@@ -21,7 +21,7 @@ from uuid import uuid4
 from langchain_core.runnables import RunnableConfig
 
 from ..config import get_settings
-from ..core.generated_image_context import NATIVE_IMAGE_ARTIFACT_KEY
+from ..core.generated_image_context import build_native_image_artifact
 from ..core.http_policy import (
     HTTPPolicyRedirectLimit,
     HTTPPolicyViolation,
@@ -101,9 +101,11 @@ def generated_image_dir(user_id: str) -> Path:
     """Per-user workspace directory where generated images are written.
 
     Single source of truth for the layout, reused by the workspace download
-    endpoint to scope non-admin users to their own generated images.
+    endpoint to scope non-admin users to their own generated images. Lives
+    under ``<workspace>/images/`` alongside ``prompt-attached/`` (user-attached
+    images) so the agent can browse and re-view both with file_read/bash.
     """
-    return _workspace_dir() / "image-generation" / _safe_user_id(user_id)
+    return _workspace_dir() / "images" / "generated" / _safe_user_id(user_id)
 
 
 def _write_image_file(
@@ -323,16 +325,15 @@ def _native_artifact(
     mime_type: str,
     native_context_enabled: bool,
 ) -> dict[str, Any]:
-    return {
-        NATIVE_IMAGE_ARTIFACT_KEY: {
-            "path": str(path),
-            "mime_type": mime_type,
-            "prompt": prompt,
-            "provider": provider,
-            "model": model,
-            "native_context_enabled": native_context_enabled,
-        }
-    }
+    return build_native_image_artifact(
+        path,
+        mime_type,
+        source="image_gen",
+        prompt=prompt,
+        provider=provider,
+        model=model,
+        native_context_enabled=native_context_enabled,
+    )
 
 
 def finalize_image(
@@ -355,9 +356,10 @@ def finalize_image(
     inspect the result on the next reasoning step. Raises on write failure; callers
     wrap the call and return an ``[Error]: ...`` string.
 
-    Note: the native-vision replay path only re-feeds images up to 8 MB with a
-    png/jpeg/webp/gif MIME type (see core/generated_image_context.py). Larger 4K
-    outputs still attach to the chat but are not replayed to the model.
+    Note: the native-vision replay path only re-feeds png/jpeg/webp/gif images
+    within the active model's ``max_image_bytes`` cap (see
+    core/generated_image_context.py). Larger 4K outputs still attach to the chat
+    but are not replayed to the model.
     """
     user_id = get_user_id(config)
     path = _write_image_file(

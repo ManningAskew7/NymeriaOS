@@ -1383,6 +1383,7 @@ class NymeriaAgent:
     def _sandbox_pending_attachments(
         self,
         thread_id: str,
+        user_id: str,
         message: str,
         attachments: Optional[List[Dict[str, str]]],
         images: Optional[List[Dict[str, str]]],
@@ -1391,8 +1392,9 @@ class NymeriaAgent:
 
         Returns ``(updated_message, image_attachments, sandbox_records, error)``.
         Used by both ``chat()`` and ``astream()`` so the two entry points agree
-        on how attachments are split (images stay inline; documents go to disk
-        and are referenced from the message preamble).
+        on how attachments are split (images stay inline AND are persisted to
+        the per-user images dir for later re-viewing; documents go to the
+        per-thread sandbox and are referenced from the message preamble).
 
         ``error`` is non-None when an attachment can't be processed; callers
         should surface it as the turn's error response.
@@ -1402,8 +1404,15 @@ class NymeriaAgent:
         if not (attachments or images):
             return message, image_attachments, sandbox_records, None
 
-        from .attachment_sandbox import build_attachment_preamble, write_attachment
+        from .attachment_sandbox import (
+            build_attached_image_note,
+            build_attachment_preamble,
+            persist_prompt_attached_image,
+            write_attachment,
+        )
         from ..config.model_capabilities import infer_mime_type, normalize_attachment_file_type
+
+        saved_image_paths: List[str] = []
 
         all_atts: List[Dict[str, str]] = list(attachments or [])
         if images:
@@ -1412,6 +1421,7 @@ class NymeriaAgent:
                     "file_type": "image",
                     "data_url": img.get("data_url", ""),
                     "mime_type": img.get("mime_type", ""),
+                    "file_name": img.get("file_name", ""),
                 })
 
         for att in all_atts:
@@ -1423,6 +1433,18 @@ class NymeriaAgent:
             )
             if file_type == "image":
                 image_attachments.append(att)
+                try:
+                    saved = persist_prompt_attached_image(
+                        user_id,
+                        data_url=att.get("data_url", ""),
+                        file_name=att.get("file_name", ""),
+                        mime_type=mime,
+                    )
+                except Exception:
+                    logger.debug("Failed to persist prompt-attached image", exc_info=True)
+                    saved = None
+                if saved is not None:
+                    saved_image_paths.append(str(saved))
             elif file_type == "document":
                 try:
                     record = write_attachment(thread_id, {**att, "mime_type": mime})
@@ -1441,6 +1463,8 @@ class NymeriaAgent:
 
         if sandbox_records:
             message = build_attachment_preamble(sandbox_records) + message
+        if saved_image_paths:
+            message = build_attached_image_note(saved_image_paths) + message
         return message, image_attachments, sandbox_records, None
 
     def chat(
@@ -1480,7 +1504,7 @@ class NymeriaAgent:
         # the astream() path. Errors surface as the sync turn's return string
         # because chat() has no SSE channel.
         message, image_attachments, sandbox_records, attachment_error = (
-            self._sandbox_pending_attachments(thread_id, message, attachments, images)
+            self._sandbox_pending_attachments(thread_id, user_id, message, attachments, images)
         )
         if attachment_error is not None:
             return attachment_error
@@ -1982,7 +2006,7 @@ class NymeriaAgent:
         # ``file_read`` them via existing core tools instead of carrying the
         # bytes through every turn of context.
         message, image_attachments, sandbox_records, attachment_error = (
-            self._sandbox_pending_attachments(thread_id, message, attachments, images)
+            self._sandbox_pending_attachments(thread_id, user_id, message, attachments, images)
         )
         if attachment_error is not None:
             yield {"type": "error", "content": attachment_error}

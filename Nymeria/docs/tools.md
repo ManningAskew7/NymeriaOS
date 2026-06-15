@@ -9,7 +9,7 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | # | Tool | Category | Security | Default | Description |
 |---|------|----------|----------|---------|-------------|
 | 1 | `bash_execute` | Core | MODERATE | On | Execute shell commands in the backend environment |
-| 2 | `file_read` | Core | SAFE | On | Read file contents |
+| 2 | `file_read` | Core | SAFE | On | Read file or image contents |
 | 3 | `file_write` | Core | MODERATE | On | Write content to files; optional workspace confinement is available |
 | 3b | `file_edit` | Core | MODERATE | On | Exact, all-or-nothing edits to existing text files |
 | 4 | `web_search_perplexity` | Web Search | SAFE | Opt-in | Search the web via Perplexity (Sonar); opt-in `WEB_SEARCH_SERVICE_TOOLS` group |
@@ -84,7 +84,7 @@ Not loaded by default. Nymeria registers more than a thousand optional integrati
 
 ### Optional: Image Generation (5)
 
-One opt-in tool per provider (the `image_gen_*` suite), so users can search for and swap between providers individually. Not loaded by default. Enable per-thread, or promote to Core in the Desktop global Tools settings. Each tool writes generated images under `NYMERIA_WORKSPACE_DIR/image-generation/`, returns a workspace artifact via `[attach:/path]`, and stores only small artifact metadata in chat history. On the next reasoning step, Nymeria hydrates recent generated images into native vision input for supported chat providers: Anthropic vision models and OpenAI/OpenRouter models using `OPENAI_API_MODE=responses`. Other provider modes still see the file path and artifact. Native-vision replay is skipped for images over 8 MB or outside png/jpeg/webp/gif (large 4K outputs still attach to the chat).
+One opt-in tool per provider (the `image_gen_*` suite), so users can search for and swap between providers individually. Not loaded by default. Enable per-thread, or promote to Core in the Desktop global Tools settings. Each tool writes generated images under `NYMERIA_WORKSPACE_DIR/images/generated/<user>/` (sibling of `images/prompt-attached/<user>/`, where user-attached images are persisted so they survive compaction and new threads; both are browsable/re-viewable with `file_read`/`bash`), returns a workspace artifact via `[attach:/path]`, and stores only small artifact metadata in chat history. On the next reasoning step, Nymeria hydrates recent generated images into native vision input for supported chat providers: Anthropic vision models and OpenAI/OpenRouter models using `OPENAI_API_MODE=responses`. Other provider modes still see the file path and artifact. Native-vision replay is skipped for images outside png/jpeg/webp/gif or over the active model's `max_image_bytes` cap (large 4K outputs still attach to the chat).
 
 API keys resolve credential vault first, then settings, then env (the same pattern as the `web_search_*` suite): `OPENAI_API_KEY`, `GEMINI_API_KEY`, `BFL_API_KEY`, `REPLICATE_API_KEY` (or `REPLICATE_API_TOKEN`), and `FAL_API_KEY` (or `FAL_KEY`), or a vault credential bound to `native_tool:image_gen_<provider>`. Note: when `OPENAI_API_KEY` is a CLIProxy gatekeeper value (`cpx-*`), supply a genuine OpenAI key through the vault for `image_gen_openai`.
 
@@ -187,7 +187,7 @@ When `run_in_background=True` is called from an agent thread, stdout and stderr 
 
 ### file_read
 
-Read the contents of a file.
+Read the contents of a file, including images.
 
 ```python
 file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = None)
@@ -197,12 +197,14 @@ Relative paths resolve from the same detected default tool cwd used by `bash_exe
 
 **Parameters:**
 - `file_path` (`str`): Absolute or relative path to the file. Relative paths resolve from the detected default tool cwd.
-- `encoding` (`str`, default `"utf-8"`): File encoding
-- `max_lines` (`Optional[int]`, default `None`): Limit number of lines to read
+- `encoding` (`str`, default `"utf-8"`): File encoding (text files only)
+- `max_lines` (`Optional[int]`, default `None`): Limit number of lines to read (text files only)
 
-**Returns:** File contents, or error message.
+**Returns:** File contents as text, or, for an image file, a loaded-image note with the image surfaced to the model.
 
-**Limits:** 10 MB maximum file size.
+**Images:** When the target is an image (png/jpeg/webp/gif, plus bmp/tiff which are converted), `file_read` detects it by magic bytes and surfaces it to the model through the same native-vision replay path as `image_gen_*` (a `nymeria_native_image` artifact hydrated just-in-time, so history stays compact). It is a `content_and_artifact` tool. Large images are downscaled to the active model's `max_image_bytes` cap (a long edge ceiling bounds tokens); the downscaled copy is written to the per-thread fetch sandbox. Unlike generated images, `file_read` may surface images from any readable path (matching its text-read scope). If the active model/route cannot carry a tool-result image (a non-vision model, or an OpenAI-compatible `chat_completions` route), it returns a `[Note]: ...` explaining how the user can attach the image directly instead. At most the 3 most recent images across all sources are replayed per turn.
+
+**Limits:** 10 MB maximum for text files; 50 MB for images (downscaled to fit the model before sending).
 
 ---
 

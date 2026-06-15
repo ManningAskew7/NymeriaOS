@@ -239,3 +239,59 @@ def test_to_history_dict_excludes_bytes(_isolated_workspace: Path):
     assert payload["size"] == 2
     assert payload["sandbox_path"] == r.sandbox_path
     assert "data_url" not in payload
+
+
+# --------------------------------------------------------------------------- #
+# Persistent user-attached images
+# --------------------------------------------------------------------------- #
+
+def test_prompt_attached_images_dir_layout(_isolated_workspace: Path):
+    path = attachment_sandbox.prompt_attached_images_dir("alice")
+    assert path.exists()
+    assert path == _isolated_workspace / "images" / "prompt-attached" / "alice"
+
+
+def test_persist_prompt_attached_image_writes_with_original_stem(_isolated_workspace: Path):
+    saved = attachment_sandbox.persist_prompt_attached_image(
+        "alice",
+        data_url=_data_url(b"png-bytes-1", "image/png"),
+        file_name="receipt.png",
+        mime_type="image/png",
+    )
+    assert saved is not None
+    assert saved.parent == _isolated_workspace / "images" / "prompt-attached" / "alice"
+    assert saved.name.startswith("receipt-")
+    assert saved.suffix == ".png"
+    assert saved.read_bytes() == b"png-bytes-1"
+
+
+def test_persist_prompt_attached_image_dedups_identical_bytes(_isolated_workspace: Path):
+    first = attachment_sandbox.persist_prompt_attached_image(
+        "bob", data_url=_data_url(b"same", "image/png"), file_name="a.png"
+    )
+    second = attachment_sandbox.persist_prompt_attached_image(
+        "bob", data_url=_data_url(b"same", "image/png"), file_name="a.png"
+    )
+    different = attachment_sandbox.persist_prompt_attached_image(
+        "bob", data_url=_data_url(b"other", "image/png"), file_name="a.png"
+    )
+    assert first == second  # same content hash -> same path
+    assert different != first
+
+
+def test_persist_prompt_attached_image_bad_data_url_returns_none(_isolated_workspace: Path):
+    assert attachment_sandbox.persist_prompt_attached_image(
+        "alice", data_url="not-a-data-url", file_name="x.png"
+    ) is None
+
+
+def test_build_attached_image_note_single_and_multiple():
+    one = attachment_sandbox.build_attached_image_note(["/ws/images/prompt-attached/u/a-1.png"])
+    assert "do NOT re-read" in one
+    assert "/ws/images/prompt-attached/u/a-1.png" in one
+    assert "workspace/images/" in one
+
+    many = attachment_sandbox.build_attached_image_note(["/ws/a.png", "/ws/b.png"])
+    assert "/ws/a.png" in many and "/ws/b.png" in many
+
+    assert attachment_sandbox.build_attached_image_note([]) == ""

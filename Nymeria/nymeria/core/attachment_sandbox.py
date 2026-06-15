@@ -411,3 +411,123 @@ def build_attachment_preamble(records: list[AttachmentRecord]) -> str:
         "Use file_read for extracted text and bash_execute for binary inspection."
     )
     return intro + "\n" + "\n".join(bullets) + "\n\n"
+
+
+# --------------------------------------------------------------------------- #
+# Persistent user-attached images (cross-thread, survive compaction)
+# --------------------------------------------------------------------------- #
+
+_IMAGE_EXT_BY_MIME = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+}
+
+
+def prompt_attached_images_dir(user_id: str) -> Path:
+    """Resolve (and create) the per-user directory for user-attached images.
+
+    Layout: ``<workspace>/images/prompt-attached/<user_id>/`` (sibling of the
+    ``images/generated/<user_id>/`` dir used by image-generation tools). Unlike
+    the per-thread sandbox, these persist across threads and survive compaction,
+    so the agent can re-view a previously attached image with file_read/bash
+    instead of the user re-attaching it. Scoped per-user to mirror the
+    generated-image layout (note: the workspace download endpoint currently
+    serves only ``generated/``; these are read server-side by the agent).
+    """
+    safe = _SAFE_NAME_RE.sub("_", user_id) or "default"
+    base = _workspace_root() / "images" / "prompt-attached" / safe
+    base.mkdir(parents=True, exist_ok=True)
+    try:
+        base.chmod(0o700)
+    except (PermissionError, OSError):
+        logger.debug("Could not chmod %s; continuing", base)
+    return base
+
+
+def _data_url_mime(data_url: str) -> str:
+    header = data_url.split(",", 1)[0]
+    if header.startswith("data:"):
+        return header[len("data:"):].split(";", 1)[0].strip()
+    return ""
+
+
+def _image_ext_for(mime: str, file_name: str) -> str:
+    ext = _IMAGE_EXT_BY_MIME.get((mime or "").lower())
+    if ext:
+        return ext
+    suffix = Path(file_name).suffix.lower()
+    return suffix if suffix else ".png"
+
+
+def _image_stem_for(file_name: str) -> str:
+    stem = Path(file_name).stem if file_name else ""
+    cleaned = _SAFE_NAME_RE.sub("_", stem).strip("_")
+    return cleaned[:48] or "image"
+
+
+def persist_prompt_attached_image(
+    user_id: str,
+    *,
+    data_url: str,
+    file_name: str = "",
+    mime_type: str = "",
+) -> Optional[Path]:
+    """Persist a user-attached image to the per-user images dir; return its path.
+
+    The file is named ``<original-stem>-<sha8><ext>``: the original filename
+    gives a content hint for later browsing, and the content hash dedups
+    re-attaches of the same image (same bytes -> same path, written once).
+    Returns ``None`` on any failure so the caller keeps the inline image and the
+    turn is unaffected.
+    """
+    if not data_url or not data_url.startswith("data:"):
+        return None
+    try:
+        raw = _decode_data_url(data_url)
+    except Exception:
+        logger.warning("persist_prompt_attached_image: could not decode data URL", exc_info=True)
+        return None
+    if not raw or len(raw) > _MAX_ATTACHMENT_BYTES:
+        return None
+
+    mime = mime_type or _data_url_mime(data_url) or "image/png"
+    digest = hashlib.sha256(raw).hexdigest()[:8]
+    filename = f"{_image_stem_for(file_name)}-{digest}{_image_ext_for(mime, file_name)}"
+    target = prompt_attached_images_dir(user_id) / filename
+    try:
+        if not target.exists():
+            target.write_bytes(raw)
+    except OSError:
+        logger.warning("persist_prompt_attached_image: write failed", exc_info=True)
+        return None
+    return target
+
+
+def build_attached_image_note(paths: list[str]) -> str:
+    """Preamble recording where user-attached images were saved on disk.
+
+    The images are ALSO sent inline this turn (the model sees them directly), so
+    this note exists only to (a) record the on-disk path for re-viewing in a
+    later turn/thread and (b) act as a fallback if the image did not reach the
+    model. It explicitly tells the agent NOT to re-read a visible image.
+    """
+    if not paths:
+        return ""
+    if len(paths) == 1:
+        location = f"Attached image saved to: {paths[0]}"
+        plural = "this image"
+    else:
+        listing = "\n".join(f"  - {p}" for p in paths)
+        location = f"Attached images saved to (matching the images below, in order):\n{listing}"
+        plural = "these images"
+    return (
+        f"[{location}\n"
+        f"You can already see {plural} directly in this message, so do NOT re-read "
+        "with file_read just to be safe. Use a saved path only if an image did not "
+        "come through, or to view it again in a later turn or thread (past images "
+        "live under workspace/images/). You may rename or organize files there.]\n\n"
+    )

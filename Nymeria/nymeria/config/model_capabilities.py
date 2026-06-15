@@ -773,9 +773,21 @@ def _fetch_anthropic_models(
 
         capabilities_obj = model.get("capabilities") or {}
         input_modalities: Set[str] = {"text"}
+        image_reported = "image_input" in capabilities_obj
+        pdf_reported = "pdf_input" in capabilities_obj
         if (capabilities_obj.get("image_input") or {}).get("supported"):
             input_modalities.add("image")
         if (capabilities_obj.get("pdf_input") or {}).get("supported"):
+            input_modalities.add("file")
+        # Some Anthropic-compatible gateways (notably CLIProxy) return /v1/models
+        # without a capabilities block. Do NOT assert text-only in that case: it
+        # would mark every vision-capable Claude model as non-vision in the live
+        # cache (which is authoritative over the static fallback) and silently
+        # disable all image input. Defer to the static capability sets for any
+        # modality the provider did not explicitly report.
+        if not image_reported and _fallback_check(model_id, VISION_CAPABLE_MODELS):
+            input_modalities.add("image")
+        if not pdf_reported and _fallback_check(model_id, DOCUMENT_CAPABLE_MODELS):
             input_modalities.add("file")
         reasoning_efforts = parse_anthropic_reasoning_capabilities(capabilities_obj)
 
@@ -964,6 +976,7 @@ ANTHROPIC_VISION_CAPABLE_MODELS = {
     "anthropic/claude-opus-4.6",
     "anthropic/claude-opus-4.6-fast",
     "anthropic/claude-opus-4.7",
+    "anthropic/claude-opus-4.8",
     "claude-3-opus",
     "claude-3-sonnet",
     "claude-3-haiku",
@@ -979,6 +992,7 @@ ANTHROPIC_VISION_CAPABLE_MODELS = {
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
 }
 
 ANTHROPIC_DOCUMENT_CAPABLE_MODELS = {
@@ -997,6 +1011,7 @@ ANTHROPIC_DOCUMENT_CAPABLE_MODELS = {
     "anthropic/claude-opus-4.5",
     "anthropic/claude-opus-4.6",
     "anthropic/claude-opus-4.7",
+    "anthropic/claude-opus-4.8",
     "claude-3-opus",
     "claude-3-sonnet",
     "claude-3-haiku",
@@ -1012,6 +1027,7 @@ ANTHROPIC_DOCUMENT_CAPABLE_MODELS = {
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
 }
 
 OPENAI_VISION_CAPABLE_MODELS = {

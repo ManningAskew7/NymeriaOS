@@ -73,7 +73,7 @@ def test_image_gen_openai_end_to_end(workspace, monkeypatch):
     content, artifact = igi.image_gen_openai.func(prompt="a cat", config=_CONFIG)
 
     _assert_generated(content, artifact, provider="openai", model="gpt-image-2")
-    files = list((workspace / "image-generation" / "owner-example.com").glob("*.png"))
+    files = list((workspace / "images" / "generated" / "owner-example.com").glob("*.png"))
     assert len(files) == 1
     assert files[0].read_bytes() == b"openai-bytes"
 
