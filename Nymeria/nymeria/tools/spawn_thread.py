@@ -512,7 +512,12 @@ def spawn_thread(
             if this thread should be single-use.
         llm_provider, llm_model, llm_temperature, llm_max_tokens,
         llm_extended_thinking, llm_reasoning_effort: Optional LLM overrides
-            for this thread. Omit to inherit global settings.
+            for this thread. Omit to inherit global settings. llm_model also
+            accepts the tier aliases "fast", "smart", or "default": these
+            resolve to the configured fast/smart/primary model (and may route to
+            a different provider), so you can pick a cheap model for simple
+            sub-tasks or a stronger model for hard ones without naming an exact
+            model ID.
         prompt: If provided, dispatches this message to the new
             thread and BLOCKS until the child returns its response. The
             child's response becomes part of this tool's output.
@@ -552,6 +557,7 @@ def spawn_thread(
         - ttl_hours must be >= 1 when set.
     """
     from . import SEED_TOOLS, CATALOG_TOOLS
+    from ..config.model_tiers import is_tier_alias, resolve_tier
     from ..core.agent import get_current_agent
     from ..core.event_bus import publish_sync_event
     from ..core.thread_config import ThreadConfig, ThreadLLMConfig
@@ -754,6 +760,19 @@ def spawn_thread(
         # Funnel every core tool name into disabled_list so the graph builder
         # filters them out. Dedupe in case the caller also named some explicitly.
         disabled_list = sorted({*(disabled_list), *(t.name for t in SEED_TOOLS)})
+
+    # Expand a tier alias ("fast"/"smart"/"default") into a concrete
+    # provider+model so the child thread carries real IDs. A tier may target a
+    # different provider (provider:model), which the runtime resolves credentials
+    # for via the existing cross-provider fallback machinery.
+    if is_tier_alias(llm_model):
+        resolved_tier = resolve_tier(
+            llm_model,
+            agent.settings,
+            provider=llm_provider or agent.settings.llm_provider,
+        )
+        if resolved_tier is not None:
+            llm_provider, llm_model = resolved_tier
 
     llm_config = None
     if any(

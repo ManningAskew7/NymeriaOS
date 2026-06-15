@@ -584,7 +584,20 @@ class Settings(BaseSettings):
     )
     llm_fast_model: Optional[str] = Field(
         default=None,
-        description="Fast/cheap model used by the CLI /fast shortcut",
+        description=(
+            "Fast/cheap model tier used by the /fast command and the 'fast' "
+            "alias. May be a model ID for the active provider or provider:model "
+            "for any known provider. Unset uses a provider-aware default."
+        ),
+    )
+    llm_smart_model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Smart/high-capability model tier used by the /smart command and "
+            "the 'smart' alias. May be a model ID for the active provider or "
+            "provider:model for any known provider. Unset falls back to the "
+            "primary llm_model."
+        ),
     )
     llm_fallback_models: Optional[str] = Field(
         default=DEFAULT_LLM_FALLBACK_MODELS,

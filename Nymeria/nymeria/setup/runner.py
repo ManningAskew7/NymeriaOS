@@ -310,6 +310,27 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         help="Reasoning effort for the primary model (medium recommended)",
     )
     parser.add_argument(
+        "--fast-model", default=None, metavar="MODEL",
+        help=(
+            "Fast model tier (LLM_FAST_MODEL); a model id or provider:model "
+            "for a different provider"
+        ),
+    )
+    parser.add_argument(
+        "--smart-model", default=None, metavar="MODEL",
+        help=(
+            "Smart model tier (LLM_SMART_MODEL); a model id or provider:model "
+            "for a different provider"
+        ),
+    )
+    parser.add_argument(
+        "--fallback-models", default=None, metavar="LIST",
+        help=(
+            "Comma-separated fallback chain (LLM_FALLBACK_MODELS); entries may "
+            "be model ids or provider:model"
+        ),
+    )
+    parser.add_argument(
         "--root",
         default=None,
         help="Runtime root for config.env and the default data/ directory",
@@ -419,6 +440,9 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         ("context", "context_strategy"),
         ("timezone", "user_timezone"),
         ("reasoning_effort", "llm_effort"),
+        ("fast_model", "llm_fast_model"),
+        ("smart_model", "llm_smart_model"),
+        ("fallback_models", "llm_fallback_models"),
     ):
         value = getattr(args, attr, None)
         if value:

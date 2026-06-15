@@ -119,6 +119,7 @@ def _env_categories() -> dict[str, list[str]]:
             "llm_provider",
             "llm_model",
             "llm_fast_model",
+            "llm_smart_model",
             "llm_fallback_models",
             "llm_temperature",
             "llm_max_tokens",
@@ -352,6 +353,27 @@ def _fallback_model_list(value: Any) -> list[str]:
     return models
 
 
+def _resolved_tier_ref(settings: Any, tier: str) -> Optional[str]:
+    """Effective tier ref for the GET response (provider:model or bare model).
+
+    Returns the model alone when the tier inherits the primary provider, or
+    ``provider:model`` when it targets a different provider, so the per-thread
+    tier quick-pick can fill provider+model directly. ``None`` when unresolved.
+    """
+    from ...config.llm_providers import normalize_llm_provider
+    from ...config.model_tiers import resolve_tier
+
+    resolved = resolve_tier(tier, settings)
+    if not resolved or not resolved[1]:
+        return None
+    provider, model = resolved
+    if normalize_llm_provider(provider) == normalize_llm_provider(
+        getattr(settings, "llm_provider", "")
+    ):
+        return model
+    return f"{provider}:{model}"
+
+
 def _mask_value(val: str) -> str:
     """Mask a secret value, showing first 4 and last 3 chars."""
     s = str(val)
@@ -391,6 +413,7 @@ _LLM_FIELDS = frozenset(
         "llm_provider",
         "llm_model",
         "llm_fast_model",
+        "llm_smart_model",
         "llm_fallback_models",
         "llm_temperature",
         "llm_max_tokens",
@@ -743,6 +766,9 @@ def create_settings_router(
             llm_provider=settings.llm_provider,
             llm_model=settings.llm_model,
             llm_fast_model=settings.llm_fast_model,
+            llm_smart_model=settings.llm_smart_model,
+            llm_fast_model_resolved=_resolved_tier_ref(settings, "fast"),
+            llm_smart_model_resolved=_resolved_tier_ref(settings, "smart"),
             llm_fallback_models=_fallback_model_list(settings.llm_fallback_models),
             llm_temperature=settings.llm_temperature,
             llm_max_tokens=settings.llm_max_tokens,

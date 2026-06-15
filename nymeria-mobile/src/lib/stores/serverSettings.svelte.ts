@@ -6,6 +6,8 @@ function createServerSettingsStore() {
   let provider = $state<string | null>(null);
   let providerRoute = $state<string | null>(null);
   let model = $state<string | null>(null);
+  let fastModelResolved = $state<string | null>(null);
+  let smartModelResolved = $state<string | null>(null);
   let memoryCharLimit = $state<number | null>(null);
   let loading = $state(false);
   let loaded = $state(false);
@@ -14,6 +16,8 @@ function createServerSettingsStore() {
     get provider() { return provider; },
     get providerRoute() { return providerRoute; },
     get model() { return model; },
+    get fastModelResolved() { return fastModelResolved; },
+    get smartModelResolved() { return smartModelResolved; },
     get memoryCharLimit() { return memoryCharLimit; },
     get loading() { return loading; },
     get loaded() { return loaded; },
@@ -26,6 +30,8 @@ function createServerSettingsStore() {
         provider = settings.llm_provider;
         providerRoute = settings.llm_provider_route;
         model = settings.llm_model;
+        fastModelResolved = settings.llm_fast_model_resolved;
+        smartModelResolved = settings.llm_smart_model_resolved;
         memoryCharLimit = settings.memory_char_limit;
         loaded = true;
       } catch (e) {

@@ -1595,6 +1595,30 @@ class CommandService:
         )
         self.register("models", description="List available provider models", category="LLM")
         self.register(
+            "fast",
+            description="Switch this thread to the fast model tier",
+            category="LLM",
+            usage="/fast [on|off|set <model-id>]",
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "smart",
+            description="Switch this thread to the smart model tier",
+            category="LLM",
+            usage="/smart [on|off|set <model-id>]",
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
+            "fallback",
+            description="Manage the model fallback chain",
+            category="LLM",
+            usage="/fallback [list|add|remove|clear|set]",
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
             "think",
             description="Show or change thinking mode",
             category="LLM",
@@ -4085,6 +4109,193 @@ class _CommandExecutor:
         if len(models) > 25:
             lines.append(f"(showing 25 of {len(models)})")
         return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_fast(self, args: list[str], rest: str) -> str:
+        return await self._apply_tier_command("fast", args)
+
+    async def _cmd_smart(self, args: list[str], rest: str) -> str:
+        return await self._apply_tier_command("smart", args)
+
+    async def _apply_tier_command(self, tier: str, args: list[str]) -> str:
+        """Shared /fast and /smart handler: show / toggle / on / off / set."""
+        from ..config.model_tiers import is_tier_alias, plan_tier_switch, resolve_tier
+
+        label = tier.capitalize()
+        sub = args[0].lower() if args else ""
+        settings = await self.api.get_settings()
+
+        if sub == "set":
+            model_id = " ".join(args[1:]).strip()
+            if not model_id:
+                return f"[Error]: Usage: /{tier} set <model-id> (or provider:model)"
+            if is_tier_alias(model_id):
+                return (
+                    f"[Error]: Cannot set the {tier} tier to another tier alias "
+                    f"({model_id}). Use a model id or provider:model."
+                )
+            key = "llm_fast_model" if tier == "fast" else "llm_smart_model"
+            result = await self.api.update_settings(
+                user_id=self.user_id, **{key: model_id}
+            )
+            msg = f"[Success]: {label} model set to {model_id}."
+            if result.get("restart_required"):
+                msg += " (restart required to take effect)"
+            return msg
+
+        if sub not in {"", "on", "off"}:
+            return f"[Error]: Usage: /{tier} [on|off|set <model-id>]"
+
+        if not self.thread_id:
+            resolved = resolve_tier(tier, settings)
+            if resolved is None or not resolved[1]:
+                return f"[Error]: {label} model is not configured."
+            return f"[Info]: {label} tier resolves to {resolved[1]} ({resolved[0]})."
+
+        # Resolve against the thread's effective provider so an unset tier honors
+        # a per-thread provider override (matching the CLI handler).
+        tc = await self.api.get_thread_config(self.thread_id)
+        llm_cfg = (tc or {}).get("llm_config") or {}
+        cur_provider = str(llm_cfg.get("provider") or settings.get("llm_provider") or "")
+        cur_model = str(llm_cfg.get("model") or settings.get("llm_model") or "").strip()
+
+        plan = plan_tier_switch(
+            tier,
+            settings,
+            cur_provider=cur_provider,
+            cur_model=cur_model,
+            mode=sub or "toggle",
+        )
+        if plan is None:
+            return f"[Error]: {label} model is not configured."
+        target_provider, target_model, enabled = plan
+
+        await self.api.update_thread_config(
+            self.thread_id,
+            user_id=self.user_id,
+            llm_config={"provider": target_provider, "model": target_model},
+        )
+        mode = label if enabled else "default"
+        return (
+            f"[Success]: This thread switched to {mode} model "
+            f"({target_model}, {target_provider})."
+        )
+
+    async def _cmd_fallback(self, args: list[str], rest: str) -> str:
+        """Manage the global fallback chain: list / add / remove / clear / set."""
+        sub = args[0].lower() if args else "list"
+        settings = await self.api.get_settings()
+        chain = self._fallback_chain(settings)
+
+        if sub == "list":
+            primary = str(settings.get("llm_model", "") or "").strip() or "Unknown"
+            provider = str(settings.get("llm_provider", "") or "").strip()
+            lines = [f"Primary: {primary}" + (f" ({provider})" if provider else "")]
+            if chain:
+                lines += [f"  {i}. {model}" for i, model in enumerate(chain, start=1)]
+            else:
+                lines.append("  (no fallback models configured)")
+            return "[Info]: Model Fallbacks\n" + "\n".join(lines)
+
+        if sub == "add":
+            model, position, error = self._parse_fallback_add(args[1:])
+            if error:
+                return f"[Error]: {error}"
+            next_chain = [m for m in chain if m != model]
+            if position is None:
+                next_chain.append(model)
+            else:
+                next_chain.insert(min(position - 1, len(next_chain)), model)
+            return await self._save_fallback_chain(next_chain, f"Added fallback model: {model}")
+
+        if sub in {"remove", "rm"}:
+            model = " ".join(args[1:]).strip()
+            if not model:
+                return "[Error]: Usage: /fallback remove <model-id>"
+            next_chain = [m for m in chain if m != model]
+            if len(next_chain) == len(chain):
+                return f"[Error]: Fallback model is not configured: {model}"
+            return await self._save_fallback_chain(next_chain, f"Removed fallback model: {model}")
+
+        if sub == "clear":
+            return await self._save_fallback_chain([], "Cleared fallback chain.")
+
+        if sub == "set":
+            next_chain = self._dedupe_models(args[1:])
+            if not next_chain:
+                return "[Error]: Usage: /fallback set <model1> <model2> ..."
+            label = " -> ".join(next_chain)
+            return await self._save_fallback_chain(next_chain, f"Fallback chain set: {label}")
+
+        return "[Error]: Usage: /fallback [list|add|remove|clear|set]"
+
+    async def _save_fallback_chain(self, chain: list[str], message: str) -> str:
+        result = await self.api.update_settings(
+            user_id=self.user_id, llm_fallback_models=",".join(chain)
+        )
+        if result.get("restart_required"):
+            message += " (restart required to take effect)"
+        return f"[Success]: {message}"
+
+    @staticmethod
+    def _fallback_chain(settings: dict) -> list[str]:
+        raw = settings.get("llm_fallback_models", [])
+        if isinstance(raw, str):
+            raw = raw.replace("\n", ",").split(",")
+        elif not isinstance(raw, (list, tuple)):
+            raw = [raw]
+        return _CommandExecutor._dedupe_models(raw)
+
+    @staticmethod
+    def _dedupe_models(values) -> list[str]:
+        output: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            model = str(value or "").strip()
+            if model and model not in seen:
+                output.append(model)
+                seen.add(model)
+        return output
+
+    @staticmethod
+    def _parse_position(value: str) -> tuple[int | None, str]:
+        try:
+            position = int(value)
+        except ValueError:
+            return None, f"Invalid position: {value}"
+        if position < 1:
+            return None, "Position must be 1 or greater."
+        return position, ""
+
+    @staticmethod
+    def _parse_fallback_add(args: list[str]) -> tuple[str, int | None, str]:
+        model = ""
+        position: int | None = None
+        index = 0
+        while index < len(args):
+            token = args[index]
+            if token == "--position":
+                if index + 1 >= len(args):
+                    return "", None, "--position requires a value."
+                position, error = _CommandExecutor._parse_position(args[index + 1])
+                if error:
+                    return "", None, error
+                index += 1
+            elif token.startswith("--position="):
+                position, error = _CommandExecutor._parse_position(
+                    token.split("=", 1)[1]
+                )
+                if error:
+                    return "", None, error
+            elif token.startswith("--"):
+                return "", None, f"Unknown option: {token}"
+            elif model:
+                return "", None, "Usage: /fallback add <model-id> [--position N]"
+            else:
+                model = token.strip()
+            index += 1
+        if not model:
+            return "", None, "Usage: /fallback add <model-id> [--position N]"
+        return model, position, ""
 
     @staticmethod
     def _think_clamp_note(settings: dict, effort: str) -> tuple[str, str]:

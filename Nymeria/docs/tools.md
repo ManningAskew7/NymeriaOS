@@ -2233,7 +2233,7 @@ spawn_thread(
 - `disabled_tools`: List of core tool names to EXCLUDE from the new thread.
 - `include_core_tools` (default `True`): If `False`, disables every core tool so the child gets only explicitly resolved or selected tools.
 - `make_callable` (default `True`): If `True`, the new thread is registered as a callable tool with an auto-derived name (`spawned_{slug}_{rand8}`) and ownership is **claimed for the spawning user** in `thread_owners`. Threads owned by that same user (including the parent) can invoke it; threads owned by any other user cannot  -  the runtime gate in `agents/tool_factory.py` rejects cross-user invocations. Set `False` for a single-use thread.
-- `llm_*`: Optional LLM overrides. Omit to inherit global settings.
+- `llm_*`: Optional LLM overrides. Omit to inherit global settings. `llm_model` also accepts the tier aliases `"fast"`, `"smart"`, or `"default"`, which resolve to the configured fast/smart/primary model (and may route to a different provider) so the agent can pick a cheap model for simple sub-tasks or a stronger one for hard tasks without naming an exact model id.
 - `prompt`: If provided, dispatches this message and **blocks** until the child responds. The child's response becomes part of this tool's output.
 - `mode` (default `"fresh"`): `"fresh"` builds an empty thread. `"branched"` forks the calling thread's full checkpoint history and configuration via `branch_thread()`; the new thread starts with the parent's conversation context, then the spawn-thread overrides are layered on top. Requires a parent thread.
 - `ttl_hours`: Optional lifetime. `None` is permanent. Any positive integer marks the thread temporary and auto-deletes it after that many idle hours.

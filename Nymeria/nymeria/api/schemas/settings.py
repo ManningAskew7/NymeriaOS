@@ -96,6 +96,11 @@ class ServerSettingsResponse(BaseModel):
     llm_provider: str
     llm_model: str
     llm_fast_model: Optional[str] = None
+    llm_smart_model: Optional[str] = None
+    # Read-only effective "provider:model" the fast/smart aliases resolve to
+    # (configured value or default), used by the per-thread tier quick-pick.
+    llm_fast_model_resolved: Optional[str] = None
+    llm_smart_model_resolved: Optional[str] = None
     llm_fallback_models: list[str] = Field(default_factory=list)
     llm_temperature: float
     llm_max_tokens: Optional[int] = None
@@ -168,6 +173,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_fast_model: Optional[str] = None
+    llm_smart_model: Optional[str] = None
     llm_fallback_models: Optional[str] = None
     llm_temperature: Optional[float] = None
     llm_max_tokens: Optional[int] = None
