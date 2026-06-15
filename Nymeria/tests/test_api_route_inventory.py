@@ -509,11 +509,11 @@ def test_workspace_download_scopes_non_admin_to_own_generated_images(
     outside = tmp_path / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
     # Per-user generated-image dirs mirror tools.image_generation.generated_image_dir.
-    alice_img_dir = workspace_dir / "image-generation" / "alice"
+    alice_img_dir = workspace_dir / "images" / "generated" / "alice"
     alice_img_dir.mkdir(parents=True)
     alice_image = alice_img_dir / "gen.png"
     alice_image.write_bytes(b"alice-image")
-    bob_img_dir = workspace_dir / "image-generation" / "bob"
+    bob_img_dir = workspace_dir / "images" / "generated" / "bob"
     bob_img_dir.mkdir(parents=True)
     bob_image = bob_img_dir / "gen.png"
     bob_image.write_bytes(b"bob-image")
