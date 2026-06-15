@@ -1032,6 +1032,13 @@ def create_api_app(
     # Sync callable thread tools into the registry
     _agent.sync_agent_tools()
 
+    # Pre-embed the tool-search catalog in the background. Both slim and Docker
+    # run the agent in this (API) process and the worker never builds this app,
+    # so registering unconditionally warms exactly where searches run. Without
+    # it, the first tool_search after a restart embeds ~1300 tools inline and
+    # can hit the 300s tool-execution timeout.
+    _register_tool_index_warm_lifecycle(app)
+
     # ========================================================================
     # Slim-mode wiring (embedded MCP + in-process watchdog)
     #
@@ -1329,6 +1336,88 @@ def _register_dream_scheduler_lifecycle(
     async def _stop() -> None:
         if stop_event is not None:
             stop_event.set()
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    app.router.add_event_handler("startup", _start)
+    app.router.add_event_handler("shutdown", _stop)
+
+
+# Tool-index warm: startup delay (let app boot settle) and the heartbeat that
+# reconciles any change signal missed before the loop registered.
+TOOL_INDEX_WARM_STARTUP_DELAY_SECONDS = 20.0
+TOOL_INDEX_WARM_HEARTBEAT_SECONDS = 300.0
+
+
+def _register_tool_index_warm_lifecycle(app: FastAPI) -> None:
+    """Background-warm the tool-search embedding cache in the API process.
+
+    The first ``tool_search`` after a restart would otherwise embed the whole
+    catalog (~1300 tools) inline and could exceed the 300s tool-execution
+    timeout. This task embeds the catalog into the persistent store / in-memory
+    cache at startup (off the event loop) and re-embeds deltas when the catalog
+    changes (``mark_tool_search_dirty`` sets the wake event). Until the warm
+    completes, ``search`` serves keyword results instead of embedding inline.
+    """
+    import asyncio
+
+    from ..core.tool_search_index import get_tool_search_index
+
+    stop_event: "asyncio.Event | None" = None
+    wake_event: "asyncio.Event | None" = None
+    task: "asyncio.Task[None] | None" = None
+
+    async def _warm_loop(stop: asyncio.Event, wake: asyncio.Event) -> None:
+        index = get_tool_search_index()
+        index.register_warm_loop(asyncio.get_running_loop(), wake)
+
+        # Short startup delay so the first warm doesn't race app boot.
+        try:
+            await asyncio.wait_for(
+                stop.wait(), timeout=TOOL_INDEX_WARM_STARTUP_DELAY_SECONDS
+            )
+        except asyncio.TimeoutError:
+            pass  # Expected: the first warm fires after the delay.
+
+        while not stop.is_set():
+            # Clear before warming so a change signaled mid-pass is not lost: it
+            # stays set and immediately re-triggers the next pass.
+            wake.clear()
+            try:
+                await asyncio.to_thread(index.warm_embeddings)
+            except Exception:
+                logger.exception("Tool index warm pass failed")
+            if stop.is_set():
+                break
+            try:
+                await asyncio.wait_for(
+                    wake.wait(), timeout=TOOL_INDEX_WARM_HEARTBEAT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                pass  # Heartbeat tick: re-warm (idempotent, delta-cheap).
+
+    async def _start() -> None:
+        nonlocal stop_event, wake_event, task
+        stop_event = asyncio.Event()
+        wake_event = asyncio.Event()
+        task = asyncio.create_task(_warm_loop(stop_event, wake_event))
+        app.state.tool_index_warm_task = task
+        app.state.tool_index_warm_stop = stop_event
+        app.state.tool_index_warm_wake = wake_event
+        logger.info("Tool index warm task started")
+
+    async def _stop() -> None:
+        if stop_event is not None:
+            stop_event.set()
+        if wake_event is not None:
+            wake_event.set()  # Break the wake wait promptly.
         if task is not None:
             try:
                 await asyncio.wait_for(task, timeout=5.0)
