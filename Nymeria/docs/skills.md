@@ -140,7 +140,7 @@ that each bind their tools (ttl 2h) only when activated:
 | `tool-management` | `tool_search`, `tool_manage`, `tool_create`, `api_discover`, `http_request` | find/enable/build tools, including HTTP or API-backed custom tools |
 | `skill-management` | `skill_manage`, `skill_write`, `skill_edit` | find/install/create/edit Skills and Skill Kits |
 | `mcp-management` | `manage_mcp` | find/install/test/manage MCP servers (ships with the single `manage_mcp` tool today) |
-| `credential-management` | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` | request/inspect/clean up credentials (these auth tools are in the default seed, so this kit is mainly guidance) |
+| `credential-management` | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` | request/inspect/clean up credentials (binds these auth tools on activation, like the other capability kits) |
 
 Nymeria initializes `self-improve` and all four `*-management` kits in each user
 profile's `enabled_global_skills` list once, so they are on by default for new
