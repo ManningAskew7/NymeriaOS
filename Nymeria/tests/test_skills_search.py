@@ -142,3 +142,33 @@ def test_semantic_search_finds_intent_matches(tmp_path):
     assert r.mode == "semantic"
     assert r.results
     assert r.results[0].name == "ocr-tool"
+
+
+def test_embedding_client_uses_bounded_timeout_and_no_retries(tmp_path):
+    """A slow/unreachable embeddings endpoint must fail fast and degrade to
+    FTS5/keyword search instead of stalling the agent turn for the SDK default
+    (~600s x 2 retries). Guards against regressing the client construction.
+    """
+    import openai
+
+    from nymeria.skills.embedding_index import EMBED_REQUEST_TIMEOUT_SECONDS
+
+    captured: dict = {}
+
+    class _RecordingClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    original = openai.OpenAI
+    openai.OpenAI = _RecordingClient
+    try:
+        idx = SkillEmbeddingIndex(
+            db_path=tmp_path / "skills.db",
+            openai_api_key="sk-real-looking-key",
+        )
+        idx._get_openai()
+    finally:
+        openai.OpenAI = original
+
+    assert captured["timeout"] == EMBED_REQUEST_TIMEOUT_SECONDS
+    assert captured["max_retries"] == 0

@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 EMBEDDING_DIMENSIONS = 1536
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+# Each _embed() call sends a single short text, on both the search-query path
+# (latency-sensitive: a hang stalls the agent turn) and the rebuild path. The
+# OpenAI SDK otherwise defaults to a 600s timeout with 2 retries, so a hung
+# socket can block for minutes; bound it so _embed() degrades to FTS5/keyword
+# search instead. A rebuild that hits the timeout costs exactly one stall: the
+# first failure latches _semantic_available off, so later items skip the embed.
+EMBED_REQUEST_TIMEOUT_SECONDS = 10.0
+
 # Skills we index — accepts either a Skill object or a MarketplaceSkillEntry-shaped object.
 # Both have .name and .description; indexable attrs below are all optional.
 SearchMode = str  # "semantic" | "bm25" | "substring"
@@ -164,7 +172,11 @@ class SkillEmbeddingIndex:
             if not self._openai_key:
                 raise RuntimeError("EMBEDDING_API_KEY not configured")
             from openai import OpenAI
-            kwargs = {"api_key": self._openai_key}
+            kwargs = {
+                "api_key": self._openai_key,
+                "timeout": EMBED_REQUEST_TIMEOUT_SECONDS,
+                "max_retries": 0,
+            }
             if self._openai_base_url:
                 kwargs["base_url"] = self._openai_base_url
             self._openai_client = OpenAI(**kwargs)
