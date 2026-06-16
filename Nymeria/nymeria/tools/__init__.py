@@ -8,7 +8,7 @@ Callable thread tools are added per-graph in _build_graph_with_prompt(), not glo
 
 Tool classification (read this before reasoning about "core" vs "optional"):
 
-- ``SEED_TOOLS`` (~18) is the code-level set that SEEDS each user's editable
+- ``SEED_TOOLS`` (~13) is the code-level set that SEEDS each user's editable
   ``default_thread_tools`` on first run (``NymeriaAgent._migrate_tool_preferences``).
   It is NOT "all tools" and NOT a runtime guarantee: a user can demote a seed
   tool out of their defaults, and any thread can disable it.
@@ -1418,6 +1418,8 @@ CATALOG_TOOLS = {t.name: t for t in (
     + HTTP_API_TOOLS
     + TOOL_CREATE_TOOLS
     + SKILL_CONFIG_TOOLS
+    + AUTH_MANAGER_TOOLS
+    + REQUEST_CREDENTIAL_TOOLS
     + WATCHDOG_TOOLS
     + SPAWN_THREAD_TOOLS
     + DREAM_TOOLS
@@ -1460,9 +1462,15 @@ CATALOG_TOOLS = {t.name: t for t in (
 )}
 
 # Capability expansion tools are deliberately opt-in through the bundled
-# capability kits (tool-management, skill-management, mcp-management; the
-# credential tools stay core). They should not live in profile
-# default_thread_tools.
+# capability kits (tool-management, skill-management, mcp-management). They are
+# force-stripped from profile default_thread_tools on every sync so they never
+# linger as always-on. The credential-management kit (auth_inspect,
+# auth_cleanup, auth_bindings, request_credential) is bundled and default-on the
+# same way, but its tools are intentionally NOT in this set: they are plain
+# opt-in catalog tools that are not force-stripped (matching how personality_set
+# was demoted), so an existing profile that had them seeded keeps them across a
+# normal restart. (A demotion is still picked up by the diff-based reload_all
+# path, which is fine: the default-on kit rebinds them on demand.)
 CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
     t.name
     for t in (
@@ -1562,12 +1570,6 @@ SEED_TOOLS = [
     notify,
     # Core command-service bridge
     slash_command,
-    # Credential management — default so the agent can always prompt the user
-    # for API keys and OAuth tokens without requiring the tool to be pre-enabled.
-    auth_inspect,
-    auth_cleanup,
-    auth_bindings,
-    request_credential,
 ]
 
 
