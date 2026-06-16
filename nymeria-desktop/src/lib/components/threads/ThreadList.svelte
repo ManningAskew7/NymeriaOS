@@ -1495,7 +1495,7 @@
     border: none;
     border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: opacity var(--transition-fast);
+    transition: background var(--transition-fast), opacity var(--transition-fast);
   }
 
   .folder-picker-create-btn:disabled {
@@ -1503,8 +1503,11 @@
     cursor: not-allowed;
   }
 
+  /* Real hover (accent darken) rather than the prior opacity-only 0.9, so
+     the press affordance follows the active theme's accent like every other
+     primary control. */
   .folder-picker-create-btn:not(:disabled):hover {
-    opacity: 0.9;
+    background: var(--accent-hover);
   }
 
   .folder-picker-existing {

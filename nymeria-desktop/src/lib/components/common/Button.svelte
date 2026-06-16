@@ -100,6 +100,13 @@
     border-color: var(--text-muted);
   }
 
+  /* Pressed cue: these variants don't lift on hover (unlike .btn-primary),
+     so the press is a subtle scale-down, matching the no-lift .send-btn
+     convention. Theme-independent and distinct from the hover bg shift. */
+  .btn-secondary:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
   .btn-ghost {
     background: transparent;
     color: var(--text-secondary);
@@ -109,6 +116,10 @@
     background: var(--bg-hover);
     color: var(--text-primary);
     box-shadow: inset 0 0 0 1px var(--border-subtle);
+  }
+
+  .btn-ghost:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .btn-danger {
@@ -123,6 +134,10 @@
        theme's own error color, which keeps the contrast direction correct
        across every theme. */
     background: color-mix(in srgb, var(--error) 88%, black);
+  }
+
+  .btn-danger:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   /* States */

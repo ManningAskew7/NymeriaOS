@@ -72,6 +72,10 @@
     color: var(--text-primary);
   }
 
+  .close-btn:active {
+    transform: scale(0.9);
+  }
+
   .wizard-body {
     padding: var(--spacing-lg);
     overflow-y: auto;

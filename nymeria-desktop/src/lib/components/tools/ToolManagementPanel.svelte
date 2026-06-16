@@ -1339,7 +1339,10 @@
     margin-bottom: var(--spacing-sm);
   }
 
-  .tool-item:hover {
+  /* The row is a non-interactive container (no onclick); the hover border
+     lift is just a "pointing here" cue. Guard it so a toggled-off tool's
+     row doesn't light up as if it were active. */
+  .tool-item:not(.disabled):hover {
     border-color: var(--border-default);
   }
 

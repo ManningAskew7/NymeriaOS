@@ -121,6 +121,10 @@
     color: var(--text-primary);
   }
 
+  .close-btn:active {
+    transform: scale(0.9);
+  }
+
   .modal-content {
     padding: var(--spacing-lg);
     overflow-y: auto;

@@ -311,12 +311,18 @@
     color: var(--text-muted);
     cursor: pointer;
     position: relative;
-    transition: color var(--transition-fast), background var(--transition-fast);
+    transition: color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
   }
 
   .footer-icon-btn:hover {
     color: var(--text-primary);
     background: var(--bg-hover);
+  }
+
+  /* Pressed cue: a small scale-down reads as a tactile press on these
+     icon-only buttons (real <button>s, so :active never fires when disabled). */
+  .footer-icon-btn:active {
+    transform: scale(0.92);
   }
 
   .footer-icon-btn.has-unread {
@@ -339,6 +345,10 @@
   .icon-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+  }
+
+  .icon-btn:active {
+    transform: scale(0.92);
   }
 
   .icon-btn.has-unread {

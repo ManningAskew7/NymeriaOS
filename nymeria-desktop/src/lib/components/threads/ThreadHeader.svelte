@@ -679,7 +679,8 @@
     cursor: pointer;
     transition:
       color var(--transition-fast),
-      background var(--transition-fast);
+      background var(--transition-fast),
+      transform var(--transition-fast);
   }
 
   .icon-btn :global(svg) {
@@ -689,6 +690,13 @@
   .icon-btn:hover {
     color: var(--accent-primary);
     background: var(--bg-hover);
+  }
+
+  /* Pressed cue: tactile scale-down on the header action buttons. The .cog
+     variant rotates its inner SVG on hover; this scales the button itself,
+     so the two transforms don't conflict. */
+  .icon-btn:active {
+    transform: scale(0.9);
   }
 
   .icon-btn:focus-visible {
