@@ -116,15 +116,28 @@
     showActions = false;
     navigator.clipboard.writeText(thread.id);
   }
+
+  // Keyboard activation for the row (now a role="button"). Nested controls
+  // (the actions button, the open actions sheet) handle their own keys, so
+  // only select when the row itself is the event target.
+  function handleRowKeydown(e: KeyboardEvent) {
+    if ((e.target as HTMLElement).closest('button')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onSelect(thread.id);
+    }
+  }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
 <div
   class="thread-item"
   class:active={isActive}
   class:pinned={thread.pinned}
+  role="button"
+  tabindex="0"
   aria-current={isActive ? 'page' : undefined}
   onclick={() => onSelect(thread.id)}
+  onkeydown={handleRowKeydown}
   oncontextmenu={handleContextMenu}
 >
   <div class="thread-content">
@@ -197,6 +210,13 @@
   .thread-item.active {
     background: var(--bg-active);
     border-left: 3px solid var(--accent-primary);
+  }
+
+  /* Inset ring: rows are edge-to-edge in the list, so the app.css outset
+     baseline (+2px) is clip-prone. Mirrors desktop ThreadItem. */
+  .thread-item:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
   }
 
   .thread-content {

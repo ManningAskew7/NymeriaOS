@@ -139,9 +139,19 @@
     e.stopPropagation();
     onNavigateToThread?.();
   }
+
+  // Keyboard activation for the row (now a role="button"). Nested controls
+  // (complete / delete buttons) handle their own keys, so only open the edit
+  // form when the row itself is the event target.
+  function handleRowKeydown(e: KeyboardEvent) {
+    if ((e.target as HTMLElement).closest('button')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleTap();
+    }
+  }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div
   class="todo-item"
   class:done={todo.status === 'done'}
@@ -149,7 +159,10 @@
   class:highlighted
   class:scheduled={!!todo.scheduledFor}
   class:editable={!!onEdit}
+  role="button"
+  tabindex="0"
   onclick={handleTap}
+  onkeydown={handleRowKeydown}
 >
   <!-- Complete checkbox -->
   <button
@@ -222,6 +235,13 @@
 
   .todo-item.editable {
     cursor: pointer;
+  }
+
+  /* Inset ring: rows are edge-to-edge in the feed, so the app.css outset
+     baseline (+2px) is clip-prone. Mirrors the ThreadItem row treatment. */
+  .todo-item:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
   }
 
   .todo-item.done {
