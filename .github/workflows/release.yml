@@ -54,7 +54,7 @@ jobs:
           test -d Nymeria/nymeria/frontend/_app
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -118,7 +118,7 @@ jobs:
         run: npm install
 
       - name: Set up Python for version check
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -211,7 +211,7 @@ jobs:
           path: dist
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
