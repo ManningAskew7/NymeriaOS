@@ -49,6 +49,9 @@
   let isDragging = $state(false);
   let positionInitialized = false;
 
+  // Panel root, for moving focus into it when it opens.
+  let panelEl = $state<HTMLElement | null>(null);
+
   // Tick once per second so the device-code countdown re-renders.
   let nowMs = $state(Date.now());
   let deviceExpiresAt = $state<number | null>(null);
@@ -118,6 +121,29 @@
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s.toString().padStart(2, '0')}`;
+  }
+
+  // Move focus into the panel when it opens so keyboard and screen-reader
+  // users land on it. Intentionally NOT a focus trap: this panel is
+  // non-blocking by design (it can be dragged, dismissed, or ignored while
+  // using the rest of the app), so focus is free to leave once moved here.
+  $effect(() => {
+    if (isOpen && panelEl) {
+      const el = panelEl;
+      requestAnimationFrame(() => el.focus());
+    }
+  });
+
+  // Escape dismisses the panel, mirroring the header close button. Because the
+  // panel is non-blocking and can sit under other surfaces, Escape only
+  // dismisses it when focus is actually inside it; otherwise the keypress
+  // belongs to whatever the user is currently working in. handleClose itself
+  // no-ops while a submit/test is in flight.
+  function handleWindowKeydown(event: KeyboardEvent) {
+    if (!isOpen || event.key !== 'Escape') return;
+    if (panelEl && panelEl.contains(document.activeElement)) {
+      void handleClose();
+    }
   }
 
   async function openExternal(href: string) {
@@ -339,10 +365,13 @@
   }
 </script>
 
+<svelte:window onkeydown={handleWindowKeydown} />
+
 {#if isOpen && prompt}
   {@const showLabelEditor = prompt.existing_accounts.length > 0 || !!prompt.account_label}
 
   <div
+    bind:this={panelEl}
     class="auth-panel"
     class:dragging={isDragging}
     role="dialog"

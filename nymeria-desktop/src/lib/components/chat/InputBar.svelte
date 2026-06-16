@@ -242,20 +242,9 @@
       return;
     }
 
-    // Plain Tab inserts a tab character at the cursor instead of moving focus
-    // away from the message bar.
-    if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      event.preventDefault();
-      const ta = event.target as HTMLTextAreaElement;
-      const start = ta.selectionStart;
-      const end = ta.selectionEnd;
-      inputValue = inputValue.slice(0, start) + '\t' + inputValue.slice(end);
-      // Restore caret to right after the inserted tab (after the bind has
-      // committed the new value to the DOM).
-      queueMicrotask(() => {
-        ta.selectionStart = ta.selectionEnd = start + 1;
-      });
-    }
+    // Plain Tab is left to its default: move focus out of the composer (e.g.
+    // to the Send button) so the message bar is keyboard-navigable. It used
+    // to insert a literal tab character, which silently trapped focus here.
   }
 
   function handleInput() {
