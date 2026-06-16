@@ -17,7 +17,7 @@ langchain-google-genai==4.1.2
 langchain-aws==1.4.6
 langchain-ollama==1.1.0
 langchain-classic==1.0.7
-langchain-community==0.4.1  # optional: wikipedia, wolfram alpha tools
+langchain-community==0.4.2  # optional: wikipedia, wolfram alpha tools
 langchain-protocol==0.0.15
 langchain-text-splitters==1.1.2
 langgraph==1.2.0
