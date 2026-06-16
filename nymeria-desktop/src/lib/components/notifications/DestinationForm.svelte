@@ -6,6 +6,7 @@
     NotificationDestinationUpdate
   } from '$lib/types';
   import Button from '$lib/components/common/Button.svelte';
+  import Icon from '$lib/components/common/Icon.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   interface Props {
@@ -204,7 +205,10 @@
   </div>
 
   {#if submitError}
-    <div class="error">{submitError}</div>
+    <div class="error">
+      <Icon name="error" size={14} />
+      <span>{submitError}</span>
+    </div>
   {/if}
 
   {#if testResult}
@@ -314,6 +318,9 @@
   }
 
   .error {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     padding: var(--spacing-sm);
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--error) 12%, transparent);

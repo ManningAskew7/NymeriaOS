@@ -106,10 +106,10 @@
     </div>
 
     {#if installError}
-      <div class="banner banner-error">{installError}</div>
+      <div class="banner banner-error"><Icon name="error" size={14} /><span>{installError}</span></div>
     {/if}
     {#if skillsStore.marketplaceError}
-      <div class="banner banner-error">{skillsStore.marketplaceError}</div>
+      <div class="banner banner-error"><Icon name="error" size={14} /><span>{skillsStore.marketplaceError}</span></div>
     {/if}
 
     <div class="marketplace-results">
@@ -243,6 +243,9 @@
     font-size: var(--font-size-sm);
   }
   .banner-error {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     background: color-mix(in srgb, var(--error) 10%, transparent);
     color: var(--error);
   }

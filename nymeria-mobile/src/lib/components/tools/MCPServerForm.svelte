@@ -129,7 +129,7 @@
   <label class="form-field" class:has-error={formErrors.name}>
     <span class="field-label">Name *</span>
     <input type="text" bind:value={formName} placeholder="e.g. Filesystem Server" onfocus={() => touched = true} />
-    {#if formErrors.name}<span class="field-error">{formErrors.name}</span>{/if}
+    {#if formErrors.name}<span class="field-error"><Icon name="error" size={12} />{formErrors.name}</span>{/if}
   </label>
 
   <label class="form-field" class:has-error={formErrors.id}>
@@ -146,7 +146,7 @@
       oninput={() => { if (mode === 'add') idManuallyEdited = true; }}
       onfocus={() => touched = true}
     />
-    {#if formErrors.id}<span class="field-error">{formErrors.id}</span>{/if}
+    {#if formErrors.id}<span class="field-error"><Icon name="error" size={12} />{formErrors.id}</span>{/if}
   </label>
 
   <label class="form-field">
@@ -158,7 +158,7 @@
     <span class="field-label">Command *</span>
     <input type="text" bind:value={formCommand} placeholder="e.g. npx" onfocus={() => touched = true} />
     <span class="field-hint">Full path may be needed</span>
-    {#if formErrors.command}<span class="field-error">{formErrors.command}</span>{/if}
+    {#if formErrors.command}<span class="field-error"><Icon name="error" size={12} />{formErrors.command}</span>{/if}
   </label>
 
   <div class="form-field">
@@ -280,6 +280,9 @@
   }
 
   .field-error {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     font-size: 0.72rem;
     color: var(--error);
   }

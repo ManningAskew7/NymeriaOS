@@ -155,7 +155,7 @@
             {/if}
           </div>
           {#if pictureError}
-            <div class="field-error">{pictureError}</div>
+            <div class="field-error"><Icon name="error" size={12} />{pictureError}</div>
           {/if}
           <input
             bind:this={pictureInputRef}
@@ -207,7 +207,7 @@
               </div>
             {/if}
             {#if nameError}
-              <div class="field-error">{nameError}</div>
+              <div class="field-error"><Icon name="error" size={12} />{nameError}</div>
             {/if}
           </div>
 
@@ -457,6 +457,9 @@
   }
 
   .field-error {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     font-size: var(--font-size-xs);
     color: var(--error);
   }
