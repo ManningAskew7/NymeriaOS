@@ -594,6 +594,14 @@
     border-color: var(--border-default);
   }
 
+  /* Inset ring: the card has overflow:hidden and sits flush in the feed, so
+     the app.css outset baseline (+2px) is clip-prone. -2px keeps the ring
+     inside the border, matching the ThreadItem list-row treatment. */
+  .trigger-card:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+  }
+
   .trigger-card.disabled {
     opacity: 0.62;
   }

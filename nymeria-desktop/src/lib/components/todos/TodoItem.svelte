@@ -267,8 +267,8 @@
   }
 
   .todo-item:focus-visible {
-    outline: 1px solid var(--accent-primary);
-    outline-offset: 1px;
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
   }
 
   .todo-item:nth-child(1) { animation-delay: 0.03s; }

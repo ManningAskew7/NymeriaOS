@@ -130,6 +130,12 @@
     box-shadow: none;
   }
 
+  /* Borderless input drops its own ring; signal focus on the wrapper's
+     bottom rule instead so the search bar still shows a clear focus cue. */
+  .search-bar:focus-within {
+    border-bottom-color: var(--accent-primary);
+  }
+
   .groups {
     flex: 1;
     overflow-y: auto;

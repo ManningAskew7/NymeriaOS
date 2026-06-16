@@ -57,12 +57,7 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div
-  class="activity-item"
-  class:clickable={!!onNavigate}
-  onclick={onNavigate}
->
+{#snippet activityContent()}
   <div class="activity-icon" style="color: {color}">
     <Icon name={icon} size={14} />
   </div>
@@ -76,15 +71,34 @@
       <span class="activity-time">{timeAgo}</span>
     </div>
   </div>
-</div>
+{/snippet}
+
+<!-- Render as a real <button> when navigable (keyboard-reachable + the
+     app.css focus ring); plain <div> otherwise. Mirrors desktop ActivityItem. -->
+{#if onNavigate}
+  <button class="activity-item clickable" type="button" onclick={onNavigate}>
+    {@render activityContent()}
+  </button>
+{:else}
+  <div class="activity-item">
+    {@render activityContent()}
+  </div>
+{/if}
 
 <style>
   .activity-item {
     display: flex;
     gap: var(--spacing-sm);
+    width: 100%;
     padding: var(--spacing-sm) var(--spacing-md);
     min-height: var(--touch-target-min);
     align-items: flex-start;
+    /* Button chrome reset — .clickable rows render as a <button>. */
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
   }
 
   .activity-item:active {
@@ -93,6 +107,13 @@
 
   .activity-item.clickable {
     cursor: pointer;
+  }
+
+  /* Inset ring: rows are edge-to-edge in the feed, so the app.css outset
+     baseline (+2px) is clip-prone. Matches the ThreadItem row treatment. */
+  .activity-item.clickable:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
   }
 
   .activity-icon {

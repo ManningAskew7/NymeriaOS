@@ -516,7 +516,8 @@
   }
 
   .input-container:focus-within {
-    border-color: var(--border-default);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-tint-bg);
   }
 
   .input-container.drag-over {

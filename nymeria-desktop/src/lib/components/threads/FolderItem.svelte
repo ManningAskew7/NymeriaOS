@@ -135,7 +135,12 @@
     role="button"
     tabindex="0"
     onclick={handleHeaderClick}
-    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleHeaderClick(); } }}
+    onkeydown={(e) => {
+      // Don't hijack keys destined for the inline rename input (Space would
+      // otherwise be swallowed and toggle the folder instead of typing).
+      if ((e.target as HTMLElement).closest('input')) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleHeaderClick(); }
+    }}
     oncontextmenu={handleContextMenu}
   >
     <span class="folder-chevron" class:collapsed={folder.collapsed}>
@@ -243,6 +248,14 @@
 
   .folder-header:hover {
     background: var(--bg-hover);
+  }
+
+  /* Inset ring to match the sidebar list-row treatment (ThreadItem): the
+     header sits flush in the scrolling thread list where the app.css outset
+     baseline (+2px) is clip-prone. */
+  .folder-header:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
   }
 
   .folder-chevron {

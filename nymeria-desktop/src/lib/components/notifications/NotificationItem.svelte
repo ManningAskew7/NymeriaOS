@@ -94,7 +94,7 @@
         role="button"
         tabindex="0"
         onclick={handleDismiss}
-        onkeydown={(e) => e.key === 'Enter' && handleDismiss(e as unknown as MouseEvent)}
+        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDismiss(e as unknown as MouseEvent); } }}
         title="Mark as read"
       >
         <Icon name="check" size={14} />
@@ -106,7 +106,7 @@
         role="button"
         tabindex="0"
         onclick={handleDelete}
-        onkeydown={(e) => e.key === 'Enter' && handleDelete(e as unknown as MouseEvent)}
+        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDelete(e as unknown as MouseEvent); } }}
         title="Delete notification"
       >
         <Icon name="x" size={14} />
@@ -251,5 +251,13 @@
 
   .row-action.delete:hover {
     color: var(--error);
+  }
+
+  /* The actions are opacity:0 until the row is hovered. A keyboard user who
+     Tabs into one would otherwise focus an invisible control: reveal the
+     group on focus-within so the global :focus-visible ring is actually
+     seen. The ring itself comes from the app.css baseline. */
+  .row-actions:focus-within {
+    opacity: 1;
   }
 </style>
