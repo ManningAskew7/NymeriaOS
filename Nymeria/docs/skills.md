@@ -69,6 +69,12 @@ metadata:
 - `required_tools` must be exact Nymeria tool names. Categories, globs, and
   Anthropic-style `Bash(...)` patterns are not interpreted.
 - `tool_ttl` accepts `Nm`, `Nh`, `Nd`, `Nw`, or `never`/`permanent`; default is `2h`.
+- A custom TTL can override `tool_ttl` per activation: the agent passes
+  `Skill(name="<kit>", ttl="<value>")` and a user passes `/kit <name> <ttl>`
+  (see Slash-command activation). The override governs only the kit's bound
+  tools, never the skill body, which stays in context until
+  compaction/`/clear`/the sliding window evicts it regardless of TTL. It is
+  ignored for skills that bind no tools.
 - `internal: true` under `metadata.nymeria` keeps a skill available to code
   paths such as `/goal` while hiding it from user-facing `/skill`, `/kit`,
   and `/skills list` surfaces.
@@ -176,7 +182,10 @@ Three layers:
    ever injected into `soul.md` or the thread instructions.
 2. **On activation:** when the agent calls `Skill(name=...)`, the full
    `SKILL.md` body is returned as a `ToolMessage`. Lives in conversation
-   history only.
+   history only. For Skill Kits, an optional `ttl` argument
+   (`Skill(name=..., ttl="30m")`) sets a one-off lifetime for the kit's bound
+   tools for this activation; it does not change how long the body stays in
+   context.
 3. **On demand:** `references/*.md` load only if the skill's body tells the
    agent to `file_read` them. `scripts/*` run only if the body tells the agent
    to use an enabled tool such as `bash_execute` for them. `assets/` are never auto-read.

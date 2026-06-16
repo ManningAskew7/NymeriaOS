@@ -20,6 +20,7 @@ from langchain_core.tools import BaseTool, tool as tool_decorator
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId
 from langgraph.types import Command
 
+from ..core.time_utils import parse_tool_ttl
 from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from . import AVAILABLE_SKILLS_CHAR_BUDGET, Skill, SkillManager
 
@@ -40,8 +41,22 @@ reference files or run scripts using your existing tools (file_read,
 bash_execute, etc.); the skill's directory path is included in the returned
 body so you can resolve those references.
 
+Optional `ttl` argument (Skill Kits only): some skills are "Skill Kits" that
+bind extra tools onto this thread when you activate them. By default those
+tools stay bound for the kit's own declared lifetime; pass `ttl` to set a
+one-off lifetime for THIS activation instead, e.g. ttl="30m", "2h", "24h",
+"7d", or "permanent". Important: `ttl` governs ONLY the kit's bound tools
+(and, once nested skills are supported, any skills a kit pulls in the same way
+it pulls in tools). It does NOT change how long the skill's instructions stay
+with you: the body text this tool returns remains in your context until the
+conversation is compacted, cleared, or scrolls out of the sliding window, no
+matter what `ttl` you pass. Note that ttl="permanent" (or "never") makes the
+kit's tools persist on the thread beyond this turn rather than expiring; use a
+finite value like "2h" unless you intend a lasting change. `ttl` has no effect
+on skills that bind no tools.
+
 Call this tool at most once per distinct skill per turn. If no skill applies,
-do not call it — proceed with your regular tools.
+do not call it; proceed with your regular tools.
 """
 
 
@@ -200,6 +215,16 @@ def create_skill_meta_tool(
     @tool_decorator("Skill", return_direct=False)
     def skill_meta_tool(
         name: str,
+        ttl: Annotated[
+            Optional[str],
+            "Optional one-off lifetime for a Skill Kit's bound tools, e.g. "
+            "'30m', '2h', '7d', or 'permanent'. Overrides the kit's declared "
+            "tool_ttl for this activation only. Applies ONLY to the bound "
+            "tools, never to the skill's instruction text (which persists "
+            "until compaction/clear/sliding-window). 'permanent'/'never' make "
+            "the tools persist beyond this turn. Ignored for skills that bind "
+            "no tools.",
+        ] = None,
         *,
         tool_call_id: Annotated[str, InjectedToolCallId],
         config: Annotated[RunnableConfig, InjectedToolArg],
@@ -208,6 +233,12 @@ def create_skill_meta_tool(
 
         Args:
             name: The exact name of one of the skills in <available_skills>.
+            ttl: Optional. For Skill Kits only, a one-off lifetime for the
+                tools the kit binds (e.g. "30m", "2h", "7d", "permanent"),
+                overriding the kit's declared tool_ttl for this activation.
+                Governs the bound tools only, not the returned instructions,
+                which stay in context until compaction/clear/sliding-window.
+                No effect for skills that bind no tools.
         """
         # Re-fetch from disk when possible so SKILL.md edits are live.
         skill: Optional[Skill] = None
@@ -233,6 +264,36 @@ def create_skill_meta_tool(
 
         logger.info("skill activated: %s (scope=%s)", skill.name, skill.scope)
         body = _render_skill_body(skill)
+
+        # Resolve the effective TTL for any Skill Kit tools this activation
+        # binds. A model-supplied `ttl` overrides the kit's declared tool_ttl,
+        # but ONLY for the bound tools: the skill body returned here is not
+        # governed by any TTL (it persists in conversation history until
+        # compaction, /clear, or the sliding window evicts it).
+        effective_ttl = skill.tool_ttl
+        ttl_notice = ""
+        if ttl is not None and str(ttl).strip():
+            if not skill.required_tools:
+                ttl_notice = (
+                    "[note] ttl was provided but this skill binds no Skill Kit "
+                    "tools, so it has no effect. TTL applies only to a kit's "
+                    "bound tools, not to the instructions above."
+                )
+            else:
+                try:
+                    ttl_key, _ = parse_tool_ttl(ttl)
+                    effective_ttl = ttl_key
+                except ValueError as exc:
+                    # Deliberately divergent from the /kit slash path: there an
+                    # invalid leading token is reinterpreted as the prompt
+                    # (command_service.activate_skill_kit / prepare_skill_slash_command).
+                    # Here the typed `ttl` arg means the model intended a TTL, so
+                    # fall back to the kit default and tell it the value was bad
+                    # rather than aborting activation. Do not "align" the two.
+                    ttl_notice = (
+                        f"[note] Ignored ttl={ttl!r}: {exc} Bound this kit's "
+                        f"tools with its default TTL ({skill.tool_ttl}) instead."
+                    )
 
         binding_text = ""
         binding_reload_queued = False
@@ -261,7 +322,7 @@ def create_skill_meta_tool(
                 "",
                 get_thread_id(config),
                 get_user_id(config),
-                ttl=skill.tool_ttl,
+                ttl=effective_ttl,
                 strict=True,
                 source="skill_kit",
                 skill_name=skill.name,
@@ -283,6 +344,9 @@ def create_skill_meta_tool(
                 f"Skill Kit binding result for {skill.name}:\n"
                 f"{binding_text}"
             )
+
+        if ttl_notice:
+            body += "\n\n---\n" + ttl_notice
 
         # Advisory: warn the model only when portable allowed-tools entries
         # correspond to real Nymeria tool names missing from this thread.

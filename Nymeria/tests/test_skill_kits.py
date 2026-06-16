@@ -618,6 +618,90 @@ def test_skill_meta_tool_binds_tool_present_only_in_superset_snapshot(tmp_path: 
     assert "memory_clear_all" in tc.temporary_tools
 
 
+def test_skill_meta_tool_custom_ttl_overrides_kit_default(tmp_path: Path):
+    """The agent can pass ttl to override a kit's declared tool_ttl, and the
+    override applies to the bound tools' expiry."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    assert skill.tool_ttl == "30m"  # kit default
+    agent = _FakeAgent(tmp_path / "data")
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool([skill])
+        skill_tool.func(
+            "hello-kit",
+            ttl="4w",
+            tool_call_id="call-1",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert "hello_test" in tc.temporary_tools
+    expires_at = tc.temporary_tools["hello_test"].expires_at
+    assert expires_at is not None
+    # The 4w (~28d) override must win over the kit's 30m default.
+    assert expires_at > datetime.now(timezone.utc) + timedelta(days=7)
+
+
+def test_skill_meta_tool_invalid_ttl_falls_back_to_kit_default(tmp_path: Path):
+    """An invalid agent-supplied ttl does not block activation: the kit's
+    tools bind at the default TTL and the result notes the fallback."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool([skill])
+        result = skill_tool.func(
+            "hello-kit",
+            ttl="banana",
+            tool_call_id="call-1",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    content = (
+        result.update["messages"][0].content
+        if isinstance(result, Command)
+        else result
+    )
+    assert "Ignored ttl='banana'" in content
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert "hello_test" in tc.temporary_tools
+    expires_at = tc.temporary_tools["hello_test"].expires_at
+    assert expires_at is not None
+    # Fell back to the kit's 30m default, so it expires within the hour.
+    assert expires_at < datetime.now(timezone.utc) + timedelta(hours=1)
+
+
+def test_skill_meta_tool_ttl_on_plain_skill_reports_no_effect(tmp_path: Path):
+    """ttl on a skill that binds no tools is a no-op and is flagged as such;
+    the body is still returned so the skill activates normally."""
+    skill_dir = _write_skill(tmp_path, "plain-skill", PLAIN_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    skill_tool = create_skill_meta_tool([skill])
+
+    result = skill_tool.func(
+        "plain-skill",
+        ttl="2h",
+        tool_call_id="call-1",
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+    assert isinstance(result, str)
+    assert "Plain Skill" in result
+    assert "no Skill Kit" in result
+    assert "no effect" in result
+
+
 def test_memory_hash_evicts_expired_temporary_tools(tmp_path: Path):
     agent = object.__new__(NymeriaAgent)
     agent.thread_config_manager = ThreadConfigManager(tmp_path)
