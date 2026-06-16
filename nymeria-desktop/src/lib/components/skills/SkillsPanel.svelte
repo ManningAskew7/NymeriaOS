@@ -93,15 +93,15 @@
   </div>
 
   {#if skillsStore.installedError}
-    <div class="banner banner-error">{skillsStore.installedError}</div>
+    <div class="banner banner-error"><Icon name="error" size={14} /><span>{skillsStore.installedError}</span></div>
   {/if}
 
   {#if skillsStore.enabledGlobalError}
-    <div class="banner banner-error">{skillsStore.enabledGlobalError}</div>
+    <div class="banner banner-error"><Icon name="error" size={14} /><span>{skillsStore.enabledGlobalError}</span></div>
   {/if}
 
   {#if actionError}
-    <div class="banner banner-error">{actionError}</div>
+    <div class="banner banner-error"><Icon name="error" size={14} /><span>{actionError}</span></div>
   {/if}
 
   {#if skillsStore.installedLoading && !skillsStore.installedLoaded}
@@ -247,6 +247,9 @@
     font-size: var(--font-size-sm);
   }
   .banner-error {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     background: color-mix(in srgb, var(--error) 10%, transparent);
     color: var(--error);
   }

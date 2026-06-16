@@ -759,6 +759,7 @@
 
     {#if threadsStore.threads.length === 0}
       <div class="empty-state">
+        <Icon name="chat" size={32} />
         <p>No threads yet</p>
         <p class="hint">Start a new thread to begin</p>
       </div>
@@ -1123,6 +1124,10 @@
   }
 
   .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing-sm);
     padding: var(--spacing-lg);
     text-align: center;
     color: var(--text-muted);
@@ -1134,7 +1139,6 @@
 
   .empty-state .hint {
     font-size: var(--font-size-sm);
-    margin-top: var(--spacing-xs);
   }
 
   .thread-group {

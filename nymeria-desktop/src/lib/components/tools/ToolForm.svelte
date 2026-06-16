@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { CustomTool, CustomToolCreateRequest, ToolParameter } from '$lib/types';
   import Button from '../common/Button.svelte';
+  import Icon from '../common/Icon.svelte';
 
   interface Props {
     tool?: CustomTool;
@@ -463,7 +464,7 @@
         aria-describedby={parametersError ? 'tool-params-err' : 'tool-params-hint'}
       ></textarea>
       {#if parametersError}
-        <p id="tool-params-err" class="error-text">{parametersError}</p>
+        <p id="tool-params-err" class="error-text"><Icon name="error" size={12} />{parametersError}</p>
       {:else}
         <p id="tool-params-hint" class="hint">Define tool parameters as JSON object</p>
       {/if}
@@ -580,6 +581,9 @@
   }
 
   .error-text {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     margin: 0;
     font-size: var(--font-size-xs);
     color: var(--error);

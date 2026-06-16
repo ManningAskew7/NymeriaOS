@@ -464,7 +464,7 @@ https://github.com/example/mcp-server`}
                     oninput={(event) => setConfigValue(field.name, (event.currentTarget as HTMLInputElement).value)}
                   />
                   {#if field.error}
-                    <small class="field-error">{field.error}</small>
+                    <small class="field-error"><Icon name="error" size={12} />{field.error}</small>
                   {:else if fieldDescription(field)}
                     <small>{fieldDescription(field)}</small>
                   {/if}
@@ -1081,6 +1081,9 @@ https://github.com/example/mcp-server`}
      (specificity 0,1,1). Anchor to the same selector chain instead
      (0,2,1) so we win on specificity without escalating to !important. */
   .config-field small.field-error {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     color: var(--error);
   }
 

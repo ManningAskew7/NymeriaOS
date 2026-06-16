@@ -170,7 +170,7 @@
         aria-describedby={formErrors.name ? 'mcp-name-err' : undefined}
       />
       {#if formErrors.name}
-        <span id="mcp-name-err" class="field-error">{formErrors.name}</span>
+        <span id="mcp-name-err" class="field-error"><Icon name="error" size={12} />{formErrors.name}</span>
       {/if}
     </label>
     <label class="form-field form-field-id" class:has-error={formErrors.id}>
@@ -190,7 +190,7 @@
         aria-describedby={formErrors.id ? 'mcp-id-err' : undefined}
       />
       {#if formErrors.id}
-        <span id="mcp-id-err" class="field-error">{formErrors.id}</span>
+        <span id="mcp-id-err" class="field-error"><Icon name="error" size={12} />{formErrors.id}</span>
       {/if}
     </label>
   </div>
@@ -212,7 +212,7 @@
     />
     <span id="mcp-command-hint" class="field-hint">Full path may be needed (e.g. C:/Program Files/nodejs/npx.cmd)</span>
     {#if formErrors.command}
-      <span id="mcp-command-err" class="field-error">{formErrors.command}</span>
+      <span id="mcp-command-err" class="field-error"><Icon name="error" size={12} />{formErrors.command}</span>
     {/if}
   </label>
 
@@ -366,6 +366,9 @@
   }
 
   .field-error {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     font-size: var(--font-size-2xs);
     color: var(--error);
   }

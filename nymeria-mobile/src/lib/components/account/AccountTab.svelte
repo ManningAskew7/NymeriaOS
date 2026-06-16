@@ -109,7 +109,7 @@
               </div>
             {/if}
             {#if nameError}
-              <div class="field-error">{nameError}</div>
+              <div class="field-error"><Icon name="error" size={12} />{nameError}</div>
             {/if}
           </div>
 
@@ -286,6 +286,9 @@
   }
 
   .field-error {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     font-size: 12px;
     color: var(--error);
   }

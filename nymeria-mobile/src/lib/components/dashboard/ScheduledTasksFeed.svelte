@@ -1,6 +1,7 @@
 <script lang="ts">
   import { todosStore } from '$lib/stores/todos.svelte';
   import ScheduledTodoItem from './ScheduledTodoItem.svelte';
+  import Icon from '$lib/components/common/Icon.svelte';
   import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount } from 'svelte';
 
@@ -23,6 +24,7 @@
     </div>
   {:else if !hasScheduledItems}
     <div class="empty-state">
+      <Icon name="clock" size={24} />
       <p>No scheduled tasks</p>
       <span class="hint">Schedule a task for later to wake Nymeria up automatically.</span>
     </div>
@@ -42,6 +44,10 @@
   }
 
   .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing-sm);
     text-align: center;
     color: var(--text-muted);
     padding: var(--spacing-lg);
@@ -59,7 +65,6 @@
   .hint {
     font-size: var(--font-size-xs);
     display: block;
-    margin-top: var(--spacing-xs);
   }
 
   .tasks-list {
