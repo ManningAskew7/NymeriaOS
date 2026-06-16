@@ -170,13 +170,13 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download Python distribution artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: nymeria-python-dist
           path: Nymeria/dist
 
       - name: Download Windows installer artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: nymeria-windows-installer
           path: desktop-dist
@@ -205,7 +205,7 @@ jobs:
 
     steps:
       - name: Download Python distribution artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: nymeria-python-dist
           path: dist
@@ -281,7 +281,7 @@ jobs:
 
     steps:
       - name: Download Python distribution artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           # Reuse the exact wheel + sdist that passed `twine check` in the
           # python-package job rather than rebuilding (and re-bundling the
