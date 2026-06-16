@@ -9,6 +9,7 @@
   import { api } from '$lib/services/api.svelte';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
+  import InlineLoader from '../common/InlineLoader.svelte';
   import ToggleSwitch from '../common/ToggleSwitch.svelte';
   import ToolForm from './ToolForm.svelte';
   import ToolTestPanel from './ToolTestPanel.svelte';
@@ -425,7 +426,7 @@
 <div class="tool-management">
   <div class="panel-scroll">
   {#if defaultToolsStore.loading}
-    <div class="loading">Loading tools…</div>
+    <div class="loading"><InlineLoader text="Loading tools…" /></div>
   {:else if !defaultToolsStore.loaded}
     <div class="loading">Not connected to the backend. Open Settings → Backend to connect, then manage tools here.</div>
   {:else}
@@ -558,7 +559,7 @@
     {/if}
 
     {#if toolsStore.loading}
-      <div class="loading">Loading custom tools…</div>
+      <div class="loading"><InlineLoader text="Loading custom tools…" /></div>
     {:else if filteredCustomTools.length === 0}
       <div class="empty-state">
         <div class="empty-icon">+</div>

@@ -4,6 +4,7 @@
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
+  import InlineLoader from '../common/InlineLoader.svelte';
   import MCPServerPanel from './MCPServerPanel.svelte';
 
   let selectedTools = $state<Set<string>>(new Set());
@@ -72,7 +73,7 @@
 <div class="mcp-management">
   <div class="panel-scroll">
     {#if defaultToolsStore.loading}
-      <div class="loading">Loading MCP servers…</div>
+      <div class="loading"><InlineLoader text="Loading MCP servers…" /></div>
     {:else if !defaultToolsStore.loaded}
       <div class="loading">Connect to the API to configure MCP servers.</div>
     {:else}

@@ -29,6 +29,7 @@
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
+  import InlineLoader from './InlineLoader.svelte';
   import { CredentialManagerPanel } from '../credentials';
   import { MCPManagementPanel, ToolManagementPanel } from '../tools';
   import SkillsPanel from '../skills/SkillsPanel.svelte';
@@ -583,6 +584,10 @@
   let showConnectionAdvanced = $state(true);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
   let testMessage = $state('');
+  // In-flight guard for the Save/Update connection commit (both route through
+  // async store calls). Mirrors the Test Connection button's disabled+label
+  // idiom in the same actions row.
+  let connectionSaving = $state(false);
   let loadingSettings = $state(false);
   let savingSettings = $state(false);
   let showProviderSetupWizard = $state(false);
@@ -741,20 +746,25 @@
   }
 
   async function handleSaveConnection() {
-    // Saving the form is a backend commit: route through applyConnection so the
-    // sidebar is cleared and re-synced against the new backend (a bare config
-    // write left the previous backend's cached threads in place).
-    await connectionsStore.applyConnection(apiUrl, apiKey);
-    // Reflect the applied connection back into the form + server settings.
-    apiUrl = configStore.apiUrl;
-    apiKey = configStore.apiKey;
-    serverSettings = null;
-    await loadServerSettings();
-    testStatus = 'idle';
-    testMessage = 'Connection settings saved!';
-    setTimeout(() => {
-      testMessage = '';
-    }, 2000);
+    connectionSaving = true;
+    try {
+      // Saving the form is a backend commit: route through applyConnection so the
+      // sidebar is cleared and re-synced against the new backend (a bare config
+      // write left the previous backend's cached threads in place).
+      await connectionsStore.applyConnection(apiUrl, apiKey);
+      // Reflect the applied connection back into the form + server settings.
+      apiUrl = configStore.apiUrl;
+      apiKey = configStore.apiKey;
+      serverSettings = null;
+      await loadServerSettings();
+      testStatus = 'idle';
+      testMessage = 'Connection settings saved!';
+      setTimeout(() => {
+        testMessage = '';
+      }, 2000);
+    } finally {
+      connectionSaving = false;
+    }
   }
 
   // Saved connections handlers
@@ -774,25 +784,30 @@
 
   async function handleUpdateConnection() {
     if (!editingConnectionId) return;
-    const wasActive = connectionsStore.activeConnectionId === editingConnectionId;
-    connectionsStore.update(editingConnectionId, {
-      name: editingName.trim() || undefined,
-      apiUrl,
-      apiKey,
-    });
-    // If editing the active connection and its backend creds actually changed,
-    // re-apply so threads clear + resync against the (possibly different)
-    // backend instead of leaving the old backend's cached list in the sidebar.
-    const norm = (u: string) => u.trim().replace(/\/+$/, '');
-    const credsChanged =
-      norm(configStore.apiUrl) !== norm(apiUrl) || configStore.apiKey.trim() !== apiKey.trim();
-    if (wasActive && credsChanged) {
-      await connectionsStore.applyConnection(apiUrl, apiKey);
+    connectionSaving = true;
+    try {
+      const wasActive = connectionsStore.activeConnectionId === editingConnectionId;
+      connectionsStore.update(editingConnectionId, {
+        name: editingName.trim() || undefined,
+        apiUrl,
+        apiKey,
+      });
+      // If editing the active connection and its backend creds actually changed,
+      // re-apply so threads clear + resync against the (possibly different)
+      // backend instead of leaving the old backend's cached list in the sidebar.
+      const norm = (u: string) => u.trim().replace(/\/+$/, '');
+      const credsChanged =
+        norm(configStore.apiUrl) !== norm(apiUrl) || configStore.apiKey.trim() !== apiKey.trim();
+      if (wasActive && credsChanged) {
+        await connectionsStore.applyConnection(apiUrl, apiKey);
+      }
+      editingConnectionId = null;
+      editingName = '';
+      testMessage = 'Connection updated!';
+      setTimeout(() => { testMessage = ''; }, 2000);
+    } finally {
+      connectionSaving = false;
     }
-    editingConnectionId = null;
-    editingName = '';
-    testMessage = 'Connection updated!';
-    setTimeout(() => { testMessage = ''; }, 2000);
   }
 
   function handleCancelEdit() {
@@ -1311,15 +1326,15 @@
             {testStatus === 'testing' ? 'Testing…' : 'Test Connection'}
           </Button>
           {#if editingConnectionId}
-            <Button variant="primary" onclick={handleUpdateConnection}>
-              Update Connection
+            <Button variant="primary" onclick={handleUpdateConnection} disabled={connectionSaving}>
+              {connectionSaving ? 'Updating…' : 'Update Connection'}
             </Button>
-            <Button variant="secondary" onclick={handleCancelEdit}>
+            <Button variant="secondary" onclick={handleCancelEdit} disabled={connectionSaving}>
               Cancel Edit
             </Button>
           {:else}
-            <Button variant="primary" onclick={handleSaveConnection}>
-              Save connection
+            <Button variant="primary" onclick={handleSaveConnection} disabled={connectionSaving}>
+              {connectionSaving ? 'Saving…' : 'Save connection'}
             </Button>
           {/if}
         </div>
@@ -1570,7 +1585,7 @@
   {#if activeTab === 'llm' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
-        <p class="loading">Loading model settings…</p>
+        <p class="loading"><InlineLoader text="Loading model settings…" /></p>
       {:else}
         <div class="llm-subview-toggle" role="tablist" aria-label="Provider configuration view">
           <button class="llm-subview-btn" class:active={llmSubView === 'main'} onclick={() => (llmSubView = 'main')} type="button" role="tab" aria-selected={llmSubView === 'main'}>Main</button>
@@ -2101,7 +2116,7 @@
   {#if activeTab === 'agent' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
-        <p class="loading">Loading agent settings…</p>
+        <p class="loading"><InlineLoader text="Loading agent settings…" /></p>
       {:else}
         <div class="field">
           <label for="context-management">Context Management</label>
@@ -2254,7 +2269,7 @@
     <div class="tab-content">
       <div class="section-heading">My RAG (this account)</div>
       {#if ragUserLoading}
-        <p class="loading">Loading RAG settings…</p>
+        <p class="loading"><InlineLoader text="Loading RAG settings…" /></p>
       {:else}
         <div class="field checkbox-field">
           <input id="rag-enabled" type="checkbox" bind:checked={ragEnabled} />
@@ -2323,7 +2338,7 @@
       {#if isAdmin}
         <div class="section-heading">RAG engine (server-wide)</div>
         {#if loadingSettings}
-          <p class="loading">Loading RAG settings…</p>
+          <p class="loading"><InlineLoader text="Loading RAG settings…" /></p>
         {:else}
           <div class="field checkbox-field">
             <input id="rag-embed-tools" type="checkbox" bind:checked={ragEmbedToolResults} />
@@ -2386,7 +2401,7 @@
   {#if activeTab === 'dream' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
-        <p class="loading">Loading dreaming settings…</p>
+        <p class="loading"><InlineLoader text="Loading dreaming settings…" /></p>
       {:else}
         <p class="hint" style="margin-bottom: var(--spacing-md);">
           Global defaults for the background dreaming cycle. A thread's own Dreaming
@@ -2502,7 +2517,7 @@
   {#if activeTab === 'voice' && isAdmin}
     <div class="tab-content">
       {#if loadingSettings}
-        <p class="loading">Loading voice settings…</p>
+        <p class="loading"><InlineLoader text="Loading voice settings…" /></p>
       {:else}
         <h3 class="section-heading">Text-to-Speech (TTS)</h3>
 

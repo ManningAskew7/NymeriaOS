@@ -2,6 +2,7 @@ export { default as Button } from './Button.svelte';
 export { default as Collapsible } from './Collapsible.svelte';
 export { default as ConnectionStatus } from './ConnectionStatus.svelte';
 export { default as Icon } from './Icon.svelte';
+export { default as InlineLoader } from './InlineLoader.svelte';
 export { default as Modal } from './Modal.svelte';
 export { default as SetupWizard } from './SetupWizard.svelte';
 export { default as Spinner } from './Spinner.svelte';

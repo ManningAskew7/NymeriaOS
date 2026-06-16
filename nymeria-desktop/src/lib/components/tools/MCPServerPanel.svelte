@@ -6,6 +6,7 @@
   import type { MCPServer, MCPServerCreateRequest } from '$lib/types';
   import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
+  import InlineLoader from '../common/InlineLoader.svelte';
   import ToggleSwitch from '../common/ToggleSwitch.svelte';
   import MCPServerForm from './MCPServerForm.svelte';
   import MCPInstallModal from './MCPInstallModal.svelte';
@@ -336,7 +337,7 @@
   {/if}
 
   {#if mcpServersStore.loading && mcpServersStore.servers.length === 0}
-    <div class="loading-state">Loading MCP servers…</div>
+    <div class="loading-state"><InlineLoader text="Loading MCP servers…" /></div>
   {:else if mcpServersStore.servers.length === 0 && !showAddForm}
     <div class="empty-state">
       <Icon name="terminal" size={24} />

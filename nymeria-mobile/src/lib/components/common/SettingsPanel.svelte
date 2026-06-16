@@ -20,6 +20,7 @@
   import type { ServerSettings, LLMProvider, OpenAIApiMode, LogLevel, LLMProviderSpec, ProviderRoute } from '$lib/types';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
+  import InlineLoader from './InlineLoader.svelte';
   import CLIProxySection from './CLIProxySection.svelte';
   import ProviderSelect from './ProviderSelect.svelte';
   import { CredentialManagerPanel } from '../credentials';
@@ -589,7 +590,7 @@
       <!-- Provider Tab -->
       {:else if activeTab === 'llm' && isAdmin}
         {#if loadingSettings}
-          <div class="loading-state">Loading model settings…</div>
+          <div class="loading-state"><InlineLoader text="Loading model settings…" /></div>
         {:else}
           <CLIProxySection />
           <div class="setting-group">
@@ -937,7 +938,7 @@
       <!-- Agent Tab -->
       {:else if activeTab === 'agent' && isAdmin}
         {#if loadingSettings}
-          <div class="loading-state">Loading agent settings…</div>
+          <div class="loading-state"><InlineLoader text="Loading agent settings…" /></div>
         {:else}
           <div class="setting-group">
             <label class="setting-label">Context Management</label>
@@ -1066,7 +1067,7 @@
       {:else if activeTab === 'rag'}
         <h3 class="section-heading">My RAG (this account)</h3>
         {#if ragUserLoading}
-          <p class="loading">Loading RAG settings…</p>
+          <p class="loading"><InlineLoader text="Loading RAG settings…" /></p>
         {:else}
           <div class="setting-group">
             <label class="setting-toggle">
@@ -1145,7 +1146,7 @@
         {#if isAdmin}
           <h3 class="section-heading">RAG engine (server-wide)</h3>
           {#if loadingSettings}
-            <p class="loading">Loading RAG settings…</p>
+            <p class="loading"><InlineLoader text="Loading RAG settings…" /></p>
           {:else}
             <div class="setting-group">
               <label class="setting-toggle">
@@ -1207,7 +1208,7 @@
 
       {:else if activeTab === 'voice' && isAdmin}
         {#if loadingSettings}
-          <div class="loading-state">Loading voice settings…</div>
+          <div class="loading-state"><InlineLoader text="Loading voice settings…" /></div>
         {:else}
           <h3 class="section-heading">Text-to-Speech (TTS)</h3>
 

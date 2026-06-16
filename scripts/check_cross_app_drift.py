@@ -33,6 +33,7 @@ EXACT_MATCH: set[str] = {
     "lib/components/chat/WorkspaceImage.svelte",
     "lib/components/common/Collapsible.svelte",
     "lib/components/common/Icon.svelte",
+    "lib/components/common/InlineLoader.svelte",
     "lib/components/common/ProviderSelect.svelte",
     "lib/components/common/Spinner.svelte",
     "lib/components/common/ThinkingIndicator.svelte",

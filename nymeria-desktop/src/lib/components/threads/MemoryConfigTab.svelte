@@ -1,5 +1,6 @@
 <script lang="ts">
   import ThreadSettingsSection from './ThreadSettingsSection.svelte';
+  import InlineLoader from '../common/InlineLoader.svelte';
 
   /**
    * Memory tab: the thread's persistent notepad and its size cap (moved here
@@ -39,7 +40,7 @@
         {notepad.length}{#if notepadCharLimit} / {notepadCharLimit}{/if}
       </span>
     {:else}
-      <p class="field-hint">Loading notepad…</p>
+      <p class="field-hint"><InlineLoader text="Loading notepad…" /></p>
     {/if}
 
     <div class="sub-field">

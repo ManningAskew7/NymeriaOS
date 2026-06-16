@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Icon, ToggleSwitch } from '$lib/components/common';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { api } from '$lib/services/api.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
@@ -350,7 +351,7 @@
       </button>
     </div>
   {:else if loading}
-    <div class="tools-msg">Loading tools…</div>
+    <div class="tools-msg"><InlineLoader text="Loading tools…" /></div>
   {:else}
     <div class="tools-search">
       <input

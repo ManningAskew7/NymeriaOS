@@ -1,6 +1,7 @@
 <script lang="ts">
   import { trapFocus } from '$lib/actions/focus';
   import { Button, Icon } from '$lib/components/common';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { SkillMarketplaceSource } from '$lib/types';
@@ -113,7 +114,7 @@
 
     <div class="marketplace-results">
       {#if skillsStore.marketplaceSearching}
-        <p class="status">Loading skills from {source}…</p>
+        <p class="status"><InlineLoader text={`Loading skills from ${source}…`} /></p>
       {:else if skillsStore.marketplaceResults.length === 0}
         <p class="status">No skills matched.</p>
       {:else}

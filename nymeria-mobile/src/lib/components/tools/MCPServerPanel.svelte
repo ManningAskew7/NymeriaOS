@@ -5,7 +5,7 @@
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type { MCPServer, MCPServerCreateRequest } from '$lib/types';
   import Icon from '$lib/components/common/Icon.svelte';
-  import Spinner from '$lib/components/common/Spinner.svelte';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import MCPServerForm from './MCPServerForm.svelte';
   import MCPInstallModal from './MCPInstallModal.svelte';
 
@@ -254,7 +254,7 @@
   {/if}
 
   {#if mcpServersStore.loading && mcpServersStore.servers.length === 0}
-    <div class="loading"><Spinner size="sm" /></div>
+    <div class="loading"><InlineLoader text="Loading MCP servers…" /></div>
   {:else if mcpServersStore.servers.length === 0 && !showAddForm}
     <p class="empty-state">No MCP servers configured.</p>
   {:else}

@@ -4,6 +4,7 @@
   import TriggerSetupWizard from './TriggerSetupWizard.svelte';
   import TriggerHistoryPanel from './TriggerHistoryPanel.svelte';
   import { Icon } from '$lib/components/common';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount, onDestroy } from 'svelte';
   import type { Trigger } from '$lib/types';
 
@@ -72,7 +73,7 @@
 
   {#if triggersStore.loading && filteredTriggers.length === 0}
     <div class="loading-state">
-      <span class="loading-text">Loading triggers…</span>
+      <InlineLoader text="Loading triggers…" />
     </div>
   {:else if triggersStore.error}
     <div class="error-state">
@@ -192,6 +193,12 @@
     padding: var(--spacing-lg);
   }
 
+  /* Loading text sits one size down (pairs with the InlineLoader's sm
+     spinner); this lived on the removed .loading-text span before. */
+  .loading-state {
+    font-size: var(--font-size-sm);
+  }
+
   .empty-state p {
     margin: 0;
   }
@@ -225,10 +232,6 @@
     background: color-mix(in srgb, var(--error) 15%, transparent);
     border-color: var(--error);
     color: var(--error);
-  }
-
-  .loading-text {
-    font-size: var(--font-size-sm);
   }
 
   .trigger-group {

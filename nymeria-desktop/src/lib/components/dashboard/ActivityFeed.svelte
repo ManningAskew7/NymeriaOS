@@ -3,6 +3,7 @@
   import type { ActivityEntry } from '$lib/types';
   import ActivityItem from './ActivityItem.svelte';
   import { Icon } from '$lib/components/common';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
@@ -117,7 +118,7 @@
 <div class="activity-feed">
   {#if activityStore.loading && activityStore.entries.length === 0}
     <div class="loading-state">
-      <span class="loading-text">Loading recent activity…</span>
+      <InlineLoader text="Loading recent activity…" />
     </div>
   {:else if activityStore.error}
     <div class="error-state">
@@ -188,6 +189,12 @@
     padding: var(--spacing-md);
   }
 
+  /* Loading text sits one size down (pairs with the InlineLoader's sm
+     spinner); this lived on the removed .loading-text span before. */
+  .loading-state {
+    font-size: var(--font-size-sm);
+  }
+
   .empty-state p {
     margin: 0;
   }
@@ -204,10 +211,6 @@
 
   .error-state p {
     margin: 0;
-  }
-
-  .loading-text {
-    font-size: var(--font-size-sm);
   }
 
   .activity-list {

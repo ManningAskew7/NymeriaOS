@@ -2,7 +2,7 @@
   import { unifiedToolsStore } from '$lib/stores/unifiedTools.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
-  import Spinner from '$lib/components/common/Spinner.svelte';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount } from 'svelte';
   import { filterToolSearch } from '$lib/utils/toolSearch';
 
@@ -88,7 +88,7 @@
     <div class="panel-body">
       {#if unifiedToolsStore.loading && unifiedToolsStore.tools.length === 0}
         <div class="loading-state">
-          <Spinner size="md" />
+          <InlineLoader text="Loading tools…" />
         </div>
       {:else if Object.keys(filteredCategories).length === 0}
         <div class="loading-state">

@@ -3,6 +3,7 @@
   import { api } from '$lib/services/api.svelte';
   import type { SystemPromptInfo } from '$lib/types';
   import Button from './Button.svelte';
+  import InlineLoader from './InlineLoader.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   const MAX_LEN = 100000;
@@ -95,7 +96,7 @@
   </header>
 
   {#if loading}
-    <p class="loading">Loading system prompt…</p>
+    <p class="loading"><InlineLoader text="Loading system prompt…" /></p>
   {:else}
     <textarea
       class="prompt-input"

@@ -6,6 +6,7 @@
   import SkillsMarketplacePanel from './SkillsMarketplacePanel.svelte';
   import Button from '$lib/components/common/Button.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
 
   let showMarketplace = $state(false);
   let expanded = $state<Record<string, boolean>>({});
@@ -104,7 +105,7 @@
   {/if}
 
   {#if skillsStore.installedLoading && !skillsStore.installedLoaded}
-    <p class="status">Loading skills…</p>
+    <p class="status"><InlineLoader text="Loading skills…" /></p>
   {:else if skillsStore.installed.length === 0}
     <div class="empty-state">
       <p>No skills installed yet.</p>

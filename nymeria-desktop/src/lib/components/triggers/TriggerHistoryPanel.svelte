@@ -9,6 +9,7 @@
     DIALOG_RISE_OUT,
   } from '$lib/utils/transitions';
   import { Icon } from '$lib/components/common';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { onMount } from 'svelte';
@@ -91,7 +92,7 @@
     <div class="panel-body">
       {#if loading}
         <div class="empty-state">
-          <span class="loading-text">Loading history…</span>
+          <InlineLoader text="Loading history…" />
         </div>
       {:else if error}
         <div class="empty-state error">
