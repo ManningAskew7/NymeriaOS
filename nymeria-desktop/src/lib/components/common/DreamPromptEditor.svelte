@@ -3,6 +3,7 @@
   import { api } from '$lib/services/api.svelte';
   import type { DreamPromptInfo } from '$lib/types';
   import Button from './Button.svelte';
+  import InlineLoader from './InlineLoader.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   /**
@@ -128,7 +129,7 @@
   </header>
 
   {#if loading}
-    <p class="loading">Loading dream prompts…</p>
+    <p class="loading"><InlineLoader text="Loading dream prompts…" /></p>
   {:else if loadError}
     <p class="status error">{loadError}</p>
   {:else}

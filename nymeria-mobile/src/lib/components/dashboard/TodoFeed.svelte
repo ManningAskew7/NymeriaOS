@@ -3,6 +3,7 @@
   import TodoItem from './TodoItem.svelte';
   import TodoForm from './TodoForm.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount } from 'svelte';
   import type { TodoItem as TodoItemType } from '$lib/types';
 
@@ -58,7 +59,7 @@
 
   {#if todosStore.loading && todosStore.todos.length === 0}
     <div class="empty-state">
-      <span>Loading tasks…</span>
+      <InlineLoader text="Loading tasks…" />
     </div>
   {:else if todosStore.error}
     <div class="empty-state error">

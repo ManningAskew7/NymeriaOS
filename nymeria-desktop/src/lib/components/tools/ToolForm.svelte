@@ -4,11 +4,15 @@
 
   interface Props {
     tool?: CustomTool;
-    onSubmit: (request: CustomToolCreateRequest) => void;
+    onSubmit: (request: CustomToolCreateRequest) => void | Promise<void>;
     onCancel: () => void;
   }
 
   let { tool, onSubmit, onCancel }: Props = $props();
+
+  // In-flight guard so the submit button shows a spinner and can't be
+  // double-fired while the create/update round-trips (model: ProviderSetupWizard).
+  let submitting = $state(false);
 
   function getInitialHttpHeaders(): string {
     return Object.entries(tool?.httpConfig?.headers || {})
@@ -168,7 +172,8 @@
     }
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
+    if (submitting) return;
     const parameters = validateParameters();
     if (!parameters) return;
 
@@ -205,7 +210,14 @@
       };
     }
 
-    onSubmit(request);
+    submitting = true;
+    try {
+      await onSubmit(request);
+    } finally {
+      // On success the parent unmounts this form (harmless no-op); on failure
+      // it stays mounted, so re-enable the button for a retry.
+      submitting = false;
+    }
   }
 </script>
 
@@ -462,8 +474,8 @@
     <Button variant="secondary" onclick={onCancel}>
       Cancel
     </Button>
-    <Button variant="primary" type="submit">
-      {tool ? 'Update Tool' : 'Create Tool'}
+    <Button variant="primary" type="submit" loading={submitting}>
+      {submitting ? (tool ? 'Updating…' : 'Creating…') : (tool ? 'Update Tool' : 'Create Tool')}
     </Button>
   </div>
 </form>

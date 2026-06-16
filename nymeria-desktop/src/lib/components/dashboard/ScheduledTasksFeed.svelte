@@ -1,6 +1,7 @@
 <script lang="ts">
   import { todosStore } from '$lib/stores/todos.svelte';
   import ScheduledTodoItem from './ScheduledTodoItem.svelte';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount } from 'svelte';
 
   onMount(() => {
@@ -14,7 +15,7 @@
 <div class="tasks-feed">
   {#if isLoading}
     <div class="loading-state">
-      <span class="loading-text">Loading scheduled tasks…</span>
+      <InlineLoader text="Loading scheduled tasks…" />
     </div>
   {:else if todosStore.error}
     <div class="error-state">
@@ -48,6 +49,12 @@
     padding: var(--spacing-md);
   }
 
+  /* Loading text sits one size down (pairs with the InlineLoader's sm
+     spinner); this lived on the removed .loading-text span before. */
+  .loading-state {
+    font-size: var(--font-size-sm);
+  }
+
   .empty-state p {
     margin: 0;
   }
@@ -59,10 +66,6 @@
 
   .error-state {
     color: var(--error);
-  }
-
-  .loading-text {
-    font-size: var(--font-size-sm);
   }
 
   .tasks-list {

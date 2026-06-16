@@ -3,6 +3,7 @@
   import type { ActivityEntry } from '$lib/types';
   import ActivityItem from './ActivityItem.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount } from 'svelte';
 
   interface Props {
@@ -106,7 +107,7 @@
 <div class="activity-feed">
   {#if activityStore.loading && activityStore.entries.length === 0}
     <div class="empty-state">
-      <span>Loading recent activity…</span>
+      <InlineLoader text="Loading recent activity…" />
     </div>
   {:else if activityStore.error}
     <div class="empty-state error">

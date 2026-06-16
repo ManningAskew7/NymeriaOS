@@ -21,6 +21,7 @@
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import Icon from '$lib/components/common/Icon.svelte';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
   import TriggerConfigTab from '$lib/components/triggers/TriggerConfigTab.svelte';
   import { ToolCountWarning } from '$lib/components/tools';
@@ -935,7 +936,7 @@
 
     <div class="settings-body">
       {#if loading}
-        <div class="loading-state">Loading thread settings…</div>
+        <div class="loading-state"><InlineLoader text="Loading thread settings…" /></div>
 
       {:else if activeTab === 'instructions'}
         <div class="setting-group">
@@ -1417,7 +1418,7 @@
         {#if toolsLoadError}
           <div class="loading-state">{toolsLoadError}</div>
         {:else if toolsLoading}
-          <div class="loading-state">Loading tools…</div>
+          <div class="loading-state"><InlineLoader text="Loading tools…" /></div>
         {:else}
           <div class="tools-list">
             {#if filteredTools.length === 0}
@@ -1484,7 +1485,7 @@
         {#if toolsLoadError}
           <div class="loading-state">{toolsLoadError}</div>
         {:else if toolsLoading}
-          <div class="loading-state">Loading MCP tools…</div>
+          <div class="loading-state"><InlineLoader text="Loading MCP tools…" /></div>
         {:else}
           <div class="section-divider">
             <span class="section-heading">
@@ -1564,7 +1565,7 @@
         {#if skillsStore.installedError}
           <div class="loading-state">{skillsStore.installedError}</div>
         {:else if skillsStore.installedLoading && !skillsStore.installedLoaded}
-          <div class="loading-state">Loading skills…</div>
+          <div class="loading-state"><InlineLoader text="Loading skills…" /></div>
         {:else if skillsStore.installed.length === 0}
           <div class="loading-state">No skills installed.</div>
         {:else}

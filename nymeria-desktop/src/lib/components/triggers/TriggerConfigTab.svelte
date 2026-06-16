@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Thread, Trigger, TriggerCreateRequest, TriggerUpdateRequest, TriggerActionType, TriggerSourceInfo } from '$lib/types';
   import { Button, Icon, ToggleSwitch } from '$lib/components/common';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
@@ -259,7 +260,7 @@
   {/if}
 
   {#if triggersStore.loading}
-    <div class="empty-state">Loading triggers…</div>
+    <div class="empty-state"><InlineLoader text="Loading triggers…" /></div>
   {:else if threadTriggers.length === 0}
     <div class="empty-state">
       No triggers configured for this thread. Create one to automate tasks.

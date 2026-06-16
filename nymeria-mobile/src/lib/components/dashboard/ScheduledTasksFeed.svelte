@@ -1,6 +1,7 @@
 <script lang="ts">
   import { todosStore } from '$lib/stores/todos.svelte';
   import ScheduledTodoItem from './ScheduledTodoItem.svelte';
+  import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount } from 'svelte';
 
   onMount(() => {
@@ -14,7 +15,7 @@
 <div class="tasks-feed">
   {#if isLoading}
     <div class="empty-state">
-      <span>Loading scheduled tasks…</span>
+      <InlineLoader text="Loading scheduled tasks…" />
     </div>
   {:else if todosStore.error}
     <div class="empty-state error">

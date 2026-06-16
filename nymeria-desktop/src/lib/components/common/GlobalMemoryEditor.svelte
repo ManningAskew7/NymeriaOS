@@ -4,6 +4,7 @@
   import type { UserMemory } from '$lib/types';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
+  import InlineLoader from './InlineLoader.svelte';
   import { humanizeErrorText, type HumanErrorContext } from '$lib/services/api/humanizeError';
 
   const MAX_ENTRIES = 100;
@@ -143,7 +144,7 @@
   {/if}
 
   {#if loading}
-    <p class="loading">Loading memories…</p>
+    <p class="loading"><InlineLoader text="Loading memories…" /></p>
   {:else if memories.length === 0}
     <p class="empty-state">No memories stored yet. Add one above, or let the agent learn things over time.</p>
   {:else}
