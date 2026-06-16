@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { fly } from 'svelte/transition';
   import { TAB_FADE } from '$lib/utils/transitions';
   import { Collapsible } from '$lib/components/common';
@@ -40,44 +39,25 @@
     }
   });
 
-  // Tab key toggles between "This Thread" and "Global" panes.
-  // Guarded so it never hijacks typing, modifier-Tab shortcuts, or focus
-  // movement inside a modal.
-  function handleTabKey(e: KeyboardEvent) {
-    if (e.key !== 'Tab') return;
-    if (e.ctrlKey || e.altKey || e.metaKey) return;
-    if (isCollapsed) return;
-
-    // Use e.target — by the time the bubble-phase listener runs, the
-    // browser may have already moved focus to the next element, so
-    // document.activeElement no longer points at the originally-focused
-    // textarea/input.
-    const target = e.target as HTMLElement | null;
-    if (target) {
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
-      if (target.isContentEditable) return;
-      // Walk up for an editable ancestor (some rich editors put the
-      // contenteditable on a wrapper above the actual event target).
-      if (target.closest('[contenteditable="true"], [contenteditable=""]')) return;
-      // Inside an open modal / dialog, leave Tab alone so it cycles focus
-      // within the dialog the way users expect.
-      if (target.closest('[role="dialog"]')) return;
-    }
-
+  // Arrow keys switch dashboard panes, but only when a tab button itself is
+  // focused (the standard ARIA tablist pattern). Tab is deliberately left
+  // untouched so it moves focus through the page normally; an earlier
+  // window-level Tab hijack here froze keyboard navigation whenever the
+  // panel was open.
+  function handleTablistKeydown(e: KeyboardEvent) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    // "This Thread" is only meaningful when a thread is selected; without one
+    // the panel is pinned to Global (see the auto-switch effect above), so the
+    // arrow is a no-op rather than bouncing selection back and forth.
+    if (!currentThreadId) return;
     e.preventDefault();
-    if (activeTab === 'thread' && currentThreadId) {
-      activeTab = 'global';
-    } else if (activeTab === 'global' && currentThreadId) {
-      activeTab = 'thread';
-    }
+    const next = e.key === 'ArrowRight' ? 'global' : 'thread';
+    activeTab = next;
+    // Move focus to follow the new selection (automatic activation).
+    requestAnimationFrame(() => {
+      document.getElementById(`dashboard-tab-${next}`)?.focus();
+    });
   }
-
-  onMount(() => {
-    // capture: true so we observe the keydown before the browser's default
-    // focus-change kicks in and we still see the originally-focused element.
-    window.addEventListener('keydown', handleTabKey, true);
-    return () => window.removeEventListener('keydown', handleTabKey, true);
-  });
 
   // Build thread title lookup for global view
   let threadTitleMap = $derived(
@@ -101,6 +81,7 @@
         class="tab-btn"
         class:active={activeTab === 'thread'}
         onclick={() => (activeTab = 'thread')}
+        onkeydown={handleTablistKeydown}
         type="button"
         role="tab"
         aria-selected={activeTab === 'thread'}
@@ -113,6 +94,7 @@
         class="tab-btn"
         class:active={activeTab === 'global'}
         onclick={() => (activeTab = 'global')}
+        onkeydown={handleTablistKeydown}
         type="button"
         role="tab"
         aria-selected={activeTab === 'global'}
