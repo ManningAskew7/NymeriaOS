@@ -105,6 +105,13 @@
   --sidebar-width-collapsed: 60px;
   --right-panel-width: 320px;
   --header-height: 48px;
+  /* NOTE: --touch-target-min is intentionally NOT defined here. It is a
+     mobile-only token (48px in nymeria-mobile/src/app.css). The shared
+     EXACT_MATCH Collapsible.svelte uses `min-height: var(--touch-target-min,
+     38px)`, relying on this token's ABSENCE to keep the desktop header at
+     38px while mobile gets the 48px tap floor. Defining it here would
+     silently grow every desktop Collapsible header; the drift gate would
+     not catch it (it compares the two component copies, not app.css). */
 
   /* Border radius */
   /* Border-radius tiers — each tier corresponds to an element role, not a

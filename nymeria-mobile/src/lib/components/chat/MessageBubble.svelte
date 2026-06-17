@@ -818,7 +818,19 @@
     color: var(--text-secondary);
   }
 
+  /* Images: constrain to the bubble so a wide image scales down instead of
+     overflowing on narrow viewports (AI-UI §10). */
+  .markdown-content :global(img) {
+    max-width: 100%;
+    height: auto;
+  }
+
   /* Tables */
+  .markdown-content :global(.md-table-wrap) {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
   .markdown-content :global(table) {
     border-collapse: collapse;
     width: 100%;
