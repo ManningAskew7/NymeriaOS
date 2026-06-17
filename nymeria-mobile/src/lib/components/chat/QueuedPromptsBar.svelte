@@ -151,7 +151,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 28px;
-    min-height: 28px;
+    /* Raise the hit area to the mobile touch floor (AI-UI §10); the icon
+       stays small, the tappable area grows. */
+    min-width: var(--touch-target-min);
+    min-height: var(--touch-target-min);
   }
 </style>

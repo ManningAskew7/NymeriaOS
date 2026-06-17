@@ -68,6 +68,20 @@ marked.use({
       const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       return `<pre><code>${escaped}</code></pre>`;
     }
+  },
+  // Wrap rendered tables in a horizontally-scrollable container so a wide
+  // table scrolls instead of overflowing the message bubble on narrow
+  // viewports (AI-UI §10). Runs as the final parse step, before DOMPurify,
+  // which keeps the plain wrapper div. `table { width: 100% }` is retained,
+  // so a narrow table still fills the bubble and only wide ones scroll.
+  // Code-fenced `<table>` text is entity-escaped by the code renderer above,
+  // so it is never matched here.
+  hooks: {
+    postprocess(html: string) {
+      return html
+        .replace(/<table>/g, '<div class="md-table-wrap">\n<table>')
+        .replace(/<\/table>/g, '</table>\n</div>');
+    }
   }
 });
 

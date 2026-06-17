@@ -147,7 +147,10 @@
     align-items: center;
     gap: var(--spacing-sm);
     width: 100%;
-    min-height: 38px;
+    /* 38px is the desktop visual; --touch-target-min is defined only in the
+       mobile app.css (48px), so this resolves to 38px on desktop (unchanged)
+       and lifts the mobile tap target to the 48px floor (AI-UI §10). */
+    min-height: var(--touch-target-min, 38px);
     padding: 0 var(--spacing-md);
     background: var(--bg-elevated-2);
     color: var(--text-primary);
