@@ -32,8 +32,19 @@
     return `${diffDays}d ago`;
   }
 
-  function handleClick() {
+  function handleClick(e: MouseEvent) {
+    // Clicks on the row actions are handled by their own buttons.
+    if ((e.target as HTMLElement).closest('.row-actions')) return;
     onclick?.();
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    // The action buttons are real <button>s and handle their own keys.
+    if ((e.target as HTMLElement).closest('.row-actions')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onclick?.();
+    }
   }
 
   function handleDismiss(e: MouseEvent) {
@@ -47,12 +58,14 @@
   }
 </script>
 
-<button
+<div
   class="notification-item"
   class:unread={!notification.read}
   class:has-errors={hasErrors}
-  type="button"
+  role="button"
+  tabindex="0"
   onclick={handleClick}
+  onkeydown={handleKeydown}
 >
   <div class="notification-content">
     <div class="notification-icon">
@@ -89,31 +102,29 @@
   </div>
   <div class="row-actions">
     {#if !notification.read && onDismiss}
-      <span
+      <button
         class="row-action"
-        role="button"
-        tabindex="0"
+        type="button"
         onclick={handleDismiss}
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDismiss(e as unknown as MouseEvent); } }}
         title="Mark as read"
+        aria-label="Mark as read"
       >
         <Icon name="check" size={14} />
-      </span>
+      </button>
     {/if}
     {#if onDelete}
-      <span
+      <button
         class="row-action delete"
-        role="button"
-        tabindex="0"
+        type="button"
         onclick={handleDelete}
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDelete(e as unknown as MouseEvent); } }}
         title="Delete notification"
+        aria-label="Delete notification"
       >
         <Icon name="x" size={14} />
-      </span>
+      </button>
     {/if}
   </div>
-</button>
+</div>
 
 <style>
   .notification-item {
@@ -237,11 +248,18 @@
   }
 
   .row-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     padding: var(--spacing-xs);
     color: var(--text-muted);
     border-radius: var(--radius-sm);
     transition: all var(--transition-fast);
     cursor: pointer;
+  }
+
+  .row-action:active {
+    transform: scale(var(--press-scale-icon));
   }
 
   .row-action:hover {
