@@ -598,6 +598,12 @@
     opacity: 0.7;
   }
 
+  .agent-btn:active,
+  .edit-btn:active,
+  .delete-btn:active {
+    transform: scale(var(--press-scale-icon));
+  }
+
   .agent-btn {
     color: var(--text-muted);
     opacity: 0.85;
