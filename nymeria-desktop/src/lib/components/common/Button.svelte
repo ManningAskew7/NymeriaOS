@@ -104,7 +104,7 @@
      so the press is a subtle scale-down, matching the no-lift .send-btn
      convention. Theme-independent and distinct from the hover bg shift. */
   .btn-secondary:active:not(:disabled) {
-    transform: scale(0.97);
+    transform: scale(var(--press-scale));
   }
 
   .btn-ghost {
@@ -119,7 +119,7 @@
   }
 
   .btn-ghost:active:not(:disabled) {
-    transform: scale(0.97);
+    transform: scale(var(--press-scale));
   }
 
   .btn-danger {
@@ -137,7 +137,7 @@
   }
 
   .btn-danger:active:not(:disabled) {
-    transform: scale(0.97);
+    transform: scale(var(--press-scale));
   }
 
   /* States */

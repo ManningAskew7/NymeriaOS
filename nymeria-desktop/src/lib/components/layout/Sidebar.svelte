@@ -322,7 +322,7 @@
   /* Pressed cue: a small scale-down reads as a tactile press on these
      icon-only buttons (real <button>s, so :active never fires when disabled). */
   .footer-icon-btn:active {
-    transform: scale(0.92);
+    transform: scale(var(--press-scale-icon));
   }
 
   .footer-icon-btn.has-unread {
@@ -348,7 +348,7 @@
   }
 
   .icon-btn:active {
-    transform: scale(0.92);
+    transform: scale(var(--press-scale-icon));
   }
 
   .icon-btn.has-unread {

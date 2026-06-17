@@ -201,6 +201,15 @@
   --ease-emphasis: cubic-bezier(0.4, 0, 0.2, 1); /* larger layout shifts: sidebar collapse */
   --ease-spring: cubic-bezier(0.16, 1, 0.3, 1); /* fast start, long settle: bottom sheets (JS twin: expoOut) */
 
+  /* Press-scale (§5/§8). The active-state scale-down that signals a tactile
+     press on no-lift buttons and icon-buttons. Two magnitudes: --press-scale
+     for text buttons (Button variants, the composer .send-btn),
+     --press-scale-icon (deeper) for compact icon-only buttons (sidebar,
+     thread header, modal/wizard close). Desktop-only: mobile press feedback
+     is a color change, not a transform. */
+  --press-scale: 0.96;
+  --press-scale-icon: 0.9;
+
   /* Single source of truth for the sidebar-collapse choreography. The sidebar
      widths, the bottom input-section's sliding background, the "Press
      Ctrl+Enter…" hint that slides with it, and any future element that

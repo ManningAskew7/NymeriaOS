@@ -696,7 +696,7 @@
      variant rotates its inner SVG on hover; this scales the button itself,
      so the two transforms don't conflict. */
   .icon-btn:active {
-    transform: scale(0.9);
+    transform: scale(var(--press-scale-icon));
   }
 
   .icon-btn:focus-visible {
