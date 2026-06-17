@@ -122,7 +122,7 @@
   }
 
   .close-btn:active {
-    transform: scale(0.9);
+    transform: scale(var(--press-scale-icon));
   }
 
   .modal-content {

@@ -588,7 +588,7 @@
   }
 
   .send-btn:active:not(:disabled) {
-    transform: scale(0.96);
+    transform: scale(var(--press-scale));
   }
 
   .send-btn:disabled {
