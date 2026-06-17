@@ -395,7 +395,7 @@
     overflow-y: auto;
     margin: 0;
     padding: 4px 0;
-    background: var(--bg-elevated-2, #1f1f2a);
+    background: var(--bg-elevated-2);
     border-radius: 6px;
     list-style: none;
     z-index: 50;
