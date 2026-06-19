@@ -333,6 +333,7 @@ def create_thread_operations_router(
     @router.post("/threads/{thread_id}/compact")
     async def compact_thread(
         thread_id: str,
+        priority: str | None = None,
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
@@ -341,10 +342,13 @@ def create_thread_operations_router(
         Compresses conversation history into a summary while preserving recent messages.
         Compaction always runs under the authenticated caller — admins impersonate via
         ``X-Nymeria-Act-As``, which ``verify_api_key`` resolves before we get here.
+
+        Optional ``priority`` query param is a free-text focus instruction that steers
+        what the summary emphasizes (it never drops other required content).
         """
         require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
-        result = await agent.compact_now(thread_id, user.id)
+        result = await agent.compact_now(thread_id, user.id, priority=priority)
         return result
 
     @router.post("/threads/{thread_id}/prune")

@@ -95,9 +95,74 @@ Format as a bulleted list of quoted strings.
 - Omit greetings, failed-then-corrected attempts, verbose tool outputs
 - Aim for under 1500 words total"""
 
+# Optional user steering for a manual ``/compact <focus instruction>``. Added
+# ONLY when the user supplies a focus; auto-compaction never carries one, so the
+# base prompt stays byte-identical on that path. Framed as "prioritize, not
+# filter": the agent must still complete every required section and persist all
+# durable facts, the focus only changes emphasis/ordering. The primer is
+# inserted just before the sections so the model writes them with the focus in
+# mind; the addendum is appended last for recency.
+MAX_COMPACT_PRIORITY_CHARS = 1000
+
+_COMPACT_SECTIONS_ANCHOR = "**Structure your summary using EXACTLY these sections:**"
+
+COMPACT_PRIORITY_PRIMER = (
+    'The user has flagged a specific focus for this summary (see "Additional '
+    'focus" at the end). Keep it in mind as you write every section below: it '
+    "changes the order and specificity of what you record, not which sections "
+    "or facts you include."
+)
+
+COMPACT_PRIORITY_ADDENDUM = """
+
+**Additional focus for this summary (user-requested)**
+
+The user asked you to pay special attention to the following:
+
+<<<
+{priority}
+>>>
+
+This is an extra priority layered on top of every instruction above, never a
+replacement for them. Apply it like this:
+- Still produce every required section in full, and still persist all durable
+  facts and working state to memory exactly as already instructed. Nothing
+  unrelated to this focus may be dropped, merged, or shortened because of it.
+- Within the sections where this focus is relevant, lead with it and be more
+  precise and complete about it (exact names, decisions, values, paths) than you
+  would be by default. Steer detail by ordering and specificity, not by spending
+  the whole summary on it.
+- If honoring this focus and covering everything else would exceed the length
+  guidance above, exceed it: completeness of the required sections and the focus
+  both win over the word target. The word target is a default, not a reason to
+  omit anything."""
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalize_priority(text: Optional[str]) -> Optional[str]:
+    """Clean a user-supplied ``/compact`` focus instruction.
+
+    Strips control characters (keeping newlines/tabs), removes any ``<<<``/``>>>``
+    fence markers so the user text cannot break the addendum's delimiters, trims
+    whitespace, caps length to ``MAX_COMPACT_PRIORITY_CHARS``, and collapses an
+    empty result to ``None`` (so no addendum is added). The priority is transient
+    steering: it rides the internal, discarded ``compact_prompt`` turn and is not
+    persisted anywhere.
+    """
+    if not text:
+        return None
+    cleaned = "".join(
+        ch for ch in text if ch in ("\n", "\t") or ord(ch) >= 32
+    )
+    cleaned = cleaned.replace("<<<", "").replace(">>>", "").strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > MAX_COMPACT_PRIORITY_CHARS:
+        cleaned = cleaned[:MAX_COMPACT_PRIORITY_CHARS].rstrip()
+    return cleaned
 
 def estimate_tokens(text: str) -> int:
     """Rough estimate of token count (~4 chars per token)."""
@@ -366,14 +431,21 @@ class CompactionManager:
         user_id: str = "default",
         *,
         on_started: Optional[CompactionStartCallback] = None,
+        priority: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Manually trigger compaction (/compact command).
 
         Generates summary and stores it to be attached to the user's next
         message. The UI should show "(context summary attached)" instead
         of the full summary.
+
+        ``priority`` is an optional free-text focus instruction (from
+        ``/compact <text>``) that steers what the summary emphasizes without
+        dropping any required section; normalized here so every caller inherits
+        the guard.
         """
         agent = self._agent
+        priority = _normalize_priority(priority)
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
 
         state = await agent._default_async_graph.aget_state(config)
@@ -398,21 +470,40 @@ class CompactionManager:
         # Manual /compact: build the retained tail but do NOT auto-resume; the
         # user's next message continues naturally after it.
         result = await self._run_compact_turn_and_prune(
-            thread_id, user_id, auto_resumed=False,
+            thread_id, user_id, auto_resumed=False, priority=priority,
         )
         if result.get("success"):
             logger.info(f"Thread {thread_id}: Manual compact complete")
         return result
 
-    def _summary_input(self) -> dict:
-        """Build the graph input state for summary generation."""
+    def _summary_input(self, priority: Optional[str] = None) -> dict:
+        """Build the graph input state for summary generation.
+
+        When ``priority`` is set (a manual ``/compact`` with a focus
+        instruction), a primer is inserted before the section list and a focus
+        addendum is appended. Auto-compaction and overflow recovery pass no
+        priority, so the base prompt is byte-identical on those paths.
+        """
         from .agent import _create_human_message
 
         return {"messages": [_create_human_message(
-            self.get_compact_prompt(),
+            self._build_compact_prompt(priority),
             internal=True,
             internal_type="compact_prompt",
         )]}
+
+    @classmethod
+    def _build_compact_prompt(cls, priority: Optional[str]) -> str:
+        """Base compaction prompt, optionally steered by a user focus instruction."""
+        prompt = cls.get_compact_prompt()
+        if not priority:
+            return prompt
+        prompt = prompt.replace(
+            _COMPACT_SECTIONS_ANCHOR,
+            f"{COMPACT_PRIORITY_PRIMER}\n\n{_COMPACT_SECTIONS_ANCHOR}",
+            1,
+        )
+        return prompt + COMPACT_PRIORITY_ADDENDUM.format(priority=priority)
 
     @staticmethod
     def _extract_summary_from_result(
@@ -428,6 +519,7 @@ class CompactionManager:
         self,
         thread_id: str,
         user_id: str,
+        priority: Optional[str] = None,
     ) -> Optional[str]:
         """Generate a summary by injecting a compaction prompt and running the agent."""
         agent = self._agent
@@ -437,7 +529,7 @@ class CompactionManager:
         agent._compacting_threads.add(thread_id)
         try:
             result = await asyncio.wait_for(
-                graph.ainvoke(self._summary_input(), config=config),
+                graph.ainvoke(self._summary_input(priority), config=config),
                 timeout=COMPACTION_TIMEOUT_SECONDS,
             )
             return self._extract_summary_from_result(result.get("messages", []))
@@ -605,6 +697,9 @@ class CompactionManager:
         future: Optional[concurrent.futures.Future] = None
         agent._compacting_threads.add(thread_id)
         try:
+            # No ``priority`` here on purpose: the sync path serves only
+            # auto-compaction and overflow recovery, which never carry a user
+            # focus instruction. Manual ``/compact <text>`` runs the async chain.
             future = executor.submit(
                 graph.invoke,
                 self._summary_input(),
@@ -673,7 +768,8 @@ class CompactionManager:
         return True
 
     async def _run_compact_turn_and_prune(
-        self, thread_id: str, user_id: str, *, auto_resumed: bool
+        self, thread_id: str, user_id: str, *, auto_resumed: bool,
+        priority: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the compaction turn, then rebuild the thread to the retained tail.
 
@@ -694,7 +790,7 @@ class CompactionManager:
         pre_ids = {m.id for m in pre_messages}
         conversational_before = self._count_conversational_messages(pre_messages)
 
-        summary = await self._generate_summary(thread_id, user_id)
+        summary = await self._generate_summary(thread_id, user_id, priority=priority)
         if not summary:
             await self._discard_turn_delta(graph, config, pre_ids)
             return {"success": False, "reason": "Failed to generate summary"}

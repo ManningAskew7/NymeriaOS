@@ -81,6 +81,14 @@ The summary prompt requires these exact sections:
 
 The `RAG Search Queries` section should contain 3-5 quoted search strings that target important decisions, findings, file paths, and task state from the compacted thread. These are hints for the next agent turn to retrieve the full preserved conversation from RAG when the summary alone is not enough.
 
+### Steering the summary (`/compact <focus instruction>`)
+
+A manual `/compact` may carry an optional free-text focus instruction, for example `/compact keep the exact auth-flow decisions and the failing test names`. The text is normalized (trimmed, control-character stripped, `<<<`/`>>>` fence markers removed, capped at 1,000 chars; empty collapses to none) and, when present, inserts a one-line primer before the section list and appends a focus addendum after the base prompt.
+
+The framing is deliberately "prioritize, not filter": the agent still produces every required section and still persists all durable facts to memory, the focus only changes emphasis and ordering, and the addendum explicitly lets the under-1500-word target yield rather than displace other content. So a focus never narrows the summary to just that focus.
+
+It is wired only on the manual (async) path. `api/routers/chat.py` parses the trailing text from the raw (case-preserved) message and threads it through `agent.compact_now(..., priority=...)` to the single `_summary_input` chokepoint in `core/agent_compaction.py` (`_build_compact_prompt`). Auto-compaction and overflow recovery pass no priority, so the base `COMPACT_PROMPT` is byte-identical on those paths. The same `priority` is also accepted as a query param on `POST /threads/{id}/compact`, by the `nymeria_compact_thread` MCP tool, and by the Telegram/Discord `/compact` commands.
+
 ### Sub-turn trigger
 
 Auto-compaction can fire **mid-turn**, not just at turn boundaries. The vendored router `route_after_tools` runs after each tool batch and before the next LLM call; there it asks `agent.should_halt_for_subturn_compaction(thread_id, messages)`, which reads the most recent AIMessage's provider-reported `input_tokens` (via `token_usage.extract_last_from_messages` -- `TokenTracker` is stale mid-loop) and compares against the per-thread trigger. If crossed, it flags the thread and returns `"end"` to halt the graph at that sub-turn boundary.

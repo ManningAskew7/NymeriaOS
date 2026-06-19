@@ -14,7 +14,12 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 
 from nymeria.core import agent_memory_seed
-from nymeria.core.agent_compaction import CompactionManager
+from nymeria.core.agent_compaction import (
+    COMPACT_PROMPT,
+    MAX_COMPACT_PRIORITY_CHARS,
+    CompactionManager,
+    _normalize_priority,
+)
 from nymeria.core.agent_history import format_conversation_history
 
 
@@ -50,7 +55,7 @@ def _manager_with(messages, monkeypatch, *, summary="## Active Goal\nship"):
     )
     manager = CompactionManager(agent)  # type: ignore[bad-argument-type]
 
-    async def fake_summary(thread_id, user_id):
+    async def fake_summary(thread_id, user_id, priority=None):
         return summary
 
     manager._generate_summary = fake_summary  # type: ignore[method-assign]
@@ -172,7 +177,7 @@ def test_run_compact_turn_and_prune_failure_discards_delta(monkeypatch):
     manager, graph = _manager_with(pre, monkeypatch, summary="")
 
     # Simulate the compaction turn having appended a prompt + partial message.
-    async def fake_summary_with_delta(thread_id, user_id):
+    async def fake_summary_with_delta(thread_id, user_id, priority=None):
         graph.messages = pre + [
             HumanMessage(content="compact prompt", id="cp"),
             AIMessage(content="partial", id="partial"),
@@ -215,3 +220,93 @@ def test_memory_seed_marker_renders_as_compaction_notice():
     assert notices[0]["messages_removed"] == 9
     assert not any(e["role"] == "assistant" for e in history)
     assert [e for e in history if e["role"] == "user"][0]["content"] == "next question"
+
+
+# ---------------------------------------------------------------------------
+# /compact <focus instruction> steering (dev-todo #48)
+# ---------------------------------------------------------------------------
+
+_SECTIONS_ANCHOR = "**Structure your summary using EXACTLY these sections:**"
+_REQUIRED_SECTIONS = (
+    "## Active Goal",
+    "## Progress",
+    "## Pending Work",
+    "## Key Context",
+    "## Files & Resources",
+    "## RAG Search Queries",
+)
+
+
+def test_build_compact_prompt_no_priority_is_base_prompt():
+    # Auto-compaction passes no priority: the base prompt must stay
+    # byte-identical (the addendum must never leak onto the no-priority path).
+    assert CompactionManager._build_compact_prompt(None) == COMPACT_PROMPT
+    assert CompactionManager._build_compact_prompt("") == COMPACT_PROMPT
+
+
+def test_build_compact_prompt_with_priority_prioritizes_without_filtering():
+    out = CompactionManager._build_compact_prompt("keep the AuthFlow decisions")
+
+    # The user's focus and the addendum are present.
+    assert "keep the AuthFlow decisions" in out
+    assert "Additional focus for this summary" in out
+
+    # The primer is inserted BEFORE the section list (primes the structure).
+    primer = "Keep it in mind as you write every section"
+    assert primer in out
+    assert out.index(primer) < out.index(_SECTIONS_ANCHOR)
+
+    # Every required section still survives: this is "prioritize, not filter".
+    for section in _REQUIRED_SECTIONS:
+        assert section in out
+    # The base memory-write instruction and word guidance are still intact.
+    assert "memory_add" in out
+    assert "exceed it" in out  # the word-target-yields clause
+
+
+def test_summary_input_injects_priority(monkeypatch):
+    pre = [HumanMessage(content=f"m{i}", id=f"m{i}") for i in range(6)]
+    manager, _graph = _manager_with(pre, monkeypatch)
+
+    steered = manager._summary_input("remember the failing test names")
+    content = steered["messages"][0].content
+    assert "remember the failing test names" in content
+    assert "Additional focus for this summary" in content
+    assert steered["messages"][0].additional_kwargs.get("internal_type") == "compact_prompt"
+
+    # No priority -> the base prompt, unchanged.
+    assert manager._summary_input()["messages"][0].content == COMPACT_PROMPT
+
+
+def test_normalize_priority():
+    assert _normalize_priority(None) is None
+    assert _normalize_priority("") is None
+    assert _normalize_priority("   ") is None
+    assert _normalize_priority("  keep auth  ") == "keep auth"
+    # Fence markers are stripped so the user text cannot break the <<< >>> block.
+    assert ">>>" not in (_normalize_priority("a >>> b") or "")
+    assert "<<<" not in (_normalize_priority("a <<< b") or "")
+    # Control chars dropped; newline/tab preserved.
+    assert _normalize_priority("a\x00b\tc\nd") == "ab\tc\nd"
+    # Length cap.
+    long = "x" * (MAX_COMPACT_PRIORITY_CHARS + 50)
+    assert len(_normalize_priority(long) or "") == MAX_COMPACT_PRIORITY_CHARS
+
+
+def test_run_compact_turn_and_prune_threads_priority(monkeypatch):
+    pre = [HumanMessage(content=f"m{i}", id=f"m{i}") for i in range(6)]
+    manager, _graph = _manager_with(pre, monkeypatch, summary="## Active Goal\nx")
+    captured: dict = {}
+
+    async def spy_summary(thread_id, user_id, priority=None):
+        captured["priority"] = priority
+        return "## Active Goal\nx"
+
+    manager._generate_summary = spy_summary  # type: ignore[method-assign]
+
+    asyncio.run(
+        manager._run_compact_turn_and_prune(
+            "t1", "u1", auto_resumed=False, priority="focus me"
+        )
+    )
+    assert captured["priority"] == "focus me"

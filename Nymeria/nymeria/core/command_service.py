@@ -2114,9 +2114,9 @@ class CommandService:
         )
         self.register(
             "compact",
-            description="Compact the active chat context",
+            description="Compact the active chat context (add a focus instruction to steer the summary)",
             category="Thread",
-            usage="/compact",
+            usage="/compact [focus instruction]",
             agent_allowed=False,
             requires_thread=True,
             execution_kind="chat_stream",

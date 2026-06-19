@@ -151,6 +151,7 @@ NymeriaOS adapts its capabilities at runtime without code changes. The agent dis
 
 ### Context Management
 - **Auto-compaction** (default)  -  Automatic summarization at a configurable model-window threshold (default 80%)
+- **Manual compaction with optional steering**  -  `/compact` on demand; an optional focus instruction (`/compact keep the auth decisions and failing test names`) biases what the summary emphasizes without dropping any required section or memory write. Also exposed on the compact REST endpoint, the MCP tool, and the Telegram/Discord bots
 - **In-context summarization**  -  Agent generates its own summary, no separate LLM call
 - **Pre-compaction RAG flush**  -  All messages indexed before trimming (nothing lost)
 - **Checkpoint pruning**  -  Old checkpoint rows cleaned up after compaction

@@ -965,12 +965,18 @@ class NymeriaAgent:
         user_id: str = "default",
         *,
         on_started=None,
+        priority: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Manually trigger compaction (/compact command)."""
+        """Manually trigger compaction (/compact command).
+
+        ``priority`` is an optional free-text focus instruction that steers what
+        the summary emphasizes (it never drops other required content).
+        """
         return await self._compaction.compact_now(
             thread_id,
             user_id,
             on_started=on_started,
+            priority=priority,
         )
 
     async def prune_now(

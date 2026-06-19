@@ -2100,7 +2100,7 @@ class NymeriaTelegramBot:
         await self._send_backend_command(update, context, "clear")
 
     async def _cmd_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /compact."""
+        """Handle /compact [focus instruction]."""
         if update.message is None or update.effective_chat is None:
             return
         chat_id = update.effective_chat.id
@@ -2108,9 +2108,11 @@ class NymeriaTelegramBot:
         if user_id is None:
             return
         thread_id = self.resolve_thread_id_for_chat(chat_id)
+        focus = " ".join(context.args) if context.args else ""
+        compact_message = f"/compact {focus}".strip()
         await self._stream_to_chat(
             chat_id=chat_id,
-            message="/compact",
+            message=compact_message,
             thread_id=thread_id,
             user_id=user_id,
             context=context,

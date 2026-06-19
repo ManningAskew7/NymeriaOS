@@ -945,11 +945,13 @@ preserving thread config, notepad content, and other thread settings. Use
 ### Compact Thread
 
 ```http
-POST /threads/{thread_id}/compact
+POST /threads/{thread_id}/compact?priority=<focus instruction>
 Authorization: Bearer <token>
 ```
 
 Manually trigger context compaction for a thread.
+
+Optional `priority` query param: a free-text focus instruction that steers what the generated summary emphasizes (for example `keep the exact auth-flow decisions and failing test names`). It is normalized and capped at 1,000 chars. The framing is "prioritize, not filter": every required summary section and all durable-memory writes still happen; the focus only changes emphasis. Omit it for the default summary.
 
 **Response:**
 ```json

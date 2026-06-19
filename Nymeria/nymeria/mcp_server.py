@@ -577,9 +577,18 @@ async def nymeria_stop_thread(thread_id: str, user_id: str = "default") -> Dict[
 
 
 @mcp.tool()
-async def nymeria_compact_thread(thread_id: str, user_id: str = "default") -> Dict[str, Any]:
-    """Manually compact a thread's conversation context."""
-    return await _json_call("POST", f"/threads/{_enc(thread_id)}/compact", user_id=user_id)
+async def nymeria_compact_thread(
+    thread_id: str, user_id: str = "default", priority: Optional[str] = None
+) -> Dict[str, Any]:
+    """Manually compact a thread's conversation context.
+
+    Optional ``priority`` is a free-text focus instruction that steers what the
+    summary emphasizes (it never drops other required content).
+    """
+    params = {"priority": priority} if priority else None
+    return await _json_call(
+        "POST", f"/threads/{_enc(thread_id)}/compact", user_id=user_id, params=params
+    )
 
 
 @mcp.tool()
