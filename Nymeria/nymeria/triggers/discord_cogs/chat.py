@@ -57,7 +57,8 @@ class ChatCog(commands.Cog):
         name="compact",
         description="Compress conversation to save context window",
     )
-    async def cmd_compact(self, interaction: discord.Interaction):
+    @app_commands.describe(focus="Optional: what to prioritize in the summary")
+    async def cmd_compact(self, interaction: discord.Interaction, focus: str = ""):
         await interaction.response.defer()
         if interaction.channel_id is None or interaction.channel is None:
             return
@@ -69,10 +70,11 @@ class ChatCog(commands.Cog):
         async def _first(content: str) -> discord.Message:
             return await interaction.followup.send(content, wait=True)
 
+        compact_message = f"/compact {focus}".strip()
         await self.bot._stream_to_channel(
             channel=interaction.channel,
             first_send=_first,
-            message="/compact",
+            message=compact_message,
             thread_id=thread_id,
             user_id=user_id,
         )

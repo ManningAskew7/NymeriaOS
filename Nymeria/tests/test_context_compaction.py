@@ -218,7 +218,7 @@ def test_manual_compact_start_callback_runs_when_compaction_starts():
     manager = CompactionManager(agent)
     started: list[str] = []
 
-    async def fake_run_compact_turn_and_prune(thread_id, user_id, *, auto_resumed):
+    async def fake_run_compact_turn_and_prune(thread_id, user_id, *, auto_resumed, priority=None):
         return {
             "success": True,
             "messages_before": 3,

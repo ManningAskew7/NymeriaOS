@@ -50,8 +50,10 @@ class FakeChatAgent:
         yield {"type": "thinking", "content": "working"}
         yield {"type": "response", "content": "stream response"}
 
-    async def compact_now(self, thread_id: str, user_id: str, *, on_started=None):
-        self.compact_calls.append({"thread_id": thread_id, "user_id": user_id})
+    async def compact_now(self, thread_id: str, user_id: str, *, on_started=None, priority=None):
+        self.compact_calls.append(
+            {"thread_id": thread_id, "user_id": user_id, "priority": priority}
+        )
         if self.compact_should_start and on_started is not None:
             result = on_started()
             if inspect.isawaitable(result):
@@ -260,3 +262,36 @@ def test_chat_stream_compact_emits_status_only_after_compaction_starts(
         "thread_id": "thread-compact",
     }
     assert compacted_events[1]["type"] == "compacted"
+
+
+def test_chat_stream_compact_forwards_focus_instruction(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent.compact_should_start = True
+    agent.compact_result = {"success": True, "messages_removed": 2, "summary": "s"}
+
+    # Trailing text after /compact steers the summary; original case preserved.
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={
+            "message": "/compact Keep the AuthFlow decisions",
+            "thread_id": "thread-compact",
+        },
+    ) as response:
+        _ = "".join(response.iter_text())
+    assert response.status_code == 200
+    assert agent.compact_calls[-1]["priority"] == "Keep the AuthFlow decisions"
+
+    # Bare /compact carries no priority.
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/compact", "thread_id": "thread-compact"},
+    ) as response:
+        _ = "".join(response.iter_text())
+    assert agent.compact_calls[-1]["priority"] is None

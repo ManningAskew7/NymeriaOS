@@ -427,10 +427,19 @@ class NymeriaAPIClient:
         """Abort the current operation on a thread."""
         return await self._post(f"/threads/{thread_id}/stop", act_as=user_id)
 
-    async def compact(self, thread_id: str, user_id: str) -> dict:
-        """Compact conversation context."""
+    async def compact(
+        self, thread_id: str, user_id: str, priority: Optional[str] = None
+    ) -> dict:
+        """Compact conversation context.
+
+        Optional ``priority`` is a free-text focus instruction that steers what the
+        summary emphasizes (it never drops other required content).
+        """
+        params = {"user_id": user_id}
+        if priority:
+            params["priority"] = priority
         return await self._post(
-            f"/threads/{thread_id}/compact", params={"user_id": user_id}, act_as=user_id,
+            f"/threads/{thread_id}/compact", params=params, act_as=user_id,
         )
 
     async def prune(self, thread_id: str, user_id: str, mode: str = "full") -> dict:

@@ -348,15 +348,23 @@ def create_chat_router(
                 thread_id = mention_resolution.thread_id
                 message = mention_resolution.message
 
-        # Handle slash commands (e.g., /compact)
+        # Handle slash commands (e.g., /compact [focus instruction])
         msg_stripped = message.strip().lower()
+        compact_tokens = msg_stripped.split(maxsplit=1)
+        is_compact_cmd = bool(compact_tokens) and compact_tokens[0] == "/compact"
         logger.info(
             "[CHAT] Received message: '%s' stripped: '%s' is_compact: %s",
             message,
             msg_stripped,
-            msg_stripped == "/compact",
+            is_compact_cmd,
         )
-        if msg_stripped == "/compact":
+        if is_compact_cmd:
+            # Optional trailing text steers what the summary prioritizes. Parse it
+            # from the original (case-preserved) message, not msg_stripped (lowered).
+            raw_compact_parts = message.strip().split(maxsplit=1)
+            compact_priority = (
+                raw_compact_parts[1].strip() if len(raw_compact_parts) > 1 else ""
+            ) or None
 
             async def compact_command_response():
                 if dispatched_target is not None:
@@ -382,6 +390,7 @@ def create_chat_router(
                         thread_id,
                         user_id,
                         on_started=_on_compaction_started,
+                        priority=compact_priority,
                     )
                 )
                 start_task = asyncio.create_task(compact_started.wait())

@@ -37,7 +37,7 @@ class FakeAgent:
         self._callable_tool_thread_map = {}
         self._thread_locks = FakeThreadLocks()
         self.aborted_threads: list[str] = []
-        self.compactions: list[tuple[str, str]] = []
+        self.compactions: list[tuple[str, str, str | None]] = []
         self.prunes: list[tuple[str, str, str]] = []
         self.rewinds: list[tuple[str, int]] = []
         self.rewind_return = 0
@@ -49,8 +49,8 @@ class FakeAgent:
             return config.llm_config
         return ThreadLLMConfig()
 
-    async def compact_now(self, thread_id: str, user_id: str):
-        self.compactions.append((thread_id, user_id))
+    async def compact_now(self, thread_id: str, user_id: str, *, priority: str | None = None):
+        self.compactions.append((thread_id, user_id, priority))
         return {"status": "compacted", "thread_id": thread_id, "user_id": user_id}
 
     async def prune_now(self, thread_id: str, user_id: str, *, mode: str = "full"):
@@ -162,7 +162,22 @@ def test_compact_route_runs_under_authenticated_user(tmp_path: Path, api_client_
         "thread_id": thread_id,
         "user_id": "owner",
     }
-    assert agent.compactions == [(thread_id, "owner")]
+    assert agent.compactions == [(thread_id, "owner", None)]
+
+
+def test_compact_route_forwards_priority(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-compact-focus"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    response = client.post(
+        f"/threads/{thread_id}/compact",
+        params={"priority": "keep the failing test names"},
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    assert agent.compactions == [(thread_id, "owner", "keep the failing test names")]
 
 
 def test_prune_route_runs_under_authenticated_user(tmp_path: Path, api_client_builder):
