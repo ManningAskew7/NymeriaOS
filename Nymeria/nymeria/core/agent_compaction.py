@@ -690,8 +690,9 @@ class CompactionManager:
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
         graph = agent._default_async_graph
 
-        pre_ids = {m.id for m in self._state_messages(await graph.aget_state(config))}
-        msg_count_before = len(pre_ids)
+        pre_messages = self._state_messages(await graph.aget_state(config))
+        pre_ids = {m.id for m in pre_messages}
+        conversational_before = self._count_conversational_messages(pre_messages)
 
         summary = await self._generate_summary(thread_id, user_id)
         if not summary:
@@ -701,8 +702,10 @@ class CompactionManager:
         tail = build_resume_compaction_tail(
             user_id=user_id, thread_id=thread_id, summary=summary
         )
+        conversational_after = self._count_conversational_messages(tail)
+        conversational_removed = max(0, conversational_before - conversational_after)
         self._stamp_seed_marker(
-            tail[0], summary=summary, messages_removed=msg_count_before,
+            tail[0], summary=summary, messages_removed=conversational_removed,
             auto_resumed=auto_resumed,
         )
 
@@ -733,14 +736,16 @@ class CompactionManager:
             self._estimate_messages_tokens(tail, self._model_for(thread_id)),
         )
         logger.info(
-            f"Thread {thread_id}: Compaction complete — removed {msg_count_before}, "
+            f"Thread {thread_id}: Compaction complete — summarized "
+            f"{conversational_removed} conversation messages "
+            f"({len(pre_ids)} checkpoint objects removed), "
             f"retained {len(tail)} (resume opener + memory read-back)"
         )
         return {
             "success": True,
-            "messages_before": msg_count_before,
-            "messages_after": len(tail),
-            "messages_removed": msg_count_before,
+            "messages_before": conversational_before,
+            "messages_after": conversational_after,
+            "messages_removed": conversational_removed,
             "auto_resumed": auto_resumed,
             "summary": summary,
         }
@@ -765,8 +770,9 @@ class CompactionManager:
         config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
         graph = agent._default_graph
 
-        pre_ids = {m.id for m in self._state_messages(graph.get_state(config))}
-        msg_count_before = len(pre_ids)
+        pre_messages = self._state_messages(graph.get_state(config))
+        pre_ids = {m.id for m in pre_messages}
+        conversational_before = self._count_conversational_messages(pre_messages)
 
         summary = self._generate_summary_sync(thread_id, user_id)
         if not summary:
@@ -776,8 +782,10 @@ class CompactionManager:
         tail = build_resume_compaction_tail(
             user_id=user_id, thread_id=thread_id, summary=summary
         )
+        conversational_after = self._count_conversational_messages(tail)
+        conversational_removed = max(0, conversational_before - conversational_after)
         self._stamp_seed_marker(
-            tail[0], summary=summary, messages_removed=msg_count_before,
+            tail[0], summary=summary, messages_removed=conversational_removed,
             auto_resumed=auto_resumed,
         )
 
@@ -808,14 +816,15 @@ class CompactionManager:
             self._estimate_messages_tokens(tail, self._model_for(thread_id)),
         )
         logger.info(
-            f"Thread {thread_id}: Sync compaction complete — removed {msg_count_before}, "
-            f"retained {len(tail)}"
+            f"Thread {thread_id}: Sync compaction complete — summarized "
+            f"{conversational_removed} conversation messages "
+            f"({len(pre_ids)} checkpoint objects removed), retained {len(tail)}"
         )
         return {
             "success": True,
-            "messages_before": msg_count_before,
-            "messages_after": len(tail),
-            "messages_removed": msg_count_before,
+            "messages_before": conversational_before,
+            "messages_after": conversational_after,
+            "messages_removed": conversational_removed,
             "auto_resumed": auto_resumed,
             "summary": summary,
         }
@@ -1330,6 +1339,50 @@ class CompactionManager:
         values = getattr(state, "values", {}) or {}
         messages = values.get("messages", [])
         return messages if isinstance(messages, list) else []
+
+    @staticmethod
+    def _ai_message_has_text(msg: Any) -> bool:
+        """True if an AIMessage carries visible reply text.
+
+        Tool-call-only and thinking-only assistant steps have no user-visible
+        text, so they are intermediate steps rather than replies.
+        """
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, str):
+                    if block.strip():
+                        return True
+                elif isinstance(block, dict):
+                    if block.get("type") == "text" and str(block.get("text") or "").strip():
+                        return True
+            return False
+        return bool(content)
+
+    @staticmethod
+    def _count_conversational_messages(messages: List[Any]) -> int:
+        """Count user-visible conversation messages in a message list.
+
+        Counts real user turns plus assistant replies that produced visible
+        text. Excludes tool-call and tool-result traffic, thinking-only or
+        tool-call-only assistant steps, and system-generated scaffolding
+        (memory-seed openers, autonomous wake-ups, compaction prompts: anything
+        flagged ``internal``). This is what the post-compaction notice reports,
+        so the number reflects the conversation rather than the raw checkpoint
+        object count (which counts every intermediate tool call and result).
+        """
+        count = 0
+        for m in messages:
+            kwargs = getattr(m, "additional_kwargs", None) or {}
+            if kwargs.get("internal"):
+                continue
+            if isinstance(m, HumanMessage):
+                count += 1
+            elif isinstance(m, AIMessage) and CompactionManager._ai_message_has_text(m):
+                count += 1
+        return count
 
     @staticmethod
     def _state_checkpoint_id(state: Any) -> Optional[str]:

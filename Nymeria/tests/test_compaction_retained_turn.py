@@ -48,7 +48,7 @@ def _manager_with(messages, monkeypatch, *, summary="## Active Goal\nship"):
         _default_async_graph=graph,
         _token_tracker=SimpleNamespace(reset_after_compact=lambda *a, **k: None),
     )
-    manager = CompactionManager(agent)
+    manager = CompactionManager(agent)  # type: ignore[bad-argument-type]
 
     async def fake_summary(thread_id, user_id):
         return summary
@@ -72,7 +72,11 @@ def test_run_compact_turn_and_prune_builds_retained_tail(monkeypatch):
     )
 
     assert result["success"] is True
-    assert result["messages_after"] == 4
+    # Counts are conversational (user turns + assistant replies), not raw
+    # checkpoint objects: the 6 plain user messages count, the scaffolding-only
+    # retained tail counts as 0.
+    assert result["messages_before"] == 6
+    assert result["messages_after"] == 0
     assert result["messages_removed"] == 6
 
     # State is exactly the retained tail: resume opener + read-back, no trailer.
@@ -94,6 +98,71 @@ def test_run_compact_turn_and_prune_builds_retained_tail(monkeypatch):
     assert isinstance(msgs[-1], ToolMessage)
     # No dangling: tool_call ids are matched.
     assert {tc["id"] for tc in ai_calls.tool_calls} == {tool_g.tool_call_id, tool_t.tool_call_id}
+
+
+def test_count_conversational_messages_excludes_tool_traffic_and_scaffolding():
+    # A realistic checkpoint: user turns, an assistant tool-call step + its
+    # result, assistant text replies, an autonomous wake-up + a prior
+    # compaction's resume opener (both internal scaffolding), plus a
+    # thinking-only assistant step. Only the 5 conversation messages count.
+    msgs = [
+        HumanMessage(content="hello", id="h1"),                                  # +1 user
+        AIMessage(content="", id="a1", tool_calls=[                              # tool-call only
+            {"id": "x", "name": "web_search", "args": {}, "type": "tool_call"},
+        ]),
+        ToolMessage(content="results...", tool_call_id="x", name="web_search", id="t1"),  # tool result
+        AIMessage(content="Here are the results.", id="a2"),                     # +1 reply
+        HumanMessage(content="thanks", id="h2"),                                 # +1 user
+        HumanMessage(                                                           # autonomous wake-up
+            content="[Trigger: ticker]", id="auto",
+            additional_kwargs={"internal": True, "internal_type": "autonomous_wakeup"},
+        ),
+        AIMessage(content="Checked, nothing new.", id="a3"),                     # +1 reply
+        HumanMessage(                                                           # prior resume opener
+            content="[Session resume] ...", id="seed",
+            additional_kwargs={"internal": True, "internal_type": "memory_seed_marker"},
+        ),
+        AIMessage(content=[                                                      # +1 reply (text block)
+            {"type": "thinking", "thinking": "hmm"},
+            {"type": "text", "text": "Done."},
+        ], id="a4"),
+        AIMessage(content=[                                                      # thinking only
+            {"type": "thinking", "thinking": "still pondering"},
+        ], id="a5"),
+    ]
+
+    assert CompactionManager._count_conversational_messages(msgs) == 5
+    # The raw object count (what the buggy notice used to report) is far higher.
+    assert len(msgs) == 10
+
+
+def test_run_compact_turn_and_prune_counts_only_conversation(monkeypatch):
+    # Mixed pre-compaction state: 4 conversation messages buried among tool
+    # traffic and internal scaffolding (7 raw objects). The notice must report 4.
+    pre = [
+        HumanMessage(content="hello", id="h1"),
+        AIMessage(content="", id="a1", tool_calls=[
+            {"id": "x", "name": "web_search", "args": {}, "type": "tool_call"},
+        ]),
+        ToolMessage(content="results...", tool_call_id="x", name="web_search", id="t1"),
+        AIMessage(content="Here are the results.", id="a2"),
+        HumanMessage(content="thanks", id="h2"),
+        HumanMessage(
+            content="[Trigger: ticker]", id="auto",
+            additional_kwargs={"internal": True, "internal_type": "autonomous_wakeup"},
+        ),
+        AIMessage(content="Checked, nothing new.", id="a3"),
+    ]
+    manager, _graph = _manager_with(pre, monkeypatch)
+
+    result = asyncio.run(
+        manager._run_compact_turn_and_prune("t1", "u1", auto_resumed=False)
+    )
+
+    assert result["success"] is True
+    assert result["messages_before"] == 4
+    assert result["messages_after"] == 0
+    assert result["messages_removed"] == 4
 
 
 def test_run_compact_turn_and_prune_failure_discards_delta(monkeypatch):
