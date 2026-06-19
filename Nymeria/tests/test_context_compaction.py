@@ -31,8 +31,12 @@ def _agent_with_compaction(
     mode: str = "percentage",
     pct: float = 0.8,
     tokens: int = 100_000,
-) -> NymeriaAgent:
-    agent = object.__new__(NymeriaAgent)
+) -> Any:
+    # A deliberately partial NymeriaAgent: real instance (so the real
+    # threshold methods run) with only the attributes those methods touch
+    # stubbed in. Typed Any because the stubs do not match the declared
+    # attribute types.
+    agent: Any = object.__new__(NymeriaAgent)
     agent.settings = SimpleNamespace(
         context_management="auto_compact",
         compact_threshold=pct,
@@ -189,7 +193,7 @@ def test_manual_compact_start_callback_waits_for_message_count_check():
         ]),
         _flush_memories_before_trim=lambda *_args: None,
     )
-    manager = CompactionManager(agent)
+    manager = CompactionManager(agent)  # type: ignore[bad-argument-type]
     started: list[str] = []
 
     result = asyncio.run(
@@ -215,7 +219,7 @@ def test_manual_compact_start_callback_runs_when_compaction_starts():
         ]),
         _flush_memories_before_trim=lambda *_args: None,
     )
-    manager = CompactionManager(agent)
+    manager = CompactionManager(agent)  # type: ignore[bad-argument-type]
     started: list[str] = []
 
     async def fake_run_compact_turn_and_prune(thread_id, user_id, *, auto_resumed, priority=None):
