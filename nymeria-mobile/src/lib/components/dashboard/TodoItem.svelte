@@ -213,7 +213,7 @@
 
   <!-- Inline actions (visible for non-done items) -->
   {#if todo.status !== 'done'}
-    <button class="action-btn delete" onclick={handleDelete} title="Delete" type="button">
+    <button class="action-btn delete" onclick={handleDelete} aria-label="Delete" type="button">
       <Icon name="trash" size={14} />
     </button>
   {/if}

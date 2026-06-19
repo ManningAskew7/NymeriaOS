@@ -4,6 +4,7 @@
   import type { UserMemory } from '$lib/types';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
+  import { tooltipWhenClipped } from '$lib/actions/tooltip';
   import InlineLoader from './InlineLoader.svelte';
   import { humanizeErrorText, type HumanErrorContext } from '$lib/services/api/humanizeError';
 
@@ -152,7 +153,7 @@
       {#each memories as m (m.key)}
         <li class="memory-row">
           <div class="row-head">
-            <span class="row-key" title={m.key}>{m.key}</span>
+            <span class="row-key" use:tooltipWhenClipped={m.key}>{m.key}</span>
             <span class="row-count">{(drafts[m.key] ?? '').length} / {MAX_VALUE}</span>
           </div>
           <textarea
@@ -175,7 +176,8 @@
               size="sm"
               onclick={() => deleteRow(m.key)}
               disabled={busyKey === m.key}
-              title="Delete this memory"
+              dataTooltip="Delete this memory"
+              ariaLabel="Delete this memory"
             >
               <Icon name="trash" size={14} />
             </Button>

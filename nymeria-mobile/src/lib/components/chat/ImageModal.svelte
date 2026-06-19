@@ -137,7 +137,7 @@
               type="button"
               class="reset-zoom-btn"
               onclick={() => { scale = 1; translateX = 0; translateY = 0; }}
-              title="Reset zoom"
+              aria-label="Reset zoom"
             >
               {Math.round(scale * 100)}%
             </button>
@@ -146,7 +146,7 @@
             type="button"
             class="close-button"
             onclick={onClose}
-            title="Close"
+            aria-label="Close"
           >
             <Icon name="x" size={22} />
           </button>

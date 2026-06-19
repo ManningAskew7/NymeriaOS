@@ -3,6 +3,7 @@
   import type { Message, MessageStep, FileAttachment } from '$lib/types';
   import { Icon, Modal } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
+  import { formatMessageTime } from '$lib/utils/time';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
   import { messageToMarkdown, messageToResponseText } from '$lib/utils/messageToMarkdown';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
@@ -402,7 +403,7 @@
                 type="button"
                 class="user-image-button"
                 onclick={() => openFileModal(file)}
-                title={file.name}
+                data-tooltip={file.name}
               >
                 <img src={file.dataUrl} alt={file.name} />
               </button>
@@ -412,7 +413,7 @@
                 class="user-document"
                 onclick={() => downloadAttachment(file)}
                 disabled={downloadingIds.has(file.id)}
-                title={`Download ${file.name} (${formatFileSize(file.size)})`}
+                data-tooltip={`Download ${file.name} (${formatFileSize(file.size)})`}
               >
                 <Icon name={getFileIcon(file.mimeType)} size={20} />
                 <span class="doc-name">{file.name}</span>
@@ -558,18 +559,18 @@
 
   <div class="message-footer">
     <time class="timestamp">
-      {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      {formatMessageTime(message.timestamp)}
     </time>
     {#if showActions}
       <div class="message-actions">
-        <button type="button" class="action-btn" title="Copy response" aria-label="Copy response" onclick={handleCopyResponse}>
+        <button type="button" class="action-btn" data-tooltip="Copy response" aria-label="Copy response" onclick={handleCopyResponse}>
           <Icon name={copyResponseIcon} size={14} />
         </button>
-        <button type="button" class="action-btn" title="Copy full (thinking + tools + response)" aria-label="Copy full message" onclick={handleCopyFull}>
+        <button type="button" class="action-btn" data-tooltip="Copy full (thinking + tools + response)" aria-label="Copy full message" onclick={handleCopyFull}>
           <Icon name={copyFullIcon} size={14} />
         </button>
-        <button type="button" class="action-btn" title="Report problem" aria-label="Report problem" onclick={openReportModal}>
-          <Icon name="warning" size={14} />
+        <button type="button" class="action-btn" data-tooltip="Report problem" aria-label="Report problem" onclick={openReportModal}>
+          <Icon name="flag" size={14} />
         </button>
       </div>
     {/if}
@@ -694,7 +695,9 @@
     display: flex;
     flex-direction: column;
     max-width: min(70ch, 85%);
-    margin-bottom: var(--spacing-md);
+    /* Inter-message gap follows the Appearance > Spacing setting; falls back to
+       --spacing-md (the original 16px) when no override is set. */
+    margin-bottom: var(--ui-density-gap, var(--spacing-md));
     animation: msgIn var(--transition-normal);
   }
 
@@ -715,6 +718,10 @@
   .bubble-content {
     padding: var(--spacing-md);
     border-radius: var(--radius-lg);
+    /* Message reading text matches the chat-title size (--font-size-sm, 14px)
+       used by the sidebar thread titles, the thread header, and task titles,
+       so body copy and titles share one size across the app. */
+    font-size: var(--font-size-sm);
     line-height: 1.6;
   }
 
@@ -1027,10 +1034,6 @@
     font-style: italic;
   }
 
-  .intermediate-content .markdown-content {
-    opacity: 0.85;
-  }
-
   /* Separator appears AFTER tool calls, grouping thinking with its tool */
   .tool-calls {
     margin-top: var(--spacing-sm);
@@ -1059,10 +1062,8 @@
     justify-content: flex-end;
   }
 
-  .timestamp {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-  }
+  /* .timestamp text style is the global utility in app.css (size/weight/color);
+     its placement here is owned by .message-footer above. */
 
   /* Intentional variant of the global slideUp: adds a scale-in from 0.98. */
   @keyframes msgIn {
@@ -1139,10 +1140,20 @@
     padding-left: var(--spacing-lg);
   }
 
-  /* Action buttons (copy, report) */
+  /* Action buttons (copy, copy-full, report) — hidden until the message is
+     hovered or one of them is focused, so the reading surface stays clean.
+     :focus-within keeps them keyboard-reachable (tabbing into the message
+     reveals them). */
   .message-actions {
     display: flex;
     gap: var(--spacing-xs);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+  }
+
+  .message-bubble:hover .message-actions,
+  .message-bubble:focus-within .message-actions {
+    opacity: 1;
   }
 
   .action-btn {
@@ -1157,11 +1168,9 @@
     border: none;
     cursor: pointer;
     transition: all var(--transition-fast);
-    opacity: 0.4;
   }
 
   .action-btn:hover {
-    opacity: 1;
     color: var(--text-secondary);
     background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   }

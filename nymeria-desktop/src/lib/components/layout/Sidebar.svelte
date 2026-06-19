@@ -13,6 +13,15 @@
   let settingsInitialTab = $state<string | undefined>(undefined);
   let showNotifications = $state(false);
   let notificationWrapper = $state<HTMLDivElement | undefined>(undefined);
+  // Trigger element the dropdown anchors to. Only one bell renders at a time
+  // (expanded vs collapsed footer), so a single ref bound in both branches is
+  // correct.
+  let bellButton = $state<HTMLButtonElement | undefined>(undefined);
+  // Expanded footer only: the account chip the notifications popup bottom-aligns
+  // to, so it shares a bottom baseline with the account menu (which opens from
+  // this chip). Unset in the collapsed rail, where the popup falls back to the
+  // bell.
+  let footerAccountEl = $state<HTMLDivElement | undefined>(undefined);
 
   let isCollapsed = $derived(uiStore.sidebarCollapsed);
 
@@ -91,7 +100,8 @@
         class="icon-btn"
         type="button"
         onclick={handleNewThread}
-        title="New Thread"
+        data-tooltip="New Thread"
+        data-tooltip-pos="bottom"
         aria-label="New Thread"
       >
         <Icon name="plus" size={20} />
@@ -108,17 +118,18 @@
   <footer class="sidebar-footer" class:collapsed={isCollapsed}>
     {#if !isCollapsed}
       <div class="footer-row">
-        <div class="footer-account">
+        <div class="footer-account" bind:this={footerAccountEl}>
           <AccountBadge onOpenSettings={openSettings} />
         </div>
         <div class="footer-tools">
           <div class="notification-wrapper" bind:this={notificationWrapper}>
             <button
+              bind:this={bellButton}
               class="footer-icon-btn"
               class:has-unread={notificationStore.unreadCount > 0}
               type="button"
               onclick={toggleNotifications}
-              title="Notifications"
+              data-tooltip="Notifications"
               aria-label="Notifications"
               aria-haspopup="dialog"
               aria-expanded={showNotifications}
@@ -128,13 +139,13 @@
                 <span class="notification-badge-collapsed">{notificationStore.unreadCount}</span>
               {/if}
             </button>
-            <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} />
+            <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} anchorEl={bellButton} bottomAnchorEl={footerAccountEl} />
           </div>
           <button
             class="footer-icon-btn"
             type="button"
             onclick={() => openSettings()}
-            title="Settings"
+            data-tooltip="Settings"
             aria-label="Settings"
           >
             <Icon name="settings" size={16} />
@@ -144,11 +155,12 @@
     {:else}
       <div class="notification-wrapper" bind:this={notificationWrapper}>
         <button
+          bind:this={bellButton}
           class="icon-btn"
           class:has-unread={notificationStore.unreadCount > 0}
           type="button"
           onclick={toggleNotifications}
-          title="Notifications"
+          data-tooltip="Notifications"
           aria-label="Notifications"
           aria-haspopup="dialog"
           aria-expanded={showNotifications}
@@ -158,14 +170,14 @@
             <span class="notification-badge-collapsed">{notificationStore.unreadCount}</span>
           {/if}
         </button>
-        <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} />
+        <NotificationCenter isOpen={showNotifications} onClose={closeNotifications} anchorEl={bellButton} />
       </div>
       <AccountBadge onOpenSettings={openSettings} />
       <button
         class="icon-btn"
         type="button"
         onclick={() => openSettings()}
-        title="Settings"
+        data-tooltip="Settings"
         aria-label="Settings"
       >
         <Icon name="settings" size={20} />
@@ -195,7 +207,11 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--spacing-md);
-    padding: var(--spacing-md);
+    /* Bottom padding is halved (md -> sm) so the gap below the logo equals the
+       gap above it. The space under the logo also picks up the thread list's
+       own 8px top padding, so a full 16px bottom here would read as ~24px;
+       8px + that 8px lands back at 16px, matching the 16px top padding. */
+    padding: var(--spacing-md) var(--spacing-md) var(--spacing-sm);
   }
 
   .sidebar-header.collapsed {
@@ -244,15 +260,20 @@
     text-shadow: none;
   }
 
-  .new-thread-wrap :global(.btn) {
-    /* Nudge the whole pill (background, + icon, and label) 1px down for
-       optical alignment with neighbouring sidebar elements. Size stays the
-       component's btn-sm; no token overrides. */
-    transform: translateY(1px);
-  }
-
-  .new-thread-wrap :global(.new-thread-label) {
-    transform: translateY(0);
+  /* New Thread sits in the header's top-right corner, scaled to 0.9 (height
+     and width reduced by the same 10%) so it reads a touch smaller than the
+     component's default btn-sm. The scale lives on the WRAPPER, not the
+     button: Button's own hover/press rules set transform on .btn (e.g.
+     .btn-primary:hover applies translateY(-1px)) at higher specificity, so a
+     transform on .btn would be wiped on hover and the pill would snap back to
+     full size. Scaling the flex-item wrapper instead lets the button's
+     hover-lift and press-scale compose inside a steady 0.9. transform-origin
+     keeps it hugging the header's right padding as it shrinks. No translateY,
+     so the button rests at its flex-centred position, 1px higher than the old
+     optical nudge (per request). */
+  .new-thread-wrap {
+    transform: scale(0.9);
+    transform-origin: right center;
   }
 
   .threads-container {
@@ -262,7 +283,14 @@
   }
 
   .sidebar-footer {
-    padding: var(--spacing-md) var(--spacing-md) var(--spacing-md);
+    /* Vertical padding split evenly (11px top and bottom) so the account row
+       sits centred within the footer bar. The 22px total is unchanged from the
+       earlier 6px-top / 16px-bottom split, so the footer's overall height (and
+       therefore its top border line, kept level with the vertical middle of the
+       prompt input bar) is preserved: only the row's position within the bar
+       shifts down to centre. Both the footer and the input area are anchored to
+       the window bottom, so this holds at any window height. */
+    padding: 11px var(--spacing-md);
     border-top: 1px solid var(--glass-border);
     display: flex;
     flex-direction: column;

@@ -77,7 +77,7 @@
         <span class="notification-time">{formatTimeAgo(notification.createdAt)}</span>
         {#if notification.profile}
           <span class="meta-sep">·</span>
-          <span class="notification-profile" title="Profile used for routing">
+          <span class="notification-profile" data-tooltip="Profile used for routing">
             {notification.profile}
           </span>
         {/if}
@@ -85,13 +85,13 @@
       {#if notification.deliveredTo.length > 0 || hasErrors}
         <div class="delivery-row">
           {#each notification.deliveredTo as dest (dest)}
-            <span class="delivery-badge ok" title="Delivered to {dest}">
+            <span class="delivery-badge ok" data-tooltip="Delivered to {dest}">
               <Icon name="check" size={10} />
               {dest}
             </span>
           {/each}
           {#each errorEntries as [dest, err] (dest)}
-            <span class="delivery-badge err" title="{dest}: {err}">
+            <span class="delivery-badge err" data-tooltip="{dest}: {err}">
               <Icon name="x" size={10} />
               {dest}
             </span>
@@ -106,7 +106,7 @@
         class="row-action"
         type="button"
         onclick={handleDismiss}
-        title="Mark as read"
+        data-tooltip="Mark as read"
         aria-label="Mark as read"
       >
         <Icon name="check" size={14} />
@@ -117,7 +117,7 @@
         class="row-action delete"
         type="button"
         onclick={handleDelete}
-        title="Delete notification"
+        data-tooltip="Delete notification"
         aria-label="Delete notification"
       >
         <Icon name="x" size={14} />
@@ -199,11 +199,6 @@
 
   .meta-sep {
     opacity: 0.6;
-  }
-
-  .notification-profile {
-    font-variant: small-caps;
-    letter-spacing: 0.02em;
   }
 
   .delivery-row {

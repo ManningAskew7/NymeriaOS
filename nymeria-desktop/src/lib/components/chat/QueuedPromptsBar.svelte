@@ -53,7 +53,7 @@
               type="button"
               class="dismiss"
               onclick={() => dismiss(prompt.id)}
-              title="Cancel this queued prompt"
+              data-tooltip="Cancel this queued prompt"
               aria-label="Cancel this queued prompt"
             >
               <Icon name="x" size={12} />

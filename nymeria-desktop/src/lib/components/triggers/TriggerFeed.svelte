@@ -3,7 +3,6 @@
   import TriggerItem from './TriggerItem.svelte';
   import TriggerSetupWizard from './TriggerSetupWizard.svelte';
   import TriggerHistoryPanel from './TriggerHistoryPanel.svelte';
-  import { Icon } from '$lib/components/common';
   import { onMount, onDestroy } from 'svelte';
   import type { Trigger } from '$lib/types';
 
@@ -55,23 +54,11 @@
     showWizard = false;
     editTarget = undefined;
   }
-
-  function openNewWizard() {
-    editTarget = undefined;
-    showWizard = true;
-  }
 </script>
 
 <div class="trigger-feed">
-  <div class="feed-header">
-    <button class="add-trigger-btn" onclick={openNewWizard} type="button">
-      <Icon name="plus" size={14} />
-      <span>New Trigger</span>
-    </button>
-  </div>
-
   <!-- No loading-state branch on purpose — same reason as TodoFeed.
-       The Svelte slide transition on the wrapping Collapsible measures
+       The Svelte slide transition on the wrapping collapsible section measures
        the .content height once at intro-start; if the initial render
        were the small loading-state and the fetch resolves mid-slide,
        the rendered state switches to the (taller) empty-state and the
@@ -97,7 +84,7 @@
   {:else}
     {#if activeTriggers.length > 0}
       <div class="trigger-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">Active</span>
           <span class="count highlight">{activeTriggers.length}</span>
         </h3>
@@ -118,7 +105,7 @@
 
     {#if pausedTriggers.length > 0}
       <div class="trigger-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">Paused</span>
           <span class="count">{pausedTriggers.length}</span>
         </h3>
@@ -159,38 +146,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-lg);
-  }
-
-  .feed-header {
-    display: flex;
-    width: 100%;
-  }
-
-  .add-trigger-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--spacing-xs);
-    width: 100%;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    background: transparent;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    color: var(--text-muted);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-
-  .add-trigger-btn:hover {
-    border-color: var(--accent-primary);
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .add-trigger-btn span {
-    transform: translateY(-1px);
   }
 
   .error-state,
@@ -250,13 +205,21 @@
   .group-label {
     display: flex;
     align-items: center;
+    /* Count sits right after the label text (spaced by the gap), reading as
+       "Upcoming 2" rather than floating at the row's right edge. */
     gap: var(--spacing-sm);
     margin: 0 0 var(--spacing-xs) 0;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    /* Type role (uppercase / tracking / weight / muted) is the global .section-label. */
+    /* Indent to the 16px icon column (8px section body + 8px here) so the group
+       label shares the chevron / row-icon vertical line. */
+    padding-left: var(--spacing-sm);
+  }
+
+  /* Reserve the shared count-column width so the count begins at the same x as
+     every other count in the dashboard panel. Falls back to 0 (count sits right
+     after the label) wherever --count-col-label is not defined. */
+  .label-text {
+    min-width: var(--count-col-label, 0px);
   }
 
   .count {
@@ -281,9 +244,9 @@
   .group-items {
     display: flex;
     flex-direction: column;
-    /* Matches TodoFeed.group-items — both lists of cards in the right
-       panel share the same between-card breathing so they read as the
-       same family of feed. */
-    gap: var(--spacing-sm);
+    /* Rows sit flush (no gap): the hairline divider on each row but the first
+       (see TriggerItem) provides the separation, matching the Tasks feed so
+       both read as one continuous list inside the section card. */
+    gap: 0;
   }
 </style>

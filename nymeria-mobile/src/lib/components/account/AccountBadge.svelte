@@ -38,7 +38,6 @@
   onclick={openMenu}
   aria-haspopup="dialog"
   aria-label="Account: {identityDisplayName(identity)}"
-  title={identityDisplayName(identity)}
 >
   <Avatar {identity} size={28} state={avatarState} />
 </button>

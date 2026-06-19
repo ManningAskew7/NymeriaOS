@@ -18,7 +18,7 @@
   );
 </script>
 
-<button type="button" class="connection-status" onclick={() => healthStore.check()} title="Tap to check connection">
+<button type="button" class="connection-status" onclick={() => healthStore.check()}>
   <span class="status-dot {statusClass}"></span>
   <span class="status-label">{statusLabel}</span>
   {#if healthStore.connected && healthStore.latencyMs !== null}

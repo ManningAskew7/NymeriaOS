@@ -1734,7 +1734,6 @@
   .preview-text {
     font-size: 18px;
     font-weight: 600;
-    opacity: 0.8;
   }
 
   .theme-info {

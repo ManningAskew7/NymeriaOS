@@ -8,6 +8,10 @@
     loading?: boolean;
     type?: 'button' | 'submit' | 'reset';
     title?: string;
+    /** Custom hover tooltip (rendered via the [data-tooltip] portal). */
+    dataTooltip?: string;
+    /** Accessible name — required when the button is icon-only. */
+    ariaLabel?: string;
     onclick?: (e: MouseEvent) => void;
     children: Snippet;
   }
@@ -19,6 +23,8 @@
     loading = false,
     type = 'button',
     title,
+    dataTooltip,
+    ariaLabel,
     onclick,
     children
   }: Props = $props();
@@ -28,6 +34,8 @@
   class="btn btn-{variant} btn-{size}"
   {type}
   {title}
+  data-tooltip={dataTooltip}
+  aria-label={ariaLabel}
   disabled={disabled || loading}
   {onclick}
 >

@@ -72,7 +72,7 @@
 
       {#each filteredGroups as group}
         <div class="group">
-          <div class="group-label">{group.label}</div>
+          <div class="group-label section-label">{group.label}</div>
           {#each group.threads as thread (thread.id)}
             <ThreadItem
               {thread}
@@ -142,12 +142,8 @@
   }
 
   .group-label {
+    /* Type role (uppercase / tracking / weight / muted) is the global .section-label. */
     padding: var(--spacing-sm) var(--spacing-lg);
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     background: var(--bg-elevated);
     position: sticky;
     top: 0;

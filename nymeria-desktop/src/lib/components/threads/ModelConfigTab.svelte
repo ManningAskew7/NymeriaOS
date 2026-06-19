@@ -330,10 +330,10 @@
         <div class="tier-quickpick">
           <span class="field-hint">Quick tier:</span>
           {#if fastTierRef}
-            <button type="button" class="tier-btn" onclick={() => applyTier('fast')} title={`Fast tier: ${fastTierRef}`}>Fast</button>
+            <button type="button" class="tier-btn" onclick={() => applyTier('fast')} data-tooltip={`Fast tier: ${fastTierRef}`}>Fast</button>
           {/if}
           {#if smartTierRef}
-            <button type="button" class="tier-btn" onclick={() => applyTier('smart')} title={`Smart tier: ${smartTierRef}`}>Smart</button>
+            <button type="button" class="tier-btn" onclick={() => applyTier('smart')} data-tooltip={`Smart tier: ${smartTierRef}`}>Smart</button>
           {/if}
         </div>
       {/if}

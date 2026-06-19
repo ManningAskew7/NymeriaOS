@@ -111,33 +111,38 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bgHover: '#2a2e33',
       bgActive: '#32373d',
       textPrimary: '#e8eaed',
-      // Bumped from #9aa0a6 (was 4.55:1 on bgActive — barely-AA near-miss).
-      // Now 5.38:1 on bgActive worst-case. The lift is paired with a matching
-      // textMuted bump below so the type-scale gap is preserved (steps 11/12);
-      // see textMuted comment for why solo-bumping textMuted alone collapsed
-      // the hierarchy.
-      textSecondary: '#a6afb3',
-      // Bumped from #888d96 (was 3.60:1 on bgActive, sub-AA — and the prior
-      // worst-case of 4.79:1 only covered bgBase/bgElevated/bgElevated2, not
-      // the hover/active state backgrounds). Now 4.69:1 on bgActive, 5.34:1
-      // on bgHover. Hierarchy gap with textSecondary preserved at ~0.06 L
-      // (would have collapsed to ~0.001 L if textSecondary had stayed at the
-      // old value, hence the tandem lift above).
-      textMuted: '#9ba3a9',
-      accentPrimary: '#5fb8cc',
-      accentSecondary: '#5b8bbf',
-      accentHover: '#4ba3b8',
-      // Dark ink for text/icons placed on the light cyan accent fill.
+      // Low-contrast meta/label tier (Radix step 11). Lifted from #a6afb3
+      // (5.37:1 on bgActive) to clear the dim-text complaint with headroom:
+      // now ~6.5:1 on bgActive worst-case, brighter on every darker surface.
+      // Paired with the textMuted lift below so the step-down stays visible
+      // (secondary sits a clear step above muted, not flattened into it).
+      textSecondary: '#b9c0c5',
+      // Dimmest text tier (timestamps, hints, placeholder, metadata). Lifted
+      // from #9ba3a9 (4.69:1 on bgActive, right at the AA floor) to ~5.5:1 on
+      // bgActive worst-case, so low-emphasis text reads cleanly rather than
+      // unfinished. Stays a clear step below textSecondary (about 0.09 L gap).
+      textMuted: '#a9b0b6',
+      // Bright cornflower blue: a brightened step up from the reference
+      // mockup's periwinkle, per the design owner. One coherent blue across
+      // buttons, links, focus rings and active states (primary == secondary).
+      // Light, so dark on-accent ink reads on the fill (~6.9:1) and the accent
+      // clears AA as text on bgBase (~6.8:1). accentHover keeps a
+      // darker-than-primary hover offset. Give secondary a distinct sibling if
+      // differentiation is needed.
+      accentPrimary: '#6fa0db',
+      accentSecondary: '#6fa0db',
+      accentHover: '#5b8bc7',
+      // Dark ink for text/icons placed on the light blue accent fill.
       textOnAccent: '#0b1416',
       success: '#34d399',
       warning: '#fbbf24',
       error: '#f87171',
       info: '#818cf8',
-      // Calm cyan-tinted slate so the user-action surface pairs with the accent
-      // (the same "bgBase + accent direction" pattern Light uses with #c9e3df).
-      // Old #1e3a5f was a saturated iMessage-style navy that read disjoint
-      // against the calm cyan accent.
-      bubbleUser: '#1a3036',
+      // Calm blue-tinted slate so the user-action surface pairs with the blue
+      // accent (the same "bgBase + accent direction" pattern Light uses with
+      // #c9e3df). Re-tinted from the old cyan #1a3036 when the accent moved to
+      // blue; same low tint strength (just rotated hue) to avoid a saturated navy.
+      bubbleUser: '#1a2636',
       bubbleAi: '#1a1d21',
       bubbleTool: '#1a1f2e',
       // Hairline borders (steps 6/7). Surface separation comes from the
@@ -231,14 +236,14 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
       bgHover: '#282c33',
       bgActive: '#333841',
       textPrimary: '#f0f0f2',
-      textSecondary: '#a8a8b0',
-      // Bumped from #8b8b93 (was 3.48:1 on bgActive, sub-AA — and the prior
-      // worst-case of 4.93:1 only covered bgBase/bgElevated/bgElevated2, not
-      // the hover/active state backgrounds). Now 4.51:1 on bgActive, 5.37:1
-      // on bgHover. Solo bump works here (no tandem textSecondary lift needed
-      // like Midnight) because Platinum's textSecondary L=0.395 leaves
-      // headroom above the bgActive-clear threshold (~0.345).
-      textMuted: '#9fa0a5',
+      // Low-contrast meta/label tier (Radix step 11). Lifted from #a8a8b0
+      // (4.99:1 on bgActive) to ~6.5:1 on bgActive worst-case, paired with the
+      // textMuted lift below so the step-down stays visible.
+      textSecondary: '#c0c0c7',
+      // Dimmest text tier. Lifted from #9fa0a5 (4.51:1 on bgActive, right at
+      // the AA floor) to ~5.4:1 on bgActive worst-case, so low-emphasis text
+      // reads cleanly. Stays a clear step below textSecondary (about 0.09 L gap).
+      textMuted: '#afb0b5',
       // Documented exception: Platinum runs a brighter near-white silver accent.
       accentPrimary: '#e0f0ff',
       accentSecondary: '#8291a8',

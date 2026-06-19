@@ -157,7 +157,6 @@
   }
 
   .thinking-content .markdown-content {
-    opacity: 0.85;
     font-size: var(--font-size-sm);
   }
 </style>

@@ -5,6 +5,7 @@
   import Icon from '$lib/components/common/Icon.svelte';
   import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { onMount } from 'svelte';
+  import { formatRelativeTime } from '$lib/utils/time';
 
   interface Props {
     threadId?: string;
@@ -80,18 +81,6 @@
     expandedGroups = next;
   }
 
-  function formatTimeAgo(timestamp: Date): string {
-    const now = new Date();
-    const diff = now.getTime() - timestamp.getTime();
-    const minutes = Math.floor(diff / 60000);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-    if (days > 0) return `${days}d ago`;
-    if (hours > 0) return `${hours}h ago`;
-    if (minutes > 0) return `${minutes}m ago`;
-    return 'Just now';
-  }
-
   function getThreadTitle(entry: ActivityEntry): string | undefined {
     if (!threadTitleMap || !entry.threadId) return undefined;
     return threadTitleMap[entry.threadId];
@@ -139,7 +128,7 @@
               <Icon name="bolt" size={14} />
               <span class="trigger-name">{item.triggerName}</span>
               <span class="trigger-count">{item.entries.length}</span>
-              <span class="trigger-time">{formatTimeAgo(item.entries[0].timestamp)}</span>
+              <span class="trigger-time">{formatRelativeTime(item.entries[0].timestamp)}</span>
               <span class="trigger-chevron" class:rotated={expanded}>
                 <Icon name="chevronDown" size={12} />
               </span>

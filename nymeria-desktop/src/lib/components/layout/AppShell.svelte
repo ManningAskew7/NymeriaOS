@@ -138,7 +138,7 @@
       onclick={() => outlookToggleSidebar()}
       aria-label={uiStore.sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       aria-expanded={!uiStore.sidebarCollapsed}
-      title={uiStore.sidebarCollapsed ? 'Expand sidebar (Ctrl+B)' : 'Collapse sidebar (Ctrl+B)'}
+      data-tooltip={uiStore.sidebarCollapsed ? 'Expand sidebar (Ctrl+B)' : 'Collapse sidebar (Ctrl+B)'}
     >
       {#if uiStore.sidebarCollapsed}
         <Icon name="chevronRight" size={14} />
@@ -172,7 +172,7 @@
       onclick={() => outlookToggleRightPanel()}
       aria-label={uiStore.rightPanelCollapsed ? 'Expand dashboard' : 'Collapse dashboard'}
       aria-expanded={!uiStore.rightPanelCollapsed}
-      title={uiStore.rightPanelCollapsed ? 'Expand dashboard (Ctrl+Shift+B)' : 'Collapse dashboard (Ctrl+Shift+B)'}
+      data-tooltip={uiStore.rightPanelCollapsed ? 'Expand dashboard (Ctrl+Shift+B)' : 'Collapse dashboard (Ctrl+Shift+B)'}
     >
       {#if uiStore.rightPanelCollapsed}
         <Icon name="chevronLeft" size={14} />

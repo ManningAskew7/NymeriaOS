@@ -88,7 +88,6 @@
       onclick={toggleMenu}
       aria-haspopup="menu"
       aria-expanded={showMenu}
-      title="Account"
     >
       <Avatar {identity} size={28} state={avatarState} />
       <span class="identity-stack">
@@ -113,7 +112,7 @@
       onclick={toggleMenu}
       aria-haspopup="menu"
       aria-expanded={showMenu}
-      title={primaryLabel}
+      data-tooltip={primaryLabel}
       aria-label="Account: {primaryLabel}"
     >
       <Avatar {identity} size={28} state={avatarState} />

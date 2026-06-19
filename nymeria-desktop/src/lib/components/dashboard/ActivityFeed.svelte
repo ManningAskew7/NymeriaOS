@@ -7,6 +7,7 @@
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
+  import { formatRelativeTime } from '$lib/utils/time';
 
   interface Props {
     threadId?: string;
@@ -91,18 +92,6 @@
     expandedGroups = next;
   }
 
-  function formatTimeAgo(timestamp: Date): string {
-    const now = new Date();
-    const diff = now.getTime() - timestamp.getTime();
-    const minutes = Math.floor(diff / 60000);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-    if (days > 0) return `${days}d ago`;
-    if (hours > 0) return `${hours}h ago`;
-    if (minutes > 0) return `${minutes}m ago`;
-    return 'Just now';
-  }
-
   function getThreadTitle(entry: ActivityEntry): string | undefined {
     if (!threadTitleMap || !entry.threadId) return undefined;
     return threadTitleMap[entry.threadId];
@@ -152,9 +141,9 @@
               </span>
               <span class="trigger-name">{item.triggerName}</span>
               <span class="trigger-count">{item.entries.length}</span>
-              <span class="trigger-last-time">{formatTimeAgo(item.entries[0].timestamp)}</span>
+              <span class="trigger-last-time">{formatRelativeTime(item.entries[0].timestamp)}</span>
               <span class="trigger-chevron" class:rotated={expanded}>
-                <Icon name="chevronRight" size={12} />
+                <Icon name="chevronDown" size={12} />
               </span>
             </button>
             {#if expanded}
@@ -179,6 +168,11 @@
   .activity-feed {
     display: flex;
     flex-direction: column;
+    /* Fill the activity section's flex:1 height so the single message states
+       below can sit in the vertical centre of the panel. The populated
+       .activity-list stays flex-start (top-aligned) and scrolls as before. */
+    flex: 1;
+    min-height: 0;
   }
 
   .loading-state,
@@ -187,11 +181,21 @@
     text-align: center;
     color: var(--text-muted);
     padding: var(--spacing-md);
+    /* Auto top/bottom margins centre the state vertically in the feed's free
+       space; they collapse to the top gracefully when the panel is too short. */
+    margin: auto 0;
   }
 
   /* Loading text sits one size down (pairs with the InlineLoader's sm
      spinner); this lived on the removed .loading-text span before. */
   .loading-state {
+    font-size: var(--font-size-sm);
+  }
+
+  /* Empty-state text matches the Triggers/Tasks empty states (sm, 14px); the
+     .hint line keeps its own xs below. Without this the message inherited the
+     16px reading size and read larger than its siblings. */
+  .empty-state {
     font-size: var(--font-size-sm);
   }
 
@@ -249,7 +253,8 @@
   }
 
   .trigger-group-icon {
-    color: var(--accent-secondary, var(--accent-primary));
+    /* Category marker, not state: muted gray like the rest of the feed. */
+    color: var(--text-muted);
     display: flex;
     align-items: center;
     flex-shrink: 0;
@@ -274,8 +279,10 @@
     padding: 0 5px;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    background: var(--accent-tint-bg);
-    color: var(--accent-primary);
+    /* Neutral count chip (was an accent tint); matches the thread-name badge so
+       the feed carries no decorative accent. */
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
     border-radius: var(--radius-full);
     flex-shrink: 0;
   }
@@ -295,12 +302,13 @@
   }
 
   .trigger-chevron.rotated {
-    transform: rotate(90deg);
+    transform: rotate(180deg);
   }
 
   .trigger-group-items {
     padding-left: var(--spacing-sm);
-    border-left: 2px solid rgba(var(--accent-primary-rgb), 0.2);
+    /* Neutral indent rail (was an accent tint): structure, not state. */
+    border-left: 2px solid var(--border-default);
     margin-left: var(--spacing-md);
   }
 </style>

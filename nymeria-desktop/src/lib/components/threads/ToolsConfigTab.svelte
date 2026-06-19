@@ -434,15 +434,14 @@
     <div class="tt-info">
       <span class="tt-name">
         {item.shortName}
-        {#if item.isTemporary}<span class="tt-tag" title="Temporary tool bound with a TTL (e.g. by a Skill Kit)">temporary</span>{/if}
-        {#if dormant}<span class="tt-tag" title="MCP server is stopped. Enable it in Settings → MCP.">stopped</span>{/if}
+        {#if item.isTemporary}<span class="tt-tag" data-tooltip="Temporary tool bound with a TTL (e.g. by a Skill Kit)">temporary</span>{/if}
+        {#if dormant}<span class="tt-tag" data-tooltip="MCP server is stopped. Enable it in Settings → MCP.">stopped</span>{/if}
       </span>
       <span class="tt-desc">{item.description || 'No description'}</span>
     </div>
     <ToggleSwitch
       checked={enabled}
       onclick={() => toggleTool(item)}
-      title={enabled ? 'Disable for this thread' : 'Enable for this thread'}
       ariaLabel={`${enabled ? 'Disable' : 'Enable'} ${item.shortName} for this thread`}
     />
   </div>

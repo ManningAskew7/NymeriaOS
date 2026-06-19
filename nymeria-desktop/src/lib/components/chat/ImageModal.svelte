@@ -50,7 +50,7 @@
           type="button"
           class="close-button"
           onclick={onClose}
-          title="Close"
+          data-tooltip="Close"
           aria-label="Close"
         >
           <Icon name="x" size={20} />

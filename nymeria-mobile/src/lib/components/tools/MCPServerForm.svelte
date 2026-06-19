@@ -322,7 +322,7 @@
   .arg-add {
     display: flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: var(--spacing-sm);
     padding: 0.4rem 0.5rem;
     border: 1px dashed var(--border-default);
     border-radius: 4px;

@@ -898,27 +898,37 @@
   }
 
   .input-area {
-    /* Single source of truth for the three vertical gaps that flank the
-       prompt input bar:
+    /* Source of truth for the three vertical gaps that flank the prompt
+       input bar:
          1. above the input-container  (padding-top of .input-area)
          2. between input-container and the "Press Ctrl+Enter…" hint
             (the hint's margin-top, overridden via :global below)
          3. below the hint  (padding-bottom of .input-area)
-       Changing --prompt-stack-gap below resizes ALL THREE gaps in lock step
-       so they remain equal even if the input or hint heights change later.
-       To break this equality intentionally, override the individual values
-       on .input-area or the :global(.hint) rule. */
-    --prompt-stack-gap: 14px;
-    padding: var(--prompt-stack-gap) var(--spacing-md);
+       Base gap is --prompt-stack-gap (8px). Gaps 1 and 2 carry a +2px lift so
+       the space ABOVE the pill equals the space ABOVE the hint (both 10px),
+       which is what the eye reads as the prompt's top and middle gaps matching.
+       Gap 3 stays at the base 8px so the hint's bottom keeps landing 8px above
+       the section bottom, lining the hint up with the RightPanel
+       ConnectionStatus bar. The +2px is the same lift applied to the hint's
+       margin-top below (it raises the pill flush with the "API Connected"
+       border); adding it to padding-top too only grows the space above the
+       pill, it does not move the pill, because the section is bottom-anchored. */
+    --prompt-stack-gap: 8px;
+    padding: calc(var(--prompt-stack-gap) + 2px) var(--spacing-md) var(--prompt-stack-gap);
     /* The InputBar component handles its own internal padding. The divider
        between context bar and input is drawn by the sliding pseudo in
        .input-section::before so it moves with the bg. */
   }
 
-  /* Override InputBar's default 18px hint margin-top so it stays locked to
-     the same gap value as the .input-area paddings above and below. */
+  /* Override InputBar's default 18px hint margin-top. Normally this equals the
+     shared --prompt-stack-gap; the +2px lifts the prompt pill's bottom edge up
+     to sit flush with the right panel's ConnectionStatus top border (the line
+     above "API Connected"). The pill is otherwise ~2px below that line because
+     the connection strip's text row is ~2px taller than this hint row. Because
+     the hint stays bottom-anchored, growing this gap raises only the pill — the
+     hint itself stays where it lines up with the "API Connected" text. */
   .input-area :global(.hint) {
-    margin-top: var(--prompt-stack-gap);
+    margin-top: calc(var(--prompt-stack-gap) + 2px);
   }
 
   /* When a sidebar collapses, the "Press Ctrl+Enter…" hint that lives at the

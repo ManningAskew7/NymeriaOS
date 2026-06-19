@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { TodoItem as TodoItemType } from '$lib/types';
-  import { Icon } from '$lib/components/common';
+  import { Icon, KebabMenu } from '$lib/components/common';
+  import { tooltipWhenClipped } from '$lib/actions/tooltip';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { slide } from 'svelte/transition';
@@ -19,6 +20,10 @@
 
   // Collapsible state - default collapsed, expand to see details
   let expanded = $state(false);
+
+  // Bound to the shared KebabMenu so the row can react to the menu opening
+  // (reveal the kebab, fade the disclosure chevron via .menu-open).
+  let menuOpen = $state(false);
 
   // Reactive time for countdown - updates every second when scheduled
   let now = $state(new Date());
@@ -102,6 +107,31 @@
   // Check if user-created
   let isUserCreated = $derived(todo.createdBy === 'user');
 
+  // TEMPORARY PREVIEW (no backend `title` field yet): split the task text into a
+  // short stand-in title and a body, so the "Title above, task text below" layout
+  // can be eyeballed now. Once todos carry a real `title`, this whole block is
+  // replaced by `todo.title` (title) + `todo.task` (body).
+  let preview = $derived.by(() => {
+    const text = todo.task.trim();
+    const real = (todo as { title?: string }).title;
+    if (real && real.trim()) return { title: real.trim(), body: text };
+    // Stand-in: cut at the first natural break (newline, " / ", ": ", "; "), else
+    // at ~44 chars on a word boundary; the remainder becomes the body below.
+    let idx = -1;
+    const m = text.match(/\n|\s\/\s|;\s|:\s/);
+    if (m && m.index !== undefined && m.index >= 8) idx = m.index;
+    else if (text.length > 48) {
+      const cut = text.slice(0, 44);
+      const sp = cut.lastIndexOf(' ');
+      idx = sp > 20 ? sp : 44;
+    }
+    if (idx < 0) return { title: text, body: '' };
+    return {
+      title: text.slice(0, idx).trim(),
+      body: text.slice(idx).replace(/^[\s/:;]+/, '').trim(),
+    };
+  });
+
   // Recurrence label — mirrors Nymeria.core.todo_constants.format_recurrence_for_display.
   let recurrenceLabel = $derived.by(() => {
     if (!todo.recurrence) return null;
@@ -138,10 +168,47 @@
     }
   }
 
-  function handleEdit(e: MouseEvent) {
-    e.stopPropagation();
+  // Whole-card click/keyboard toggles expand, but never when the interaction
+  // originated on one of the card's own controls (checkbox, kebab, menu item,
+  // thread link). Mirrors NotificationItem's guard so the nested buttons keep
+  // their own behaviour without double-firing the card.
+  function fromControl(e: Event) {
+    return !!(e.target as HTMLElement).closest('button, a');
+  }
+
+  function handleCardClick(e: MouseEvent) {
+    if (fromControl(e)) return;
+    toggleExpand();
+  }
+
+  function handleCardKeydown(e: KeyboardEvent) {
+    if (fromControl(e)) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggleExpand();
+    }
+  }
+
+  function editTodo() {
     onEdit?.(todo);
   }
+
+  async function deleteTodo() {
+    const ok = window.confirm(`Delete "${todo.task}"? This can't be undone.`);
+    if (!ok) return;
+    try {
+      await todosStore.delete(todo.id);
+    } catch (err) {
+      console.error('Failed to delete todo:', err);
+    }
+  }
+
+  // Items for the shared kebab menu. Edit is offered only when an onEdit handler
+  // is wired; Delete is always present and reads as destructive.
+  let menuItems = $derived([
+    ...(onEdit ? [{ label: 'Edit', icon: 'edit', onSelect: editTodo }] : []),
+    { label: 'Delete', icon: 'trash', onSelect: deleteTodo, destructive: true },
+  ]);
 </script>
 
 <div
@@ -151,10 +218,11 @@
   class:highlighted={highlighted}
   class:expandable={hasDetails}
   class:expanded={expanded}
+  class:menu-open={menuOpen}
   role="button"
   tabindex="0"
-  onclick={toggleExpand}
-  onkeydown={(e) => e.key === 'Enter' && toggleExpand()}
+  onclick={handleCardClick}
+  onkeydown={handleCardKeydown}
 >
   <!-- Complete checkbox -->
   <button
@@ -164,7 +232,8 @@
     onclick={handleComplete}
     disabled={todo.status === 'done' || completing}
     type="button"
-    title={todo.status === 'done' ? 'Completed' : 'Mark as done'}
+    data-tooltip={todo.status === 'done' ? 'Completed' : 'Mark as done'}
+    aria-label={todo.status === 'done' ? 'Completed' : 'Mark as done'}
   >
     {#if completing}
       <span class="spinner"></span>
@@ -178,17 +247,16 @@
   <div class="todo-content">
     <div class="todo-header">
       {#if isUserCreated}
-        <span class="creator-badge user" title="Created by you">
+        <span class="creator-badge user" data-tooltip="Created by you">
           <Icon name="user" size={10} />
         </span>
       {/if}
-      <span class="todo-task">{todo.task}</span>
-      {#if hasDetails}
-        <span class="expand-icon" class:rotated={expanded} aria-hidden="true">
-          <Icon name="chevronRight" size={12} />
-        </span>
-      {/if}
+      <span class="todo-title" use:tooltipWhenClipped={preview.title}>{preview.title}</span>
     </div>
+
+    {#if preview.body}
+      <span class="todo-task">{preview.body}</span>
+    {/if}
 
     {#if threadTitle || recurrenceLabel || scheduledInfo}
       <div class="todo-meta">
@@ -197,23 +265,21 @@
             <button
               class="meta-thread clickable"
               type="button"
-              title={threadTitle}
+              use:tooltipWhenClipped={threadTitle}
               onclick={(e) => { e.stopPropagation(); onNavigateToThread(); }}
             >{threadTitle}</button>
           {:else}
-            <span class="meta-thread" title={threadTitle}>{threadTitle}</span>
+            <span class="meta-thread" use:tooltipWhenClipped={threadTitle}>{threadTitle}</span>
           {/if}
         {/if}
         {#if recurrenceLabel}
-          {#if threadTitle}<span class="meta-sep" aria-hidden="true">·</span>{/if}
-          <span class="meta-item" title="Recurring task">
+          <span class="meta-item">
             <Icon name="refresh" size={10} />
             {recurrenceLabel}
           </span>
         {/if}
         {#if scheduledInfo}
-          {#if threadTitle || recurrenceLabel}<span class="meta-sep" aria-hidden="true">·</span>{/if}
-          <span class="meta-item meta-countdown" title="Time until activation">
+          <span class="meta-item meta-countdown" data-tooltip="Time until activation">
             <Icon name="clock" size={10} />
             {scheduledInfo}
           </span>
@@ -234,18 +300,20 @@
     {/if}
   </div>
 
-  <!-- Edit button -->
-  {#if onEdit}
-    <button
-      class="edit-btn"
-      onclick={handleEdit}
-      type="button"
-      title="Edit task"
-      aria-label="Edit task"
-    >
-      <Icon name="edit" size={12} />
-    </button>
-  {/if}
+  <!-- Top-right corner: a disclosure chevron at rest (for cards with details)
+       that cross-fades to the kebab (⋮) overflow menu on hover/focus. Both
+       share one absolutely-positioned cell so the title can use the full width;
+       the header reserves a right gutter to clear this cell. -->
+  <div class="todo-corner">
+    {#if hasDetails}
+      <span class="expand-icon" class:rotated={expanded} aria-hidden="true">
+        <Icon name="chevronRight" size={12} />
+      </span>
+    {/if}
+    <span class="kebab-slot">
+      <KebabMenu items={menuItems} ariaLabel="Task actions" bind:open={menuOpen} />
+    </span>
+  </div>
 </div>
 
 <style>
@@ -254,16 +322,27 @@
     display: flex;
     align-items: flex-start;
     gap: var(--spacing-sm);
-    padding: var(--spacing-sm-plus) var(--spacing-md);
-    border-radius: var(--radius-md);
-    transition: background var(--transition-fast), border-color var(--transition-fast);
+    /* 8px side gutter pairs with the section body's 8px; the checkbox's own
+       margin (see .complete-btn) then centres it on the header chevron column. */
+    padding: var(--spacing-sm-plus) var(--spacing-sm);
+    transition: background var(--transition-fast);
     width: 100%;
     text-align: left;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle);
+    /* Flat row inside the section card: no per-item background or border. Rows
+       are separated by a hairline divider (below) and lifted on hover; the
+       hover fill is rounded (radius-sm) to match the Activity items. */
+    border-radius: var(--radius-sm);
+    background: transparent;
     cursor: default;
     font-family: inherit;
     animation: staggerFadeIn var(--transition-slow) backwards;
+  }
+
+  /* Hairline divider between consecutive rows (none above the first). The
+     todo-items are the leading siblings in each .group-items list, so
+     :first-child reliably matches the top row. */
+  .todo-item:not(:first-child) {
+    border-top: 1px solid var(--border-subtle);
   }
 
   .todo-item:focus-visible {
@@ -286,52 +365,36 @@
 
   .todo-item:hover {
     background: var(--bg-hover);
-    border-color: var(--border-default);
   }
 
-  .todo-item:hover .edit-btn {
+  /* Reveal the kebab (and hide the resting chevron) when the row is hovered,
+     when the kebab itself is focused, or while its menu is open. */
+  .todo-item:hover .kebab-slot,
+  .todo-corner:focus-within .kebab-slot,
+  .todo-item.menu-open .kebab-slot {
     opacity: 1;
+  }
+
+  .todo-item:hover .expand-icon,
+  .todo-corner:focus-within .expand-icon,
+  .todo-item.menu-open .expand-icon {
+    opacity: 0;
   }
 
   .todo-item.completed {
     opacity: 0.55;
   }
 
-  .todo-item.completed .todo-task {
+  .todo-item.completed .todo-title {
     text-decoration: line-through;
     text-decoration-color: var(--text-muted);
     text-decoration-thickness: 1px;
   }
 
-  .todo-item.highlighted {
-    background: rgba(var(--accent-primary-rgb), 0.08);
-    border-color: rgba(var(--accent-primary-rgb), 0.35);
-  }
-
-  .todo-item.highlighted:hover {
-    background: rgba(var(--accent-primary-rgb), 0.12);
-  }
-
-  /* Scheduled accent — a thin inside rail rather than a chunky border.
-     Rail insets match the trigger-card health rail so both feeds read as
-     the same family of component. */
-  .todo-item.scheduled::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: var(--spacing-sm-plus);
-    bottom: var(--spacing-sm-plus);
-    width: 2px;
-    background: var(--accent-primary);
-    border-radius: 0 1px 1px 0;
-    opacity: 0.55;
-    transition: opacity var(--transition-fast);
-  }
-
-  .todo-item.scheduled:hover::before,
-  .todo-item.highlighted::before {
-    opacity: 1;
-  }
+  /* In-progress and scheduled tasks no longer carry a per-item highlight or a
+     left accent rail — flattened to plain rows so the section card stays the
+     only container. In-progress tasks sit under their own "In Progress" group
+     label; scheduled tasks still show their countdown in the meta row. */
 
   .complete-btn {
     flex-shrink: 0;
@@ -346,6 +409,9 @@
     cursor: pointer;
     transition: all var(--transition-fast);
     margin-top: 2px;
+    /* Nudge right so the 13px checkbox's centre lands on the section chevron's
+       column, level with the trigger badges and activity icons. */
+    margin-left: 1.5px;
     padding: 0;
   }
 
@@ -389,9 +455,12 @@
 
   .todo-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--spacing-xs);
     min-width: 0;
+    /* Clear the absolute corner cell (chevron/kebab) in the top-right so a
+       two-line title never runs underneath it. */
+    padding-right: 26px;
   }
 
   .creator-badge {
@@ -404,26 +473,53 @@
     flex-shrink: 0;
     color: var(--accent-primary);
     opacity: 0.7;
+    /* Align with the first line of the (now top-aligned) title. */
+    margin-top: 2px;
   }
 
-  .todo-task {
-    font-size: var(--font-size-sm);
+  .todo-title {
+    /* The task's name: bold (weight 500), primary ink, sized like the activity
+       feed message (xs). Wraps to at most two lines, then ellipsises. */
+    font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--text-primary);
     line-height: 1.35;
     letter-spacing: -0.005em;
     flex: 1;
     min-width: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  }
+
+  .todo-task {
+    /* The task text, sitting under the title as a quieter body line: regular
+       weight and secondary ink so the title reads as the heading. Clamps to two
+       lines, then ellipsises. */
+    font-size: var(--font-size-xs);
+    font-weight: 400;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
 
-  /* Quiet secondary metadata row — the key to the professional look */
+  /* Quiet secondary metadata row — the key to the professional look. The items
+     (thread, recurrence, countdown) are distributed across the full width with
+     space-between, so they spread out evenly and the countdown reaches the
+     right edge instead of bunching at the left. gap is the minimum spacing for
+     when the row is too narrow to spread. */
   .todo-meta {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 8px;
     min-width: 0;
     font-size: var(--font-size-2xs);
@@ -473,43 +569,44 @@
     color: var(--accent-primary);
   }
 
-  .meta-sep {
-    color: var(--text-muted);
-    opacity: 0.5;
+  /* Top-right corner cell shared by the disclosure chevron and the kebab; both
+     children are stacked (absolute, centred) and cross-fade via opacity so the
+     control swap stays in one fixed spot. */
+  .todo-corner {
+    position: absolute;
+    /* Tucked into the box's top-right corner with equal 8px gaps to the top and
+       right edges. The cell is square and its glyph is centred, so the visible
+       chevron/kebab then sits the same distance in from each edge. */
+    top: var(--spacing-sm);
+    right: var(--spacing-sm);
+    width: 22px;
+    height: 22px;
     flex-shrink: 0;
-    user-select: none;
+  }
+
+  .expand-icon,
+  .kebab-slot {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .expand-icon {
-    display: flex;
-    align-items: center;
     color: var(--text-muted);
-    flex-shrink: 0;
-    transition: transform 120ms var(--ease-out);
+    transition: transform 120ms var(--ease-out), opacity var(--transition-fast);
   }
 
   .expand-icon.rotated {
     transform: rotate(90deg);
   }
 
-  .edit-btn {
-    flex-shrink: 0;
-    padding: 4px;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
+  /* Hidden until revealed (see the hover/focus/menu-open rules above); the kebab
+     control itself (styling, hover, press) and its dropdown live in KebabMenu. */
+  .kebab-slot {
     opacity: 0;
-    transition: all var(--transition-fast);
-    border: none;
-    align-self: flex-start;
-    margin-top: 2px;
-  }
-
-  .edit-btn:hover {
-    background: var(--bg-active);
-    color: var(--text-primary);
-    opacity: 1;
+    transition: opacity var(--transition-fast);
   }
 
   .todo-details {

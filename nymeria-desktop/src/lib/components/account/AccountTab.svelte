@@ -137,7 +137,8 @@
             type="button"
             class="avatar-button"
             onclick={openPicturePicker}
-            title="Click to change profile picture"
+            data-tooltip="Change profile picture"
+            aria-label="Change profile picture"
           >
             <Avatar {identity} size={72} state="connected" />
             <span class="avatar-overlay">
@@ -413,8 +414,6 @@
 
   .field-label {
     font-size: var(--font-size-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--text-muted);
     font-weight: 600;
   }

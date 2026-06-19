@@ -49,6 +49,7 @@
           class="remove-button"
           onclick={() => onRemove(file.id)}
           title="Remove file"
+          aria-label="Remove file"
         >
           <Icon name="x" size={12} />
         </button>

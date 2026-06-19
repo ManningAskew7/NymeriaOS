@@ -237,14 +237,14 @@
           </div>
           <div class="credential-actions">
             {#if credential.status === 'pending_setup'}
-              <button type="button" title="Complete setup" onclick={() => startComplete(credential)}>
+              <button type="button" title="Complete setup" aria-label="Complete setup" onclick={() => startComplete(credential)}>
                 <Icon name="edit" size={15} />
               </button>
             {/if}
-            <button type="button" title="Test credential" onclick={() => credentialsStore.test(credential.id)}>
+            <button type="button" title="Test credential" aria-label="Test credential" onclick={() => credentialsStore.test(credential.id)}>
               <Icon name="check" size={15} />
             </button>
-            <button type="button" title="Disable credential" onclick={() => credentialsStore.disable(credential.id)}>
+            <button type="button" title="Disable credential" aria-label="Disable credential" onclick={() => credentialsStore.disable(credential.id)}>
               <Icon name="trash" size={15} />
             </button>
           </div>

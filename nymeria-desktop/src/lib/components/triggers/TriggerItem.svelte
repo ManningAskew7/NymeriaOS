@@ -4,6 +4,7 @@
   import { cubicOut } from 'svelte/easing';
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import { Icon, ToggleSwitch } from '$lib/components/common';
+  import { tooltipWhenClipped } from '$lib/actions/tooltip';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
@@ -304,11 +305,9 @@
   onclick={toggleExpand}
   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(); } }}
 >
-  <span class="health-rail" style="background: {healthColor}" aria-hidden="true"></span>
-
   <!-- Header row: icon + name + (when collapsed) chip+toggle + expand affordance -->
   <div class="card-header">
-    <div class="source-badge" title={sourceLabel}>
+    <div class="source-badge">
       <Icon name={sourceIcon} size={14} />
     </div>
 
@@ -354,7 +353,6 @@
             checked={trigger.enabled}
             disabled={toggling}
             onclick={handleToggle}
-            title={trigger.enabled ? 'Disable' : 'Enable'}
             ariaLabel={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
             size="sm"
             variant="outlined"
@@ -385,16 +383,15 @@
             class="thread-pill clickable"
             onclick={handleThreadClick}
             type="button"
-            title={`Go to thread: ${threadTitle}`}
           >
             <Icon name="chat" size={10} />
-            <span class="thread-name">{threadTitle}</span>
+            <span class="thread-name" use:tooltipWhenClipped={threadTitle}>{threadTitle}</span>
             <Icon name="chevronRight" size={10} />
           </button>
         {:else}
-          <span class="thread-pill" title={threadTitle}>
+          <span class="thread-pill">
             <Icon name="chat" size={10} />
-            <span class="thread-name">{threadTitle}</span>
+            <span class="thread-name" use:tooltipWhenClipped={threadTitle}>{threadTitle}</span>
           </span>
         {/if}
       {/if}
@@ -413,7 +410,6 @@
           checked={trigger.enabled}
           disabled={toggling}
           onclick={handleToggle}
-          title={trigger.enabled ? 'Disable' : 'Enable'}
           ariaLabel={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
           size="sm"
           variant="outlined"
@@ -431,30 +427,30 @@
 
     <!-- Meta stats -->
     <div class="meta-row">
-      <span class="meta-item" title={healthLabel}>
+      <span class="meta-item">
         <span class="health-dot" style="background: {healthColor}"></span>
         {healthLabel}
       </span>
       <span class="meta-sep" aria-hidden="true">·</span>
-      <span class="meta-item" title="Times fired">
+      <span class="meta-item">
         <Icon name="bolt" size={10} />
         <span><span class="num">{trigger.fire_count}</span> {trigger.fire_count === 1 ? 'fire' : 'fires'}</span>
       </span>
       <span class="meta-sep" aria-hidden="true">·</span>
-      <span class="meta-item clock-item" title="Last fired">
+      <span class="meta-item clock-item" data-tooltip="Last fired">
         <Icon name="clock" size={10} />
         {formatTimeAgo(trigger.last_fired)}
       </span>
       {#if trigger.cooldown_seconds > 0}
         <span class="meta-sep" aria-hidden="true">·</span>
-        <span class="meta-item cooldown-item" title="Cooldown between fires">
+        <span class="meta-item cooldown-item" data-tooltip="Cooldown between fires">
           {formatCooldown(trigger.cooldown_seconds)}
         </span>
       {/if}
     </div>
 
     {#if trigger.last_error && trigger.health_status !== 'healthy'}
-      <div class="error-banner" title={trigger.last_error}>
+      <div class="error-banner" data-tooltip={trigger.last_error}>
         <Icon name="warning" size={11} />
         <span>{truncate(trigger.last_error, 90)}</span>
       </div>
@@ -569,19 +565,24 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);
-    /* Matches .todo-item — both feeds use the same list-item tier so a
-       trigger card and a todo card read as the same family. */
-    padding: var(--spacing-sm-plus) var(--spacing-md);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle, var(--border-default));
-    border-radius: var(--radius-md);
-    overflow: hidden;
+    /* Flat row inside the section card (matches the Tasks feed): no per-item
+       background or border. A hairline divider (below) separates rows and a
+       subtle hover background lifts them; the hover fill is rounded (radius-sm)
+       to match the Activity items. */
+    border-radius: var(--radius-sm);
+    /* 8px side gutter pairs with the section body's 8px; the source badge's own
+       margin (see .source-badge) then centres it on the header chevron column. */
+    padding: var(--spacing-sm-plus) var(--spacing-sm);
+    background: transparent;
     cursor: pointer;
     animation: cardIn var(--transition-normal) both;
     transition:
       background var(--transition-fast),
-      border-color var(--transition-fast),
       transform var(--transition-fast);
+  }
+
+  .trigger-card:not(:first-child) {
+    border-top: 1px solid var(--border-subtle);
   }
 
   @keyframes cardIn {
@@ -591,12 +592,10 @@
 
   .trigger-card:hover {
     background: var(--bg-hover);
-    border-color: var(--border-default);
   }
 
-  /* Inset ring: the card has overflow:hidden and sits flush in the feed, so
-     the app.css outset baseline (+2px) is clip-prone. -2px keeps the ring
-     inside the border, matching the ThreadItem list-row treatment. */
+  /* Inset focus ring keeps the cue inside the row edges so it doesn't overlap
+     the divider between rows (matches the ThreadItem list-row treatment). */
   .trigger-card:focus-visible {
     outline: 2px solid var(--accent-primary);
     outline-offset: -2px;
@@ -606,31 +605,14 @@
     opacity: 0.62;
   }
 
-  .trigger-card.unhealthy {
-    border-color: color-mix(in srgb, var(--error) 45%, var(--border-subtle));
-  }
+  /* No .unhealthy border tint and no left health rail anymore — the section
+     card owns the only border. Trigger health still surfaces in the expanded
+     meta row's health dot + label. */
 
   .trigger-card.expanded {
-    background: var(--bg-hover);
-    /* Extra bottom padding to breathe around the revealed details */
+    /* No background — the row stays flat (the section card is the only
+       container). Extra bottom padding breathes around the revealed details. */
     padding-bottom: var(--spacing-sm-plus);
-  }
-
-  /* Health rail — a thin accent rail on the left that reflects status.
-     Insets match the todo-item scheduled rail so the two feeds align. */
-  .health-rail {
-    position: absolute;
-    left: 0;
-    top: var(--spacing-sm-plus);
-    bottom: var(--spacing-sm-plus);
-    width: 2px;
-    border-radius: 0 1px 1px 0;
-    opacity: 0.8;
-    transition: opacity var(--transition-fast);
-  }
-
-  .trigger-card.disabled .health-rail {
-    opacity: 0.35;
   }
 
   /* --- Header --- */
@@ -645,6 +627,10 @@
     flex-shrink: 0;
     width: 24px;
     height: 24px;
+    /* Nudge left so the 24px badge's centre lands on the section chevron's
+       column (chevron, task checkboxes and activity icons all share it).
+       Without this the wider badge sits ~4px right of that line. */
+    margin-left: -4px;
     border-radius: 6px;
     display: flex;
     align-items: center;
@@ -935,8 +921,6 @@
     flex-shrink: 0;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--text-muted);
   }
 
@@ -1078,8 +1062,6 @@
     gap: var(--spacing-xs);
     font-size: var(--font-size-3xs);
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
     color: var(--text-muted);
   }
 

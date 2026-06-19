@@ -46,7 +46,6 @@
     <button
       class="back-btn"
       onclick={() => uiStore.goToChat()}
-      title="Back to chat"
       aria-label="Back to chat"
     >
       <Icon name="chevronLeft" size={22} />
@@ -55,7 +54,6 @@
     <button
       class="refresh-btn"
       onclick={handleRefresh}
-      title="Refresh"
       aria-label="Refresh dashboard"
     >
       <Icon name="refresh" size={20} />

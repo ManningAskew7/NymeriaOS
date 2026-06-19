@@ -1533,7 +1533,8 @@
                             class:off={!isEnabled}
                             onclick={() => toggleMcpThreadTool(tool)}
                             type="button"
-                            title={isEnabled ? 'Disable for this thread' : 'Enable for this thread'}
+                            aria-label={isEnabled ? 'Disable for this thread' : 'Enable for this thread'}
+                            aria-pressed={isEnabled}
                           >
                             <span class="toggle-track"><span class="toggle-thumb"></span></span>
                           </button>
@@ -2394,7 +2395,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.3rem;
+    gap: var(--spacing-sm);
     padding: 0.5rem;
     margin-top: 0.4rem;
     border: 1px dashed var(--border-default);

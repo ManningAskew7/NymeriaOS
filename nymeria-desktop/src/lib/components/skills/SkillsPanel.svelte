@@ -119,7 +119,7 @@
     {#each scopeOrder as scope}
       {#if grouped[scope].length > 0}
         <section class="scope-section">
-          <h4 class="scope-heading">
+          <h4 class="scope-heading section-label">
             {scopeLabel[scope]}
             <span class="scope-count">({grouped[scope].length})</span>
           </h4>
@@ -145,12 +145,12 @@
                           {#if skill.has_references}<span class="chip chip-cap"><Icon name="fileText" size={10} /><span>references</span></span>{/if}
                           {#if skill.has_assets}<span class="chip chip-cap"><Icon name="folder" size={10} /><span>assets</span></span>{/if}
                           {#each skill.required_tools as toolName}
-                            <span class="chip chip-required" title={`Required tool: ${toolName} (${skill.tool_ttl})`}>
+                            <span class="chip chip-required" data-tooltip={`Required tool: ${toolName} (${skill.tool_ttl})`}>
                               {toolName}
                             </span>
                           {/each}
                           {#if skill.allowed_tools.length > 0}
-                            <span class="chip chip-tools" title={skill.allowed_tools.join(', ')}>
+                            <span class="chip chip-tools" data-tooltip={skill.allowed_tools.join(', ')}>
                               {skill.allowed_tools.length} allowed-tool{skill.allowed_tools.length > 1 ? 's' : ''}
                             </span>
                           {/if}
@@ -169,7 +169,7 @@
                       <div class="skill-actions">
                         <label
                           class="toggle-wrap"
-                          title="Enable this skill by default on every new thread"
+                          data-tooltip="Enable this skill by default on every new thread"
                         >
                           <input
                             type="checkbox"
@@ -283,12 +283,8 @@
   }
 
   .scope-heading {
+    /* type role from global .section-label */
     margin: 0 0 var(--spacing-sm) 0;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
   }
   .scope-count {
     font-weight: 400;

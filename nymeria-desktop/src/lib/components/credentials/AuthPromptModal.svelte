@@ -581,7 +581,7 @@
                 type="button"
                 class="alert-copy"
                 aria-label={copiedError ? 'Copied error to clipboard' : 'Copy error to clipboard'}
-                title={copiedError ? 'Copied' : 'Copy to clipboard'}
+                data-tooltip={copiedError ? 'Copied' : 'Copy to clipboard'}
                 onclick={handleCopyError}
               >
                 {#if copiedError}
@@ -633,7 +633,7 @@
               type="button"
               class="alert-copy"
               aria-label={copiedError ? 'Copied status to clipboard' : 'Copy status to clipboard'}
-              title={copiedError ? 'Copied' : 'Copy to clipboard'}
+              data-tooltip={copiedError ? 'Copied' : 'Copy to clipboard'}
               onclick={handleCopyError}
             >
               {#if copiedError}
@@ -835,8 +835,6 @@
 
   .callout-label {
     font-size: var(--font-size-xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--accent-primary);
     margin-bottom: var(--spacing-xs);
     font-weight: 600;

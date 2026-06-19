@@ -48,6 +48,13 @@
         var b = localStorage.getItem('nymeria_chat_bubbles');
         if (b === 'on') document.documentElement.setAttribute('data-chat-bubbles', 'on');
       } catch (e) {}
+      // Apply persisted interface-spacing choice before app loads. Only a stored
+      // 4/8/16/24 sets the override; absence leaves each area's built-in spacing.
+      try {
+        var sp = localStorage.getItem('nymeria_ui_spacing');
+        if (sp === '4' || sp === '8' || sp === '16' || sp === '24')
+          document.documentElement.style.setProperty('--ui-density-gap', sp + 'px');
+      } catch (e) {}
     </script>
     <script>
       // Dev-only crash overlay. During `npm run tauri dev` (and `vite dev`) the

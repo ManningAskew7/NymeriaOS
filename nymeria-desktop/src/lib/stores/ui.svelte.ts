@@ -8,6 +8,9 @@ interface UIState {
   rightPanelCollapsed: boolean;
   sidebarWidth: number;
   rightPanelWidth: number;
+  // When true, the thread header collapses its row of metadata counts into a
+  // single summary chip (with a popover for the full breakdown). Default off.
+  threadHeaderSummary: boolean;
 }
 
 export const SIDEBAR_WIDTH_DEFAULT = 310;
@@ -31,6 +34,7 @@ function loadUIState(): UIState {
       rightPanelCollapsed: false,
       sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
       rightPanelWidth: RIGHT_PANEL_WIDTH_DEFAULT,
+      threadHeaderSummary: false,
     };
   }
 
@@ -43,6 +47,7 @@ function loadUIState(): UIState {
         rightPanelCollapsed: state.rightPanelCollapsed ?? false,
         sidebarWidth: clampSidebarWidth(state.sidebarWidth ?? SIDEBAR_WIDTH_DEFAULT),
         rightPanelWidth: clampRightPanelWidth(state.rightPanelWidth ?? RIGHT_PANEL_WIDTH_DEFAULT),
+        threadHeaderSummary: state.threadHeaderSummary ?? false,
       };
     }
   } catch (e) {
@@ -54,6 +59,7 @@ function loadUIState(): UIState {
     rightPanelCollapsed: false,
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
     rightPanelWidth: RIGHT_PANEL_WIDTH_DEFAULT,
+    threadHeaderSummary: false,
   };
 }
 
@@ -78,6 +84,7 @@ function createUIStore() {
   let rightPanelCollapsed = $state(isOutlookMode ? true : initial.rightPanelCollapsed);
   let sidebarWidth = $state(initial.sidebarWidth);
   let rightPanelWidth = $state(initial.rightPanelWidth);
+  let threadHeaderSummary = $state(initial.threadHeaderSummary);
 
   // Reload UI prefs when the connected user changes — different users likely
   // have different sidebar/panel preferences.
@@ -87,10 +94,11 @@ function createUIStore() {
     rightPanelCollapsed = isOutlookMode ? true : next.rightPanelCollapsed;
     sidebarWidth = next.sidebarWidth;
     rightPanelWidth = next.rightPanelWidth;
+    threadHeaderSummary = next.threadHeaderSummary;
   });
 
   function save() {
-    saveUIState({ sidebarCollapsed, rightPanelCollapsed, sidebarWidth, rightPanelWidth });
+    saveUIState({ sidebarCollapsed, rightPanelCollapsed, sidebarWidth, rightPanelWidth, threadHeaderSummary });
   }
 
   return {
@@ -105,6 +113,13 @@ function createUIStore() {
     },
     get rightPanelWidth() {
       return rightPanelWidth;
+    },
+    get threadHeaderSummary() {
+      return threadHeaderSummary;
+    },
+    setThreadHeaderSummary(value: boolean) {
+      threadHeaderSummary = value;
+      save();
     },
     toggleSidebar() {
       sidebarCollapsed = !sidebarCollapsed;

@@ -3,6 +3,7 @@
   import { TAB_FADE } from '$lib/utils/transitions';
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
   import { api, probeConnection } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { threadsStore } from '$lib/stores/threads.svelte';
@@ -384,6 +385,41 @@
     if (typeof localStorage === 'undefined') return;
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
+  }
+
+  // Interface spacing — one standardised gap applied to the space between chat
+  // messages, between sidebar date-groups, and between the dashboard cards.
+  // Writes --ui-density-gap on :root (same value consumed by all three sites);
+  // "default" clears the override so each area keeps its own built-in spacing.
+  // The boot script in app.html re-applies a stored value before paint.
+  const UI_SPACING_KEY = 'nymeria_ui_spacing';
+  type SpacingId = 'default' | '4' | '8' | '16' | '24';
+  const spacingOptions: { id: SpacingId; label: string }[] = [
+    { id: 'default', label: 'Default' },
+    { id: '4', label: '4px' },
+    { id: '8', label: '8px' },
+    { id: '16', label: '16px' },
+    { id: '24', label: '24px' },
+  ];
+
+  function detectInitialSpacing(): SpacingId {
+    if (typeof localStorage === 'undefined') return 'default';
+    const stored = localStorage.getItem(UI_SPACING_KEY);
+    if (stored === '4' || stored === '8' || stored === '16' || stored === '24') return stored;
+    return 'default';
+  }
+
+  let selectedSpacing = $state<SpacingId>(detectInitialSpacing());
+
+  function handleSpacingChange(id: SpacingId) {
+    selectedSpacing = id;
+    if (id === 'default') {
+      applyOrClear('--ui-density-gap', null);
+      persistOrClear(UI_SPACING_KEY, null);
+    } else {
+      applyOrClear('--ui-density-gap', `${id}px`);
+      persistOrClear(UI_SPACING_KEY, id);
+    }
   }
 
   function setLogoSize(next: number) {
@@ -985,7 +1021,7 @@
          label per group and a single column of nav items underneath. -->
     <aside class="settings-sidebar">
       <div class="nav-group">
-        <span class="nav-group-label">Account</span>
+        <span class="nav-group-label section-label">Account</span>
         <button
           class="nav-item"
           class:active={activeTab === 'account'}
@@ -1009,7 +1045,7 @@
       </div>
 
       <div class="nav-group">
-        <span class="nav-group-label">Preferences</span>
+        <span class="nav-group-label section-label">Preferences</span>
         <button
           class="nav-item"
           class:active={activeTab === 'appearance'}
@@ -1044,7 +1080,7 @@
       </div>
 
       <div class="nav-group">
-        <span class="nav-group-label">Capabilities</span>
+        <span class="nav-group-label section-label">Capabilities</span>
         <button
           class="nav-item"
           class:active={activeTab === 'tools'}
@@ -1103,7 +1139,7 @@
 
       {#if isAdmin}
         <div class="nav-group">
-          <span class="nav-group-label">Server</span>
+          <span class="nav-group-label section-label">Server</span>
           <button
             class="nav-item"
             class:active={activeTab === 'llm'}
@@ -1195,7 +1231,7 @@
       <!-- Saved Connections -->
       <div class="saved-connections">
         <div class="section-header">
-          <span class="group-label">Saved Connections</span>
+          <span class="group-label section-label">Saved Connections</span>
         </div>
 
         {#if connectionsStore.connections.length === 0}
@@ -1223,10 +1259,10 @@
                 {/if}
                 <div class="conn-actions">
                   {#if editingConnectionId === conn.id}
-                    <button type="button" class="conn-action-btn" onclick={handleUpdateConnection} title="Save connection" aria-label="Save connection">
+                    <button type="button" class="conn-action-btn" onclick={handleUpdateConnection} data-tooltip="Save connection" aria-label="Save connection">
                       <Icon name="check" size={14} />
                     </button>
-                    <button type="button" class="conn-action-btn" onclick={handleCancelEdit} title="Cancel" aria-label="Cancel edit">
+                    <button type="button" class="conn-action-btn" onclick={handleCancelEdit} data-tooltip="Cancel" aria-label="Cancel edit">
                       <Icon name="x" size={14} />
                     </button>
                   {:else}
@@ -1242,10 +1278,10 @@
                     {:else}
                       <span class="conn-active-label">Connected</span>
                     {/if}
-                    <button type="button" class="conn-action-btn" onclick={() => handleEditConnection(conn)} title="Edit connection" aria-label="Edit connection">
+                    <button type="button" class="conn-action-btn" onclick={() => handleEditConnection(conn)} data-tooltip="Edit connection" aria-label="Edit connection">
                       <Icon name="edit" size={14} />
                     </button>
-                    <button type="button" class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} title="Delete connection" aria-label="Delete connection">
+                    <button type="button" class="conn-action-btn danger" onclick={() => handleDeleteConnection(conn.id)} data-tooltip="Delete connection" aria-label="Delete connection">
                       <Icon name="trash" size={14} />
                     </button>
                   {/if}
@@ -1398,6 +1434,36 @@
             onchange={(e) => handleChatBubblesChange((e.currentTarget as HTMLInputElement).checked)}
           />
           <span>Show message bubble around AI responses</span>
+        </label>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Spacing</span>
+        <p class="hint">Standardise the gap between chat messages, sidebar sections, and the dashboard cards. Default keeps each area's current spacing.</p>
+        <div class="spacing-control" role="radiogroup" aria-label="Interface spacing">
+          {#each spacingOptions as opt}
+            <button
+              class="spacing-seg"
+              class:active={selectedSpacing === opt.id}
+              type="button"
+              role="radio"
+              aria-checked={selectedSpacing === opt.id}
+              onclick={() => handleSpacingChange(opt.id)}
+            >{opt.label}</button>
+          {/each}
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Thread details</span>
+        <p class="hint">Collapse the row of metadata counts in the thread header into a single summary chip on the right that opens the full breakdown in a popover.</p>
+        <label class="bubble-toggle">
+          <input
+            type="checkbox"
+            checked={uiStore.threadHeaderSummary}
+            onchange={(e) => uiStore.setThreadHeaderSummary((e.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>Collapse thread details into a summary chip</span>
         </label>
       </div>
 
@@ -1596,7 +1662,7 @@
         {#if llmSubView === 'main'}
         <div class="provider-setup-callout">
           <div>
-            <span class="group-label">Provider Setup</span>
+            <span class="group-label section-label">Provider Setup</span>
             <p class="hint">Test and save a direct provider key or configure a backend to use an existing CLIProxy OAuth endpoint.</p>
           </div>
           <Button variant="secondary" onclick={() => (showProviderSetupWizard = true)}>
@@ -1684,7 +1750,8 @@
             <button
               type="button"
               class="info-btn"
-              title="How to use a custom model"
+              data-tooltip="How to use a custom model"
+              aria-label="How to use a custom model"
               onclick={() => showModelHelp = !showModelHelp}
             >
               <Icon name="info" size={14} />
@@ -1831,7 +1898,7 @@
                     oninput={(e) => (llmTopP = parseFloat(e.currentTarget.value))}
                     disabled={llmUseModelDefaults}
                   />
-                  <button class="clear-btn" onclick={() => (llmTopP = null)} title="Reset to default" disabled={llmUseModelDefaults}>×</button>
+                  <button class="clear-btn" onclick={() => (llmTopP = null)} data-tooltip="Reset to default" aria-label="Reset to default" disabled={llmUseModelDefaults}>×</button>
                 </div>
                 <p class="hint">
                   Nucleus sampling threshold (0-1)
@@ -1867,7 +1934,7 @@
                     oninput={(e) => (llmFrequencyPenalty = parseFloat(e.currentTarget.value))}
                     disabled={llmUseModelDefaults}
                   />
-                  <button class="clear-btn" onclick={() => (llmFrequencyPenalty = null)} title="Reset to default" disabled={llmUseModelDefaults}>×</button>
+                  <button class="clear-btn" onclick={() => (llmFrequencyPenalty = null)} data-tooltip="Reset to default" aria-label="Reset to default" disabled={llmUseModelDefaults}>×</button>
                 </div>
                 <p class="hint">
                   Reduce repetition of token sequences (-2 to 2)
@@ -1890,7 +1957,7 @@
                     oninput={(e) => (llmPresencePenalty = parseFloat(e.currentTarget.value))}
                     disabled={llmUseModelDefaults}
                   />
-                  <button class="clear-btn" onclick={() => (llmPresencePenalty = null)} title="Reset to default" disabled={llmUseModelDefaults}>×</button>
+                  <button class="clear-btn" onclick={() => (llmPresencePenalty = null)} data-tooltip="Reset to default" aria-label="Reset to default" disabled={llmUseModelDefaults}>×</button>
                 </div>
                 <p class="hint">Encourage new topics (-2 to 2)</p>
               </div>
@@ -2759,11 +2826,8 @@
   }
 
   .nav-group-label {
+    /* type role from global .section-label; keep 3xs size for dense nav */
     font-size: var(--font-size-3xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
     padding: 0 var(--spacing-sm) 4px;
   }
 
@@ -2832,7 +2896,10 @@
   .tab-content {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-md);
+    /* Airy row rhythm (matches the Perplexity settings reference): rows breathe
+       at 24px rather than 16px. Section headings add their own top margin on top
+       of this gap for a larger between-section break. */
+    gap: var(--spacing-lg);
     /* Fill the content area so each tab uses identical space and the panel
        can't resize when switching between tabs. */
     height: 100%;
@@ -2892,8 +2959,11 @@
     font-size: var(--font-size-md);
     font-weight: 600;
     color: var(--text-primary);
-    margin: var(--spacing-sm) 0 0 0;
-    padding-bottom: var(--spacing-xs);
+    /* Larger top margin opens a clear break before each section (adds on top of
+       the .tab-content row gap for ~48px between sections, matching Perplexity);
+       the divider sits a touch lower for breathing room above the first row. */
+    margin: var(--spacing-lg) 0 0 0;
+    padding-bottom: var(--spacing-sm);
     border-bottom: 1px solid var(--border-subtle);
   }
 
@@ -3412,7 +3482,8 @@
   }
 
   /* Three-way segmented control for logo color */
-  .logo-color-controls {
+  .logo-color-controls,
+  .spacing-control {
     display: inline-flex;
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
@@ -3420,7 +3491,8 @@
     overflow: hidden;
   }
 
-  .color-seg {
+  .color-seg,
+  .spacing-seg {
     padding: 4px 12px;
     background: transparent;
     border: none;
@@ -3432,16 +3504,19 @@
     transition: background var(--transition-fast), color var(--transition-fast);
   }
 
-  .color-seg:last-child {
+  .color-seg:last-child,
+  .spacing-seg:last-child {
     border-right: none;
   }
 
-  .color-seg:hover:not(.active) {
+  .color-seg:hover:not(.active),
+  .spacing-seg:hover:not(.active) {
     background: var(--bg-hover);
     color: var(--text-primary);
   }
 
-  .color-seg.active {
+  .color-seg.active,
+  .spacing-seg.active {
     background: var(--accent-primary);
     color: var(--bg-base);
     font-weight: 500;
@@ -3500,7 +3575,6 @@
   .preview-text {
     font-size: var(--font-size-lg);
     font-weight: 600;
-    opacity: 0.8;
   }
 
   .theme-info {
@@ -3662,18 +3736,10 @@
     margin-bottom: var(--spacing-sm);
   }
 
-  .group-label {
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
   .section-divider {
     height: 1px;
     background: var(--glass-border);
-    margin: var(--spacing-md) 0;
+    margin: var(--spacing-lg) 0;
   }
 
   .provider-setup-callout {

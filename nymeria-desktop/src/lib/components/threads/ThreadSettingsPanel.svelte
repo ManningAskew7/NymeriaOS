@@ -1044,7 +1044,7 @@
           <h2 id="thread-settings-title">Thread Settings</h2>
           <span class="modal-subtitle">{thread.title}</span>
         </div>
-        <span class="header-model" title="Effective model for this thread">
+        <span class="header-model" data-tooltip="Effective model for this thread">
           <span class="header-model-label">Model</span>
           <span class="header-model-value">{effectiveModelLabel}</span>
           {#if modelInherited}<span class="header-model-tag">global default</span>{/if}
@@ -1064,7 +1064,7 @@
         <div class="settings-sidebar-inner" role="tablist" aria-label="Thread settings sections" aria-orientation="vertical">
           {#each NAV_GROUPS as group, gi (group.label)}
             <div class="nav-group" role="group" aria-labelledby={`thread-nav-group-${gi}`}>
-              <span class="nav-group-label" id={`thread-nav-group-${gi}`}>{group.label}</span>
+              <span class="nav-group-label section-label" id={`thread-nav-group-${gi}`}>{group.label}</span>
               {#each group.items as item (item.id)}
                 <button
                   id={`thread-tab-${item.id}`}
@@ -1403,11 +1403,8 @@
   }
 
   .nav-group-label {
+    /* type role from global .section-label; keep 3xs size for dense nav */
     font-size: var(--font-size-3xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
     padding: 0 var(--spacing-sm) 4px;
   }
 

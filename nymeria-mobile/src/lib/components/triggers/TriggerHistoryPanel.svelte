@@ -378,9 +378,7 @@
     display: block;
     font-size: var(--font-size-3xs);
     font-weight: 600;
-    text-transform: uppercase;
     color: var(--text-muted);
-    letter-spacing: 0.05em;
     margin-bottom: 2px;
   }
 

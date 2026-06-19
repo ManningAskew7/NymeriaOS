@@ -224,7 +224,7 @@
 
 <form class="tool-form" onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
   <div class="form-section">
-    <h3>Basic Info</h3>
+    <h3 class="section-label">Basic Info</h3>
 
     {#if !tool}
       <div class="field">
@@ -282,7 +282,7 @@
   </div>
 
   <div class="form-section">
-    <h3>Implementation Type</h3>
+    <h3 class="section-label">Implementation Type</h3>
 
     <div class="type-selector">
       <button
@@ -310,7 +310,7 @@
 
   {#if implementationType === 'http'}
     <div class="form-section">
-      <h3>HTTP Configuration</h3>
+      <h3 class="section-label">HTTP Configuration</h3>
 
       <div class="field-row">
         <div class="field" style="flex: 0 0 120px;">
@@ -386,7 +386,7 @@
     </div>
   {:else}
     <div class="form-section">
-      <h3>MCP Configuration</h3>
+      <h3 class="section-label">MCP Configuration</h3>
 
       <div class="field">
         <label for="mcp-command">Server Command</label>
@@ -449,7 +449,7 @@
   {/if}
 
   <div class="form-section">
-    <h3>Parameters</h3>
+    <h3 class="section-label">Parameters</h3>
 
     <div class="field">
       <label for="tool-params">Parameters (JSON)</label>
@@ -496,11 +496,9 @@
   }
 
   .form-section h3 {
+    /* type role from global .section-label; keep sm size for form section */
     margin: 0;
-    color: var(--text-primary);
     font-size: var(--font-size-sm);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
   .field {

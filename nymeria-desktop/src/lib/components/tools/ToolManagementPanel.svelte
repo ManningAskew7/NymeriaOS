@@ -590,14 +590,16 @@
             <div class="tool-actions">
               <button
                 class="action-btn"
-                title="Test tool"
+                data-tooltip="Test tool"
+                aria-label="Test tool"
                 onclick={() => (testingTool = tool)}
               >
                 <Icon name="play" size={16} />
               </button>
               <button
                 class="action-btn"
-                title="Edit tool"
+                data-tooltip="Edit tool"
+                aria-label="Edit tool"
                 onclick={() => (editingTool = tool)}
               >
                 <Icon name="edit" size={16} />
@@ -605,14 +607,16 @@
               <button
                 class="action-btn"
                 class:enabled={tool.enabled}
-                title={tool.enabled ? 'Disable' : 'Enable'}
+                data-tooltip={tool.enabled ? 'Disable' : 'Enable'}
+                aria-label={tool.enabled ? 'Disable tool' : 'Enable tool'}
                 onclick={() => handleToggleEnabled(tool)}
               >
                 <Icon name={tool.enabled ? 'visible' : 'hidden'} size={16} />
               </button>
               <button
                 class="action-btn delete"
-                title="Delete tool"
+                data-tooltip="Delete tool"
+                aria-label="Delete tool"
                 onclick={() => handleDelete(tool)}
               >
                 <Icon name="trash" size={16} />
@@ -864,7 +868,7 @@
     <span class="tool-name">
       {tool.name}
       {#if isAdminOnlyTool(tool.name)}
-        <span class="admin-only-badge" title={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
+        <span class="admin-only-badge" data-tooltip={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
       {/if}
     </span>
     <span class="tool-desc">{tool.description}</span>
@@ -874,14 +878,15 @@
       class="row-edit-btn"
       onclick={() => openBuiltinEditor(tool.name)}
       type="button"
-      title="Edit tool"
+      data-tooltip="Edit tool"
+      aria-label="Edit tool"
     >
       <Icon name="edit" size={14} />
     </button>
     <ToggleSwitch
       checked={selected}
       onclick={() => toggleTool(tool.name)}
-      title={selected ? 'Remove from defaults' : 'Add to defaults'}
+      dataTooltip={selected ? 'Remove from defaults' : 'Add to defaults'}
       ariaLabel={`${selected ? 'Remove' : 'Add'} ${tool.name} ${selected ? 'from' : 'to'} default tools`}
     />
   </div>
@@ -1623,11 +1628,6 @@
 
   .meta-label {
     font-size: var(--font-size-xs);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    /* text-indent matches letter-spacing so the uppercase label sits
-       visually centered, not left-weighted from the trailing tracking. */
-    text-indent: 0.05em;
     color: var(--text-muted);
   }
 

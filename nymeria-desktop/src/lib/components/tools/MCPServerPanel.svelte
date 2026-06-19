@@ -294,7 +294,6 @@
           size="sm"
           variant="ghost"
           onclick={() => { showAddForm = !showAddForm; addError = null; }}
-          title="Manually enter server command, args, and environment variables"
         >
           <Icon name={showAddForm ? 'x' : 'edit'} size={14} />
           {showAddForm ? 'Cancel' : 'Add manually'}
@@ -308,7 +307,7 @@
           Install Server
         </Button>
       {:else}
-        <span class="admin-only-hint" title="Admin role required">
+        <span class="admin-only-hint">
           <Icon name="info" size={14} />
           Admin only
         </span>
@@ -369,7 +368,6 @@
             <ToggleSwitch
               checked={server.enabled}
               onclick={() => handleToggleEnabled(server)}
-              title={server.enabled ? 'Disable MCP server' : 'Enable MCP server'}
               ariaLabel={`${server.enabled ? 'Disable' : 'Enable'} MCP server ${server.name}`}
               variant="outlined"
             />
@@ -454,7 +452,7 @@
 
                 {#if server.discoveredTools.length > 0}
                   <div class="tools-section">
-                    <span class="tools-heading">Discovered Tools</span>
+                    <span class="tools-heading section-label">Discovered Tools</span>
                     <div class="tool-list">
                       {#each server.discoveredTools as tool}
                         {@const mcpName = getMcpToolName(server.id, tool.name)}
@@ -463,10 +461,10 @@
                           class="tool-row"
                           class:tool-enabled={isEnabled}
                           class:tool-row-dormant={!server.enabled}
-                          title={!server.enabled ? 'MCP server is not running. Enable the server to make this tool available' : ''}
+                          data-tooltip={!server.enabled ? 'MCP server is not running. Enable the server to make this tool available' : ''}
                         >
                           <div class="tool-info">
-                            <span class="tool-display-name" title={mcpName}>{tool.name}</span>
+                            <span class="tool-display-name" data-tooltip={mcpName}>{tool.name}</span>
                             {#if tool.description}
                               <span class="tool-description">{tool.description}</span>
                             {/if}
@@ -474,7 +472,6 @@
                           <ToggleSwitch
                             checked={isEnabled}
                             onclick={() => toggleGlobalTool(server.id, tool.name)}
-                            title={isEnabled ? 'Disable MCP tool globally' : 'Enable MCP tool globally'}
                             ariaLabel={`${isEnabled ? 'Disable' : 'Enable'} MCP tool ${tool.name} globally`}
                             size="sm"
                             variant="outlined"
@@ -811,11 +808,8 @@
   }
 
   .tools-heading {
+    /* type role from global .section-label; keep 0.78rem size for dense list */
     font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   .tool-list {

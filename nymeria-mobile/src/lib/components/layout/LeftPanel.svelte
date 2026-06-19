@@ -45,7 +45,6 @@
     <button
       class="new-thread-btn"
       onclick={handleNewThread}
-      title="New Thread"
       aria-label="New thread"
     >
       <Icon name="plus" size={22} />
@@ -61,14 +60,14 @@
 
     <div class="footer-actions">
       <AccountBadge onOpenSettings={openSettings} />
-      <button class="footer-btn" title="Settings" onclick={() => openSettings()}>
+      <button class="footer-btn" aria-label="Settings" onclick={() => openSettings()}>
         <Icon name="settings" size={20} />
       </button>
       <button
         class="footer-btn"
         class:has-unread={notificationStore.unreadCount > 0}
         onclick={toggleNotifications}
-        title="Notifications"
+        aria-label="Notifications"
       >
         <Icon name="bell" size={20} />
         {#if notificationStore.unreadCount > 0}

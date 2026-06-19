@@ -61,7 +61,6 @@
   .model-name {
     font-family: var(--font-mono);
     font-size: 0.65rem;
-    opacity: 0.8;
     max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -99,6 +98,5 @@
 
   .compaction-count {
     font-size: 0.6rem;
-    opacity: 0.7;
   }
 </style>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { fade } from 'svelte/transition';
+  import { tooltipWhenClipped } from '$lib/actions/tooltip';
 
   interface Props {
     /** Pause rotation while the user is actively composing a message. */
@@ -63,7 +64,6 @@
   class="tip"
   role="status"
   aria-live="off"
-  title={current}
   onmouseenter={() => (hovered = true)}
   onmouseleave={() => (hovered = false)}
 >
@@ -71,7 +71,7 @@
        corner Claude Code draws under its input. The vertical leg rises by
        --prompt-stack-gap so it meets the bar's bottom-left edge. -->
   <span class="elbow" aria-hidden="true"></span>
-  <span class="tip-clip">
+  <span class="tip-clip" use:tooltipWhenClipped={current}>
     {#key current}
       <span class="tip-text" in:fade={{ duration: 220 }}>{current}</span>
     {/key}
@@ -89,7 +89,6 @@
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     text-align: left;
-    opacity: 0.75;
   }
 
   .elbow {

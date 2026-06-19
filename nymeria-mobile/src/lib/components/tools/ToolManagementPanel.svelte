@@ -99,7 +99,7 @@
           {@const info = unifiedToolsStore.getCategoryInfo(category)}
           <div class="category">
             <div class="category-header">
-              <span class="category-name">{info.name}</span>
+              <span class="category-name section-label">{info.name}</span>
               <span class="category-count">{tools.filter(t => t.enabled).length}/{tools.length}</span>
             </div>
             {#each tools as tool (tool.id)}
@@ -239,11 +239,8 @@
   }
 
   .category-name {
+    /* type role from global .section-label; keep sm size for category header */
     font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
   .category-count {

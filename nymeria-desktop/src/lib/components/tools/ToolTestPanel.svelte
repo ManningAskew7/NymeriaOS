@@ -218,8 +218,6 @@
     margin: 0 0 var(--spacing-sm);
     color: var(--text-primary);
     font-size: var(--font-size-sm);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
   .no-params {
