@@ -4,12 +4,13 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from cli_fixtures import (
+from cli_fixtures import (  # type: ignore[import-not-found]
     DelayedEvent,
     FakeAgentClient,
     FakeTerminalCapabilities,
     simple_response_events,
 )
+from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import is_done
 from prompt_toolkit.formatted_text import to_formatted_text
@@ -96,11 +97,11 @@ def _slash_hint_transform(
     )
     return SlashUsageHintProcessor(registry).apply_transformation(
         TransformationInput(
-            buffer_control=SimpleNamespace(),
+            buffer_control=SimpleNamespace(),  # type: ignore[bad-argument-type]
             document=document,
             lineno=lineno,
             source_to_display=lambda position: position,
-            fragments=fragments if fragments is not None else [("", text)],
+            fragments=fragments if fragments is not None else [("", text)],  # type: ignore[bad-argument-type]
             width=width,
             height=1,
         )
@@ -134,10 +135,12 @@ def test_command_completions_include_descriptions() -> None:
     )
 
     root_completions = list(
-        CommandCompleter(registry).get_completions(Document("/he", 3), None)
+        CommandCompleter(registry).get_completions(Document("/he", 3), CompleteEvent())
     )
     subcommand_completions = list(
-        CommandCompleter(registry).get_completions(Document("/threads l", 10), None)
+        CommandCompleter(registry).get_completions(
+            Document("/threads l", 10), CompleteEvent()
+        )
     )
 
     assert root_completions[0].text == "/help"
@@ -152,7 +155,7 @@ def test_composer_completes_attachment_paths(tmp_path: Path) -> None:
     completions = list(
         ComposerCompleter(cwd=tmp_path).get_completions(
             Document("summarize @no", 13),
-            None,
+            CompleteEvent(),
         )
     )
 
@@ -165,7 +168,7 @@ def test_composer_does_not_complete_leading_thread_mention(tmp_path: Path) -> No
     (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
 
     completions = list(
-        ComposerCompleter(cwd=tmp_path).get_completions(Document("@no", 3), None)
+        ComposerCompleter(cwd=tmp_path).get_completions(Document("@no", 3), CompleteEvent())
     )
 
     assert completions == []
@@ -329,9 +332,9 @@ def test_slash_usage_hint_processor_truncates_and_replaces_history_hint() -> Non
         fragments=[("", "/color"), ("class:auto-suggestion", " red")],
     )
 
-    assert all("auto-suggestion" not in style for style, _text in fragments)
+    assert all("auto-suggestion" not in fragment[0] for fragment in fragments)
     assert fragments[-1][0] == "class:slash-hint"
-    assert cell_len("".join(text for _style, text in fragments)) <= 16
+    assert cell_len("".join(fragment[1] for fragment in fragments)) <= 16
 
 
 def test_inline_slash_usage_hints_are_rich_repl_only(tmp_path: Path) -> None:
@@ -348,11 +351,11 @@ def test_inline_slash_usage_hints_are_rich_repl_only(tmp_path: Path) -> None:
 
     assert any(
         isinstance(processor, SlashUsageHintProcessor)
-        for processor in rich.text_area.control.input_processors
+        for processor in (rich.text_area.control.input_processors or [])
     )
     assert not any(
         isinstance(processor, SlashUsageHintProcessor)
-        for processor in full_screen.text_area.control.input_processors
+        for processor in (full_screen.text_area.control.input_processors or [])
     )
 
 
@@ -409,9 +412,11 @@ def test_enter_can_submit_slash_panel_selection() -> None:
 def test_rich_repl_prompt_uses_chat_label_without_command_chevron() -> None:
     state = CLIState(None, thread_id="thread-1")
 
-    ready_text = "".join(text for _, text in to_formatted_text(get_prompt(state)))
+    ready_text = "".join(
+        fragment[1] for fragment in to_formatted_text(get_prompt(state))
+    )
     busy_text = "".join(
-        text for _, text in to_formatted_text(get_prompt(state, busy=True))
+        fragment[1] for fragment in to_formatted_text(get_prompt(state, busy=True))
     )
 
     assert ready_text == "› "
@@ -449,39 +454,40 @@ def test_rich_repl_application_keeps_status_above_multiline_chat_input(
     )
 
     app = shell.build_application()
+    assert shell.composer_controller is not None
     children = app.layout.container.children
 
     assert app.full_screen is False
     footer_spacer = children[0]
     assert isinstance(footer_spacer, Window)
-    assert footer_spacer.height.weight == 1
-    assert footer_spacer.height.preferred == 0
+    assert footer_spacer.height.weight == 1  # type: ignore[missing-attribute]
+    assert footer_spacer.height.preferred == 0  # type: ignore[missing-attribute]
     assert not footer_spacer.dont_extend_height()
     assert footer_spacer.char == " "
 
     transcript_gap = children[1]
     assert isinstance(transcript_gap, ConditionalContainer)
     assert isinstance(transcript_gap.content, Window)
-    assert transcript_gap.content.height.min == 1
-    assert transcript_gap.content.height.max == 1
+    assert transcript_gap.content.height.min == 1  # type: ignore[missing-attribute]
+    assert transcript_gap.content.height.max == 1  # type: ignore[missing-attribute]
     assert transcript_gap.content.dont_extend_height()
     assert transcript_gap.content.char == " "
-    assert transcript_gap.filter.filters[1].filter is is_done
+    assert transcript_gap.filter.filters[1].filter is is_done  # type: ignore[missing-attribute]
 
     status_container = children[2]
     assert isinstance(status_container, ConditionalContainer)
-    assert status_container.filter.filters[1].filter is is_done
+    assert status_container.filter.filters[1].filter is is_done  # type: ignore[missing-attribute]
 
     status_bar = status_container.content
     assert isinstance(status_bar, Window)
-    assert status_bar.height.min == 1
-    assert status_bar.height.max == 1
-    assert status_bar.height.preferred == 1
+    assert status_bar.height.min == 1  # type: ignore[missing-attribute]
+    assert status_bar.height.max == 1  # type: ignore[missing-attribute]
+    assert status_bar.height.preferred == 1  # type: ignore[missing-attribute]
     assert status_bar.dont_extend_height()
     assert not status_bar.wrap_lines()
     assert status_bar.char == " "
     assert status_bar.style == "class:status"
-    assert status_bar.content.text() == runtime.status_fragments()
+    assert status_bar.content.text() == runtime.status_fragments()  # type: ignore[missing-attribute]
 
     input_area = children[3]
     assert isinstance(input_area, HSplit)
@@ -543,6 +549,7 @@ def test_rich_repl_slash_panel_navigation_fills_selected_command(
     )
 
     shell.build_application()
+    assert shell.composer_controller is not None
     buffer = shell.composer_controller.text_area.buffer
     buffer.text = "hello"
     assert shell.composer_controller.slash_panel_navigation_enabled() is False
@@ -554,6 +561,59 @@ def test_rich_repl_slash_panel_navigation_fills_selected_command(
 
     assert buffer.text == "/loop"
     assert buffer.cursor_position == len("/loop")
+
+
+def test_active_form_suppresses_slash_panel(tmp_path: Path) -> None:
+    from nymeria.triggers.cli.commands.base import CommandResult
+    from nymeria.triggers.cli.rendering.form_panel import (
+        FormField,
+        FormSpec,
+        FormTab,
+    )
+
+    capabilities = FakeTerminalCapabilities(width=80, height=24, renderer="rich")
+    cli_app = CLIApp(
+        None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich"),
+    )
+    renderer = RichReplRenderer(capabilities=capabilities, width=80)
+    runtime = _RichReplRuntime(
+        app=cli_app,
+        renderer=renderer,
+        capabilities=capabilities,
+    )
+    shell = _RichReplPromptToolkitShell(
+        cli_app=cli_app,
+        runtime=runtime,
+        renderer=renderer,
+        capabilities=capabilities,
+        history_path=tmp_path / "cli_history",
+    )
+    shell.build_application()
+    assert shell.composer_controller is not None
+    buffer = shell.composer_controller.text_area.buffer
+
+    buffer.text = "/mo"
+    assert runtime.slash_panel_visible() is True
+    assert runtime.slash_panel_selectable() is True
+
+    async def _confirm(_result) -> CommandResult:
+        return CommandResult.completed()
+
+    runtime.open_form(
+        FormSpec(
+            title="Pick",
+            tabs=(FormTab(label="T", fields=(FormField(kind="radio", key="m"),)),),
+            on_confirm=_confirm,
+        )
+    )
+    # Even a slash-prefixed filter must not wake the slash panel while a form
+    # owns the composer (otherwise Tab would overwrite the filter text).
+    buffer.text = "/mo"
+    assert runtime.form_is_active() is True
+    assert runtime.slash_panel_visible() is False
+    assert runtime.slash_panel_selectable() is False
 
 
 def test_rich_repl_scroll_region_uses_footer_only_layout(tmp_path: Path) -> None:
@@ -578,18 +638,21 @@ def test_rich_repl_scroll_region_uses_footer_only_layout(tmp_path: Path) -> None
     )
 
     app = shell.build_application()
+    assert shell.composer_controller is not None
     children = app.layout.container.children
     runtime.terminal_width = lambda: 24  # type: ignore[method-assign]
     shell.composer_controller.text_area.buffer.text = "abcdefghij " * 6
 
     assert runtime.scroll_region_enabled() is True
-    assert len(children) == 4
+    assert len(children) == 5
     assert isinstance(children[0], ConditionalContainer)
     assert isinstance(children[1], ConditionalContainer)
     assert isinstance(children[2], HSplit)
     assert isinstance(children[3], ConditionalContainer)  # slash panel, below input
+    assert isinstance(children[4], ConditionalContainer)  # form panel, below slash panel
     assert runtime.composer_input_height() > 1
-    # Composer text does not start with "/", so the panel is hidden
+    # Composer text does not start with "/" and no form is open, so both panels
+    # are hidden and contribute zero footer height.
     assert runtime.footer_height() == runtime.composer_input_height() + 4
     assert shell.composer_controller.text_area.window.height().min == (
         runtime.composer_input_height()

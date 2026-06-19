@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import inspect
 import math
 import signal
 import sys
@@ -30,6 +31,7 @@ from .commands import (
 from .autonomous import AutonomousStreamMonitor
 from .header import CLIHeaderSnapshot, build_header_snapshot, concise_connection_label
 from .rendering.indicator import FRAME_INTERVAL_SECONDS
+from .rendering import form_panel
 from .rendering.slash_panel import (
     filter_commands,
     slash_panel_fragments,
@@ -162,6 +164,8 @@ class _RichReplRuntime:
         self._slash_panel_filter_text = ""
         self._slash_panel_match_count = 0
         self._slash_panel_selected_index = 0
+        self._active_form: form_panel.FormSpec | None = None
+        self._form_state: form_panel.FormState | None = None
         self._autonomous_monitor = AutonomousStreamMonitor(
             client_getter=lambda: self.app._client,
             user_id_getter=lambda: self.app.state.user_id,
@@ -350,7 +354,12 @@ class _RichReplRuntime:
         return max(1, min(_RICH_REPL_COMPOSER_MAX_HEIGHT, height))
 
     def footer_height(self) -> int:
-        return self.composer_input_height() + 4 + self.slash_panel_height()
+        return (
+            self.composer_input_height()
+            + 4
+            + self.slash_panel_height()
+            + self.form_height()
+        )
 
     def _composer_text(self) -> str:
         controller = self.composer_controller
@@ -360,6 +369,8 @@ class _RichReplRuntime:
         return str(getattr(buffer, "text", "") or "")
 
     def slash_panel_visible(self) -> bool:
+        if self.form_is_active():
+            return False
         return slash_panel_visible(self._composer_text())
 
     def slash_panel_height(self) -> int:
@@ -379,6 +390,8 @@ class _RichReplRuntime:
         )
 
     def slash_panel_selectable(self) -> bool:
+        if self.form_is_active():
+            return False
         return bool(self._sync_slash_panel_selection())
 
     def move_slash_panel_selection(self, delta: int) -> bool:
@@ -417,6 +430,158 @@ class _RichReplRuntime:
             min(self._slash_panel_selected_index, len(matches) - 1),
         )
         return matches
+
+    # ----- Interactive config form (see rendering/form_panel.py) -------- #
+
+    def form_is_active(self) -> bool:
+        return self._active_form is not None
+
+    def form_visible(self) -> bool:
+        return self._active_form is not None and self._form_state is not None
+
+    def form_tab_enabled(self) -> bool:
+        return self._active_form is not None and len(self._active_form.tabs) > 1
+
+    def active_field_is_checkbox(self) -> bool:
+        if self._active_form is None or self._form_state is None:
+            return False
+        return form_panel.active_field_is_checkbox(self._active_form, self._form_state)
+
+    def form_height(self) -> int:
+        if self._active_form is None or self._form_state is None:
+            return 0
+        self._sync_form_filter()
+        return form_panel.form_panel_height(self._active_form, self._form_state)
+
+    def form_fragments(self) -> list[Any]:
+        if self._active_form is None or self._form_state is None:
+            return []
+        self._sync_form_filter()
+        return list(
+            form_panel.form_panel_fragments(
+                self._active_form,
+                self._form_state,
+                width=self.terminal_width(),
+            )
+        )
+
+    def _sync_form_filter(self) -> None:
+        if self._active_form is None or self._form_state is None:
+            return
+        form_panel.sync_filter(self._active_form, self._form_state, self._composer_text())
+
+    def _reset_composer_buffer(self) -> None:
+        controller = self.composer_controller
+        buffer = getattr(getattr(controller, "text_area", None), "buffer", None)
+        if buffer is not None:
+            buffer.text = ""
+            buffer.cursor_position = 0
+
+    def open_form(self, spec: form_panel.FormSpec) -> None:
+        self._active_form = spec
+        self._form_state = form_panel.init_state(spec)
+        self._reset_composer_buffer()
+        self.invalidate()
+
+    def close_form(self) -> None:
+        self._active_form = None
+        self._form_state = None
+
+    def move_form_selection(self, delta: int) -> bool:
+        if self._active_form is None or self._form_state is None:
+            return False
+        self._sync_form_filter()
+        moved = form_panel.move_selection(self._active_form, self._form_state, delta)
+        if moved:
+            self._maybe_form_change()
+            self.invalidate()
+        return moved
+
+    def move_form_tab(self, delta: int) -> bool:
+        if self._active_form is None or self._form_state is None:
+            return False
+        moved = form_panel.move_tab(self._active_form, self._form_state, delta)
+        if moved:
+            self._reset_composer_buffer()
+            self.invalidate()
+        return moved
+
+    def toggle_form_option(self) -> bool:
+        if self._active_form is None or self._form_state is None:
+            return False
+        self._sync_form_filter()
+        toggled = form_panel.toggle_current(self._active_form, self._form_state)
+        if toggled:
+            self.invalidate()
+        return toggled
+
+    def schedule_form_submit(self) -> bool:
+        if self._active_form is None or self._form_state is None:
+            return False
+        app = self.application
+        if app is None:
+            return False
+        app.create_background_task(self._submit_form_async())
+        return True
+
+    def request_form_cancel(self) -> bool:
+        if self._active_form is None:
+            return False
+        title = self._active_form.title
+        self.close_form()
+        self._reset_composer_buffer()
+        self.invalidate()
+        app = self.application
+        if app is not None:
+            app.create_background_task(self._render_form_note(f"{title} — dismissed"))
+        return True
+
+    def _maybe_form_change(self) -> None:
+        spec = self._active_form
+        state = self._form_state
+        if spec is None or state is None or spec.on_change is None:
+            return
+        try:
+            outcome = spec.on_change(form_panel.build_result(spec, state))
+        except Exception:  # noqa: BLE001 - a form callback must not kill the REPL.
+            return
+        if inspect.isawaitable(outcome):
+            app = self.application
+            if app is not None:
+                app.create_background_task(outcome)
+
+    async def _submit_form_async(self) -> None:
+        spec = self._active_form
+        state = self._form_state
+        if spec is None or state is None:
+            return
+        self._sync_form_filter()
+        result = form_panel.build_result(spec, state)
+        self.close_form()
+        self._reset_composer_buffer()
+        self.invalidate()
+        try:
+            command_result = await spec.on_confirm(result)
+        except Exception as exc:  # noqa: BLE001 - a form callback must not kill the REPL.
+            await self._render_form_note(f"Form error: {exc.__class__.__name__}: {exc}")
+            return
+        messages = list(getattr(command_result, "messages", ()) or ())
+        if messages:
+            await self._render_form_messages(messages)
+
+    async def _render_form_messages(self, messages: Sequence[Any]) -> None:
+        def render() -> None:
+            sink = RichConsoleCommandOutputSink(self.app.state.console)
+            for message in messages:
+                sink.emit(message)
+
+        await self.render_above_prompt(render)
+
+    async def _render_form_note(self, text: str) -> None:
+        def render() -> None:
+            self.app.state.console.print(f"[dim]{text}[/dim]")
+
+        await self.render_above_prompt(render)
 
     def _reserved_footer_height(self, size: Any) -> int:
         return min(self.footer_height(), max(1, int(size.rows) - 2))
@@ -1182,6 +1347,14 @@ class _RichReplPromptToolkitShell:
             slash_panel_is_active=self.runtime.slash_panel_selectable,
             on_slash_panel_move=self.runtime.move_slash_panel_selection,
             on_slash_panel_accept=self.runtime.accept_slash_panel_selection,
+            form_is_active=self.runtime.form_is_active,
+            form_tab_enabled=self.runtime.form_tab_enabled,
+            active_field_is_checkbox=self.runtime.active_field_is_checkbox,
+            on_form_move=self.runtime.move_form_selection,
+            on_form_tab=self.runtime.move_form_tab,
+            on_form_toggle=self.runtime.toggle_form_option,
+            on_form_submit=self.runtime.schedule_form_submit,
+            on_form_cancel=self.runtime.request_form_cancel,
         )
         if self.runtime.scroll_region_enabled():
             controller.text_area.window.height = lambda: Dimension.exact(
@@ -1221,6 +1394,18 @@ class _RichReplPromptToolkitShell:
             ),
             filter=slash_panel_filter,
         )
+        form_panel_filter = Condition(self.runtime.form_visible) & footer_visible
+        form_panel_container = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: self.runtime.form_fragments()),
+                height=lambda: Dimension.exact(max(1, self.runtime.form_height())),
+                dont_extend_height=True,
+                style="class:form-panel",
+                wrap_lines=False,
+                char=" ",
+            ),
+            filter=form_panel_filter,
+        )
         top_border = ConditionalContainer(
             Window(
                 height=Dimension.exact(1),
@@ -1246,12 +1431,19 @@ class _RichReplPromptToolkitShell:
         footer_spacer = Window(height=Dimension(weight=1), char=" ")
         if self.runtime.scroll_region_enabled():
             body = HSplit(
-                [transcript_gap, status_bar, input_area, slash_panel],
+                [transcript_gap, status_bar, input_area, slash_panel, form_panel_container],
                 height=lambda: Dimension.exact(self.runtime.footer_height()),
             )
         else:
             body = HSplit(
-                [footer_spacer, transcript_gap, status_bar, input_area, slash_panel]
+                [
+                    footer_spacer,
+                    transcript_gap,
+                    status_bar,
+                    input_area,
+                    slash_panel,
+                    form_panel_container,
+                ]
             )
         bindings = KeyBindings()
 
@@ -2476,6 +2668,18 @@ class CLIApp:
             if runtime is not None:
                 await runtime.redraw()
             return
+        elif action_type == "open_form":
+            spec = action.get("spec")
+            runtime = self._active_rich_runtime
+            if runtime is not None and isinstance(spec, form_panel.FormSpec):
+                runtime.open_form(spec)
+            return
+        elif action_type == "close_form":
+            runtime = self._active_rich_runtime
+            if runtime is not None:
+                runtime.close_form()
+                runtime.invalidate()
+            return
         if refresh_header:
             self._mark_header_refresh_pending()
 
@@ -3229,6 +3433,19 @@ def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
         ),
         "slash-panel.empty": ptk_style(theme, "status_fg"),
         "slash-panel.more": ptk_style(theme, "separator"),
+        "form-panel": ptk_style(theme, "status_fg"),
+        "form-panel.title": ptk_style(theme, "status_accent", bold=True),
+        "form-panel.tab": ptk_style(theme, "status_fg"),
+        "form-panel.tab.active": ptk_style(
+            theme,
+            "status_accent",
+            bg_slot="input_border",
+            bold=True,
+        ),
+        "form-panel.search": ptk_style(theme, "status_fg"),
+        "form-panel.placeholder": ptk_style(theme, "separator"),
+        "form-panel.footer": ptk_style(theme, "separator"),
+        "form-panel.more": ptk_style(theme, "separator"),
     }
 
 
