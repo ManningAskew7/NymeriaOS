@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nymeria.core.activity_log import ActivityType
 from nymeria.core.time_utils import utc_now
 from nymeria.core.todo_manager import TodoManager, TodoStatus
 from nymeria.tools import todo as todo_tools
@@ -183,3 +184,54 @@ def test_nym_todo_delete_cannot_remove_another_thread(
     todo_list = manager.get_todos("owner")
     assert todo_list.get_item(current.id) is None
     assert todo_list.get_item(other.id) is not None
+
+
+def test_todo_activity_entries_carry_thread_id(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Every todo activity event (added/updated/completed/deleted) is tagged with
+    the todo's thread so the dashboard activity feed can resolve a thread badge
+    and per-thread activity views include them (parity with trigger/scheduled
+    runs, which already pass thread_id)."""
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+
+    calls: list[tuple] = []
+
+    def _capture(activity_type, message, **kwargs):
+        calls.append((activity_type, kwargs))
+
+    monkeypatch.setattr(todo_tools, "log_activity", _capture)
+
+    def _thread_id_for(activity_type) -> object:
+        matches = [kw for at, kw in calls if at is activity_type]
+        assert matches, f"no {activity_type} activity recorded"
+        return matches[-1].get("thread_id")
+
+    add_result = todo_tools.nym_todo.func(
+        task="Buy milk",
+        scheduled_for="1h",
+        config=_config("thread-a"),
+    )
+    assert add_result.startswith("[Added]:")
+    assert _thread_id_for(ActivityType.TODO_ADDED) == "thread-a"
+
+    todo_id = [kw for at, kw in calls if at is ActivityType.TODO_ADDED][-1][
+        "metadata"
+    ]["todo_id"]
+
+    todo_tools.nym_todo.func(
+        todo_id=todo_id,
+        status="in_progress",
+        config=_config("thread-a"),
+    )
+    assert _thread_id_for(ActivityType.TODO_UPDATED) == "thread-a"
+
+    # Completion via the MCP internal path (no thread in scope) tags from the
+    # item's own thread_id.
+    todo_tools._todo_complete_internal(todo_id, "owner")
+    assert _thread_id_for(ActivityType.TODO_COMPLETED) == "thread-a"
+
+    todo_tools.nym_todo_delete.func(todo_id=todo_id, config=_config("thread-a"))
+    assert _thread_id_for(ActivityType.TODO_DELETED) == "thread-a"
