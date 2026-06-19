@@ -217,6 +217,7 @@ def nym_todo(
                     ActivityType.TODO_ADDED,
                     f"TODO added: {task[:80]}",
                     user_id=user_id,
+                    thread_id=thread_id,
                     metadata=metadata,
                 )
 
@@ -355,6 +356,7 @@ def nym_todo(
                 ActivityType.TODO_UPDATED,
                 f"TODO updated: {item.task[:60]} (status: {item.status.value})",
                 user_id=user_id,
+                thread_id=thread_id,
                 metadata=metadata,
             )
 
@@ -442,6 +444,7 @@ def _todo_complete_internal(
                 ActivityType.TODO_COMPLETED,
                 f"TODO completed: {task_name[:80]}",
                 user_id=user_id,
+                thread_id=item.thread_id,
                 metadata={"todo_id": todo_id},
             )
             if rescheduled_time:
@@ -493,6 +496,7 @@ def nym_todo_delete(
                 ActivityType.TODO_DELETED,
                 f"TODO deleted: {deleted.task[:80]}",
                 user_id=user_id,
+                thread_id=thread_id,
                 metadata={"todo_id": todo_id},
             )
             return f"[Deleted]: {deleted.task[:100]}"
