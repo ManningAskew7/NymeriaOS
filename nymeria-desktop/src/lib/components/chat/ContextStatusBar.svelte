@@ -96,7 +96,7 @@
 
         {#if stats.compactionCount > 0}
           <span class="separator">|</span>
-          <span class="compaction-count" title="Times compacted">{stats.compactionCount}x compacted</span>
+          <span class="compaction-count" data-tooltip="Times compacted">{stats.compactionCount}x compacted</span>
         {/if}
       </div>
     {/if}
@@ -230,7 +230,6 @@
   .model-name {
     font-family: var(--font-mono);
     font-size: var(--font-size-3xs);
-    opacity: 0.8;
     max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -272,7 +271,6 @@
 
   .compaction-count {
     font-size: 0.6rem;
-    opacity: 0.7;
     transform: translateY(1px);
   }
 </style>

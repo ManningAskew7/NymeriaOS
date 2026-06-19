@@ -33,11 +33,6 @@
 
   // svelte-ignore state_referenced_locally — intentional one-time initialization
   let isOpen = $state(defaultOpen);
-  // Active during the outro slide. While true the content's bottom border is
-  // forced transparent so it doesn't visibly slide upward as the slide
-  // transition shrinks the content's height (most noticeable on themes where
-  // --border-subtle contrasts with the surrounding panel bg, e.g. Platinum).
-  let isClosing = $state(false);
 
   let rootEl: HTMLDivElement;
 
@@ -90,7 +85,6 @@
     const wasOpen = isOpen;
 
     isOpen = !isOpen;
-    if (isOpen) isClosing = false;
 
     // Only animate on OPEN. Close lets the slide outro run, content unmounts,
     // bubble snaps to narrow natural width.
@@ -124,12 +118,9 @@
     <div
       id={contentId}
       class="content"
-      class:closing={isClosing}
       role="region"
       aria-labelledby={headerId}
       transition:slide={slideOptions}
-      onoutrostart={() => (isClosing = true)}
-      onoutroend={() => (isClosing = false)}
     >
       {@render children()}
     </div>
@@ -140,6 +131,17 @@
   .collapsible {
     display: flex;
     flex-direction: column;
+    /* The rounded border + clip live on this stable wrapper, NOT on the header
+       and content separately. Because the wrapper's radius never changes, the
+       bottom corners stay curved at every frame as the body slides open or
+       shut, instead of "snapping" from curved to straight the moment the
+       header stops being the bottom of the box. (Standard fix for the
+       accordion corner-snap artifact: round + clip on the parent rather than
+       animating a child's corners.) Safe here because every Collapsible body
+       is text/list content, with no pop-out menus that need to escape the clip. */
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
   }
 
   .header {
@@ -156,18 +158,15 @@
     color: var(--text-primary);
     text-align: left;
     line-height: 1;
-    /* Bottom border stays 1px wide in both states — only its color changes
-       (visible when closed, transparent when open). Keeping the width
-       constant avoids the layout shift / "flash" you get when style: none is
-       toggled, since border-style isn't an animatable property. */
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    transition: background var(--transition-fast), border-color var(--transition-fast), border-radius var(--transition-fast);
+    transition: background var(--transition-fast);
   }
 
-  .open .header {
-    border-bottom-color: transparent;
-    border-radius: var(--radius-md) var(--radius-md) 0 0;
+  /* The header is flush against the wrapper's clip, so an outset focus ring
+     would be shaved off on three sides. Inset it (matches the edge-to-edge row
+     treatment used elsewhere, e.g. ThreadItem / activity rows). */
+  .header:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
   }
 
   .header:hover {
@@ -194,16 +193,7 @@
   .content {
     padding: var(--spacing-md);
     background: var(--bg-elevated-2);
-    border: 1px solid var(--border-subtle);
-    border-top: none;
-    border-radius: 0 0 var(--radius-md) var(--radius-md);
-    /* Fade the bottom-border color during the outro so the 1px line doesn't
-       visibly slide upward as the slide transition shrinks the content's
-       height. Pairs with .closing below. */
-    transition: border-bottom-color var(--transition-fast);
-  }
-
-  .content.closing {
-    border-bottom-color: transparent;
+    /* No border or radius here: the wrapper owns both and clips this body to
+       the rounded shape, so the bottom corners never snap (see .collapsible). */
   }
 </style>

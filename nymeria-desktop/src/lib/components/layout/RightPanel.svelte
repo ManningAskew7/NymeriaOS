@@ -1,9 +1,11 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
   import { TAB_FADE } from '$lib/utils/transitions';
-  import { Collapsible } from '$lib/components/common';
+  import { SectionHeader } from '$lib/components/common';
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
+  import TodoForm from '$lib/components/todos/TodoForm.svelte';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
+  import TriggerSetupWizard from '$lib/components/triggers/TriggerSetupWizard.svelte';
   import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
@@ -15,6 +17,13 @@
 
   let activeTab = $state<'thread' | 'global'>('thread');
   let currentThreadId = $derived(threadsStore.currentThreadId);
+
+  // Create flows are launched from the always-visible section headers, so the
+  // modals live here at the panel level rather than inside the collapsible
+  // bodies (which unmount when a section is collapsed). Item edits keep their
+  // own modal inside each feed.
+  let showTaskCreate = $state(false);
+  let showTriggerCreate = $state(false);
 
   // True for the brief window when switching INTO the 'thread' tab. Hides
   // scrollbars on the whole panel during that window so they don't flash /
@@ -74,11 +83,11 @@
 
 <div class="right-panel-content" class:collapsed={isCollapsed} aria-hidden={isCollapsed}>
   <header class="panel-header">
-    <h2>Dashboard</h2>
-    <div class="tab-buttons" role="tablist" aria-label="Dashboard view">
+    <h2 class="panel-title">Dashboard</h2>
+    <div class="segmented" role="tablist" aria-label="Dashboard view">
       <button
         id="dashboard-tab-thread"
-        class="tab-btn"
+        class="segment"
         class:active={activeTab === 'thread'}
         onclick={() => (activeTab = 'thread')}
         onkeydown={handleTablistKeydown}
@@ -91,7 +100,7 @@
       </button>
       <button
         id="dashboard-tab-global"
-        class="tab-btn"
+        class="segment"
         class:active={activeTab === 'global'}
         onclick={() => (activeTab = 'global')}
         onkeydown={handleTablistKeydown}
@@ -116,53 +125,55 @@
       in:fly={TAB_FADE}
       out:fly={TAB_FADE}
     >
-      <!-- Tasks Section -->
-      <Collapsible title="Tasks" defaultOpen={true}>
-        {#snippet header()}
-          <span class="section-heading">Tasks</span>
-          {#if todosStore.todos.length > 0}
-            <span class="section-count">{todosStore.todos.length}</span>
-          {/if}
-        {/snippet}
+      <!-- Tasks -->
+      <SectionHeader
+        title="Tasks"
+        count={todosStore.todos.length}
+        action={{ label: 'New task', onClick: () => (showTaskCreate = true) }}
+      >
         {#if activeTab === 'thread' && currentThreadId}
           <TodoFeed threadId={currentThreadId} />
         {:else}
           <TodoFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
         {/if}
-      </Collapsible>
+      </SectionHeader>
 
-      <!-- Triggers Section -->
-      <Collapsible title="Triggers" defaultOpen={true}>
-        {#snippet header()}
-          <span class="section-heading">Triggers</span>
-          {#if triggersStore.enabledCount > 0}
-            <span class="section-count">{triggersStore.enabledCount}</span>
-          {/if}
-        {/snippet}
+      <!-- Triggers -->
+      <SectionHeader
+        title="Triggers"
+        count={triggersStore.enabledCount}
+        action={{ label: 'New trigger', onClick: () => (showTriggerCreate = true) }}
+      >
         {#if activeTab === 'thread' && currentThreadId}
           <TriggerFeed threadId={currentThreadId} />
         {:else}
           <TriggerFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
         {/if}
-      </Collapsible>
+      </SectionHeader>
 
-      <!-- Activity Section — always visible -->
-      <div class="section-divider"></div>
-      <div class="activity-section">
-        <div class="activity-header">
-          <span class="section-heading">Activity</span>
-        </div>
+      <!-- Activity (no create action; same chevron + title chrome) -->
+      <SectionHeader title="Activity">
         {#if activeTab === 'thread' && currentThreadId}
           <ActivityFeed threadId={currentThreadId} />
         {:else}
           <ActivityFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
         {/if}
-      </div>
+      </SectionHeader>
     </div>
     {/key}
   </div>
   <ConnectionStatus />
 </div>
+
+<!-- Create flows live at the panel level so the section headers' "New task" /
+     "New trigger" links work even when a section is collapsed. -->
+<TodoForm isOpen={showTaskCreate} onClose={() => (showTaskCreate = false)} editTodo={null} />
+{#if showTriggerCreate}
+  <TriggerSetupWizard
+    threadId={activeTab === 'thread' && currentThreadId ? currentThreadId : undefined}
+    onClose={() => (showTriggerCreate = false)}
+  />
+{/if}
 
 <style>
   .right-panel-content {
@@ -177,46 +188,83 @@
   }
 
   .panel-header {
-    padding: var(--spacing-md);
+    display: flex;
+    align-items: center;
+    /* Title on the left, indented to the 16px content line shared by the chat
+       title and the sidebar brand; view toggle hugging the right gutter (its
+       right edge lines up with the Tasks/Triggers cards' right edge below,
+       same --spacing-sm side gutter). */
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    box-sizing: border-box;
+    /* Height + padding mirror the sidebar header (16px top + ~40px brand row +
+       8px bottom = 64px) so the "Dashboard" title and the view toggle sit on
+       the same line as the sidebar's New Thread button (all centre ~36px from
+       the top). align-items:center holds this whatever the toggle's height is. */
+    min-height: 64px;
+    padding: var(--spacing-md) var(--spacing-sm) var(--spacing-sm) var(--spacing-md);
+    /* Hairline under the header, matching the line above the sidebar account
+       row (its footer's border-top uses the same token). */
     border-bottom: 1px solid var(--glass-border);
   }
 
-  .panel-header h2 {
+  .panel-title {
     margin: 0;
-    font-size: var(--font-size-lg);
-    font-weight: 700;
+    /* Sized so the title's line box matches the segmented toggle's height
+       (~25px): 20px text at line-height 1.25. Reads as a proper section
+       heading and sits vertically centred against the toggle via the header's
+       align-items:center. Shrinks with an ellipsis before the toggle does if
+       the panel gets narrow. */
+    font-size: var(--font-size-xl);
+    font-weight: 600;
     color: var(--text-primary);
     letter-spacing: -0.01em;
+    line-height: 1.25;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
 
-  .tab-buttons {
-    display: flex;
-    /* §3 chip-row gap: ≥8px so adjacent tabs don't crowd edge-to-edge. */
-    gap: var(--spacing-sm);
-    margin-top: var(--spacing-sm);
+  /* Segmented control: one bordered container holding both views as segments,
+     instead of two free-standing buttons. The container owns the border + the
+     rounded clip; segments are borderless and divided by a single hairline. */
+  .segmented {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    /* Keep the labels at full size; the header's flex-wrap is the fallback
+       when there isn't room for the title and the control on one row. */
+    flex-shrink: 0;
   }
 
-  .tab-btn {
-    flex: 1;
+  .segment {
     padding: var(--spacing-xs) var(--spacing-sm);
     font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--text-muted);
     background: transparent;
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-md);
+    border: none;
     cursor: pointer;
+    white-space: nowrap;
     transition: all var(--transition-fast);
   }
 
-  .tab-btn:hover {
-    color: var(--text-primary);
-    border-color: var(--text-muted);
+  .segment + .segment {
+    border-left: 1px solid var(--glass-border);
   }
 
-  .tab-btn.active {
+  .segment:hover {
+    color: var(--text-primary);
+  }
+
+  /* Active segment reuses the previous active-tab fill + text color verbatim
+     (accent tint background, accent-primary text); the container border
+     replaces the per-button border the old active tab carried. */
+  .segment.active {
     color: var(--accent-primary);
-    border-color: var(--accent-primary);
     background: var(--accent-tint-bg);
   }
 
@@ -235,10 +283,37 @@
     position: absolute;
     inset: 0;
     overflow-y: auto;
+    /* Count alignment: every count badge in this panel (the Tasks/Triggers
+       section-header counts AND the In Progress/Upcoming/Active/etc. group
+       counts) lines up in one vertical column. This is the reserved width of a
+       GROUP label; the count begins right after it. SectionHeader derives its
+       title's reserved width from this same value (minus the 24px the chevron +
+       header padding add to its prefix) so header and group counts share the
+       column. Sized to clear the longest label ("IN PROGRESS"); only defined
+       here, so the column exists in the dashboard and nowhere else. One number
+       tunes the whole column. */
+    --count-col-label: 108px;
+    /* Top padding matches the sides (8px) so the first section's top edge lines
+       up with the thread-list "Recent" sort button in the sidebar: both sit 8px
+       below their respective 64px headers. Sides keep the --spacing-sm content
+       gutter the cards align to. */
     padding: var(--spacing-sm);
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-sm);
+    /* Gap between the dashboard cards follows the Appearance > Spacing setting;
+       falls back to --spacing-sm (the original 8px) when no override is set. */
+    gap: var(--ui-density-gap, var(--spacing-sm));
+  }
+
+  /* The section cards must never shrink. SectionHeader's wrapper sets
+     overflow:hidden (so its rounded corners clip the sliding body), which
+     zeroes the flex item's automatic min-height. Without this, once the
+     sections' combined height exceeds the panel, the flex column shrinks them
+     to fit and the overflow:hidden clips the last card's bottom instead of
+     letting the panel scroll. flex-shrink:0 keeps each card at its natural
+     height, so the panel scrolls (overflow-y:auto above) rather than clipping. */
+  .dashboard-sections > :global(.section) {
+    flex-shrink: 0;
   }
 
   /* When switching INTO the 'thread' tab, hide every scrollbar inside the
@@ -251,58 +326,4 @@
     display: none;
   }
 
-  /* Nudge the chevron inside Tasks/Triggers headers down by 1px for better
-     vertical centering. Scoped to Collapsibles so Activity (which is not
-     collapsible) is unaffected. The open state combines the nudge with the
-     90deg rotation — using a single `transform` for both means we have to
-     respecify the full value here (otherwise the rotate would be lost). */
-  :global(.dashboard-sections .collapsible > .header .chevron) {
-    transform: translateY(1px);
-  }
-  :global(.dashboard-sections .collapsible.open > .header .chevron) {
-    transform: translateY(1px) rotate(90deg);
-  }
-
-  .section-heading {
-    flex: 1;
-    font-weight: 600;
-    font-size: var(--font-size-md);
-    color: var(--text-primary);
-  }
-
-  .section-count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 20px;
-    height: 20px;
-    padding: 0 6px;
-    font-size: var(--font-size-2xs);
-    font-weight: 500;
-    background: transparent;
-    color: var(--text-muted);
-    border-radius: var(--radius-full);
-  }
-
-  .section-divider {
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--glass-border), transparent);
-    margin: var(--spacing-xs) 0;
-  }
-
-  .activity-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
-  }
-
-  .activity-header {
-    display: flex;
-    align-items: center;
-    padding: var(--spacing-sm) var(--spacing-md);
-    color: var(--text-primary);
-  }
 </style>

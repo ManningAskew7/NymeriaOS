@@ -290,7 +290,8 @@
               <button
                 class="icon-btn danger"
                 onclick={() => handleDelete(trigger.id)}
-                title="Delete trigger"
+                data-tooltip="Delete trigger"
+                aria-label="Delete trigger"
                 type="button"
               >
                 <Icon name="check" size={14} />
@@ -298,7 +299,8 @@
               <button
                 class="icon-btn"
                 onclick={() => (confirmDeleteId = null)}
-                title="Cancel"
+                data-tooltip="Cancel"
+                aria-label="Cancel"
                 type="button"
               >
                 <Icon name="x" size={14} />
@@ -307,7 +309,8 @@
               <button
                 class="icon-btn"
                 onclick={() => openEdit(trigger)}
-                title="Edit trigger"
+                data-tooltip="Edit trigger"
+                aria-label="Edit trigger"
                 type="button"
               >
                 <Icon name="edit" size={14} />
@@ -315,7 +318,8 @@
               <button
                 class="icon-btn danger"
                 onclick={() => (confirmDeleteId = trigger.id)}
-                title="Delete trigger"
+                data-tooltip="Delete trigger"
+                aria-label="Delete trigger"
                 type="button"
               >
                 <Icon name="trash" size={14} />
@@ -325,7 +329,6 @@
             <ToggleSwitch
               checked={trigger.enabled}
               onclick={() => handleToggle(trigger)}
-              title={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
               ariaLabel={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
             />
           </div>
@@ -337,7 +340,7 @@
 {:else}
   <!-- Create / Edit Form -->
   <div class="form-header">
-    <button class="icon-btn" onclick={closeForm} title="Back to list" type="button" aria-label="Back to list">
+    <button class="icon-btn" onclick={closeForm} data-tooltip="Back to list" type="button" aria-label="Back to list">
       <Icon name="chevronRight" size={16} class="back-icon" />
     </button>
     <span class="form-title">{view === 'create' ? 'New Trigger' : 'Edit Trigger'}</span>
@@ -833,12 +836,9 @@
   }
 
   .section-label {
+    /* Sub-section divider: type role comes from the global .section-label
+       utility; only layout is local. */
     display: block;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
     margin-bottom: var(--spacing-sm);
   }
 

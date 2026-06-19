@@ -6,6 +6,8 @@
     size?: 'sm' | 'md';
     variant?: 'solid' | 'outlined';
     title?: string;
+    /** Custom hover tooltip (rendered via the [data-tooltip] portal). */
+    dataTooltip?: string;
     onclick?: (event: MouseEvent) => void | Promise<void>;
   }
 
@@ -16,6 +18,7 @@
     size = 'md',
     variant = 'solid',
     title,
+    dataTooltip,
     onclick,
   }: Props = $props();
 </script>
@@ -28,6 +31,7 @@
   aria-pressed={checked}
   {disabled}
   {title}
+  data-tooltip={dataTooltip}
   {onclick}
 >
   <span class="toggle-track" aria-hidden="true">

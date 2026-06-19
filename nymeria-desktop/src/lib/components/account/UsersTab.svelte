@@ -377,7 +377,7 @@
                   {user.token_count} token{user.token_count === 1 ? '' : 's'}
                 </span>
                 <span class="dot">·</span>
-                <span title={user.last_token_use ?? 'never'}>
+                <span data-tooltip={user.last_token_use ?? 'never'}>
                   {user.last_token_use ? `Last seen ${formatRelative(user.last_token_use)}` : 'Never seen'}
                 </span>
               </div>
@@ -415,7 +415,7 @@
     </div>
 
     <section class="detail-section">
-      <div class="section-header"><h3>Profile</h3></div>
+      <div class="section-header"><h3 class="section-label">Profile</h3></div>
       <div class="form-grid">
         <label class="form-row">
           <span class="row-label">Display name</span>
@@ -456,7 +456,7 @@
     </section>
 
     <section class="detail-section">
-      <div class="section-header"><h3>API tokens</h3></div>
+      <div class="section-header"><h3 class="section-label">API tokens</h3></div>
       <TokenManagementSection
         mode="admin"
         userId={selectedUser.id}
@@ -466,7 +466,7 @@
     </section>
 
     <section class="detail-section">
-      <div class="section-header"><h3>Linked platforms</h3></div>
+      <div class="section-header"><h3 class="section-label">Linked platforms</h3></div>
       <PlatformLinkingSection
         userId={selectedUser.id}
         userLabel={identityDisplayName(selectedUser)}
@@ -474,7 +474,7 @@
     </section>
 
     <section class="detail-section danger-section">
-      <div class="section-header"><h3>Delete user</h3></div>
+      <div class="section-header"><h3 class="section-label">Delete user</h3></div>
       <p class="section-hint">
         Cleans up tokens and platform identities automatically. The backend
         refuses with 409 if this user still owns threads or tasks; re-assign
@@ -502,7 +502,6 @@
         variant="ghost"
         onclick={handleDelete}
         disabled={deleting || isMe}
-        title={isMe ? "Can't delete yourself" : 'Permanently delete this user'}
       >
         <Icon name="trash" size={14} />
         {deleting ? 'Deleting…' : isMe ? 'Cannot delete yourself' : `Delete ${identityDisplayName(selectedUser)}`}
@@ -871,12 +870,9 @@
   }
 
   .section-header h3 {
+    /* type role from global .section-label; keep sm size for section header */
     margin: 0;
     font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--text-primary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   .section-hint {
@@ -904,8 +900,6 @@
 
   .row-label {
     font-size: var(--font-size-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--text-muted);
     font-weight: 600;
   }
@@ -978,8 +972,6 @@
 
   .field label {
     font-size: var(--font-size-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--text-muted);
     font-weight: 600;
   }

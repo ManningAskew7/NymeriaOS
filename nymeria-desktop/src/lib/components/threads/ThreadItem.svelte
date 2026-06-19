@@ -2,7 +2,7 @@
   import type { Thread } from '$lib/types';
   import { slide } from 'svelte/transition';
   import { focusOnMount } from '$lib/actions/focus';
-  import { Icon } from '$lib/components/common';
+  import { Icon, KebabMenu } from '$lib/components/common';
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
 
   interface Props {
@@ -27,35 +27,27 @@
 
   let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, hasUnread = false, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin, onExport, onToggleSelect }: Props = $props();
 
-  let showActions = $state(false);
+  let menuOpen = $state(false);
   let isEditing = $state(false);
   let editTitle = $state('');
   let contextMenu = $state<{ x: number; y: number } | null>(null);
 
-  function handleDelete(e: MouseEvent) {
-    e.stopPropagation();
-    e.preventDefault();
-    onDelete();
-  }
-
   function handleClick(e: MouseEvent) {
-    // Don't select if clicking action buttons or editing
+    // Don't select if the click landed on the row's action controls or editing
     const target = e.target as HTMLElement;
-    if (target.closest('.delete-btn') || target.closest('.edit-btn') || target.closest('.agent-btn') || isEditing) return;
+    if (target.closest('.row-actions') || isEditing) return;
     onSelect(e);
   }
 
   function handleKeydown(e: KeyboardEvent) {
     const target = e.target as HTMLElement;
-    if (target.closest('.action-buttons')) return;
+    if (target.closest('.row-actions')) return;
     if (e.key === 'Enter' && !isEditing) {
       onSelect(e as unknown as MouseEvent);
     }
   }
 
-  function startEditing(e: MouseEvent) {
-    e.stopPropagation();
-    e.preventDefault();
+  function startRename() {
     editTitle = thread.title;
     isEditing = true;
   }
@@ -117,10 +109,10 @@
     onConfigure?.();
   }
 
-  function handleOpenAgentConfig(e: MouseEvent) {
+  function handlePinClick(e: MouseEvent) {
     e.stopPropagation();
     e.preventDefault();
-    onOpenAgentConfig?.();
+    onTogglePin?.();
   }
 
   function handleCopyId() {
@@ -135,8 +127,7 @@
 
   function handleContextRename() {
     contextMenu = null;
-    editTitle = thread.title;
-    isEditing = true;
+    startRename();
   }
 
   function handleContextDelete() {
@@ -144,12 +135,19 @@
     onDelete();
   }
 
-  function handleFocusOut(e: FocusEvent) {
-    const nextTarget = e.relatedTarget;
-    if (!(nextTarget instanceof Node) || !(e.currentTarget as HTMLElement).contains(nextTarget)) {
-      showActions = false;
-    }
-  }
+  // Items for the shared kebab menu. "Behavior settings" and "Agent settings"
+  // open the thread-config panel on the matching tab (Behavior / Agent), so each
+  // label names its destination and the two read as distinct by scope; both
+  // appear only when their handler is wired. Rename is local; Delete routes to
+  // the list's existing confirm modal.
+  let kebabItems = $derived([
+    ...(onConfigure ? [{ label: 'Behavior settings', icon: 'cog', onSelect: () => onConfigure?.() }] : []),
+    ...(onOpenAgentConfig
+      ? [{ label: 'Agent settings', icon: 'tool', onSelect: () => onOpenAgentConfig?.() }]
+      : []),
+    { label: 'Rename', icon: 'edit', onSelect: startRename },
+    { label: 'Delete', icon: 'trash', onSelect: onDelete, destructive: true },
+  ]);
 </script>
 
 <div
@@ -158,88 +156,84 @@
   class:selected={isSelected}
   class:editing={isEditing}
   class:callable={isCallable}
-  class:actionsOpen={showActions}
+  class:menuOpen={menuOpen}
   data-thread-id={thread.id}
   onclick={handleClick}
   oncontextmenu={handleContextMenu}
   onkeydown={handleKeydown}
-  onmouseenter={() => (showActions = true)}
-  onmouseleave={() => (showActions = false)}
-  onfocusin={() => (showActions = true)}
-  onfocusout={handleFocusOut}
   role="button"
   tabindex="0"
   aria-current={isActive ? 'page' : undefined}
 >
   <div class="thread-icon">
     {#if thread.platform === 'discord'}
-      <span class="platform-icon discord" title="Discord">
+      <span class="platform-icon discord" data-tooltip="Discord">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
         </svg>
       </span>
     {:else if thread.platform === 'telegram'}
-      <span class="platform-icon telegram" title="Telegram">
+      <span class="platform-icon telegram" data-tooltip="Telegram">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
         </svg>
       </span>
     {:else if thread.platform === 'slack'}
-      <span class="platform-icon slack" title="Slack">
+      <span class="platform-icon slack" data-tooltip="Slack">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/>
         </svg>
       </span>
     {:else if thread.platform === 'matrix'}
-      <span class="platform-icon matrix" title="Matrix">
+      <span class="platform-icon matrix" data-tooltip="Matrix">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'whatsapp'}
-      <span class="platform-icon whatsapp" title="WhatsApp">
+      <span class="platform-icon whatsapp" data-tooltip="WhatsApp">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'messenger'}
-      <span class="platform-icon messenger" title="Messenger">
+      <span class="platform-icon messenger" data-tooltip="Messenger">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'webex'}
-      <span class="platform-icon webex" title="Webex">
+      <span class="platform-icon webex" data-tooltip="Webex">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'mattermost'}
-      <span class="platform-icon mattermost" title="Mattermost">
+      <span class="platform-icon mattermost" data-tooltip="Mattermost">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'zulip'}
-      <span class="platform-icon zulip" title="Zulip">
+      <span class="platform-icon zulip" data-tooltip="Zulip">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'rocketchat'}
-      <span class="platform-icon rocketchat" title="Rocket.Chat">
+      <span class="platform-icon rocketchat" data-tooltip="Rocket.Chat">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'teams'}
-      <span class="platform-icon teams" title="Microsoft Teams">
+      <span class="platform-icon teams" data-tooltip="Microsoft Teams">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'googlechat'}
-      <span class="platform-icon googlechat" title="Google Chat">
+      <span class="platform-icon googlechat" data-tooltip="Google Chat">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'line'}
-      <span class="platform-icon line" title="LINE">
+      <span class="platform-icon line" data-tooltip="LINE">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'signal'}
-      <span class="platform-icon signal" title="Signal">
+      <span class="platform-icon signal" data-tooltip="Signal">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'twitch'}
-      <span class="platform-icon twitch" title="Twitch">
+      <span class="platform-icon twitch" data-tooltip="Twitch">
         <Icon name="chat" size={14} />
       </span>
     {:else if thread.platform === 'trigger'}
-      <span class="platform-icon trigger" title="Trigger">
+      <span class="platform-icon trigger" data-tooltip="Trigger">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
         </svg>
@@ -273,19 +267,19 @@
     {/if}
   </div>
 
-  {#if !showActions && !isEditing}
+  {#if !isEditing}
     <div class="thread-badges">
       {#if isCallable && !onOpenAgentConfig}
-        <span class="callable-indicator" title="Callable">&lt;</span>
+        <span class="callable-indicator" data-tooltip="Callable">&lt;</span>
       {/if}
       {#if isPinned}
-        <span class="pin-indicator" title="Pinned"><Icon name="pin" size={12} /></span>
+        <span class="pin-indicator" data-tooltip="Pinned"><Icon name="pin" size={12} /></span>
       {/if}
       {#if hasUnread}
-        <span class="unread-dot" title="New message from Nymeria"></span>
+        <span class="unread-dot" data-tooltip="New message from Nymeria"></span>
       {/if}
       {#if thread.recovered}
-        <span class="recovered-indicator" title="Recovered backend thread">
+        <span class="recovered-indicator" data-tooltip="Recovered backend thread">
           <Icon name="warning" size={12} />
         </span>
       {/if}
@@ -298,25 +292,24 @@
     </div>
   {/if}
 
-  {#if showActions && !isEditing}
-    <div class="action-buttons">
-      {#if onOpenAgentConfig}
+  {#if !isEditing}
+    <div class="row-actions">
+      {#if onTogglePin}
         <button
-          class="agent-btn"
-          onclick={handleOpenAgentConfig}
+          class="pin-toggle"
+          class:pinned={isPinned}
+          onclick={handlePinClick}
           type="button"
-          data-tooltip={isCallable ? 'Callable agent settings' : 'Agent settings'}
-          aria-label={isCallable ? 'Callable agent settings' : 'Agent settings'}
+          data-tooltip={isPinned ? 'Unpin thread' : 'Pin thread'}
+          aria-label={isPinned ? 'Unpin thread' : 'Pin thread'}
+          aria-pressed={isPinned}
         >
-          <Icon name="tool" size={14} />
+          <Icon name="pin" size={14} />
         </button>
       {/if}
-      <button class="edit-btn" onclick={startEditing} type="button" data-tooltip="Rename thread" aria-label="Rename thread">
-        <Icon name="edit" size={14} />
-      </button>
-      <button class="delete-btn" onclick={handleDelete} type="button" data-tooltip="Delete thread" aria-label="Delete thread">
-        <Icon name="trash" size={14} />
-      </button>
+      <span class="kebab-wrap">
+        <KebabMenu items={kebabItems} ariaLabel="Thread actions" bind:open={menuOpen} />
+      </span>
     </div>
   {/if}
 </div>
@@ -340,7 +333,7 @@
     {#if onConfigure}
       <button class="context-item" onclick={handleContextConfigure} type="button">
         <Icon name="cog" size={14} />
-        <span>Configure</span>
+        <span>Behavior settings</span>
       </button>
     {/if}
     {#if onExport}
@@ -571,60 +564,63 @@
     text-overflow: ellipsis;
   }
 
-  .action-buttons {
+  /* Pin + kebab float over the right edge as an absolute overlay, so revealing
+     them never shifts or compresses the title the way the old in-flow icon
+     cluster did. The resting status badges sit in the same spot and cross-fade
+     out as these fade in. Hidden (and out of the tab order, via visibility)
+     until the row is hovered or keyboard-focused, or while the kebab menu is
+     open. */
+  .row-actions {
     position: absolute;
-    right: 1px;
     top: 50%;
+    right: var(--spacing-md);
     transform: translateY(-50%);
     display: flex;
-    gap: 4px;
-    padding: 3px;
-    background: var(--bg-elevated);
-    border-radius: var(--radius-md);
-    /* §7 — floating hover-revealed actions bar: shadow alone defines
-       elevation; border would be redundant chrome. Tokenized to
-       --shadow-md (raw 0 2px 8px / 0.35 was in the popover tier). */
-    box-shadow: var(--shadow-md);
-    z-index: 2;
+    align-items: center;
+    gap: 2px;
+    z-index: 1;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--transition-fast), visibility 0s var(--transition-fast);
   }
 
-  .agent-btn,
-  .edit-btn,
-  .delete-btn {
-    padding: var(--spacing-xs);
+  .thread-item:hover .row-actions,
+  .thread-item:focus-within .row-actions,
+  .thread-item.menuOpen .row-actions {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity var(--transition-fast), visibility 0s 0s;
+  }
+
+  .pin-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
     color: var(--text-muted);
     border-radius: var(--radius-sm);
-    transition: all var(--transition-fast);
-    opacity: 0.7;
+    cursor: pointer;
+    transition: color var(--transition-fast), background var(--transition-fast),
+      transform var(--transition-fast);
   }
 
-  .agent-btn:active,
-  .edit-btn:active,
-  .delete-btn:active {
+  .pin-toggle:hover {
+    color: var(--accent-primary);
+    background: var(--bg-elevated-2);
+  }
+
+  .pin-toggle:active {
     transform: scale(var(--press-scale-icon));
   }
 
-  .agent-btn {
-    color: var(--text-muted);
-    opacity: 0.85;
-  }
-
-  .agent-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-elevated-2);
-    opacity: 1;
-  }
-
-  .edit-btn:hover {
+  /* Lit when pinned so the toggle reads as "on". */
+  .pin-toggle.pinned {
     color: var(--accent-primary);
-    background: var(--bg-elevated-2);
-    opacity: 1;
   }
 
-  .delete-btn:hover {
-    color: var(--error);
-    background: var(--bg-elevated-2);
-    opacity: 1;
+  .kebab-wrap {
+    display: inline-flex;
+    align-items: center;
   }
 
   .thread-item.editing {
@@ -653,6 +649,15 @@
     flex-shrink: 0;
     margin-left: auto;
     padding-right: var(--spacing-xs);
+    /* Cross-fade with the action overlay: the badges fade as pin+kebab fade in,
+       keeping their flow space so the title width never changes. */
+    transition: opacity var(--transition-fast);
+  }
+
+  .thread-item:hover .thread-badges,
+  .thread-item:focus-within .thread-badges,
+  .thread-item.menuOpen .thread-badges {
+    opacity: 0;
   }
 
   .task-badge {

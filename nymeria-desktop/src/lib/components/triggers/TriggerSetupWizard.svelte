@@ -380,7 +380,7 @@
           <div class="config-form">
             {#each Object.entries(fieldGroups) as [group, fields]}
               <div class="field-group">
-                <h4 class="group-title">{group}</h4>
+                <h4 class="group-title section-label">{group}</h4>
                 {#each fields as [key, field]}
                   <div class="field-row">
                     <label class="field-label" for="cfg-{key}">
@@ -1015,12 +1015,9 @@
   }
 
   .group-title {
+    /* type role from global .section-label; keep 2xs size for dense form */
     margin: 0;
     font-size: var(--font-size-2xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    letter-spacing: 0.05em;
   }
 
   .field-row {

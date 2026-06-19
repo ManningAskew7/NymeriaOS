@@ -79,7 +79,7 @@
               {#if globalOn}<span class="skill-chip">global</span>{/if}
               {#if skill.is_skill_kit}<span class="skill-chip">Skill Kit</span>{/if}
               {#each skill.required_tools as toolName}
-                <span class="skill-chip skill-required" title={`Required tool: ${toolName} (${skill.tool_ttl})`}>
+                <span class="skill-chip skill-required" data-tooltip={`Required tool: ${toolName} (${skill.tool_ttl})`}>
                   {toolName}
                 </span>
               {/each}
@@ -93,7 +93,6 @@
                 class:skill-btn-danger={threadOff}
                 onclick={() => toggleThreadSkillDisabled(skill.name)}
                 type="button"
-                title="Disable for this thread only"
               >
                 {threadOff ? 'Disabled here' : 'Disable for thread'}
               </button>
@@ -103,7 +102,6 @@
                 class:skill-btn-active={threadOn}
                 onclick={() => toggleThreadSkillEnabled(skill.name)}
                 type="button"
-                title="Enable for this thread"
               >
                 {threadOn ? 'Enabled here' : 'Enable for thread'}
               </button>

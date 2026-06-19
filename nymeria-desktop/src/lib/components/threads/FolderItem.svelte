@@ -164,7 +164,7 @@
     {/if}
     <span class="folder-count">{threads.length}</span>
     {#if isPinned}
-      <span class="pin-indicator" title="Pinned"><Icon name="pin" size={12} /></span>
+      <span class="pin-indicator" data-tooltip="Pinned"><Icon name="pin" size={12} /></span>
     {/if}
   </div>
 

@@ -27,7 +27,6 @@
   class:state-unverified={state === 'unverified'}
   class:state-loading={state === 'loading'}
   style="--avatar-size: {size}px;"
-  title={identity ? `${identity.display_name || identity.email} (${identity.role})` : 'No identity'}
 >
   {#if state === 'loading'}
     <span class="skeleton"></span>

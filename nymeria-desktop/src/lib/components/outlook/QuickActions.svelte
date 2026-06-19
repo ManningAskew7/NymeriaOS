@@ -59,7 +59,6 @@
             class="qa-btn"
             onclick={() => handleClick(action.prompt)}
             disabled={disabled}
-            title={action.label}
           >
             <span class="qa-icon">{action.icon}</span>
             <span class="qa-text">{action.label}</span>
@@ -69,7 +68,7 @@
           class="qa-btn qa-btn-ref"
           onclick={handleInsertRef}
           disabled={disabled}
-          title="Insert email reference into message"
+          data-tooltip="Insert email reference into message"
         >
           <span class="qa-icon">@</span>
           <span class="qa-text">Ref Email</span>
@@ -82,7 +81,6 @@
           <button
             class="qa-btn"
             disabled
-            title="Select an email first"
           >
             <span class="qa-icon">{action.icon}</span>
             <span class="qa-text">{action.label}</span>
@@ -91,7 +89,6 @@
         <button
           class="qa-btn qa-btn-ref"
           disabled
-          title="Select an email first"
         >
           <span class="qa-icon">@</span>
           <span class="qa-text">Ref Email</span>

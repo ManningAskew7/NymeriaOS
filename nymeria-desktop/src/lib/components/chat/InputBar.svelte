@@ -444,7 +444,7 @@
         class="plus-btn"
         onclick={openFilePicker}
         disabled={disabled || isStreaming}
-        title="Attach files"
+        data-tooltip="Attach files"
         aria-label="Attach files"
       >
         <Icon name="plus" size={18} />
@@ -468,7 +468,7 @@
         type="button"
         class="plus-btn danger"
         onclick={handleStopClick}
-        title="Stop the current turn"
+        data-tooltip="Stop the current turn"
         aria-label="Stop"
       >
         <Icon name="stop" size={14} />
@@ -479,7 +479,7 @@
       class="send-btn"
       onclick={handleSendClick}
       disabled={!canSend}
-      title={isStreaming ? 'Queue this message until the agent halts' : 'Send'}
+      data-tooltip={isStreaming ? 'Queue this message until the agent halts' : 'Send'}
       aria-label="Send"
     >
       <Icon name="arrowUp" size={14} />
@@ -671,7 +671,11 @@
     border: none;
     color: var(--text-primary);
     font-family: inherit;
-    font-size: var(--font-size-base);
+    /* Match the message reading size (--font-size-sm, 14px in .bubble-content)
+       so what you type and the placeholder ghost read at the same size as the
+       conversation above. The placeholder inherits this size (its rule only
+       sets color). */
+    font-size: var(--font-size-sm);
     line-height: 1.5;
     resize: none;
     overflow-y: auto;
@@ -759,7 +763,6 @@
     color: var(--text-muted);
     text-align: right;
     white-space: nowrap;
-    opacity: 0.75;
   }
 
   kbd {
@@ -770,5 +773,8 @@
     background: var(--bg-elevated-2);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-sm);
+    /* Nudge the key chips (and their labels) up 1px so they sit optically
+       centred against the surrounding "Press … to send" text. */
+    transform: translateY(-1px);
   }
 </style>

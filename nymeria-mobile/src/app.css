@@ -354,6 +354,30 @@ pre code {
 .text-warning { color: var(--warning); }
 .text-error { color: var(--error); }
 
+/* ── Centralized text-role utilities ─────────────────────────────────
+   Two small typographic roles defined once so they can't drift across
+   components (see Nymeria/docs/private/AI-UI-Design-Diagnosis guide). */
+
+/* One timestamp text style, reused for every absolute clock time in chat. */
+.timestamp {
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* The one section-divider role: all-caps + tracking. Apply ONLY to labels that
+   introduce a group of sibling items (sidebar date groups, "UPCOMING", settings
+   group headers). Font-size defaults to xs; a dense context (nav rail, form
+   section) may override font-size locally and nothing else. No other small text
+   should be uppercase/letter-spaced, so this look unambiguously means "divider". */
+.section-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 /* Animation utilities */
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }

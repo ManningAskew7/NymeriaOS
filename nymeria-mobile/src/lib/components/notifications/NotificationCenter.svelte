@@ -75,8 +75,11 @@
           </div>
         {:else if notificationStore.notifications.length === 0}
           <div class="empty-state">
-            <Icon name="bell" size={32} />
-            <p>No notifications yet. Task and trigger updates will land here.</p>
+            <!-- A crescent moon reads as "all quiet / nothing pending", a calmer
+                 empty state than the bell (which is the trigger icon). Greyed a
+                 touch below the text via .empty-moon. -->
+            <Icon name="moon" size={28} class="empty-moon" />
+            <p>No notifications.</p>
           </div>
         {:else}
           {#each notificationStore.notifications as notification (notification.id)}
@@ -161,8 +164,15 @@
     align-items: center;
     justify-content: center;
     padding: var(--spacing-xl);
-    gap: var(--spacing-sm);
+    gap: var(--spacing-md);
     color: var(--text-muted);
+  }
+
+  /* The moon sits a step quieter than the "No notifications" text: same hue
+     (inherits the muted text color) but knocked back with opacity so it reads
+     as a soft, restful mark rather than a label. */
+  .empty-state :global(.empty-moon) {
+    opacity: 0.6;
   }
 
   .empty-state p {

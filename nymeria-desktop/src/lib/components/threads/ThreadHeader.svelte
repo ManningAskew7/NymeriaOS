@@ -3,7 +3,9 @@
   import { tick } from 'svelte';
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
+  import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import { Icon } from '$lib/components/common';
+  import { tooltipWhenClipped } from '$lib/actions/tooltip';
   import CheckpointViewer from '$lib/components/common/CheckpointViewer.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
@@ -14,6 +16,7 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
   import { healthStore } from '$lib/stores/health.svelte';
+  import { uiStore } from '$lib/stores/ui.svelte';
   import { computeEffectiveToolCounts, liveTemporaryToolNames } from '$lib/utils/toolCounts';
 
   interface Props {
@@ -28,6 +31,17 @@
   // Developer-mode raw checkpoint viewer (null = closed). The button that sets
   // this is gated behind configStore.developerMode.
   let checkpointThreadId = $state<string | null>(null);
+
+  // Appearance setting (uiStore): collapse the inline metadata row into a single
+  // summary chip on the right, with the full breakdown in a popover.
+  const summaryMode = $derived(uiStore.threadHeaderSummary);
+
+  // Summary-chip popover state. Fixed-positioned and portaled to <body> (same
+  // approach as the task-card overflow menu) so the panel chrome can't clip it.
+  let summaryOpen = $state(false);
+  let chipEl = $state<HTMLButtonElement>();
+  let summaryEl = $state<HTMLDivElement>();
+  let summaryStyle = $state('');
 
   const healthDotClass = $derived(
     healthStore.checking && !healthStore.connected
@@ -319,6 +333,49 @@
     return parts;
   });
 
+  // Rows shown in the summary-mode popover: every metric except the model (kept
+  // inline beside the title) and tools (the chip's headline number). Same
+  // presence rules as metaParts, so the popover stays in sync with what the
+  // inline row would have shown.
+  type BreakdownRow = {
+    id: string;
+    label: string;
+    count: number | string;
+    tooltip?: string;
+    variant?: 'reduced' | 'accent' | 'default';
+  };
+
+  const breakdownRows = $derived.by<BreakdownRow[]>(() => {
+    const rows: BreakdownRow[] = [];
+    if (activeMcpToolCount !== null) {
+      rows.push({ id: 'mcp', label: 'MCP', count: activeMcpToolCount, tooltip: mcpTooltip, variant: disabledMcpCount > 0 ? 'reduced' : 'default' });
+    }
+    if (callableCount !== null && callableCount > 0) {
+      rows.push({ id: 'callables', label: 'Callable', count: callableCount, tooltip: callableTooltip });
+    }
+    if (activeSkillCount !== null && activeSkillCount > 0) {
+      rows.push({ id: 'skills', label: 'Skills', count: activeSkillCount, tooltip: activeSkillTooltip });
+    }
+    if (activeKitCount !== null && activeKitCount > 0) {
+      rows.push({ id: 'kits', label: 'Kits', count: activeKitCount, tooltip: activeKitTooltip });
+    }
+    if (triggerCount > 0) {
+      rows.push({ id: 'triggers', label: 'Triggers', count: triggerCount, tooltip: `${triggerCount} active trigger${triggerCount !== 1 ? 's' : ''}` });
+    }
+    if (hasInstructions) {
+      rows.push({ id: 'instructions', label: 'Instructions', count: '✓', tooltip: instructionsTooltip });
+    }
+    if (isCallable) {
+      rows.push({ id: 'callable', label: 'Callable thread', count: '✓', tooltip: 'This thread can be called by other threads', variant: 'accent' });
+    }
+    return rows;
+  });
+
+  // Chip headline mirrors the image: the active tool count. Falls back to a
+  // generic label if tools haven't resolved yet but other metrics have.
+  const summaryLabel = $derived(activeToolCount !== null ? `${activeToolCount} tools` : 'Details');
+  const showSummaryChip = $derived(activeToolCount !== null || breakdownRows.length > 0);
+
   // The metrics row keeps as many full labels as the width allows and collapses
   // the rest, right to left, to counts/dots (see MetaPart.compactText) so it
   // always shows the most information that fits. The title yields space first
@@ -410,12 +467,86 @@
     observer.observe(headerEl);
     return () => observer.disconnect();
   });
+
+  // --- Summary-chip popover (summary mode only) ---
+
+  // Move the popover out to <body> so its fixed positioning is measured against
+  // the viewport, immune to any ancestor that establishes a containing block.
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.remove();
+      },
+    };
+  }
+
+  function openSummary() {
+    if (!chipEl) return;
+    const r = chipEl.getBoundingClientRect();
+    // Anchor by the right edge so the popover lines up under the chip and grows
+    // leftward with its content. The header is pinned to the top of the window,
+    // so it always has room to drop downward (no up-flip needed).
+    const right = Math.max(8, window.innerWidth - r.right);
+    summaryStyle = `top:${r.bottom + 6}px; right:${right}px;`;
+    summaryOpen = true;
+  }
+
+  function closeSummary() {
+    if (summaryEl?.contains(document.activeElement)) chipEl?.focus();
+    summaryOpen = false;
+  }
+
+  function toggleSummary(e: MouseEvent) {
+    e.stopPropagation();
+    if (summaryOpen) closeSummary();
+    else openSummary();
+  }
+
+  function handleSummaryOutsideClick(e: MouseEvent) {
+    const t = e.target as HTMLElement;
+    if (!t.closest('.summary-popover') && !t.closest('.summary-chip')) closeSummary();
+  }
+
+  function handleSummaryKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSummary();
+    }
+  }
+
+  $effect(() => {
+    if (!summaryOpen) return;
+    document.addEventListener('click', handleSummaryOutsideClick, true);
+    document.addEventListener('keydown', handleSummaryKeydown, true);
+    window.addEventListener('scroll', closeSummary, true);
+    window.addEventListener('resize', closeSummary, true);
+    return () => {
+      document.removeEventListener('click', handleSummaryOutsideClick, true);
+      document.removeEventListener('keydown', handleSummaryKeydown, true);
+      window.removeEventListener('scroll', closeSummary, true);
+      window.removeEventListener('resize', closeSummary, true);
+    };
+  });
+
+  // Close the popover if summary mode is switched off while it's open.
+  $effect(() => {
+    if (!summaryMode && summaryOpen) summaryOpen = false;
+  });
 </script>
 
 <header class="thread-header" bind:this={headerEl}>
-  <h2 class="title" title={thread.title} bind:this={titleEl}>{thread.title}</h2>
+  <h2 class="title" use:tooltipWhenClipped={thread.title} bind:this={titleEl}>{thread.title}</h2>
 
-  {#if metaParts.length > 0}
+  {#if summaryMode}
+    {#if effectiveModel}
+      <span
+        class="header-model"
+        class:accent={effectiveModel.isOverride}
+        data-tooltip={`${effectiveModel.full}${effectiveModel.isOverride ? ' (thread override)' : ''}`}
+      >{effectiveModel.name}</span>
+    {/if}
+  {:else if metaParts.length > 0}
     <button
       class="meta-toggle {healthDotClass}"
       class:open={showMeta}
@@ -432,7 +563,7 @@
       <div class="meta" bind:this={metaEl} transition:slide={{ axis: 'x', duration: 240, easing: cubicOut }}>
         {#each metaParts as part, i (part.id)}
           {@const showFull = measuring === 'full' || (measuring !== 'compact' && i < fullCount)}
-          <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} title={part.tooltip}>{showFull ? part.text : compactOf(part)}</span>
+          <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} data-tooltip={part.tooltip}>{showFull ? part.text : compactOf(part)}</span>
         {/each}
       </div>
     {/if}
@@ -443,7 +574,7 @@
       <button
         class="icon-btn"
         onclick={popOut}
-        title="Pop out to resizable window"
+        data-tooltip="Pop out to resizable window"
         type="button"
         aria-label="Pop out"
       >
@@ -452,7 +583,7 @@
       <button
         class="icon-btn"
         onclick={openInBrowser}
-        title="Open in full browser"
+        data-tooltip="Open in full browser"
         type="button"
         aria-label="Open in browser"
       >
@@ -463,18 +594,33 @@
       <button
         class="icon-btn"
         onclick={() => (checkpointThreadId = thread.id)}
-        title="View raw checkpoint (developer)"
+        data-tooltip="View raw checkpoint (developer)"
         type="button"
         aria-label="View raw checkpoint"
       >
         <Icon name="terminal" size={16} />
       </button>
     {/if}
+    {#if summaryMode && showSummaryChip}
+      <button
+        class="summary-chip"
+        class:open={summaryOpen}
+        bind:this={chipEl}
+        onclick={toggleSummary}
+        type="button"
+        data-tooltip="Thread details"
+        aria-haspopup="true"
+        aria-expanded={summaryOpen}
+      >
+        <span>{summaryLabel}</span>
+        <Icon name="chevronDown" size={14} />
+      </button>
+    {/if}
     <button
       class="icon-btn cog"
       class:active={threadConfig?.hasCustomizations ?? false}
       onclick={onOpenSettings}
-      title={threadConfig?.hasCustomizations ? 'Thread settings (customized)' : 'Thread settings'}
+      data-tooltip={threadConfig?.hasCustomizations ? 'Thread settings (customized)' : 'Thread settings'}
       type="button"
       aria-label={threadConfig?.hasCustomizations ? 'Thread settings, customized' : 'Thread settings'}
     >
@@ -482,6 +628,24 @@
     </button>
   </div>
 </header>
+
+{#if summaryMode && summaryOpen}
+  <div
+    class="summary-popover"
+    bind:this={summaryEl}
+    use:portal
+    style={summaryStyle}
+    aria-label="Thread details"
+    transition:slide={DROPDOWN_TRANSITION}
+  >
+    {#each breakdownRows as row (row.id)}
+      <div class="summary-row {row.variant ?? ''}" data-tooltip={row.tooltip}>
+        <span class="summary-row-label">{row.label}</span>
+        <span class="count" class:zero={row.count === 0}>{row.count}</span>
+      </div>
+    {/each}
+  </div>
+{/if}
 
 <CheckpointViewer threadId={checkpointThreadId} onClose={() => (checkpointThreadId = null)} />
 
@@ -638,15 +802,12 @@
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot-color) 18%, transparent);
   }
 
-  .meta-part--model { --dot-color: var(--accent-primary); }
-  .meta-part--tools { --dot-color: var(--success); }
-  .meta-part--mcp { --dot-color: var(--info); }
-  .meta-part--callables { --dot-color: var(--accent-secondary); }
-  .meta-part--skills { --dot-color: var(--accent-primary); }
-  .meta-part--kits { --dot-color: color-mix(in srgb, var(--accent-primary) 55%, var(--text-muted)); }
-  .meta-part--triggers { --dot-color: var(--warning); }
-  .meta-part--instructions { --dot-color: var(--text-muted); }
-  .meta-part--callable { --dot-color: var(--accent-primary); }
+  /* Every metric dot keeps the neutral muted gray set on .meta-part above.
+     These dots mark categories (model, tools, MCP, skills, …), not health, so a
+     per-category rainbow just read as noise: the category is already named by
+     the label and its tooltip. Colour here is reserved for genuine state — the
+     .reduced warning below (tools turned off) and the .meta-toggle health cue —
+     plus the single accent on a .accent override. */
 
   .meta-part.reduced {
     color: var(--warning);
@@ -713,6 +874,123 @@
   }
 
   .icon-btn.cog.active {
+    color: var(--accent-primary);
+  }
+
+  /* Summary mode: the model name sits inline beside the title (replacing its
+     spot in the meta row), muted like the secondary metadata it summarises. */
+  .header-model {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 0 1 auto;
+    min-width: 0;
+    cursor: default;
+    /* Same optical-centering nudge the .meta row uses, so it sits level with
+       the title beside it. */
+    transform: translateY(1px);
+  }
+
+  .header-model.accent {
+    color: var(--accent-primary);
+    font-weight: 500;
+  }
+
+  /* The single chip that stands in for the whole meta row in summary mode. A
+     quiet bordered pill (left of the cog) that opens the breakdown popover. */
+  .summary-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 26px;
+    padding: 0 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    /* Blends into the header at rest (no fill, no visible border); the hover /
+       open background is the only interactivity cue, matching the other quiet
+       header controls. The 1px transparent border keeps the box size steady so
+       a hover/open fill never nudges the chevron. */
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: color var(--transition-fast), background var(--transition-fast),
+      border-color var(--transition-fast);
+  }
+
+  .summary-chip:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .summary-chip:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+  }
+
+  .summary-chip :global(svg) {
+    display: block;
+    color: var(--text-muted);
+    /* Nudged down 1px so the chevron sits optically centred against the
+       cap-height of the "22 tools" label rather than its full line box. */
+    transform: translateY(1px);
+    transition: transform 120ms var(--ease-out);
+  }
+
+  /* Open state highlights the chip itself rather than flipping the chevron —
+     the app's disclosure arrows don't do a 180° flip, and the popover's
+     presence is the real open cue. */
+  .summary-chip.open {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* Breakdown popover (fixed-positioned + portaled). Chrome mirrors the other
+     floating menus: elevated surface, shadow-defined elevation, no border. */
+  .summary-popover {
+    position: fixed;
+    min-width: 184px;
+    padding: var(--spacing-xs);
+    background: var(--bg-elevated-2, var(--bg-elevated));
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    z-index: 1000;
+  }
+
+  .summary-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    cursor: default;
+  }
+
+  .summary-row .count {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A zero count is dimmed so a present-but-empty category (e.g. MCP 0) reads as
+     quieter than the active ones. */
+  .summary-row .count.zero {
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .summary-row.reduced .count {
+    color: var(--warning);
+  }
+
+  .summary-row.accent .count {
     color: var(--accent-primary);
   }
 </style>

@@ -2,7 +2,6 @@
   import { todosStore } from '$lib/stores/todos.svelte';
   import TodoItem from './TodoItem.svelte';
   import TodoForm from './TodoForm.svelte';
-  import { Icon } from '$lib/components/common';
   import { onMount } from 'svelte';
   import type { TodoItem as TodoItemType } from '$lib/types';
 
@@ -29,11 +28,6 @@
   let showForm = $state(false);
   let editingTodo = $state<TodoItemType | null>(null);
 
-  function openCreateForm() {
-    editingTodo = null;
-    showForm = true;
-  }
-
   function openEditForm(todo: TodoItemType) {
     editingTodo = todo;
     showForm = true;
@@ -46,16 +40,8 @@
 </script>
 
 <div class="todo-feed">
-  <!-- Header with Add Button -->
-  <div class="feed-header">
-    <button class="add-task-btn" onclick={openCreateForm} type="button">
-      <Icon name="plus" size={14} />
-      <span>Add Task</span>
-    </button>
-  </div>
-
   <!-- No loading-state branch on purpose. When this feed is inside a
-       Collapsible, the Svelte slide transition measures the .content
+       collapsible section, the Svelte slide transition measures the .content
        height once at intro-start. If the initial render is the small
        loading-state and the fetch resolves mid-slide, the rendered
        state switches to the (taller) empty-state or todo list, but the
@@ -76,17 +62,17 @@
     <div class="empty-state">
       {#if threadId}
         <p>No tasks in this thread</p>
-        <p class="hint">Use "Add Task" above to create one for this thread</p>
+        <p class="hint">Use "New task" in the section header to create one for this thread</p>
       {:else}
         <p>No tasks yet</p>
-        <p class="hint">Click "Add Task" to create one. Nymeria can also create tasks while working on a thread.</p>
+        <p class="hint">Click "New task" in the section header to create one. Nymeria can also create tasks while working on a thread.</p>
       {/if}
     </div>
   {:else}
     <!-- In Progress Section (highlighted at top) -->
     {#if organized.inProgress.length > 0}
       <div class="todo-group in-progress-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">In Progress</span>
           <span class="count highlight">{organized.inProgress.length}</span>
         </h3>
@@ -107,7 +93,7 @@
     <!-- Active Tasks Section (pending) -->
     {#if organized.active.length > 0}
       <div class="todo-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">Upcoming</span>
           <span class="count">{organized.active.length}</span>
         </h3>
@@ -127,7 +113,7 @@
     <!-- Completed Section (scrollable like Activity) -->
     {#if organized.completed.length > 0}
       <div class="todo-group completed-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">Completed</span>
           <span class="count">{organized.completed.length}</span>
         </h3>
@@ -154,38 +140,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-lg);
-  }
-
-  .feed-header {
-    display: flex;
-    width: 100%;
-  }
-
-  .add-task-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--spacing-xs);
-    width: 100%;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    background: transparent;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    color: var(--text-muted);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-
-  .add-task-btn:hover {
-    border-color: var(--accent-primary);
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .add-task-btn span {
-    transform: translateY(-1px);
   }
 
   .error-state,
@@ -245,13 +199,21 @@
   .group-label {
     display: flex;
     align-items: center;
+    /* Count sits right after the label text (spaced by the gap), reading as
+       "Upcoming 2" rather than floating at the row's right edge. */
     gap: var(--spacing-sm);
     margin: 0 0 var(--spacing-xs) 0;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    /* Type role (uppercase / tracking / weight / muted) is the global .section-label. */
+    /* Indent to the 16px icon column (8px section body + 8px here) so the group
+       label shares the chevron / row-icon vertical line. */
+    padding-left: var(--spacing-sm);
+  }
+
+  /* Reserve the shared count-column width so the count begins at the same x as
+     every other count in the dashboard panel. Falls back to 0 (count sits right
+     after the label) wherever --count-col-label is not defined. */
+  .label-text {
+    min-width: var(--count-col-label, 0px);
   }
 
   .count {
@@ -276,18 +238,10 @@
   .group-items {
     display: flex;
     flex-direction: column;
-    /* Gap between cards uses --spacing-sm so the breathing matches
-       TriggerFeed exactly. The 12px internal card padding (todo-item)
-       feels grouped within a card, the 8px between cards reads as
-       separation — Gestalt proximity working in our favour. */
-    gap: var(--spacing-sm);
-  }
-
-  .group-items.highlighted {
-    padding: var(--spacing-xs);
-    background: rgba(var(--accent-primary-rgb), 0.1);
-    border: 1px solid var(--accent-tint-border);
-    border-radius: var(--radius-md);
+    /* Rows sit flush (no gap): a hairline divider on each row but the first
+       (see TodoItem) provides the separation, so the list reads as one
+       continuous group inside the section card rather than a stack of cards. */
+    gap: 0;
   }
 
   /* Completed section scrollable like Activity feed */

@@ -62,9 +62,15 @@
       showTimer = null;
     }
     // If already visible (user moved from one tooltipped element to another),
-    // swap to the new one immediately.
+    // swap to the new one. Deferred to a microtask for the same reason as
+    // hide(): onOver/onFocusIn can fire synchronously while Svelte is mid-flush
+    // (focus relocating as DOM is inserted/removed), and showFor writes $state,
+    // which would trip state_unsafe_mutation. The currentTarget recheck drops
+    // the swap if hover/focus moved on before the microtask ran.
     if (visible) {
-      showFor(target);
+      queueMicrotask(() => {
+        if (currentTarget === target) showFor(target);
+      });
       return;
     }
     showTimer = window.setTimeout(() => {
@@ -77,8 +83,23 @@
       window.clearTimeout(showTimer);
       showTimer = null;
     }
-    visible = false;
     currentTarget = null;
+    if (!visible) return;
+    // hide() runs from the global focus/mouse listeners, which can fire
+    // synchronously while Svelte is mid-flush — e.g. a focused, tooltipped
+    // element removed during another component's teardown dispatches
+    // `focusout` during effect destruction. Writing the `visible` $state in
+    // that window trips Svelte's state_unsafe_mutation guard, so defer the
+    // write to a microtask (which runs after the flush completes). The
+    // currentTarget check drops the deferred hide if a new anchor became
+    // active in the same tick, so moving between adjacent tooltips doesn't
+    // flicker off. Consequence: `visible` clears one microtask later, not
+    // synchronously — don't assume it's false immediately after hide(). Safe
+    // because this portal is a mounted singleton, so the microtask never
+    // outlives the component except at app teardown (a harmless final write).
+    queueMicrotask(() => {
+      if (!currentTarget) visible = false;
+    });
   }
 
   function findAnchor(e: Event): HTMLElement | null {
@@ -164,7 +185,11 @@
     font-size: var(--font-size-xs);
     font-weight: 400;
     line-height: 1.3;
-    white-space: nowrap;
+    /* Short labels stay one line (box sizes to content under max-width); longer
+       migrated tooltips (error text, disabled reasons, admin notes) wrap instead
+       of overflowing the bubble. */
+    white-space: normal;
+    overflow-wrap: break-word;
     border-radius: var(--radius-sm);
     /* §7 — floating tooltip: shadow alone defines elevation; border
        would be redundant chrome. */

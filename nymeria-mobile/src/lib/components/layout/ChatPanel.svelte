@@ -488,7 +488,7 @@
     <button
       class="header-btn"
       onclick={() => uiStore.goToPanel('left')}
-      title="Threads"
+      aria-label="Threads"
     >
       <Icon name="menu" size={22} />
     </button>
@@ -548,7 +548,7 @@
         <button
           class="header-btn"
           onclick={() => (showThreadSettings = true)}
-          title="Thread Settings"
+          aria-label="Thread Settings"
         >
           <Icon name="settings" size={20} />
         </button>
@@ -556,7 +556,7 @@
       <button
         class="header-btn"
         onclick={() => uiStore.goToPanel('right')}
-        title="Dashboard"
+        aria-label="Dashboard"
       >
         <Icon name="bolt" size={22} />
       </button>

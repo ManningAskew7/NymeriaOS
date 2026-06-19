@@ -80,8 +80,6 @@
   .skill-label {
     font-size: var(--font-size-xs);
     color: var(--accent-primary);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     font-weight: 600;
   }
 

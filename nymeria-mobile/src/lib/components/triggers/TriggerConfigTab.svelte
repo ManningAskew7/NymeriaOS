@@ -803,12 +803,8 @@
   }
 
   .section-label {
+    /* type role from global .section-label */
     display: block;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
     margin-bottom: var(--spacing-sm);
   }
 

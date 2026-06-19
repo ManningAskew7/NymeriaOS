@@ -74,7 +74,7 @@
       <button
         class="restart-btn"
         onclick={handleRestart}
-        title="Restart API server"
+        data-tooltip="Restart API server"
         aria-label="Restart API server"
         type="button"
       >
@@ -106,6 +106,10 @@
     height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
+    /* Nudge the status dot up 1px so it sits optically centred against the
+       "API Connected" text cap-height rather than its full line-box. None of
+       the dot animations touch transform, so this offset is preserved. */
+    transform: translateY(-1px);
   }
 
   .dot.connected {

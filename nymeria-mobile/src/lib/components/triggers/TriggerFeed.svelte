@@ -95,7 +95,7 @@
   {:else}
     {#if activeTriggers.length > 0}
       <div class="trigger-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">Active</span>
           <span class="count highlight">{activeTriggers.length}</span>
         </h3>
@@ -116,7 +116,7 @@
 
     {#if pausedTriggers.length > 0}
       <div class="trigger-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">Paused</span>
           <span class="count">{pausedTriggers.length}</span>
         </h3>
@@ -245,11 +245,7 @@
     align-items: center;
     gap: var(--spacing-sm);
     margin: 0;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    /* Type role (uppercase / tracking / weight / muted) is the global .section-label. */
   }
 
   .count {

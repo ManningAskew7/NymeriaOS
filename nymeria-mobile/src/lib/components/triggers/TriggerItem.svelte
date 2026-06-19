@@ -128,47 +128,47 @@
           class="thread-badge"
           onclick={onNavigateToThread}
           type="button"
-          title="Go to thread"
         >
           {threadTitle}
         </button>
       {/if}
 
-      <label class="toggle" title={trigger.enabled ? 'Disable' : 'Enable'}>
+      <label class="toggle">
         <input
           type="checkbox"
           checked={trigger.enabled}
           disabled={toggling}
           onchange={handleToggle}
+          aria-label={trigger.enabled ? 'Disable trigger' : 'Enable trigger'}
         />
         <span class="toggle-track"></span>
       </label>
 
-      <button class="action-btn" onclick={handleTest} disabled={testing} type="button" title="Test trigger">
+      <button class="action-btn" onclick={handleTest} disabled={testing} type="button" aria-label="Test trigger">
         <Icon name="terminal" size={13} />
       </button>
 
       {#if onHistory}
-        <button class="action-btn" onclick={() => onHistory(trigger)} type="button" title="History">
+        <button class="action-btn" onclick={() => onHistory(trigger)} type="button" aria-label="History">
           <Icon name="clock" size={13} />
         </button>
       {/if}
 
       {#if onEdit}
-        <button class="action-btn" onclick={() => onEdit(trigger)} type="button" title="Edit trigger">
+        <button class="action-btn" onclick={() => onEdit(trigger)} type="button" aria-label="Edit trigger">
           <Icon name="edit" size={13} />
         </button>
       {/if}
 
       {#if !confirmDelete}
-        <button class="action-btn delete-btn" onclick={() => (confirmDelete = true)} type="button" title="Delete trigger">
+        <button class="action-btn delete-btn" onclick={() => (confirmDelete = true)} type="button" aria-label="Delete trigger">
           <Icon name="x" size={13} />
         </button>
       {:else}
-        <button class="action-btn confirm-delete" onclick={handleDelete} type="button" title="Delete trigger">
+        <button class="action-btn confirm-delete" onclick={handleDelete} type="button" aria-label="Confirm delete trigger">
           <Icon name="check" size={13} />
         </button>
-        <button class="action-btn" onclick={() => (confirmDelete = false)} type="button" title="Cancel">
+        <button class="action-btn" onclick={() => (confirmDelete = false)} type="button" aria-label="Cancel">
           <Icon name="x" size={13} />
         </button>
       {/if}

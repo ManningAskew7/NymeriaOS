@@ -2,6 +2,7 @@
   import { slide } from 'svelte/transition';
   import type { SavedConnection } from '$lib/types';
   import { focusOnMount } from '$lib/actions/focus';
+  import { tooltipWhenClipped } from '$lib/actions/tooltip';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
@@ -131,7 +132,7 @@
       <button
         class="header-action"
         type="button"
-        title="Close"
+        data-tooltip="Close"
         aria-label="Close switcher"
         onclick={onClose}
       >
@@ -157,7 +158,6 @@
               type="button"
               onclick={() => handleSwitch(entry.id)}
               disabled={isBusy || connectionsStore.switching}
-              title={isActive ? 'Active account' : `Switch to ${deriveLabel(entry)}`}
             >
               <Avatar
                 identity={entry.identity}
@@ -187,7 +187,7 @@
                   <span class="row-secondary">
                     <span class="row-host">{safeHostname(entry.apiUrl)}</span>
                     {#if entry.identityError}
-                      <span class="row-error" title={entry.identityError}>{entry.identityError}</span>
+                      <span class="row-error" use:tooltipWhenClipped={entry.identityError}>{entry.identityError}</span>
                     {:else if !entry.identity}
                       <span class="row-hint">Tap to verify</span>
                     {/if}
@@ -273,8 +273,6 @@
   .switcher-title {
     font-size: var(--font-size-2xs);
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--text-muted);
   }
 

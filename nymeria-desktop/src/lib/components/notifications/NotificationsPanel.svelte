@@ -102,64 +102,60 @@
 </script>
 
 <section class="notifications-panel">
-  <header class="section-header">
-    <div>
-      <h2 class="panel-title">Notification routing</h2>
-      <p class="section-blurb">
-        Define <strong>destinations</strong> (where messages go) and bundle them
-        into <strong>routing profiles</strong> (which the agent picks by name). The
-        bell sidebar always logs every notification regardless of where it was
-        sent.
-      </p>
-    </div>
+  <!-- Intro: plain framing with a divider beneath, no card, no mid-sentence
+       bolding. The section headings below carry the structure. -->
+  <header class="panel-intro">
+    <h2 class="panel-title">Notification routing</h2>
+    <p class="panel-lede">Where the notify tool sends messages.</p>
   </header>
 
   {#if notificationStore.configLoading}
-    <div class="loading"><Icon name="loading" size={16} /> Loading…</div>
+    <div class="status-line"><Icon name="loading" size={16} /> Loading…</div>
   {/if}
 
   {#if notificationStore.configError}
-    <div class="error">{notificationStore.configError}</div>
+    <div class="status-line error">{notificationStore.configError}</div>
   {/if}
 
-  <!-- Preferences -->
-  <div class="card">
-    <div class="card-header">
-      <h3>Default routing profile</h3>
+  <!-- Set-once preference: a quiet inline row bracketed by the header divider
+       above and its own divider below, deliberately lighter than the managed
+       sections (the thing you set once should not look like the thing you
+       manage often). -->
+  <div class="default-row">
+    <div class="default-label">
+      <label class="default-title" for="default-profile">Default profile</label>
+      <span class="default-desc">Used when a call sets no override</span>
     </div>
-    <div class="card-body">
-      <p class="muted">
-        The profile the notify tool routes through when no per-call or
-        per-thread override is set.
-      </p>
-      <div class="pref-row">
-        <select
-          value={notificationStore.preferences?.defaultProfile ?? 'default'}
-          onchange={handleDefaultProfileChange}
-          disabled={prefSaving || notificationStore.profiles.length === 0}
-        >
-          {#if notificationStore.profiles.length === 0}
-            <option value="default">default (no profiles yet)</option>
-          {:else}
-            {#each notificationStore.profiles as p (p.id)}
-              <option value={p.name}>{p.name}</option>
-            {/each}
-          {/if}
-        </select>
-        {#if prefSaving}
-          <span class="muted">Saving…</span>
+    <div class="default-control">
+      <select
+        id="default-profile"
+        value={notificationStore.preferences?.defaultProfile ?? 'default'}
+        onchange={handleDefaultProfileChange}
+        disabled={prefSaving || notificationStore.profiles.length === 0}
+      >
+        {#if notificationStore.profiles.length === 0}
+          <option value="default">default (no profiles yet)</option>
+        {:else}
+          {#each notificationStore.profiles as p (p.id)}
+            <option value={p.name}>{p.name}</option>
+          {/each}
         {/if}
-      </div>
+      </select>
+      {#if prefSaving}
+        <span class="saving">Saving…</span>
+      {/if}
     </div>
   </div>
 
-  <!-- Destinations -->
-  <div class="card">
-    <div class="card-header">
+  <!-- Destinations: the primary action keeps the accent fill; everything else
+       (Add profile, row Edit/Delete) sits quiet. -->
+  <section class="entity-section">
+    <div class="entity-head">
       <h3>Destinations</h3>
       {#if !creatingDestination && !editingDestinationId}
         <Button
           variant="primary"
+          size="sm"
           onclick={() => {
             closeAllForms();
             creatingDestination = true;
@@ -169,78 +165,78 @@
         </Button>
       {/if}
     </div>
-    <div class="card-body">
-      {#if creatingDestination}
-        <DestinationForm
-          channelTypes={notificationStore.channelTypes}
-          onSubmit={handleDestinationSubmit}
-          onCancel={closeAllForms}
-        />
-      {:else if editingDestination}
-        <DestinationForm
-          channelTypes={notificationStore.channelTypes}
-          existing={editingDestination}
-          onSubmit={handleDestinationSubmit}
-          onCancel={closeAllForms}
-          onTest={handleTestDestination}
-        />
-      {:else if notificationStore.destinations.length === 0}
-        <p class="muted">
-          No destinations yet. Add one to start routing notifications.
-        </p>
-      {:else}
-        <ul class="entity-list">
-          {#each notificationStore.destinations as dest (dest.id)}
-            <li class="entity-row" class:disabled={!dest.enabled}>
-              <div class="entity-info">
-                <div class="entity-title">
-                  <span class="entity-name">{dest.name}</span>
-                  <span class="entity-type">{dest.type}</span>
-                  {#if !dest.enabled}
-                    <span class="status-pill off">disabled</span>
-                  {/if}
-                </div>
-                {#if Object.keys(dest.config).length > 0}
-                  <p class="entity-meta">
-                    {#each Object.entries(dest.config) as [k, v], i (k)}
-                      {#if i > 0} · {/if}<span class="cfg-key">{k}</span>=<span class="cfg-val">{String(v)}</span>
-                    {/each}
-                  </p>
-                {/if}
-                {#if dest.secretFieldNames.length > 0}
-                  <p class="entity-meta secret-meta">
-                    secrets set: {dest.secretFieldNames.join(', ')}
-                  </p>
-                {/if}
-              </div>
-              <div class="entity-actions">
-                <Button
-                  variant="ghost"
-                  onclick={() => {
-                    closeAllForms();
-                    editingDestinationId = dest.id;
-                  }}
-                >
-                  Edit
-                </Button>
-                <Button variant="ghost" onclick={() => handleDestinationDelete(dest)}>
-                  Delete
-                </Button>
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </div>
-  </div>
 
-  <!-- Profiles -->
-  <div class="card">
-    <div class="card-header">
+    {#if creatingDestination}
+      <DestinationForm
+        channelTypes={notificationStore.channelTypes}
+        onSubmit={handleDestinationSubmit}
+        onCancel={closeAllForms}
+      />
+    {:else if editingDestination}
+      <DestinationForm
+        channelTypes={notificationStore.channelTypes}
+        existing={editingDestination}
+        onSubmit={handleDestinationSubmit}
+        onCancel={closeAllForms}
+        onTest={handleTestDestination}
+      />
+    {:else if notificationStore.destinations.length === 0}
+      <p class="empty">No destinations yet.</p>
+    {:else}
+      <ul class="entity-list">
+        {#each notificationStore.destinations as dest (dest.id)}
+          <li class="entity-row" class:disabled={!dest.enabled}>
+            <div class="entity-info">
+              <div class="entity-title">
+                <span class="entity-name">{dest.name}</span>
+                <span class="entity-type">{dest.type}</span>
+                {#if Object.keys(dest.config).length > 0}
+                  <span class="entity-config">
+                    {#each Object.entries(dest.config) as [k, v], i (k)}
+                      {#if i > 0} · {/if}<span class="cfg-key">{k}</span> <span class="cfg-val">{String(v)}</span>
+                    {/each}
+                  </span>
+                {/if}
+                {#if !dest.enabled}
+                  <span class="status-pill off">disabled</span>
+                {/if}
+              </div>
+              {#if dest.secretFieldNames.length > 0}
+                <p class="entity-meta secret-meta">
+                  secrets set: {dest.secretFieldNames.join(', ')}
+                </p>
+              {/if}
+            </div>
+            <div class="entity-actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                onclick={() => {
+                  closeAllForms();
+                  editingDestinationId = dest.id;
+                }}
+              >
+                Edit
+              </Button>
+              <Button variant="ghost" size="sm" onclick={() => handleDestinationDelete(dest)}>
+                Delete
+              </Button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <!-- Routing profiles: secondary action (outlined), so the page has a single
+       focal CTA. -->
+  <section class="entity-section">
+    <div class="entity-head">
       <h3>Routing profiles</h3>
       {#if !creatingProfile && !editingProfileId}
         <Button
-          variant="primary"
+          variant="secondary"
+          size="sm"
           onclick={() => {
             closeAllForms();
             creatingProfile = true;
@@ -250,66 +246,62 @@
         </Button>
       {/if}
     </div>
-    <div class="card-body">
-      {#if creatingProfile}
-        <ProfileForm
-          destinations={notificationStore.destinations}
-          onSubmit={handleProfileSubmit}
-          onCancel={closeAllForms}
-        />
-      {:else if editingProfile}
-        <ProfileForm
-          destinations={notificationStore.destinations}
-          existing={editingProfile}
-          onSubmit={handleProfileSubmit}
-          onCancel={closeAllForms}
-        />
-      {:else if notificationStore.profiles.length === 0}
-        <p class="muted">
-          No profiles yet. Create one to bundle destinations together (e.g. an
-          <code>urgent</code> profile that fires both your phone and email).
-        </p>
-      {:else}
-        <ul class="entity-list">
-          {#each notificationStore.profiles as profile (profile.id)}
-            <li class="entity-row">
-              <div class="entity-info">
-                <div class="entity-title">
-                  <span class="entity-name">{profile.name}</span>
-                  {#if notificationStore.preferences?.defaultProfile === profile.name}
-                    <span class="status-pill default">default</span>
-                  {/if}
-                </div>
+
+    {#if creatingProfile}
+      <ProfileForm
+        destinations={notificationStore.destinations}
+        onSubmit={handleProfileSubmit}
+        onCancel={closeAllForms}
+      />
+    {:else if editingProfile}
+      <ProfileForm
+        destinations={notificationStore.destinations}
+        existing={editingProfile}
+        onSubmit={handleProfileSubmit}
+        onCancel={closeAllForms}
+      />
+    {:else if notificationStore.profiles.length === 0}
+      <p class="empty">
+        No profiles yet. A profile bundles destinations together (e.g. an
+        <code>urgent</code> profile that fires both phone and email).
+      </p>
+    {:else}
+      <ul class="entity-list">
+        {#each notificationStore.profiles as profile (profile.id)}
+          <li class="entity-row">
+            <div class="entity-info">
+              <div class="entity-title">
+                <span class="entity-name">{profile.name}</span>
+                {#if notificationStore.preferences?.defaultProfile === profile.name}
+                  <span class="status-pill default">default</span>
+                {/if}
                 {#if profile.destinationNames.length === 0}
-                  <p class="entity-meta muted">
-                    (no destinations; notifications are logged in-app only)
-                  </p>
+                  <span class="profile-targets muted">→ in-app log only</span>
                 {:else}
-                  <p class="entity-meta">
-                    destinations: {profile.destinationNames.join(', ')}
-                  </p>
+                  <span class="profile-targets">→ {profile.destinationNames.join(', ')}</span>
                 {/if}
               </div>
-              <div class="entity-actions">
-                <Button
-                  variant="ghost"
-                  onclick={() => {
-                    closeAllForms();
-                    editingProfileId = profile.id;
-                  }}
-                >
-                  Edit
-                </Button>
-                <Button variant="ghost" onclick={() => handleProfileDelete(profile)}>
-                  Delete
-                </Button>
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </div>
-  </div>
+            </div>
+            <div class="entity-actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                onclick={() => {
+                  closeAllForms();
+                  editingProfileId = profile.id;
+                }}
+              >
+                Edit
+              </Button>
+              <Button variant="ghost" size="sm" onclick={() => handleProfileDelete(profile)}>
+                Delete
+              </Button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
 </section>
 
 <style>
@@ -319,66 +311,78 @@
     gap: var(--spacing-lg);
   }
 
-  .section-header {
+  /* Intro is not a card: the title is the page's main heading, the lede is one
+     muted line, and a hairline divider sits directly beneath it. */
+  .panel-intro {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: var(--spacing-md);
+    flex-direction: column;
+    gap: var(--spacing-2xs);
+    padding-bottom: var(--spacing-sm);
+    border-bottom: 1px solid var(--border-subtle);
   }
 
   .panel-title {
-    margin: 0 0 4px 0;
+    margin: 0;
     font-size: var(--font-size-lg);
     font-weight: 600;
     color: var(--text-primary);
   }
 
-  .section-blurb {
+  .panel-lede {
     margin: 0;
-    color: var(--text-secondary);
-    font-size: var(--font-size-sm);
-    max-width: 60ch;
-  }
-
-  .loading,
-  .error {
-    padding: var(--spacing-sm);
-    border-radius: var(--radius-sm);
+    color: var(--text-muted);
     font-size: var(--font-size-sm);
   }
 
-  .error {
-    background: color-mix(in srgb, var(--error) 12%, transparent);
+  .status-line {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+  }
+
+  .status-line.error {
     color: var(--error);
   }
 
-  .card {
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--bg-base);
-    overflow: hidden;
-  }
-
-  .card-header {
+  /* Set-once preference: a plain labelled row, no card. A divider beneath
+     brackets it (with the intro divider above) so it reads as a single quiet
+     setting, distinct from the managed lists below. */
+  .default-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--spacing-md);
+    gap: var(--spacing-md);
+    padding-bottom: var(--spacing-lg);
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  .card-body {
-    padding: var(--spacing-md);
+  .default-label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
 
-  .pref-row {
+  .default-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .default-desc {
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+  }
+
+  .default-control {
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
   }
 
-  .pref-row select {
-    padding: var(--spacing-sm);
+  .default-row select {
+    padding: var(--spacing-xs) var(--spacing-sm);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     background: var(--bg-elevated);
@@ -387,10 +391,40 @@
     min-width: 200px;
   }
 
-  .muted {
+  .saving {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
+  /* Managed sections are flat: a heading + action on a row with a divider
+     beneath, then a flat list with hairline dividers between rows (DESIGN.md
+     §7 — flat lists with dividers, not stacked identically-bordered cards). */
+  .entity-section {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .entity-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding-bottom: var(--spacing-sm);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .entity-head h3 {
+    margin: 0;
+    font-size: var(--font-size-md);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .empty {
+    margin: 0;
+    padding: var(--spacing-sm) 0;
     color: var(--text-muted);
     font-size: var(--font-size-sm);
-    margin: 0 0 var(--spacing-sm) 0;
   }
 
   .entity-list {
@@ -399,22 +433,30 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-sm);
   }
 
+  /* Flat rows: no per-row border or fill, just a hairline divider between rows
+     and a hover wash. */
   .entity-row {
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
+    align-items: center;
     gap: var(--spacing-md);
-    padding: var(--spacing-sm);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    background: var(--bg-elevated);
+    padding: var(--spacing-sm) var(--spacing-xs);
+    border-bottom: 1px solid var(--border-subtle);
+    transition: background var(--transition-fast);
+  }
+
+  .entity-row:last-child {
+    border-bottom: none;
+  }
+
+  .entity-row:hover {
+    background: var(--bg-hover);
   }
 
   .entity-row.disabled {
-    opacity: 0.65;
+    opacity: 0.6;
   }
 
   .entity-info {
@@ -424,7 +466,7 @@
 
   .entity-title {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: var(--spacing-sm);
     flex-wrap: wrap;
   }
@@ -434,14 +476,45 @@
     color: var(--text-primary);
   }
 
+  /* Channel type: an outlined monospace chip (data, not a label) — §3 chip at
+     --radius-sm, smaller than body, not a pill. */
   .entity-type {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    padding: 1px 6px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+  }
+
+  /* Inline config (e.g. chat_id 884213709) reads as data, so it's monospace
+     and muted, sitting on the same line as the name and type. */
+  .entity-config {
+    font-family: var(--font-mono);
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    background: var(--bg-base);
-    padding: 1px 6px;
-    /* §3 — text chip uses --radius-sm token (4px) for consistency with the
-       rest of the chip system. Not a pill. */
-    border-radius: var(--radius-sm);
+    min-width: 0;
+    word-break: break-word;
+  }
+
+  .cfg-key {
+    color: var(--text-secondary);
+  }
+
+  .cfg-val {
+    color: var(--text-primary);
+  }
+
+  /* Profile targets (→ dest-a, dest-b): data, so monospace + muted, inline. */
+  .profile-targets {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    word-break: break-word;
+  }
+
+  .profile-targets.muted {
+    font-style: italic;
   }
 
   .status-pill {
@@ -449,7 +522,7 @@
     padding: 1px 6px;
     /* §3 — text chip uses --radius-sm token, not full pill. */
     border-radius: var(--radius-sm);
-    background: var(--bg-base);
+    background: var(--bg-elevated-2);
   }
 
   .status-pill.off {
@@ -458,7 +531,7 @@
 
   .status-pill.default {
     color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+    background: var(--accent-tint-bg);
   }
 
   .entity-meta {
@@ -470,14 +543,6 @@
 
   .entity-meta.secret-meta {
     font-style: italic;
-  }
-
-  .cfg-key {
-    color: var(--text-secondary);
-  }
-
-  .cfg-val {
-    color: var(--text-primary);
   }
 
   .entity-actions {

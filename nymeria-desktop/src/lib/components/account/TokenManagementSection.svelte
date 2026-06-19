@@ -241,7 +241,7 @@
           variant="ghost"
           onclick={handleRotateAll}
           disabled={rotating || issuing || activeTokens.length === 0}
-          title="Revoke every active token and issue a fresh one"
+          dataTooltip="Revoke every active token and issue a fresh one"
         >
           <Icon name={rotating ? 'loading' : 'refresh'} size={14} />
           {rotating ? 'Rotating…' : 'Rotate all'}
@@ -289,14 +289,14 @@
               {/if}
             </div>
             <div class="row-secondary">
-              <span title={token.created_at}>Issued {formatRelative(token.created_at)}</span>
+              <span data-tooltip={token.created_at}>Issued {formatRelative(token.created_at)}</span>
               <span class="dot" aria-hidden="true">·</span>
-              <span title={token.last_used_at ?? 'never used'}>
+              <span data-tooltip={token.last_used_at ?? 'never used'}>
                 {token.last_used_at ? `Last used ${formatRelative(token.last_used_at)}` : 'Never used'}
               </span>
               {#if isRevoked}
                 <span class="dot" aria-hidden="true">·</span>
-                <span title={token.revoked_at}>Revoked {formatRelative(token.revoked_at)}</span>
+                <span data-tooltip={token.revoked_at}>Revoked {formatRelative(token.revoked_at)}</span>
               {/if}
             </div>
           </div>
@@ -306,7 +306,7 @@
               type="button"
               onclick={() => handleRevoke(token)}
               disabled={isRevoking}
-              title="Revoke this token"
+              data-tooltip="Revoke this token"
               aria-label="Revoke token {token.token_hash_prefix}"
             >
               {#if isRevoking}
@@ -574,8 +574,6 @@
 
   .field label {
     font-size: var(--font-size-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--text-muted);
     font-weight: 600;
   }

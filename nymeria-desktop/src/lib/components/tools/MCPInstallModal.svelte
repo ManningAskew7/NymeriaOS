@@ -337,7 +337,7 @@ https://github.com/example/mcp-server`}
               <span>{bundleFile ? bundleFile.name : 'Upload MCPB, DXT, or ZIP'}</span>
             </label>
             {#if bundleFile}
-              <button type="button" class="clear-file" onclick={clearBundleFile} title="Clear bundle" aria-label="Clear bundle file">
+              <button type="button" class="clear-file" onclick={clearBundleFile} data-tooltip="Clear bundle" aria-label="Clear bundle file">
                 <Icon name="x" size={14} />
               </button>
             {/if}
@@ -554,7 +554,7 @@ https://github.com/example/mcp-server`}
             </div>
             <div class="tool-chips">
               {#each visibleToolNames(result) as tn, index}
-                <code class="tool-chip" title={result.toolNames[index] ?? tn}>{tn}</code>
+                <code class="tool-chip" data-tooltip={result.toolNames[index] ?? tn}>{tn}</code>
               {/each}
             </div>
           </div>
@@ -997,8 +997,6 @@ https://github.com/example/mcp-server`}
   .plan-item span,
   .stat-label {
     font-size: var(--font-size-3xs);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
     color: var(--text-muted);
   }
 

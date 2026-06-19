@@ -224,8 +224,6 @@
   .control label {
     font-size: var(--font-size-xs);
     color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   .control select,

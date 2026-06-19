@@ -322,7 +322,7 @@
 
               {#if server.discoveredTools.length > 0}
                 <div class="tools-section">
-                  <span class="tools-heading">Discovered Tools</span>
+                  <span class="tools-heading section-label">Discovered Tools</span>
                   {#each server.discoveredTools as tool}
                     {@const mcpName = getMcpToolName(server.id, tool.name)}
                     {@const isEnabled = enabledToolNames.has(mcpName)}
@@ -568,11 +568,8 @@
   }
 
   .tools-heading {
+    /* type role from global .section-label; keep 0.75rem size for dense list */
     font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   .tool-row {

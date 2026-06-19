@@ -79,7 +79,7 @@
     <!-- In Progress -->
     {#if organized.inProgress.length > 0}
       <div class="todo-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">In Progress</span>
           <span class="count highlight">{organized.inProgress.length}</span>
         </h3>
@@ -98,7 +98,7 @@
     <!-- Upcoming (pending) -->
     {#if organized.active.length > 0}
       <div class="todo-group">
-        <h3 class="group-label">
+        <h3 class="group-label section-label">
           <span class="label-text">Upcoming</span>
           <span class="count">{organized.active.length}</span>
         </h3>
@@ -200,11 +200,7 @@
     gap: var(--spacing-sm);
     margin: 0;
     padding: var(--spacing-xs) var(--spacing-md);
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    /* Type role (uppercase / tracking / weight / muted) is the global .section-label. */
   }
 
   .count {

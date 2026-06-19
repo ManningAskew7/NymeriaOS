@@ -679,7 +679,7 @@
         class="mode-btn"
         class:active={threadsStore.organizationMode === 'folders'}
         type="button"
-        title="Show folders"
+        data-tooltip="Show folders"
         aria-label="Show folders"
         aria-pressed={threadsStore.organizationMode === 'folders'}
         onclick={() => threadsStore.setOrganizationMode('folders')}
@@ -690,7 +690,7 @@
         class="mode-btn"
         class:active={threadsStore.organizationMode === 'teams'}
         type="button"
-        title="Show teams"
+        data-tooltip="Show teams"
         aria-label="Show teams"
         aria-pressed={threadsStore.organizationMode === 'teams'}
         onclick={() => threadsStore.setOrganizationMode('teams')}
@@ -703,7 +703,6 @@
       type="button"
       onclick={handleImportClick}
       disabled={importing}
-      title="Import thread"
       aria-label="Import thread"
     >
       <Icon name={importing ? 'loading' : 'upload'} size={14} />
@@ -805,7 +804,7 @@
       {#if threadsStore.sortMode === 'recent'}
         {#each groupThreadsByDate(getUnteamedThreads()) as group (group.label)}
           <div class="thread-group">
-            <h3 class="group-label">{group.label}</h3>
+            <h3 class="group-label section-label">{group.label}</h3>
             <div class="group-threads">
               {#each group.threads as thread (thread.id)}
                 <ThreadItem
@@ -897,7 +896,7 @@
       {#if threadsStore.sortMode === 'recent'}
         {#each threadsStore.groupedUnfiledThreads as group (group.label)}
           <div class="thread-group">
-            <h3 class="group-label">{group.label}</h3>
+            <h3 class="group-label section-label">{group.label}</h3>
             <div class="group-threads">
               {#each group.threads as thread (thread.id)}
                 <ThreadItem
@@ -1142,16 +1141,23 @@
   }
 
   .thread-group {
-    margin-bottom: var(--spacing-md);
+    /* Space ABOVE each date-group label (Yesterday, Previous 7 Days, …) is the
+       previous row's 8px bottom padding + this margin + the label's 8px top
+       padding. At 20px that lands the above-label gap at ~36px, double the
+       ~18px gap below the label (and between chat rows) — "1a" below, "2× 1a"
+       above. Follows the Appearance > Spacing setting; falls back to the tuned
+       20px when no override is set. */
+    margin-bottom: var(--ui-density-gap, 20px);
   }
 
   .group-label {
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: var(--spacing-sm) var(--spacing-md);
+    /* Type role (uppercase / tracking / weight / muted) is the global .section-label. */
+    /* Vertical padding is split (8px top, 10px bottom) so the whitespace below
+       the label matches the gap between chat rows (~18px = each row's 8px
+       padding twice + 2px flex gap): the first row adds its own 8px top
+       padding, so 10px here lands the label-to-row gap at 18px. The gap above
+       the label is set to the same 18px by the sort bar's bottom padding. */
+    padding: var(--spacing-sm) var(--spacing-md) 10px;
     margin: 0;
   }
 
@@ -1243,7 +1249,11 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
-    padding: 0 var(--spacing-xs) var(--spacing-xs);
+    /* 11px bottom: sets the whitespace from the filter bar down to the first
+       list item (a folder header or a section label) to ~20px once that item's
+       own 8px top padding is added, matching the ~20px rhythm used elsewhere
+       in the list. */
+    padding: 0 var(--spacing-xs) 11px;
     position: relative;
   }
 
@@ -1292,6 +1302,11 @@
 
   .import-trigger {
     margin-left: auto;
+    /* Tertiary/ghost: drop the outline the sort + mode chips carry so the
+       toolbar hierarchy reads New Thread (primary) > sort/mode (secondary,
+       bordered) > Import (tertiary, borderless). The 1px transparent border is
+       kept so Import stays vertically aligned with its bordered siblings. */
+    border-color: transparent;
   }
 
   .share-file-input {
@@ -1304,6 +1319,12 @@
     color: var(--text-primary);
     background: var(--bg-hover);
     border-color: var(--border-default);
+  }
+
+  /* Keep Import borderless on hover too — the grouped hover rule above adds a
+     visible border to the sort/mode chips. */
+  .import-trigger:hover:not(:disabled) {
+    border-color: transparent;
   }
 
   .import-trigger:disabled {
@@ -1368,7 +1389,14 @@
   .folders-divider {
     height: 1px;
     background: linear-gradient(90deg, transparent, var(--border-default), transparent);
-    margin: var(--spacing-sm) var(--spacing-md);
+    /* Asymmetric vertical margin. Top 10px: combined with the last folder
+       row's own 8px bottom padding, the gap from that row's text down to the
+       divider lands at ~18px (one "1a" row-gap), giving the folders area
+       breathing room below its last item. Bottom 12px: the gap from the
+       divider down to the first section label (e.g. PINNED) is ~20px (12px +
+       the label's 8px top padding), matching the ~20px gap below the label and
+       between chat rows. */
+    margin: 10px var(--spacing-md) 12px;
   }
 
   /* Bulk action bar */
@@ -1413,7 +1441,7 @@
   .bulk-btn {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--spacing-sm);
     padding: 4px 8px;
     font-size: var(--font-size-xs);
     font-weight: 500;

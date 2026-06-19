@@ -3,6 +3,7 @@
   import type { Message, MessageStep, ToolCall, FileAttachment } from '$lib/types';
   import { Icon, ThinkingIndicator } from '$lib/components/common';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
+  import { formatMessageTime } from '$lib/utils/time';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
@@ -349,7 +350,6 @@
                 type="button"
                 class="user-image-button"
                 onclick={() => openFileModal(file)}
-                title={file.name}
               >
                 <img src={file.dataUrl} alt={file.name} />
               </button>
@@ -359,7 +359,6 @@
                 class="user-document"
                 onclick={() => downloadAttachment(file)}
                 disabled={downloadingIds.has(file.id)}
-                title={`Download ${file.name} (${formatFileSize(file.size)})`}
               >
                 <Icon name={getFileIcon(file.mimeType)} size={20} />
                 <span class="doc-name">{file.name}</span>
@@ -488,7 +487,7 @@
   </div>
 
   <time class="timestamp">
-    {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+    {formatMessageTime(message.timestamp)}
   </time>
 </div>
 {/if}
@@ -898,10 +897,6 @@
     font-style: italic;
   }
 
-  .intermediate-content .markdown-content {
-    opacity: 0.85;
-  }
-
   /* Separator appears AFTER tool calls, grouping thinking with its tool */
   .tool-calls {
     margin-top: var(--spacing-sm);
@@ -967,9 +962,9 @@
   }
 
 
+  /* Text style (size/weight/color) is the global .timestamp utility in app.css;
+     only the placement is owned here. */
   .timestamp {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
     margin-top: var(--spacing-xs);
     padding: 0 var(--spacing-sm);
   }

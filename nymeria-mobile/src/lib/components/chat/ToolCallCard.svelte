@@ -3,6 +3,7 @@
   import { Collapsible, Icon } from '$lib/components/common';
   import { formatFileSize } from '$lib/utils/fileProcessing';
   import { getToolSummary } from '$lib/utils/toolSummary';
+  import { formatMessageTime } from '$lib/utils/time';
   import { configStore } from '$lib/stores/config.svelte';
   import WorkspaceArtifactModal from './WorkspaceArtifactModal.svelte';
   import WorkspaceImage from './WorkspaceImage.svelte';
@@ -79,13 +80,13 @@
 
     <div class="tool-details">
       <div class="detail-section">
-        <h3>Arguments</h3>
+        <h3 class="section-label">Arguments</h3>
         <pre class="code-block">{formatArgs(toolCall.arguments)}</pre>
       </div>
 
       {#if toolCall.result}
         <div class="detail-section">
-          <h3>Result</h3>
+          <h3 class="section-label">Result</h3>
           <pre class="code-block result" class:error={toolCall.status === 'error'}>
             {formatResult(toolCall.result)}
           </pre>
@@ -94,14 +95,13 @@
 
       {#if toolCall.artifacts?.length}
         <div class="detail-section">
-          <h3>Artifacts</h3>
+          <h3 class="section-label">Artifacts</h3>
           <div class="artifact-list">
             {#each toolCall.artifacts as artifact (artifact.path)}
               <button
                 type="button"
                 class="artifact-chip"
                 onclick={() => { modalArtifact = artifact; }}
-                title={`View ${artifact.name}`}
               >
                 <Icon name={getArtifactIcon(artifact.mimeType)} size={20} />
                 <span class="artifact-copy">
@@ -117,7 +117,7 @@
 
       {#if toolCall.startTime}
         <div class="timing">
-          <span>Started: {toolCall.startTime.toLocaleTimeString()}</span>
+          <span>Started: {formatMessageTime(toolCall.startTime)}</span>
           {#if toolCall.endTime}
             <span>
               Duration: {Math.round((toolCall.endTime.getTime() - toolCall.startTime.getTime()) / 1000)}s
@@ -267,12 +267,8 @@
   }
 
   .detail-section h3 {
+    /* type role from global .section-label */
     margin: 0 0 var(--spacing-xs) 0;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
   .code-block {

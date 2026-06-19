@@ -114,8 +114,9 @@
      not catch it (it compares the two component copies, not app.css). */
 
   /* Border radius */
-  /* Border-radius tiers — each tier corresponds to an element role, not a
-     size. Pick by what the element IS, not how round it should look:
+  /* Standardised to a tight 6 to 8px band (down from the old 4/8/12/16 scale)
+     so corners read consistently across the app and new components inherit it.
+     Tokens stay role-named so callers still pick by what the element IS:
        --radius-sm   : inline chips, pills, status badges, code-block snippets
        --radius-md   : interactive controls (buttons, inputs, dropdowns,
                        toggles) AND interactive list items (ThreadItem,
@@ -124,13 +125,14 @@
                        Collapsible bodies, full-feature panels)
        --radius-xl   : overlay surfaces (modals, dialogs, drawers, sheets)
        --radius-full : fully circular (avatars, dot indicators, full pills)
-     The scale steps from 4 → 8 → 12 → 16 keep a 4px rhythm; pairing this
-     with the shadow tier scale above gives every element a clear place
-     in the visual hierarchy. */
-  --radius-sm: 4px;
+     Small inline elements sit at 6px; every structural surface (controls, list
+     items, cards, bubbles, overlays) resolves to 8px, the top of the band. The
+     tiers stay distinct tokens so the hierarchy can be re-expanded later from
+     one line here, without touching call sites. */
+  --radius-sm: 6px;
   --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  --radius-lg: 8px;
+  --radius-xl: 8px;
   --radius-full: 9999px;
 
   /* Typography — three families and an 8-step type scale.
@@ -347,14 +349,16 @@ h4 {
   font-size: var(--font-size-sm);
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling — auto-hide. The track always reserves a constant 8px
+   gutter (so content never shifts), but the thumb is transparent at rest and
+   only fades in while the pointer is over a scrollable area (i.e. when you go
+   to scroll it), then deepens when you grab the thumb itself. Keeps the reading
+   surface clean without the layout jump of a grow-on-hover bar. (A scroll area
+   reached only by keyboard stays clean too; ask if you want it to flash on
+   active scroll, which needs a small script.) */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar:hover {
   width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -362,9 +366,13 @@ h4 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-default);
+  background: transparent;
   border-radius: var(--radius-full);
   transition: background var(--transition-normal);
+}
+
+:hover::-webkit-scrollbar-thumb {
+  background: var(--border-default);
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -534,6 +542,30 @@ pre code {
 .text-success { color: var(--success); }
 .text-warning { color: var(--warning); }
 .text-error { color: var(--error); }
+
+/* ── Centralized text-role utilities ─────────────────────────────────
+   Two small typographic roles defined once so they can't drift across
+   components (see Nymeria/docs/private/AI-UI-Design-Diagnosis guide). */
+
+/* One timestamp text style, reused for every absolute clock time in chat. */
+.timestamp {
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* The one section-divider role: all-caps + tracking. Apply ONLY to labels that
+   introduce a group of sibling items (sidebar date groups, "UPCOMING", settings
+   group headers). Font-size defaults to xs; a dense context (nav rail, form
+   section) may override font-size locally and nothing else. No other small text
+   should be uppercase/letter-spaced, so this look unambiguously means "divider". */
+.section-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
 
 .bg-base { background-color: var(--bg-base); }
 .bg-elevated { background-color: var(--bg-elevated); }

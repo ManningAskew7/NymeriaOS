@@ -151,7 +151,7 @@
     <div class="presets">
       <span class="presets-label">Quick start:</span>
       {#each MCP_PRESETS as preset}
-        <button type="button" class="preset-btn" onclick={() => applyPreset(preset)} title={preset.hint}>
+        <button type="button" class="preset-btn" onclick={() => applyPreset(preset)} data-tooltip={preset.hint}>
           {preset.label}
         </button>
       {/each}
@@ -227,7 +227,7 @@
             oninput={(e) => updateArg(i, (e.target as HTMLInputElement).value)}
             placeholder={i === 0 ? 'e.g. -y' : 'e.g. @modelcontextprotocol/server-filesystem'}
           />
-          <button type="button" class="arg-remove" onclick={() => removeArg(i)} title="Remove argument">
+          <button type="button" class="arg-remove" onclick={() => removeArg(i)} data-tooltip="Remove argument" aria-label="Remove argument">
             <Icon name="x" size={14} />
           </button>
         </div>
@@ -420,7 +420,7 @@
   .arg-add {
     display: flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: var(--spacing-sm);
     padding: 0.3rem 0.5rem;
     border: 1px dashed var(--border-default);
     border-radius: var(--radius-sm);
