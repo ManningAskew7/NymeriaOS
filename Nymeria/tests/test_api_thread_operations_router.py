@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, ThreadLLMConfig
@@ -71,7 +73,7 @@ class FakeAgent:
         self.synced_tools += 1
 
 
-def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent, str]:
+def _client(tmp_path: Path, api_client_builder) -> tuple[TestClient, FakeAgent, str]:
     settings = api_client_builder.settings(tmp_path)
     agent = FakeAgent(tmp_path)
     client, token = api_client_builder.authenticated_client(

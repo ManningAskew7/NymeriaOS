@@ -1421,7 +1421,9 @@ class NymeriaAgent:
 
         saved_image_paths: List[str] = []
 
-        all_atts: List[Dict[str, str]] = list(attachments or [])
+        # Mostly str-valued, but the image branch below records int width/height
+        # for token accounting, so the value type is widened to Any here.
+        all_atts: List[Dict[str, Any]] = list(attachments or [])
         if images:
             for img in images:
                 all_atts.append({
