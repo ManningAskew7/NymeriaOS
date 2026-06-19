@@ -195,6 +195,19 @@ class CommandContext:
             return str(await result)
         return str(result)
 
+    def supports_forms(self) -> bool:
+        """True when the active renderer can show an interactive form.
+
+        Only the Rich REPL renders the inline form panel; the plain renderer
+        and any non-interactive caller fall back to text/argument behavior.
+        """
+
+        capabilities = self.metadata.get("capabilities")
+        return (
+            getattr(capabilities, "renderer", "") == "rich"
+            and self.dispatch_state is not None
+        )
+
 
 @dataclass(slots=True)
 class Command:

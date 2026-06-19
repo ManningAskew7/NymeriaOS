@@ -43,6 +43,9 @@ StateGetter = Callable[[], bool]
 CountGetter = Callable[[], int]
 SlashPanelMoveHandler = Callable[[int], bool | None]
 SlashPanelAcceptHandler = Callable[["Buffer"], bool | None]
+FormMoveHandler = Callable[[int], bool | None]
+FormTabHandler = Callable[[int], bool | None]
+FormActionHandler = Callable[[], bool | None]
 
 _SHIFT_ENTER_CSI = "\x1b[13;2u"
 if _SHIFT_ENTER_CSI not in ANSI_SEQUENCES:
@@ -211,6 +214,14 @@ class ComposerController:
         slash_panel_is_active: StateGetter | None = None,
         on_slash_panel_move: SlashPanelMoveHandler | None = None,
         on_slash_panel_accept: SlashPanelAcceptHandler | None = None,
+        form_is_active: StateGetter | None = None,
+        form_tab_enabled: StateGetter | None = None,
+        active_field_is_checkbox: StateGetter | None = None,
+        on_form_move: FormMoveHandler | None = None,
+        on_form_tab: FormTabHandler | None = None,
+        on_form_toggle: FormActionHandler | None = None,
+        on_form_submit: FormActionHandler | None = None,
+        on_form_cancel: FormActionHandler | None = None,
         multiline: bool = False,
         show_queued_prompt: bool = True,
         show_slash_usage_hints: bool = False,
@@ -225,6 +236,14 @@ class ComposerController:
         self.slash_panel_is_active = slash_panel_is_active or (lambda: False)
         self.on_slash_panel_move = on_slash_panel_move
         self.on_slash_panel_accept = on_slash_panel_accept
+        self.form_is_active = form_is_active or (lambda: False)
+        self.form_tab_enabled = form_tab_enabled or (lambda: False)
+        self.active_field_is_checkbox = active_field_is_checkbox or (lambda: False)
+        self.on_form_move = on_form_move
+        self.on_form_tab = on_form_tab
+        self.on_form_toggle = on_form_toggle
+        self.on_form_submit = on_form_submit
+        self.on_form_cancel = on_form_cancel
         self.show_queued_prompt = show_queued_prompt
         self.last_attachment_errors: tuple[str, ...] = ()
         self.key_bindings = self._build_key_bindings()
@@ -348,11 +367,60 @@ class ComposerController:
             return False
         return self.submit_buffer(buffer)
 
+    def form_active(self) -> bool:
+        return bool(self.form_is_active())
+
+    def form_move_enabled(self) -> bool:
+        return self.on_form_move is not None and self.form_active()
+
+    def form_tab_nav_enabled(self) -> bool:
+        return self.on_form_tab is not None and bool(self.form_tab_enabled())
+
+    def form_toggle_enabled(self) -> bool:
+        return (
+            self.on_form_toggle is not None
+            and self.form_active()
+            and bool(self.active_field_is_checkbox())
+        )
+
+    def form_submit_enabled(self) -> bool:
+        return self.on_form_submit is not None and self.form_active()
+
+    def form_cancel_enabled(self) -> bool:
+        return self.on_form_cancel is not None and self.form_active()
+
+    def move_form_selection(self, delta: int) -> bool:
+        if not self.form_move_enabled() or self.on_form_move is None:
+            return False
+        return self.on_form_move(delta) is not False
+
+    def move_form_tab(self, delta: int) -> bool:
+        if not self.form_tab_nav_enabled() or self.on_form_tab is None:
+            return False
+        return self.on_form_tab(delta) is not False
+
+    def toggle_form_option(self) -> bool:
+        if not self.form_toggle_enabled() or self.on_form_toggle is None:
+            return False
+        return self.on_form_toggle() is not False
+
+    def submit_form_selection(self) -> bool:
+        if not self.form_submit_enabled() or self.on_form_submit is None:
+            return False
+        return self.on_form_submit() is not False
+
+    def cancel_form(self) -> bool:
+        if not self.form_cancel_enabled() or self.on_form_cancel is None:
+            return False
+        return self.on_form_cancel() is not False
+
     def _build_key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
 
         @bindings.add("enter", eager=True)
         def _submit(event):
+            if self.submit_form_selection():
+                return
             if self.submit_slash_panel_selection(event.current_buffer):
                 return
             self.handle_enter(event.current_buffer)
@@ -361,7 +429,12 @@ class ComposerController:
         def _ctrl_enter_newline(event):
             self.insert_newline(event.current_buffer)
 
-        @bindings.add("escape", "enter", eager=True)
+        @bindings.add(
+            "escape",
+            "enter",
+            eager=True,
+            filter=Condition(lambda: not self.form_active()),
+        )
         def _modified_enter_newline(event):
             self.insert_newline(event.current_buffer)
 
@@ -388,6 +461,67 @@ class ComposerController:
         )
         def _slash_panel_accept(event):
             self.accept_slash_panel_selection(event.current_buffer)
+
+        @bindings.add(
+            "up",
+            eager=True,
+            filter=Condition(self.form_move_enabled),
+        )
+        def _form_up(event):
+            self.move_form_selection(-1)
+
+        @bindings.add(
+            "down",
+            eager=True,
+            filter=Condition(self.form_move_enabled),
+        )
+        def _form_down(event):
+            self.move_form_selection(1)
+
+        @bindings.add(
+            "left",
+            eager=True,
+            filter=Condition(self.form_tab_nav_enabled),
+        )
+        def _form_tab_prev(event):
+            self.move_form_tab(-1)
+
+        @bindings.add(
+            "right",
+            eager=True,
+            filter=Condition(self.form_tab_nav_enabled),
+        )
+        def _form_tab_next(event):
+            self.move_form_tab(1)
+
+        @bindings.add(
+            " ",
+            eager=True,
+            filter=Condition(self.form_toggle_enabled),
+        )
+        def _form_toggle(event):
+            self.toggle_form_option()
+
+        # eager=False is load-bearing: a form is navigated with arrow keys, which
+        # arrive as escape sequences (ESC [ A ...). An eager bare-escape binding
+        # would consume the ESC prefix and break the arrows. Non-eager lets
+        # prompt_toolkit match the longer arrow sequences first and only fire
+        # this on a standalone Escape (c-g is the immediate cancel alternative).
+        @bindings.add(
+            "escape",
+            eager=False,
+            filter=Condition(self.form_cancel_enabled),
+        )
+        def _form_cancel_escape(event):
+            self.cancel_form()
+
+        @bindings.add(
+            "c-g",
+            eager=True,
+            filter=Condition(self.form_cancel_enabled),
+        )
+        def _form_cancel_ctrl_g(event):
+            self.cancel_form()
 
         @bindings.add("c-c", eager=True)
         def _stop_or_clear(event):
@@ -473,6 +607,14 @@ def create_rich_repl_composer(
     slash_panel_is_active: StateGetter | None = None,
     on_slash_panel_move: SlashPanelMoveHandler | None = None,
     on_slash_panel_accept: SlashPanelAcceptHandler | None = None,
+    form_is_active: StateGetter | None = None,
+    form_tab_enabled: StateGetter | None = None,
+    active_field_is_checkbox: StateGetter | None = None,
+    on_form_move: FormMoveHandler | None = None,
+    on_form_tab: FormTabHandler | None = None,
+    on_form_toggle: FormActionHandler | None = None,
+    on_form_submit: FormActionHandler | None = None,
+    on_form_cancel: FormActionHandler | None = None,
 ) -> ComposerController:
     """Create the scrollback-native Rich REPL composer controller."""
 
@@ -488,6 +630,14 @@ def create_rich_repl_composer(
         slash_panel_is_active=slash_panel_is_active,
         on_slash_panel_move=on_slash_panel_move,
         on_slash_panel_accept=on_slash_panel_accept,
+        form_is_active=form_is_active,
+        form_tab_enabled=form_tab_enabled,
+        active_field_is_checkbox=active_field_is_checkbox,
+        on_form_move=on_form_move,
+        on_form_tab=on_form_tab,
+        on_form_toggle=on_form_toggle,
+        on_form_submit=on_form_submit,
+        on_form_cancel=on_form_cancel,
         multiline=True,
         show_queued_prompt=False,
         show_slash_usage_hints=True,
