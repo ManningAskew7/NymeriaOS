@@ -3,9 +3,11 @@
 Two screens: pick an embedding model (and authenticate), then pick a reranker
 (authenticating only when the embedding key cannot be reused, e.g. Voyage embed
 plus Voyage rerank reuses one key). Options are grouped premium / value / local
-with recommendations from an internal retrieval eval on a blended agentic corpus;
-the catalog lives in ``setup/rag_catalog.py``. The reranker step only appears once
-an embedder is chosen, so skipping RAG (Ctrl+S on the embedder) skips both.
+and annotated with eval verdicts (and, for cloud options, list prices) from an
+internal retrieval eval on a blended agentic corpus; no option is flagged as the
+pick. The reranker step does suggest a pairing for the chosen embedder. The
+catalog lives in ``setup/rag_catalog.py``. The reranker step only appears once an
+embedder is chosen, so skipping RAG (Ctrl+S on the embedder) skips both.
 
 Both screens are `FormStep`s: arrows move focus across the model list, the API key
 field, and (embedder) the Hybrid / Vector-only retrieval choice; Space selects the
@@ -31,6 +33,7 @@ from textual.widgets import Input, RadioButton, Static
 from ..nav import Step
 from ..rag_catalog import (
     EMBEDDERS,
+    PRICING_CHECKED,
     RERANKERS,
     TIER_LABELS,
     EmbedderOption,
@@ -50,14 +53,11 @@ _TIER_COLOR = "#8a93a3"
 
 
 def _name_column(option) -> str:
-    name = option.label
-    if getattr(option, "recommended", False):
-        name += " (recommended)"
-    return name
+    return option.label
 
 
 def _name_width(options) -> int:
-    """Width of the name column: the longest label (+ recommended marker)."""
+    """Width of the name column: the longest option label."""
     return max(len(_name_column(o)) for o in options)
 
 
@@ -80,9 +80,15 @@ def _tagged_label(option, name_width: int = 0) -> str:
 
 def _describe(option) -> str:
     """The focused option's description (the short eval verdict rides inline in
-    the row; the fuller metrics line stays in the catalog and docs). Routed
-    through code_markup like every other choice-description path."""
-    return code_markup(option.description)
+    the row; the fuller metrics line stays in the catalog and docs). Cloud
+    options append their list price with a may-have-changed note; local options
+    carry no price. Routed through code_markup like every other
+    choice-description path."""
+    text = option.description
+    pricing = getattr(option, "pricing", "")
+    if pricing:
+        text += f"\nPricing: {pricing} (checked {PRICING_CHECKED}, may have changed)."
+    return code_markup(text)
 
 
 class EmbedderStep(FormStep):
