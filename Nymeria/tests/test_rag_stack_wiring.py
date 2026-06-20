@@ -21,6 +21,8 @@ from nymeria.setup.rag_catalog import (
     EMBEDDERS,
     RERANKERS,
     apply_quickstart_rag,
+    get_embedder,
+    get_reranker,
     rag_env_for_state,
 )
 from nymeria.setup.state import WizardState
@@ -137,6 +139,39 @@ def test_rag_catalog_options_are_well_formed():
         assert r.provider in {"voyage", "cohere", "zeroentropy", "local", "none"}
         if r.requires_key:
             assert r.key_vendor
+
+
+def test_no_option_is_flagged_recommended():
+    """The per-option (recommended) tag was removed: users pick from the eval
+    verdicts and prices, not a pushed default. The dataclasses no longer carry a
+    `recommended` field at all."""
+    assert not any(hasattr(e, "recommended") for e in EMBEDDERS)
+    assert not any(hasattr(r, "recommended") for r in RERANKERS)
+
+
+def test_non_local_options_carry_pricing_and_local_do_not():
+    """Every cloud (non-local) embedder/reranker shows a list price; local and the
+    no-reranker baseline carry none (they cost nothing to run)."""
+    for e in EMBEDDERS:
+        if e.tier == "local":
+            assert not e.pricing, e.id
+        else:
+            assert e.pricing, e.id
+    for r in RERANKERS:
+        if r.tier in {"local", "none"}:
+            assert not r.pricing, r.id
+        else:
+            assert r.pricing, r.id
+
+
+def test_single_key_voyage_stack_shares_one_vendor():
+    """The Voyage value embedder and its paired reranker share a key vendor, so the
+    reranker step reuses the embedding key instead of prompting for a second
+    account (the "single key" claim is enforced, not just described)."""
+    emb = get_embedder("value-voyage-lite")
+    rer = get_reranker("value-voyage-2.5-lite")
+    assert emb is not None and rer is not None
+    assert emb.key_vendor == rer.key_vendor == "voyage"
 
 
 def test_rag_env_for_state_maps_each_tier():

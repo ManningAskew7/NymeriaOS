@@ -6535,8 +6535,9 @@ def test_rag_picker_rows_carry_inline_eval_and_fit_standard_width():
             if option.eval_tag:
                 assert option.eval_tag in plain
                 tag_columns.add(plain.index(option.eval_tag))
-            if option.recommended:
-                assert "(recommended)" in plain
+            # No option carries a "(recommended)" tag any more: the row shows the
+            # label, tier, and inline eval verdict only.
+            assert "(recommended)" not in plain
             assert len(plain) <= 97, f"{option.id} row is {len(plain)}: {plain!r}"
         # The verdicts line up as one table column across the list.
         assert len(tag_columns) == 1

@@ -51,7 +51,7 @@ class EmbedderOption:
     key_vendor: Optional[str] = None  # reuse tag shared with rerankers
     base_url: Optional[str] = None  # EMBEDDING_BASE_URL
     input_type: Optional[str] = None  # EMBEDDING_INPUT_TYPE
-    recommended: bool = False
+    pricing: str = ""  # provider list price, shown with a may-have-changed note
     key_label: str = "API key"
     metrics: str = ""  # fuller one-line internal-eval summary (reference/docs)
     eval_tag: str = ""  # short eval summary, rendered dim inline in the picker row
@@ -68,18 +68,25 @@ class RerankerOption:
     requires_key: bool
     key_vendor: Optional[str] = None
     onnx_file: Optional[str] = None  # RAG_RERANK_LOCAL_ONNX_FILE
-    recommended: bool = False
+    pricing: str = ""  # provider list price, shown with a may-have-changed note
     key_label: str = "API key"
     metrics: str = ""  # fuller one-line internal-eval summary (reference/docs)
     eval_tag: str = ""  # short eval summary, rendered dim inline in the picker row
 
 
+# Pricing on the non-local options was checked on this date. Provider list prices
+# change, so the wizard shows each price with a "may have changed" note; re-verify
+# against the provider's pricing page when updating these figures.
+PRICING_CHECKED = "2026-06-20"
+
+
 # Embedders, in display order (premium, value, local). Vector-only quality on the
 # eval corpus ranks Cohere > Gemini (free) > Voyage-large > Voyage-lite ~ OpenAI
 # ~ granite; a reranker narrows the gap (it erases the embedder gap on prose), so
-# the value and local tiers stay strong picks. Each provider lists its fuller
-# lineup so a user can match an account they already hold; the recommended pick
-# per tier carries the (recommended) tag.
+# the value and local tiers stay strong picks. No option is flagged as the pick:
+# each row carries its short eval verdict (and, for the cloud options, its price),
+# so the user chooses from the eval results. Each provider lists its fuller lineup
+# so a user can match an account they already hold.
 EMBEDDERS: list[EmbedderOption] = [
     EmbedderOption(
         id="premium-cohere",
@@ -95,7 +102,7 @@ EMBEDDERS: list[EmbedderOption] = [
         dimensions=1024,
         requires_key=True,
         key_vendor="cohere",
-        recommended=True,
+        pricing="about $0.12 / 1M text tokens (free trial key is rate-limited)",
         key_label="Cohere API key",
         metrics="Internal eval avg nDCG@5 0.71 (tool 0.66 / prose 0.63 / code 0.84): #1 of every embedder tested.",
         eval_tag="nDCG@5 0.71, #1 overall",
@@ -114,6 +121,7 @@ EMBEDDERS: list[EmbedderOption] = [
         dimensions=1536,
         requires_key=True,
         key_vendor="cohere",
+        pricing="about $0.12 / 1M text tokens (same embed-v4 model as the 1024-d pick)",
         key_label="Cohere API key",
         metrics="Internal eval avg nDCG@5 0.70: statistically tied with 1024-d, which edges it on tool and prose.",
         eval_tag="nDCG@5 0.70, ties 1024-d",
@@ -134,6 +142,7 @@ EMBEDDERS: list[EmbedderOption] = [
         key_vendor="voyage",
         base_url="https://api.voyageai.com/v1",
         input_type="voyage",
+        pricing="about $0.12 / 1M tokens, first 200M tokens free per account",
         key_label="Voyage API key",
         metrics="Internal eval avg nDCG@5 0.67 (tool 0.59 / prose 0.61 / code 0.81): premium #2, just behind Cohere.",
         eval_tag="nDCG@5 0.67, premium #2",
@@ -144,7 +153,7 @@ EMBEDDERS: list[EmbedderOption] = [
         label="Gemini embedding-001 (free tier)",
         description=(
             "Best quality per dollar: #2 embedder overall and free on Google's "
-            "free tier, beating paid Voyage on tool and prose. Mind the free-tier "
+            "free tier, beating Voyage on tool and prose. Mind the free-tier "
             "rate/daily caps. Needs a Google AI (Gemini) API key."
         ),
         provider="gemini",
@@ -152,7 +161,7 @@ EMBEDDERS: list[EmbedderOption] = [
         dimensions=1024,
         requires_key=True,
         key_vendor="gemini",
-        recommended=True,
+        pricing="free on Google's free tier (rate-limited); about $0.15 / 1M tokens paid",
         key_label="Google AI (Gemini) API key",
         metrics="Internal eval avg nDCG@5 0.68 (tool 0.59 / prose 0.61 / code 0.82): #2 overall, free.",
         eval_tag="nDCG@5 0.68, #2 overall, free",
@@ -162,9 +171,9 @@ EMBEDDERS: list[EmbedderOption] = [
         tier="value",
         label="Voyage 4 lite (1024-d)",
         description=(
-            "The cheapest paid Voyage embedder. An all-paid value option if "
-            "Gemini's free-tier caps are a problem, but Gemini beats it on both "
-            "price and quality. Shares its key with the Voyage rerankers."
+            "Single-key value pick: one Voyage key powers both the embedder and "
+            "the Voyage rerankers (the cheapest Voyage embedder), with the highest "
+            "throughput for bulk indexing. Needs a Voyage API key."
         ),
         provider="openai",
         model="voyage-4-lite",
@@ -173,8 +182,9 @@ EMBEDDERS: list[EmbedderOption] = [
         key_vendor="voyage",
         base_url="https://api.voyageai.com/v1",
         input_type="voyage",
+        pricing="about $0.02 / 1M tokens, first 200M tokens free per account",
         key_label="Voyage API key",
-        metrics="Internal eval avg nDCG@5 0.64: the weakest API embedder tested; prefer Gemini unless free-tier caps bite.",
+        metrics="Internal eval avg nDCG@5 0.64 (weakest API embedder tested); a reranker narrows the gap, and one Voyage key covers embedder + reranker, free up to 200M tokens/model.",
         eval_tag="nDCG@5 0.64",
     ),
     EmbedderOption(
@@ -192,6 +202,7 @@ EMBEDDERS: list[EmbedderOption] = [
         dimensions=1536,
         requires_key=True,
         key_vendor="openai",
+        pricing="about $0.02 / 1M tokens",
         key_label="OpenAI API key",
         metrics="Internal eval avg nDCG@5 0.60 (tool 0.55 / prose 0.51 / code 0.74): below the free local Granite.",
         eval_tag="nDCG@5 0.60, below local",
@@ -209,7 +220,6 @@ EMBEDDERS: list[EmbedderOption] = [
         model="ibm-granite/granite-embedding-small-english-r2",
         dimensions=384,
         requires_key=False,
-        recommended=True,
         metrics="Internal eval avg nDCG@5 0.61 (code 0.79, within 0.03 of premium): best on-device embedder.",
         eval_tag="nDCG@5 0.61, code 0.79",
     ),
@@ -249,7 +259,7 @@ RERANKERS: list[RerankerOption] = [
         model="rerank-2.5",
         requires_key=True,
         key_vendor="voyage",
-        recommended=True,
+        pricing="about $0.05 / 1M tokens, first 200M tokens free per account",
         key_label="Voyage API key",
         metrics="Internal eval avg nDCG@5 0.77 on the premium pool (tool 0.73 / prose 0.72 / code 0.86): best all-rounder.",
         eval_tag="nDCG@5 0.77, best overall",
@@ -267,6 +277,7 @@ RERANKERS: list[RerankerOption] = [
         model="rerank-v4.0-pro",
         requires_key=True,
         key_vendor="cohere",
+        pricing="about $2.50 / 1k searches (a search = 1 query + up to 100 documents)",
         key_label="Cohere API key",
         metrics="Internal eval avg nDCG@5 0.76 on the premium pool; best on code (0.87), behind Voyage on prose.",
         eval_tag="nDCG@5 0.76, best code 0.87",
@@ -283,7 +294,7 @@ RERANKERS: list[RerankerOption] = [
         model="rerank-2.5-lite",
         requires_key=True,
         key_vendor="voyage",
-        recommended=True,
+        pricing="about $0.02 / 1M tokens, first 200M tokens free per account",
         key_label="Voyage API key",
         metrics="Internal eval: within ~0.01 nDCG@5 of the full rerank-2.5, at ~40% of the cost.",
         eval_tag="matches 2.5 at ~40% cost",
@@ -301,6 +312,7 @@ RERANKERS: list[RerankerOption] = [
         model="zerank-2",
         requires_key=True,
         key_vendor="zeroentropy",
+        pricing="about $0.025 / 1M tokens (no free tier)",
         key_label="ZeroEntropy API key",
         metrics="Internal eval: best on CODE (~0.87, top of all rerankers) but worst on prose; code-only winner.",
         eval_tag="code 0.87, weak prose/tool",
@@ -317,7 +329,6 @@ RERANKERS: list[RerankerOption] = [
         provider="local",
         model="cross-encoder/ettin-reranker-68m-v1",
         requires_key=False,
-        recommended=True,
         metrics="Internal eval: +0.07 to +0.10 nDCG@5 on local/cheap embeddings, small lift on premium; ~3-5s/query CPU.",
         eval_tag="up to +0.10 nDCG@5, free",
     ),
@@ -356,6 +367,12 @@ RECOMMENDED_COMBOS: list[tuple[str, str, str, str]] = [
         "~98% of premium at a near-free embedder + a cheap reranker",
     ),
     (
+        "Value (single key)",
+        "value-voyage-lite",
+        "value-voyage-2.5-lite",
+        "one Voyage key powers embedder + reranker, both free up to 200M tokens/model",
+    ),
+    (
         "Local",
         "local-granite",
         "local-ettin",
@@ -383,7 +400,7 @@ _RECOMMENDED_RERANKER: dict[str, tuple[str, str]] = {
     ),
     "value-voyage-lite": (
         "value-voyage-2.5-lite",
-        "All-paid value pair; one Voyage key for both.",
+        "Single Voyage key for both, free up to 200M tokens/model.",
     ),
     "value-openai-small": (
         "value-voyage-2.5-lite",
@@ -550,6 +567,7 @@ def apply_quickstart_rag(state: "WizardState") -> None:
 
 __all__ = [
     "TIER_LABELS",
+    "PRICING_CHECKED",
     "EmbedderOption",
     "RerankerOption",
     "EMBEDDERS",
