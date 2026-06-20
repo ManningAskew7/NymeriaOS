@@ -2,9 +2,10 @@
 
 `fetch_url_nymeria` is the first member of an opt-in fetch family that mirrors the
 web_search_* family: a free, in-process, SSRF-safe fetcher that pulls a URL,
-extracts the readable content as markdown or text, and optionally distills it
-down to an instruction with a configurable secondary model. Hosted members (fetch_url_firecrawl, ...)
-land later as separate opt-in tools for the cases free extraction cannot match.
+extracts the readable content as markdown or text, and optionally hands it to a
+secondary model that reads the page and returns only what an `extraction_prompt`
+asks for. Hosted members (fetch_url_firecrawl, ...) land later as separate
+opt-in tools for the cases free extraction cannot match.
 
 The fetch is gated by the shared HTTP egress policy (core/http_policy.py): the
 agent supplies an arbitrary URL, so every request and redirect hop is validated
@@ -30,6 +31,7 @@ from ..core.http_policy import (
     HTTPPolicyViolation,
     requests_get_with_policy,
 )
+from .llm_extract import run_extraction
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,6 @@ _THIN_CONTENT_CHARS = 200  # below this, try the readability fallback
 _MIN_MAX_LENGTH = 500
 _MAX_MAX_LENGTH = 50_000
 _DEFAULT_MAX_LENGTH = 8_000
-_SUMMARY_INPUT_CHAR_BUDGET = 120_000  # ~30k tokens; map-reduce is out of scope
 _USER_AGENT = "Nymeria/1.0 (web fetch; autonomous personal assistant)"
 
 _EXTRACT_FORMATS = {"markdown", "text"}
@@ -281,104 +282,6 @@ def _extract_content(response, extract: str) -> str:
     return f"[Error]: Unsupported content type '{content_type or 'unknown'}' for {response.url}"
 
 
-# --- optional distill ---------------------------------------------------------
-
-
-def _build_fetch_summary_llm_config(settings):
-    """Build an LLMConfig for the summarize step.
-
-    Uses the dedicated fetch_summary_* settings when a model is configured;
-    otherwise falls back to the main agent model (mirrors doctor._build_global_llm_config).
-    """
-    from ..vendor.react_agent.config import LLMConfig
-
-    if settings.fetch_summary_model:
-        from ..config.llm_providers import resolve_provider_api_key, resolve_provider_base_url
-
-        provider = settings.fetch_summary_provider or settings.llm_provider
-        model = settings.fetch_summary_model
-        base_url = resolve_provider_base_url(
-            provider,
-            configured_base_url=settings.fetch_summary_base_url,
-            settings=settings,
-        )
-        api_key = resolve_provider_api_key(provider, settings=settings)
-    else:
-        provider = settings.llm_provider
-        model = settings.llm_model
-        base_url = settings.llm_base_url
-        if provider == "anthropic":
-            api_key = (
-                settings.anthropic_api_key
-                if base_url
-                else (settings.anthropic_direct_api_key or settings.anthropic_api_key)
-            )
-        else:
-            api_key = {
-                "openai": settings.openai_api_key,
-                "openrouter": settings.openrouter_api_key,
-            }.get(provider) or settings.get_api_key_for_provider()
-
-    return LLMConfig(
-        provider=provider,
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=None,
-        max_tokens=1500,
-        provider_route=getattr(settings, "llm_provider_route", None),
-        openai_api_mode=settings.openai_api_mode,
-        request_timeout=90,
-        stream_max_retries=0,
-    )
-
-
-def _distill(content: str, instruction: str) -> str:
-    """Distill already-cleaned content down to an instruction with the secondary model."""
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    from ..config import get_settings
-    from ..vendor.react_agent.providers import create_llm
-
-    try:
-        config = _build_fetch_summary_llm_config(get_settings())
-        if not config.model:
-            return (
-                "[Error]: No summarizer model configured. Set the fetch summarizer "
-                "model in settings or configure a default LLM."
-            )
-        llm = create_llm(config)
-        prompt = instruction.strip() or "Summarize the key points of this page."
-        messages = [
-            SystemMessage(
-                content=(
-                    "You extract and summarize web page content. Be accurate and "
-                    "concise, and use only the provided page text."
-                )
-            ),
-            HumanMessage(content=f"{prompt}\n\n---\nPAGE CONTENT:\n{content[:_SUMMARY_INPUT_CHAR_BUDGET]}"),
-        ]
-        # callbacks=[] severs this nested call from the parent agent's
-        # astream_events stream, so the summary lands ONLY in the tool result and
-        # never leaks token-by-token into the live transcript (mirrors the
-        # callbacks=[] isolation used for chat()-from-inside-a-tool in agent.py).
-        result = llm.invoke(messages, config={"callbacks": []})
-        text = getattr(result, "content", "")
-        if isinstance(text, list):
-            # Anthropic-style content blocks: keep text parts, tolerate None/non-dicts.
-            parts: list[str] = []
-            for part in text:
-                value = part.get("text") if isinstance(part, dict) else part
-                if value:
-                    parts.append(str(value))
-            text = " ".join(parts)
-        text = (text or "").strip()
-        return text or "[Error]: Summarizer returned no content."
-    except Exception as e:  # noqa: BLE001 - never leak provider URLs/keys from the exception text
-        logger.error("fetch_url_nymeria distill failed: %s", e, exc_info=True)
-        return f"[Error]: Distill step failed: {type(e).__name__} (see server logs)"
-
-
 # --- rendering ----------------------------------------------------------------
 
 
@@ -439,7 +342,7 @@ def _fetch_and_render(
     url: str,
     *,
     extract: str,
-    distill: str,
+    extraction_prompt: str,
     max_length: int,
     config=None,
 ) -> str:
@@ -459,10 +362,11 @@ def _fetch_and_render(
         except Exception:  # noqa: BLE001
             title = ""
 
-    if distill.strip():
-        body = _distill(body, distill)
-        if body.startswith("[Error]:"):
-            return body
+    if extraction_prompt.strip():
+        extracted, model = run_extraction(body, extraction_prompt)
+        if extracted.startswith("[Error]:"):
+            return extracted
+        body = f"{extracted}\n\n[Extracted by {model}]"
     elif len(body) > max_length:
         full_len = len(body)
         preview = body[:max_length].rstrip()
@@ -488,7 +392,7 @@ def fetch_url_nymeria(
     url: str = "",
     urls: str = "",
     extract: str = "markdown",
-    distill: str = "",
+    extraction_prompt: str = "",
     max_length: int = _DEFAULT_MAX_LENGTH,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
@@ -506,13 +410,19 @@ def fetch_url_nymeria(
               http(s) URLs. Takes precedence over url. Each is fetched
               independently. Max 10 per call.
         extract: "markdown" (default, preserves structure) or "text" (plain prose).
-        distill: Leave empty to return the full readable page. Provide an
-                 instruction (e.g. "pricing tiers and limits") to have a secondary
-                 LLM read the page and return only that, instead of the full text.
+        extraction_prompt: Leave empty to return the full readable page. Provide
+                 a prompt (e.g. "pricing tiers and limits") and a secondary LLM
+                 reads the page and returns only what the prompt asks for,
+                 instead of the full text. Best for large pages where you want a
+                 few specific facts; skip it for small pages (just read them).
+                 The LLM sees the cleaned page up to ~30k tokens, so for very
+                 large pages it can miss content past that; the result is tagged
+                 with the model that produced it.
         max_length: Max characters of content returned (500-50000, default 8000).
-                   Long pages are truncated when distill is empty. When truncated,
-                   the FULL extracted text is saved to a file in your thread
-                   sandbox and the path is included so you can file_read or grep it.
+                   Long pages are truncated when extraction_prompt is empty. When
+                   truncated, the FULL extracted text is saved to a file in your
+                   thread sandbox and the path is included so you can file_read or
+                   grep it.
 
     Returns:
         A short header (title, source URL) followed by the content. Batch mode:
@@ -540,13 +450,18 @@ def fetch_url_nymeria(
         extract = "markdown"
     max_length = max(_MIN_MAX_LENGTH, min(_MAX_MAX_LENGTH, max_length))
 
-    logger.info("fetch_url_nymeria: %d url(s) (extract=%s, distill=%s)", len(url_list), extract, bool(distill.strip()))
+    logger.info(
+        "fetch_url_nymeria: %d url(s) (extract=%s, extraction_prompt=%s)",
+        len(url_list),
+        extract,
+        bool(extraction_prompt.strip()),
+    )
 
     if len(url_list) == 1:
         return _fetch_and_render(
             url_list[0],
             extract=extract,
-            distill=distill,
+            extraction_prompt=extraction_prompt,
             max_length=max_length,
             config=config,
         )
@@ -557,7 +472,7 @@ def fetch_url_nymeria(
         result = _fetch_and_render(
             u,
             extract=extract,
-            distill=distill,
+            extraction_prompt=extraction_prompt,
             max_length=max_length,
             config=config,
         )

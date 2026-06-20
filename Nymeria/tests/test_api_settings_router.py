@@ -34,6 +34,8 @@ class FakeSettings:
     llm_model: str = "claude-test"
     llm_fast_model: str | None = None
     llm_smart_model: str | None = None
+    llm_background_model: str | None = None
+    llm_background_base_url: str | None = None
     llm_fallback_models: str = DEFAULT_LLM_FALLBACK_MODELS
     llm_temperature: float = 1.0
     llm_max_tokens: int | None = None
@@ -60,9 +62,6 @@ class FakeSettings:
     compact_threshold_tokens: int = 100_000
     compact_keep_messages: int = 4
     compact_model: str | None = None
-    fetch_summary_provider: str | None = None
-    fetch_summary_model: str | None = None
-    fetch_summary_base_url: str | None = None
     sliding_window_cycles: int = 20
     tool_output_max_chars: int = 100000
     memory_char_limit: int = 8000
@@ -297,7 +296,9 @@ class FakeAgent:
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
         self.synced_tools = 0
         self.llm_config = llm_config or FakeLLMConfig()
-        self.settings = None
+        # Populated by the settings-apply path on first PATCH; typed as the
+        # post-apply FakeSettings so the test assertions type-check.
+        self.settings: FakeSettings = None  # type: ignore[bad-assignment]
         self._graph_cache_lock = threading.Lock()
         self._user_graphs = {"user": object()}
         self._async_user_graphs = {"user": object()}
@@ -340,7 +341,7 @@ def _client(
     monkeypatch.setattr(api_module, "get_settings", provider)
 
     agent = FakeAgent(settings.data_dir, llm_config=llm_config)
-    client = TestClient(api_module.create_api_app(agent))
+    client = TestClient(api_module.create_api_app(agent))  # type: ignore[bad-argument-type]
     agent.accounts_repo.create_user(
         "admin",
         "admin@example.com",

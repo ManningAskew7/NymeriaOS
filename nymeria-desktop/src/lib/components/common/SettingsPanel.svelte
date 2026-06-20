@@ -92,15 +92,15 @@
   // aliases). Each may be a model id or provider:model for a different provider.
   let llmFastModel = $state('');
   let llmSmartModel = $state('');
+  // Background/utility tier (powers the extraction_prompt step now, more
+  // background tasks later). A model id or provider:model; optional base-URL
+  // override points it at a local server or CLIProxy independently of the main.
+  let llmBackgroundModel = $state('');
+  let llmBackgroundBaseUrl = $state('');
   let llmFallbackModels = $state(''); // comma/newline-separated provider:model entries
   let llmFallbackHoldSeconds = $state(7200);
-  // LLM tab sub-view toggle: main provider / fallback / fetch summarizer.
-  let llmSubView = $state<'main' | 'fallback' | 'fetch'>('main');
-  // Optional dedicated model for fetch_url_nymeria's summarize step. The display
-  // provider mirrors the main picker (synthetic local_openai/openai_custom entries).
-  let fetchSummaryDisplayProvider = $state<DisplayProvider>('');
-  let fetchSummaryModel = $state('');
-  let fetchSummaryBaseUrl = $state('');
+  // LLM tab sub-view toggle: main provider / model tiers.
+  let llmSubView = $state<'main' | 'fallback'>('main');
   let llmTemperature = $state(1);
   let showModelHelp = $state(false);
   // Advanced LLM settings
@@ -535,31 +535,6 @@
     void loadAvailableModels(provider, availableModelsState, baseUrlOverride);
   });
 
-  // Dynamic model list for the fetch summarizer provider (mirrors the main one).
-  let summaryModelsState = $state<AvailableModelsState>({
-    models: [],
-    provider: '',
-    loading: false,
-  });
-
-  // Backend provider id behind the summarizer display provider ('' = use main).
-  const fetchSummaryProviderId = $derived(
-    fetchSummaryDisplayProvider ? fromDisplayProvider(fetchSummaryDisplayProvider).provider : ''
-  );
-
-  $effect(() => {
-    const dp = fetchSummaryDisplayProvider;
-    if (!dp) {
-      clearAvailableModels(summaryModelsState);
-      return;
-    }
-    const { provider } = fromDisplayProvider(dp);
-    const baseUrlOverride = (
-      dp === 'local_openai' || dp === 'openai_custom' || fetchSummaryBaseUrl
-    ) ? fetchSummaryBaseUrl : '';
-    void loadAvailableModels(provider, summaryModelsState, baseUrlOverride);
-  });
-
   $effect(() => {
     if (hasRouteChoice(llmProvider, providerCatalog)) {
       llmProviderRoute = coerceProviderRoute(llmProvider, providerCatalog, llmProviderRoute);
@@ -658,6 +633,8 @@
       llmModel = serverSettings.llm_model;
       llmFastModel = serverSettings.llm_fast_model ?? '';
       llmSmartModel = serverSettings.llm_smart_model ?? '';
+      llmBackgroundModel = serverSettings.llm_background_model ?? '';
+      llmBackgroundBaseUrl = serverSettings.llm_background_base_url ?? '';
       llmFallbackModels = (serverSettings.llm_fallback_models ?? []).join(', ');
       llmFallbackHoldSeconds = serverSettings.llm_fallback_hold_seconds ?? 7200;
       llmTemperature = serverSettings.llm_temperature;
@@ -674,12 +651,6 @@
       llmContextLength = serverSettings.llm_context_length;
       llmOllamaNumCtx = serverSettings.llm_ollama_num_ctx;
       openaiApiMode = serverSettings.openai_api_mode ?? 'responses';
-      fetchSummaryModel = serverSettings.fetch_summary_model ?? '';
-      fetchSummaryBaseUrl = serverSettings.fetch_summary_base_url ?? '';
-      fetchSummaryDisplayProvider = toDisplayProvider(
-        (serverSettings.fetch_summary_provider || '') as LLMProvider,
-        serverSettings.fetch_summary_base_url || ''
-      );
       contextManagement = serverSettings.context_management;
       compactThreshold = serverSettings.compact_threshold ?? 0.8;
       compactThresholdMode = serverSettings.compact_threshold_mode ?? 'percentage';
@@ -898,13 +869,14 @@
         : displayProvider === 'openai_custom'
           ? (llmBaseUrl || DEFAULT_OPENAI_CLIPROXY_BASE_URL)
           : llmBaseUrl;
-      const fetchSummary = fromDisplayProvider(fetchSummaryDisplayProvider);
 
       const result = await api.updateServerSettings({
         llm_provider: actualProvider,
         llm_model: llmModel,
         llm_fast_model: llmFastModel.trim(),
         llm_smart_model: llmSmartModel.trim(),
+        llm_background_model: llmBackgroundModel.trim(),
+        llm_background_base_url: llmBackgroundBaseUrl.trim(),
         llm_fallback_models: llmFallbackModels.trim(),
         llm_fallback_hold_seconds: llmFallbackHoldSeconds,
         llm_temperature: llmTemperature,
@@ -922,11 +894,6 @@
         llm_ollama_num_ctx: optionalNumberUpdate(llmOllamaNumCtx, serverSettings?.llm_ollama_num_ctx),
         llm_provider_route: showProviderRouteSelect(actualProvider) ? llmProviderRoute : null,
         openai_api_mode: openaiApiMode,
-        fetch_summary_provider: fetchSummaryDisplayProvider ? fetchSummary.provider : null,
-        fetch_summary_model: fetchSummaryModel || null,
-        fetch_summary_base_url: (fetchSummaryDisplayProvider && !fetchSummary.clearBaseUrl)
-          ? (fetchSummaryBaseUrl || null)
-          : null,
         context_management: contextManagement,
         compact_threshold: compactThreshold,
         compact_threshold_mode: compactThresholdMode,
@@ -1656,7 +1623,6 @@
         <div class="llm-subview-toggle" role="tablist" aria-label="Provider configuration view">
           <button class="llm-subview-btn" class:active={llmSubView === 'main'} onclick={() => (llmSubView = 'main')} type="button" role="tab" aria-selected={llmSubView === 'main'}>Main</button>
           <button class="llm-subview-btn" class:active={llmSubView === 'fallback'} onclick={() => (llmSubView = 'fallback')} type="button" role="tab" aria-selected={llmSubView === 'fallback'}>Tiers</button>
-          <button class="llm-subview-btn" class:active={llmSubView === 'fetch'} onclick={() => (llmSubView = 'fetch')} type="button" role="tab" aria-selected={llmSubView === 'fetch'}>Fetch tool</button>
         </div>
 
         {#if llmSubView === 'main'}
@@ -2046,11 +2012,11 @@
         {#if llmSubView === 'fallback'}
         <p class="hint">
           Model tiers route work to a cheaper or stronger model. The
-          <code>/fast</code> and <code>/smart</code> commands, the per-thread
-          quick-pick, and <code>spawn_thread</code> aliases all use these. Each
-          value may be a model id, or <code>provider:model</code> to use a
-          different provider with its own credentials, so one provider's outage
-          does not disable every tier.
+          <code>/fast</code>, <code>/smart</code> and <code>/background</code>
+          commands, the per-thread quick-pick, and <code>spawn_thread</code>
+          aliases all use these. Each value may be a model id, or
+          <code>provider:model</code> to use a different provider with its own
+          credentials, so one provider's outage does not disable every tier.
         </p>
 
         <div class="field">
@@ -2071,6 +2037,37 @@
             bind:value={llmSmartModel}
             placeholder="blank = primary model (e.g. anthropic:claude-opus-4-8)"
           />
+        </div>
+
+        <div class="field">
+          <label for="llm-background-model">Background model</label>
+          <input
+            id="llm-background-model"
+            type="text"
+            bind:value={llmBackgroundModel}
+            placeholder="blank = primary model; powers extraction and background tasks"
+          />
+          <p class="hint">
+            Utility tier for the <code>extraction_prompt</code> step
+            (<code>fetch_url_nymeria</code> and <code>file_read</code>) and
+            future background tasks. A small local model works well (no tool
+            calling required).
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="llm-background-base-url">Background base URL (optional)</label>
+          <input
+            id="llm-background-base-url"
+            type="text"
+            bind:value={llmBackgroundBaseUrl}
+            placeholder="blank = inherit provider base URL; e.g. http://host.docker.internal:1234/v1"
+          />
+          <p class="hint">
+            Point the background model at a local server or CLIProxy
+            independently of the main provider. Blank inherits the resolved
+            provider's base URL like fast/smart.
+          </p>
         </div>
 
         <div class="field">
@@ -2102,72 +2099,6 @@
             primary recovers. 0 disables the timed hold.
           </p>
         </div>
-        {/if}
-
-        {#if llmSubView === 'fetch'}
-        <p class="hint">
-          Optional dedicated model for <code>fetch_url_nymeria</code>'s summarize
-          option. A small local model works well here (no tool calling is
-          required). Leave the model blank to reuse your main model.
-        </p>
-
-        <div class="field">
-          <label for="fetch-summary-provider">Provider</label>
-          <ProviderSelect
-            id="fetch-summary-provider"
-            bind:value={fetchSummaryDisplayProvider}
-            groups={settingsProviderGroups}
-            includeDefault={true}
-            defaultLabel="Use main provider"
-            defaultDescription="Reuse the main agent provider"
-          />
-        </div>
-
-        <div class="field">
-          <label for="fetch-summary-model">Model</label>
-          {#if summaryModelsState.models.length > 0}
-            <select id="fetch-summary-model" bind:value={fetchSummaryModel}>
-              <option value="">(use main model)</option>
-              {#each summaryModelsState.models as model}
-                <option value={model.id}>{model.name || model.id}</option>
-              {/each}
-            </select>
-            <p class="hint">{summaryModelsState.models.length} models available</p>
-          {:else if summaryModelsState.loading}
-            <select id="fetch-summary-model" disabled>
-              <option>Loading models…</option>
-            </select>
-          {:else}
-            <select id="fetch-summary-model" bind:value={fetchSummaryModel}>
-              <option value="">(use main model)</option>
-              {#each (modelOptions[fetchSummaryProviderId] ?? []) as model}
-                <option value={model.value}>{model.label}</option>
-              {/each}
-            </select>
-          {/if}
-          <div class="model-custom-row">
-            <input
-              type="text"
-              bind:value={fetchSummaryModel}
-              placeholder="Model id, or blank to use the main model"
-              class="model-custom"
-            />
-          </div>
-          <p class="hint">Pick from the list or type any model id. Blank reuses the main model.</p>
-        </div>
-
-        {#if fetchSummaryDisplayProvider === 'local_openai' || fetchSummaryDisplayProvider === 'openai_custom'}
-          <div class="field">
-            <label for="fetch-summary-base-url">API Base URL</label>
-            <input
-              id="fetch-summary-base-url"
-              type="text"
-              bind:value={fetchSummaryBaseUrl}
-              placeholder="e.g. http://host.docker.internal:1234/v1"
-            />
-            <p class="hint">Local OpenAI-compatible server endpoint. From Docker, <code>host.docker.internal</code> reaches the host.</p>
-          </div>
-        {/if}
         {/if}
 
         <div class="actions">

@@ -1,4 +1,4 @@
-"""Unit tests for the fast/smart/default model-tier resolver."""
+"""Unit tests for the fast/smart/default/background model-tier resolver."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from nymeria.config.model_tiers import (
     default_fast_model,
+    is_thread_tier_alias,
     is_tier_alias,
     plan_tier_switch,
     resolve_tier,
@@ -19,6 +20,7 @@ def _settings(**overrides):
         llm_model="claude-sonnet-4-6",
         llm_fast_model=None,
         llm_smart_model=None,
+        llm_background_model=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -28,8 +30,20 @@ def test_is_tier_alias() -> None:
     assert is_tier_alias("fast")
     assert is_tier_alias("SMART")
     assert is_tier_alias(" default ")
+    assert is_tier_alias("background")
     assert not is_tier_alias("claude-sonnet-4-6")
     assert not is_tier_alias(None)
+
+
+def test_is_thread_tier_alias_excludes_background() -> None:
+    # fast/smart/default are valid thread models; background is global-only and
+    # must NOT expand into a thread model (spawn_thread guard).
+    assert is_thread_tier_alias("fast")
+    assert is_thread_tier_alias("SMART")
+    assert is_thread_tier_alias(" default ")
+    assert not is_thread_tier_alias("background")
+    assert not is_thread_tier_alias("claude-sonnet-4-6")
+    assert not is_thread_tier_alias(None)
 
 
 def test_default_tier_is_primary_model() -> None:
@@ -49,6 +63,22 @@ def test_fast_unset_uses_provider_default() -> None:
 
 def test_smart_unset_falls_back_to_primary() -> None:
     assert resolve_tier("smart", _settings()) == ("anthropic", "claude-sonnet-4-6")
+
+
+def test_background_unset_falls_back_to_primary() -> None:
+    assert resolve_tier("background", _settings()) == (
+        "anthropic",
+        "claude-sonnet-4-6",
+    )
+
+
+def test_background_configured_and_cross_provider() -> None:
+    assert resolve_tier(
+        "background", _settings(llm_background_model="haiku-bg")
+    ) == ("anthropic", "haiku-bg")
+    assert resolve_tier(
+        "background", _settings(llm_background_model="openai:gpt-4o-mini")
+    ) == ("openai", "gpt-4o-mini")
 
 
 def test_configured_tier_values() -> None:

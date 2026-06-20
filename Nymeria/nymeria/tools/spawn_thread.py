@@ -557,7 +557,7 @@ def spawn_thread(
         - ttl_hours must be >= 1 when set.
     """
     from . import SEED_TOOLS, CATALOG_TOOLS
-    from ..config.model_tiers import is_tier_alias, resolve_tier
+    from ..config.model_tiers import is_thread_tier_alias, resolve_tier
     from ..core.agent import get_current_agent
     from ..core.event_bus import publish_sync_event
     from ..core.thread_config import ThreadConfig, ThreadLLMConfig
@@ -761,11 +761,12 @@ def spawn_thread(
         # filters them out. Dedupe in case the caller also named some explicitly.
         disabled_list = sorted({*(disabled_list), *(t.name for t in SEED_TOOLS)})
 
-    # Expand a tier alias ("fast"/"smart"/"default") into a concrete
+    # Expand a thread tier alias ("fast"/"smart"/"default") into a concrete
     # provider+model so the child thread carries real IDs. A tier may target a
     # different provider (provider:model), which the runtime resolves credentials
-    # for via the existing cross-provider fallback machinery.
-    if is_tier_alias(llm_model):
+    # for via the existing cross-provider fallback machinery. The global-only
+    # "background" utility tier is excluded: it never becomes a thread model.
+    if is_thread_tier_alias(llm_model):
         resolved_tier = resolve_tier(
             llm_model,
             agent.settings,

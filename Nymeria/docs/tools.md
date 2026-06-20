@@ -19,7 +19,7 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 4e | `web_search_brave` | Web Search | SAFE | Opt-in | Ranked-source web search via Brave's independent index; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4f | `web_search_searxng` | Web Search | SAFE | Opt-in | Keyless metasearch via a self-hosted SearXNG instance; opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4g | `web_search_ddgs` | Web Search | SAFE | Opt-in | Keyless in-process metasearch via the ddgs library (no key, no instance); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
-| 4h | `fetch_url_nymeria` | Web Search | SAFE | Opt-in | Free, SSRF-gated page fetch + readable extraction (markdown/PDF), optional distill; opt-in `WEB_FETCH_TOOLS` group |
+| 4h | `fetch_url_nymeria` | Web Search | SAFE | Opt-in | Free, SSRF-gated page fetch + readable extraction (markdown/PDF), optional `extraction_prompt` LLM step; opt-in `WEB_FETCH_TOOLS` group |
 | 5 | `consult` | Core | SAFE | Opt-in | Ask Gemini for a second opinion (OpenRouter); enable per-thread (was a seed default, now optional) |
 | 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
 | 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
@@ -190,7 +190,7 @@ When `run_in_background=True` is called from an agent thread, stdout and stderr 
 Read the contents of a file, including images.
 
 ```python
-file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = None)
+file_read(file_path: str, encoding: str = "utf-8", max_lines: Optional[int] = None, extraction_prompt: str = "")
 ```
 
 Relative paths resolve from the same detected default tool cwd used by `bash_execute`, normally `settings.project_root`. Shell `cd` commands do not affect file tool paths.
@@ -199,8 +199,9 @@ Relative paths resolve from the same detected default tool cwd used by `bash_exe
 - `file_path` (`str`): Absolute or relative path to the file. Relative paths resolve from the detected default tool cwd.
 - `encoding` (`str`, default `"utf-8"`): File encoding (text files only)
 - `max_lines` (`Optional[int]`, default `None`): Limit number of lines to read (text files only)
+- `extraction_prompt` (`str`, default `""`): Leave empty to return the file as-is. Provide a prompt (e.g. `"the failed requests and their timestamps"`) and a secondary LLM reads the file and returns only what the prompt asks for. Best for large files where you want a few specific facts; skip it for small files. The LLM sees the file up to ~30k tokens (grep/sed huge files first); ignored for images; the result is tagged `[Extracted by <model>]`. Shares the `background` model tier with `fetch_url_nymeria` (see its Extraction step)
 
-**Returns:** File contents as text, or, for an image file, a loaded-image note with the image surfaced to the model.
+**Returns:** File contents as text, or, for an image file, a loaded-image note with the image surfaced to the model. With `extraction_prompt`, the extracted text followed by an `[Extracted by <model>]` line.
 
 **Images:** When the target is an image (png/jpeg/webp/gif, plus bmp/tiff which are converted), `file_read` detects it by magic bytes and surfaces it to the model through the same native-vision replay path as `image_gen_*` (a `nymeria_native_image` artifact hydrated just-in-time, so history stays compact). It is a `content_and_artifact` tool. Large images are downscaled to the active model's `max_image_bytes` cap (a long edge ceiling bounds tokens); the downscaled copy is written to the per-thread fetch sandbox. Unlike generated images, `file_read` may surface images from any readable path (matching its text-read scope). If the active model/route cannot carry a tool-result image (a non-vision model, or an OpenAI-compatible `chat_completions` route), it returns a `[Note]: ...` explaining how the user can attach the image directly instead. A combined sliding window bounds the total images sent per turn across all sources (generated, file_read, and user-attached): the newest N are kept and older ones drop out of context (older user images become a disk-path placeholder so they can be re-viewed with `file_read`). N is the per-thread Agent-tab "image window" setting, defaulting to the model's `max_images_per_request` (Claude 100, OpenAI 1500, Gemini 3000).
 
@@ -501,21 +502,21 @@ with DNS pinning. Content is extracted with Trafilatura (primary, emits markdown
 and a readability-lxml + markdownify fallback; PDFs go through pypdf.
 
 ```python
-fetch_url_nymeria(url: str = "", urls: str = "", extract: str = "markdown", distill: str = "", max_length: int = 8000)
+fetch_url_nymeria(url: str = "", urls: str = "", extract: str = "markdown", extraction_prompt: str = "", max_length: int = 8000)
 ```
 
 **Parameters (agent-controlled):**
 - `url` (`str`): Single URL to fetch
 - `urls` (`str`): Multiple URLs separated by `" | "` (pipe) or commas; takes precedence over `url`, max 10 per call
 - `extract` (`str`): `"markdown"` (default, preserves structure) or `"text"` (plain prose)
-- `distill` (`str`): Leave empty to return the full readable page. Provide an instruction (e.g. `"pricing tiers and limits"`) to have a secondary LLM read the page and return only that, instead of the full text
-- `max_length` (`int`): Max characters of content returned (clamped 500-50000, default 8000); long pages are truncated when `distill` is empty
+- `extraction_prompt` (`str`): Leave empty to return the full readable page. Provide a prompt (e.g. `"pricing tiers and limits"`) and a secondary LLM reads the page and returns only what the prompt asks for, instead of the full text. Best for large pages; skip it for small ones. The LLM sees the cleaned page up to ~30k tokens; the result is tagged `[Extracted by <model>]`
+- `max_length` (`int`): Max characters of content returned (clamped 500-50000, default 8000); long pages are truncated when `extraction_prompt` is empty
 
 Hard defaults (not exposed): granular httpx timeouts (connect 10s, read 25s), an honest `User-Agent`, a 10 MB fetch guard, redirect handling and DNS pinning via the egress policy, and the extraction cascade order.
 
 **Returns:** A short header (title, source URL, redirect note) followed by the content. Batch mode adds `=== URL N/M: <url> ===` headers. Failures are returned as `[Error]: <reason>` strings (blocked by egress policy, HTTP code, timeout, unsupported content type, or could-not-extract), never raised.
 
-**Distill step:** when `distill` is non-empty, uses a dedicated, optional model resolved from the global settings `fetch_summary_provider` / `fetch_summary_model` / `fetch_summary_base_url` (env `FETCH_SUMMARY_PROVIDER` / `FETCH_SUMMARY_MODEL` / `FETCH_SUMMARY_BASE_URL`). A small local model works well (no tool calling needed). When unset, it falls back to the main agent model.
+**Extraction step:** when `extraction_prompt` is non-empty, a secondary model reads the cleaned page (up to ~30k tokens) and returns only what the prompt asks for, isolated from the live SSE transcript, and the result is tagged with the model that produced it. The model is resolved from the global `background` model tier (`llm_background_model`, with an optional `llm_background_base_url` override; env `LLM_BACKGROUND_MODEL` / `LLM_BACKGROUND_BASE_URL`; also set via the `/background` command). A small local model works well (no tool calling needed). When unset, it falls back to the main agent model. The same step and tier back `file_read`'s `extraction_prompt` (shared `nymeria/tools/llm_extract.py`).
 
 **Scope:** v1 is static and server-rendered pages plus PDFs. JavaScript-only pages may return little content (a hosted fetch provider or the future browser tier handles those). No API key (the in-process path is keyless).
 
