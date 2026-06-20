@@ -10,7 +10,7 @@ import asyncio
 from nymeria.onboarding import HostingOption
 from nymeria.setup import finalize as finalize_mod
 
-from _setup_wizard_helpers import (
+from _setup_wizard_helpers import (  # type: ignore[import-not-found]
     _API_PORT_STEP,
     _AUTH_STEP,
     _CONNECTION_STEP,
@@ -103,7 +103,7 @@ def test_wizard_pilot_tier_quickstart_gates_and_seeds(monkeypatch):
             assert app.nav.current() == _HOSTING_STEP
             await pilot.press("enter")  # accept default hosting (local)
             await pilot.pause()
-            return state, app.nav.current()
+            return state, app.nav.current()  # type: ignore[bad-return]
 
     state, landed = asyncio.run(drive())
     assert state.quick is True
@@ -203,11 +203,11 @@ def test_show_error_toggles_error_row_visibility():
             scr = app.screen
             error = scr.query_one("#wizard-error", Static)
             assert error.display is False
-            scr.show_error("boom")
+            scr.show_error("boom")  # type: ignore[missing-attribute]
             await pilot.pause()
             assert error.display is True
             assert "boom" in str(error.render())
-            scr.show_error("")
+            scr.show_error("")  # type: ignore[missing-attribute]
             await pilot.pause()
             assert error.display is False
 
@@ -444,7 +444,7 @@ def test_wizard_radio_focused_label_is_bold_and_bright_no_bar():
             # No row paints a background: there is no selection bar.
             assert all(b.styles.background.a == 0 for b in buttons)
 
-            foc_label = focused.get_visual_style("toggle--label")
+            foc_label = focused.get_visual_style("toggle--label")  # type: ignore[missing-attribute]
             assert foc_label.bold is True  # the focused row is bold...
             # ...and brighter than every unfocused label, which stay un-bold.
             foc_luma = luma(foc_label.foreground)
@@ -1008,7 +1008,7 @@ def test_wizard_pilot_provider_picker_up_arrow_focus_flow():
 
             await pilot.press("down")  # move down one selectable row
             await pilot.pause()
-            assert option_list.highlighted == first + 1
+            assert option_list.highlighted == first + 1  # type: ignore[unsupported-operation]
 
             await pilot.press("up")  # back to the first row, still in the list
             await pilot.pause()

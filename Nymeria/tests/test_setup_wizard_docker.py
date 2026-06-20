@@ -14,7 +14,7 @@ from nymeria.onboarding import HostingOption
 from nymeria.setup import finalize as finalize_mod
 from nymeria.setup.runner import main as setup_main
 
-from _setup_wizard_helpers import (
+from _setup_wizard_helpers import (  # type: ignore[import-not-found]
     _env_line,
     _no_checkout,
     _stub_llm,

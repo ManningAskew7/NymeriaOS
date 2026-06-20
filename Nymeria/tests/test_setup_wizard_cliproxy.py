@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from nymeria.setup.runner import main as setup_main
 
-from _setup_wizard_helpers import (
+from _setup_wizard_helpers import (  # type: ignore[import-not-found]
     _active_auth,
     _cliproxy_first_run,
     _env_line,
