@@ -345,12 +345,20 @@ def _label_summary(labels: tuple[str, ...], count: int) -> str:
 
 
 def _provider_api_line(snapshot: CLIHeaderSnapshot) -> str:
+    # Provider/model are backend state. When disconnected, the snapshot carries
+    # the CLI's local Settings defaults; reporting them would imply a backend is
+    # configured. Show the connection truth instead (dev-todo #37). Key off the
+    # typed health status, the source of truth, not the rendered label string.
+    if snapshot.health.status == "disconnected":
+        return "not connected"
     if not snapshot.api_type:
         return snapshot.provider
     return f"{snapshot.provider} ({snapshot.api_type})"
 
 
 def _model_thinking_line(snapshot: CLIHeaderSnapshot) -> str:
+    if snapshot.health.status == "disconnected":
+        return "not connected"
     thinking = _thinking_label(snapshot.thinking_mode)
     if not thinking:
         return snapshot.model
