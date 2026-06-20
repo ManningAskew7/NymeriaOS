@@ -97,10 +97,14 @@ class ServerSettingsResponse(BaseModel):
     llm_model: str
     llm_fast_model: Optional[str] = None
     llm_smart_model: Optional[str] = None
-    # Read-only effective "provider:model" the fast/smart aliases resolve to
-    # (configured value or default), used by the per-thread tier quick-pick.
+    llm_background_model: Optional[str] = None
+    llm_background_base_url: Optional[str] = None
+    # Read-only effective "provider:model" the fast/smart/background aliases
+    # resolve to (configured value or default), used by the per-thread tier
+    # quick-pick.
     llm_fast_model_resolved: Optional[str] = None
     llm_smart_model_resolved: Optional[str] = None
+    llm_background_model_resolved: Optional[str] = None
     llm_fallback_models: list[str] = Field(default_factory=list)
     llm_temperature: float
     llm_max_tokens: Optional[int] = None
@@ -127,9 +131,6 @@ class ServerSettingsResponse(BaseModel):
     compact_threshold_tokens: int = 200_000
     compact_keep_messages: int
     compact_model: Optional[str] = None
-    fetch_summary_provider: Optional[str] = None
-    fetch_summary_model: Optional[str] = None
-    fetch_summary_base_url: Optional[str] = None
     sliding_window_cycles: int
     tool_output_max_chars: int
     memory_char_limit: int = 8000
@@ -174,6 +175,8 @@ class ServerSettingsUpdate(BaseModel):
     llm_model: Optional[str] = None
     llm_fast_model: Optional[str] = None
     llm_smart_model: Optional[str] = None
+    llm_background_model: Optional[str] = None
+    llm_background_base_url: Optional[str] = None
     llm_fallback_models: Optional[str] = None
     llm_temperature: Optional[float] = None
     llm_max_tokens: Optional[int] = None
@@ -190,9 +193,6 @@ class ServerSettingsUpdate(BaseModel):
     llm_ollama_num_ctx: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
     llm_provider_route: Optional[ProviderRoute] = None
     openai_api_mode: Optional[OpenAIApiMode] = None
-    fetch_summary_provider: Optional[str] = None
-    fetch_summary_model: Optional[str] = None
-    fetch_summary_base_url: Optional[str] = None
     cliproxy_management_url: Optional[str] = None
     # Accepted by PATCH /settings only. Secret values are intentionally absent
     # from ServerSettingsResponse.

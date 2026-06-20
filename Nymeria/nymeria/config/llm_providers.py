@@ -1307,6 +1307,31 @@ def _ollama_openai_compat_base_url(base_url: str) -> str:
     return f"{clean}/v1"
 
 
+def cliproxy_base_url_for_provider(
+    provider: str | None,
+    main_base_url: str | None,
+) -> str | None:
+    """Derive a provider's CLIProxy endpoint from the global LLM base URL.
+
+    CLIProxy serves the Anthropic OAuth path at the container root and the
+    OpenAI-compatible path at ``/v1`` on the same host, so a cross-provider
+    reference must derive the matching URL from the global base URL rather than
+    falling through to the provider's public default (which would bill direct
+    and reject the proxy key). Mirrors the derivation in
+    ``core/agent_llm_config.base_url_for_provider``. Returns ``None`` when the
+    global base URL is unset or is not a CLIProxy URL.
+    """
+    url = (main_base_url or "").rstrip("/")
+    if not url or ("cli-proxy" not in url and "cliproxy" not in url):
+        return None
+    p = normalize_llm_provider(provider)
+    if p == "anthropic":
+        return url[:-3] if url.endswith("/v1") else url
+    if p == "openai":
+        return url if url.endswith("/v1") else f"{url}/v1"
+    return None
+
+
 def resolve_provider_api_key(
     provider: str | None,
     *,

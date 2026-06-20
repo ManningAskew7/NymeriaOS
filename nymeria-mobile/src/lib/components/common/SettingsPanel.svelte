@@ -120,6 +120,11 @@
   // aliases). Each may be a model id or provider:model for a different provider.
   let llmFastModel = $state('');
   let llmSmartModel = $state('');
+  // Background/utility tier (powers the extraction_prompt step now, more
+  // background tasks later). A model id or provider:model; optional base-URL
+  // override points it at a local server or CLIProxy independently of the main.
+  let llmBackgroundModel = $state('');
+  let llmBackgroundBaseUrl = $state('');
   let llmFallbackModels = $state(''); // comma/newline-separated provider:model entries
   let llmFallbackHoldSeconds = $state(7200);
   let llmTemperature = $state(1);
@@ -242,6 +247,8 @@
       llmModel = serverSettings.llm_model;
       llmFastModel = serverSettings.llm_fast_model ?? '';
       llmSmartModel = serverSettings.llm_smart_model ?? '';
+      llmBackgroundModel = serverSettings.llm_background_model ?? '';
+      llmBackgroundBaseUrl = serverSettings.llm_background_base_url ?? '';
       llmFallbackModels = (serverSettings.llm_fallback_models ?? []).join(', ');
       llmFallbackHoldSeconds = serverSettings.llm_fallback_hold_seconds ?? 7200;
       llmTemperature = serverSettings.llm_temperature;
@@ -392,6 +399,8 @@
         llm_model: llmModel,
         llm_fast_model: llmFastModel.trim(),
         llm_smart_model: llmSmartModel.trim(),
+        llm_background_model: llmBackgroundModel.trim(),
+        llm_background_base_url: llmBackgroundBaseUrl.trim(),
         llm_fallback_models: llmFallbackModels.trim(),
         llm_fallback_hold_seconds: llmFallbackHoldSeconds,
         llm_temperature: llmTemperature,
@@ -696,9 +705,26 @@
               bind:value={llmSmartModel}
               placeholder="blank = primary model"
             />
+            <label class="setting-label">Background model</label>
+            <input
+              type="text"
+              class="setting-input"
+              bind:value={llmBackgroundModel}
+              placeholder="blank = primary model"
+            />
+            <label class="setting-label">Background base URL (optional)</label>
+            <input
+              type="text"
+              class="setting-input"
+              bind:value={llmBackgroundBaseUrl}
+              placeholder="blank = inherit provider base URL"
+            />
             <p class="hint">
-              Tiers for /fast, /smart, the quick-pick, and spawn_thread aliases.
-              A model id, or provider:model to use a different provider.
+              Tiers for /fast, /smart, /background, the quick-pick, and
+              spawn_thread aliases. A model id, or provider:model to use a
+              different provider. The background tier powers the
+              extraction_prompt step and future background tasks; its optional
+              base URL points it at a local server or CLIProxy.
             </p>
           </div>
 

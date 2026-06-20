@@ -183,6 +183,7 @@ def file_read(
     file_path: str,
     encoding: str = "utf-8",
     max_lines: Optional[int] = None,
+    extraction_prompt: str = "",
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> tuple[str, dict]:
     """
@@ -200,11 +201,22 @@ def file_read(
         encoding: File encoding for text files (default utf-8)
         max_lines: Maximum number of lines to read for text files (optional,
             reads all if not specified)
+        extraction_prompt: Leave empty to return the file contents as-is.
+            Provide a prompt (e.g. "the failed requests and their timestamps")
+            and a secondary LLM reads the file and returns only what the prompt
+            asks for, instead of the full text. Best for large files where you
+            want a few specific facts; skip it for small files (just read them).
+            The LLM sees the file up to ~30k tokens, so for very large files
+            grep/sed to the relevant section first; the result is tagged with
+            the model that produced it. Ignored for images, and leave max_lines
+            unset when extracting from a whole file.
 
     Returns:
         File contents as plain text, or a loaded-image note (with the image
         attached for you to view). Truncated text ends with
-        "[Truncated after N lines]". Errors: "[Error]: <reason>".
+        "[Truncated after N lines]". When extraction_prompt is used, the
+        extracted text ends with "[Extracted by <model>]". Errors:
+        "[Error]: <reason>".
     """
     logger.info(f"Reading file: {file_path}")
 
@@ -251,6 +263,15 @@ def file_read(
                 content = f.read()
 
         logger.debug(f"Read {len(content)} characters from {file_path}")
+
+        if extraction_prompt.strip():
+            from .llm_extract import run_extraction
+
+            extracted, model = run_extraction(content, extraction_prompt)
+            if extracted.startswith("[Error]:"):
+                return extracted, {}
+            return f"{extracted}\n\n[Extracted by {model}]", {}
+
         return content, {}
 
     except UnicodeDecodeError:

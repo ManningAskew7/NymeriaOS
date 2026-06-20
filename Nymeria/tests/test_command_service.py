@@ -449,6 +449,71 @@ def test_fast_set_rejects_tier_alias() -> None:
     assert not any(name == "update_settings" for name, _args, _kw in api.calls)
 
 
+def test_background_command_shows_set_and_clears() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    # Show: unset background resolves to the main model, no settings write.
+    shown = run(service.execute(ctx, "/background", api=api))
+    assert shown.success is True
+    assert "gpt-test" in shown.markdown
+    assert not any(name == "update_settings" for name, _a, _kw in api.calls)
+
+    # Set the model.
+    did_set = run(service.execute(ctx, "/background set llama-3.3-70b", api=api))
+    assert did_set.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_background_model": "llama-3.3-70b"},
+    ) in api.calls
+
+    # Set a base URL override.
+    did_url = run(service.execute(ctx, "/background set-url http://localhost:1234/v1", api=api))
+    assert did_url.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_background_base_url": "http://localhost:1234/v1"},
+    ) in api.calls
+
+    # Clear writes empty strings for both keys.
+    did_clear = run(service.execute(ctx, "/background clear", api=api))
+    assert did_clear.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_background_model": "", "llm_background_base_url": ""},
+    ) in api.calls
+
+    # Global-only: never touches the thread config.
+    assert not any(name == "update_thread_config" for name, _a, _kw in api.calls)
+
+
+def test_background_set_rejects_tier_alias() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    result = run(service.execute(ctx, "/background set smart", api=api))
+
+    assert result.success is False
+    assert not any(name == "update_settings" for name, _a, _kw in api.calls)
+
+
 def test_fallback_add_updates_global_chain() -> None:
     service = CommandService()
     api = FakeCommandApi()

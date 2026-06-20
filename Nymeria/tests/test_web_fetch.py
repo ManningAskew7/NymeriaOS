@@ -2,7 +2,7 @@
 
 Covers registration in the Web group, the WEB metadata category/security level,
 the SSRF-gated fetch path, content extraction dispatch, batch handling, error
-envelopes, and the optional distill step (secondary-model wiring).
+envelopes, and the optional extraction step (secondary-model gating + attribution).
 """
 
 import pytest
@@ -235,101 +235,51 @@ def test_thin_content_returns_error(monkeypatch):
     assert out.startswith("[Error]: Could not extract readable content")
 
 
-# --- distill ------------------------------------------------------------------
+# --- extraction (extraction_prompt) -------------------------------------------
+# The extraction helpers themselves live in nymeria/tools/llm_extract.py and are
+# unit-tested in test_llm_extract.py. These cover only the fetch integration: the
+# gating knob and the model attribution rendered into the tool result.
 
 
-def test_distill_invokes_secondary_model(monkeypatch):
-    from nymeria.vendor.react_agent import providers
-
-    class FakeMessage:
-        content = "EXTRACTED SUMMARY"
-
-    seen = {}
-
-    class FakeLLM:
-        def invoke(self, messages, config=None):
-            seen["config"] = config
-            return FakeMessage()
-
-    class FakeConfig:
-        model = "fake-model"
-
-    monkeypatch.setattr(web_fetch, "_build_fetch_summary_llm_config", lambda settings: FakeConfig())
-    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
-
-    out = web_fetch._distill("page body content", "extract the pricing")
-    assert out == "EXTRACTED SUMMARY"
-    # The nested distill call MUST sever callbacks so its tokens never leak
-    # into the parent agent's astream_events transcript.
-    assert seen["config"] == {"callbacks": []}
-
-
-def test_distill_arg_gates_the_llm_call(monkeypatch):
-    # The single optional `distill` string is the knob: empty -> full page (no
-    # LLM), non-empty -> the secondary model runs with that instruction.
+def test_extraction_prompt_gates_the_llm_call(monkeypatch):
+    # The optional `extraction_prompt` string is the knob: empty -> full page
+    # (no LLM), non-empty -> the secondary model runs with that prompt and the
+    # result is tagged with the model that produced it.
     _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
     calls = {}
 
-    def fake_distill(content, instruction):
-        calls["instruction"] = instruction
-        return "DISTILLED"
+    def fake_extraction(content, prompt):
+        calls["prompt"] = prompt
+        return "EXTRACTED", "fake-model"
 
-    monkeypatch.setattr(web_fetch, "_distill", fake_distill)
+    monkeypatch.setattr(web_fetch, "run_extraction", fake_extraction)
 
     full = web_fetch.fetch_url_nymeria.func(url="https://example.com/page")
-    assert "instruction" not in calls       # empty distill never calls the model
+    assert "prompt" not in calls       # empty extraction_prompt never calls the model
     assert "The Heading" in full
 
-    out = web_fetch.fetch_url_nymeria.func(url="https://example.com/page", distill="pricing tiers")
-    assert calls["instruction"] == "pricing tiers"
-    assert "DISTILLED" in out
+    out = web_fetch.fetch_url_nymeria.func(
+        url="https://example.com/page", extraction_prompt="pricing tiers"
+    )
+    assert calls["prompt"] == "pricing tiers"
+    assert "EXTRACTED" in out
+    assert "[Extracted by fake-model]" in out
 
 
-def test_summary_config_falls_back_to_main_model():
-    class FakeSettings:
-        fetch_summary_model = None
-        fetch_summary_provider = None
-        fetch_summary_base_url = None
-        llm_provider = "openai"
-        llm_model = "gpt-main"
-        llm_base_url = None
-        openai_api_key = "k"
-        openrouter_api_key = None
-        anthropic_api_key = None
-        anthropic_direct_api_key = None
-        llm_provider_route = None
-        openai_api_mode = "responses"
+def test_extraction_error_short_circuits(monkeypatch):
+    # An [Error]: from the extraction step is returned as-is, with no attribution.
+    _patch_fetch(monkeypatch, FakeResponse(content=_ARTICLE_HTML))
+    monkeypatch.setattr(
+        web_fetch,
+        "run_extraction",
+        lambda content, prompt: ("[Error]: Extraction step failed: X", ""),
+    )
 
-        def get_api_key_for_provider(self):
-            return "k"
-
-    cfg = web_fetch._build_fetch_summary_llm_config(FakeSettings())
-    assert cfg.provider == "openai"
-    assert cfg.model == "gpt-main"
-
-
-def test_summary_config_uses_override_model():
-    class FakeSettings:
-        fetch_summary_model = "qwen2.5-7b"
-        fetch_summary_provider = "openai"
-        fetch_summary_base_url = "http://localhost:1234/v1"
-        llm_provider = "anthropic"
-        llm_model = "claude-x"
-        llm_base_url = None
-        openai_api_key = None
-        openrouter_api_key = None
-        anthropic_api_key = None
-        anthropic_direct_api_key = None
-        llm_provider_route = None
-        openai_api_mode = "responses"
-
-        def get_api_key_for_provider(self):
-            return None
-
-    cfg = web_fetch._build_fetch_summary_llm_config(FakeSettings())
-    assert cfg.model == "qwen2.5-7b"
-    assert cfg.provider == "openai"
-    assert cfg.base_url == "http://localhost:1234/v1"
+    out = web_fetch.fetch_url_nymeria.func(
+        url="https://example.com/page", extraction_prompt="anything"
+    )
+    assert out.startswith("[Error]: Extraction step failed")
+    assert "Extracted by" not in out
 
 
 # --- review hardening: size cap, redaction, spill fallback, sanitization ------
@@ -384,30 +334,6 @@ def test_spill_write_failure_falls_back_to_plain_truncation(monkeypatch, tmp_pat
     )
     assert "Content truncated to 500 of 20000 characters" in out
     assert "Full text saved to" not in out
-
-
-def test_distill_handles_list_content(monkeypatch):
-    from nymeria.vendor.react_agent import providers
-
-    class FakeMessage:
-        content = [
-            {"type": "text", "text": "PART ONE"},
-            {"type": "text", "text": None},   # must not crash the join
-            {"type": "tool_use"},             # no text key
-        ]
-
-    class FakeLLM:
-        def invoke(self, messages, config=None):
-            return FakeMessage()
-
-    class FakeConfig:
-        model = "fake"
-
-    monkeypatch.setattr(web_fetch, "_build_fetch_summary_llm_config", lambda settings: FakeConfig())
-    monkeypatch.setattr(providers, "create_llm", lambda config: FakeLLM())
-
-    out = web_fetch._distill("page body", "prompt")
-    assert out == "PART ONE"
 
 
 # --- round 2: encoding + comma-split ------------------------------------------

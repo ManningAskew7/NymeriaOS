@@ -86,8 +86,8 @@ def make_web_search_step() -> Step:
 def make_fetch_url_step() -> Step:
     """Real multi-select over the built fetch_url-family tools (Section B/C).
 
-    `fetch_url_nymeria` is default-checked: it distills pages with the configured
-    primary LLM, so it needs no separate key and is a safe out-of-the-box default
+    `fetch_url_nymeria` is default-checked: it can extract from pages with the
+    configured primary LLM, so it needs no separate key and is a safe default
     (the quick path seeds the same one, see `quick.QUICK_FETCH_DEFAULT`).
     """
     _, store = _extras_list("fetch_url")

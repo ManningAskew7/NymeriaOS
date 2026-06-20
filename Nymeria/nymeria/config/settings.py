@@ -599,6 +599,25 @@ class Settings(BaseSettings):
             "primary llm_model."
         ),
     )
+    llm_background_model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Background/utility model tier used by the /background command and "
+            "the 'background' alias. Powers secondary tasks like the "
+            "extraction_prompt step (fetch_url_nymeria and file_read). May be a "
+            "model ID for the active provider or provider:model for any known "
+            "provider. Unset falls back to the primary llm_model. Local models "
+            "work well here (no tool calling needed)."
+        ),
+    )
+    llm_background_base_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional base URL override for the background model tier, e.g. a "
+            "local model server or CLIProxy. Blank inherits the resolved "
+            "provider's base URL like the fast/smart tiers."
+        ),
+    )
     llm_fallback_models: Optional[str] = Field(
         default=DEFAULT_LLM_FALLBACK_MODELS,
         description=(
@@ -744,9 +763,6 @@ class Settings(BaseSettings):
     replicate_api_key: Optional[str] = Field(default=None, description="Replicate API token for image_gen_replicate")
     fal_api_key: Optional[str] = Field(default=None, description="fal.ai API key for image_gen_fal")
     bfl_api_key: Optional[str] = Field(default=None, description="Black Forest Labs API key for image_gen_flux")
-    fetch_summary_provider: Optional[str] = Field(default=None, description="Provider for the fetch_url_nymeria summarize step (defaults to the main model)")
-    fetch_summary_model: Optional[str] = Field(default=None, description="Model id for the fetch_url_nymeria summarize step; local models work well (no tool calling needed)")
-    fetch_summary_base_url: Optional[str] = Field(default=None, description="Base URL for the fetch summarizer, e.g. a local model server")
     nasa_api_key: Optional[str] = Field(default=None, description="NASA API key for nasa_apod")
     openweathermap_api_key: Optional[str] = Field(default=None, description="OpenWeatherMap API key for weather tools")
     google_books_api_key: Optional[str] = Field(default=None, description="Optional Google Books API key fallback")

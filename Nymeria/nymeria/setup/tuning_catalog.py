@@ -319,6 +319,13 @@ MODEL_TIER_FIELDS: tuple[TuningField, ...] = (
         kind="str",
     ),
     TuningField(
+        key="llm_background_model",
+        env_var="LLM_BACKGROUND_MODEL",
+        label="Background model (optional)",
+        placeholder="blank = primary model; powers extraction and background tasks",
+        kind="str",
+    ),
+    TuningField(
         key="llm_fallback_models",
         env_var="LLM_FALLBACK_MODELS",
         label="Fallback chain (optional, comma-separated)",

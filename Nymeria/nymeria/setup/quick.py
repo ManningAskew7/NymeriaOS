@@ -16,7 +16,7 @@ unwinds exactly what was seeded (`unapply_quick_defaults`).
 Defaults chosen for zero extra auth or cost:
 - RAG: the free, private local stack (granite + Ettin), the same default a RAG
   skip applies (see `rag_catalog.apply_quickstart_rag`).
-- Web fetch: `fetch_url_nymeria`, which distills pages with your already
+- Web fetch: `fetch_url_nymeria`, which can extract from pages with your already
   configured primary LLM, so it needs no separate key. (It is also the
   default-checked option in the full path's fetch step.)
 - Web search: keyless, by hosting shape. Docker gets `web_search_searxng`
@@ -83,8 +83,8 @@ QUICK_KEEP_STEP_IDS = frozenset(
     }
 )
 
-# Keyless web fetch default: distills pages with the configured primary LLM, so
-# it needs no separate key. Seeded into default_thread_tools via the fetch_url
+# Keyless web fetch default: extracts from pages with the configured primary LLM,
+# so it needs no separate key. Seeded into default_thread_tools via the fetch_url
 # family (see steps/placeholders.seeded_tool_names). Single source of truth lives
 # in family_catalog so the full-path fetch step and the quick path agree.
 QUICK_FETCH_DEFAULT = family_catalog.default_checked_fetch_url()

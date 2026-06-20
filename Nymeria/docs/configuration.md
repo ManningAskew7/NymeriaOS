@@ -55,6 +55,8 @@ These variables are deployment-wide server defaults, not per-user account prefer
 | `LLM_MODEL` | Yes | `claude-sonnet-4-6` | Model identifier for the provider (the primary/default tier) |
 | `LLM_FAST_MODEL` | No | provider-aware | Fast model tier used by the `/fast` command and the `fast` alias (e.g. in `spawn_thread`). A model id, or `provider:model-id` to route the tier to a different provider with its own credentials. When unset, picks a provider-aware default. |
 | `LLM_SMART_MODEL` | No | primary model | Smart/high-capability model tier used by the `/smart` command and the `smart` alias. A model id, or `provider:model-id` for a different provider. When unset, resolves to `LLM_MODEL`. |
+| `LLM_BACKGROUND_MODEL` | No | primary model | Background/utility model tier used by the `/background` command and the `background` alias. Powers the `extraction_prompt` step (`fetch_url_nymeria` and `file_read`) now, and more background tasks later. A model id, or `provider:model-id` for a different provider. A small local model works well (no tool calling needed). When unset, resolves to `LLM_MODEL`. |
+| `LLM_BACKGROUND_BASE_URL` | No | (inherit provider) | Optional base URL override for the background tier (e.g. a local model server or CLIProxy). Blank inherits the resolved provider's base URL like the fast/smart tiers. |
 | `LLM_FALLBACK_MODELS` | No | `anthropic:claude-haiku-4-5-20251001` | Comma-separated ordered fallback models tried by the backend after primary retries are exhausted for a transient provider/transport error before output starts. Entries use the active provider by default, or `provider:model-id` for any known provider in the LLM registry (so one provider's outage does not also disable the fallback). CLI shortcut: `/fallback`. |
 | `LLM_TEMPERATURE` | No | `1.0` | Sampling temperature (0.0 - 2.0) |
 
@@ -147,9 +149,6 @@ Set the API key for your chosen provider:
 | `BRAVE_API_KEY` | Brave | Used by `web_search_brave` tool (credential vault preferred) |
 | `WOLFRAM_ALPHA_APP_ID` | Wolfram\|Alpha | Optional env fallback for `wolfram_alpha_query`; credential vault provider `wolfram_alpha` is preferred |
 | `SEARXNG_BASE_URL` | SearXNG | Base URL for `web_search_searxng` (defaults to the bundled `http://searxng:8080` sidecar); credential vault provider `searxng` field `base_url` also works |
-| `FETCH_SUMMARY_PROVIDER` | fetch_url_nymeria | Provider for `fetch_url_nymeria`'s optional summarize step; blank reuses the main provider |
-| `FETCH_SUMMARY_MODEL` | fetch_url_nymeria | Model for the summarize step; a small local model works well (no tool calling needed); blank reuses the main model |
-| `FETCH_SUMMARY_BASE_URL` | fetch_url_nymeria | Base URL for the summarizer (e.g. a local model server); blank uses the provider default |
 | `NASA_API_KEY` | NASA | Optional env fallback for `nasa_apod`; credential vault provider `nasa` is preferred |
 | `OPENWEATHERMAP_API_KEY` | OpenWeatherMap | Optional env fallback for `openweathermap_*`; credential vault provider `openweathermap` is preferred |
 | `NPM_REGISTRY_URL` | npm | Optional registry override for npm tools; credential vault provider `npm` can also provide `registry_url` and `token` |
@@ -990,9 +989,6 @@ reachable from the backend process.
 | `WOLFRAM_ALPHA_APP_ID` | - | Wolfram\|Alpha AppID for wolfram_alpha_query |
 | `SEARXNG_BASE_URL` | - | Base URL for a SearXNG instance used by web_search_searxng (Docker compose sets `http://searxng:8080` for the bundled sidecar; `nymeria init` writes it when SearXNG is selected on a Docker host) |
 | `SEARXNG_SECRET` | (compose default) | Cookie/CSRF signing secret the compose files interpolate into the SearXNG sidecar; `nymeria init` generates one per install when the sidecar is selected |
-| `FETCH_SUMMARY_PROVIDER` | (main provider) | Provider for fetch_url_nymeria's summarize step |
-| `FETCH_SUMMARY_MODEL` | (main model) | Model for fetch_url_nymeria's summarize step; a small local model works well |
-| `FETCH_SUMMARY_BASE_URL` | (provider default) | Base URL for the fetch summarizer (e.g. a local model server) |
 | `NASA_API_KEY` | - | NASA API key fallback for nasa_apod |
 | `OPENWEATHERMAP_API_KEY` | - | OpenWeatherMap API key fallback for weather tools |
 | `NPM_REGISTRY_URL` | `https://registry.npmjs.org` | npm registry base URL fallback |

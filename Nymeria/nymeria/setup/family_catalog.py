@@ -56,7 +56,7 @@ _WEB_SEARCH_LABELS: dict[str, tuple[str, str]] = {
 _FETCH_URL_LABELS: dict[str, tuple[str, str]] = {
     "fetch_url_nymeria": (
         "Nymeria fetch",
-        "Built-in fetcher that distills a page with a configurable model.",
+        "Built-in fetcher that can extract from a page with a configurable model.",
     ),
     "jina_reader_fetch_url": ("Jina Reader", "Hosted reader endpoint (key required)."),
 }
@@ -125,8 +125,8 @@ _DEFAULT_CHECKED_KITS: tuple[str, ...] = (
     "trigger-management",
 )
 
-# Keyless web fetch default: distills pages with the configured primary LLM, so
-# it needs no separate key. Single source of truth for the full path's default
+# Keyless web fetch default: extracts from pages with the configured primary LLM,
+# so it needs no separate key. Single source of truth for the full path's default
 # check and the quick path (see quick.QUICK_FETCH_DEFAULT).
 _DEFAULT_FETCH_URL = ["fetch_url_nymeria"]
 

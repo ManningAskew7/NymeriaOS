@@ -1,11 +1,12 @@
-"""Shared resolution for the fast/smart/default model tiers.
+"""Shared resolution for the fast/smart/default/background model tiers.
 
 A "tier ref" is a model string in the same syntax the fallback chain uses:
 either a bare ``model`` (inherits the active provider) or ``provider:model``
 to target a different provider with its own credentials. This module is the
-single source of truth for what the ``fast``/``smart``/``default`` aliases
-resolve to, shared by the central slash commands, ``spawn_thread``, the CLI,
-and the settings API.
+single source of truth for what the ``fast``/``smart``/``default``/``background``
+aliases resolve to, shared by the central slash commands, ``spawn_thread``, the
+CLI, and the settings API. ``background`` is a utility tier (extraction now,
+thread auto-naming and live tool-call descriptions later), not a thread mode.
 
 Resolution is eager: callers apply the resolved ``(provider, model)`` pair onto
 a thread's LLM config, so the runtime choke point keeps seeing literal model
@@ -26,8 +27,15 @@ DEFAULT_FAST_MODELS = {
     "openrouter": "anthropic/claude-haiku-4.5",
 }
 
-# Tier aliases accepted anywhere a model ID is accepted.
-TIER_ALIASES = frozenset({"fast", "smart", "default"})
+# Reserved tier aliases. A value matching one of these is never a literal model
+# ID (used to reject e.g. `/fast set background`). Includes the global-only
+# `background` utility tier.
+TIER_ALIASES = frozenset({"fast", "smart", "default", "background"})
+
+# Tier aliases valid as a THREAD/agent model (spawn_thread, the /fast and /smart
+# thread toggles). `background` is deliberately excluded: it is a global-only
+# utility tier, never a thread mode, so it must not expand into a thread model.
+THREAD_TIER_ALIASES = frozenset({"fast", "smart", "default"})
 
 # Known provider prefixes for splitting ``provider:model`` refs. Mirrors
 # ``_FALLBACK_PROVIDER_PREFIXES`` in core/agent_llm_config.py.
@@ -60,8 +68,17 @@ def split_provider_model(value: str, default_provider: str) -> tuple[str, str]:
 
 
 def is_tier_alias(value: Any) -> bool:
-    """True when ``value`` is one of the fast/smart/default tier aliases."""
+    """True when ``value`` is a reserved tier alias (fast/smart/default/background)."""
     return str(value or "").strip().casefold() in TIER_ALIASES
+
+
+def is_thread_tier_alias(value: Any) -> bool:
+    """True when ``value`` is a tier alias valid as a thread/agent model.
+
+    Excludes the global-only ``background`` utility tier, which must never
+    expand into a thread's model (use ``is_tier_alias`` for reserved-name checks).
+    """
+    return str(value or "").strip().casefold() in THREAD_TIER_ALIASES
 
 
 def _setting(settings: Any, key: str) -> Any:
@@ -83,9 +100,11 @@ def resolve_tier(
     explicit ``provider:`` prefix (defaults to ``settings.llm_provider``).
     Returns ``None`` when ``tier`` is not a recognized alias.
 
-    - ``default`` -> the primary provider + ``settings.llm_model``.
-    - ``fast``    -> ``settings.llm_fast_model`` (or a provider-aware default).
-    - ``smart``   -> ``settings.llm_smart_model`` (or the primary ``llm_model``).
+    - ``default``    -> the primary provider + ``settings.llm_model``.
+    - ``fast``       -> ``settings.llm_fast_model`` (or a provider-aware default).
+    - ``smart``      -> ``settings.llm_smart_model`` (or the primary ``llm_model``).
+    - ``background`` -> ``settings.llm_background_model`` (or the primary
+      ``llm_model``); a utility tier for secondary tasks like extraction.
     """
     tier_key = str(tier or "").strip().casefold()
     if tier_key not in TIER_ALIASES:
@@ -109,6 +128,12 @@ def resolve_tier(
             )
         # No known fast default for this provider: degrade to the primary model
         # rather than an Anthropic id the provider cannot serve.
+        return effective_provider, primary_model
+
+    if tier_key == "background":
+        raw = str(_setting(settings, "llm_background_model") or "").strip()
+        if raw:
+            return split_provider_model(raw, effective_provider)
         return effective_provider, primary_model
 
     # smart

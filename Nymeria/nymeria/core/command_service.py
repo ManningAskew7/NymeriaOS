@@ -1611,6 +1611,14 @@ class CommandService:
             danger_level="normal",
         )
         self.register(
+            "background",
+            description="Show or set the global background/utility model tier",
+            category="LLM",
+            usage="/background [set <model-id> | set-url <base-url> | clear]",
+            mutates_state=True,
+            danger_level="normal",
+        )
+        self.register(
             "fallback",
             description="Manage the model fallback chain",
             category="LLM",
@@ -4179,6 +4187,76 @@ class _CommandExecutor:
             f"[Success]: This thread switched to {mode} model "
             f"({target_model}, {target_provider})."
         )
+
+    async def _cmd_background(self, args: list[str], rest: str) -> str:
+        """Manage the global background/utility model tier: show / set / set-url / clear.
+
+        Unlike /fast and /smart this never switches the thread's agent model: the
+        background tier is a utility model (extraction now, more later), so it is
+        global-only with no thread toggle.
+        """
+        from ..config.model_tiers import is_tier_alias, resolve_tier
+
+        sub = args[0].lower() if args else ""
+        settings = await self.api.get_settings()
+
+        if sub == "set":
+            model_id = " ".join(args[1:]).strip()
+            if not model_id:
+                return "[Error]: Usage: /background set <model-id> (or provider:model)"
+            if is_tier_alias(model_id):
+                return (
+                    "[Error]: Cannot set the background tier to another tier alias "
+                    f"({model_id}). Use a model id or provider:model."
+                )
+            result = await self.api.update_settings(
+                user_id=self.user_id, llm_background_model=model_id
+            )
+            msg = f"[Success]: Background model set to {model_id}."
+            if result.get("restart_required"):
+                msg += " (restart required to take effect)"
+            return msg
+
+        if sub == "set-url":
+            base_url = " ".join(args[1:]).strip()
+            if not base_url:
+                return "[Error]: Usage: /background set-url <base-url>"
+            result = await self.api.update_settings(
+                user_id=self.user_id, llm_background_base_url=base_url
+            )
+            msg = f"[Success]: Background base URL set to {base_url}."
+            if result.get("restart_required"):
+                msg += " (restart required to take effect)"
+            return msg
+
+        if sub == "clear":
+            # Empty strings clear both keys in the env file (mirrors how the
+            # frontend clears a tier field); None would be filtered out.
+            await self.api.update_settings(
+                user_id=self.user_id,
+                llm_background_model="",
+                llm_background_base_url="",
+            )
+            return "[Success]: Background model cleared (falls back to the main model)."
+
+        if sub not in {"", "show"}:
+            return (
+                "[Error]: Usage: /background [set <model-id> | set-url <base-url> | clear]"
+            )
+
+        configured = str(settings.get("llm_background_model") or "").strip()
+        base_url = str(settings.get("llm_background_base_url") or "").strip()
+        resolved = resolve_tier("background", settings)
+        lines = []
+        if configured:
+            lines.append(f"Background model: {configured}")
+        else:
+            lines.append("Background model: (unset, falls back to the main model)")
+        if resolved and resolved[1]:
+            lines.append(f"Resolves to: {resolved[1]} ({resolved[0]})")
+        if base_url:
+            lines.append(f"Base URL override: {base_url}")
+        return "[Info]: " + "\n".join(lines)
 
     async def _cmd_fallback(self, args: list[str], rest: str) -> str:
         """Manage the global fallback chain: list / add / remove / clear / set."""
