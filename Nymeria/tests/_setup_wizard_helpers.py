@@ -325,7 +325,7 @@ def _serve_chat_sync(respond):
     seen: list[tuple[str, str, str | None]] = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *args):  # noqa: ARG002 (quiet test server)
+        def log_message(self, *args):  # type: ignore[bad-override]  # noqa: ARG002 (quiet test server)
             pass
 
         def do_POST(self):

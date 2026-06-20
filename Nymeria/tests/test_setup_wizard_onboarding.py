@@ -64,7 +64,7 @@ def test_new_deployment_enums_have_ordered_choices_and_recommended_markers():
     ):
         assert set(order) == set(enum_type)  # every member is ordered
         assert set(table) == set(enum_type)  # every member has a choice
-        flagged = [opt for opt in order if table[opt].recommended]
+        flagged = [opt for opt in order if table[opt].recommended]  # type: ignore[bad-index]
         expected = [recommended] if recommended is not None else []
         assert flagged == expected  # at most one, the expected default
 

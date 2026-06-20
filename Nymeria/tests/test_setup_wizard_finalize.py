@@ -14,7 +14,7 @@ import pytest
 from nymeria.setup import finalize as finalize_mod
 from nymeria.setup.runner import main as setup_main
 
-from _setup_wizard_helpers import (
+from _setup_wizard_helpers import (  # type: ignore[import-not-found]
     _init_state,
     _read_secrets_key,
     _stub_llm,
@@ -112,7 +112,7 @@ def test_noninteractive_print_creds_echoes_token_url_and_cli(
 
     out = capsys.readouterr().out
     token_path = root / "data" / "BOOTSTRAP_TOKEN.txt"
-    raw_token = re.search(
+    raw_token = re.search(  # type: ignore[missing-attribute]
         r"nym_[A-Za-z0-9_-]+", token_path.read_text(encoding="utf-8")
     ).group(0)
 
@@ -169,9 +169,9 @@ def test_review_hint_advertises_toggle_only_when_actionable():
     reconfig = build(
         _Wiz(WizardState(hosting=HostingOption.LOCAL, reconfigure=True)), 1, 1
     )
-    assert "t toggle token" in fresh._hint
-    assert "t toggle token" not in docker._hint
-    assert "t toggle token" not in reconfig._hint
+    assert "t toggle token" in fresh._hint  # type: ignore[missing-attribute]
+    assert "t toggle token" not in docker._hint  # type: ignore[missing-attribute]
+    assert "t toggle token" not in reconfig._hint  # type: ignore[missing-attribute]
 
 
 def test_review_pilot_t_key_toggles_token_print():
@@ -250,7 +250,7 @@ def test_noninteractive_no_print_creds_suppresses_token(monkeypatch, tmp_path, c
 
     out = capsys.readouterr().out
     token_path = root / "data" / "BOOTSTRAP_TOKEN.txt"
-    raw_token = re.search(
+    raw_token = re.search(  # type: ignore[missing-attribute]
         r"nym_[A-Za-z0-9_-]+", token_path.read_text(encoding="utf-8")
     ).group(0)
 
@@ -815,7 +815,7 @@ def test_noninteractive_writes_registry_provider(monkeypatch, tmp_path):
     )
 
     config = (root / "config.env").read_text(encoding="utf-8")
-    env_var = get_llm_provider_spec("deepseek").api_key_env_vars[0]
+    env_var = get_llm_provider_spec("deepseek").api_key_env_vars[0]  # type: ignore[missing-attribute]
     assert rc == 0
     assert "LLM_PROVIDER=deepseek" in config
     assert f"{env_var}=sk-deepseek-test" in config
@@ -840,7 +840,7 @@ def test_noninteractive_requires_base_url_provider(monkeypatch, tmp_path):
     )
 
     config = (root / "config.env").read_text(encoding="utf-8")
-    env_var = get_llm_provider_spec("azure-openai").api_key_env_vars[0]
+    env_var = get_llm_provider_spec("azure-openai").api_key_env_vars[0]  # type: ignore[missing-attribute]
     assert rc == 0
     assert "LLM_PROVIDER=azure-openai" in config
     assert "LLM_BASE_URL=https://example.openai.azure.com" in config

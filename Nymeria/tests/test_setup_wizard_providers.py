@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from _setup_wizard_helpers import (
+from _setup_wizard_helpers import (  # type: ignore[import-not-found]
     _FakeModelsClient,
     _install_fake_models_client,
 )
@@ -74,7 +74,7 @@ def test_fetch_models_for_spec_anthropic(monkeypatch):
         monkeypatch, body={"data": [{"id": "claude-3"}, {"id": "claude-2"}]}
     )
     models = asyncio.run(
-        fetch_models_for_spec(get_llm_provider_spec("anthropic"), api_key="sk-ant-x")
+        fetch_models_for_spec(get_llm_provider_spec("anthropic"), api_key="sk-ant-x")  # type: ignore[bad-argument-type]
     )
 
     assert [m.id for m in models] == ["claude-2", "claude-3"]  # sorted by id
@@ -92,7 +92,7 @@ def test_fetch_models_for_spec_openai_compatible(monkeypatch):
         monkeypatch, body={"data": [{"id": "deepseek-chat", "name": "DeepSeek Chat"}]}
     )
     models = asyncio.run(
-        fetch_models_for_spec(get_llm_provider_spec("deepseek"), api_key="sk-deepseek")
+        fetch_models_for_spec(get_llm_provider_spec("deepseek"), api_key="sk-deepseek")  # type: ignore[bad-argument-type]
     )
 
     assert [(m.id, m.name) for m in models] == [("deepseek-chat", "DeepSeek Chat")]
@@ -108,7 +108,7 @@ def test_fetch_models_for_spec_local_substitutes_not_needed(monkeypatch):
     _install_fake_models_client(monkeypatch, body={"data": [{"id": "local-model"}]})
     models = asyncio.run(
         fetch_models_for_spec(
-            get_llm_provider_spec("lmstudio"),
+            get_llm_provider_spec("lmstudio"),  # type: ignore[bad-argument-type]
             api_key="",
             base_url="http://localhost:1234/v1",
         )
@@ -126,6 +126,6 @@ def test_fetch_models_for_spec_returns_empty_on_http_error(monkeypatch):
 
     _install_fake_models_client(monkeypatch, status=401, body={"error": "nope"})
     models = asyncio.run(
-        fetch_models_for_spec(get_llm_provider_spec("openai"), api_key="sk-bad")
+        fetch_models_for_spec(get_llm_provider_spec("openai"), api_key="sk-bad")  # type: ignore[bad-argument-type]
     )
     assert models == []

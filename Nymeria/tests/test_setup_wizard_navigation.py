@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from nymeria.onboarding import HostingOption
 
-from _setup_wizard_helpers import (
+from _setup_wizard_helpers import (  # type: ignore[import-not-found]
     _capture_console,
     _conditional_steps,
     _env_line,
