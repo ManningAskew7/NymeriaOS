@@ -1465,7 +1465,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, LLM stream retry settings, and `llm_fallback_hold_seconds`; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`; plus RAG engine settings such as `embedding_provider`, `embedding_model`, `embedding_dimensions`, `rag_retrieval_mode`, `rag_rerank_enabled`, `rag_rerank_provider`, `rag_rerank_model`, and `rag_embed_tool_results`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, the model tier settings `llm_fast_model`, `llm_smart_model`, `llm_background_model`, and `llm_background_base_url` (each with a read-only `*_resolved` companion giving the effective `provider:model`), `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, LLM stream retry settings, and `llm_fallback_hold_seconds`; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`; plus RAG engine settings such as `embedding_provider`, `embedding_model`, `embedding_dimensions`, `rag_retrieval_mode`, `rag_rerank_enabled`, `rag_rerank_provider`, `rag_rerank_model`, and `rag_embed_tool_results`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user. Provider and capability API keys are not included in this response.
 
@@ -1604,6 +1604,10 @@ Authorization: Bearer <admin-token>
 {
   "llm_provider": "openrouter",
   "llm_model": "anthropic/claude-sonnet-4",
+  "llm_fast_model": "anthropic/claude-haiku-4.5",
+  "llm_smart_model": "anthropic/claude-opus-4",
+  "llm_background_model": "openai:gpt-4o-mini",
+  "llm_background_base_url": "",
   "llm_fallback_models": ["anthropic:claude-haiku-4-5-20251001"],
   "llm_temperature": 0.7,
   "llm_max_tokens": 4096,
@@ -1636,6 +1640,10 @@ Authorization: Bearer <admin-token>
 |-------|------|-------|-------------|
 | `llm_provider` | string | - | Provider ID. `anthropic` uses Anthropic Messages; OpenAI-compatible IDs are listed by `GET /settings/llm/providers`. |
 | `llm_model` | string | - | Model identifier |
+| `llm_fast_model` | string | - | Fast model tier for the `/fast` command and the `fast` alias. A `model-id` or `provider:model-id`. Unset uses a provider-aware default. |
+| `llm_smart_model` | string | - | Smart model tier for the `/smart` command and the `smart` alias. A `model-id` or `provider:model-id`. Unset falls back to `llm_model`. |
+| `llm_background_model` | string | - | Background/utility model tier for the `/background` command and the `background` alias; powers the `extraction_prompt` step (`fetch_url_nymeria`, `file_read`). A `model-id` or `provider:model-id`. Unset falls back to `llm_model`. |
+| `llm_background_base_url` | string | - | Optional base URL override for the background tier (e.g. a local model server or CLIProxy). Blank inherits the resolved provider's base URL like the fast/smart tiers. |
 | `llm_fallback_models` | string[] / comma string on PATCH | - | Ordered backend model fallback chain used after primary retries are exhausted. PATCH accepts a comma-separated string; entries may be `model-id` or `provider:model-id`. |
 | `llm_temperature` | float | 0.0-2.0 | Sampling temperature |
 | `llm_max_tokens` | int | 1-1000000 | Max output tokens |
