@@ -38,6 +38,25 @@
   let selectedIds = $state<Set<string>>(new Set());
   let lastClickedId = $state<string | null>(null);
 
+  // Selection mode is implicit: it is "on" whenever at least one row is
+  // selected. Rows use this to keep their left checkbox revealed and to hide
+  // their per-row pin/kebab actions (the user acts on the whole set via the
+  // bulk bar instead).
+  let selectionActive = $derived(selectedIds.size > 0);
+
+  // Polite screen-reader announcement of the running count (no global announce
+  // helper exists; mirrors the ChatContainer sr-only/role=status pattern).
+  let selectionAnnouncement = $derived(
+    selectedIds.size > 0 ? `${selectedIds.size} thread${selectedIds.size > 1 ? 's' : ''} selected` : ''
+  );
+
+  // Bulk Pin is a smart toggle: if every selected thread is already pinned the
+  // action unpins them all, otherwise it pins them all.
+  let allSelectedPinned = $derived(
+    selectedIds.size > 0 &&
+    [...selectedIds].every((id) => threadsStore.threads.find((t) => t.id === id)?.pinned)
+  );
+
   // Ctrl-hover multi-select. After a chat is selected/active, the user can
   // hold Ctrl (Cmd on Mac) and move the cursor across other chat rows — every
   // row the cursor passes over gets added to the selection range anchored on
@@ -317,18 +336,30 @@
     ctrlHoverInitialSelection = null;
   }
 
+  // Escape clears the selection. The bulk bar's X is the visible exit; this is
+  // an additive keyboard shortcut. Ignored while typing in a field so it never
+  // competes with inline rename / the folder/team name inputs.
+  function handleSelectionEscape(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !selectionActive) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('input, textarea, [contenteditable="true"]')) return;
+    clearSelection();
+  }
+
   onMount(() => {
     // capture: true so we see the originally-focused element via e.target
     // before any default behavior moves focus.
     window.addEventListener('keydown', handleArrowNav, true);
     window.addEventListener('keydown', handleCtrlKeyDown);
     window.addEventListener('keyup', handleCtrlKeyUp);
+    window.addEventListener('keydown', handleSelectionEscape);
     window.addEventListener('mousemove', handleCtrlHoverMove);
     window.addEventListener('blur', handleWindowBlur);
     return () => {
       window.removeEventListener('keydown', handleArrowNav, true);
       window.removeEventListener('keydown', handleCtrlKeyDown);
       window.removeEventListener('keyup', handleCtrlKeyUp);
+      window.removeEventListener('keydown', handleSelectionEscape);
       window.removeEventListener('mousemove', handleCtrlHoverMove);
       window.removeEventListener('blur', handleWindowBlur);
     };
@@ -367,15 +398,9 @@
       return;
     }
 
-    // Plain click
-    if (selectedIds.size > 0) {
-      // Clear selection on plain click (don't navigate)
-      selectedIds = new Set();
-      lastClickedId = null;
-      return;
-    }
-
-    // Normal navigation — set anchor for future Shift+Click
+    // Plain click always navigates and preserves any active selection. The
+    // bulk bar's X (clearSelection) is the sole way to leave selection mode;
+    // a row's checkbox toggles its own membership without opening it.
     lastClickedId = threadId;
     handleSelectThread(threadId);
   }
@@ -536,6 +561,20 @@
     deleteConfirmThreadId = '__bulk__';
   }
 
+  // Pin (or unpin) the whole selection. Reuses the single-thread toggle, only
+  // flipping rows that aren't already at the target state, so a mixed selection
+  // ends up uniformly pinned. Non-destructive, so the selection is kept (unlike
+  // Delete / group), letting the user see the result or act again.
+  function handleBulkPin() {
+    const target = !allSelectedPinned;
+    for (const id of selectedIds) {
+      const thread = threadsStore.threads.find((t) => t.id === id);
+      if (thread && Boolean(thread.pinned) !== target) {
+        threadsStore.togglePinThread(id);
+      }
+    }
+  }
+
   function executeBulkDelete() {
     const needsClear = threadsStore.currentThreadId !== null && selectedIds.has(threadsStore.currentThreadId);
     for (const id of selectedIds) {
@@ -663,6 +702,12 @@
 </script>
 
 <div class="thread-list">
+  <!-- Polite, persistent live region: announces the running selection count.
+       Always mounted (not inside the bulk bar) so even the first 0->1 change is
+       announced, since screen readers only voice mutations to an existing
+       region. -->
+  <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{selectionAnnouncement}</div>
+
   <!-- Sort controls bar -->
   <div class="sort-bar">
     <button
@@ -780,6 +825,7 @@
           threads={resolveFolderThreads(team.threadIds)}
           currentThreadId={threadsStore.currentThreadId}
           {selectedIds}
+          {selectionActive}
           isThreadPinned={(id) => threadsStore.isThreadPinned(id)}
           getThreadTaskCount={(id) => threadsStore.getThreadTaskCount(id)}
           isThreadActive={(id) => threadsStore.isThreadActive(id)}
@@ -793,6 +839,7 @@
           onRenameFolder={(name) => void handleRenameTeam(team.id, name)}
           onDeleteFolder={() => void handleDeleteTeam(team.id)}
           onTogglePinThread={(id) => threadsStore.togglePinThread(id)}
+          onToggleSelectThread={(id) => toggleSelectThread(id)}
           onExportThread={handleExportThread}
         />
       {/each}
@@ -811,6 +858,7 @@
                   {thread}
                   isActive={thread.id === threadsStore.currentThreadId}
                   isSelected={selectedIds.has(thread.id)}
+                  {selectionActive}
                   isPinned={thread.pinned ?? false}
                   taskCount={threadsStore.getThreadTaskCount(thread.id)}
                   hasActiveTask={threadsStore.isThreadActive(thread.id)}
@@ -837,6 +885,7 @@
               {thread}
               isActive={thread.id === threadsStore.currentThreadId}
               isSelected={selectedIds.has(thread.id)}
+              {selectionActive}
               isPinned={thread.pinned ?? false}
               taskCount={threadsStore.getThreadTaskCount(thread.id)}
               hasActiveTask={threadsStore.isThreadActive(thread.id)}
@@ -869,6 +918,7 @@
           threads={resolveFolderThreads(folder.threadIds)}
           currentThreadId={threadsStore.currentThreadId}
           {selectedIds}
+          {selectionActive}
           isPinned={folder.pinned ?? false}
           isThreadPinned={(id) => threadsStore.isThreadPinned(id)}
           getThreadTaskCount={(id) => threadsStore.getThreadTaskCount(id)}
@@ -884,6 +934,7 @@
           onDeleteFolder={() => threadsStore.deleteFolder(folder.id)}
           onTogglePin={() => threadsStore.togglePinFolder(folder.id)}
           onTogglePinThread={(id) => threadsStore.togglePinThread(id)}
+          onToggleSelectThread={(id) => toggleSelectThread(id)}
           onExportThread={handleExportThread}
         />
       {/each}
@@ -903,6 +954,7 @@
                   {thread}
                   isActive={thread.id === threadsStore.currentThreadId}
                   isSelected={selectedIds.has(thread.id)}
+                  {selectionActive}
                   isPinned={thread.pinned ?? false}
                   taskCount={threadsStore.getThreadTaskCount(thread.id)}
                   hasActiveTask={threadsStore.isThreadActive(thread.id)}
@@ -929,6 +981,7 @@
               {thread}
               isActive={thread.id === threadsStore.currentThreadId}
               isSelected={selectedIds.has(thread.id)}
+              {selectionActive}
               isPinned={thread.pinned ?? false}
               taskCount={threadsStore.getThreadTaskCount(thread.id)}
               hasActiveTask={threadsStore.isThreadActive(thread.id)}
@@ -1037,6 +1090,10 @@
           <Icon name="x" size={14} />
         </button>
         <div class="bulk-actions-row">
+          <button class="bulk-btn bulk-group" type="button" onclick={handleBulkPin}>
+            <Icon name="pin" size={14} />
+            {allSelectedPinned ? 'Unpin' : 'Pin'}
+          </button>
           <button class="bulk-btn bulk-group" type="button" onclick={handleBulkGroup}>
             <Icon name="folder" size={14} />
             Folder
@@ -1094,6 +1151,19 @@
 </Modal>
 
 <style>
+  /* Visually-hidden live region (WCAG clip pattern, matching ChatContainer). */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .delete-confirm-text {
     color: var(--text-secondary);
     margin: 0 0 var(--spacing-lg);

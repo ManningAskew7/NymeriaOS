@@ -12,6 +12,8 @@
     kind?: 'folder' | 'team';
     currentThreadId: string | null;
     selectedIds: Set<string>;
+    /** Mirrors ThreadList: true while a multi-select is in progress. */
+    selectionActive?: boolean;
     isPinned?: boolean;
     isThreadPinned?: (id: string) => boolean;
     getThreadTaskCount: (id: string) => number;
@@ -28,6 +30,7 @@
     onDeleteFolder: () => void;
     onTogglePin?: () => void;
     onTogglePinThread?: (id: string) => void;
+    onToggleSelectThread?: (id: string) => void;
   }
 
   let {
@@ -36,6 +39,7 @@
     kind = 'folder',
     currentThreadId,
     selectedIds,
+    selectionActive = false,
     isPinned = false,
     isThreadPinned,
     getThreadTaskCount,
@@ -52,6 +56,7 @@
     onDeleteFolder,
     onTogglePin,
     onTogglePinThread,
+    onToggleSelectThread,
   }: Props = $props();
 
   const iconName = $derived(kind === 'team' ? 'users' : (folder.collapsed ? 'folder' : 'folderOpen'));
@@ -178,6 +183,7 @@
             {thread}
             isActive={thread.id === currentThreadId}
             isSelected={selectedIds.has(thread.id)}
+            {selectionActive}
             isPinned={isThreadPinned?.(thread.id) ?? false}
             taskCount={getThreadTaskCount(thread.id)}
             hasActiveTask={isThreadActive(thread.id)}
@@ -191,6 +197,7 @@
             onOpenAgentConfig={onOpenAgentConfigThread ? () => onOpenAgentConfigThread(thread) : undefined}
             onExport={onExportThread ? () => onExportThread(thread) : undefined}
             onTogglePin={onTogglePinThread ? () => onTogglePinThread(thread.id) : undefined}
+            onToggleSelect={onToggleSelectThread ? () => onToggleSelectThread(thread.id) : undefined}
           />
         {/each}
       {/if}
