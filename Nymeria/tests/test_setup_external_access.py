@@ -16,7 +16,7 @@ import pytest
 from nymeria.setup import external_access as ea
 from nymeria.setup.state import WizardState
 
-from tests.test_setup_wizard import _stub_llm  # noqa: F401  (fixture-style helper)
+from _setup_wizard_helpers import _stub_llm  # type: ignore[import-not-found]
 from nymeria.setup.runner import main as setup_main
 
 

@@ -863,7 +863,7 @@ def write_config(
 # Value formatting and the merge/atomic-write mechanics now live in the shared
 # writer (`config/env_file.py`) so finalize and `PATCH /settings` cannot drift.
 # `_env_value` stays as a module-local alias because call sites and a test
-# (`tests/test_setup_wizard.py::test_env_value_leaves_base64_unquoted`) use it.
+# (`tests/test_setup_wizard_finalize.py::test_env_value_leaves_base64_unquoted`) use it.
 _env_value = format_env_value
 
 
