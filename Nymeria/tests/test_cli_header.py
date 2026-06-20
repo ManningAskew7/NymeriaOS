@@ -618,6 +618,38 @@ def test_rich_header_caps_width_for_scrollback_resize_stability() -> None:
     assert all(cell_len(line) <= 79 for line in stream.getvalue().splitlines())
 
 
+def test_rich_header_render_shows_not_connected_when_disconnected() -> None:
+    # dev-todo #37: a disconnected snapshot carries the CLI's local Settings
+    # defaults; the welcome panel must show the connection truth, not present
+    # those defaults as the configured provider/model.
+    stream = io.StringIO()
+    console = Console(file=stream, width=92, force_terminal=False, color_system=None)
+    state = SimpleNamespace(console=console)
+    snapshot = CLIHeaderSnapshot(
+        thread_id="thread-123456",
+        user_id="alice",
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+        api_type="messages/v1",
+        thinking_mode="adaptive (high)",
+        health=HeaderHealthSnapshot(status="disconnected"),
+    )
+
+    render_welcome(
+        state,
+        snapshot,
+        capabilities=FakeTerminalCapabilities(width=92),
+    )
+    output = stream.getvalue()
+
+    assert snapshot.connection_label == "disconnected"
+    assert "not connected" in output
+    assert "claude-sonnet-4-6" not in output
+    assert "anthropic" not in output
+    # The Backend line still reports the disconnected health label.
+    assert "disconnected" in output
+
+
 def test_cli_app_refresh_hooks_mark_and_render_header(monkeypatch) -> None:
     calls: list[str] = []
 

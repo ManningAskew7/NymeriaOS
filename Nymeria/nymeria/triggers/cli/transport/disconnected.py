@@ -8,7 +8,10 @@ from typing import Any, Mapping
 from ..events import DoneEvent, ErrorEvent, NormalizedEvent
 from .base import Attachment
 
-DISCONNECTED_MESSAGE = "Not connected. Run /login to connect to a running Nymeria backend."
+DISCONNECTED_MESSAGE = (
+    "Not connected. Run /login to connect to a running backend, "
+    "or 'nymeria init' to set one up."
+)
 
 
 class DisconnectedAgentClient:

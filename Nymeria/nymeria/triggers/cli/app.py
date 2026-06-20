@@ -267,6 +267,7 @@ class _RichReplRuntime:
             connection_label=self.app._status_connection_label(),
             thread_label=self._thread_label(),
             model=self._model_label(),
+            disconnected=is_disconnected_client(self.app._client),
             reasoning_label=self.app._repl_reasoning_label,
             fast_mode_active=self.app._repl_fast_active,
             cwd=Path.cwd(),
@@ -290,8 +291,21 @@ class _RichReplRuntime:
         return self.app.state.thread_id
 
     def _model_label(self) -> str:
+        # Explicit /fast or /model override wins everywhere.
         if self.app._repl_model_label:
             return self.app._repl_model_label
+        # Disconnected: no backend to report a model. Show nothing rather than
+        # the client's local Settings default (dev-todo #37).
+        if is_disconnected_client(self.app._client):
+            return ""
+        # Remote (thin client, no in-process agent): the model is backend state.
+        # Report the fetched header-snapshot model; never the local default.
+        if self.app.state.agent is None:
+            snapshot = self.app._header_snapshot
+            if snapshot is not None and snapshot.model:
+                return snapshot.model
+            return ""
+        # Local-agent mode (slim): the in-process Settings model is authoritative.
         with suppress(Exception):
             return self.app.state.get_effective_model()
         return ""

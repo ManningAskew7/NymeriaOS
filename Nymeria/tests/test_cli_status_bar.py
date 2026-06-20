@@ -99,6 +99,50 @@ def test_status_bar_shows_fast_mode_indicator() -> None:
     assert "FAST" in text
 
 
+def test_status_bar_omits_model_when_disconnected() -> None:
+    # dev-todo #37: a CLI started before the backend must not present its local
+    # Settings default as the active model. The disconnected label carries the
+    # state; no model segment is shown.
+    renderer = StatusBarRenderer()
+    caps = FakeTerminalCapabilities(width=120)
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+
+    text = renderer.render_text(
+        state,
+        capabilities=caps,
+        context=StatusBarContext(
+            connection_label="disconnected",
+            model="claude-sonnet-4-6",
+            disconnected=True,
+        ),
+        now=0.0,
+    )
+
+    assert "disconnected" in text
+    assert "claude-sonnet-4-6" not in text
+
+
+def test_status_bar_shows_connected_backend_model() -> None:
+    # When connected, the fetched backend model renders even before the first
+    # turn streams an active_model.
+    renderer = StatusBarRenderer()
+    caps = FakeTerminalCapabilities(width=120)
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+
+    text = renderer.render_text(
+        state,
+        capabilities=caps,
+        context=StatusBarContext(
+            connection_label="api ok 24ms",
+            model="gpt-5.5",
+            disconnected=False,
+        ),
+        now=0.0,
+    )
+
+    assert "gpt-5.5" in text
+
+
 def test_quiet_activity_status_becomes_formulating() -> None:
     renderer = StatusBarRenderer()
     state = create_initial_state(thread_id="thread-1", now=0.0)

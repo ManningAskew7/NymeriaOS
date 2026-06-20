@@ -44,6 +44,7 @@ class StatusBarContext:
     connection_label: str = ""
     thread_label: str = ""
     model: str = ""
+    disconnected: bool = False
     reasoning_label: str = ""
     fast_mode_active: bool = False
     cwd: str | Path | None = None
@@ -172,7 +173,10 @@ class StatusBarRenderer:
             default_ttl_seconds=self.default_notice_ttl_seconds,
         )
         thread = context.thread_label or state.thread_id or ""
-        model = state.active_model or context.model
+        # Disconnected bars omit the model segment entirely; the "disconnected"
+        # connection label already conveys state, and there is no backend model
+        # to report (the local Settings default must never surface as active).
+        model = "" if context.disconnected else (state.active_model or context.model)
         context_usage = context_usage_label(
             state, compact_settings=context.compact_settings,
         )
