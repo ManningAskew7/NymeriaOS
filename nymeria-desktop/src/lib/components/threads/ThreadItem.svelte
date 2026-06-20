@@ -9,6 +9,9 @@
     thread: Thread;
     isActive: boolean;
     isSelected?: boolean;
+    /** True whenever a multi-select is in progress (any row selected). Keeps the
+        left checkbox revealed on every row and hides the per-row actions. */
+    selectionActive?: boolean;
     isPinned?: boolean;
     isCallable?: boolean;
     taskCount?: number;
@@ -25,7 +28,7 @@
     onToggleSelect?: () => void;
   }
 
-  let { thread, isActive, isSelected = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, hasUnread = false, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin, onExport, onToggleSelect }: Props = $props();
+  let { thread, isActive, isSelected = false, selectionActive = false, isPinned = false, isCallable = false, taskCount, hasActiveTask, hasCustomConfig, hasUnread = false, onSelect, onDelete, onRename, onConfigure, onOpenAgentConfig, onTogglePin, onExport, onToggleSelect }: Props = $props();
 
   let menuOpen = $state(false);
   let isEditing = $state(false);
@@ -33,18 +36,27 @@
   let contextMenu = $state<{ x: number; y: number } | null>(null);
 
   function handleClick(e: MouseEvent) {
-    // Don't select if the click landed on the row's action controls or editing
+    // Don't navigate if the click landed on the row's action controls, the
+    // selection checkbox, or while editing.
     const target = e.target as HTMLElement;
-    if (target.closest('.row-actions') || isEditing) return;
+    if (target.closest('.row-actions') || target.closest('.select-box') || isEditing) return;
     onSelect(e);
   }
 
   function handleKeydown(e: KeyboardEvent) {
     const target = e.target as HTMLElement;
-    if (target.closest('.row-actions')) return;
+    if (target.closest('.row-actions') || target.closest('.select-box')) return;
     if (e.key === 'Enter' && !isEditing) {
       onSelect(e as unknown as MouseEvent);
     }
+  }
+
+  // The left selection checkbox. Stops propagation so toggling selection never
+  // also fires the row's navigate handler (mirrors handlePinClick).
+  function handleSelectClick(e: MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    onToggleSelect?.();
   }
 
   function startRename() {
@@ -154,6 +166,7 @@
   class="thread-item"
   class:active={isActive}
   class:selected={isSelected}
+  class:selecting={selectionActive}
   class:editing={isEditing}
   class:callable={isCallable}
   class:menuOpen={menuOpen}
@@ -165,6 +178,20 @@
   tabindex="0"
   aria-current={isActive ? 'page' : undefined}
 >
+  {#if onToggleSelect && !isEditing}
+    <button
+      class="select-box"
+      class:checked={isSelected}
+      type="button"
+      role="checkbox"
+      aria-checked={isSelected}
+      aria-label="Select thread"
+      onclick={handleSelectClick}
+    >
+      {#if isSelected}<Icon name="check" size={12} />{/if}
+    </button>
+  {/if}
+
   <div class="thread-icon">
     {#if thread.platform === 'discord'}
       <span class="platform-icon discord" data-tooltip="Discord">
@@ -243,12 +270,6 @@
     {/if}
   </div>
 
-  {#if isSelected}
-    <div class="selection-check">
-      <Icon name="check" size={12} />
-    </div>
-  {/if}
-
   <div class="thread-content">
     {#if isEditing}
       <input
@@ -292,7 +313,7 @@
     </div>
   {/if}
 
-  {#if !isEditing}
+  {#if !isEditing && !selectionActive}
     <div class="row-actions">
       {#if onTogglePin}
         <button
@@ -439,19 +460,60 @@
     outline: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
   }
 
-  .selection-check {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 18px;
+  /* Left selection checkbox. A rounded SQUARE (distinct from the round-ish
+     green todo "done" control by accent fill + left position), filled with the
+     accent when checked. Collapsed to zero width at rest and revealed on row
+     hover/focus or whenever a selection is in progress (.selecting). The
+     negative margin cancels the parent's flex `gap` while collapsed, so a
+     hidden checkbox adds no phantom space before the icon; revealing it
+     animates both the width and that margin back to their open values. Kept out
+     of `display:none`/`visibility:hidden` so it stays in the tab order: a
+     keyboard user can Tab to it (it reveals via :focus-within) to start a
+     selection. NB: the collapsed margin is deliberately -1 * the row's flex
+     `gap` (--spacing-sm) so they cancel exactly; if the row gap ever changes,
+     update this margin to match or a small phantom offset returns. */
+  .select-box {
+    flex-shrink: 0;
+    box-sizing: border-box;
+    width: 0;
     height: 18px;
-    display: flex;
+    margin-right: calc(-1 * var(--spacing-sm));
+    padding: 0;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--accent-primary);
-    color: var(--text-on-accent);
+    border: 1.5px solid var(--border-default);
     border-radius: var(--radius-sm);
-    z-index: 1;
+    background: transparent;
+    color: var(--text-on-accent);
+    cursor: pointer;
+    opacity: 0;
+    overflow: hidden;
+    transition: width var(--transition-fast), margin-right var(--transition-fast),
+      opacity var(--transition-fast), background var(--transition-fast),
+      border-color var(--transition-fast);
+  }
+
+  .thread-item:hover .select-box,
+  .thread-item:focus-within .select-box,
+  .thread-item.selecting .select-box {
+    width: 18px;
+    margin-right: 0;
+    opacity: 1;
+  }
+
+  .select-box:hover {
+    border-color: var(--accent-primary);
+  }
+
+  .select-box.checked {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+  }
+
+  .select-box:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
   }
 
   .thread-item:focus-visible {
