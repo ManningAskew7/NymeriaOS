@@ -525,6 +525,13 @@
     font-size: var(--font-size-2xs);
     color: var(--text-muted);
     line-height: 1.5;
+    /* Tighten only the space above the meta row (leaving the 6px title/body
+       rhythm of .todo-content intact) so the text-to-"thread" gap matches the
+       activity feed's. The activity meta row has min-height:18px, which adds
+       ~2.8px of internal space above its label, so its 1px content gap renders
+       as ~3.8px; this meta row has no such floor, so netting the 6px gap down to
+       ~2.6px lands at the same ~3.8px visual gap. */
+    margin-top: -3.4px;
   }
 
   .meta-thread {

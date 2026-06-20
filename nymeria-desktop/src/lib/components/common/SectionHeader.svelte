@@ -74,9 +74,14 @@
     {/if}
 
     {#if action}
-      <button class="section-action" type="button" onclick={action.onClick}>
-        <Icon name="plus" size={12} />
-        <span>{action.label}</span>
+      <button
+        class="section-action"
+        type="button"
+        onclick={action.onClick}
+        aria-label={action.label}
+        data-tooltip={action.label}
+      >
+        <Icon name="plus" size={16} />
       </button>
     {/if}
   </div>
@@ -194,24 +199,21 @@
     flex-shrink: 0;
   }
 
-  /* Quiet tertiary text link, pushed to the row's right edge by the toggle's
+  /* Icon-only "+" create button, pushed to the row's right edge by the toggle's
      flex:1. Muted at rest, accent on hover — one consistent treatment for every
-     section's create action. */
+     section's create action. The md side padding aligns the glyph to the
+     header's content gutter (its right edge matches the toggle's md padding)
+     and gives a full-height click target (the header stretches its children).
+     The accessible name + hover hint come from aria-label / data-tooltip. */
   .section-action {
     display: inline-flex;
     align-items: center;
-    /* Icon-to-label gap matches the app's standard button gap
-       (--spacing-sm), so the "+" sits the same distance from its label as
-       on every other icon+text button. */
-    gap: var(--spacing-sm);
+    justify-content: center;
     flex-shrink: 0;
     padding: 0 var(--spacing-md);
     background: transparent;
     border: none;
     color: var(--text-muted);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    white-space: nowrap;
     cursor: pointer;
     transition: color var(--transition-fast);
   }

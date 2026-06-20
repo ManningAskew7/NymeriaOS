@@ -316,6 +316,14 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
+    /* Stable row height so the feed rhythm doesn't jump between entry types. The
+       thread chip's 1px vertical padding makes it ~2px taller than the bare
+       timestamp, so a row that carries a chip reads taller than one that doesn't
+       (and only some entry types resolve to a thread). Floor the row to the
+       padded-chip height (xs text line box at line-height 1.5, plus 2px padding)
+       so every entry's meta row is the same height whether or not it carries a
+       chip or the expand chevron. */
+    min-height: 20px;
   }
 
   .thread-badge {

@@ -289,10 +289,12 @@
        GROUP label; the count begins right after it. SectionHeader derives its
        title's reserved width from this same value (minus the 24px the chevron +
        header padding add to its prefix) so header and group counts share the
-       column. Sized to clear the longest label ("IN PROGRESS"); only defined
-       here, so the column exists in the dashboard and nowhere else. One number
-       tunes the whole column. */
-    --count-col-label: 108px;
+       column. Sized just past the longest label ("IN PROGRESS", ~87px at the
+       16px Geist group-label size) so the count stack sits as far left as the
+       shared column allows without a longer label colliding into it; only
+       defined here, so the column exists in the dashboard and nowhere else. One
+       number tunes the whole column. */
+    --count-col-label: 90px;
     /* Top padding matches the sides (8px) so the first section's top edge lines
        up with the thread-list "Recent" sort button in the sidebar: both sit 8px
        below their respective 64px headers. Sides keep the --spacing-sm content

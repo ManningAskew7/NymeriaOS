@@ -344,20 +344,29 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
+    /* Uniform meta-row height across entry types so the feed rhythm stays even.
+       The thread label, timestamp, and expand chevron are all short; floor the
+       row to a stable height (3xs text line box at line-height 1.5, rounded up)
+       so a row with no thread label is the same height as one that carries it. */
+    min-height: 18px;
   }
 
   .thread-badge {
+    /* Plain-text thread label, matching the scheduled-task meta row
+       (TodoItem .meta-thread): a thread name is a quiet reference, not a chip,
+       so it carries no pill background or padding and sits inline with the
+       timestamp rather than reading as an active/selected state. */
     display: inline-block;
     max-width: 120px;
-    padding: 1px 6px;
-    font-size: var(--font-size-3xs);
+    padding: 0;
+    /* 2xs to match the scheduled-task thread label (TodoItem .meta-thread), so
+       the same thread name reads at the same size in both feeds. (The adjacent
+       timestamp stays the smaller 3xs, the usual label-over-timestamp step.) */
+    font-size: var(--font-size-2xs);
     font-weight: 500;
-    /* Neutral chip: a thread name is a label, not an active/selected state, so
-       it sits on the muted gray scale rather than the accent tint. */
     color: var(--text-secondary);
-    background: var(--bg-elevated);
+    background: transparent;
     border: 0;
-    border-radius: var(--radius-sm);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -367,13 +376,14 @@
      thread (the row click is reserved for expand/collapse). */
   .thread-badge.clickable {
     cursor: pointer;
-    font: inherit;
-    transition: background var(--transition-fast), color var(--transition-fast);
+    /* Neutralize the UA button font, but keep the label's own size/weight set
+       above (a bare `font: inherit` would reset both back to the row default). */
+    font-family: inherit;
+    transition: color var(--transition-fast);
   }
 
   .thread-badge.clickable:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    color: var(--accent-primary);
   }
 
   .thread-badge.clickable:focus-visible {
