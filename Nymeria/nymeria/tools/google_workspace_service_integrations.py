@@ -296,6 +296,17 @@ def _summarize_slides(slides: list[dict[str, Any]], *, include_text: bool) -> li
     return summarized
 
 
+# Partial-response field mask for ``google_slides_list_slides``. The nested
+# ``pageElements -> shape -> text -> textElements -> textRun -> content`` path
+# mirrors what ``_slide_text`` walks. The parentheses must stay balanced or the
+# Slides API rejects the whole request with a 400, so it is a module constant
+# with a balance test rather than an inline literal.
+_SLIDES_LIST_FIELDS = (
+    "presentationId,title,slides(objectId,pageType,slideProperties,"
+    "pageElements(objectId,shape(text(textElements(textRun(content))))))"
+)
+
+
 def _chat_resource_name(value: str, *, label: str, prefix: str) -> str:
     cleaned = value.strip().strip("/")
     if not cleaned:
@@ -930,7 +941,7 @@ def google_slides_list_slides(
     user_id = get_user_id(config)
     try:
         presentation_id = _slides_id(presentation_id)
-        fields = "presentationId,title,slides(objectId,pageType,slideProperties,pageElements(objectId,shape(text(textElements(textRun(content)))))"
+        fields = _SLIDES_LIST_FIELDS
         success, result = _slides_request(
             user_id,
             lambda s: s.presentations().get(presentationId=presentation_id, fields=fields).execute(),

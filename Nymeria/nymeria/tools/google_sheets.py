@@ -9,7 +9,8 @@ to read app-level reference data through a Google service account.
 import json
 import logging
 import time
-from typing import Annotated, Any, Callable, Dict, List, Optional, Tuple
+from collections import OrderedDict
+from typing import Annotated, Any, Callable, List, Optional, Tuple
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -27,8 +28,20 @@ logger = logging.getLogger(__name__)
 # scope is ``f"service_account:{credential_id}"`` so entries from different
 # vault credentials never collide.
 
-_sheet_cache: Dict[str, Tuple[float, List[str], List[List[str]]]] = {}
+_sheet_cache: "OrderedDict[str, Tuple[float, List[str], List[List[str]]]]" = OrderedDict()
 _CACHE_TTL = 300  # seconds
+# Cap retained entries so the long-lived API process does not accumulate a
+# cached payload for every distinct (scope, spreadsheet, tab) tuple forever.
+# Evicted LRU-style: reads bump recency, writes drop the oldest over the cap.
+_CACHE_MAX_ENTRIES = 256
+
+
+def _cache_store(key: str, value: Tuple[float, List[str], List[List[str]]]) -> None:
+    """Store a cache entry, evicting the least-recently-used over the size cap."""
+    _sheet_cache[key] = value
+    _sheet_cache.move_to_end(key)
+    while len(_sheet_cache) > _CACHE_MAX_ENTRIES:
+        _sheet_cache.popitem(last=False)
 
 # Read-only Sheets scope used by service-account reads.
 _SERVICE_ACCOUNT_SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
@@ -174,6 +187,7 @@ def _fetch_sheet_with_service(
     if cache_key in _sheet_cache:
         ts, headers, rows = _sheet_cache[cache_key]
         if now - ts < _CACHE_TTL:
+            _sheet_cache.move_to_end(cache_key)
             return headers, rows
 
     service = service_factory() if service_factory else None
@@ -214,7 +228,7 @@ def _fetch_sheet_with_service(
 
     values = result.get("values", [])
     if not values:
-        _sheet_cache[cache_key] = (now, [], [])
+        _cache_store(cache_key, (now, [], []))
         return [], []
 
     # Detect header row: if row 1 has many empty cells and row 2 is fuller,
@@ -239,7 +253,7 @@ def _fetch_sheet_with_service(
         padded = row + [""] * (len(headers) - len(row)) if len(row) < len(headers) else row[: len(headers)]
         normalized.append([str(c).strip() for c in padded])
 
-    _sheet_cache[cache_key] = (now, headers, normalized)
+    _cache_store(cache_key, (now, headers, normalized))
     return headers, normalized
 
 
@@ -312,6 +326,7 @@ def fetch_service_account_raw_values(
     if cache_key in _sheet_cache:
         ts, _, cached_rows = _sheet_cache[cache_key]
         if now - ts < _CACHE_TTL:
+            _sheet_cache.move_to_end(cache_key)
             return cached_rows
 
     service = _get_service_account_sheets_service(service_account_credential_id)
@@ -340,7 +355,7 @@ def fetch_service_account_raw_values(
 
     values = result.get("values", [])
     raw_rows = [[str(c) for c in row] for row in values]
-    _sheet_cache[cache_key] = (now, [], raw_rows)
+    _cache_store(cache_key, (now, [], raw_rows))
     return raw_rows
 
 

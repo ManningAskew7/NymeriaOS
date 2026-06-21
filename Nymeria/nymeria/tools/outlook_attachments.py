@@ -65,7 +65,7 @@ def _download_attachments(
 
     Returns (list of {name, mime_type, data_b64, size}, skipped_inline_count).
     """
-    from .outlook_email import graph_request
+    from .outlook_email import _is_inline_signature_image, graph_request
 
     success, result = graph_request(
         user_id,
@@ -92,8 +92,10 @@ def _download_attachments(
         is_inline = att.get("isInline", False)
 
         # Skip inline signature images (company logos, social icons, etc.)
-        # These are small images embedded in HTML email bodies via cid: references
-        if is_inline and mime_type.startswith("image/") and size < 50000:
+        # These are small images embedded in HTML email bodies via cid: references.
+        # ``size`` here is the base64 length, so the byte cutoff is ~33% lower
+        # than the Graph ``size`` field used in outlook_email; preserved as-is.
+        if _is_inline_signature_image(is_inline=is_inline, mime=mime_type, size=size):
             skipped_inline += 1
             logger.debug(f"Skipping inline signature image '{name}' ({size} bytes)")
             continue
