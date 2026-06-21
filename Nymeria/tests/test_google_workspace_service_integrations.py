@@ -186,11 +186,26 @@ def test_google_slides_replace_text_calls_batch_update(monkeypatch):
     assert "https://www.googleapis.com/auth/presentations" in calls[0]["scopes"]
 
 
+def test_google_slides_list_fields_mask_is_balanced():
+    # An unbalanced field mask makes the Slides API reject the whole request
+    # with a 400, which the broad try/except in the tool masks as a generic
+    # error. Guard the parentheses balance directly.
+    from nymeria.tools.google_workspace_service_integrations import _SLIDES_LIST_FIELDS
+
+    assert _SLIDES_LIST_FIELDS.count("(") == _SLIDES_LIST_FIELDS.count(")")
+    # The mask must project the full text path that _slide_text walks.
+    for segment in ("slides(", "pageElements(", "shape(", "text(", "textElements(", "textRun(content"):
+        assert segment in _SLIDES_LIST_FIELDS
+
+
 def test_google_slides_list_slides_summarizes_text(monkeypatch):
     from nymeria.tools import google_workspace_service_integrations as tools
 
+    captured = {}
+
     class PresentationsResource:
         def get(self, **kwargs):
+            captured.update(kwargs)
             return _Executable(
                 {
                     "presentationId": kwargs["presentationId"],
@@ -234,6 +249,9 @@ def test_google_slides_list_slides_summarizes_text(monkeypatch):
         "title": "Deck",
         "slides": [{"index": 1, "objectId": "slide-1", "pageType": "SLIDE", "text": "Hello world"}],
     }
+    # The field mask passed to the Slides API must be syntactically valid.
+    fields = captured["fields"]
+    assert fields.count("(") == fields.count(")")
 
 
 def test_google_chat_send_message_calls_chat_api(monkeypatch):

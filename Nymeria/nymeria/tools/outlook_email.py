@@ -51,6 +51,25 @@ def _resolve_folder_alias(folder: str) -> tuple[bool, str]:
     return False, f"Invalid folder. Expected one of: {options}."
 
 
+def _parse_recipients(addr_str: str) -> List[dict]:
+    """Parse a comma-separated address string into Graph recipient objects."""
+    addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
+    return [{"emailAddress": {"address": a}} for a in addresses]
+
+
+# Inline images below this size are treated as signature logos / social icons
+# embedded in HTML bodies and hidden from attachment listings. Callers supply
+# their own size measurement (Graph ``size`` field vs base64 length), so the
+# effective cutoff differs slightly by call site; the threshold lives here so it
+# is tuned in one place.
+_INLINE_IMAGE_SKIP_BYTES = 50_000
+
+
+def _is_inline_signature_image(*, is_inline: bool, mime: str, size: int) -> bool:
+    """True for a small inline image that should be skipped as a signature logo."""
+    return is_inline and mime.startswith("image/") and size < _INLINE_IMAGE_SKIP_BYTES
+
+
 def _html_to_text(content: str) -> str:
     """Convert HTML email body to readable plain text.
 
@@ -75,6 +94,22 @@ def _html_to_text(content: str) -> str:
     # Collapse excessive newlines (3+ → 2)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+# Email bodies are capped to this many characters in the read view. Both HTML
+# (after text conversion) and plain-text bodies are trimmed uniformly, with an
+# explicit marker so the agent knows content was dropped instead of silently
+# acting on a partial email.
+_BODY_PREVIEW_CHARS = 8000
+
+
+def _truncate_body(text: str) -> str:
+    """Cap an email body to the preview budget, appending a marker when trimmed."""
+    if len(text) <= _BODY_PREVIEW_CHARS:
+        return text
+    dropped = len(text) - _BODY_PREVIEW_CHARS
+    return text[:_BODY_PREVIEW_CHARS] + f"\n...[truncated {dropped} chars]"
+
 
 # Token refresh endpoint
 TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
@@ -447,9 +482,10 @@ def _format_single_email(result: dict) -> str:
     body = result.get("body", {})
     body_content = body.get("content", "")
 
-    # Convert HTML to readable text
+    # Convert HTML to readable text, then cap both content types uniformly.
     if body.get("contentType") == "html":
-        body_content = _html_to_text(body_content)[:2000]
+        body_content = _html_to_text(body_content)
+    body_content = _truncate_body(body_content)
 
     lines = [
         f"**From:** {sender_str}",
@@ -480,7 +516,7 @@ def _format_single_email(result: dict) -> str:
                 mime = att.get("contentType", "")
                 size = att.get("size", 0)
                 # Skip small inline images (signature logos)
-                if is_inline and mime.startswith("image/") and size < 50000:
+                if _is_inline_signature_image(is_inline=is_inline, mime=mime, size=size):
                     inline_count += 1
                     continue
                 size_str = f"{size // 1024}KB" if size >= 1024 else f"{size}B"
@@ -569,17 +605,18 @@ def outlook_get_email(
     return "\n\n".join(sections)
 
 
-def _build_search_kql(
-    query: str,
+def _build_kql_suffix(
     sender: str = "",
     recipient: str = "",
     subject: str = "",
     has_attachments: bool = False,
 ) -> str:
-    """Build a KQL search string from structured parameters."""
+    """Build the KQL filter suffix (from/to/subject/attachments) for a search.
+
+    The free-text keyword query is handled by the caller; this only assembles
+    the structured filter operators that get appended to each keyword.
+    """
     parts = []
-    if query.strip():
-        parts.append(query.strip())
     if sender.strip():
         parts.append(f"from:{sender.strip()}")
     if recipient.strip():
@@ -777,7 +814,7 @@ def outlook_search_emails(
         return _search_single_query(user_id, kql.strip(), account_id, limit, folder=folder, days_back=days_back, category=category)
 
     # Build KQL from structured filters
-    kql_suffix = _build_search_kql("", sender=sender, recipient=to, subject=subject, has_attachments=has_attachments)
+    kql_suffix = _build_kql_suffix(sender=sender, recipient=to, subject=subject, has_attachments=has_attachments)
 
     # Parse queries
     if queries.strip():
@@ -842,9 +879,6 @@ def outlook_send_email(
         Success or error message.
     """
     user_id = get_user_id(config)
-    def parse_recipients(addr_str: str) -> List[dict]:
-        addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
-        return [{"emailAddress": {"address": a}} for a in addresses]
 
     message = {
         "subject": subject,
@@ -852,13 +886,13 @@ def outlook_send_email(
             "contentType": "HTML" if is_html else "Text",
             "content": body,
         },
-        "toRecipients": parse_recipients(to),
+        "toRecipients": _parse_recipients(to),
     }
 
     if cc:
-        message["ccRecipients"] = parse_recipients(cc)
+        message["ccRecipients"] = _parse_recipients(cc)
     if bcc:
-        message["bccRecipients"] = parse_recipients(bcc)
+        message["bccRecipients"] = _parse_recipients(bcc)
 
     success, result = graph_request(user_id, "POST",
         "/me/sendMail",
@@ -1013,9 +1047,6 @@ def outlook_create_draft(
         Success message with draft ID and recipient counts.
     """
     user_id = get_user_id(config)
-    def parse_recipients(addr_str: str) -> List[dict]:
-        addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
-        return [{"emailAddress": {"address": a}} for a in addresses]
 
     message = {
         "subject": subject,
@@ -1023,15 +1054,15 @@ def outlook_create_draft(
             "contentType": "HTML" if is_html else "Text",
             "content": body,
         },
-        "toRecipients": parse_recipients(to),
+        "toRecipients": _parse_recipients(to),
     }
 
     if cc:
-        message["ccRecipients"] = parse_recipients(cc)
+        message["ccRecipients"] = _parse_recipients(cc)
 
     bcc_count = 0
     if bcc:
-        bcc_recipients = parse_recipients(bcc)
+        bcc_recipients = _parse_recipients(bcc)
         bcc_count = len(bcc_recipients)
         message["bccRecipients"] = bcc_recipients
 
@@ -1082,9 +1113,6 @@ def outlook_edit_draft(
         Success message confirming the update.
     """
     user_id = get_user_id(config)
-    def parse_recipients(addr_str: str) -> List[dict]:
-        addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
-        return [{"emailAddress": {"address": a}} for a in addresses]
 
     updates: dict = {}
     if body:
@@ -1095,11 +1123,11 @@ def outlook_edit_draft(
     if subject:
         updates["subject"] = subject
     if to:
-        updates["toRecipients"] = parse_recipients(to)
+        updates["toRecipients"] = _parse_recipients(to)
     if cc:
-        updates["ccRecipients"] = parse_recipients(cc)
+        updates["ccRecipients"] = _parse_recipients(cc)
     if bcc:
-        updates["bccRecipients"] = parse_recipients(bcc)
+        updates["bccRecipients"] = _parse_recipients(bcc)
 
     if not updates:
         return "[Error]: No fields to update. Provide at least one of: body, subject, to, cc, bcc."
@@ -1253,12 +1281,9 @@ def outlook_forward_email(
         Success or error message.
     """
     user_id = get_user_id(config)
-    def parse_recipients(addr_str: str) -> List[dict]:
-        addresses = [a.strip() for a in addr_str.split(",") if a.strip()]
-        return [{"emailAddress": {"address": a}} for a in addresses]
 
     data: dict[str, Any] = {
-        "toRecipients": parse_recipients(to),
+        "toRecipients": _parse_recipients(to),
     }
     if comment:
         data["comment"] = comment
