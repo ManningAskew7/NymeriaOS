@@ -550,7 +550,23 @@ def redact_secrets(value: Any) -> Any:
 
 
 _audit_lock = threading.Lock()
-_dns_pin_lock = threading.RLock()
+
+# DNS-pin dispatcher state. The previous implementation swapped
+# ``socket.getaddrinfo`` per request under a global lock held across the whole
+# network transfer, which serialized every policy-managed HTTP call
+# process-wide. Instead we install one transparent ``getaddrinfo`` replacement
+# (``_dns_pin_dispatcher``) exactly once and carry the active pin in
+# thread-local state, so concurrent requests on different threads pin
+# independently with no lock around the network I/O.
+#
+# ``_SYSTEM_GETADDRINFO`` is the real resolver, captured once at import before
+# any install. The dispatcher delegates every non-pinned lookup straight to it,
+# so the dispatcher is behaviourally invisible when no thread has an active pin
+# and can never recurse into itself. It is read as a module global at call time
+# so tests can substitute a hostile resolver to exercise the pin.
+_SYSTEM_GETADDRINFO: Callable[..., Any] = socket.getaddrinfo
+_dns_install_lock = threading.Lock()
+_dns_pin_state = threading.local()
 
 
 def _coerce_port(value: Any) -> Optional[int]:
@@ -593,36 +609,26 @@ def _addrinfo_for_pinned_ip(
     )
 
 
-@contextmanager
-def pinned_dns_resolution(decision: HTTPPolicyDecision):
+def _dns_pin_dispatcher(
+    host: Any,
+    port: Any,
+    family: int = 0,
+    type: int = 0,
+    proto: int = 0,
+    flags: int = 0,
+):
+    """Process-wide ``getaddrinfo`` that honours the calling thread's pin.
+
+    When the current thread has an active pin matching the requested
+    ``(host, port)``, return the policy-approved addresses; otherwise delegate to
+    ``_SYSTEM_GETADDRINFO`` (the real resolver captured at import). The pin lives
+    in thread-local state, so concurrent policy-managed requests can pin
+    different hosts at the same time without a shared lock around the request.
     """
-    Force the request-time resolver to use the IPs approved by policy.
-
-    requests/httpx keep the URL hostname for Host, SNI, and certificate checks,
-    but their socket layer would otherwise perform a second DNS lookup during
-    connect. This scoped resolver pin closes the DNS-rebinding gap for
-    policy-managed synchronous requests.
-    """
-    if not decision.host or decision.port is None or not decision.resolved_ips:
-        yield
-        return
-
-    target_host = _normalize_host(decision.host)
-    target_port = decision.port
-    pinned_ips = decision.resolved_ips
-    original_getaddrinfo = socket.getaddrinfo
-
-    def pinned_getaddrinfo(
-        host: Any,
-        port: Any,
-        family: int = 0,
-        type: int = 0,
-        proto: int = 0,
-        flags: int = 0,
-    ):
-        requested_host = _normalize_host(str(host))
-        requested_port = _coerce_port(port)
-        if requested_host == target_host and requested_port == target_port:
+    pin = getattr(_dns_pin_state, "active", None)
+    if pin is not None:
+        target_host, target_port, pinned_ips = pin
+        if _normalize_host(str(host)) == target_host and _coerce_port(port) == target_port:
             infos = [
                 info
                 for ip_text in pinned_ips
@@ -640,14 +646,62 @@ def pinned_dns_resolution(decision: HTTPPolicyDecision):
             if infos:
                 return infos
             raise socket.gaierror(socket.EAI_NONAME, "No pinned address for requested family")
-        return original_getaddrinfo(host, port, family, type, proto, flags)
+    return _SYSTEM_GETADDRINFO(host, port, family, type, proto, flags)
 
-    with _dns_pin_lock:
-        socket.getaddrinfo = pinned_getaddrinfo
-        try:
-            yield
-        finally:
-            socket.getaddrinfo = original_getaddrinfo
+
+def _ensure_dns_dispatcher_installed() -> None:
+    """Install the transparent ``getaddrinfo`` dispatcher (idempotent).
+
+    The dispatcher is left in place once installed: it delegates all non-pinned
+    lookups to the system resolver, so leaving it installed is transparent and
+    avoids reintroducing the per-request global swap (and its lock) that this
+    change exists to remove. The lock guards only the one-time pointer swap; no
+    network I/O happens while it is held. If some other component has displaced
+    the dispatcher, re-assert it so an active pin is never silently ignored.
+    """
+    if socket.getaddrinfo is _dns_pin_dispatcher:
+        return
+    with _dns_install_lock:
+        if socket.getaddrinfo is not _dns_pin_dispatcher:
+            socket.getaddrinfo = _dns_pin_dispatcher
+
+
+@contextmanager
+def pinned_dns_resolution(decision: HTTPPolicyDecision):
+    """
+    Force the request-time resolver to use the IPs approved by policy.
+
+    requests/httpx keep the URL hostname for Host, SNI, and certificate checks,
+    but their socket layer would otherwise perform a second DNS lookup during
+    connect. This scoped resolver pin closes the DNS-rebinding gap for
+    policy-managed synchronous requests.
+
+    The pin is stored in thread-local state behind a process-wide transparent
+    ``getaddrinfo`` dispatcher (installed once on first use), so two threads can
+    pin different hosts simultaneously and no lock is held across the network
+    request.
+
+    Correctness depends on the caller resolving and connecting on the same
+    thread that entered this context. That holds for synchronous ``requests``
+    and ``httpx.Client`` callers, which is how every policy wrapper here issues
+    requests. It does NOT hold for ``httpx.AsyncClient``: async DNS runs on an
+    anyio worker thread that does not carry this thread-local pin, so the pin
+    would be silently skipped and the rebinding protection lost. Keep these
+    wrappers synchronous (callers that need them off the event loop should use
+    ``asyncio.to_thread`` so resolve and connect stay on one worker thread).
+    """
+    if not decision.host or decision.port is None or not decision.resolved_ips:
+        yield
+        return
+
+    _ensure_dns_dispatcher_installed()
+    pin = (_normalize_host(decision.host), decision.port, decision.resolved_ips)
+    previous = getattr(_dns_pin_state, "active", None)
+    _dns_pin_state.active = pin
+    try:
+        yield
+    finally:
+        _dns_pin_state.active = previous
 
 
 def audit_http_event(event: dict[str, Any]) -> None:

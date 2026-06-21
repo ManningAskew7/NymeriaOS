@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -153,7 +154,10 @@ def test_requests_get_with_policy_pins_dns_between_check_and_connect(monkeypatch
             )
             return FakeResponse()
 
-    monkeypatch.setattr(socket, "getaddrinfo", hostile_getaddrinfo)
+    # The pin installs a transparent dispatcher onto socket.getaddrinfo, which
+    # delegates non-pinned lookups to the system resolver captured at import.
+    # Inject the hostile resolver there to simulate DNS rebinding during connect.
+    monkeypatch.setattr(http_policy, "_SYSTEM_GETADDRINFO", hostile_getaddrinfo)
 
     response, _redirect_chain, decision = http_policy.requests_get_with_policy(
         "https://api.example.com/data",
@@ -191,7 +195,10 @@ def test_httpx_request_with_policy_pins_dns_between_check_and_connect(monkeypatc
             )
             return FakeResponse()
 
-    monkeypatch.setattr(socket, "getaddrinfo", hostile_getaddrinfo)
+    # The pin installs a transparent dispatcher onto socket.getaddrinfo, which
+    # delegates non-pinned lookups to the system resolver captured at import.
+    # Inject the hostile resolver there to simulate DNS rebinding during connect.
+    monkeypatch.setattr(http_policy, "_SYSTEM_GETADDRINFO", hostile_getaddrinfo)
 
     response, _redirect_chain, decision = http_policy.httpx_request_with_policy(
         "GET",
@@ -205,6 +212,56 @@ def test_httpx_request_with_policy_pins_dns_between_check_and_connect(monkeypatc
     assert decision.resolved_ips == (pinned_ip,)
     assert seen_addrinfo["during_request"][0][4][0] == pinned_ip
     assert socket.getaddrinfo("api.example.com", 443)[0][4][0] == hostile_ip
+
+
+def test_pinned_dns_resolution_isolates_concurrent_threads():
+    """Two threads pinning different hosts at the same time each resolve their
+    own pinned IP.
+
+    The old design held a process-global RLock across the entire request, so two
+    pins could not coexist: this barrier setup (each thread waits for the other
+    while inside its pinned context) would have deadlocked, since the second
+    thread could never acquire the lock to reach the barrier. The thread-local
+    pin makes the two contexts independent, so both resolve concurrently.
+    """
+    decision_a = http_policy.evaluate_http_url(
+        "https://a.example.test/x",
+        config=http_policy.HTTPPolicyConfig(),
+        resolver=lambda host, port: ["93.184.216.34"],
+    )
+    decision_b = http_policy.evaluate_http_url(
+        "https://b.example.test/x",
+        config=http_policy.HTTPPolicyConfig(),
+        resolver=lambda host, port: ["8.8.8.8"],
+    )
+    assert decision_a.resolved_ips == ("93.184.216.34",)
+    assert decision_b.resolved_ips == ("8.8.8.8",)
+
+    barrier = threading.Barrier(2, timeout=10)
+    results: dict[str, str] = {}
+    errors: list[Exception] = []
+
+    def run(name: str, decision: http_policy.HTTPPolicyDecision, host: str) -> None:
+        try:
+            with http_policy.pinned_dns_resolution(decision):
+                # Both threads are now inside their own pinned context at once.
+                barrier.wait()
+                infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+                results[name] = str(infos[0][4][0])
+        except Exception as exc:  # noqa: BLE001 - surfaced via the assertion below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, args=("a", decision_a, "a.example.test")),
+        threading.Thread(target=run, args=("b", decision_b, "b.example.test")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    assert results == {"a": "93.184.216.34", "b": "8.8.8.8"}
 
 
 def test_validate_http_egress_url_blocks_literal_private_base_url():
