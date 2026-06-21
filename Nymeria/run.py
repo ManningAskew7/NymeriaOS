@@ -409,6 +409,14 @@ def run_cli(args: argparse.Namespace) -> None:
     runtime_config = build_cli_runtime_config(args)
     agent = None
     if runtime_config.transport == "local":
+        # Pin the embedded agent to local SQLite (Redis off) unless the user
+        # opted to share the configured backend. main() already applies this
+        # before validate_config in the normal launch path; repeating it here
+        # (the helper clears the settings cache) keeps run_cli correct when
+        # invoked directly, e.g. from tests or an embedding host.
+        if not getattr(args, "keep_db_backend", False):
+            _apply_fat_runtime_env()
+
         from nymeria import NymeriaAgent
         from nymeria.tools import SEED_TOOLS
 
@@ -542,6 +550,46 @@ def _apply_slim_runtime_env(
         pass
 
     return base_url
+
+
+def _apply_fat_runtime_env() -> None:
+    """Pin the embedded ("fat") CLI agent to local, isolated persistence.
+
+    The in-process ``run.py cli --transport local`` CLI embeds a full
+    ``NymeriaAgent`` whose checkpointer (``build_checkpointer_config``) and
+    event-bus selection read the same ``Settings`` the Docker stack uses.
+    Because ``_load_environment`` merges ``.env.docker`` (typically Postgres +
+    Redis) into the process env at import, an unguarded fat CLI would silently
+    persist conversations to Postgres and honor Redis settings instead of
+    behaving as the self-contained, single-user offline REPL it is meant to be.
+
+    This is the fat-mode analogue of ``_apply_slim_runtime_env``: it forces
+    SQLite and disables Redis so a stray env file cannot silently change
+    behavior. Unlike slim it sets NO ``API_HOST``/``API_PORT``/``NYMERIA_API_URL``,
+    because fat mode binds no server. (The fat CLI's autonomous event stream
+    does not depend on this Redis pin: ``run_cli`` never calls ``set_event_bus``,
+    so ``get_event_bus()`` always returns the in-memory bus regardless of the
+    Redis env. The pin is defense-in-depth for other settings consumers.) The
+    env values are set BEFORE
+    ``get_settings()`` is first cached (the caller invokes this before
+    ``validate_config``); the cache is cleared defensively in case settings were
+    already loaded. Callers skip this entirely when the user passes
+    ``--keep-db-backend`` to deliberately share the configured backend.
+    """
+    os.environ["DATABASE_BACKEND"] = "sqlite"
+    os.environ["REDIS_ENABLED"] = "false"
+    # Clearing REDIS_URL prevents any settings consumer from reaching the
+    # cross-process bus even if .env.docker set one for the regular api command.
+    os.environ.pop("REDIS_URL", None)
+
+    # If settings were loaded earlier (e.g. by `_load_environment()` callers or
+    # argparse imports), reset the cache so the fat overrides take effect.
+    try:
+        from nymeria.config import get_settings
+
+        get_settings.cache_clear()
+    except Exception:
+        pass
 
 
 def _resolve_slim_port(args: argparse.Namespace) -> int:
@@ -1562,6 +1610,18 @@ Examples:
         ),
     )
     cli_parser.add_argument(
+        "--keep-db-backend",
+        action="store_true",
+        default=False,
+        help=(
+            "Fat mode only (--transport local / --fat): keep the configured "
+            "DATABASE_BACKEND and REDIS_* values from your environment instead "
+            "of forcing local SQLite with Redis off. Use only when you "
+            "deliberately want the embedded agent to share a Postgres/Redis "
+            "backend; the default keeps fat mode a self-contained offline REPL."
+        ),
+    )
+    cli_parser.add_argument(
         "--renderer",
         choices=("full", "rich", "plain", "auto"),
         default="rich",
@@ -1968,6 +2028,14 @@ def main() -> None:
                 args, "active_execution_stale_minutes", None
             ),
         )
+    # Fat (in-process) CLI embeds a full agent; pin its persistence to local
+    # SQLite (Redis off) BEFORE validate_config caches settings, unless the user
+    # explicitly opts to share the configured backend. Mirrors the slim early
+    # pin above. Only `--transport local` (incl. its `--fat` alias) builds the
+    # embedded agent; api/auto never do.
+    elif args.command == "cli" and getattr(args, "transport", None) == "local":
+        if not getattr(args, "keep_db_backend", False):
+            _apply_fat_runtime_env()
 
     # Setup logging (except for service commands and STDIO MCP, which must keep
     # stdout reserved for JSON-RPC messages. The MCP server configures stderr
