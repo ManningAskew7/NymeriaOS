@@ -475,6 +475,13 @@ services:
     command: ["python", "run.py", "watchdog", "--api-url", "http://nymeria-api:8000"]
     environment:
       <<: *thin-client-env
+      # Thin client: the watchdog deliberately does NOT receive
+      # NYMERIA_SECRETS_KEY (the per-deployment master Fernet key that decrypts
+      # the whole credential vault). It cannot, therefore, decrypt notification
+      # destination secrets to deliver off-frontend stale-TODO alerts from a
+      # container. Routing that delivery through the API (which holds the key)
+      # is a to-be-completed item (see dev-ledger / dev-todo). In slim the
+      # watchdog shares the API process, so it delivers there.
       WATCHDOG_ENABLED: ${WATCHDOG_ENABLED:-true}
       WATCHDOG_INTERVAL_MINUTES: ${WATCHDOG_INTERVAL_MINUTES:-5}
       TODO_STALENESS_MINUTES: ${TODO_STALENESS_MINUTES:-20}

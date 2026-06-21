@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-
+import nymeria.core.notification_channels as nc
+import nymeria.core.notification_destinations as nd
+from nymeria.core.notification_channels import SendResult, _BaseChannel
+from nymeria.core.notification_destinations import NotificationDestinationsRepo
 from nymeria.core.notification_dispatch import (
     create_autonomous_notification,
     create_in_app_notification,
     get_in_app_notification_level,
-    send_discord,
     send_external_notifications,
-    send_slack,
-    send_telegram,
     send_telegram_default,
     should_notify_autonomous,
     thread_has_telegram_route,
@@ -123,14 +124,6 @@ def test_telegram_default_returns_none_without_chat_id():
     assert send_telegram_default("hi", _settings(telegram_bot_token="tok")) is None
 
 
-def test_discord_returns_none_when_unconfigured():
-    assert send_discord("hi", _settings()) is None
-
-
-def test_slack_returns_none_when_unconfigured():
-    assert send_slack("hi", _settings()) is None
-
-
 # ── thread_has_telegram_route ────────────────────────────────────────────────
 
 
@@ -148,36 +141,12 @@ def test_telegram_route_non_telegram_without_agent():
         assert thread_has_telegram_route("desktop-abc") is False
 
 
-# ── send_telegram ────────────────────────────────────────────────────────────
-
-
-def test_send_telegram_prefers_thread_route():
-    import nymeria.core.notification_dispatch as mod
-    orig = mod.publish_telegram_thread_notification
-    mod.publish_telegram_thread_notification = lambda msg, uid, tid: "Queued to Telegram thread"
-    try:
-        result = send_telegram("msg", _settings(), "user-1", "telegram_123")
-        assert result == "Queued to Telegram thread"
-    finally:
-        mod.publish_telegram_thread_notification = orig
-
-
-def test_send_telegram_falls_back_to_default():
-    import nymeria.core.notification_dispatch as mod
-    orig = mod.publish_telegram_thread_notification
-    mod.publish_telegram_thread_notification = lambda msg, uid, tid: None
-    try:
-        result = send_telegram("msg", _settings(), "user-1", "desktop-thread")
-        assert result is None  # default also unconfigured
-    finally:
-        mod.publish_telegram_thread_notification = orig
-
-
 # ── create_in_app_notification ───────────────────────────────────────────────
 
 
 def test_create_in_app_skips_when_off():
     result = create_in_app_notification("msg", "user-1", "thread-1", in_app_level="off")
+    assert result is not None
     assert "Skipped" in result
 
 
@@ -190,6 +159,7 @@ def test_create_in_app_creates_notification():
         "nymeria.core.event_bus": fake_event_bus_mod,
     }):
         result = create_in_app_notification("hello world", "user-1", "thread-1")
+        assert result is not None
         assert "Sent to Desktop" in result
         assert "notif-1" in result
 
@@ -319,49 +289,62 @@ def test_autonomous_notification_with_task_id():
     assert calls[0]["task_id"] == "todo-42"
 
 
-# ── send_external_notifications ──────────────────────────────────────────────
+# ── send_external_notifications (channel-registry profile dispatch) ──────────
+#
+# send_external_notifications now routes the watchdog's external delivery
+# through the user's "default" notification profile (the same channel registry
+# the notify tool uses), instead of the old per-platform env senders.
 
 
-def test_external_notifications_returns_successes():
-    import nymeria.core.notification_dispatch as mod
+class _FakeOKChannel(_BaseChannel):
+    name = "faketest"
 
-    orig_tg = mod.send_telegram
-    orig_dc = mod.send_discord
-    orig_sl = mod.send_slack
-    mod.send_telegram = lambda msg, st, uid="default", tid="": "Sent to Telegram (message_id: 1)"
-    mod.send_discord = lambda msg, st: "Sent to Discord"
-    mod.send_slack = lambda msg, st: None
-    try:
-        results = send_external_notifications("hello", _settings())
-        assert len(results) == 2
-        assert any("Telegram" in r for r in results)
-        assert any("Discord" in r for r in results)
-    finally:
-        mod.send_telegram = orig_tg
-        mod.send_discord = orig_dc
-        mod.send_slack = orig_sl
+    def send(self, message, destination, ctx, repo):
+        return SendResult.success("ok")
 
 
-def test_external_notifications_handles_all_unconfigured():
-    results = send_external_notifications("hello", _settings())
+class _FakeBoomChannel(_BaseChannel):
+    name = "faketest"
+
+    def send(self, message, destination, ctx, repo):
+        raise RuntimeError("channel boom")
+
+
+def _tmp_repo(tmp_path: Path, monkeypatch) -> NotificationDestinationsRepo:
+    nd.reset_destinations_repo_for_tests()
+    repo = NotificationDestinationsRepo(tmp_path / "accounts.db")
+    monkeypatch.setattr(nd, "_repo", repo)
+    return repo
+
+
+def test_external_notifications_dispatches_via_default_profile(tmp_path, monkeypatch):
+    repo = _tmp_repo(tmp_path, monkeypatch)
+    monkeypatch.setitem(nc._REGISTRY, "faketest", _FakeOKChannel())
+    repo.create_destination(user_id="u1", name="fake-dest", type="faketest")
+    repo.create_profile(user_id="u1", name="default", destination_names=["fake-dest"])
+
+    results = send_external_notifications("hello", _settings(), user_id="u1")
+    assert results == ["Sent to fake-dest"]
+
+
+def test_external_notifications_empty_when_no_profile(tmp_path, monkeypatch):
+    # No env config => auto-seed creates nothing and no "default" profile exists,
+    # so dispatch delivers to nothing.
+    _tmp_repo(tmp_path, monkeypatch)
+    results = send_external_notifications("hello", _settings(), user_id="u1")
     assert results == []
 
 
-def test_external_notifications_ignores_sender_exceptions():
-    import nymeria.core.notification_dispatch as mod
+def test_external_notifications_isolates_channel_exception(tmp_path, monkeypatch):
+    # A channel that raises is caught per-destination inside dispatch_to_profile;
+    # the function returns an empty success list and never propagates.
+    repo = _tmp_repo(tmp_path, monkeypatch)
+    monkeypatch.setitem(nc._REGISTRY, "faketest", _FakeBoomChannel())
+    repo.create_destination(user_id="u1", name="fake-dest", type="faketest")
+    repo.create_profile(user_id="u1", name="default", destination_names=["fake-dest"])
 
-    orig_tg = mod.send_telegram
-
-    def _boom(*a, **kw):
-        raise RuntimeError("boom")
-    _boom.__name__ = "send_telegram"  # for logging
-
-    mod.send_telegram = _boom
-    try:
-        results = send_external_notifications("hello", _settings())
-        assert results == []
-    finally:
-        mod.send_telegram = orig_tg
+    results = send_external_notifications("hello", _settings(), user_id="u1")
+    assert results == []
 
 
 # ── Callers use the shared module (regression / delegation checks) ───────────

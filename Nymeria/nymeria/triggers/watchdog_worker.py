@@ -277,9 +277,11 @@ class WatchdogWorker:
                 key = (user_id, todo.get("id", ""))
                 self._nudged[key] = now
 
-            # External notifications so the user actually sees it even if they
-            # aren't watching the frontend. Reuses the existing stateless helpers.
-            self._send_external_notifications(thread_id, stale_todos)
+            # Best-effort off-frontend alert via the user's "default"
+            # notification profile. Only delivers where the running process
+            # holds the master secrets key (slim); the thin Docker watchdog
+            # does not, so it no-ops there. See _send_external_notifications.
+            self._send_external_notifications(user_id, thread_id, stale_todos)
 
             logger.info(
                 "[WATCHDOG] thread=%s nudge complete (response=%s)",
@@ -315,8 +317,22 @@ class WatchdogWorker:
         return "\n".join(lines)
 
     def _send_external_notifications(
-        self, thread_id: str, stale_todos: List[Dict[str, Any]]
+        self, user_id: str, thread_id: str, stale_todos: List[Dict[str, Any]]
     ) -> None:
+        """Best-effort off-frontend delivery of the stale-TODO alert.
+
+        Dispatches in-process through the notification-profile system, which
+        decrypts per-destination secrets with the per-deployment master
+        ``NYMERIA_SECRETS_KEY``. That key is present only when the watchdog
+        shares the API process (slim); the Docker watchdog is a thin client
+        and deliberately does NOT hold it, so this is a graceful no-op there.
+
+        TO BE COMPLETED: route this through the API (the key holder) so the
+        Docker watchdog can deliver too, instead of dispatching in-process.
+        Tracked in dev-todo.md / dev-ledger.md ("watchdog external
+        notifications via API"). The notification system itself is not yet
+        finalized, so this is intentionally left minimal for now.
+        """
         try:
             from ..core.notification_dispatch import send_external_notifications
         except Exception as e:
@@ -329,6 +345,8 @@ class WatchdogWorker:
             + "\n".join(f"- {(t.get('task') or '')[:80]}" for t in stale_todos)
         )
 
-        results = send_external_notifications(msg, self.settings, thread_id=thread_id)
+        results = send_external_notifications(
+            msg, self.settings, user_id=user_id, thread_id=thread_id,
+        )
         for result in results:
             logger.info("Watchdog notification sent: %s", result)

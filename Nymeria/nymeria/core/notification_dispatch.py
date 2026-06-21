@@ -1,8 +1,10 @@
-"""Unified notification dispatch.
+"""Notification dispatch orchestration.
 
-Single source of truth for reading per-thread notification settings and
-delivering notifications across all channels (in-app, FCM, Telegram,
-Discord, Slack, Teams, event bus).
+Reads per-thread notification settings, creates in-app notification-center
+rows, and routes outbound delivery through the channel-type registry in
+:mod:`nymeria.core.notification_channels` (profiles + destinations). The only
+direct platform sender kept here is the Telegram default-chat helper, which
+``TelegramChannel`` reuses for its default-chat fallback.
 """
 
 from __future__ import annotations
@@ -53,10 +55,11 @@ def should_notify_autonomous(
     return get_in_app_notification_level(thread_id, thread_config_manager) == "all_autonomous"
 
 
-# ── Platform senders ─────────────────────────────────────────────────────────
+# ── Telegram default-chat sender ─────────────────────────────────────────────
 #
-# Each returns a short status string on success ("Sent to …"), ``None`` when
-# the platform is not configured, or an error string otherwise.
+# The one direct-HTTP sender kept outside the channel registry: TelegramChannel
+# reuses it for the default-chat fallback. Every other platform delivery goes
+# through the channel registry in notification_channels.py.
 
 
 def send_telegram_default(message: str, settings) -> Optional[str]:
@@ -125,91 +128,6 @@ def publish_telegram_thread_notification(
     except Exception as e:
         logger.error("Telegram thread notification failed: %s", e)
         return f"Telegram thread error: {e}"
-
-
-def send_telegram(
-    message: str, settings, user_id: str = "default", thread_id: str = "",
-) -> Optional[str]:
-    """Send via the thread-bound Telegram chat if possible, else default."""
-    routed = publish_telegram_thread_notification(message, user_id, thread_id)
-    if routed is not None:
-        return routed
-    return send_telegram_default(message, settings)
-
-
-def send_discord(message: str, settings) -> Optional[str]:
-    """Send via Discord webhook."""
-    webhook_url = settings.discord_webhook_url
-    if not webhook_url:
-        return None
-    payload = {"content": message, "username": "Nymeria"}
-    try:
-        with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-            response = client.post(webhook_url, json=payload)
-        if response.status_code in (200, 204):
-            logger.info("Discord notification sent")
-            return "Sent to Discord"
-        return f"Discord HTTP error: {response.status_code}"
-    except Exception as e:
-        logger.error("Discord notification failed: %s", e)
-        return f"Discord error: {e}"
-
-
-def send_slack(message: str, settings) -> Optional[str]:
-    """Send via Slack webhook."""
-    webhook_url = settings.slack_webhook_url
-    if not webhook_url:
-        return None
-    payload = {"text": message, "username": "Nymeria"}
-    try:
-        with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-            response = client.post(webhook_url, json=payload)
-        if response.status_code == 200 and response.text == "ok":
-            logger.info("Slack notification sent")
-            return "Sent to Slack"
-        return f"Slack error: {response.text[:100]}"
-    except Exception as e:
-        logger.error("Slack notification failed: %s", e)
-        return f"Slack error: {e}"
-
-
-def send_teams(message: str, settings) -> Optional[str]:
-    """Send to Microsoft Teams via Graph API."""
-    team_id = settings.teams_team_id
-    channel_id = settings.teams_channel_id
-    if not team_id or not channel_id:
-        return None
-    try:
-        from ..tools.outlook_email import get_access_token, GRAPH_BASE
-    except ImportError:
-        return None
-
-    teams_account = settings.teams_account_id
-    token = get_access_token(teams_account)
-    if not token:
-        return "Teams error: No authenticated Microsoft account"
-
-    url = f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    payload = {"body": {"contentType": "text", "content": message}}
-    try:
-        with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-            response = client.post(url, headers=headers, json=payload)
-        if response.status_code == 201:
-            msg_id = response.json().get("id", "")[:20]
-            logger.info("Teams notification sent: %s", msg_id)
-            return "Sent to Teams"
-        try:
-            err = response.json().get("error", {}).get("message", response.text[:200])
-        except Exception:
-            err = response.text[:200]
-        return f"Teams HTTP error {response.status_code}: {err}"
-    except Exception as e:
-        logger.error("Teams notification failed: %s", e)
-        return f"Teams error: {e}"
 
 
 # ── Composite dispatch helpers ───────────────────────────────────────────────
@@ -395,20 +313,40 @@ def send_external_notifications(
     user_id: str = "default",
     thread_id: str = "",
 ) -> List[str]:
-    """Send to all configured external platforms (Telegram, Discord, Slack).
+    """Deliver to the external destinations in the user's ``default``
+    notification profile (the same channel-registry path the ``notify`` tool
+    uses).
 
-    Returns a list of success result strings.
+    Unlike :func:`send_via_profile`, this does NOT write an in-app notification
+    row: the watchdog (the only caller) wants external delivery only. Returns
+    one ``"Sent to <destination>"`` string per delivered destination so the
+    caller can log them; per-destination failures are isolated inside
+    :func:`dispatch_to_profile` and simply omitted from the result.
     """
+    from .notification_channels import (
+        SendContext,
+        dispatch_to_profile,
+        ensure_seeded_destinations,
+        resolve_profile_name,
+    )
+    from .notification_destinations import get_destinations_repo
+
+    try:
+        repo = get_destinations_repo()
+        ensure_seeded_destinations(user_id=user_id, settings=settings, repo=repo)
+        profile_name = resolve_profile_name(user_id=user_id, repo=repo)
+        ctx = SendContext(
+            user_id=user_id, thread_id=thread_id or "", settings=settings,
+        )
+        result = dispatch_to_profile(
+            message=message, profile_name=profile_name, ctx=ctx, repo=repo,
+        )
+    except Exception as e:
+        logger.debug("External notifications via profile failed: %s", e)
+        return []
+
     results: List[str] = []
-    for sender in (send_telegram, send_discord, send_slack):
-        try:
-            if sender is send_telegram:
-                result = sender(message, settings, user_id, thread_id)
-            else:
-                result = sender(message, settings)
-            if result and (result.startswith("Sent") or result.startswith("Queued")):
-                logger.info("External notification sent via %s", sender.__name__)
-                results.append(result)
-        except Exception as e:
-            logger.debug("External notify via %s failed: %s", sender.__name__, e)
+    for name in result.delivered_to:
+        logger.info("External notification delivered via destination %s", name)
+        results.append(f"Sent to {name}")
     return results

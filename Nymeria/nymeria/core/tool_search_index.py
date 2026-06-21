@@ -147,7 +147,6 @@ class ToolSearchIndex:
         openai_base_url: Optional[str] = None,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         embedding_dimensions: Optional[int] = None,
-        embedding_provider: str = "openai",
         db_path: Optional[Path] = None,
     ) -> None:
         self._openai_key = openai_api_key
@@ -155,9 +154,6 @@ class ToolSearchIndex:
         self._embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
         self._dimensions = int(embedding_dimensions or EMBEDDING_DIMENSIONS)
         self._dimensions_explicit = embedding_dimensions is not None
-        # Recorded for future use; the tool index embeds via the OpenAI-compatible
-        # client only today (as it did before this change), regardless of provider.
-        self._provider = embedding_provider or "openai"
         self._openai_client = None
         self._semantic_available: Optional[bool] = None
         self._last_error: Optional[str] = None
@@ -561,10 +557,16 @@ class ToolSearchIndex:
                 )
                 break
 
-        self._recompute_fully_embedded()
+        self._recompute_fully_embedded(docs)
 
-    def _recompute_fully_embedded(self) -> None:
-        docs = self._static_catalog_docs()
+    def _recompute_fully_embedded(
+        self, docs: Optional[list[ToolSearchDocument]] = None,
+    ) -> None:
+        # Reuse the catalog the caller already built (warm_embeddings) instead of
+        # rebuilding the full ~1300-tool catalog a second time per pass; rebuild
+        # only when called standalone.
+        if docs is None:
+            docs = self._static_catalog_docs()
         with self._lock:
             self._fully_embedded = bool(docs) and all(
                 (cached := self._embedding_cache.get(doc.name)) is not None
@@ -972,7 +974,6 @@ def get_tool_search_index() -> ToolSearchIndex:
                 openai_base_url=settings.embedding_base_url,
                 embedding_model=settings.embedding_model,
                 embedding_dimensions=settings.embedding_dimensions,
-                embedding_provider=settings.embedding_provider,
                 db_path=settings.data_dir / "tool_search_embeddings.db",
             )
         return _DEFAULT_INDEX
