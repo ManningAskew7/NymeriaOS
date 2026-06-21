@@ -32,7 +32,7 @@ import sys
 import warnings
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
+from typing import Callable, NamedTuple, Optional
 
 import os
 
@@ -134,6 +134,52 @@ def _stdin_is_interactive() -> bool:
         return False
 
 
+_BOT_API_URL_HELP = "URL of running Nymeria API (e.g. http://localhost:8000)"
+
+
+def _resolve_api_url(args: argparse.Namespace) -> str:
+    """Thin-client API URL: explicit ``--api-url``, else the Docker default.
+
+    Shared by the chat-platform bot runners and the watchdog. The worker
+    resolves its own URL (it also honours the ``NYMERIA_API_URL`` env var) and
+    the MCP server defers resolution, so neither routes through this helper.
+    """
+    return getattr(args, "api_url", None) or "http://nymeria-api:8000"
+
+
+def _install_exit_handlers(
+    message: str,
+    *,
+    on_stop: Optional[Callable[[], None]] = None,
+    hard_exit: bool = True,
+) -> None:
+    """Register SIGINT/SIGTERM handlers shared by the long-running runners.
+
+    The handler prints *message*, runs *on_stop* if given, then (by default)
+    calls ``os._exit(0)``. Hard exit is required for runners that spawn
+    non-daemon threads (e.g. the worker's ThreadPoolExecutor) which would
+    otherwise keep the process alive after a graceful stop; pass
+    ``hard_exit=False`` for runners that unwind their own main loop.
+    """
+
+    def signal_handler(signum, frame):  # noqa: ANN001 - signal handler signature
+        print(message)
+        if on_stop is not None:
+            on_stop()
+        if hard_exit:
+            os._exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+
+def _add_api_url_arg(
+    parser: argparse.ArgumentParser, *, help_text: str = _BOT_API_URL_HELP
+) -> None:
+    """Register the shared ``--api-url`` thin-client argument on a subparser."""
+    parser.add_argument("--api-url", default=None, help=help_text)
+
+
 def validate_config(skip_api_key: bool = False, suppress_service_token_warning: bool = False) -> None:
     """
     Validate configuration before starting any command.
@@ -148,28 +194,30 @@ def validate_config(skip_api_key: bool = False, suppress_service_token_warning: 
     from nymeria.config import get_settings
 
     settings = get_settings()
-    errors, warnings = settings.validate_runtime()
+    # Locals are named config_* so they do not shadow the stdlib ``warnings``
+    # module imported at the top of this file.
+    config_errors, config_warnings = settings.validate_runtime()
 
     # Filter out API key error if skip_api_key is True
     if skip_api_key:
-        errors = [e for e in errors if "NYMERIA_API_KEY" not in e]
+        config_errors = [e for e in config_errors if "NYMERIA_API_KEY" not in e]
     if suppress_service_token_warning:
-        warnings = [w for w in warnings if "NYMERIA_SERVICE_TOKEN not set" not in w]
+        config_warnings = [w for w in config_warnings if "NYMERIA_SERVICE_TOKEN not set" not in w]
 
     # Print warnings (non-fatal)
-    if warnings:
+    if config_warnings:
         print("\n[Configuration Warnings]")
         print("-" * 50)
-        for warning in warnings:
+        for warning in config_warnings:
             print(f"  [!] {warning}")
         print()
 
     # Print errors and exit if any critical issues
-    if errors:
+    if config_errors:
         print("\n[Configuration Error]")
         print("-" * 50)
         print("NymeriaOS cannot start due to missing configuration:\n")
-        for error in errors:
+        for error in config_errors:
             print(f"  [X] {error}\n")
         print("-" * 50)
         print("\nQuick Setup - run the guided wizard. It writes your config, creates")
@@ -914,21 +962,19 @@ def run_worker(args: argparse.Namespace) -> None:
         except Exception:
             pass  # Best-effort during shutdown.
 
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping ticker...")
+    def _on_shutdown() -> None:
         ticker.stop()
         try:
             asyncio.run(_close_executor())
         except RuntimeError:
             # An asyncio loop may already be torn down; ignore.
             pass
-        # Force exit — ThreadPoolExecutor threads are non-daemon and
-        # would otherwise keep the process alive indefinitely.
-        import os
-        os._exit(0)
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # Hard exit: ThreadPoolExecutor threads are non-daemon and would otherwise
+    # keep the process alive indefinitely.
+    _install_exit_handlers(
+        "\nShutdown signal received, stopping ticker...", on_stop=_on_shutdown
+    )
 
     print("\nWorker running. Press Ctrl+C to stop.")
 
@@ -968,7 +1014,7 @@ def run_discord_bot(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # API URL is required — the bot is a thin client
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     # Bots authenticate as the bot-service admin and route per-user traffic
     # with X-Nymeria-Act-As.
     api_key = _require_service_token(settings, "the Discord bot")
@@ -988,14 +1034,7 @@ def run_discord_bot(args: argparse.Namespace) -> None:
         respond_mode=settings.discord_respond_mode,
     )
 
-    # Handle shutdown signals
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Discord bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers("\nShutdown signal received, stopping Discord bot...")
 
     print("\nConnecting to Discord...")
     bot.run(settings.discord_bot_token, log_handler=None)
@@ -1021,7 +1060,7 @@ def run_watchdog(args: argparse.Namespace) -> None:
         sys.exit(0)
 
     # Per-user act-as routing requires the admin service token.
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the watchdog worker")
 
     print("Starting Nymeria Watchdog (thin client)...")
@@ -1033,12 +1072,11 @@ def run_watchdog(args: argparse.Namespace) -> None:
     api = _service_api_client(api_url, api_key, settings)
     worker = WatchdogWorker(client=api, settings=settings)
 
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping watchdog worker...")
-        worker.stop()
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers(
+        "\nShutdown signal received, stopping watchdog worker...",
+        on_stop=worker.stop,
+        hard_exit=False,
+    )
 
     try:
         asyncio.run(worker.run())
@@ -1071,7 +1109,7 @@ def run_telegram_bot(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # API URL is required — the bot is a thin client
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the Telegram bot")
 
     print("Starting Nymeria Telegram Bot (thin client)...")
@@ -1091,14 +1129,7 @@ def run_telegram_bot(args: argparse.Namespace) -> None:
         default_chat_id=settings.telegram_default_chat_id,
     )
 
-    # Handle shutdown signals
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Telegram bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers("\nShutdown signal received, stopping Telegram bot...")
 
     print("\nConnecting to Telegram...")
     bot.run()
@@ -1131,7 +1162,7 @@ def run_slack_bot(args: argparse.Namespace) -> None:
         print("     SLACK_APP_TOKEN=xapp-...")
         sys.exit(1)
 
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the Slack bot")
 
     print("Starting Nymeria Slack Bot (thin client)...")
@@ -1149,13 +1180,7 @@ def run_slack_bot(args: argparse.Namespace) -> None:
         show_tool_events=settings.slack_show_tool_events,
     )
 
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Slack bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers("\nShutdown signal received, stopping Slack bot...")
 
     print("\nConnecting to Slack...")
     bot.run()
@@ -1184,7 +1209,7 @@ def run_matrix_bot(args: argparse.Namespace) -> None:
         print("  Set MATRIX_ACCESS_TOKEN, or MATRIX_USER_ID + MATRIX_PASSWORD.")
         sys.exit(1)
 
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the Matrix bot")
     free_response_rooms = [
         room.strip()
@@ -1213,13 +1238,7 @@ def run_matrix_bot(args: argparse.Namespace) -> None:
         auto_join=settings.matrix_auto_join,
     )
 
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Matrix bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers("\nShutdown signal received, stopping Matrix bot...")
 
     print("\nConnecting to Matrix...")
     bot.run()
@@ -1246,7 +1265,7 @@ def run_mattermost_bot(args: argparse.Namespace) -> None:
         print("  Create a Mattermost bot account and copy its generated access token.")
         sys.exit(1)
 
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the Mattermost bot")
 
     print("Starting Nymeria Mattermost Bot (thin client)...")
@@ -1265,13 +1284,7 @@ def run_mattermost_bot(args: argparse.Namespace) -> None:
         show_tool_events=settings.mattermost_show_tool_events,
     )
 
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Mattermost bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers("\nShutdown signal received, stopping Mattermost bot...")
 
     print("\nConnecting to Mattermost...")
     bot.run()
@@ -1302,7 +1315,7 @@ def run_zulip_bot(args: argparse.Namespace) -> None:
         print("  Copy the bot API key from Zulip Personal settings > Bots.")
         sys.exit(1)
 
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the Zulip bot")
 
     print("Starting Nymeria Zulip Bot (thin client)...")
@@ -1322,13 +1335,7 @@ def run_zulip_bot(args: argparse.Namespace) -> None:
         show_tool_events=settings.zulip_show_tool_events,
     )
 
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Zulip bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers("\nShutdown signal received, stopping Zulip bot...")
 
     print("\nConnecting to Zulip...")
     bot.run()
@@ -1359,7 +1366,7 @@ def run_rocketchat_bot(args: argparse.Namespace) -> None:
         print("  Create a Rocket.Chat bot/user personal access token and save it here.")
         sys.exit(1)
 
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the Rocket.Chat bot")
 
     print("Starting Nymeria Rocket.Chat Bot (thin client)...")
@@ -1379,13 +1386,7 @@ def run_rocketchat_bot(args: argparse.Namespace) -> None:
         show_tool_events=settings.rocketchat_show_tool_events,
     )
 
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Rocket.Chat bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers("\nShutdown signal received, stopping Rocket.Chat bot...")
 
     print("\nConnecting to Rocket.Chat...")
     bot.run()
@@ -1412,7 +1413,7 @@ def run_signal_bot(args: argparse.Namespace) -> None:
         print("  Example: SIGNAL_ACCOUNT=+15551234567")
         sys.exit(1)
 
-    api_url = getattr(args, "api_url", None) or "http://nymeria-api:8000"
+    api_url = _resolve_api_url(args)
     api_key = _require_service_token(settings, "the Signal bot")
 
     print("Starting Nymeria Signal Bot (thin client)...")
@@ -1426,13 +1427,7 @@ def run_signal_bot(args: argparse.Namespace) -> None:
     api = _service_api_client(api_url, api_key, settings)
     bot = create_signal_bot_from_settings(api, settings=settings)
 
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received, stopping Signal bot...")
-        import os
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers("\nShutdown signal received, stopping Signal bot...")
 
     print("\nConnecting to Signal...")
     bot.run()
@@ -1486,13 +1481,9 @@ def run_gateway_foreground(args: argparse.Namespace) -> None:
 
     gateway = GatewayServer(settings=settings)
 
-    # Handle Ctrl+C gracefully
-    def signal_handler(signum, frame):
-        print("\nShutdown signal received...")
-        gateway.stop()
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    _install_exit_handlers(
+        "\nShutdown signal received...", on_stop=gateway.stop, hard_exit=False
+    )
 
     # Start the gateway
     gateway.start()
@@ -1834,12 +1825,13 @@ Examples:
         "discord-bot",
         help="Start Discord bot (gateway mode)"
     )
-    discord_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000). "
-             "Enables autonomous task results to appear in Discord channels "
-             "when running the bot and API as separate local processes.",
+    _add_api_url_arg(
+        discord_parser,
+        help_text=(
+            "URL of running Nymeria API (e.g. http://localhost:8000). "
+            "Enables autonomous task results to appear in Discord channels "
+            "when running the bot and API as separate local processes."
+        ),
     )
 
     # Telegram bot subcommand
@@ -1847,88 +1839,61 @@ Examples:
         "telegram-bot",
         help="Start Telegram bot (polling mode)"
     )
-    telegram_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000)",
-    )
+    _add_api_url_arg(telegram_parser)
 
     # Slack bot subcommand
     slack_parser = subparsers.add_parser(
         "slack-bot",
         help="Start Slack bot (Socket Mode)",
     )
-    slack_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000)",
-    )
+    _add_api_url_arg(slack_parser)
 
     # Matrix bot subcommand
     matrix_parser = subparsers.add_parser(
         "matrix-bot",
         help="Start Matrix bot (sync loop)",
     )
-    matrix_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000)",
-    )
+    _add_api_url_arg(matrix_parser)
 
     # Mattermost bot subcommand
     mattermost_parser = subparsers.add_parser(
         "mattermost-bot",
         help="Start Mattermost bot (WebSocket mode)",
     )
-    mattermost_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000)",
-    )
+    _add_api_url_arg(mattermost_parser)
 
     # Zulip bot subcommand
     zulip_parser = subparsers.add_parser(
         "zulip-bot",
         help="Start Zulip bot (event queue mode)",
     )
-    zulip_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000)",
-    )
+    _add_api_url_arg(zulip_parser)
 
     # Rocket.Chat bot subcommand
     rocketchat_parser = subparsers.add_parser(
         "rocketchat-bot",
         help="Start Rocket.Chat bot (realtime mode)",
     )
-    rocketchat_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000)",
-    )
+    _add_api_url_arg(rocketchat_parser)
 
     # Signal bot subcommand
     signal_parser = subparsers.add_parser(
         "signal-bot",
         help="Start Signal bot (signal-cli SSE mode)",
     )
-    signal_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000)",
-    )
+    _add_api_url_arg(signal_parser)
 
     # Watchdog subcommand (thin client)
     watchdog_parser = subparsers.add_parser(
         "watchdog",
         help="Start watchdog worker (thin client — polls API for stale TODOs)"
     )
-    watchdog_parser.add_argument(
-        "--api-url",
-        default=None,
-        help="URL of running Nymeria API (e.g. http://localhost:8000). "
-             "Defaults to http://nymeria-api:8000 for Docker deployments.",
+    _add_api_url_arg(
+        watchdog_parser,
+        help_text=(
+            "URL of running Nymeria API (e.g. http://localhost:8000). "
+            "Defaults to http://nymeria-api:8000 for Docker deployments."
+        ),
     )
 
     # MCP subcommand
@@ -2009,6 +1974,62 @@ Examples:
     return parser
 
 
+def run_users(args: argparse.Namespace) -> int:
+    """Dispatch a ``users`` subcommand against the local accounts DB."""
+    from nymeria.cli import users as users_cli
+
+    return users_cli.dispatch(args)
+
+
+class _Command(NamedTuple):
+    """How ``main`` runs and validates one top-level subcommand.
+
+    runner:          the ``run_*`` function for the command.
+    exits:           call ``sys.exit(runner(args))`` (commands that return an
+                     exit code) instead of ``runner(args)``.
+    full_validation: part of the server/bot set that runs the standard
+                     ``validate_config(...)`` gate. ``cli``, ``service``, and
+                     ``users`` validate conditionally and are handled explicitly
+                     in ``main``; everything else (init/doctor/reembed/completion)
+                     runs no config validation.
+    """
+
+    runner: Callable[[argparse.Namespace], Optional[int]]
+    exits: bool = False
+    full_validation: bool = False
+
+
+# Single source of truth mapping a subcommand to its runner and validation
+# behavior. Adding a command here (plus its subparser in build_parser) wires up
+# both dispatch and config validation; the two can no longer drift.
+COMMANDS: dict[str, _Command] = {
+    "cli": _Command(run_cli),
+    "api": _Command(run_api, full_validation=True),
+    "slim": _Command(run_slim, full_validation=True),
+    "worker": _Command(run_worker, full_validation=True),
+    "init": _Command(run_init, exits=True),
+    "doctor": _Command(run_doctor, exits=True),
+    "reembed": _Command(run_reembed, exits=True),
+    "discord-bot": _Command(run_discord_bot, full_validation=True),
+    "telegram-bot": _Command(run_telegram_bot, full_validation=True),
+    "slack-bot": _Command(run_slack_bot, full_validation=True),
+    "matrix-bot": _Command(run_matrix_bot, full_validation=True),
+    "mattermost-bot": _Command(run_mattermost_bot, full_validation=True),
+    "zulip-bot": _Command(run_zulip_bot, full_validation=True),
+    "rocketchat-bot": _Command(run_rocketchat_bot, full_validation=True),
+    "signal-bot": _Command(run_signal_bot, full_validation=True),
+    "watchdog": _Command(run_watchdog, full_validation=True),
+    "mcp": _Command(run_mcp, full_validation=True),
+    "service": _Command(run_service),
+    "users": _Command(run_users, exits=True),
+    "completion": _Command(run_completion),
+}
+
+_FULL_VALIDATION_COMMANDS = frozenset(
+    name for name, command in COMMANDS.items() if command.full_validation
+)
+
+
 def main() -> None:
     """Main entry point."""
     _suppress_runtime_dependency_warnings()
@@ -2064,7 +2085,7 @@ def main() -> None:
     if args.command == "cli":
         if getattr(args, "transport", "api") == "local":
             validate_config(suppress_service_token_warning=suppress_service_token_warning)
-    elif args.command in ("api", "slim", "mcp", "worker", "discord-bot", "telegram-bot", "slack-bot", "matrix-bot", "mattermost-bot", "zulip-bot", "rocketchat-bot", "signal-bot", "watchdog"):
+    elif args.command in _FULL_VALIDATION_COMMANDS:
         validate_config(suppress_service_token_warning=suppress_service_token_warning)
     elif args.command == "service":
         # Only the foreground gateway run needs a valid config; the service
@@ -2077,52 +2098,20 @@ def main() -> None:
         # check so the admin can provision users before the API is configured.
         validate_config(skip_api_key=True)
 
-    # Run appropriate command
-    if args.command == "cli":
-        run_cli(args)
-    elif args.command == "api":
-        run_api(args)
-    elif args.command == "slim":
-        run_slim(args)
-    elif args.command == "worker":
-        run_worker(args)
-    elif args.command == "init":
-        sys.exit(run_init(args))
-    elif args.command == "doctor":
-        sys.exit(run_doctor(args))
-    elif args.command == "reembed":
-        sys.exit(run_reembed(args))
-    elif args.command == "discord-bot":
-        run_discord_bot(args)
-    elif args.command == "telegram-bot":
-        run_telegram_bot(args)
-    elif args.command == "slack-bot":
-        run_slack_bot(args)
-    elif args.command == "matrix-bot":
-        run_matrix_bot(args)
-    elif args.command == "mattermost-bot":
-        run_mattermost_bot(args)
-    elif args.command == "zulip-bot":
-        run_zulip_bot(args)
-    elif args.command == "rocketchat-bot":
-        run_rocketchat_bot(args)
-    elif args.command == "signal-bot":
-        run_signal_bot(args)
-    elif args.command == "watchdog":
-        run_watchdog(args)
-    elif args.command == "mcp":
-        run_mcp(args)
-    elif args.command == "service":
-        run_service(args)
-    elif args.command == "users":
-        from nymeria.cli import users as users_cli
-
-        sys.exit(users_cli.dispatch(args))
-    elif args.command == "completion":
-        run_completion(args)
-    else:
+    # Run appropriate command via the COMMANDS registry. Resolve the runner
+    # through the module namespace at call time (by name) rather than calling
+    # the reference captured in COMMANDS at import time, so tests that
+    # monkeypatch a runner (e.g. run_slim/run_cli) still intercept dispatch,
+    # exactly as the previous if/elif chain (which looked up the global by name)
+    # did.
+    command = COMMANDS.get(args.command)
+    if command is None:
         parser.print_help()
         sys.exit(1)
+    runner = globals()[command.runner.__name__]
+    if command.exits:
+        sys.exit(runner(args))
+    runner(args)
 
 
 if __name__ == "__main__":

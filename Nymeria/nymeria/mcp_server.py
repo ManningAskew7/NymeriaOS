@@ -335,8 +335,14 @@ async def nymeria_chat_background(
         finally:
             ctx["completed_at"] = time.time()
             ctx["done_event"].set()
+            # Drop the strong reference now that the task is finished; the entry
+            # itself is reaped by the TTL eviction sweep.
+            ctx["task"] = None
 
-    asyncio.create_task(_consume())
+    # Keep a strong reference on the ctx (retained by _BACKGROUND_CHATS) for the
+    # task's lifetime. The event loop only holds a weak reference to bare tasks,
+    # so a fire-and-forget create_task() can be garbage-collected mid-flight.
+    ctx["task"] = asyncio.create_task(_consume())
 
     loop = asyncio.get_event_loop()
     deadline = loop.time() + window_ms / 1000.0

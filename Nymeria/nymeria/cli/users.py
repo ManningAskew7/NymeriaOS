@@ -186,14 +186,10 @@ def _cmd_issue_token(args: argparse.Namespace) -> int:
 
 
 def _cmd_link_platform(args: argparse.Namespace) -> int:
+    # The provider is validated by argparse (choices=VALID_PROVIDERS on the
+    # link-platform subparser), so an unknown provider can never reach here.
     repo = _repo()
     user_id = _resolve_user_id_by_email(repo, args.email)
-    if args.provider not in VALID_PROVIDERS:
-        print(
-            f"[error] Unknown provider '{args.provider}'. Use one of: {', '.join(VALID_PROVIDERS)}",
-            file=sys.stderr,
-        )
-        return 2
     repo.link_platform(args.provider, args.provider_user_id, user_id)
     print(
         f"Linked {args.provider}:{args.provider_user_id} -> {user_id} ({args.email})."
@@ -202,13 +198,9 @@ def _cmd_link_platform(args: argparse.Namespace) -> int:
 
 
 def _cmd_unlink_platform(args: argparse.Namespace) -> int:
+    # Provider is validated by argparse (choices=VALID_PROVIDERS); see
+    # _cmd_link_platform.
     repo = _repo()
-    if args.provider not in VALID_PROVIDERS:
-        print(
-            f"[error] Unknown provider '{args.provider}'. Use one of: {', '.join(VALID_PROVIDERS)}",
-            file=sys.stderr,
-        )
-        return 2
     removed = repo.unlink_platform(args.provider, args.provider_user_id)
     if removed:
         print(f"Unlinked {args.provider}:{args.provider_user_id}.")
