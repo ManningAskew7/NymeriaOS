@@ -13,6 +13,14 @@ Attachment = Mapping[str, Any]
 class AgentClient(Protocol):
     """Common async-facing client interface for CLI transports."""
 
+    supports_autonomous_stream: bool
+    """Whether ``stream_autonomous`` yields a live background event stream.
+
+    Transports that only expose a no-op ``stream_autonomous`` (e.g. the
+    disconnected placeholder) leave this falsy so the autonomous monitor never
+    starts against them.
+    """
+
     @property
     def connection_label(self) -> str:
         """Short human-readable transport label for status surfaces."""

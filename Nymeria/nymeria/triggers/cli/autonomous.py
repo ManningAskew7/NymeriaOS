@@ -101,12 +101,19 @@ class AutonomousStreamMonitor:
 
 
 def supports_autonomous_stream(client: Any) -> bool:
-    """Return True for API clients that can stream autonomous events."""
+    """Return True for transports that expose a live autonomous event stream.
+
+    Reads the transport's ``supports_autonomous_stream`` capability flag rather
+    than sniffing the connection label, so both the thin ``APIAgentClient`` and
+    the fat ``InProcessAgentClient`` (which subscribes to the in-process event
+    bus) qualify, while the disconnected placeholder, whose ``stream_autonomous``
+    is a no-op, stays excluded.
+    """
 
     stream = getattr(client, "stream_autonomous", None)
     if not callable(stream):
         return False
-    return str(getattr(client, "connection_label", "")).startswith("api ")
+    return bool(getattr(client, "supports_autonomous_stream", False))
 
 
 def decide_autonomous_event(

@@ -101,6 +101,8 @@ class APITransportStartupError(RuntimeError):
 class APIAgentClient:
     """CLI ``AgentClient`` implementation backed by ``NymeriaAPIClient``."""
 
+    supports_autonomous_stream = True
+
     def __init__(
         self,
         api: NymeriaAPIClient,
