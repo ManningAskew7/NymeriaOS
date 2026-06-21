@@ -23,7 +23,9 @@ class FakeThreadMetadataManager:
 class FakeChatAgent:
     def __init__(self, data_dir: Path) -> None:
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
-        self.settings = SimpleNamespace(llm_model="fallback-model")
+        self.settings = SimpleNamespace(
+            llm_provider="fallback-provider", llm_model="fallback-model"
+        )
         self.thread_metadata_manager = FakeThreadMetadataManager()
         self.thread_config_manager = object()
         self.synced_tools = 0
@@ -64,7 +66,9 @@ class FakeChatAgent:
         return {"thread_id": thread_id, "estimated_tokens": 123}
 
     def _get_llm_config_for_thread(self, thread_id: str):
-        return SimpleNamespace(model=None)
+        # Mirror the real LLMConfig shape (both provider and model present);
+        # None here means "inherit the settings default".
+        return SimpleNamespace(provider=None, model=None)
 
 
 def _chat_client(tmp_path: Path, api_client_builder):

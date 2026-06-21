@@ -30,7 +30,8 @@ from ...core.notification_dispatch import (
 )
 from ...core.pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from ..schemas.chat import ChatRequest, ChatResponse
-from ..sse import with_sse_keepalive
+from ..sse import SSE_RESPONSE_HEADERS, with_sse_keepalive
+from ..thread_config_helpers import effective_provider_model
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,7 @@ def _enforce_attachment_caps(request: ChatRequest, agent: Any, thread_id: str) -
     from ...config.model_capabilities import get_attachment_limits
     from ...config.model_capabilities import infer_mime_type, normalize_attachment_file_type
 
-    llm_cfg = agent._get_llm_config_for_thread(thread_id)
-    effective_model = llm_cfg.model or agent.settings.llm_model
+    effective_model = effective_provider_model(agent, thread_id).model
     limits = get_attachment_limits(effective_model)
 
     image_count = 0
@@ -336,11 +336,7 @@ def create_chat_router(
                 return StreamingResponse(
                     ambiguous_mention_response(),
                     media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers=SSE_RESPONSE_HEADERS,
                 )
             if isinstance(mention_resolution, MentionTarget):
                 require_thread_access_fn(user, mention_resolution.thread_id)
@@ -476,10 +472,7 @@ def create_chat_router(
                 yield f"data: {json.dumps(response_data)}\n\n"
                 # Include context_stats and model in done event
                 context_stats = agent.get_context_stats(thread_id)
-                effective_model = (
-                    agent._get_llm_config_for_thread(thread_id).model
-                    or agent.settings.llm_model
-                )
+                effective_model = effective_provider_model(agent, thread_id).model
                 yield (
                     "data: "
                     + json.dumps(
@@ -504,11 +497,7 @@ def create_chat_router(
             return StreamingResponse(
                 with_sse_keepalive(compact_command_response()),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
+                headers=SSE_RESPONSE_HEADERS,
             )
 
         # Default the user-visible chat-history text to the message the user
@@ -516,12 +505,6 @@ def create_chat_router(
         # rewrite `message` (for the agent's first turn) while keeping
         # `display_message` pointing at the user's original input.
         display_message = message
-
-        sse_headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        }
 
         def _slash_sse_response(content: str, target_thread_id: str):
             """Return a StreamingResponse that emits a single response chunk
@@ -551,7 +534,7 @@ def create_chat_router(
             return StreamingResponse(
                 _gen(),
                 media_type="text/event-stream",
-                headers=sse_headers,
+                headers=SSE_RESPONSE_HEADERS,
             )
 
         # Handle /skill and /kit slash commands (chat_stream execution).
@@ -1135,8 +1118,7 @@ def create_chat_router(
                         if dispatched_target is not None
                         else thread_id,
                         "context_stats": context_stats,
-                        "model": agent._get_llm_config_for_thread(thread_id).model
-                        or agent.settings.llm_model,
+                        "model": effective_provider_model(agent, thread_id).model,
                         **_dispatch_stream_fields(
                             dispatched_target,
                             original_thread_id,
@@ -1224,11 +1206,7 @@ def create_chat_router(
         return StreamingResponse(
             with_sse_keepalive(event_generator()),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
+            headers=SSE_RESPONSE_HEADERS,
         )
 
     @router.post("/chat/sync", response_model=ChatResponse)
