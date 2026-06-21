@@ -277,3 +277,69 @@ def test_send_result_helpers():
 
 def test_unknown_channel_type_returns_none():
     assert get_channel_type("nonexistent") is None
+
+
+# -- Teams / Email: token arity (F1) + egress policy (F3) -------------------
+
+
+def test_teams_channel_passes_user_id_then_account_id(repo):
+    # F1 regression: get_access_token(user_id, account_id) -- the Nymeria user
+    # id must be the FIRST positional arg and the Outlook account id the second.
+    # The deleted legacy send_teams passed the Teams account id as user_id; this
+    # asserts the surviving channel path resolves the token against the right
+    # identity.
+    repo.create_destination(
+        user_id="alice", name="team", type="teams",
+        config={"team_id": "T1", "channel_id": "C1", "account_id": "acct-9"},
+    )
+    repo.create_profile(
+        user_id="alice", name="default", destination_names=["team"],
+    )
+    ctx = SendContext(user_id="alice", thread_id="t", settings=_settings())
+
+    captured = {}
+
+    def fake_token(user_id, account_id=None):
+        captured["args"] = (user_id, account_id)
+        return "tok"
+
+    with patch(
+        "nymeria.tools.outlook_email.get_access_token", side_effect=fake_token,
+    ), patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        return_value=MagicMock(status_code=201),
+    ) as send_mock:
+        result = dispatch_to_profile(
+            message="hi", profile_name="default", ctx=ctx, repo=repo,
+        )
+
+    assert captured["args"] == ("alice", "acct-9")
+    assert result.delivered_to == ["team"]
+    # F3: Teams now goes through the screened egress helper, not raw httpx.
+    assert send_mock.called
+
+
+def test_email_outlook_uses_egress_policy(repo):
+    # F3: the Email (Outlook) channel sends through the screened egress helper
+    # rather than a raw httpx.Client.
+    repo.create_destination(
+        user_id="alice", name="mail", type="email_outlook",
+        config={"to": "person@example.com"},
+    )
+    repo.create_profile(
+        user_id="alice", name="default", destination_names=["mail"],
+    )
+    ctx = SendContext(user_id="alice", thread_id="t", settings=_settings())
+
+    with patch(
+        "nymeria.tools.outlook_email.get_access_token", return_value="tok",
+    ), patch(
+        "nymeria.core.notification_channels._send_with_egress_policy",
+        return_value=MagicMock(status_code=202),
+    ) as send_mock:
+        result = dispatch_to_profile(
+            message="hi", profile_name="default", ctx=ctx, repo=repo,
+        )
+
+    assert result.delivered_to == ["mail"]
+    assert send_mock.called

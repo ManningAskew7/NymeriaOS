@@ -80,6 +80,24 @@ def _parse_index_order(text: str, n: int) -> List[int]:
     return order
 
 
+def _apply_order(
+    order: List[int], candidates: List, results: List, top_n: int,
+) -> List:
+    """Reorder ``candidates`` by ``order``, append any candidate indices missing
+    from ``order`` (in their original order), then append the untouched tail
+    ``results[top_n:]``.
+
+    Shared reorder-and-append tail for all three rerankers. When ``order`` is a
+    full permutation of the candidates (e.g. ``local_rerank``), the backfill is
+    empty, so behavior is unchanged.
+    """
+    reranked = [candidates[i] for i in order]
+    seen = set(order)
+    reranked += [candidates[i] for i in range(len(candidates)) if i not in seen]
+    reranked += results[top_n:]
+    return reranked
+
+
 def llm_rerank(
     agent,
     thread_id: Optional[str],
@@ -111,11 +129,7 @@ def llm_rerank(
         order = _parse_index_order(text, len(candidates))
         if not order:
             return results
-        reranked = [candidates[i] for i in order]
-        seen = set(order)
-        reranked += [candidates[i] for i in range(len(candidates)) if i not in seen]
-        reranked += results[top_n:]
-        return reranked
+        return _apply_order(order, candidates, results, top_n)
     except Exception as e:
         logger.warning(f"LLM rerank failed: {e}")
         return results
@@ -169,11 +183,7 @@ def api_rerank(
     except Exception as e:
         logger.warning(f"api_rerank ({provider}) failed: {e}")
         return results
-    reranked = [candidates[i] for i in order]
-    seen = set(order)
-    reranked += [candidates[i] for i in range(len(candidates)) if i not in seen]
-    reranked += results[top_n:]
-    return reranked
+    return _apply_order(order, candidates, results, top_n)
 
 
 def local_rerank(
@@ -212,9 +222,7 @@ def local_rerank(
     except Exception as e:
         logger.warning(f"local_rerank failed: {e}")
         return results
-    reranked = [candidates[i] for i in order]
-    reranked += results[top_n:]
-    return reranked
+    return _apply_order(order, candidates, results, top_n)
 
 
 def _get_cross_encoder(model_name: str, onnx_file: Optional[str], max_length: int):

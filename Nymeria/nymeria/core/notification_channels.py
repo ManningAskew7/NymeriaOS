@@ -33,8 +33,6 @@ from typing import (
     runtime_checkable,
 )
 
-import httpx
-
 if TYPE_CHECKING:
     from .notification_destinations import (
         NotificationDestination,
@@ -337,8 +335,9 @@ class TeamsChannel(_BaseChannel):
         }
         payload = {"body": {"contentType": "text", "content": message}}
         try:
-            with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-                response = client.post(url, headers=headers, json=payload)
+            response = _send_with_egress_policy(
+                "POST", url, headers=headers, json=payload,
+            )
             if response.status_code == 201:
                 return SendResult.success("Sent to Teams")
             try:
@@ -526,15 +525,15 @@ class EmailOutlookChannel(_BaseChannel):
             "saveToSentItems": True,
         }
         try:
-            with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-                response = client.post(
-                    f"{GRAPH_BASE}/me/sendMail",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
+            response = _send_with_egress_policy(
+                "POST",
+                f"{GRAPH_BASE}/me/sendMail",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
             if response.status_code in (200, 202):
                 return SendResult.success(f"Sent email to {to_addr}")
             return SendResult.error(
