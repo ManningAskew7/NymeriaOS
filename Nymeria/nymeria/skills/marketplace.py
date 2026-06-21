@@ -263,6 +263,18 @@ class AnthropicSkillsFetcher:
                 rel_path = member.name[len(skill_prefix):]
                 if not rel_path:
                     continue
+                # Path-traversal guard: a crafted member like
+                # "<prefix>/skills/<name>/../../../etc/x" still satisfies the
+                # startswith(skill_prefix) check above, yet escapes skill_dir
+                # once the ".." segments are normalized. Refuse anything that
+                # resolves outside the destination. Low impact for today's
+                # trusted GitHub source, but load-bearing for the Phase-2
+                # arbitrary-git fetcher (GitUrlFetcher).
+                dest = (skill_dir / rel_path).resolve()
+                if not dest.is_relative_to(skill_dir.resolve()):
+                    raise MarketplaceError(
+                        f"unsafe path in archive for skill {name!r}: {member.name!r}"
+                    )
                 f = tf.extractfile(member)
                 if f is None:
                     continue

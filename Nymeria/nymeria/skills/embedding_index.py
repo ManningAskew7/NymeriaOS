@@ -398,13 +398,13 @@ class SkillEmbeddingIndex:
             ).fetchall()
         except sqlite3.OperationalError:
             return []
+        # Batch the metadata lookup with one IN(...) query, matching _vec_search,
+        # instead of issuing one SELECT per result row.
+        meta = self._lookup_meta(conn, namespace, [r["skill_key"] for r in rows])
         hits: List[SearchHit] = []
         for r in rows:
-            meta = conn.execute(
-                "SELECT extra FROM skills_meta WHERE skill_key = ?",
-                (r["skill_key"],),
-            ).fetchone()
-            extra = json.loads(meta["extra"] if meta and meta["extra"] else "{}")
+            m = meta.get(r["skill_key"])
+            extra = json.loads(m["extra"] if m and m["extra"] else "{}")
             # bm25() returns negative numbers; lower = better. Flip sign + normalize.
             score = max(0.0, -float(r["rank"]))
             hits.append(SearchHit(name=r["name"], description=r["description"], score=score, extra=extra))
