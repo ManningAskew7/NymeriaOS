@@ -10,9 +10,15 @@ import threading
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
+from queue import Empty
 from typing import Any, cast
 
 from ....core.checkpoint_cleanup import delete_thread_checkpoints
+from ....core.event_bus import (
+    AutonomousEvent,
+    autonomous_event_to_payload,
+    get_event_bus,
+)
 from ....core.stream_bridge import iter_agent_astream
 from ....core.thread_classification import classify_platform
 from ..events import ErrorEvent, NormalizedEvent, normalize_stream_event
@@ -27,6 +33,7 @@ class InProcessAgentClient:
     """Local transport that isolates direct ``NymeriaAgent`` access."""
 
     connection_label = "local agent"
+    supports_autonomous_stream = True
 
     def __init__(self, agent: Any, *, default_user_id: str = "default") -> None:
         self.agent = agent
@@ -113,10 +120,72 @@ class InProcessAgentClient:
         *,
         client_id: str | None = None,
     ) -> AsyncIterator[NormalizedEvent]:
-        """Local transport has no separate autonomous SSE subscription."""
+        """Stream the process-global event bus as normalized CLI events.
 
-        if False:
-            yield ErrorEvent(thread_id=None, content=user_id or client_id or "")
+        The in-process ("fat") transport runs the ticker, callable-thread
+        handoffs, and the dream sweeper inside the CLI process; all of them
+        publish to the same in-memory event bus the API's ``/autonomous/stream``
+        serves. Subscribing to that bus directly (no HTTP, no SSE) gives
+        ``--transport local`` the same live autonomous output the thin client
+        gets over SSE. Foreground turns stream straight from ``agent.astream``
+        and never touch the bus, so there is no echo of the user's own active
+        turn. The wire shape is shared with the API via
+        ``autonomous_event_to_payload`` so the two paths cannot drift.
+        """
+
+        # Origin-client dedup is irrelevant with a single in-process client.
+        del client_id
+        selected_user_id = user_id or self.default_user_id
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[NormalizedEvent | object] = asyncio.Queue()
+        cancel_event = threading.Event()
+
+        bus = get_event_bus()
+        subscriber_id = uuid.uuid4().hex
+        bus_queue = bus.subscribe(subscriber_id)
+
+        def publish(item: NormalizedEvent | object) -> None:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:
+                pass  # Event loop closed while worker was winding down.
+
+        def worker() -> None:
+            try:
+                while not cancel_event.is_set():
+                    try:
+                        event = bus_queue.get(timeout=0.5)
+                    except Empty:
+                        continue
+                    if not isinstance(event, AutonomousEvent):
+                        continue
+                    # Mirror the API's per-user filter so a multi-user local DB
+                    # never leaks another user's autonomous output to the CLI.
+                    if event.user_id != selected_user_id:
+                        continue
+                    publish(normalize_stream_event(autonomous_event_to_payload(event)))
+            except Exception:  # noqa: BLE001 - background stream is best effort.
+                logger.exception("Local CLI autonomous stream failed")
+            finally:
+                publish(_STREAM_DONE)
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"NymeriaCLILocalAutonomous-{subscriber_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+
+        try:
+            while True:
+                item = await queue.get()
+                if item is _STREAM_DONE:
+                    break
+                yield cast(NormalizedEvent, item)
+        finally:
+            cancel_event.set()
+            bus.unsubscribe(subscriber_id)
 
     async def stop(
         self,

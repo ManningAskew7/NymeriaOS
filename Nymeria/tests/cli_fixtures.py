@@ -12,7 +12,7 @@ import copy
 import io
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -369,6 +369,11 @@ class FakeAgentClient:
         self.clock = clock
         self.real_sleep = real_sleep
         self.connection_label = connection_label
+        # Mirror the production gate: real transports advertise autonomous
+        # support via this flag. Deriving it from the label keeps every
+        # existing test's ``can_start()`` result identical to the old
+        # connection-label sniff (API-backed → on, local placeholder → off).
+        self.supports_autonomous_stream = connection_label.startswith("api ")
         self.history = copy.deepcopy(dict(history or {}))
         self.threads = copy.deepcopy(list(threads or []))
         self.context_stats = copy.deepcopy(dict(context_stats or {}))
@@ -457,15 +462,18 @@ class FakeAgentClient:
         )
 
     async def list_threads(self, user_id: str = "default") -> list[dict[str, Any]]:
-        return copy.deepcopy(
-            self.threads
-            or [
-                {
-                    "id": "thread-1",
-                    "title": "Fixture thread",
-                    "user_id": user_id,
-                }
-            ]
+        return cast(
+            "list[dict[str, Any]]",
+            copy.deepcopy(
+                self.threads
+                or [
+                    {
+                        "id": "thread-1",
+                        "title": "Fixture thread",
+                        "user_id": user_id,
+                    }
+                ]
+            ),
         )
 
     async def get_context_stats(
@@ -474,14 +482,17 @@ class FakeAgentClient:
         user_id: str | None = None,
     ) -> dict[str, Any]:
         key = f"{user_id}:{thread_id}" if user_id else thread_id
-        return copy.deepcopy(
-            self.context_stats.get(
-                key,
+        return cast(
+            "dict[str, Any]",
+            copy.deepcopy(
                 self.context_stats.get(
-                    thread_id,
-                    {"used_tokens": 42, "max_tokens": 1000},
-                ),
-            )
+                    key,
+                    self.context_stats.get(
+                        thread_id,
+                        {"used_tokens": 42, "max_tokens": 1000},
+                    ),
+                )
+            ),
         )
 
 

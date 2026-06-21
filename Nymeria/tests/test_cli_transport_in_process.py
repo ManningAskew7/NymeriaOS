@@ -435,3 +435,113 @@ def test_thread_metadata_operations_stay_behind_client_boundary() -> None:
     assert agent.thread_config_manager.deleted == ["thread-a"]
     assert agent.invalidated == ["thread-a"]
     assert agent.sync_agent_tools_count == 1
+
+
+def test_stream_autonomous_subscribes_to_event_bus_and_filters_user() -> None:
+    from collections.abc import AsyncGenerator
+    from typing import cast
+
+    import nymeria.core.event_bus as event_bus_module
+    from nymeria.core.event_bus import AutonomousEvent, EventBus
+
+    agent = FakeAgent()
+    client = InProcessAgentClient(agent, default_user_id="alice")
+    bus = EventBus()
+    previous_bus = event_bus_module._event_bus
+    event_bus_module.set_event_bus(bus)
+
+    async def scenario():
+        # The method is typed AsyncIterator; the concrete object is an async
+        # generator, so cast to reach aclose() for the unsubscribe-on-close check.
+        gen = cast(
+            "AsyncGenerator[Any, None]",
+            client.stream_autonomous("alice"),
+        )
+        first = asyncio.ensure_future(gen.__anext__())
+        # Let the worker thread subscribe and block on the bus queue before
+        # any event is published (a pre-subscription publish would be dropped).
+        await asyncio.sleep(0.1)
+        assert bus.get_subscriber_count() == 1
+        # A mismatched user is filtered out; only the matching user is
+        # delivered, so the first yielded event must be alice's task_completed.
+        bus.publish(
+            AutonomousEvent(event_type="task_started", thread_id="other", user_id="bob")
+        )
+        bus.publish(
+            AutonomousEvent(
+                event_type="task_completed",
+                thread_id="t-1",
+                user_id="alice",
+                task_id="task-9",
+            )
+        )
+        event = await asyncio.wait_for(first, timeout=2.0)
+        await gen.aclose()
+        return event, bus.get_subscriber_count()
+
+    try:
+        event, subscribers_after_close = run(scenario())
+    finally:
+        event_bus_module._event_bus = previous_bus
+
+    assert event.type == "task_completed"
+    assert event.thread_id == "t-1"
+    # The generator must unsubscribe on close so reconnects do not leak queues.
+    assert subscribers_after_close == 0
+
+
+def test_supports_autonomous_stream_uses_capability_flag() -> None:
+    from nymeria.triggers.cli.autonomous import supports_autonomous_stream
+    from nymeria.triggers.cli.transport.api import APIAgentClient
+    from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
+
+    in_process = InProcessAgentClient(FakeAgent(), default_user_id="alice")
+    assert supports_autonomous_stream(in_process) is True
+
+    # __new__ skips the NymeriaAPIClient dependency; only the class-level
+    # capability flag and bound stream_autonomous method matter for gating.
+    api_client = APIAgentClient.__new__(APIAgentClient)
+    assert supports_autonomous_stream(api_client) is True
+
+    assert supports_autonomous_stream(DisconnectedAgentClient()) is False
+
+    class NoStreamClient:
+        connection_label = "api http://localhost:8000"
+
+    assert supports_autonomous_stream(NoStreamClient()) is False
+
+
+def test_autonomous_event_to_payload_matches_router_serialization() -> None:
+    import json
+
+    from nymeria.api.routers.autonomous_stream import _event_to_sse_payload
+    from nymeria.core.event_bus import AutonomousEvent, autonomous_event_to_payload
+
+    event = AutonomousEvent(
+        event_type="task_completed",
+        thread_id="t-1",
+        user_id="alice",
+        task_id="task-9",
+        data={
+            "content": "done",
+            "summary": {"ok": True},
+            "_origin_client_id": "client-x",  # stripped: underscore-prefixed
+            "type": "ignored",  # stripped: reserved top-level key
+            "thread_id": "ignored",  # stripped: reserved top-level key
+            "task_id": "ignored",  # stripped: reserved top-level key
+            "timestamp": "ignored",  # stripped: reserved top-level key
+        },
+    )
+
+    payload = autonomous_event_to_payload(event)
+    assert payload == {
+        "type": "task_completed",
+        "thread_id": "t-1",
+        "task_id": "task-9",
+        "timestamp": event.timestamp.isoformat(),
+        "content": "done",
+        "summary": {"ok": True},
+    }
+    # The API SSE router must serialize exactly this dict, so the in-process
+    # transport and the SSE wire never drift.
+    assert _event_to_sse_payload(event) == json.dumps(payload)

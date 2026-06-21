@@ -22,6 +22,7 @@ from ...core.chrome_subscribers import (
 from ...core.event_bus import (
     AutonomousEvent,
     EventBus,
+    autonomous_event_to_payload,
     get_event_bus,
     should_log_stream_event_sample,
 )
@@ -91,21 +92,9 @@ def _resolve_stream_auth(
 
 
 def _event_to_sse_payload(event: AutonomousEvent) -> str:
-    # Strip internal fields and reserved keys. event.event_type is canonical so
-    # interactive sync events keep their interactive_ prefix if present.
-    payload = {
-        k: v
-        for k, v in event.data.items()
-        if not k.startswith("_") and k not in ("type", "thread_id", "task_id", "timestamp")
-    }
-    event_data = {
-        "type": event.event_type,
-        "thread_id": event.thread_id,
-        "task_id": event.task_id,
-        "timestamp": event.timestamp.isoformat(),
-        **payload,
-    }
-    return json.dumps(event_data)
+    # Flatten via the shared helper so the SSE wire shape stays identical to the
+    # CLI's in-process transport, which consumes the same dict directly.
+    return json.dumps(autonomous_event_to_payload(event))
 
 
 async def _generate_autonomous_sse_events(

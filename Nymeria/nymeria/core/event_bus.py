@@ -250,6 +250,30 @@ def set_event_bus(bus: EventBus) -> None:
     logger.info(f"Global event bus set to {type(bus).__name__}")
 
 
+def autonomous_event_to_payload(event: AutonomousEvent) -> Dict[str, Any]:
+    """Flatten an autonomous event into the canonical wire dict.
+
+    Shared by the API SSE router (which JSON-encodes the result) and the CLI's
+    in-process transport (which consumes the dict directly), so the autonomous
+    wire shape cannot drift between the two paths. ``event.event_type`` is
+    canonical, so interactive sync events keep their ``interactive_`` prefix if
+    present. Internal ``_``-prefixed keys and the reserved top-level keys are
+    stripped from ``event.data``.
+    """
+    payload = {
+        k: v
+        for k, v in event.data.items()
+        if not k.startswith("_") and k not in ("type", "thread_id", "task_id", "timestamp")
+    }
+    return {
+        "type": event.event_type,
+        "thread_id": event.thread_id,
+        "task_id": event.task_id,
+        "timestamp": event.timestamp.isoformat(),
+        **payload,
+    }
+
+
 def publish_autonomous_event(
     event_type: str,
     thread_id: str,

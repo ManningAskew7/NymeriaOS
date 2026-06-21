@@ -18,6 +18,7 @@ class DisconnectedAgentClient:
     """Minimal client used before the CLI has API credentials."""
 
     connection_label = "disconnected"
+    supports_autonomous_stream = False
 
     def __init__(
         self,
