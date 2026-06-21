@@ -707,9 +707,9 @@ class Ticker:
             for entry in due_entries:
                 logger.info(f"[TICKER POLL] Due: todo_id={entry.todo_id}, user={entry.user_id}, scheduled_for={entry.scheduled_for} ({datetime.fromtimestamp(entry.scheduled_for)})")
         else:
-            # Log every 30 seconds to confirm ticker is running
+            # Steady-state heartbeat; debug-only so it does not flood the log.
             if int(now) % 30 < self.poll_interval:
-                logger.info(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - No due TODOs")
+                logger.debug(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - No due TODOs")
 
         # Clean up completed futures
         with self._lock:
@@ -803,7 +803,7 @@ class Ticker:
         try:
             self._print_wakeup_banner(todo.task)
             logger.info(f"[TICKER] === START === TODO {todo.id}, thread={thread_id}, user={entry.user_id}")
-            logger.info(f"[TICKER] Prompt: {prompt[:200]}...")
+            logger.debug(f"[TICKER] Prompt: {prompt[:200]}...")
 
             stream_result, renderer, completed_early = self._stream_todo_execution(
                 entry, todo, thread_id, prompt,
@@ -817,6 +817,10 @@ class Ticker:
         except Exception as e:
             self._handle_execution_failure(entry, todo, thread_id, e)
 
+        # Single execution-marker cleanup for every path that reaches here
+        # (success, finalize, and the double-iteration-limit backoff). The
+        # early-return guards above (not-found, inactive, status-update
+        # failure) clear their own marker before returning.
         self.schedule_db.clear_execution(todo.id, entry.user_id)
 
     # ------------------------------------------------------------------
@@ -1007,7 +1011,8 @@ class Ticker:
                 "todo_id": todo.id,
             },
         )
-        self.schedule_db.clear_execution(todo.id, entry.user_id)
+        # Execution-marker cleanup happens once at the end of
+        # _execute_scheduled_todo, which this path returns through.
 
     def _finalize_successful_execution(
         self,
@@ -1381,37 +1386,6 @@ class Ticker:
                 self._active_execution_stale_seconds / 60
             ),
         }
-
-    def recover_missed_schedules(self) -> int:
-        """
-        Recover and report missed scheduled TODOs from previous session.
-
-        Called on startup. Finds all scheduled TODOs with scheduled_for in the past.
-        They will be picked up in the next poll cycle.
-
-        Returns:
-            Number of missed schedules
-        """
-        now = time.time()
-        missed_entries = self.schedule_db.get_due(before=now)
-
-        if missed_entries:
-            logger.info(f"Recovering {len(missed_entries)} missed scheduled TODO(s)")
-            try:
-                _console.print()
-                _console.print(
-                    Panel(
-                        f"[yellow]Found {len(missed_entries)} scheduled TODO(s) from before shutdown. "
-                        f"Executing now...[/yellow]",
-                        title="[bold]Scheduler Recovery[/bold]",
-                        border_style="yellow",
-                    )
-                )
-                _console.print()
-            except Exception:
-                logger.debug("Console render failed for output spacing")
-
-        return len(missed_entries)
 
     def rebuild_schedule_index(self) -> int:
         """

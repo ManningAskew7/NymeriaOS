@@ -4,6 +4,7 @@ them in trigger.pending_events (the legacy defer path)."""
 
 from __future__ import annotations
 
+from typing import Literal
 
 import pytest
 
@@ -78,7 +79,11 @@ def patched_sources(monkeypatch):
     return holder
 
 
-def _make_trigger(*, thread_id: str = "t1", action_type: str = "agent_prompt"):
+def _make_trigger(
+    *,
+    thread_id: str = "t1",
+    action_type: Literal["agent_prompt", "create_todo", "notify"] = "agent_prompt",
+):
     return TriggerDefinition(
         id="trig-1",
         name="My Trigger",
@@ -107,7 +112,7 @@ def test_busy_thread_enqueues_pending_prompts(tmp_path, isolated_queue, patched_
 
     agent = _FakeAgent(busy_threads={"t1"})
 
-    results = tm.check_triggers(user_id=user_id, agent=agent)
+    results = tm.check_triggers(user_id=user_id, agent=agent)  # type: ignore[bad-argument-type]
     # No fire_action call should happen for this trigger; check_triggers
     # returned no actionable (trigger, events) pairs.
     assert results == []
@@ -143,6 +148,42 @@ def test_idle_thread_returns_events_for_fire_action(tmp_path, isolated_queue, pa
     assert isolated_queue.size("t-idle") == 0
 
 
+def test_atomic_update_skips_write_on_noop_poll(
+    tmp_path, isolated_queue, patched_sources
+):
+    """A poll that produces no events and no state change must not rewrite
+    the trigger JSON (F1: dirty-aware ``atomic_update``)."""
+    # Source returns nothing and does not touch trigger.state.
+    patched_sources["static"] = _StaticSource([])
+
+    tm = TriggerManager(tmp_path)
+    user_id = "u1"
+    trigger = _make_trigger(thread_id="t-idle")
+    with tm.atomic_update(user_id) as store:
+        store.triggers.append(trigger)
+
+    # Spy on _save to count disk writes from here on.
+    saves = {"n": 0}
+    original_save = tm._save
+
+    def _counting_save(store_arg):
+        saves["n"] += 1
+        return original_save(store_arg)
+
+    tm._save = _counting_save  # type: ignore[method-assign]
+
+    # No-op poll: no events fire and no trigger state changes -> no write.
+    results = tm.check_triggers(user_id=user_id, agent=None)
+    assert results == []
+    assert saves["n"] == 0
+
+    # A poll that fires mutates last_fired/fire_count -> exactly one write.
+    patched_sources["static"] = _StaticSource([{"body": "tick"}])
+    results = tm.check_triggers(user_id=user_id, agent=None)
+    assert len(results) == 1
+    assert saves["n"] == 1
+
+
 def test_non_agent_actions_fire_even_when_thread_is_busy(
     tmp_path, isolated_queue, patched_sources
 ):
@@ -158,7 +199,7 @@ def test_non_agent_actions_fire_even_when_thread_is_busy(
         store.triggers.append(trigger)
 
     agent = _FakeAgent(busy_threads={"t1"})
-    results = tm.check_triggers(user_id=user_id, agent=agent)
+    results = tm.check_triggers(user_id=user_id, agent=agent)  # type: ignore[bad-argument-type]
     # notify actions don't need a thread lock -> still returned for firing.
     assert len(results) == 1
     # Nothing queued (the queue is only used for agent_prompt actions).
