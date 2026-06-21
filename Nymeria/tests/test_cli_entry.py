@@ -101,6 +101,41 @@ def test_run_cli_parser_accepts_tui_contract_defaults(monkeypatch):
     assert runtime_config.list_threads_on_startup is False
 
 
+@pytest.mark.parametrize(
+    "argv, expected",
+    [
+        (["cli"], "api"),
+        (["cli", "--thin"], "api"),
+        (["cli", "--fat"], "local"),
+        (["cli", "--transport", "local"], "local"),
+        (["cli", "--transport", "auto"], "auto"),
+    ],
+)
+def test_run_cli_parser_transport_aliases(argv, expected):
+    import run as run_module
+
+    args = run_module.build_parser().parse_args(argv)
+    assert run_module.build_cli_runtime_config(args).transport == expected
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["cli", "--fat", "--thin"],
+        ["cli", "--fat", "--transport", "api"],
+        ["cli", "--fat", "--transport", "local"],
+        ["cli", "--thin", "--transport", "api"],
+    ],
+)
+def test_run_cli_parser_transport_aliases_are_mutually_exclusive(argv):
+    import run as run_module
+
+    # --fat/--thin/--transport share a mutually exclusive group, so any two
+    # together is a usage error (argparse exits 2) even when they agree.
+    with pytest.raises(SystemExit):
+        run_module.build_parser().parse_args(argv)
+
+
 def test_resolve_slim_port_precedence(monkeypatch):
     """Explicit --port wins, then the config/env API_PORT, then 8000.
 

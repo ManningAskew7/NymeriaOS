@@ -206,6 +206,8 @@ def _service_token_requirement(args: argparse.Namespace) -> str | None:
         if (getattr(args, "action", None) or "run") == "run":
             return "the foreground gateway service"
         return None
+    if command is None:
+        return None
     return _SERVICE_TOKEN_REQUIRED_COMMANDS.get(command)
 
 
@@ -359,7 +361,10 @@ def build_cli_runtime_config(args: argparse.Namespace):
         )
 
     return CLIRuntimeConfig(
-        transport=args.transport,
+        # --transport defaults to None at the argparse layer (so its mutually
+        # exclusive group treats an explicit value as a real selection); resolve
+        # the thin-client default here, the single place transport is consumed.
+        transport=args.transport or "api",
         renderer=args.renderer,
         api_url=args.api_url,
         api_key=args.api_key,
@@ -1520,13 +1525,40 @@ Examples:
         metavar="ID_OR_TITLE",
         help="Resume a specific thread by ID prefix or title substring",
     )
-    cli_parser.add_argument(
+    # --transport is the canonical selector; --thin/--fat are convenience
+    # aliases. They share dest="transport" and live in a mutually exclusive
+    # group so contradictory combinations (e.g. --fat --thin, or
+    # --fat --transport api) are rejected. --transport is added first so its
+    # default="api" is the namespace default (argparse only sets a dest default
+    # from the first action that declares one).
+    transport_group = cli_parser.add_mutually_exclusive_group()
+    transport_group.add_argument(
         "--transport",
         choices=("api", "local", "auto"),
-        default="api",
+        default=None,
         help=(
             "Transport mode for CLI chat and command requests "
-            "(default: api; use --transport local for embedded agent mode)"
+            "(default: api). Aliases: --thin (=api), --fat (=local)."
+        ),
+    )
+    transport_group.add_argument(
+        "--fat",
+        dest="transport",
+        action="store_const",
+        const="local",
+        help=(
+            "Run an embedded in-process agent (alias for --transport local). "
+            "Tools execute on this machine; no backend server required."
+        ),
+    )
+    transport_group.add_argument(
+        "--thin",
+        dest="transport",
+        action="store_const",
+        const="api",
+        help=(
+            "Connect to a running backend over HTTP "
+            "(alias for --transport api; the default)."
         ),
     )
     cli_parser.add_argument(
