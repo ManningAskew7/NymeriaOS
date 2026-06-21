@@ -136,6 +136,117 @@ def test_run_cli_parser_transport_aliases_are_mutually_exclusive(argv):
         run_module.build_parser().parse_args(argv)
 
 
+def test_run_cli_parser_keep_db_backend_flag():
+    import run as run_module
+
+    assert run_module.build_parser().parse_args(["cli"]).keep_db_backend is False
+    parsed = run_module.build_parser().parse_args(["cli", "--fat", "--keep-db-backend"])
+    assert parsed.keep_db_backend is True
+    assert parsed.transport == "local"
+
+
+def test_apply_fat_runtime_env_forces_sqlite_and_redis_off(monkeypatch):
+    """The fat-mode helper isolates persistence to local SQLite (Redis off) and,
+    unlike the slim helper, sets NO API host/port/URL because fat mode binds no
+    server. It mutates os.environ directly, so snapshot/restore around it.
+    """
+    import os
+
+    import run as run_module
+
+    monkeypatch.setenv("DATABASE_BACKEND", "postgres")
+    monkeypatch.setenv("REDIS_ENABLED", "true")
+    monkeypatch.setenv("REDIS_URL", "redis://stale:6379")
+    for key in ("API_HOST", "API_PORT", "NYMERIA_API_URL"):
+        monkeypatch.delenv(key, raising=False)
+
+    saved_env = os.environ.copy()
+    try:
+        run_module._apply_fat_runtime_env()
+
+        assert os.environ["DATABASE_BACKEND"] == "sqlite"
+        assert os.environ["REDIS_ENABLED"] == "false"
+        assert "REDIS_URL" not in os.environ
+        # Fat mode binds no server: the helper must not introduce server env.
+        for key in ("API_HOST", "API_PORT", "NYMERIA_API_URL"):
+            assert key not in os.environ
+
+        from nymeria.config import get_settings
+
+        settings = get_settings()
+        assert settings.database_backend == "sqlite"
+        assert settings.redis_enabled is False
+    finally:
+        os.environ.clear()
+        os.environ.update(saved_env)
+        from nymeria.config import get_settings
+
+        get_settings.cache_clear()
+
+
+def _run_main_capturing_cli_env(monkeypatch, argv, env_key):
+    """Run main() for a cli argv with run_cli/validate_config stubbed, returning
+    the value of ``env_key`` in os.environ as seen by run_cli. Snapshots and
+    restores the process env so the pin cannot leak into the rest of the suite.
+    """
+    import os
+    import sys
+
+    import run as run_module
+
+    captured = {}
+
+    def fake_run_cli(_args):
+        captured["value"] = os.environ.get(env_key)
+
+    monkeypatch.setattr(run_module, "run_cli", fake_run_cli)
+    monkeypatch.setattr(run_module, "validate_config", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", argv)
+
+    saved_env = os.environ.copy()
+    try:
+        run_module.main()
+    finally:
+        os.environ.clear()
+        os.environ.update(saved_env)
+        from nymeria.config import get_settings
+
+        get_settings.cache_clear()
+    return captured["value"]
+
+
+def test_fat_main_pins_sqlite_before_run_cli(monkeypatch):
+    """main() must pin DATABASE_BACKEND=sqlite for `cli --fat` BEFORE run_cli
+    (and before validate_config caches settings), so a Postgres .env.docker
+    merged at import cannot make the embedded agent persist to Postgres.
+    """
+    monkeypatch.setenv("DATABASE_BACKEND", "postgres")
+    value = _run_main_capturing_cli_env(
+        monkeypatch, ["run.py", "cli", "--fat"], "DATABASE_BACKEND"
+    )
+    assert value == "sqlite"
+
+
+def test_fat_keep_db_backend_skips_pin(monkeypatch):
+    """--keep-db-backend opts out of the pin: the configured backend is honored."""
+    monkeypatch.setenv("DATABASE_BACKEND", "postgres")
+    value = _run_main_capturing_cli_env(
+        monkeypatch, ["run.py", "cli", "--fat", "--keep-db-backend"], "DATABASE_BACKEND"
+    )
+    assert value == "postgres"
+
+
+def test_thin_mode_does_not_pin_db_backend(monkeypatch):
+    """The thin (default) CLI never embeds an agent, so it must not pin the
+    backend; the env value passes through untouched.
+    """
+    monkeypatch.setenv("DATABASE_BACKEND", "postgres")
+    value = _run_main_capturing_cli_env(
+        monkeypatch, ["run.py", "cli"], "DATABASE_BACKEND"
+    )
+    assert value == "postgres"
+
+
 def test_resolve_slim_port_precedence(monkeypatch):
     """Explicit --port wins, then the config/env API_PORT, then 8000.
 
