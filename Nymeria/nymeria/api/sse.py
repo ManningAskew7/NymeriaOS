@@ -23,6 +23,19 @@ SSE_KEEPALIVE_INTERVAL_SECONDS = 25.0
 # only handles `data:`-prefixed lines.
 SSE_KEEPALIVE_FRAME = ": keepalive\n\n"
 
+# Response headers every chat/event StreamingResponse sets: disable client and
+# proxy caching, keep the connection open, and turn off nginx response buffering
+# (`X-Accel-Buffering`) so frames flush to the client immediately. Starlette
+# copies these into the response without mutating the dict, so the shared
+# module-level constant can be passed directly to each StreamingResponse. The
+# health-stream in `system.py` deliberately omits `Connection: keep-alive` and
+# keeps its own dict.
+SSE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
 
 async def with_sse_keepalive(
     source: AsyncIterable[str],
@@ -63,5 +76,6 @@ async def with_sse_keepalive(
 __all__ = [
     "SSE_KEEPALIVE_FRAME",
     "SSE_KEEPALIVE_INTERVAL_SECONDS",
+    "SSE_RESPONSE_HEADERS",
     "with_sse_keepalive",
 ]

@@ -21,6 +21,7 @@ from ..schemas.thread_operations import (
     ThreadRewindRequest,
     ThreadRewindResponse,
 )
+from ..thread_config_helpers import effective_provider_model
 
 logger = logging.getLogger(__name__)
 
@@ -217,9 +218,7 @@ def create_thread_operations_router(
         )
 
         agent = get_agent_fn()
-        llm_cfg = agent._get_llm_config_for_thread(thread_id)
-        effective_provider = llm_cfg.provider or agent.settings.llm_provider
-        effective_model = llm_cfg.model or agent.settings.llm_model
+        effective_provider, effective_model = effective_provider_model(agent, thread_id)
 
         attachments = [
             {
@@ -269,9 +268,7 @@ def create_thread_operations_router(
         from ...config.model_capabilities import get_attachment_limits
 
         agent = get_agent_fn()
-        llm_cfg = agent._get_llm_config_for_thread(thread_id)
-        effective_provider = llm_cfg.provider or agent.settings.llm_provider
-        effective_model = llm_cfg.model or agent.settings.llm_model
+        effective_provider, effective_model = effective_provider_model(agent, thread_id)
 
         limits = get_attachment_limits(effective_model)
         return AttachmentLimitsResponse(

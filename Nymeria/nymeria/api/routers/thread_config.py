@@ -20,42 +20,27 @@ from ..thread_config_helpers import (
 )
 
 
-def _default_thread_config_response(thread_id: str) -> dict[str, Any]:
-    """Return the legacy empty-config payload for an unconfigured thread."""
-    return {
-        "thread_id": thread_id,
-        "instructions": None,
-        "disabled_tools": [],
-        "enabled_tools": [],
-        "llm_config": None,
-        "active_llm_fallback": None,
-        "system_prompt": None,
-        "callable": False,
-        "callable_name": None,
-        "callable_description": None,
-        "callable_max_iterations": None,
-        "callable_team_id": None,
-        "callable_team_name": None,
-        "inject_todos_in_prompt": False,
-        "show_autonomous_prompts": False,
-        "show_prompt_metadata": False,
-        "telegram_autonomous_delivery": "full",
-        "in_app_notification_level": "notify_only",
-        "notification_profile": None,
-        "memory_char_limit": None,
-        "image_window_size": None,
-        "dreaming": None,
-        "shadow_parent_id": None,
-        "created_at": None,
-        "updated_at": None,
-        "has_customizations": False,
-    }
-
-
 def _config_response(config: ThreadConfig) -> dict[str, Any]:
     result = config.model_dump(mode="json")
     result["has_customizations"] = config.has_customizations()
     return result
+
+
+def _default_thread_config_response(thread_id: str) -> dict[str, Any]:
+    """Return the default empty-config payload for an unconfigured thread.
+
+    Built from the ``ThreadConfig`` model so it can never drift from the
+    saved-config shape ``_config_response`` returns. A hand-maintained dict
+    here had already fallen behind, dropping ``temporary_tools``,
+    ``enabled_skills``, ``disabled_skills``, and ``inject_profile_in_prompt``,
+    so a fresh thread's config payload was a different shape than it became
+    after the first save. ``created_at``/``updated_at`` are nulled because no
+    config has actually been persisted for this thread yet.
+    """
+    response = _config_response(ThreadConfig(thread_id=thread_id))
+    response["created_at"] = None
+    response["updated_at"] = None
+    return response
 
 
 def _serialize_thread_teams(agent: Any, user_id: str) -> dict[str, Any]:

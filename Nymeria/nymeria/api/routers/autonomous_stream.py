@@ -26,6 +26,7 @@ from ...core.event_bus import (
     get_event_bus,
     should_log_stream_event_sample,
 )
+from ..sse import SSE_RESPONSE_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -300,11 +301,7 @@ def create_autonomous_stream_router(
                 client_id=client_id,
             ),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
+            headers=SSE_RESPONSE_HEADERS,
         )
 
     return router

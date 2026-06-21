@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, ThreadLLMConfig
 from nymeria.core.thread_metadata import ThreadMetadataManager
@@ -25,7 +27,7 @@ class FakeAgent:
         self.synced_tools += 1
 
 
-def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent, str]:
+def _client(tmp_path: Path, api_client_builder) -> tuple[TestClient, FakeAgent, str]:
     settings = api_client_builder.settings(tmp_path)
     agent = FakeAgent(tmp_path)
     client, token = api_client_builder.authenticated_client(
@@ -166,7 +168,9 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
     assert saved.llm_config.provider == "openai"
     assert saved.llm_config.model == "gpt-5.5"
     assert saved.memory_char_limit == 6000
-    assert agent.thread_metadata_manager.get_thread("owner", thread_id).title == "OpsHelper"
+    meta = agent.thread_metadata_manager.get_thread("owner", thread_id)
+    assert meta is not None
+    assert meta.title == "OpsHelper"
     assert agent.invalidated == [thread_id]
     assert agent.synced_tools == 1
 
@@ -178,6 +182,7 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
 
     assert clear_model.status_code == 200
     saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None
     assert saved.llm_config is not None
     assert saved.llm_config.provider == "openai"
     assert saved.llm_config.model is None
@@ -190,6 +195,7 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
 
     assert clear_memory_limit.status_code == 200
     saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None
     assert saved.memory_char_limit is None
 
 
@@ -209,6 +215,8 @@ def test_thread_config_reasoning_effort_validation_and_legacy_coercion(
     )
     assert accepted.status_code == 200
     saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None
+    assert saved.llm_config is not None
     assert saved.llm_config.reasoning_effort == "xhigh"
 
     rejected = client.patch(
@@ -227,6 +235,7 @@ def test_thread_config_reasoning_effort_validation_and_legacy_coercion(
 
     reloaded = agent.thread_config_manager.get_config(thread_id)
     assert reloaded is not None
+    assert reloaded.llm_config is not None
     assert reloaded.llm_config.reasoning_effort is None
 
 
@@ -301,6 +310,52 @@ def test_thread_config_delete_removes_callable_config_and_syncs_tools(
     assert agent.synced_tools == 1
 
 
+def test_unconfigured_thread_config_matches_saved_config_shape(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """An unconfigured thread must return the same payload shape as a saved one.
+
+    The default payload was a hand-maintained dict that had drifted from the
+    ThreadConfig model, dropping temporary_tools/enabled_skills/disabled_skills/
+    inject_profile_in_prompt; a client read undefined for those on a fresh
+    thread and a real value after the first save. The default is now derived
+    from the model so the two branches can never diverge.
+    """
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+
+    fresh_id = "fresh-thread"
+    agent.accounts_repo.claim_thread(fresh_id, "owner")
+
+    default = client.get(f"/threads/{fresh_id}/config", headers=headers)
+    assert default.status_code == 200
+    default_body = default.json()
+
+    # The four fields the old hand-built dict dropped are present with their
+    # model defaults.
+    assert default_body["temporary_tools"] == {}
+    assert default_body["enabled_skills"] == []
+    assert default_body["disabled_skills"] == []
+    assert default_body["inject_profile_in_prompt"] is False
+
+    # A fresh thread is uncustomized, and no config is persisted yet so the
+    # timestamps stay null (the "no saved config" signal).
+    assert default_body["has_customizations"] is False
+    assert default_body["created_at"] is None
+    assert default_body["updated_at"] is None
+
+    # Saving a config and reading it back must yield the identical key set.
+    saved_id = "saved-thread"
+    agent.accounts_repo.claim_thread(saved_id, "owner")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id=saved_id, instructions="hi")
+    )
+    saved = client.get(f"/threads/{saved_id}/config", headers=headers)
+    assert saved.status_code == 200
+    assert set(default_body) == set(saved.json())
+
+
 def test_thread_config_image_window_size_round_trip(
     tmp_path: Path,
     api_client_builder,
@@ -324,7 +379,9 @@ def test_thread_config_image_window_size_round_trip(
     body = set_resp.json()
     assert body["image_window_size"] == 5
     assert body["has_customizations"] is True
-    assert agent.thread_config_manager.get_config(thread_id).image_window_size == 5
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None
+    assert saved.image_window_size == 5
 
     clear_resp = client.patch(
         f"/threads/{thread_id}/config",
@@ -333,4 +390,6 @@ def test_thread_config_image_window_size_round_trip(
     )
     assert clear_resp.status_code == 200
     assert clear_resp.json()["image_window_size"] is None
-    assert agent.thread_config_manager.get_config(thread_id).image_window_size is None
+    cleared = agent.thread_config_manager.get_config(thread_id)
+    assert cleared is not None
+    assert cleared.image_window_size is None

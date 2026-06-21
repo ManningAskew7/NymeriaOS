@@ -2,11 +2,35 @@
 
 import re
 import uuid
+from typing import Any, NamedTuple
 
 from fastapi import HTTPException
 
 _CALLABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _THREAD_TEAM_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+class EffectiveLLM(NamedTuple):
+    """A thread's resolved provider/model after applying global fallbacks."""
+
+    provider: str
+    model: str
+
+
+def effective_provider_model(agent: Any, thread_id: str) -> EffectiveLLM:
+    """Resolve the effective LLM provider and model for a thread.
+
+    A thread-level ``llm_config`` override wins; otherwise the global
+    ``settings`` defaults apply. Returned as a named tuple so a caller that
+    only needs the model can read ``.model`` and one that needs both can
+    unpack ``provider, model``. This single rule had been re-expressed at
+    five call sites across the chat and thread-operation routers.
+    """
+    cfg = agent._get_llm_config_for_thread(thread_id)
+    return EffectiveLLM(
+        provider=cfg.provider or agent.settings.llm_provider,
+        model=cfg.model or agent.settings.llm_model,
+    )
 
 
 def validate_callable_name(name: str) -> None:
