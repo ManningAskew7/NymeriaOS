@@ -38,9 +38,9 @@ def _datetime_to_timestamp(dt: datetime) -> float:
     if dt.tzinfo is None:
         # Naive datetime - assume it's UTC and add timezone info
         dt = dt.replace(tzinfo=timezone.utc)
-        logger.info(f"[TIMESTAMP] Naive datetime {original_dt} -> treated as UTC -> timestamp {dt.timestamp()}")
+        logger.debug(f"[TIMESTAMP] Naive datetime {original_dt} -> treated as UTC -> timestamp {dt.timestamp()}")
     else:
-        logger.info(f"[TIMESTAMP] Timezone-aware datetime {original_dt} (tzinfo={dt.tzinfo}) -> timestamp {dt.timestamp()}")
+        logger.debug(f"[TIMESTAMP] Timezone-aware datetime {original_dt} (tzinfo={dt.tzinfo}) -> timestamp {dt.timestamp()}")
     return dt.timestamp()
 
 
@@ -343,7 +343,7 @@ class TodoScheduleDB:
             conn = self._get_connection()
             try:
                 timestamp = _datetime_to_timestamp(scheduled_for)
-                logger.info(f"[SCHEDULE DB] Adding TODO {todo_id}: scheduled_for={scheduled_for} (tzinfo={scheduled_for.tzinfo}), timestamp={timestamp}, current_time={time.time()}")
+                logger.debug(f"[SCHEDULE DB] Adding TODO {todo_id}: scheduled_for={scheduled_for} (tzinfo={scheduled_for.tzinfo}), timestamp={timestamp}, current_time={time.time()}")
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO scheduled_todos
@@ -360,7 +360,7 @@ class TodoScheduleDB:
                     ),
                 )
                 conn.commit()
-                logger.info(f"[SCHEDULE DB] Successfully added TODO {todo_id} for timestamp {timestamp}")
+                logger.debug(f"[SCHEDULE DB] Successfully added TODO {todo_id} for timestamp {timestamp}")
                 return True
             except Exception as e:
                 logger.error(f"Failed to add scheduled TODO: {e}")
@@ -457,15 +457,21 @@ class TodoScheduleDB:
         with self._lock:
             conn = self._get_connection()
             try:
-                # Log all entries in the database for debugging (only log every 30 seconds to reduce spam)
-                all_cursor = conn.execute("SELECT todo_id, scheduled_for FROM scheduled_todos")
-                all_entries = all_cursor.fetchall()
-                if all_entries and int(before) % 30 < 5:
-                    logger.info(f"[SCHEDULE DB] All entries in DB (NOW={before}):")
-                    for row in all_entries:
-                        delta = row['scheduled_for'] - before
-                        is_due = delta <= 0
-                        logger.info(f"[SCHEDULE DB]   todo_id={row['todo_id']}, scheduled_for={row['scheduled_for']}, delta={delta:.1f}s, due={is_due}")
+                # Diagnostic dump of every scheduled entry: debug-only and
+                # throttled to ~once per 30s, so the extra full-table scan
+                # never runs in production (this is the tightest poll loop).
+                if logger.isEnabledFor(logging.DEBUG) and int(before) % 30 < 5:
+                    all_entries = conn.execute(
+                        "SELECT todo_id, scheduled_for FROM scheduled_todos"
+                    ).fetchall()
+                    if all_entries:
+                        logger.debug("[SCHEDULE DB] All entries in DB (NOW=%s):", before)
+                        for row in all_entries:
+                            delta = row["scheduled_for"] - before
+                            logger.debug(
+                                "[SCHEDULE DB]   todo_id=%s, scheduled_for=%s, delta=%.1fs, due=%s",
+                                row["todo_id"], row["scheduled_for"], delta, delta <= 0,
+                            )
 
                 cursor = conn.execute(
                     """
@@ -477,7 +483,7 @@ class TodoScheduleDB:
                 )
                 results = [ScheduledTodoEntry.from_row(row) for row in cursor.fetchall()]
                 if results:
-                    logger.info(f"[SCHEDULE DB] Found {len(results)} due entries")
+                    logger.debug("[SCHEDULE DB] Found %d due entries", len(results))
                 return results
             finally:
                 conn.close()

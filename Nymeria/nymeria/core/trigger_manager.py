@@ -160,16 +160,32 @@ class TriggerManager:
     def _get_lock(self, user_id: str) -> threading.RLock:
         return _trigger_locks.get(user_id)
 
+    @staticmethod
+    def _snapshot(store: TriggerStore) -> str:
+        """Stable serialization of *store* for dirty detection.
+
+        ``check_triggers`` mutates nested fields and trigger sources mutate
+        ``trigger.state`` in place, so a top-level identity check is not
+        enough; compare serialized content instead.
+        """
+        return json.dumps(store.model_dump(mode="json"), sort_keys=True, default=str)
+
     @contextmanager
     def atomic_update(self, user_id: str = "default"):
-        """Context manager for atomic trigger store updates."""
+        """Context manager for atomic trigger store updates.
+
+        Only persists when the block actually changed the store, so a no-op
+        poll (the common case in ``check_triggers``) does no disk write.
+        """
         lock = self._get_lock(user_id)
         with lock:
             store = self._load(user_id)
+            before = self._snapshot(store)
             try:
                 yield store
             finally:
-                self._save(store)
+                if self._snapshot(store) != before:
+                    self._save(store)
 
     # -- persistence ------------------------------------------------------
 
@@ -470,7 +486,7 @@ class TriggerManager:
         """
         from ..triggers.sources import get_source, AVAILABLE_SOURCES
 
-        logger.info(
+        logger.debug(
             f"[TRIGGER CHECK] user={user_id}, registered_sources={list(AVAILABLE_SOURCES.keys())}"
         )
 
