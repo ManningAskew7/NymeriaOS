@@ -42,6 +42,30 @@ NYMERIA_PROTECTED_DIRS = [
 _NYMERIA_ROOT = Path(__file__).parent.parent.parent.resolve()
 
 
+def protected_path_error(path: Path) -> Optional[str]:
+    """Return an error message if ``path`` targets a protected Nymeria system
+    directory, else ``None``.
+
+    Shared by ``file_write`` (filesystem) and ``file_edit`` so the protected-dir
+    policy and its message live in one place. The message is returned without an
+    ``[Error]:`` prefix; callers format it for their own contract.
+    """
+    try:
+        rel_path = path.relative_to(_NYMERIA_ROOT)
+    except ValueError:
+        return None  # path is outside the Nymeria project root; not protected
+    rel_path_str = str(rel_path).replace("\\", "/")
+    for protected in NYMERIA_PROTECTED_DIRS:
+        if rel_path_str.startswith(protected) or rel_path_str == protected:
+            logger.warning("Blocked write to protected path: %s", rel_path_str)
+            return (
+                f"Cannot modify protected system file: {rel_path_str}\n"
+                f"Protected directories: {', '.join(NYMERIA_PROTECTED_DIRS)}\n"
+                f"Use self_modify() to modify tools or agents instead."
+            )
+    return None
+
+
 def get_workspace_dir() -> Path:
     """Return the only filesystem root where mutating file tools may write."""
     return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
@@ -324,21 +348,9 @@ def file_write(
         assert path is not None
 
         # Check if this is a protected Nymeria system file
-        try:
-            rel_path = path.relative_to(_NYMERIA_ROOT)
-            rel_path_str = str(rel_path).replace("\\", "/")
-
-            for protected in NYMERIA_PROTECTED_DIRS:
-                if rel_path_str.startswith(protected) or rel_path_str == protected:
-                    logger.warning(f"Blocked write to protected path: {rel_path_str}")
-                    return (
-                        f"[Error]: Cannot modify protected system file: {rel_path_str}\n"
-                        f"Protected directories: {', '.join(NYMERIA_PROTECTED_DIRS)}\n"
-                        f"Use self_modify() to modify tools or agents instead."
-                    )
-        except ValueError:
-            # Path is outside Nymeria project - allow it
-            pass
+        protected_error = protected_path_error(path)
+        if protected_error:
+            return f"[Error]: {protected_error}"
 
         # Create parent directories if requested
         if create_directories:

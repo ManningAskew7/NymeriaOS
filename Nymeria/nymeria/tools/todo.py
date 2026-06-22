@@ -111,6 +111,38 @@ def _recurrence_anchor(item, schedule_db, todo_id: str, user_id: str) -> datetim
     return utc_now()
 
 
+def _advance_recurring_done(
+    todo_list,
+    anchor_item,
+    schedule_db,
+    todo_id: str,
+    user_id: str,
+    recurrence: str,
+) -> Optional[datetime]:
+    """Reschedule a recurring TODO after a done transition.
+
+    Advances from the current slot (``anchor_item``) to the next recurrence
+    time, flips the item back to PENDING at that time, and stamps
+    ``last_execution``. Returns the new scheduled datetime, or ``None`` when the
+    recurrence has no further slot. The schedule-db sync stays caller-side: the
+    nym_todo update path and the MCP completion path branch differently around
+    this reschedule, so only the shared state mutation lives here.
+    """
+    anchor = _recurrence_anchor(anchor_item, schedule_db, todo_id, user_id)
+    rescheduled_time = calculate_next_recurrence_time(recurrence, anchor)
+    if rescheduled_time:
+        todo_list.update_item(
+            todo_id,
+            scheduled_for=rescheduled_time,
+            status=TodoStatus.PENDING,
+        )
+        refreshed = todo_list.get_item(todo_id)
+        if refreshed:
+            refreshed.last_execution = anchor
+        logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
+    return rescheduled_time
+
+
 @tool
 def nym_todo(
     todo_id: Optional[str] = None,
@@ -301,23 +333,12 @@ def nym_todo(
 
             # Auto-reschedule recurring TODOs marked as done
             if todo_status == TodoStatus.DONE and item.recurrence:
-                recurrence_anchor = _recurrence_anchor(
-                    item, schedule_db, todo_id, user_id
-                )
-                rescheduled_time = calculate_next_recurrence_time(
-                    item.recurrence,
-                    recurrence_anchor,
+                rescheduled_time = _advance_recurring_done(
+                    todo_list, item, schedule_db, todo_id, user_id, item.recurrence
                 )
                 if rescheduled_time:
-                    todo_list.update_item(
-                        todo_id,
-                        scheduled_for=rescheduled_time,
-                        status=TodoStatus.PENDING,
-                    )
                     item = todo_list.get_item(todo_id)
-                    assert item is not None  # just updated, must exist
-                    item.last_execution = recurrence_anchor
-                    logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
+                    assert item is not None  # just rescheduled, must exist
 
             # Sync to schedule database
             if schedule_db:
@@ -408,23 +429,9 @@ def _todo_complete_internal(
 
             # Auto-reschedule recurring TODOs
             if has_recurrence:
-                recurrence_anchor = _recurrence_anchor(
-                    item, schedule_db, todo_id, user_id
+                rescheduled_time = _advance_recurring_done(
+                    todo_list, item, schedule_db, todo_id, user_id, has_recurrence
                 )
-                rescheduled_time = calculate_next_recurrence_time(
-                    has_recurrence,
-                    recurrence_anchor,
-                )
-                if rescheduled_time:
-                    todo_list.update_item(
-                        todo_id,
-                        scheduled_for=rescheduled_time,
-                        status=TodoStatus.PENDING,
-                    )
-                    refreshed = todo_list.get_item(todo_id)
-                    if refreshed:
-                        refreshed.last_execution = recurrence_anchor
-                    logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
 
             # Sync schedule database
             if schedule_db:

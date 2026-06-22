@@ -431,7 +431,7 @@ def _inspect_test(manager: TriggerManager, user_id: str, trigger_id: str) -> str
 
     conditions_pass = True
     if trigger.conditions:
-        conditions_pass = TriggerManager._evaluate_conditions(sample_event, trigger.conditions)
+        conditions_pass = manager._evaluate_conditions(sample_event, trigger.conditions)
 
     lines = [
         f"Test results for '{trigger.name}' [{trigger.id}]:",

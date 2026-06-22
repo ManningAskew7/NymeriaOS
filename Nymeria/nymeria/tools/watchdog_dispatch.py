@@ -6,7 +6,7 @@ They provide cross-thread visibility that normal threads don't need or want.
 
 import logging
 from datetime import datetime
-from typing import Annotated, List, Optional
+from typing import Annotated, List
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -14,28 +14,13 @@ from langchain_core.tools import InjectedToolArg, tool
 from ..core.activity_log import ActivityType, log_activity
 from ..core.time_utils import parse_scheduled_time, get_user_tz
 from ..core.todo_constants import STATUS_ICONS, STATUS_ORDER
-from ..core.todo_manager import TodoManager
+# Share the single TodoManager singleton and schedule-db accessor with the
+# todo tools, so both modules read the same on-disk store and the
+# todo._todo_manager test seam covers the watchdog path too.
+from .todo import _get_schedule_db, _get_todo_manager
 from .utils import get_user_id, get_thread_id
 
 logger = logging.getLogger(__name__)
-
-_todo_manager: Optional[TodoManager] = None
-
-
-def _get_todo_manager() -> TodoManager:
-    global _todo_manager
-    if _todo_manager is None:
-        from ..config import get_settings
-        _todo_manager = TodoManager(get_settings().data_dir)
-    return _todo_manager
-
-
-def _get_schedule_db():
-    from ..core.agent import get_current_agent
-    agent = get_current_agent()
-    if agent is None:
-        return None
-    return getattr(agent, '_schedule_db', None)
 
 
 @tool
