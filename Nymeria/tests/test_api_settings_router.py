@@ -642,6 +642,33 @@ def test_available_models_uses_provider_endpoint_and_caches_metadata(
     }
 
 
+def test_available_models_returns_empty_on_provider_http_error(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # A provider-side rejection (401 here) is logged distinctly but still
+    # collapses to the "[] == no models" contract the frontend relies on
+    # (optimization slice 10 F10).
+    FakeAsyncClient.response_status = 401
+    FakeAsyncClient.response_body = {"error": {"message": "invalid api key"}}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    try:
+        response = client.get(
+            "/models/available?provider=lmstudio&base_url=http://localhost:1234/v1",
+            headers=_auth(token),
+        )
+        assert response.status_code == 200
+        assert response.json() == []
+        assert FakeAsyncClient.calls[0]["url"] == "http://localhost:1234/v1/models"
+    finally:
+        # Reset the shared class attribute so later tests see a clean 200.
+        FakeAsyncClient.response_status = 200
+        FakeAsyncClient.response_body = None
+
+
 def test_runtime_diagnostics_uses_configured_project_root_for_env_sources(
     tmp_path: Path,
     monkeypatch,

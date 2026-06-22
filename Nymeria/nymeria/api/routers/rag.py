@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,6 +11,36 @@ from pydantic import BaseModel, Field
 from ...core.accounts import AuthenticatedUser
 
 logger = logging.getLogger(__name__)
+
+
+def _memory_db_path(agent: Any, user_id: str) -> Path:
+    """Resolve a user's ``memory.db`` path with the canonical user-id sanitization.
+
+    The sanitization charset mirrors ``core/agent_prompt.get_memory_index`` and
+    the other per-user storage sites. Collapsing rag.py's three inline copies
+    into this one helper keeps the security-relevant rule in a single place; the
+    cross-slice path-sanitizer consolidation (optimization slice 06 F6, the
+    planned ``core/storage_paths.safe_path_segment``) will repoint this helper
+    rather than the three call sites.
+    """
+    safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+    return agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+
+
+def _rag_settings_payload(profile: Any, settings: Any) -> dict:
+    """Build the RAG-settings response body shared by the GET and PUT handlers."""
+    rag_prefs = profile.get_rag_preferences()
+    return {
+        "enabled": profile.opt_in.rag_enabled,
+        "max_chunks": rag_prefs.get("max_chunks", 5),
+        "include_conversations": rag_prefs.get("include_conversations", True),
+        "include_memories": rag_prefs.get("include_memories", False),
+        "include_todos": rag_prefs.get("include_todos", True),
+        "include_tools": rag_prefs.get("include_tools", True),
+        "auto_flush": rag_prefs.get("auto_flush", True),
+        "retrieval_mode": rag_prefs.get("retrieval_mode") or settings.rag_retrieval_mode,
+        "rerank_enabled": rag_prefs.get("rerank_enabled", settings.rag_rerank_enabled),
+    }
 
 
 class RagSettingsUpdate(BaseModel):
@@ -42,20 +73,8 @@ def create_rag_router(
         agent = get_agent_fn()
         profile = agent.profile_manager.get_profile(user_id)
         from ...config import get_settings
-        rag_prefs = profile.get_rag_preferences()
-        settings = get_settings()
 
-        return {
-            "enabled": profile.opt_in.rag_enabled,
-            "max_chunks": rag_prefs.get("max_chunks", 5),
-            "include_conversations": rag_prefs.get("include_conversations", True),
-            "include_memories": rag_prefs.get("include_memories", False),
-            "include_todos": rag_prefs.get("include_todos", True),
-            "include_tools": rag_prefs.get("include_tools", True),
-            "auto_flush": rag_prefs.get("auto_flush", True),
-            "retrieval_mode": rag_prefs.get("retrieval_mode") or settings.rag_retrieval_mode,
-            "rerank_enabled": rag_prefs.get("rerank_enabled", settings.rag_rerank_enabled),
-        }
+        return _rag_settings_payload(profile, get_settings())
 
     @router.put("/users/{user_id}/rag/settings")
     async def update_rag_settings(
@@ -96,20 +115,8 @@ def create_rag_router(
                 profile.set_rag_preference("rerank_enabled", settings_update.rerank_enabled)
 
             from ...config import get_settings
-            rag_prefs = profile.get_rag_preferences()
-            settings = get_settings()
-            return {
-                "status": "ok",
-                "enabled": profile.opt_in.rag_enabled,
-                "max_chunks": rag_prefs.get("max_chunks", 5),
-                "include_conversations": rag_prefs.get("include_conversations", True),
-                "include_memories": rag_prefs.get("include_memories", False),
-                "include_todos": rag_prefs.get("include_todos", True),
-                "include_tools": rag_prefs.get("include_tools", True),
-                "auto_flush": rag_prefs.get("auto_flush", True),
-                "retrieval_mode": rag_prefs.get("retrieval_mode") or settings.rag_retrieval_mode,
-                "rerank_enabled": rag_prefs.get("rerank_enabled", settings.rag_rerank_enabled),
-            }
+
+            return {"status": "ok", **_rag_settings_payload(profile, get_settings())}
 
     @router.get("/users/{user_id}/rag/stats")
     async def get_rag_stats(
@@ -130,8 +137,7 @@ def create_rag_router(
             }
 
         try:
-            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
-            db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+            db_path = _memory_db_path(agent, user_id)
 
             if not db_path.exists():
                 return {
@@ -263,8 +269,7 @@ def create_rag_router(
             )
 
         try:
-            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
-            db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+            db_path = _memory_db_path(agent, user_id)
             memory_index = MemoryIndex(db_path)
             try:
                 cleared = memory_index.delete_by_type(user_id, "memory")
@@ -304,8 +309,7 @@ def create_rag_router(
         agent = get_agent_fn()
 
         try:
-            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
-            db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+            db_path = _memory_db_path(agent, user_id)
 
             if not db_path.exists():
                 return {

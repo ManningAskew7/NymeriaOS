@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from ...tools.definitions.custom_tool_schema import (
@@ -201,6 +202,90 @@ def python_config_to_core(config: PythonToolConfigModel) -> PythonToolConfig:
         entrypoint=config.entrypoint,
         runtime=config.runtime,
     )
+
+
+def build_custom_tool_definition(
+    request: CustomToolCreateRequest,
+) -> CustomToolDefinition:
+    """Build a core ``CustomToolDefinition`` from a create request.
+
+    Shared by the ``/tools/custom`` and ``/tools/unified`` create handlers.
+    Raises ``HTTPException(400)`` when the implementation-specific config block
+    is missing, so both routers return the same 400. ``ValueError`` from the
+    ``*_to_core`` converters or model construction is intentionally left to
+    propagate: the ``/tools/custom`` handler maps it to a 400, the unified
+    handler does not, and that difference is preserved.
+
+    ``request.parameters`` is always a dict (the schema defaults it to ``{}``),
+    so this matches the prior ``parameters or {}`` and bare ``parameters`` call
+    sites identically.
+    """
+    http_config = None
+    mcp_config = None
+    python_config = None
+    if request.implementation_type == "http":
+        if not request.http_config:
+            raise HTTPException(
+                status_code=400,
+                detail="http_config is required for HTTP tools",
+            )
+        http_config = http_config_to_core(request.http_config)
+    elif request.implementation_type == "mcp":
+        if not request.mcp_config:
+            raise HTTPException(
+                status_code=400,
+                detail="mcp_config is required for MCP tools",
+            )
+        mcp_config = mcp_config_to_core(request.mcp_config)
+    elif request.implementation_type == "python":
+        if not request.python_config:
+            raise HTTPException(
+                status_code=400,
+                detail="python_config is required for Python tools",
+            )
+        python_config = python_config_to_core(request.python_config)
+
+    return CustomToolDefinition(
+        id=request.id,
+        name=request.name,
+        description=request.description,
+        parameters=tool_parameters_to_core(request.parameters),
+        implementation_type=request.implementation_type,
+        http_config=http_config,
+        mcp_config=mcp_config,
+        python_config=python_config,
+        enabled=request.enabled,
+        tags=request.tags,
+    )
+
+
+def apply_custom_tool_update(
+    definition: CustomToolDefinition,
+    request: CustomToolUpdateRequest,
+) -> None:
+    """Apply a partial update request to an existing custom-tool definition.
+
+    Shared by the ``/tools/custom`` and ``/tools/unified`` update handlers. Only
+    the config block matching the definition's ``implementation_type`` is
+    replaced. Field assignments are independent, so the order here is immaterial
+    to the resulting definition.
+    """
+    if request.name is not None:
+        definition.name = request.name
+    if request.description is not None:
+        definition.description = request.description
+    if request.parameters is not None:
+        definition.parameters = tool_parameters_to_core(request.parameters)
+    if request.http_config is not None and definition.implementation_type == "http":
+        definition.http_config = http_config_to_core(request.http_config)
+    if request.mcp_config is not None and definition.implementation_type == "mcp":
+        definition.mcp_config = mcp_config_to_core(request.mcp_config)
+    if request.python_config is not None and definition.implementation_type == "python":
+        definition.python_config = python_config_to_core(request.python_config)
+    if request.enabled is not None:
+        definition.enabled = request.enabled
+    if request.tags is not None:
+        definition.tags = request.tags
 
 
 def custom_tool_definition_to_response(defn: CustomToolDefinition) -> CustomToolResponse:
