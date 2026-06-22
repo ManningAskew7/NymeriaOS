@@ -699,3 +699,59 @@ def test_maybe_refresh_token_declines_when_disk_matches_failed_token():
 
     assert client._maybe_refresh_token("nym_old") is False
     assert client.api_key == "nym_old"
+
+
+# ---------------------------------------------------------------------------
+# download_workspace_file narrowed-catch behavior (slice 23 F7)
+# ---------------------------------------------------------------------------
+
+
+def _patch_get_client(monkeypatch, *, get_result=None, get_raises=None):
+    """Patch httpx.AsyncClient with one whose .get returns/raises as configured."""
+
+    class _GetClient:
+        def __init__(self, *, timeout) -> None:
+            self.timeout = timeout
+
+        async def get(self, url: str, **kwargs):
+            if get_raises is not None:
+                raise get_raises
+            return get_result
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(api_client.httpx, "AsyncClient", _GetClient)
+
+
+def _download_once() -> Any:
+    async def run() -> Any:
+        client = NymeriaAPIClient(base_url="http://api", api_key="secret")
+        try:
+            return await client.download_workspace_file("/tmp/report.txt")
+        finally:
+            await client.close()
+
+    return asyncio.run(run())
+
+
+def test_download_workspace_file_returns_none_on_http_status_error(monkeypatch):
+    # A 4xx/5xx makes raise_for_status throw HTTPStatusError -> None, not a raise.
+    _patch_get_client(monkeypatch, get_result=FakeResponse(status_code=404))
+    assert _download_once() is None
+
+
+def test_download_workspace_file_returns_none_on_network_error(monkeypatch):
+    request = api_client.httpx.Request("GET", "http://api/workspace/download")
+    _patch_get_client(
+        monkeypatch,
+        get_raises=api_client.httpx.ConnectError("boom", request=request),
+    )
+    assert _download_once() is None
+
+
+def test_download_workspace_file_propagates_non_httpx_error(monkeypatch):
+    # A non-httpx (programming) error is no longer swallowed into a silent None.
+    _patch_get_client(monkeypatch, get_raises=ValueError("unexpected bug"))
+    with pytest.raises(ValueError):
+        _download_once()

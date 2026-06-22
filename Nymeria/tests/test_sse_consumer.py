@@ -12,6 +12,7 @@ from nymeria.triggers.sse_consumer import (
     dispatch_event,
     format_auth_prompt_message,
     parse_attach_paths,
+    parse_sse_data_line,
 )
 
 
@@ -541,3 +542,43 @@ def test_consume_stream_flush_before_tool_reload():
 
 def test_recording_handler_satisfies_protocol():
     assert isinstance(RecordingHandler(), SSEEventHandler)
+
+
+# ---------------------------------------------------------------------------
+# SSE line parsing (parse_sse_data_line): the shared parser that
+# api_client/trigger_api previously hand-rolled inline.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_sse_data_line_decodes_data_payload():
+    assert parse_sse_data_line('data: {"type": "done"}') == {"type": "done"}
+    assert parse_sse_data_line('data: {"type": "response", "content": "hi"}') == {
+        "type": "response",
+        "content": "hi",
+    }
+
+
+def test_parse_sse_data_line_skips_non_data_lines():
+    # Blank line, bare keepalive comment frame, and a non-data field line.
+    assert parse_sse_data_line("") is None
+    assert parse_sse_data_line(": keepalive") is None
+    assert parse_sse_data_line("event: ping") is None
+
+
+def test_parse_sse_data_line_skips_data_comment_and_bad_json():
+    # ``data: :...`` comment payload and undecodable JSON both skip.
+    assert parse_sse_data_line("data: :still-a-comment") is None
+    assert parse_sse_data_line("data: not-json") is None
+
+
+def test_parse_sse_data_line_skips_bare_null_payload():
+    # Real events are always JSON objects; a bare ``data: null`` decodes to
+    # None and is therefore treated as a skip (documented inert edge).
+    assert parse_sse_data_line("data: null") is None
+
+
+def test_parse_sse_data_line_preserves_falsy_non_null_payloads():
+    # Falsy-but-not-None decoded values are returned, not skipped.
+    assert parse_sse_data_line("data: false") is False
+    assert parse_sse_data_line("data: 0") == 0
+    assert parse_sse_data_line('data: ""') == ""

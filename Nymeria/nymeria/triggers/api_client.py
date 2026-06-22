@@ -8,12 +8,13 @@ around ``httpx.AsyncClient``.
 """
 
 import asyncio
-import json as _json
 import logging
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from urllib.parse import quote
 
 import httpx
+
+from .sse_consumer import parse_sse_data_line
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,10 @@ class NymeriaAPIClient:
     When the client is constructed with an admin-role service token, each
     per-user call can attach ``X-Nymeria-Act-As: <user_id>`` so the server
     routes the request as that user. Callers pass ``act_as=<user_id>`` on
-    the underlying ``_get``/``_post``/... helpers. Today the header is only
-    consumed by ``GET /me`` and ``GET /platform/resolve``; Step 3b's route
-    cutover will make it the authoritative identity for every endpoint.
+    the underlying ``_get``/``_post``/... helpers; the header is the
+    authoritative per-user identity honored on every per-user endpoint, so
+    shared infrastructure (bots, watchdog, slash commands) can act for any
+    user without holding that user's raw token.
     """
 
     def __init__(
@@ -363,14 +365,8 @@ class NymeriaAPIClient:
                 ) as resp:
                     resp.raise_for_status()
                     async for line in resp.aiter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        raw = line[6:]
-                        if raw.startswith(":"):
-                            continue
-                        try:
-                            chunk = _json.loads(raw)
-                        except _json.JSONDecodeError:
+                        chunk = parse_sse_data_line(line)
+                        if chunk is None:
                             continue
                         yielded = True
                         yield chunk
@@ -411,15 +407,10 @@ class NymeriaAPIClient:
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
-                if not line or not line.startswith("data: "):
+                chunk = parse_sse_data_line(line)
+                if chunk is None:
                     continue
-                raw = line[6:]
-                if raw.startswith(":"):
-                    continue
-                try:
-                    yield _json.loads(raw)
-                except _json.JSONDecodeError:
-                    continue
+                yield chunk
 
     # ── Thread Management ─────────────────────────────────────────────────
 
@@ -1625,6 +1616,15 @@ class NymeriaAPIClient:
         """Download a file from the workspace.
 
         Returns ``(raw_bytes, filename, content_type)`` or ``None``.
+
+        Returns ``None`` for an over-limit file, an HTTP-status error (e.g. 404
+        missing / 403 denied), or a transient network error, so callers can
+        uniformly skip the attachment. The two failure classes are logged
+        distinctly (HTTP-status at ``error`` with the status code, network at
+        ``warning``) so a masked auth/config problem is no longer
+        indistinguishable from a simply-missing file. Only ``httpx`` errors are
+        caught; an unexpected programming error propagates rather than being
+        swallowed as a silent ``None``.
         """
         _MAX_SIZE = 50 * 1024 * 1024  # Telegram bot limit
         try:
@@ -1644,8 +1644,15 @@ class NymeriaAPIClient:
             if "filename=" in cd:
                 filename = cd.split("filename=")[-1].strip('" ')
             return (resp.content, filename, content_type)
-        except Exception as e:
-            logger.warning("Failed to download workspace file %s: %s", file_path, e)
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Workspace download failed for %s: HTTP %s",
+                file_path,
+                e.response.status_code,
+            )
+            return None
+        except httpx.RequestError as e:
+            logger.warning("Workspace download network error for %s: %s", file_path, e)
             return None
 
     async def download_workspace_artifact(

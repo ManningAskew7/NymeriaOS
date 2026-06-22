@@ -9,7 +9,7 @@ import importlib
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 from .base import BaseTriggerSource
 
@@ -17,6 +17,21 @@ logger = logging.getLogger(__name__)
 
 # Registry: source name -> source instance
 AVAILABLE_SOURCES: Dict[str, BaseTriggerSource] = {}
+
+
+def _iter_source_module_names() -> List[str]:
+    """Return the importable module name for each source plugin file.
+
+    Shared by :func:`reload_sources` and :func:`_auto_load_sources`; skips
+    private files (``_*``) and ``base.py``. Sorted for deterministic load
+    order.
+    """
+    sources_dir = Path(__file__).parent
+    return [
+        f"nymeria.triggers.sources.{py_file.stem}"
+        for py_file in sorted(sources_dir.glob("*.py"))
+        if not py_file.name.startswith("_") and py_file.name != "base.py"
+    ]
 
 
 def register_source(name: str, source_class: Type[BaseTriggerSource]) -> None:
@@ -71,15 +86,8 @@ def reload_sources() -> int:
     """
     AVAILABLE_SOURCES.clear()
 
-    sources_dir = Path(__file__).parent
-
     count = 0
-    for py_file in sorted(sources_dir.glob("*.py")):
-        if py_file.name.startswith("_") or py_file.name == "base.py":
-            continue
-
-        module_name = f"nymeria.triggers.sources.{py_file.stem}"
-
+    for module_name in _iter_source_module_names():
         # Remove from cache so re-import triggers register_source() again
         if module_name in sys.modules:
             del sys.modules[module_name]
@@ -101,13 +109,7 @@ def reload_sources() -> int:
 
 def _auto_load_sources():
     """Auto-load all source plugins in this directory."""
-    sources_dir = Path(__file__).parent
-
-    for py_file in sorted(sources_dir.glob("*.py")):
-        if py_file.name.startswith("_") or py_file.name == "base.py":
-            continue
-
-        module_name = f"nymeria.triggers.sources.{py_file.stem}"
+    for module_name in _iter_source_module_names():
         try:
             importlib.import_module(module_name)
             logger.info(f"Auto-loaded trigger source: {module_name}")
