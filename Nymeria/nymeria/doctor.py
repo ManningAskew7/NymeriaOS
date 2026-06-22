@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 from rich.console import Console
 
 from .config.settings import PACKAGE_ROOT, PROJECT_ROOT, get_env_file_paths, get_settings
+from .core.checkpoint_sql import sqlite_table_exists
 from .core.event_bus import redact_url_credentials
 from .vendor.react_agent.config import LLMConfig
 from .vendor.react_agent.providers import create_llm
@@ -297,7 +298,7 @@ def _count_sqlite_threads(path: Path) -> int:
     if not path.is_file():
         raise FileNotFoundError(path)
     with _connect_readonly(path) as conn:
-        if not _sqlite_table_exists(conn, "checkpoints"):
+        if not sqlite_table_exists(conn, "checkpoints"):
             return 0
         row = conn.execute("SELECT COUNT(DISTINCT thread_id) AS n FROM checkpoints").fetchone()
     return int(row["n"] if row else 0)
@@ -307,7 +308,7 @@ def _count_sqlite_users(path: Path) -> int:
     if not path.is_file():
         raise FileNotFoundError(path)
     with _connect_readonly(path) as conn:
-        if not _sqlite_table_exists(conn, "users"):
+        if not sqlite_table_exists(conn, "users"):
             return 0
         row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
     return int(row["n"] if row else 0)
@@ -317,14 +318,6 @@ def _connect_readonly(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _check_postgres_database(settings: Any) -> CheckResult:
