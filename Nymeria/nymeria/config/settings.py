@@ -2000,45 +2000,28 @@ class Settings(BaseSettings):
                 "  Either set POSTGRES_URI or change DATABASE_BACKEND to 'sqlite'."
             )
 
-        # Twitch bot warning
-        if self.twitch_bot_access_token and not provider_key:
-            warnings.append(
-                "TWITCH_BOT_ACCESS_TOKEN is set but no LLM API key configured.\n"
-                "  The Twitch bot will not be able to process messages."
-            )
-
-        # Discord bot warning
-        if self.discord_bot_token and not provider_key:
-            warnings.append(
-                "DISCORD_BOT_TOKEN is set but no LLM API key configured.\n"
-                "  The Discord bot will not be able to process messages."
-            )
-
-        # Slack bot warning
-        if (self.slack_bot_token or self.slack_app_token) and not provider_key:
-            warnings.append(
-                "SLACK_BOT_TOKEN or SLACK_APP_TOKEN is set but no LLM API key configured.\n"
-                "  The Slack bot will not be able to process messages."
-            )
-
-        # Matrix bot warning
-        if (self.matrix_access_token or self.matrix_password) and not provider_key:
-            warnings.append(
-                "MATRIX_ACCESS_TOKEN or MATRIX_PASSWORD is set but no LLM API key configured.\n"
-                "  The Matrix bot will not be able to process messages."
-            )
-
-        if (self.signal_http_url or self.signal_account) and not provider_key:
-            warnings.append(
-                "SIGNAL_HTTP_URL or SIGNAL_ACCOUNT is set but no LLM API key configured.\n"
-                "  The Signal bot will not be able to process messages."
-            )
-
-        if (self.instagram_access_token or self.instagram_ig_user_id) and not provider_key:
-            warnings.append(
-                "INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_IG_USER_ID is set but no LLM API key configured.\n"
-                "  The Instagram bot will not be able to process messages."
-            )
+        # Bot platforms that need an LLM key to process messages: warn when any
+        # of a platform's tokens is configured but no provider key is present.
+        # (attribute names, "set one of" env label, bot display name)
+        bot_token_warnings = (
+            (("twitch_bot_access_token",), "TWITCH_BOT_ACCESS_TOKEN", "Twitch"),
+            (("discord_bot_token",), "DISCORD_BOT_TOKEN", "Discord"),
+            (("slack_bot_token", "slack_app_token"), "SLACK_BOT_TOKEN or SLACK_APP_TOKEN", "Slack"),
+            (("matrix_access_token", "matrix_password"), "MATRIX_ACCESS_TOKEN or MATRIX_PASSWORD", "Matrix"),
+            (("signal_http_url", "signal_account"), "SIGNAL_HTTP_URL or SIGNAL_ACCOUNT", "Signal"),
+            (
+                ("instagram_access_token", "instagram_ig_user_id"),
+                "INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_IG_USER_ID",
+                "Instagram",
+            ),
+        )
+        if not provider_key:
+            for token_attrs, env_label, bot_name in bot_token_warnings:
+                if any(getattr(self, attr) for attr in token_attrs):
+                    warnings.append(
+                        f"{env_label} is set but no LLM API key configured.\n"
+                        f"  The {bot_name} bot will not be able to process messages."
+                    )
 
         # Warnings for optional features
         if not self.perplexity_api_key:
