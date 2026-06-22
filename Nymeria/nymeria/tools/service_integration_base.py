@@ -34,7 +34,21 @@ refactor):
   rely on the module-local defaults by omitting the keyword arguments.
 * ``_csv_to_list``: some copies are newline-tolerant and some are not.
 
-These are tracked as follow-ups in the slice 13 optimization report.
+A few modules also keep a LOCAL copy of an otherwise-shared helper because their
+copy has drifted in an agent-visible way (so the canonical helper here is not a
+drop-in for them):
+
+* ``filtered`` vs local ``_filtered_params``: ``business`` and ``work_tracking``
+  drop ``None`` / ``""`` / ``[]`` but keep empty dicts ``{}``, where this
+  ``filtered`` also drops ``{}``. Switching them would change request payloads.
+* ``json_object`` vs local ``_json_object``: ``business`` and ``event_meeting``
+  add an ``allow_empty`` parameter and a richer error string;
+  ``transform_utility`` raises on whitespace-only input where this helper returns
+  ``{}``.
+* ``dump_json``: ``transform_utility``'s local ``_dump_json`` is non-truncating,
+  so it does not import this (truncating) version.
+
+These are tracked as follow-ups in the slice 13 and 14 optimization reports.
 """
 
 from __future__ import annotations
