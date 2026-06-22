@@ -216,11 +216,9 @@ def _prune_thread_skills(
         if hasattr(agent, "invalidate_thread_config_cache"):
             agent.invalidate_thread_config_cache(thread_id)
         try:
-            with agent._graph_cache_lock:
-                agent._user_graphs.clear()
-                agent._async_user_graphs.clear()
+            agent._rebuild_default_graphs()
         except Exception:
-            logger.debug("Failed to clear graph caches after skill prune", exc_info=True)
+            logger.debug("Failed to rebuild graphs after skill prune", exc_info=True)
 
     return _json_result(
         ok=True,
@@ -514,12 +512,10 @@ def install_skill(
         return f"[error] {type(e).__name__}: {e}"
 
     agent.skill_manager.reload()
-    with agent._graph_cache_lock:
-        agent._user_graphs.clear()
     try:
-        agent._async_user_graphs.clear()
+        agent._rebuild_default_graphs()
     except Exception:
-        logger.debug("Failed to clear async graph cache")
+        logger.debug("Failed to rebuild graphs after skill install", exc_info=True)
 
     details: List[str] = [
         f"Installed skill {skill.name!r} from {source} into {scope} scope.",
@@ -600,11 +596,9 @@ def _set_thread_skill_enabled(
         )
     elif changed:
         try:
-            with agent._graph_cache_lock:
-                agent._user_graphs.clear()
-            agent._async_user_graphs.clear()
+            agent._rebuild_default_graphs()
         except Exception:
-            logger.debug("Failed to clear graph caches after skill disable")
+            logger.debug("Failed to rebuild graphs after skill disable", exc_info=True)
 
     payload = _json_result(
         ok=True,

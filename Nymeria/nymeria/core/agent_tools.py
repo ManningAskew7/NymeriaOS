@@ -351,11 +351,22 @@ def rebuild_default_graphs(agent: "NymeriaAgent") -> None:
 
     Call after any mutation that could change the tool set visible to a
     graph build: default_thread_tools saved, MCP server enable/install/
-    delete, custom-tool reload. Subsequent thread messages rebuild their
+    delete, custom-tool reload, an LLM-credential change, a skill toggle,
+    or a base-system-prompt reload. Subsequent thread messages rebuild their
     graph lazily from the up-to-date registry + profile.
+
+    The two cache clears run under ``_graph_cache_lock`` because the lazy
+    build path (``store_cached_graph_entry``) mutates the same dicts under
+    that lock, including an LRU ``next(iter(cache))`` + ``del`` eviction that a
+    concurrent unlocked ``clear()`` could turn into a ``KeyError`` or
+    ``RuntimeError: dictionary changed size``. The default-graph rebuilds stay
+    outside the lock: they do not touch the cache dicts, and holding the
+    non-reentrant lock across graph construction is both unnecessary and the
+    shape the careful callers already used.
     """
-    agent._user_graphs.clear()
-    agent._async_user_graphs.clear()
+    with agent._graph_cache_lock:
+        agent._user_graphs.clear()
+        agent._async_user_graphs.clear()
     agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
     agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
 

@@ -208,10 +208,7 @@ def create_user_tools_router(
             profile.tool_preferences.custom_descriptions.clear()
             profile.updated_at = utc_now()
 
-        agent._user_graphs.clear()
-        agent._async_user_graphs.clear()
-        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
-        agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
+        agent._rebuild_default_graphs()
 
         return {
             "status": "ok",

@@ -503,15 +503,7 @@ def apply_server_settings_update(
 
     rebuild = _GRAPH_REBUILD_FIELDS & set(updates_dict.keys())
     if rebuild:
-        with agent._graph_cache_lock:
-            agent._user_graphs.clear()
-            agent._async_user_graphs.clear()
-        agent._default_graph = agent._build_graph_with_prompt(
-            agent._base_system_prompt
-        )
-        agent._default_async_graph = agent._build_async_graph_with_prompt(
-            agent._base_system_prompt
-        )
+        agent._rebuild_default_graphs()
         logger.info("Hot-reloaded graph settings: %s", rebuild)
 
     needs_restart = bool(_restart_required_keys() & set(updates_dict.keys()))
