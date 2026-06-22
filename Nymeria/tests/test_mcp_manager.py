@@ -50,6 +50,63 @@ def test_stdio_startup_failure_includes_recent_stderr(tmp_path):
     assert "No such file" in message or "can't open file" in message
 
 
+class _FakeConn:
+    def __init__(self):
+        self._id = 0
+
+    def next_request_id(self) -> int:
+        self._id += 1
+        return self._id
+
+
+def test_list_tools_detailed_returns_raw_tool_records(monkeypatch):
+    manager = MCPServerManager()
+    config = MCPToolConfig(
+        server_command=sys.executable,
+        server_args=["server.py"],
+        tool_name="__discovery__",
+        startup_timeout_seconds=7,
+    )
+    captured = {}
+
+    def fake_send_request(conn, request, timeout):
+        captured["method"] = request["method"]
+        captured["timeout"] = timeout
+        return {
+            "result": {
+                "tools": [
+                    {"name": "alpha", "description": "A", "inputSchema": {"type": "object"}},
+                    {"name": "beta"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr(manager, "_get_or_create_connection", lambda cfg: _FakeConn())
+    monkeypatch.setattr(manager, "_send_request", fake_send_request)
+
+    tools = manager.list_tools_detailed(config)
+
+    assert captured["method"] == "tools/list"
+    assert captured["timeout"] == 7  # honors config.startup_timeout_seconds
+    assert [t.get("name") for t in tools] == ["alpha", "beta"]
+    assert tools[0]["inputSchema"] == {"type": "object"}
+
+
+def test_list_tools_detailed_returns_empty_without_result(monkeypatch):
+    manager = MCPServerManager()
+    config = MCPToolConfig(
+        server_command=sys.executable,
+        server_args=["server.py"],
+        tool_name="__discovery__",
+    )
+    monkeypatch.setattr(manager, "_get_or_create_connection", lambda cfg: _FakeConn())
+    monkeypatch.setattr(
+        manager, "_send_request", lambda conn, request, timeout: {"error": {"message": "boom"}}
+    )
+
+    assert manager.list_tools_detailed(config) == []
+
+
 def test_shared_mcp_manager_used_by_managed_and_custom_tools(tmp_path):
     shutdown_mcp_manager()
     try:

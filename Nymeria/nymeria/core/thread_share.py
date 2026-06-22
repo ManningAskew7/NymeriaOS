@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import Any, Optional, Set
 
 from pydantic import ValidationError
 
+from .callable_names import CALLABLE_NAME_RE, dedupe_callable_name, safe_callable_base
 from .thread_config import ThreadConfig, ThreadLLMConfig
 
 THREAD_SHARE_KIND = "nymeria.thread.share"
@@ -59,9 +59,6 @@ LLM_CONFIG_FIELDS = {
     "context_length",
     "ollama_num_ctx",
 }
-
-CALLABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
 
 class ThreadShareError(ValueError):
     """Raised when a share document is structurally invalid."""
@@ -126,30 +123,19 @@ def build_thread_share_document(
 
 
 def _safe_callable_base(value: str) -> str:
-    safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in value.strip())
-    safe = "_".join(part for part in safe.split("_") if part)
-    safe = safe.strip("_-")
-    if not safe:
-        safe = "ImportedThread"
-    if safe[0].isdigit():
-        safe = f"Imported_{safe}"
-    return safe[:56] or "ImportedThread"
+    return safe_callable_base(
+        value, fallback="ImportedThread", digit_prefix="Imported", max_len=56
+    )
 
 
 def _dedupe_callable_name(
     desired: str,
     unavailable_names: Set[str],
 ) -> str:
-    base = _safe_callable_base(desired)
-    candidate = base[:64]
-    if CALLABLE_NAME_RE.match(candidate) and candidate not in unavailable_names:
-        return candidate
-    for i in range(2, 1000):
-        suffix = f"_{i}"
-        candidate = f"{base[:64 - len(suffix)]}{suffix}"
-        if CALLABLE_NAME_RE.match(candidate) and candidate not in unavailable_names:
-            return candidate
-    raise ThreadShareError("Could not derive a unique callable name")
+    candidate = dedupe_callable_name(_safe_callable_base(desired), unavailable_names)
+    if candidate is None:
+        raise ThreadShareError("Could not derive a unique callable name")
+    return candidate
 
 
 def validate_share_document(document: dict[str, Any]) -> dict[str, Any]:
