@@ -12,7 +12,7 @@ from typing import Any, Literal
 from rich.cells import cell_len
 
 from ..state import CLIUIState, select_context_usage
-from .markdown import truncate_cell_width
+from .markdown import coerce_width, truncate_cell_width
 from .indicator import (
     ActivityIndicator,
     PHASE_LABELS,
@@ -100,7 +100,7 @@ class StatusBarRenderer:
 
         selected_context = context or StatusBarContext()
         current_time = time.monotonic() if now is None else now
-        render_width = _positive_width(
+        render_width = coerce_width(
             width if width is not None else getattr(capabilities, "width", 80)
         )
         segments = self._segments(
@@ -506,7 +506,7 @@ def _fit_status_segment_records(
 ) -> list[StatusSegment]:
     """Drop low-priority segment records, then truncate survivors to fit one line."""
 
-    render_width = _positive_width(width)
+    render_width = coerce_width(width)
     active = [segment for segment in segments if normalize_detail(segment.text)]
     if not active:
         return []
@@ -680,16 +680,6 @@ def _first_number(payload: dict[str, Any], *keys: str) -> float | None:
         if isinstance(value, (int, float)):
             return float(value)
     return None
-
-
-def _positive_width(width: int | None) -> int:
-    if width is None:
-        return 80
-    try:
-        parsed = int(width)
-    except (TypeError, ValueError):
-        return 80
-    return max(1, parsed)
 
 
 __all__ = [

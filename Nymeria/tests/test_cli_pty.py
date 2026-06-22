@@ -19,9 +19,9 @@ from cli_fixtures import DelayedEvent, FakeAgentClient, FakeTerminalCapabilities
 from nymeria.triggers.cli.app import CLIRuntimeConfig
 from nymeria.triggers.cli.capabilities import detect_terminal_capabilities
 from nymeria.triggers.cli.input import ComposerController, ComposerSubmission
-from nymeria.triggers.cli.rendering.full_screen import (
-    FullScreenPromptToolkitShell,
-    FullScreenShellConfig,
+from nymeria.triggers.cli.rendering.full_screen_legacy import (
+    LegacyFullScreenPromptToolkitShell,
+    LegacyFullScreenShellConfig,
 )
 
 pty = pytest.importorskip("pty")
@@ -44,8 +44,10 @@ def test_real_pty_streams_are_detected_as_full_screen_capable() -> None:
     try:
         stdin, stdout, stderr = _open_slave_streams(slave_fd)
         with stdin, stdout, stderr:
+            # The legacy full-screen renderer is opt-in (auto now resolves to
+            # rich); request it explicitly to assert a real PTY is full-capable.
             caps = detect_terminal_capabilities(
-                runtime_config(),
+                runtime_config(renderer="full"),
                 stdin=stdin,
                 stdout=stdout,
                 stderr=stderr,
@@ -90,11 +92,11 @@ def test_pipe_stdout_forces_plain_even_when_stdin_is_a_real_pty() -> None:
     assert caps.alt_screen_enabled is False
 
 
-def make_shell(client: FakeAgentClient) -> FullScreenPromptToolkitShell:
-    return FullScreenPromptToolkitShell(
+def make_shell(client: FakeAgentClient) -> LegacyFullScreenPromptToolkitShell:
+    return LegacyFullScreenPromptToolkitShell(
         client=client,
         capabilities=FakeTerminalCapabilities(width=100),
-        config=FullScreenShellConfig(
+        config=LegacyFullScreenShellConfig(
             thread_id="thread-1",
             user_id="alice",
             model="test-model",
@@ -104,7 +106,7 @@ def make_shell(client: FakeAgentClient) -> FullScreenPromptToolkitShell:
 
 
 def test_ctrl_c_composer_path_requests_stop_once_and_preserves_draft() -> None:
-    async def exercise() -> tuple[FullScreenPromptToolkitShell, FakeAgentClient]:
+    async def exercise() -> tuple[LegacyFullScreenPromptToolkitShell, FakeAgentClient]:
         client = FakeAgentClient(
             streams={
                 "slow": [

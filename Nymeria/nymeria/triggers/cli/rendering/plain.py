@@ -22,6 +22,7 @@ from ..state import (
     start_turn,
 )
 from .indicator import activity_state_from_ui_state
+from .markdown import coerce_width
 
 ANSI_ESCAPE_PREFIX = "\x1b"
 ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -46,7 +47,7 @@ class PlainRenderer:
         self.state = state or create_initial_state()
         self.stdout = stdout or sys.stdout
         self.stderr = stderr or sys.stderr
-        self.width = _positive_width(width)
+        self.width = coerce_width(width)
         self._last_activity_text = ""
         self._rendered_tool_results: set[str] = set()
         self._rendered_system_ids: set[str] = set()
@@ -254,7 +255,7 @@ def activity_status_text(activity: Any, *, width: int | None = None) -> str:
         return ""
     detail = " ".join(str(getattr(activity, "detail", "") or "").split())
     text = f"{label} {detail}".strip()
-    return truncate_plain(text, _positive_width(width))
+    return truncate_plain(text, coerce_width(width))
 
 
 def tool_result_summary(
@@ -277,7 +278,7 @@ def tool_result_summary(
         parts.append("(cancelled)")
     elif tool.status == "running":
         parts.append("(running)")
-    return truncate_plain(" ".join(parts), _positive_width(width))
+    return truncate_plain(" ".join(parts), coerce_width(width))
 
 
 def format_args_preview(
@@ -318,7 +319,7 @@ def truncate_plain(text: str, width: int | None) -> str:
     """Collapse and truncate plain text to a terminal width."""
 
     normalized = " ".join(str(text or "").split())
-    selected_width = _positive_width(width)
+    selected_width = coerce_width(width)
     if len(normalized) <= selected_width:
         return normalized
     if selected_width <= 3:
@@ -384,16 +385,6 @@ def _stringify(value: Any) -> str:
         return json.dumps(value, ensure_ascii=True, sort_keys=True)
     except TypeError:
         return str(value)
-
-
-def _positive_width(width: int | None) -> int:
-    if width is None:
-        return 80
-    try:
-        parsed = int(width)
-    except (TypeError, ValueError):
-        return 80
-    return max(1, parsed)
 
 
 __all__ = [

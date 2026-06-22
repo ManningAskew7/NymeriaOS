@@ -8,9 +8,9 @@ from nymeria.triggers.cli.commands import CommandRegistry
 from nymeria.triggers.cli.commands import system as system_commands
 from nymeria.triggers.cli.commands.backend import BackendCommandProvider
 from nymeria.triggers.cli.input import ComposerSubmission
-from nymeria.triggers.cli.rendering.full_screen import (
-    FullScreenPromptToolkitShell,
-    FullScreenShellConfig,
+from nymeria.triggers.cli.rendering.full_screen_legacy import (
+    LegacyFullScreenPromptToolkitShell,
+    LegacyFullScreenShellConfig,
     _style,
     render_transcript,
 )
@@ -22,11 +22,11 @@ def make_shell(
     *,
     capabilities: FakeTerminalCapabilities | None = None,
     client: FakeAgentClient | None = None,
-) -> FullScreenPromptToolkitShell:
-    return FullScreenPromptToolkitShell(
+) -> LegacyFullScreenPromptToolkitShell:
+    return LegacyFullScreenPromptToolkitShell(
         client=client or FakeAgentClient(),
         capabilities=capabilities or FakeTerminalCapabilities(width=100),
-        config=FullScreenShellConfig(
+        config=LegacyFullScreenShellConfig(
             thread_id="thread-1",
             user_id="alice",
             model="test-model",

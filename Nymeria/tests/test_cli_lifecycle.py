@@ -17,9 +17,9 @@ from nymeria.triggers.cli.lifecycle import (
     TurnLifecycleController,
     stream_error_event_from_exception,
 )
-from nymeria.triggers.cli.rendering.full_screen import (
-    FullScreenPromptToolkitShell,
-    FullScreenShellConfig,
+from nymeria.triggers.cli.rendering.full_screen_legacy import (
+    LegacyFullScreenPromptToolkitShell,
+    LegacyFullScreenShellConfig,
 )
 from nymeria.triggers.cli.state import (
     CLIUIState,
@@ -29,11 +29,11 @@ from nymeria.triggers.cli.state import (
 )
 
 
-def make_shell(client: Any) -> FullScreenPromptToolkitShell:
-    return FullScreenPromptToolkitShell(
+def make_shell(client: Any) -> LegacyFullScreenPromptToolkitShell:
+    return LegacyFullScreenPromptToolkitShell(
         client=client,
         capabilities=FakeTerminalCapabilities(width=100),
-        config=FullScreenShellConfig(
+        config=LegacyFullScreenShellConfig(
             thread_id="thread-1",
             user_id="alice",
             model="test-model",
@@ -215,7 +215,7 @@ class StopAwareDisconnectClient(FakeAgentClient):
 
 
 def test_full_screen_explicit_stop_converts_followup_disconnect_to_cancelled() -> None:
-    async def exercise() -> FullScreenPromptToolkitShell:
+    async def exercise() -> LegacyFullScreenPromptToolkitShell:
         client = StopAwareDisconnectClient()
         shell = make_shell(client)
 
@@ -235,7 +235,7 @@ def test_full_screen_explicit_stop_converts_followup_disconnect_to_cancelled() -
 
 
 def test_full_screen_shutdown_stops_active_turn_and_cancels_task() -> None:
-    async def exercise() -> tuple[FullScreenPromptToolkitShell, FakeAgentClient]:
+    async def exercise() -> tuple[LegacyFullScreenPromptToolkitShell, FakeAgentClient]:
         client = FakeAgentClient(
             streams={
                 "slow": [

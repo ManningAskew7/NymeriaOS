@@ -9,7 +9,7 @@ from cli_fixtures import FakeTerminalCapabilities, run
 from nymeria.triggers.cli.app import _repl_prompt_style
 from nymeria.triggers.cli.commands import CommandContext, CommandRegistry, ListCommandOutputSink
 from nymeria.triggers.cli.commands import theme as theme_commands
-from nymeria.triggers.cli.rendering.full_screen import _style
+from nymeria.triggers.cli.rendering.full_screen_legacy import _style
 from nymeria.triggers.cli.rendering.rich_repl import render_tool_row
 from nymeria.triggers.cli.state import ToolCallStep
 from nymeria.triggers.cli.theme import (

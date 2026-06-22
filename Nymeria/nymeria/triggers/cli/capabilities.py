@@ -216,7 +216,12 @@ def resolve_renderer_mode(
     term: str,
     ci: bool,
 ) -> tuple[ResolvedRendererMode, str]:
-    """Resolve the requested renderer against terminal safety constraints."""
+    """Resolve the requested renderer against terminal safety constraints.
+
+    The Rich REPL is the default and actively maintained renderer, so ``auto``
+    resolves to ``rich`` on an interactive terminal. The legacy full-screen TUI
+    shell is opt-in only via an explicit ``--renderer full``.
+    """
 
     term_is_dumb = term.strip().lower() in {"", "dumb"}
     if not stdout_isatty:
@@ -234,7 +239,7 @@ def resolve_renderer_mode(
         return "rich", "rich-requested"
     if requested == "full":
         return "full", "full-requested"
-    return "full", "auto-interactive"
+    return "rich", "auto-interactive"
 
 
 def _is_tty(stream: Any) -> bool:

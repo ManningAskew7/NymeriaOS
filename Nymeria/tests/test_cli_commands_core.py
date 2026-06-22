@@ -14,9 +14,9 @@ from nymeria.triggers.cli.commands import (
 from nymeria.triggers.cli.commands import context as context_commands
 from nymeria.triggers.cli.commands import fast, smart
 from nymeria.triggers.cli.commands import model, provider, system, threads, usage
-from nymeria.triggers.cli.rendering.full_screen import (
-    FullScreenPromptToolkitShell,
-    FullScreenShellConfig,
+from nymeria.triggers.cli.rendering.full_screen_legacy import (
+    LegacyFullScreenPromptToolkitShell,
+    LegacyFullScreenShellConfig,
 )
 
 
@@ -702,10 +702,10 @@ def test_settings_patch_rejects_secret_or_unknown_fields() -> None:
 def test_full_screen_shell_core_commands_update_runtime_context() -> None:
     client = CoreFakeClient()
     registry = make_registry()
-    shell = FullScreenPromptToolkitShell(
+    shell = LegacyFullScreenPromptToolkitShell(
         client=client,
         capabilities=FakeTerminalCapabilities(width=100),
-        config=FullScreenShellConfig(
+        config=LegacyFullScreenShellConfig(
             thread_id="thread-1",
             user_id="alice",
             model="gpt-thread",
