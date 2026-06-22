@@ -2,12 +2,12 @@
 
 Extracted from ``NymeriaAgent._prepare_astream_input``. The function
 takes the agent and the per-turn parameters; reads
-``agent._get_llm_config_for_thread`` and ``agent.settings`` -- all stable
+``agent._get_llm_config_for_thread`` and ``agent.settings``, all stable
 public/facade surface on the agent.
 
 As of Phase B (multi-attachment + sandbox), this function only handles
 *image* attachments inline. Non-image attachments are sandboxed upfront
-in ``agent.astream`` and reach this function as ``sandbox_records`` — a
+in ``agent.astream`` and reach this function as ``sandbox_records``, a
 list of ``AttachmentRecord`` whose paths are already baked into the
 ``message_with_context`` preamble. The records are persisted in
 ``HumanMessage.additional_kwargs["attachments"]`` so thread history can

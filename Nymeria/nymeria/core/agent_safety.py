@@ -136,7 +136,7 @@ def turn_safety_content(agent: "NymeriaAgent", safety: TurnSafetyResult) -> str:
     return (
         f"I reached the maximum number of steps "
         f"({safety.max_iterations}) and had to stop. "
-        "My task may be incomplete — you can ask me to continue where I left off."
+        "My task may be incomplete. You can ask me to continue where I left off."
     )
 
 
