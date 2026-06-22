@@ -20,7 +20,8 @@ different mental models and warrant lexically distinct tools.
 """
 
 import logging
-from typing import Annotated, Optional
+import threading
+from typing import Annotated, Dict, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -56,8 +57,31 @@ def _get_profile_manager() -> UserProfileManager:
     return _profile_manager
 
 
+# Per-user MemoryIndex cache. Constructing a MemoryIndex opens the DB, loads the
+# sqlite-vec extension, and runs the schema init; the memory tools (rag_search,
+# memory_add/edit/read, ...) are invoked repeatedly, so one instance per user is
+# reused instead of rebuilt on every call (mirroring how the agent caches its own
+# per-user indexes). Keyed by the sanitized user id; the db_path guard rebuilds if
+# the resolved path changes (e.g. data_dir is repointed under tests). MemoryIndex
+# serializes its own DB access with an internal lock.
+_memory_index_cache: Dict[str, MemoryIndex] = {}
+_memory_index_cache_lock = threading.Lock()
+
+
+def _reset_memory_index_cache() -> None:
+    """Drop and close all cached MemoryIndex instances. For explicit teardown and
+    tests that repoint the data directory."""
+    with _memory_index_cache_lock:
+        for index in _memory_index_cache.values():
+            try:
+                index.close()
+            except Exception:
+                logger.debug("Error closing cached memory index", exc_info=True)
+        _memory_index_cache.clear()
+
+
 def _get_memory_index(user_id: str) -> Optional[MemoryIndex]:
-    """Get memory index for a user if RAG is enabled."""
+    """Get the cached memory index for a user if RAG is enabled."""
     manager = _get_profile_manager()
     profile = manager.get_profile(user_id)
 
@@ -73,7 +97,14 @@ def _get_memory_index(user_id: str) -> Optional[MemoryIndex]:
             safe_user_id = "default"
 
         db_path = settings.data_dir / "users" / safe_user_id / "memory.db"
-        return MemoryIndex(db_path)
+        with _memory_index_cache_lock:
+            index = _memory_index_cache.get(safe_user_id)
+            if index is None or index.db_path != db_path:
+                if index is not None:
+                    index.close()  # release the evicted instance's connection
+                index = MemoryIndex(db_path)
+                _memory_index_cache[safe_user_id] = index
+            return index
     except Exception as e:
         logger.warning(f"Failed to get memory index for user {user_id}: {e}")
         return None

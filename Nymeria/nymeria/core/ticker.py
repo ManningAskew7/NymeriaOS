@@ -1316,18 +1316,22 @@ class Ticker:
             # Get or create memory index
             safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
             db_path = self.settings.data_dir / "users" / safe_user_id / "memory.db"
+            # Throwaway instance: close its cached connection after use rather
+            # than relying on GC finalization.
             memory_index = MemoryIndex(db_path)
-
-            # Index the TODO completion
-            content = f"TODO '{todo_task}' completed: {response_summary}"
-            memory_index.add_chunk(
-                content=content,
-                metadata={"todo_id": todo_id},
-                chunk_type="todo",
-                user_id=user_id,
-                thread_id=thread_id,
-            )
-            logger.debug(f"Indexed TODO completion for user {user_id}, todo {todo_id}")
+            try:
+                # Index the TODO completion
+                content = f"TODO '{todo_task}' completed: {response_summary}"
+                memory_index.add_chunk(
+                    content=content,
+                    metadata={"todo_id": todo_id},
+                    chunk_type="todo",
+                    user_id=user_id,
+                    thread_id=thread_id,
+                )
+                logger.debug(f"Indexed TODO completion for user {user_id}, todo {todo_id}")
+            finally:
+                memory_index.close()
 
         except Exception as e:
             logger.warning(f"Failed to index TODO completion: {e}")

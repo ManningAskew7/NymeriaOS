@@ -143,7 +143,10 @@ def create_rag_router(
                 }
 
             memory_index = MemoryIndex(db_path)
-            stats = memory_index.get_stats(user_id)
+            try:
+                stats = memory_index.get_stats(user_id)
+            finally:
+                memory_index.close()  # throwaway instance: release its connection
             stats["enabled"] = True
             return stats
 
@@ -263,18 +266,20 @@ def create_rag_router(
             safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
             db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
             memory_index = MemoryIndex(db_path)
+            try:
+                cleared = memory_index.delete_by_type(user_id, "memory")
 
-            cleared = memory_index.delete_by_type(user_id, "memory")
-
-            indexed_memories = 0
-            for memory in profile.memories:
-                memory_index.add_chunk(
-                    content=f"{memory.key}: {memory.value}",
-                    metadata={"key": memory.key},
-                    chunk_type="memory",
-                    user_id=user_id,
-                )
-                indexed_memories += 1
+                indexed_memories = 0
+                for memory in profile.memories:
+                    memory_index.add_chunk(
+                        content=f"{memory.key}: {memory.value}",
+                        metadata={"key": memory.key},
+                        chunk_type="memory",
+                        user_id=user_id,
+                    )
+                    indexed_memories += 1
+            finally:
+                memory_index.close()  # throwaway instance: release its connection
 
             return {
                 "status": "ok",
@@ -310,7 +315,10 @@ def create_rag_router(
                 }
 
             memory_index = MemoryIndex(db_path)
-            cleared = memory_index.clear_index(user_id)
+            try:
+                cleared = memory_index.clear_index(user_id)
+            finally:
+                memory_index.close()  # throwaway instance: release its connection
 
             return {
                 "status": "ok",
