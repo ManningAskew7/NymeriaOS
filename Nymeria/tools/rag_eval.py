@@ -287,7 +287,7 @@ def _retrieve_vector(
                 break
     if not emb:
         return []
-    conn = index._get_connection()
+    conn = index._open_connection()
     try:
         cur = conn.execute(
             "SELECT chunk_id FROM vec_chunks WHERE embedding MATCH ? "
@@ -309,7 +309,7 @@ def _retrieve_bm25(
     fts_query = index._fts_match_query(query)
     if not fts_query:
         return []
-    conn = index._get_connection()
+    conn = index._open_connection()
     try:
         cur = conn.execute(
             "SELECT c.id FROM chunks_fts fts JOIN chunks c ON c.rowid = fts.rowid "
@@ -1028,7 +1028,7 @@ def _batch_backfill(index: MemoryIndex, user_id: str, batch_size: int = 128) -> 
     embed-text and insert), used after a deferred BM25-only load so a 5-model x
     500-question sweep does not hammer the embedding APIs one call per turn.
     """
-    conn = index._get_connection()
+    conn = index._open_connection()
     try:
         rows = conn.execute(
             "SELECT id, content, context FROM chunks WHERE user_id = ? "

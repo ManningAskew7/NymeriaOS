@@ -351,6 +351,13 @@ class MemoryIndex:
         self._lock = threading.RLock()
         self._openai_client = None
         self._dim_mismatch = False
+        # Cached SQLite connection (lazily opened on first use, sqlite-vec loaded
+        # once). The instance is held per user by the agent and the memory tools,
+        # so reusing one connection avoids re-opening the DB and re-loading the
+        # sqlite-vec C extension on every search/ingest/delete. All DB access is
+        # serialized by ``self._lock`` (an RLock), so a single shared connection
+        # is safe. ``close()`` releases it; the next call transparently reopens.
+        self._conn: Optional[sqlite3.Connection] = None
         # Diagnostics from the most recent search() (which branches actually ran,
         # candidate counts, embedder identity). rag_search surfaces it so the
         # configured embedder/reranker stack can be confirmed live in testing.
@@ -362,8 +369,14 @@ class MemoryIndex:
         # Initialize database
         self._init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get a database connection with sqlite-vec loaded."""
+    def _open_connection(self) -> sqlite3.Connection:
+        """Open a NEW SQLite connection with sqlite-vec loaded.
+
+        Used by one-shot / occasional methods that manage their own short-lived
+        connection (``_init_db`` at construction, ``backfill_embeddings``,
+        ``rebuild_vectors``, ``get_stats``). The repeated hot paths (ingest,
+        search, deletes) reuse the cached ``_get_connection()`` instead.
+        """
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
 
@@ -380,10 +393,38 @@ class MemoryIndex:
 
         return conn
 
+    def _get_connection(self) -> sqlite3.Connection:
+        """Return the cached database connection with sqlite-vec loaded, opening
+        it on first use.
+
+        The connection is created once per instance and reused across the
+        repeated operations (search, ingest, delete). Callers always hold
+        ``self._lock`` (an RLock; see each method), so the single connection is
+        never touched concurrently. This pays the sqlite-vec extension load once
+        instead of on every call. ``close()`` clears the cache so the next call
+        reopens transparently.
+        """
+        if self._conn is None:
+            self._conn = self._open_connection()
+        return self._conn
+
+    def close(self) -> None:
+        """Close the cached connection if open. Idempotent; the next DB call
+        reopens transparently. Used for explicit teardown (e.g. tests) and to
+        release the file handle when an index is no longer needed."""
+        with self._lock:
+            conn = self._conn
+            self._conn = None
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.debug("Error closing memory-index connection", exc_info=True)
+
     def _init_db(self) -> None:
         """Initialize database schema."""
         with self._lock:
-            conn = self._get_connection()
+            conn = self._open_connection()
             try:
                 cursor = conn.cursor()
 
@@ -855,7 +896,7 @@ class MemoryIndex:
         """
         embedded = failed = 0
         with self._lock:
-            conn = self._get_connection()
+            conn = self._open_connection()
             try:
                 cursor = conn.cursor()
                 try:
@@ -913,7 +954,7 @@ class MemoryIndex:
         untouched (BM25 search keeps working throughout). Returns summed counts.
         """
         with self._lock:
-            conn = self._get_connection()
+            conn = self._open_connection()
             try:
                 cursor = conn.cursor()
                 try:
@@ -1165,6 +1206,29 @@ class MemoryIndex:
                             chunk_type, user_id)
                         return []
 
+                # Pre-compute each chunk's embedding. Long content splits into N
+                # chunks; embedding chunks 2..N one-by-one would issue N-1
+                # sequential round-trips, so they go through a single _embed_texts
+                # batch. Index 0 stays on the per-item path (reusing the dedup_near
+                # embedding when present, else embed_text) so it remains the
+                # single-chunk entry point. When a contextual blurb is present the
+                # embedded text is context + content (the stored ``content`` stays
+                # clean for display), mirroring the per-chunk behaviour replaced.
+                embed_inputs = [
+                    (f"{context}\n\n{c}" if context else c) for c in text_chunks
+                ]
+                embeddings: List[Optional[List[float]]] = [None] * len(text_chunks)
+                if text_chunks:
+                    embeddings[0] = (
+                        first_embedding if first_embedding is not None
+                        else self.embed_text(embed_inputs[0])
+                    )
+                    if len(embed_inputs) > 1:
+                        for offset, vec in enumerate(
+                            self._embed_texts(embed_inputs[1:]), start=1
+                        ):
+                            embeddings[offset] = vec
+
                 for i, chunk_content in enumerate(text_chunks):
                     # Generate unique ID
                     chunk_id = str(uuid.uuid4())
@@ -1192,13 +1256,9 @@ class MemoryIndex:
                         self._content_hash(chunk_content),
                     ))
 
-                    # Get embedding and store in vector table. When a contextual
-                    # blurb is present, embed context + content so the vector
-                    # captures the situating context (Anthropic contextual
-                    # retrieval); the stored ``content`` stays clean for display.
-                    embed_input = f"{context}\n\n{chunk_content}" if context else chunk_content
-                    embedding = (first_embedding if i == 0 and first_embedding is not None
-                                 else self.embed_text(embed_input))
+                    # Store the pre-batched embedding for this chunk (computed
+                    # above) in the vector table.
+                    embedding = embeddings[i]
                     # Skip the vector insert on a width mismatch: the vec would be
                     # the configured width, not the table's, so vec0 would reject it
                     # per chunk. _init_db already logged the mismatch once loudly.
@@ -1221,8 +1281,6 @@ class MemoryIndex:
                 conn.rollback()
                 logger.error(f"Failed to add chunk: {e}")
                 raise
-            finally:
-                conn.close()
 
         return chunk_ids
 
@@ -1466,240 +1524,240 @@ class MemoryIndex:
 
         with self._lock:
             conn = self._get_connection()
-            try:
-                cursor = conn.cursor()
+            cursor = conn.cursor()
 
-                # Vector branch: candidate ids ranked by ascending distance.
-                # Filters are enforced at the fetch step below, so unfiltered
-                # vector candidates that fall outside scope drop out there.
-                vector_ids: List[str] = []
-                query_embedding = self.embed_text(query, input_type="query")
-                if query_embedding:
-                    try:
-                        cursor.execute("""
-                            SELECT chunk_id
-                            FROM vec_chunks
-                            WHERE embedding MATCH ?
-                            ORDER BY distance
-                            LIMIT ?
-                        """, (self._serialize_embedding(query_embedding), vector_limit))
-                        vector_ids = [row['chunk_id'] for row in cursor.fetchall()]
-                    except sqlite3.OperationalError as e:
-                        if "no such table: vec_chunks" not in str(e):
-                            logger.warning(f"Vector search failed: {e}")
+            # Vector branch: candidate ids ranked by ascending distance.
+            # Filters are enforced at the fetch step below, so unfiltered
+            # vector candidates that fall outside scope drop out there.
+            vector_ids: List[str] = []
+            query_embedding = self.embed_text(query, input_type="query")
+            if query_embedding:
+                try:
+                    cursor.execute("""
+                        SELECT chunk_id
+                        FROM vec_chunks
+                        WHERE embedding MATCH ?
+                        ORDER BY distance
+                        LIMIT ?
+                    """, (self._serialize_embedding(query_embedding), vector_limit))
+                    vector_ids = [row['chunk_id'] for row in cursor.fetchall()]
+                except sqlite3.OperationalError as e:
+                    if "no such table: vec_chunks" not in str(e):
+                        logger.warning(f"Vector search failed: {e}")
 
-                # BM25 branch: candidate ids ranked by ascending bm25 score,
-                # with filters applied in SQL. The query is sanitized into a
-                # safe FTS5 MATCH expression first; a query with no usable terms
-                # skips this branch entirely (vector search still runs).
-                bm25_ids: List[str] = []
-                # Vector-only mode skips the BM25 branch entirely; hybrid (default)
-                # keeps it as a lexical signal and a failsafe when embeddings fail.
-                fts_query = (
-                    self._fts_match_query(query)
-                    if retrieval_mode != "vector" else None
-                )
-                if fts_query:
-                    where_sql, where_params = _filters("c")
-                    try:
-                        cursor.execute(f"""
-                            SELECT c.id
-                            FROM chunks_fts fts
-                            JOIN chunks c ON c.rowid = fts.rowid
-                            WHERE chunks_fts MATCH ?
-                            AND {where_sql}
-                            ORDER BY bm25(chunks_fts)
-                            LIMIT ?
-                        """, (fts_query, *where_params, candidate_pool))
-                        bm25_ids = [row['id'] for row in cursor.fetchall()]
-                    except Exception as e:
-                        logger.warning(f"BM25 search failed: {e}")
+            # BM25 branch: candidate ids ranked by ascending bm25 score,
+            # with filters applied in SQL. The query is sanitized into a
+            # safe FTS5 MATCH expression first; a query with no usable terms
+            # skips this branch entirely (vector search still runs).
+            bm25_ids: List[str] = []
+            # Vector-only mode skips the BM25 branch entirely; hybrid (default)
+            # keeps it as a lexical signal and a failsafe when embeddings fail.
+            fts_query = (
+                self._fts_match_query(query)
+                if retrieval_mode != "vector" else None
+            )
+            if fts_query:
+                where_sql, where_params = _filters("c")
+                try:
+                    cursor.execute(f"""
+                        SELECT c.id
+                        FROM chunks_fts fts
+                        JOIN chunks c ON c.rowid = fts.rowid
+                        WHERE chunks_fts MATCH ?
+                        AND {where_sql}
+                        ORDER BY bm25(chunks_fts)
+                        LIMIT ?
+                    """, (fts_query, *where_params, candidate_pool))
+                    bm25_ids = [row['id'] for row in cursor.fetchall()]
+                except Exception as e:
+                    logger.warning(f"BM25 search failed: {e}")
 
-                # Anchor recall branch: the chunks nearest in time to the anchor
-                # interval, fused as a third signal so a content-weak on-date
-                # chunk still enters the pool. Two index-backed scans (before /
-                # at-or-after the interval start) reuse the scope filter but apply
-                # NO time WHERE bound; the split is a ranking device, not a
-                # filter. event_time is non-NULL everywhere (lazy backfill), so we
-                # read it directly to use idx_chunks_user_event_time.
-                anchor_ids: List[str] = []
+            # Anchor recall branch: the chunks nearest in time to the anchor
+            # interval, fused as a third signal so a content-weak on-date
+            # chunk still enters the pool. Two index-backed scans (before /
+            # at-or-after the interval start) reuse the scope filter but apply
+            # NO time WHERE bound; the split is a ranking device, not a
+            # filter. event_time is non-NULL everywhere (lazy backfill), so we
+            # read it directly to use idx_chunks_user_event_time.
+            anchor_ids: List[str] = []
+            if anchor_lo is not None and anchor_hi is not None:
+                lo, hi = anchor_lo, anchor_hi
+                where_sql, where_params = _filters("c")
+                start_iso = lo.isoformat()
+                rows: List[Dict[str, Any]] = []
+                try:
+                    cursor.execute(f"""
+                        SELECT c.id, c.event_time AS et
+                        FROM chunks c
+                        WHERE {where_sql} AND c.event_time < ?
+                        ORDER BY c.event_time DESC
+                        LIMIT ?
+                    """, (*where_params, start_iso, ANCHOR_FETCH_N))
+                    rows.extend(dict(r) for r in cursor.fetchall())
+                    cursor.execute(f"""
+                        SELECT c.id, c.event_time AS et
+                        FROM chunks c
+                        WHERE {where_sql} AND c.event_time >= ?
+                        ORDER BY c.event_time ASC
+                        LIMIT ?
+                    """, (*where_params, start_iso, ANCHOR_FETCH_N))
+                    rows.extend(dict(r) for r in cursor.fetchall())
+                except Exception as e:
+                    logger.warning(f"Anchor search failed: {e}")
+                # Order by distance to the interval (0 inside the plateau).
+                def _interval_distance(et_raw) -> float:
+                    ev = self._parse_ts(et_raw)
+                    if ev is None:
+                        return float("inf")
+                    if ev < lo:
+                        return (lo - ev).total_seconds()
+                    if ev > hi:
+                        return (ev - hi).total_seconds()
+                    return 0.0
+                rows.sort(key=lambda r: _interval_distance(r.get('et')))
+                anchor_ids = list(dict.fromkeys(r['id'] for r in rows))
+
+            # Record which retrieval branches actually ran this search so
+            # rag_search can confirm the live embedder/retrieval stack.
+            self._last_search_diag = {
+                "retrieval_mode": retrieval_mode,
+                "embedding_provider": self.embedding_provider,
+                "embedding_model": self.embedding_model,
+                "embedding_dimensions": self.embedding_dimensions,
+                "vector_used": query_embedding is not None,
+                "vector_candidates": len(vector_ids),
+                "bm25_used": bool(fts_query),
+                "bm25_candidates": len(bm25_ids),
+                "anchor_candidates": len(anchor_ids),
+                "candidate_pool": candidate_pool,
+                "vector_limit": vector_limit,
+            }
+
+            candidate_ids = list(dict.fromkeys([*vector_ids, *bm25_ids, *anchor_ids]))
+            if not candidate_ids:
+                return []
+
+            # Fetch full rows for all candidates, enforcing filters uniformly.
+            placeholders = ", ".join("?" for _ in candidate_ids)
+            fetch_where, fetch_params = _filters("chunks")
+            cursor.execute(f"""
+                SELECT id, content, chunk_type, thread_id, created_at,
+                       event_time, metadata, context
+                FROM chunks
+                WHERE id IN ({placeholders})
+                AND {fetch_where}
+            """, (*candidate_ids, *fetch_params))
+            rows_by_id = {row['id']: dict(row) for row in cursor.fetchall()}
+            if not rows_by_id:
+                return []
+
+            # Rank maps restricted to surviving (filtered) candidates.
+            vec_rank = {cid: i for i, cid in enumerate(
+                [c for c in vector_ids if c in rows_by_id])}
+            bm_rank = {cid: i for i, cid in enumerate(
+                [c for c in bm25_ids if c in rows_by_id])}
+            anchor_rank = {cid: i for i, cid in enumerate(
+                [c for c in anchor_ids if c in rows_by_id])}
+
+            final_scores: Dict[str, float] = {}
+            for cid, row in rows_by_id.items():
+                if fusion == "weighted":
+                    base = 0.0
+                    if cid in vec_rank:
+                        base += 0.7 / (1 + vec_rank[cid])
+                    if cid in bm_rank:
+                        base += 0.3 / (1 + bm_rank[cid])
+                else:  # rrf
+                    base = 0.0
+                    if cid in vec_rank:
+                        base += vec_weight / (rrf_k + vec_rank[cid] + 1)
+                    if cid in bm_rank:
+                        base += bm25_weight / (rrf_k + bm_rank[cid] + 1)
+                # Anchor recall branch contributes a third RRF term, so an
+                # on-date chunk that vector and BM25 both miss gets a positive
+                # floor instead of base 0 (which no multiplier could rescue).
+                if cid in anchor_rank:
+                    base += anchor_weight / (rrf_k + anchor_rank[cid] + 1)
+
+                ev = (self._parse_ts(row.get('event_time'))
+                      or self._parse_ts(row.get('created_at')) or now)
                 if anchor_lo is not None and anchor_hi is not None:
-                    lo, hi = anchor_lo, anchor_hi
-                    where_sql, where_params = _filters("c")
-                    start_iso = lo.isoformat()
-                    rows: List[Dict[str, Any]] = []
-                    try:
-                        cursor.execute(f"""
-                            SELECT c.id, c.event_time AS et
-                            FROM chunks c
-                            WHERE {where_sql} AND c.event_time < ?
-                            ORDER BY c.event_time DESC
-                            LIMIT ?
-                        """, (*where_params, start_iso, ANCHOR_FETCH_N))
-                        rows.extend(dict(r) for r in cursor.fetchall())
-                        cursor.execute(f"""
-                            SELECT c.id, c.event_time AS et
-                            FROM chunks c
-                            WHERE {where_sql} AND c.event_time >= ?
-                            ORDER BY c.event_time ASC
-                            LIMIT ?
-                        """, (*where_params, start_iso, ANCHOR_FETCH_N))
-                        rows.extend(dict(r) for r in cursor.fetchall())
-                    except Exception as e:
-                        logger.warning(f"Anchor search failed: {e}")
-                    # Order by distance to the interval (0 inside the plateau).
-                    def _interval_distance(et_raw) -> float:
-                        ev = self._parse_ts(et_raw)
-                        if ev is None:
-                            return float("inf")
-                        if ev < lo:
-                            return (lo - ev).total_seconds()
-                        if ev > hi:
-                            return (ev - hi).total_seconds()
-                        return 0.0
-                    rows.sort(key=lambda r: _interval_distance(r.get('et')))
-                    anchor_ids = list(dict.fromkeys(r['id'] for r in rows))
+                    # Flat plateau across the interval (every in-window chunk
+                    # scores the same on time), Gaussian falloff outside,
+                    # floored so a strong far match is never excluded.
+                    if anchor_lo <= ev <= anchor_hi:
+                        d_days = 0.0
+                    elif ev < anchor_lo:
+                        d_days = (anchor_lo - ev).total_seconds() / 86400.0
+                    else:
+                        d_days = (ev - anchor_hi).total_seconds() / 86400.0
+                    gauss = (math.exp(-0.5 * (d_days / anchor_sigma) ** 2)
+                             if anchor_sigma > 0 else (1.0 if d_days == 0 else 0.0))
+                    base *= anchor_floor + (1.0 - anchor_floor) * gauss
+                elif apply_recency:
+                    age_days = max(0.0, (now - ev).total_seconds() / 86400.0)
+                    hl = half_lives.get(row['chunk_type'], DEFAULT_RECENCY_HALF_LIFE)
+                    base *= 0.5 ** (age_days / hl) if hl > 0 else 1.0
 
-                # Record which retrieval branches actually ran this search so
-                # rag_search can confirm the live embedder/retrieval stack.
-                self._last_search_diag = {
-                    "retrieval_mode": retrieval_mode,
-                    "embedding_provider": self.embedding_provider,
-                    "embedding_model": self.embedding_model,
-                    "embedding_dimensions": self.embedding_dimensions,
-                    "vector_used": query_embedding is not None,
-                    "vector_candidates": len(vector_ids),
-                    "bm25_used": bool(fts_query),
-                    "bm25_candidates": len(bm25_ids),
-                    "anchor_candidates": len(anchor_ids),
-                    "candidate_pool": candidate_pool,
-                    "vector_limit": vector_limit,
-                }
+                if apply_prose_priority and prose_priority_weight:
+                    frac = self._tool_text_fraction(row.get('content'))
+                    base *= 1.0 - prose_priority_weight * frac
 
-                candidate_ids = list(dict.fromkeys([*vector_ids, *bm25_ids, *anchor_ids]))
-                if not candidate_ids:
-                    return []
+                final_scores[cid] = base
 
-                # Fetch full rows for all candidates, enforcing filters uniformly.
-                placeholders = ", ".join("?" for _ in candidate_ids)
-                fetch_where, fetch_params = _filters("chunks")
-                cursor.execute(f"""
-                    SELECT id, content, chunk_type, thread_id, created_at,
-                           event_time, metadata, context
-                    FROM chunks
-                    WHERE id IN ({placeholders})
-                    AND {fetch_where}
-                """, (*candidate_ids, *fetch_params))
-                rows_by_id = {row['id']: dict(row) for row in cursor.fetchall()}
-                if not rows_by_id:
-                    return []
+            # Greedy near-duplicate-aware top-k. Walk the fully-scored
+            # candidates best-first and keep a result only if it is not a
+            # near-duplicate of one already kept, so overlapping-window
+            # chunks and live-vs-flush twins do not occupy several slots.
+            ordered = sorted(
+                final_scores, key=lambda c: final_scores[c], reverse=True
+            )
+            if dedup:
+                ranked: List[str] = []
+                for cid in ordered:
+                    content = rows_by_id[cid].get('content')
+                    if any(
+                        self._is_near_duplicate(
+                            content, rows_by_id[kept].get('content'), dedup_threshold
+                        )
+                        for kept in ranked
+                    ):
+                        continue
+                    ranked.append(cid)
+                    if len(ranked) >= limit:
+                        break
+            else:
+                ranked = ordered[:limit]
 
-                # Rank maps restricted to surviving (filtered) candidates.
-                vec_rank = {cid: i for i, cid in enumerate(
-                    [c for c in vector_ids if c in rows_by_id])}
-                bm_rank = {cid: i for i, cid in enumerate(
-                    [c for c in bm25_ids if c in rows_by_id])}
-                anchor_rank = {cid: i for i, cid in enumerate(
-                    [c for c in anchor_ids if c in rows_by_id])}
-
-                final_scores: Dict[str, float] = {}
-                for cid, row in rows_by_id.items():
-                    if fusion == "weighted":
-                        base = 0.0
-                        if cid in vec_rank:
-                            base += 0.7 / (1 + vec_rank[cid])
-                        if cid in bm_rank:
-                            base += 0.3 / (1 + bm_rank[cid])
-                    else:  # rrf
-                        base = 0.0
-                        if cid in vec_rank:
-                            base += vec_weight / (rrf_k + vec_rank[cid] + 1)
-                        if cid in bm_rank:
-                            base += bm25_weight / (rrf_k + bm_rank[cid] + 1)
-                    # Anchor recall branch contributes a third RRF term, so an
-                    # on-date chunk that vector and BM25 both miss gets a positive
-                    # floor instead of base 0 (which no multiplier could rescue).
-                    if cid in anchor_rank:
-                        base += anchor_weight / (rrf_k + anchor_rank[cid] + 1)
-
-                    ev = (self._parse_ts(row.get('event_time'))
-                          or self._parse_ts(row.get('created_at')) or now)
-                    if anchor_lo is not None and anchor_hi is not None:
-                        # Flat plateau across the interval (every in-window chunk
-                        # scores the same on time), Gaussian falloff outside,
-                        # floored so a strong far match is never excluded.
-                        if anchor_lo <= ev <= anchor_hi:
-                            d_days = 0.0
-                        elif ev < anchor_lo:
-                            d_days = (anchor_lo - ev).total_seconds() / 86400.0
-                        else:
-                            d_days = (ev - anchor_hi).total_seconds() / 86400.0
-                        gauss = (math.exp(-0.5 * (d_days / anchor_sigma) ** 2)
-                                 if anchor_sigma > 0 else (1.0 if d_days == 0 else 0.0))
-                        base *= anchor_floor + (1.0 - anchor_floor) * gauss
-                    elif apply_recency:
-                        age_days = max(0.0, (now - ev).total_seconds() / 86400.0)
-                        hl = half_lives.get(row['chunk_type'], DEFAULT_RECENCY_HALF_LIFE)
-                        base *= 0.5 ** (age_days / hl) if hl > 0 else 1.0
-
-                    if apply_prose_priority and prose_priority_weight:
-                        frac = self._tool_text_fraction(row.get('content'))
-                        base *= 1.0 - prose_priority_weight * frac
-
-                    final_scores[cid] = base
-
-                # Greedy near-duplicate-aware top-k. Walk the fully-scored
-                # candidates best-first and keep a result only if it is not a
-                # near-duplicate of one already kept, so overlapping-window
-                # chunks and live-vs-flush twins do not occupy several slots.
-                ordered = sorted(
-                    final_scores, key=lambda c: final_scores[c], reverse=True
-                )
-                if dedup:
-                    ranked: List[str] = []
-                    for cid in ordered:
-                        content = rows_by_id[cid].get('content')
-                        if any(
-                            self._is_near_duplicate(
-                                content, rows_by_id[kept].get('content'), dedup_threshold
-                            )
-                            for kept in ranked
-                        ):
-                            continue
-                        ranked.append(cid)
-                        if len(ranked) >= limit:
-                            break
-                else:
-                    ranked = ordered[:limit]
-
-                for cid in ranked:
-                    row = rows_by_id[cid]
-                    try:
-                        metadata = json.loads(row['metadata']) if row['metadata'] else {}
-                    except json.JSONDecodeError:
-                        metadata = {}
-                    created_at = self._parse_ts(row.get('created_at')) or now
-                    event_time = self._parse_ts(row.get('event_time')) or created_at
-                    results.append(ChunkResult(
-                        id=row['id'],
-                        content=row['content'],
-                        chunk_type=row['chunk_type'],
-                        thread_id=row['thread_id'],
-                        created_at=created_at,
-                        metadata=metadata,
-                        score=final_scores[cid],
-                        event_time=event_time,
-                        context=row.get('context'),
-                    ))
-
-            finally:
-                conn.close()
+            for cid in ranked:
+                row = rows_by_id[cid]
+                try:
+                    metadata = json.loads(row['metadata']) if row['metadata'] else {}
+                except json.JSONDecodeError:
+                    metadata = {}
+                created_at = self._parse_ts(row.get('created_at')) or now
+                event_time = self._parse_ts(row.get('event_time')) or created_at
+                results.append(ChunkResult(
+                    id=row['id'],
+                    content=row['content'],
+                    chunk_type=row['chunk_type'],
+                    thread_id=row['thread_id'],
+                    created_at=created_at,
+                    metadata=metadata,
+                    score=final_scores[cid],
+                    event_time=event_time,
+                    context=row.get('context'),
+                ))
 
         return results
 
+    # Max bound parameters per DELETE statement. SQLite's compiled
+    # SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds; 500 stays well under it.
+    _DELETE_BATCH = 500
+
     def delete_chunks(self, chunk_ids: List[str]) -> int:
         """
-        Remove chunks from index.
+        Remove chunks (and their vectors) from the index.
 
         Args:
             chunk_ids: List of chunk IDs to delete
@@ -1717,14 +1775,22 @@ class MemoryIndex:
             try:
                 cursor = conn.cursor()
 
-                for chunk_id in chunk_ids:
-                    # Delete from chunks table (triggers handle FTS deletion)
-                    cursor.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
+                # Delete in batched IN(...) statements rather than one DELETE per
+                # id. vec_chunks has no FTS-style trigger (the chunks_ad trigger
+                # only syncs the FTS index), so its matching rows are deleted
+                # explicitly to avoid orphaned vectors.
+                for start in range(0, len(chunk_ids), self._DELETE_BATCH):
+                    batch = chunk_ids[start:start + self._DELETE_BATCH]
+                    placeholders = ",".join("?" for _ in batch)
+                    cursor.execute(
+                        f"DELETE FROM chunks WHERE id IN ({placeholders})", batch
+                    )
                     deleted += cursor.rowcount
-
-                    # Delete from vector table
                     try:
-                        cursor.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk_id,))
+                        cursor.execute(
+                            f"DELETE FROM vec_chunks WHERE chunk_id IN ({placeholders})",
+                            batch,
+                        )
                     except sqlite3.OperationalError:
                         pass  # Vector table may not exist
 
@@ -1735,8 +1801,6 @@ class MemoryIndex:
                 conn.rollback()
                 logger.error(f"Failed to delete chunks: {e}")
                 raise
-            finally:
-                conn.close()
 
         return deleted
 
@@ -1752,20 +1816,12 @@ class MemoryIndex:
             Number of chunks deleted
         """
         with self._lock:
-            conn = self._get_connection()
-            try:
-                cursor = conn.cursor()
-
-                # Get chunk IDs first
-                cursor.execute("""
-                    SELECT id FROM chunks
-                    WHERE user_id = ? AND thread_id = ?
-                """, (user_id, thread_id))
-
-                chunk_ids = [row['id'] for row in cursor.fetchall()]
-
-            finally:
-                conn.close()
+            cursor = self._get_connection().cursor()
+            cursor.execute(
+                "SELECT id FROM chunks WHERE user_id = ? AND thread_id = ?",
+                (user_id, thread_id),
+            )
+            chunk_ids = [row['id'] for row in cursor.fetchall()]
 
         return self.delete_chunks(chunk_ids)
 
@@ -1781,16 +1837,12 @@ class MemoryIndex:
             Number of chunks deleted
         """
         with self._lock:
-            conn = self._get_connection()
-            try:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT id FROM chunks
-                    WHERE user_id = ? AND chunk_type = ?
-                """, (user_id, chunk_type))
-                chunk_ids = [row['id'] for row in cursor.fetchall()]
-            finally:
-                conn.close()
+            cursor = self._get_connection().cursor()
+            cursor.execute(
+                "SELECT id FROM chunks WHERE user_id = ? AND chunk_type = ?",
+                (user_id, chunk_type),
+            )
+            chunk_ids = [row['id'] for row in cursor.fetchall()]
 
         return self.delete_chunks(chunk_ids)
 
@@ -1806,24 +1858,22 @@ class MemoryIndex:
             Number of chunks deleted
         """
         with self._lock:
-            conn = self._get_connection()
-            try:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT id, metadata FROM chunks
-                    WHERE user_id = ? AND chunk_type = 'memory'
-                """, (user_id,))
-
-                chunk_ids = []
-                for row in cursor.fetchall():
-                    try:
-                        metadata = json.loads(row['metadata'] or "{}")
-                    except json.JSONDecodeError:
-                        metadata = {}
-                    if metadata.get("key") == key:
-                        chunk_ids.append(row['id'])
-            finally:
-                conn.close()
+            cursor = self._get_connection().cursor()
+            # Filter by the JSON memory key in SQL (json_extract) instead of
+            # loading every memory row and parsing metadata in Python. The
+            # json_valid guard short-circuits before json_extract, so a row with
+            # malformed metadata is skipped rather than aborting the whole query
+            # (preserving the old per-row try/except json.loads behaviour);
+            # metadata is normally always json.dumps-written. A row whose metadata
+            # has no "key" yields NULL and is excluded.
+            cursor.execute(
+                "SELECT id FROM chunks "
+                "WHERE user_id = ? AND chunk_type = 'memory' "
+                "AND json_valid(metadata) "
+                "AND json_extract(metadata, '$.key') = ?",
+                (user_id, key),
+            )
+            chunk_ids = [row['id'] for row in cursor.fetchall()]
 
         return self.delete_chunks(chunk_ids)
 
@@ -1838,16 +1888,9 @@ class MemoryIndex:
             Number of chunks deleted
         """
         with self._lock:
-            conn = self._get_connection()
-            try:
-                cursor = conn.cursor()
-
-                # Get chunk IDs first
-                cursor.execute("SELECT id FROM chunks WHERE user_id = ?", (user_id,))
-                chunk_ids = [row['id'] for row in cursor.fetchall()]
-
-            finally:
-                conn.close()
+            cursor = self._get_connection().cursor()
+            cursor.execute("SELECT id FROM chunks WHERE user_id = ?", (user_id,))
+            chunk_ids = [row['id'] for row in cursor.fetchall()]
 
         return self.delete_chunks(chunk_ids)
 
@@ -1862,7 +1905,7 @@ class MemoryIndex:
             Dict with stats: chunk_count, by_type, last_indexed, etc.
         """
         with self._lock:
-            conn = self._get_connection()
+            conn = self._open_connection()
             try:
                 cursor = conn.cursor()
 
