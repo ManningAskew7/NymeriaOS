@@ -11,10 +11,11 @@ tree.
 from __future__ import annotations
 
 import secrets
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from .environment import docker_available
 
 # Digest-pinned: floating tags can be reassigned upstream and the cloak gate
 # changed once already (v6.9.0 -> v6.9.36). v7.1.61 is the verified baseline
@@ -168,10 +169,6 @@ def generate_cliproxy_deployment(
         management_secret=management_secret,
         gatekeeper_key=gatekeeper_key,
     )
-
-
-def docker_available() -> bool:
-    return shutil.which("docker") is not None
 
 
 def compose_up(directory: Path, *, timeout: float = 300.0) -> tuple[bool, str]:

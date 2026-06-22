@@ -15,6 +15,7 @@ from nymeria.setup import finalize as finalize_mod
 from nymeria.setup.runner import main as setup_main
 
 from _setup_wizard_helpers import (  # type: ignore[import-not-found]
+    _capture_console,
     _init_state,
     _read_secrets_key,
     _stub_llm,
@@ -620,9 +621,119 @@ def test_security_profile_flag_rejects_unbuilt_profiles(tmp_path, profile):
 
 def test_env_value_leaves_base64_unquoted():
     # A Fernet key is url-safe base64 ending in `=`; it must write unquoted so
-    # Docker `env_file` does not treat the quotes literally.
+    # Docker `env_file` does not treat the quotes literally. Asserts against the
+    # canonical `format_env_value`; finalize's `_env_value` is just an alias of it.
+    from nymeria.config.env_file import format_env_value
+
     key = "5KFavWE8-H-C5jk11S6vogyg-s50WyVBvAPY6ZXzuns="
-    assert finalize_mod._env_value(key) == key
+    assert format_env_value(key) == key
+
+
+# --- bootstrap profile seeding (_apply_profile_picks shared core) -----------
+
+
+def _picks_state():
+    from nymeria.setup.state import WizardState
+
+    return WizardState()
+
+
+def test_apply_profile_picks_sets_and_persists(tmp_path):
+    # The shared apply-and-save core writes the recomputed picks to disk and
+    # reports their counts, identical to what both callers expect.
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.setup.tool_seed import (
+        default_thread_tools_for_state,
+        selected_global_skills_for_state,
+    )
+
+    state = _picks_state()
+    expected_tools = default_thread_tools_for_state(state)
+    expected_skills = selected_global_skills_for_state(state)
+
+    manager = UserProfileManager(tmp_path)
+    profile = manager.get_profile("default")
+    counts = finalize_mod._apply_profile_picks(manager, profile, state)
+
+    assert counts == (len(expected_tools), len(expected_skills))
+    reloaded = UserProfileManager(tmp_path).get_profile("default")
+    assert reloaded.tool_preferences.default_thread_tools == expected_tools
+    assert reloaded.enabled_global_skills == expected_skills
+
+
+def test_seed_bootstrap_profile_writes_then_is_idempotent(tmp_path):
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.setup.tool_seed import default_thread_tools_for_state
+
+    state = _picks_state()
+    console, _ = _capture_console()
+    finalize_mod.seed_bootstrap_profile(tmp_path, state, console)
+
+    mgr = UserProfileManager(tmp_path)
+    assert (
+        mgr.get_profile("default").tool_preferences.default_thread_tools
+        == default_thread_tools_for_state(state)
+    )
+
+    # A second seed must never clobber a profile the user has since customized.
+    profile = mgr.get_profile("default")
+    profile.tool_preferences.default_thread_tools = ["only_custom_tool"]
+    mgr.save_profile(profile)
+    finalize_mod.seed_bootstrap_profile(tmp_path, state, console)
+    assert UserProfileManager(tmp_path).get_profile(
+        "default"
+    ).tool_preferences.default_thread_tools == ["only_custom_tool"]
+
+
+def test_update_bootstrap_profile_recomputes_existing(tmp_path):
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.setup.tool_seed import (
+        default_thread_tools_for_state,
+        selected_global_skills_for_state,
+    )
+
+    state = _picks_state()
+    console, _ = _capture_console()
+    finalize_mod.seed_bootstrap_profile(tmp_path, state, console)
+
+    # Simulate a stale profile, then reconfigure it in place.
+    mgr = UserProfileManager(tmp_path)
+    profile = mgr.get_profile("default")
+    profile.tool_preferences.default_thread_tools = ["stale"]
+    profile.enabled_global_skills = ["stale-skill"]
+    mgr.save_profile(profile)
+
+    finalize_mod.update_bootstrap_profile(tmp_path, state, console)
+
+    reloaded = UserProfileManager(tmp_path).get_profile("default")
+    assert reloaded.tool_preferences.default_thread_tools == default_thread_tools_for_state(state)
+    assert reloaded.enabled_global_skills == selected_global_skills_for_state(state)
+
+
+def test_update_bootstrap_profile_scoped_noop_then_seed_fallback(tmp_path):
+    from nymeria.core.user_profile import UserProfileManager
+    from nymeria.setup.tool_seed import default_thread_tools_for_state
+
+    state = _picks_state()
+    console, _ = _capture_console()
+    manager = UserProfileManager(tmp_path)
+
+    # A scoped jump outside the pick sections cannot have changed the profile.
+    finalize_mod.update_bootstrap_profile(
+        tmp_path, state, console, scoped_section="provider"
+    )
+    assert not manager._get_profile_path("default").exists()
+
+    # An in-pick scoped jump with no profile yet falls back to seeding.
+    finalize_mod.update_bootstrap_profile(
+        tmp_path, state, console, scoped_section="web_search"
+    )
+    assert (
+        UserProfileManager(tmp_path)
+        .get_profile("default")
+        .tool_preferences.default_thread_tools
+        == default_thread_tools_for_state(state)
+    )
 
 
 def test_noninteractive_mints_and_preserves_secrets_key(monkeypatch, tmp_path):

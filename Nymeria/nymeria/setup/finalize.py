@@ -9,6 +9,7 @@ wizard so the hard-won atomic-write / token-handoff guarantees are preserved.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import secrets
@@ -22,9 +23,10 @@ import time
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from rich.console import Console
+from rich.markup import escape
 
 from .. import __version__ as _PACKAGE_VERSION
 from .._runtime_paths import (
@@ -70,7 +72,16 @@ from .voice_catalog import (
     voice_env_for_state,
 )
 from .state import WizardState
-from .tool_seed import docker_init_seed_env
+from .tool_seed import (
+    default_thread_tools_for_state,
+    docker_init_seed_env,
+    selected_global_skills_for_state,
+)
+
+if TYPE_CHECKING:
+    from ..core.user_profile import UserProfile, UserProfileManager
+
+logger = logging.getLogger(__name__)
 
 BOOTSTRAP_TOKEN_REGEX = r"nym_[A-Za-z0-9_-]+"
 
@@ -862,8 +873,8 @@ def write_config(
 
 # Value formatting and the merge/atomic-write mechanics now live in the shared
 # writer (`config/env_file.py`) so finalize and `PATCH /settings` cannot drift.
-# `_env_value` stays as a module-local alias because call sites and a test
-# (`tests/test_setup_wizard_finalize.py::test_env_value_leaves_base64_unquoted`) use it.
+# `_env_value` stays as a module-local alias for brevity at the internal call
+# sites below; the canonical implementation is `config/env_file.format_env_value`.
 _env_value = format_env_value
 
 
@@ -950,6 +961,26 @@ def _resolve_optional_env(
     return optional_env
 
 
+def _apply_profile_picks(
+    manager: "UserProfileManager", profile: "UserProfile", state: WizardState
+) -> tuple[int, int]:
+    """Recompute and persist the bootstrap admin's tool/skill picks.
+
+    Shared apply-and-save core of ``seed_bootstrap_profile`` (first run) and
+    ``update_bootstrap_profile`` (reconfigure): recompute ``default_thread_tools``
+    and ``enabled_global_skills`` from the wizard state, save the profile, and
+    return ``(tool_count, skill_count)`` for the caller's console summary. Any
+    exception propagates to the caller's best-effort guard.
+    """
+
+    tools = default_thread_tools_for_state(state)
+    profile.tool_preferences.default_thread_tools = tools
+    skills = selected_global_skills_for_state(state)
+    profile.enabled_global_skills = skills
+    manager.save_profile(profile)
+    return len(tools), len(skills)
+
+
 def seed_bootstrap_profile(
     data_dir: Path, state: WizardState, console: Console
 ) -> None:
@@ -966,30 +997,23 @@ def seed_bootstrap_profile(
 
     from ..core.accounts import BOOTSTRAP_USER_ID
     from ..core.user_profile import UserProfileManager
-    from .tool_seed import (
-        default_thread_tools_for_state,
-        selected_global_skills_for_state,
-    )
 
     try:
         manager = UserProfileManager(data_dir)
         if manager._get_profile_path(BOOTSTRAP_USER_ID).exists():
             return  # existing profile: do not overwrite the user's customizations
         profile = manager.get_profile(BOOTSTRAP_USER_ID)
-        tools = default_thread_tools_for_state(state)
-        profile.tool_preferences.default_thread_tools = tools
-        skills = selected_global_skills_for_state(state)
-        profile.enabled_global_skills = skills
-        manager.save_profile(profile)
+        n_tools, n_skills = _apply_profile_picks(manager, profile, state)
         console.print(
-            f"[green]Default thread tools:[/green] {len(tools)} seeded "
+            f"[green]Default thread tools:[/green] {n_tools} seeded "
             "(core set + your picks)"
         )
         console.print(
-            f"[green]Default skill kits:[/green] {len(skills)} enabled "
+            f"[green]Default skill kits:[/green] {n_skills} enabled "
             "(self-improve + your picks)"
         )
     except Exception as exc:  # pragma: no cover - best-effort seeding
+        logger.warning("Failed to seed bootstrap profile picks", exc_info=True)
         console.print(
             f"[yellow]Could not seed default thread tools ({exc}). "
             "Set them later in settings.[/yellow]"
@@ -1021,10 +1045,6 @@ def update_bootstrap_profile(
 
     from ..core.accounts import BOOTSTRAP_USER_ID
     from ..core.user_profile import UserProfileManager
-    from .tool_seed import (
-        default_thread_tools_for_state,
-        selected_global_skills_for_state,
-    )
 
     try:
         manager = UserProfileManager(data_dir)
@@ -1032,14 +1052,11 @@ def update_bootstrap_profile(
             seed_bootstrap_profile(data_dir, state, console)
             return
         profile = manager.get_profile(BOOTSTRAP_USER_ID)
-        tools = default_thread_tools_for_state(state)
-        profile.tool_preferences.default_thread_tools = tools
-        skills = selected_global_skills_for_state(state)
-        profile.enabled_global_skills = skills
-        manager.save_profile(profile)
-        console.print(f"[green]Default thread tools:[/green] {len(tools)} (updated)")
-        console.print(f"[green]Default skill kits:[/green] {len(skills)} (updated)")
+        n_tools, n_skills = _apply_profile_picks(manager, profile, state)
+        console.print(f"[green]Default thread tools:[/green] {n_tools} (updated)")
+        console.print(f"[green]Default skill kits:[/green] {n_skills} (updated)")
     except Exception as exc:  # pragma: no cover - best-effort
+        logger.warning("Failed to update bootstrap profile picks", exc_info=True)
         console.print(
             f"[yellow]Could not update default tools/skills ({exc}). "
             "Set them in settings.[/yellow]"
@@ -1057,8 +1074,6 @@ def _cliproxy_backend_host(state: WizardState) -> str:
     """
     if not state.auth_method_is_cliproxy():
         return ""
-    from ..onboarding import DockerStack
-
     if state.hosting is HostingOption.DOCKER:
         if state.docker_stack is DockerStack.FULL:
             return "http://cli-proxy-api:8317"
@@ -1547,8 +1562,6 @@ def _maybe_install_local_rag(
     default the user never explicitly chose, so a bare hint would strand the most
     common path. Voice is always an explicit, visible pick, so a hint suffices.
     """
-    from rich.markup import escape
-
     from .local_rag_install import (
         build_install_command,
         local_rag_importable,
@@ -2027,8 +2040,6 @@ def _start_now_service(console: Console, *, state: WizardState, root: Path) -> i
     Dynamic content (errors, hints, command stderr) is markup-escaped: raw
     output like `[boot]` would otherwise be eaten as a rich tag.
     """
-    from rich.markup import escape
-
     from nymeria.service_install import (
         ServiceInstallError,
         ServiceUnavailableError,
@@ -2235,8 +2246,6 @@ def _run_inline_chat_smoke(
     path: the server holds the key, so the smoke turn works where the
     pre-write provider check cannot.
     """
-    from rich.markup import escape
-
     if state.skip_llm_test:
         console.print(
             "[yellow]Skipping the chat smoke test (--skip-llm-test).[/yellow]"
