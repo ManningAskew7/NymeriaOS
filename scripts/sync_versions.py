@@ -106,24 +106,17 @@ def _update_json_version(root: Path, path: Path, version: str) -> None:
     _write_json(root, path, data)
 
 
-def _read_package_version_from_toml(text: str, label: str) -> str:
-    in_package = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped == "[package]":
-            in_package = True
-            continue
-        if in_package and stripped.startswith("["):
-            break
-        if in_package:
-            match = re.match(r'^version\s*=\s*"([^"]+)"\s*$', stripped)
-            if match:
-                return match.group(1)
-    raise VersionManagementError(f"could not find [package] version in {label}")
+_TOML_PACKAGE_VERSION_RE = re.compile(r'^version\s*=\s*"([^"]+)"\s*$')
 
 
-def _replace_package_version_in_toml(text: str, version: str, label: str) -> str:
-    lines = text.splitlines(keepends=True)
+def _find_package_version_line(lines: list[str]) -> int | None:
+    """Index of the ``version = "..."`` line in the ``[package]`` section.
+
+    Returns None if there is no ``[package]`` section or it has no version line
+    before the next ``[`` section header. Lines are stripped for matching, so
+    callers may pass either ``splitlines()`` or ``splitlines(keepends=True)``
+    output (the indices line up either way).
+    """
     in_package = False
     for index, line in enumerate(lines):
         stripped = line.strip()
@@ -131,11 +124,29 @@ def _replace_package_version_in_toml(text: str, version: str, label: str) -> str
             in_package = True
             continue
         if in_package and stripped.startswith("["):
-            break
-        if in_package and re.match(r'^\s*version\s*=\s*"[^"]+"\s*$', line):
-            lines[index] = re.sub(r'"[^"]+"', f'"{version}"', line, count=1)
-            return "".join(lines)
-    raise VersionManagementError(f"could not update [package] version in {label}")
+            return None
+        if in_package and _TOML_PACKAGE_VERSION_RE.match(stripped):
+            return index
+    return None
+
+
+def _read_package_version_from_toml(text: str, label: str) -> str:
+    lines = text.splitlines()
+    index = _find_package_version_line(lines)
+    if index is None:
+        raise VersionManagementError(f"could not find [package] version in {label}")
+    match = _TOML_PACKAGE_VERSION_RE.match(lines[index].strip())
+    assert match is not None  # guaranteed by _find_package_version_line
+    return match.group(1)
+
+
+def _replace_package_version_in_toml(text: str, version: str, label: str) -> str:
+    lines = text.splitlines(keepends=True)
+    index = _find_package_version_line(lines)
+    if index is None:
+        raise VersionManagementError(f"could not update [package] version in {label}")
+    lines[index] = re.sub(r'"[^"]+"', f'"{version}"', lines[index], count=1)
+    return "".join(lines)
 
 
 def _read_cargo_lock_version(text: str) -> str:

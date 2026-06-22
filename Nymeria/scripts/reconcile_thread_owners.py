@@ -42,6 +42,10 @@ from pathlib import Path
 
 def _classify(thread_id: str) -> str:
     """Bucket a thread_id for the summary report."""
+    # These mirror the platform/synthetic thread-id prefixes the runtime mints
+    # for bound and spawned threads. Best-effort and cosmetic: this only drives
+    # the histogram, not the keep/delete decision, so a newly added prefix just
+    # lands in the "named/test" bucket until this list is updated.
     for prefix in (
         "telegram_",
         "discord_",
@@ -112,42 +116,48 @@ def main() -> int:
         print(f"ERROR: {accounts_db} not found", file=sys.stderr)
         return 1
 
+    # Close both connections deterministically: `acc` is a writer (commit
+    # below), so a clean close after commit matters more than for a read-only
+    # script. try/finally covers every early return inside the block.
     acc = sqlite3.connect(accounts_db)
     nym = sqlite3.connect(nymeria_db) if nymeria_db.exists() else sqlite3.connect(":memory:")
+    try:
+        owners = [r[0] for r in acc.execute("select thread_id from thread_owners")]
+        keep = _keep_set(data_dir, nym, acc)
+        orphans = sorted(t for t in owners if t not in keep)
 
-    owners = [r[0] for r in acc.execute("select thread_id from thread_owners")]
-    keep = _keep_set(data_dir, nym, acc)
-    orphans = sorted(t for t in owners if t not in keep)
+        print(f"Data dir:        {data_dir}")
+        print(f"Owner rows:      {len(owners)}")
+        print(f"Real threads:    {len(keep)}  {sorted(keep)}")
+        print(f"Orphan rows:     {len(orphans)}")
+        print("Orphan buckets:")
+        for bucket, count in sorted(Counter(_classify(t) for t in orphans).items()):
+            print(f"  {bucket:24} {count}")
 
-    print(f"Data dir:        {data_dir}")
-    print(f"Owner rows:      {len(owners)}")
-    print(f"Real threads:    {len(keep)}  {sorted(keep)}")
-    print(f"Orphan rows:     {len(orphans)}")
-    print("Orphan buckets:")
-    for bucket, count in sorted(Counter(_classify(t) for t in orphans).items()):
-        print(f"  {bucket:24} {count}")
+        if not orphans:
+            print("\nNothing to prune.")
+            return 0
 
-    if not orphans:
-        print("\nNothing to prune.")
+        if not args.apply:
+            print("\nDRY RUN. Re-run with --apply to delete the orphan rows above.")
+            print("First 30 orphan thread_ids:")
+            for t in orphans[:30]:
+                print(f"  {t}")
+            return 0
+
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = accounts_db.with_name(f"accounts.db.bak-{stamp}")
+        shutil.copy2(accounts_db, backup)
+        print(f"\nBackup written: {backup}")
+
+        acc.executemany("delete from thread_owners where thread_id = ?", [(t,) for t in orphans])
+        acc.commit()
+        remaining = acc.execute("select count(*) from thread_owners").fetchone()[0]
+        print(f"Deleted {len(orphans)} orphan rows. thread_owners now has {remaining} rows.")
         return 0
-
-    if not args.apply:
-        print("\nDRY RUN. Re-run with --apply to delete the orphan rows above.")
-        print("First 30 orphan thread_ids:")
-        for t in orphans[:30]:
-            print(f"  {t}")
-        return 0
-
-    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = accounts_db.with_name(f"accounts.db.bak-{stamp}")
-    shutil.copy2(accounts_db, backup)
-    print(f"\nBackup written: {backup}")
-
-    acc.executemany("delete from thread_owners where thread_id = ?", [(t,) for t in orphans])
-    acc.commit()
-    remaining = acc.execute("select count(*) from thread_owners").fetchone()[0]
-    print(f"Deleted {len(orphans)} orphan rows. thread_owners now has {remaining} rows.")
-    return 0
+    finally:
+        nym.close()
+        acc.close()
 
 
 if __name__ == "__main__":
