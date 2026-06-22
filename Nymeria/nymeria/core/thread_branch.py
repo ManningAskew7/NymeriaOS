@@ -9,13 +9,13 @@ source thread.
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from .callable_names import dedupe_callable_name, safe_callable_base
 from .checkpoint_cleanup import delete_thread_checkpoints
 from .thread_config import ThreadConfig
 from .time_utils import utc_now
@@ -28,8 +28,6 @@ CHECKPOINT_BRANCH_TABLES = (
     "checkpoint_writes",
     "checkpoint_blobs",
 )
-
-_CALLABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 class ThreadBranchError(RuntimeError):
@@ -477,23 +475,14 @@ def _unique_callable_name(agent: Any, user_id: str, desired: str) -> str:
         base = f"{base[:57]}_branch"
 
     unavailable = _unavailable_callable_names(agent, user_id)
-    for index in range(1, 1000):
-        suffix = "" if index == 1 else f"_{index}"
-        candidate = f"{base[:64 - len(suffix)]}{suffix}"
-        if _CALLABLE_NAME_RE.match(candidate) and candidate not in unavailable:
-            return candidate
-    raise ThreadBranchError("Could not create a unique callable name for branch")
+    candidate = dedupe_callable_name(base, unavailable)
+    if candidate is None:
+        raise ThreadBranchError("Could not create a unique callable name for branch")
+    return candidate
 
 
 def _safe_callable_name(value: str) -> str:
-    safe = "".join(char if char.isalnum() or char in "_-" else "_" for char in value.strip())
-    safe = "_".join(part for part in safe.split("_") if part)
-    safe = safe.strip("_-")
-    if not safe:
-        safe = "Branch"
-    if safe[0].isdigit():
-        safe = f"Branch_{safe}"
-    return safe[:64] or "Branch"
+    return safe_callable_base(value, fallback="Branch", digit_prefix="Branch", max_len=64)
 
 
 def _unavailable_callable_names(agent: Any, user_id: str) -> set[str]:

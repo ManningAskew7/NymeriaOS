@@ -375,6 +375,41 @@ async def execute_http_tool(
 ) -> str:
     """Execute an HTTP tool with the given parameters.
 
+    Async wrapper that offloads the synchronous core to a worker thread, mirroring
+    the Python-tool path (``execute_python_tool`` -> ``_sync_execute_python_tool``).
+
+    Args:
+        config: HTTP tool configuration.
+        params: Parameter values for interpolation.
+
+    Returns:
+        Response content as a string.
+    """
+    return await asyncio.to_thread(
+        _sync_http_request,
+        config,
+        params,
+        target_type=target_type,
+        target_id=target_id,
+        actor_user_id=actor_user_id,
+    )
+
+
+def _sync_http_request(
+    config: HTTPToolConfig,
+    params: Dict[str, Any],
+    *,
+    target_type: str = "custom_http_tool",
+    target_id: Optional[str] = None,
+    actor_user_id: Optional[str] = None,
+) -> str:
+    """Synchronous core for HTTP tool execution.
+
+    Does parameter/env/credential interpolation and the (synchronous) HTTP request.
+    Both the async wrapper (``execute_http_tool`` via ``asyncio.to_thread``) and the
+    sync tool entry point (``_sync_execute_http``) call this, so neither needs an
+    event loop.
+
     Args:
         config: HTTP tool configuration.
         params: Parameter values for interpolation.
@@ -435,8 +470,7 @@ async def execute_http_tool(
 
         from ..tools.http_api import _http_request_impl
 
-        result = await asyncio.to_thread(
-            _http_request_impl,
+        result = _http_request_impl(
             method=config.method,
             url=url,
             headers=headers,
@@ -488,16 +522,18 @@ def _sync_execute_http(
     target_id: Optional[str] = None,
     actor_user_id: Optional[str] = None,
 ) -> str:
-    """Synchronous wrapper for HTTP tool execution."""
-    import asyncio
-    return asyncio.get_event_loop().run_until_complete(
-        execute_http_tool(
-            config,
-            params,
-            target_type=target_type,
-            target_id=target_id,
-            actor_user_id=actor_user_id,
-        )
+    """Synchronous entry point for HTTP tool execution (StructuredTool ``func``).
+
+    Calls the synchronous core directly so it works on any thread, including a
+    worker thread with no event loop (the previous ``get_event_loop().run_until_complete``
+    raised there and inside an already-running loop).
+    """
+    return _sync_http_request(
+        config,
+        params,
+        target_type=target_type,
+        target_id=target_id,
+        actor_user_id=actor_user_id,
     )
 
 

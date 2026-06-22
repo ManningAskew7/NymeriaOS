@@ -7,7 +7,11 @@ import asyncio
 
 import httpx
 
-from nymeria.core.custom_tools import execute_http_tool
+from nymeria.core.custom_tools import (
+    execute_http_tool,
+    _sync_execute_http,
+    _sync_http_request,
+)
 from nymeria.core.http_policy import HTTPPolicyConfig, evaluate_http_url
 from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
 from nymeria.tools.http_api import TOOL_VERSION, _api_discover_impl, _http_request_impl
@@ -468,6 +472,37 @@ def test_custom_http_tool_uses_shared_policy_for_blocked_targets():
     )
 
     assert result.startswith("[Error]: blocked_network_target")
+
+
+def test_sync_execute_http_runs_without_an_event_loop():
+    """The sync tool entry point must work on a worker thread (no event loop).
+
+    Regression for the prior ``asyncio.get_event_loop().run_until_complete`` body,
+    which raised ``RuntimeError`` when called from a thread without a running loop
+    (as ``asyncio.to_thread`` and the StructuredTool sync path both do).
+    """
+
+    async def driver() -> str:
+        return await asyncio.to_thread(
+            _sync_execute_http,
+            HTTPToolConfig(method="GET", url="http://127.0.0.1:8000/admin"),
+            {},
+        )
+
+    result = asyncio.run(driver())
+    assert result.startswith("[Error]: blocked_network_target")
+
+
+def test_sync_and_async_http_paths_agree():
+    """``_sync_execute_http`` and ``execute_http_tool`` share one core, so identical input yields identical output."""
+    config = HTTPToolConfig(method="GET", url="http://127.0.0.1:8000/admin")
+
+    sync_result = _sync_execute_http(config, {})
+    async_result = asyncio.run(execute_http_tool(config, {}))
+    direct_core = _sync_http_request(config, {})
+
+    assert sync_result == async_result == direct_core
+    assert sync_result.startswith("[Error]: blocked_network_target")
 
 
 def test_http_api_tools_are_optional_with_metadata():

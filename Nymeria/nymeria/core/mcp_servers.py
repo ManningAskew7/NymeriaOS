@@ -119,26 +119,16 @@ class MCPServerRegistry:
             startup_timeout_seconds=defn.startup_timeout_seconds,
         )
 
-        # Get or create connection (this initializes + calls tools/list internally)
-        conn = manager._get_or_create_connection(config)
-
-        # The connection already has available_tools from initialization,
-        # but we need full tool info. Re-send tools/list for schemas.
-        tools_request = {
-            "jsonrpc": "2.0",
-            "id": conn.next_request_id(),
-            "method": "tools/list",
-        }
-        response = manager._send_request(conn, tools_request, timeout=defn.startup_timeout_seconds)
-
-        discovered = []
-        if "result" in response:
-            for tool_info in response["result"].get("tools", []):
-                discovered.append(MCPDiscoveredTool(
-                    name=tool_info.get("name", ""),
-                    description=tool_info.get("description", ""),
-                    input_schema=tool_info.get("inputSchema", {}),
-                ))
+        # Connect and fetch full tool records (name/description/inputSchema) via the
+        # manager's public discovery API rather than reaching into its connection internals.
+        discovered = [
+            MCPDiscoveredTool(
+                name=tool_info.get("name", ""),
+                description=tool_info.get("description", ""),
+                input_schema=tool_info.get("inputSchema", {}),
+            )
+            for tool_info in manager.list_tools_detailed(config)
+        ]
 
         # Update definition and save
         defn.discovered_tools = discovered

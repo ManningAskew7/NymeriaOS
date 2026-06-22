@@ -724,6 +724,29 @@ class MCPServerManager:
             logger.error(f"MCP tool call failed: {e}", exc_info=True)
             return f"[Error]: MCP tool call failed - {str(e)}"
 
+    # ---- discovery ----
+
+    def list_tools_detailed(self, config: MCPToolConfig) -> List[Dict[str, Any]]:
+        """Return the full tool records advertised by a server.
+
+        Encapsulates connection setup plus a ``tools/list`` request and returns the
+        raw tool dicts (``name``, ``description``, ``inputSchema``) so callers (e.g.
+        the server registry's ``discover_tools``) do not reach into connection
+        internals or hand-build JSON-RPC. Returns an empty list if the server's
+        response carries no ``result``.
+        """
+        conn = self._get_or_create_connection(config)
+        tools_request = {
+            "jsonrpc": "2.0",
+            "id": conn.next_request_id(),
+            "method": "tools/list",
+        }
+        timeout = config.startup_timeout_seconds or LIST_TIMEOUT_DEFAULT
+        response = self._send_request(conn, tools_request, timeout=timeout)
+        if "result" in response:
+            return list(response["result"].get("tools", []))
+        return []
+
     # ---- shutdown ----
 
     def _shutdown_connection(self, conn: MCPConnection) -> None:
