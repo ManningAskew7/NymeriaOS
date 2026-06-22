@@ -999,6 +999,12 @@ class NymeriaAgent:
         from .agent_context_stats import get_context_stats as _get_context_stats
         return _get_context_stats(self, thread_id)
 
+    def _record_turn_usage(self, thread_id: str, user_id: str, messages: List) -> tuple:
+        """Record a finished turn's token usage + USD cost. Returns
+        (input_tokens, output_tokens, recorded)."""
+        from .agent_context_stats import record_turn_usage
+        return record_turn_usage(self, thread_id, user_id, messages)
+
     def _get_llm_config_for_thread(self, thread_id: str = "") -> LLMConfig:
         from .agent_llm_config import get_llm_config_for_thread
         return get_llm_config_for_thread(self, thread_id)
@@ -1809,20 +1815,7 @@ class NymeriaAgent:
                 )
 
                 # Track token usage + USD cost.
-                input_tok, output_tok = self._extract_tokens_from_response(messages)
-                llm_config_for_cost = self._get_llm_config_for_thread(thread_id)
-                cost_usd, cost_unavailable = self._compute_turn_cost(
-                    thread_id, messages, llm_config_for_cost
-                )
-                if input_tok or output_tok or cost_usd is not None or cost_unavailable:
-                    self._token_tracker.record_usage(
-                        thread_id,
-                        input_tok,
-                        output_tok,
-                        cost_usd=cost_usd,
-                        cost_unavailable=cost_unavailable,
-                    )
-                    self._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
+                self._record_turn_usage(thread_id, user_id, messages)
 
                 # Detect if the agent was stopped by a turn safety guard.
                 max_iterations = self._max_iterations_for_thread(thread_id)
@@ -2656,20 +2649,10 @@ class NymeriaAgent:
                 try:
                     state = await graph.aget_state(config)
                     result_messages = state.values.get("messages", [])
-                    input_tok, output_tok = self._extract_tokens_from_response(result_messages)
-                    llm_config_for_cost = self._get_llm_config_for_thread(thread_id)
-                    cost_usd, cost_unavailable = self._compute_turn_cost(
-                        thread_id, result_messages, llm_config_for_cost
+                    input_tok, output_tok, recorded = self._record_turn_usage(
+                        thread_id, user_id, result_messages
                     )
-                    if input_tok or output_tok or cost_usd is not None or cost_unavailable:
-                        self._token_tracker.record_usage(
-                            thread_id,
-                            input_tok,
-                            output_tok,
-                            cost_usd=cost_usd,
-                            cost_unavailable=cost_unavailable,
-                        )
-                        self._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
+                    if recorded:
                         logger.debug(
                             f"Thread {thread_id}: Recorded {input_tok}+{output_tok} tokens "
                             f"(context: {self._token_tracker.get_usage(thread_id).context_tokens}, "
@@ -2825,20 +2808,7 @@ class NymeriaAgent:
                 try:
                     state = await graph.aget_state(config)
                     result_messages = state.values.get("messages", [])
-                    input_tok, output_tok = self._extract_tokens_from_response(result_messages)
-                    llm_config_for_cost = self._get_llm_config_for_thread(thread_id)
-                    cost_usd, cost_unavailable = self._compute_turn_cost(
-                        thread_id, result_messages, llm_config_for_cost
-                    )
-                    if input_tok or output_tok or cost_usd is not None or cost_unavailable:
-                        self._token_tracker.record_usage(
-                            thread_id,
-                            input_tok,
-                            output_tok,
-                            cost_usd=cost_usd,
-                            cost_unavailable=cost_unavailable,
-                        )
-                        self._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
+                    self._record_turn_usage(thread_id, user_id, result_messages)
                 except Exception:
                     logger.debug("Failed to extract token usage after stream error")
         finally:

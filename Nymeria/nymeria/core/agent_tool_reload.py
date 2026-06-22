@@ -18,8 +18,6 @@ from typing import Optional, TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage
 
-from .agent import _create_human_message
-
 if TYPE_CHECKING:
     from .agent import NymeriaAgent  # noqa: F401
 
@@ -99,6 +97,11 @@ def create_tool_reload_resume_message(
     agent: "NymeriaAgent",
     reload_info: dict,
 ) -> HumanMessage:
+    # Lazy: avoid circular import at module load (agent.py imports this module
+    # function-locally, so a module-top `from .agent import ...` would deadlock
+    # the import graph the day agent.py imports a facade sibling at its top).
+    from .agent import _create_human_message
+
     new_tools = reload_info.get("new_tools", [])
     ttl_key = reload_info.get("ttl", "2h")
     ttl_seconds = reload_info.get("ttl_seconds")
