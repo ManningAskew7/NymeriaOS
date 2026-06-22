@@ -11,7 +11,7 @@ import json
 # get_autonomous_tail_guidance(), NOT appended to the system prompt: the system
 # prompt is kept source-invariant so it stays cache-stable across user vs
 # autonomous turns on the same thread (see
-# docs/memory-and-compaction-rationale.md).
+# docs/agent-systems/memory-and-compaction-rationale.md).
 AUTONOMOUS_MODE_RULES = """## Autonomous Run Rules
 
 This is autonomous user-visible work. Do not end by choosing silence, a no-op,

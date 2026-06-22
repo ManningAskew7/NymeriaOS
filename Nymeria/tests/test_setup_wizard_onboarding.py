@@ -76,7 +76,7 @@ def test_new_deployment_enums_have_ordered_choices_and_recommended_markers():
 
 def test_security_profile_choices_disable_coming_soon_rows():
     """Secure and Standard render greyed out with a "(to come)" suffix until
-    the approval gate ships (docs/private/security-profiles.md); Unleashed is
+    the approval gate ships (docs/private/security/security-profiles.md); Unleashed is
     the only selectable row and carries no "(recommended)" marker.
     """
     from nymeria.onboarding import SECURITY_PROFILE_CHOICES, SECURITY_PROFILE_ORDER

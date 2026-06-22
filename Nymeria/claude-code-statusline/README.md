@@ -3,7 +3,7 @@
 A single-line, colorized status line for Claude Code, themed to match Nymeria's
 palette. This package holds the script (`statusline.sh`). The full documentation
 (segments, install, customizing) lives in
-`Nymeria/docs/private/ClaudeCode/statusline.md`.
+`Nymeria/docs/private/claude-code/statusline.md`.
 
 Quick install:
 
