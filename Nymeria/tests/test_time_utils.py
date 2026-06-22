@@ -6,7 +6,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from nymeria.core.time_utils import parse_future_scheduled_time, parse_scheduled_time, parse_tool_ttl
+from nymeria.core.time_utils import (
+    parse_future_scheduled_time,
+    parse_scheduled_time,
+    parse_tool_ttl,
+    parse_usage_timestamp,
+)
 from nymeria.core.todo_constants import calculate_next_recurrence_time
 
 
@@ -56,6 +61,22 @@ def test_parse_future_scheduled_time_rejects_past_absolute_time():
             tz=timezone.utc,
             now=datetime(2026, 5, 15, 10, 0, tzinfo=timezone.utc),
         )
+
+
+@pytest.mark.parametrize("value", [None, "", "not-a-timestamp", "2026-13-99"])
+def test_parse_usage_timestamp_returns_none_for_blank_or_invalid(value):
+    assert parse_usage_timestamp(value) is None
+
+
+def test_parse_usage_timestamp_normalizes_to_aware_utc():
+    # Offset-aware ISO is converted to UTC.
+    assert parse_usage_timestamp("2026-05-16T12:34:00-04:00") == datetime(
+        2026, 5, 16, 16, 34, tzinfo=timezone.utc
+    )
+    # Naive ISO is treated as UTC.
+    assert parse_usage_timestamp("2026-05-16T12:34:00") == datetime(
+        2026, 5, 16, 12, 34, tzinfo=timezone.utc
+    )
 
 
 def test_calculate_next_recurrence_time_preserves_schedule_anchor():

@@ -58,6 +58,21 @@ def ensure_aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def parse_usage_timestamp(value: Optional[str]) -> Optional[datetime]:
+    """Parse a stored ISO usage timestamp into aware UTC, or ``None``.
+
+    Returns ``None`` for blank or unparseable values so callers can treat a
+    missing or legacy usage record as "never used" rather than raising. Shared
+    by the tool and skill thread-config prune paths.
+    """
+    if not value:
+        return None
+    try:
+        return ensure_aware_utc(datetime.fromisoformat(str(value)))
+    except Exception:
+        return None
+
+
 def parse_duration(duration_str: str) -> Optional[int]:
     """
     Parse a duration string to seconds.

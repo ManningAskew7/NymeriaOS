@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Annotated, Any, List, Literal, Optional, Union, cast
 
 from langchain_core.runnables import RunnableConfig
@@ -22,45 +22,13 @@ from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
 from ..core.thread_config import ThreadConfig
-from ..core.time_utils import ensure_aware_utc, utc_now
-from ..core.tool_reload import should_emit_reload_command, tool_reload_command
-from .utils import get_user_id
-from .utils import get_thread_id
+from ..core.time_utils import ensure_aware_utc, parse_usage_timestamp, utc_now
+from ..core.tool_reload import command_or_text, tool_reload_command
+from .utils import current_agent, get_thread_id, get_user_id, json_result
 
 logger = logging.getLogger(__name__)
 
 PROTECTED_SKILL_NAMES = frozenset({"self-improve"})
-
-
-def _agent():
-    """Lazy import to avoid a tool->agent circular import at module load."""
-    from ..core.agent import get_current_agent
-    return get_current_agent()
-
-
-def _command_or_text(
-    text: str,
-    queued_reload: bool,
-    tool_call_id: Optional[str],
-    new_tool_names: Optional[list[str]] = None,
-    thread_id: str = "",
-) -> Union[str, Command]:
-    """Emit Command(goto=END) only when the rebuild is actually required.
-
-    In dynamic-binding mode, ``should_emit_reload_command`` skips the
-    Command because the next agent step resolves tools and skill metadata from
-    the live resolver. Skill-only changes pass an empty list.
-    """
-    if queued_reload and tool_call_id and should_emit_reload_command(
-        new_tool_names or [],
-        thread_id=thread_id,
-    ):
-        return tool_reload_command(text, tool_call_id)
-    return text
-
-
-def _json_result(**payload) -> str:
-    return json.dumps(payload, indent=2, default=str)
 
 
 def _global_enabled_skills(agent: Any, user_id: str) -> set[str]:
@@ -71,21 +39,12 @@ def _global_enabled_skills(agent: Any, user_id: str) -> set[str]:
         return set()
 
 
-def _parse_usage_timestamp(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return ensure_aware_utc(datetime.fromisoformat(str(value)))
-    except Exception:
-        return None
-
-
 def _skill_status(*, user_id: str, thread_id: str) -> str:
-    agent = _agent()
+    agent = current_agent()
     if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
-        return _json_result(ok=False, error="skills subsystem not initialized")
+        return json_result(ok=False, error="skills subsystem not initialized")
     if not thread_id:
-        return _json_result(ok=False, error="thread_id is required")
+        return json_result(ok=False, error="thread_id is required")
 
     tc = agent.thread_config_manager.get_config(thread_id)
     if tc is None:
@@ -97,7 +56,7 @@ def _skill_status(*, user_id: str, thread_id: str) -> str:
         thread_enabled_skills=tc.enabled_skills,
         thread_disabled_skills=tc.disabled_skills,
     )
-    return _json_result(
+    return json_result(
         ok=True,
         action="status",
         thread_id=thread_id,
@@ -128,15 +87,15 @@ def _prune_thread_skills(
 ) -> str:
     from ..core.capability_usage import get_capability_usage_store
 
-    agent = _agent()
+    agent = current_agent()
     if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
-        return _json_result(ok=False, error="skills subsystem not initialized")
+        return json_result(ok=False, error="skills subsystem not initialized")
     if not thread_id:
-        return _json_result(ok=False, error="thread_id is required")
+        return json_result(ok=False, error="thread_id is required")
 
     tc = agent.thread_config_manager.get_config(thread_id)
     if tc is None:
-        return _json_result(
+        return json_result(
             ok=True,
             action="prune",
             dry_run=dry_run,
@@ -201,7 +160,7 @@ def _prune_thread_skills(
             ):
                 continue
             usage = usage_store.get_skill(user_id=user_id, thread_id=thread_id, name=name)
-            last_used = _parse_usage_timestamp(usage.last_used_at)
+            last_used = parse_usage_timestamp(usage.last_used_at)
             if last_used is not None and last_used <= stale_cutoff:
                 enabled_stale.append(name)
 
@@ -212,7 +171,7 @@ def _prune_thread_skills(
         tc.enabled_skills = [name for name in enabled if name not in remove_enabled]
         tc.disabled_skills = [name for name in disabled if name not in remove_disabled]
         if not agent.thread_config_manager.save_config(tc):
-            return _json_result(ok=False, error="failed to save thread skill config")
+            return json_result(ok=False, error="failed to save thread skill config")
         if hasattr(agent, "invalidate_thread_config_cache"):
             agent.invalidate_thread_config_cache(thread_id)
         try:
@@ -220,7 +179,7 @@ def _prune_thread_skills(
         except Exception:
             logger.debug("Failed to rebuild graphs after skill prune", exc_info=True)
 
-    return _json_result(
+    return json_result(
         ok=True,
         action="prune",
         dry_run=dry_run,
@@ -270,7 +229,7 @@ def list_installed_skills(
         required_tools, tool_ttl, is_skill_kit, default_active, has_scripts,
         has_references} entries.
     """
-    agent = _agent()
+    agent = current_agent()
     if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
         return json.dumps({"error": "skills subsystem not initialized"})
 
@@ -372,7 +331,7 @@ def search_skills(
               better configuration (typically set EMBEDDING_API_KEY).
             - each result is ``{name, description, score, ...}``
     """
-    agent = _agent()
+    agent = current_agent()
     if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
         return json.dumps({"error": "skills subsystem not initialized"})
 
@@ -467,7 +426,7 @@ def install_skill(
         Human-readable summary of the install. On failure, returns an error
         message starting with "[error]".
     """
-    agent = _agent()
+    agent = current_agent()
     if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
         return "[error] skills subsystem not initialized"
 
@@ -543,18 +502,18 @@ def _set_thread_skill_enabled(
     thread_id: str,
     tool_call_id: Optional[str],
 ) -> Union[str, Command]:
-    agent = _agent()
+    agent = current_agent()
     if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
-        return _json_result(ok=False, error="skills subsystem not initialized")
+        return json_result(ok=False, error="skills subsystem not initialized")
     if not thread_id:
-        return _json_result(ok=False, error="thread_id is required")
+        return json_result(ok=False, error="thread_id is required")
 
     target = (skill_name or "").strip()
     if not target:
-        return _json_result(ok=False, error="name is required")
+        return json_result(ok=False, error="name is required")
     skill = agent.skill_manager.get(target, user_id=user_id)
     if skill is None:
-        return _json_result(ok=False, error=f"skill not installed or not visible: {target}")
+        return json_result(ok=False, error=f"skill not installed or not visible: {target}")
 
     tc = agent.thread_config_manager.get_config(thread_id)
     if tc is None:
@@ -578,7 +537,7 @@ def _set_thread_skill_enabled(
 
     if changed:
         if not agent.thread_config_manager.save_config(tc):
-            return _json_result(ok=False, error="failed to save thread skill config")
+            return json_result(ok=False, error="failed to save thread skill config")
         if hasattr(agent, "invalidate_thread_config_cache"):
             agent.invalidate_thread_config_cache(thread_id)
 
@@ -600,7 +559,7 @@ def _set_thread_skill_enabled(
         except Exception:
             logger.debug("Failed to rebuild graphs after skill disable", exc_info=True)
 
-    payload = _json_result(
+    payload = json_result(
         ok=True,
         action="enable" if enabled else "disable",
         changed=changed,
@@ -628,7 +587,7 @@ def _set_thread_skill_enabled(
             "\n\n[Reload cap hit]: the skill was enabled on this thread, but "
             "it will not be visible to the model until the next user message."
         )
-    return _command_or_text(payload, queued_reload, tool_call_id, thread_id=thread_id)
+    return command_or_text(payload, queued_reload, tool_call_id, thread_id=thread_id)
 
 
 @tool
@@ -691,7 +650,7 @@ def skill_manage(
 
     if action_key in {"list", "inspect"}:
         if name:
-            agent = _agent()
+            agent = current_agent()
             skill_manager = getattr(agent, "skill_manager", None) if agent is not None else None
             skill = (
                 skill_manager.get(name, user_id=user_id)
@@ -699,8 +658,8 @@ def skill_manage(
                 else None
             )
             if skill is None:
-                return _json_result(ok=False, error=f"skill not installed or not visible: {name}")
-            return _json_result(
+                return json_result(ok=False, error=f"skill not installed or not visible: {name}")
+            return json_result(
                 ok=True,
                 skill={
                     "name": skill.name,
@@ -774,7 +733,7 @@ def skill_manage(
             tool_call_id=tool_call_id,
         )
 
-    return _json_result(
+    return json_result(
         ok=False,
         error="action must be one of: list, search, install, enable, disable, inspect, status, prune",
     )

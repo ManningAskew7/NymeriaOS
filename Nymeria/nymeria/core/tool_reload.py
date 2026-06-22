@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.graph import END
@@ -72,3 +72,31 @@ def should_emit_reload_command(
     if not bool(getattr(settings, "dynamic_tool_binding", False)):
         return True
     return False
+
+
+def command_or_text(
+    text: str,
+    queued_reload: bool,
+    tool_call_id: Optional[str],
+    new_tool_names: Optional[Sequence[str]] = None,
+    thread_id: str = "",
+) -> Union[str, Command]:
+    """Emit ``Command(goto=END)`` only when a same-turn graph rebuild is required.
+
+    Returns the plain ``text`` unless a reload is queued, a ``tool_call_id`` is
+    available, and ``should_emit_reload_command`` says the rebuild must happen
+    (legacy rebuild mode). In dynamic-binding mode the next agent step resolves
+    tools and skill metadata from the live resolver, so the plain text is
+    returned and the graph keeps running. Skill-only changes pass an empty
+    ``new_tool_names``.
+
+    This is the canonical owner of the reload-gating decision that tool, skill,
+    and MCP enable paths share; callers route through it instead of re-deriving
+    the same short-circuit rule.
+    """
+    if queued_reload and tool_call_id and should_emit_reload_command(
+        new_tool_names or [],
+        thread_id=thread_id,
+    ):
+        return tool_reload_command(text, tool_call_id)
+    return text

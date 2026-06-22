@@ -1,12 +1,42 @@
-"""Shared runtime-context helpers for Nymeria tools.
+"""Shared runtime-context and result-formatting helpers for Nymeria tools.
 
 Every @tool that needs the caller's user_id or thread_id should import from
-here rather than hand-parsing ``config.get("configurable", {})``.
+here rather than hand-parsing ``config.get("configurable", {})``. This module
+also owns the small cross-tool helpers (current-agent lookup, JSON result
+envelopes) that were previously re-declared per tool module.
 """
 
+import json
 from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
+
+
+def current_agent() -> Optional[Any]:
+    """Return the active ``NymeriaAgent``, or ``None`` when none is running.
+
+    The import is function-local on purpose: tool modules are imported during
+    agent construction, so a module-level ``from ..core.agent import ...`` would
+    create a tool->agent circular import at load time. This is the single home
+    for that lazy-fetch pattern across the tool catalog.
+    """
+    from ..core.agent import get_current_agent
+
+    return get_current_agent()
+
+
+def json_result(**payload: Any) -> str:
+    """Serialize a tool-result payload as pretty JSON (``default=str``)."""
+    return json.dumps(payload, indent=2, default=str)
+
+
+def versioned_json_result(version: str, **payload: Any) -> str:
+    """Like :func:`json_result` but stamps a leading ``tool_version`` field.
+
+    The ``version`` is each authoring tool's own schema-version constant, so the
+    stamping stays per-module while the serialization shape is shared.
+    """
+    return json.dumps({"tool_version": version, **payload}, indent=2, default=str)
 
 
 def get_user_id(config: Optional[RunnableConfig]) -> str:
