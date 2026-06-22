@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from nymeria.core.agent_context_stats import (
     get_context_stats,
+    record_turn_usage,
     rehydrate_token_usage,
 )
 
@@ -158,6 +159,171 @@ def test_rehydrate_silently_swallows_graph_exceptions():
     rehydrate_token_usage(cast(Any, agent), "t1")
 
     assert agent._record_calls == []
+
+
+# ----- record_turn_usage ------------------------------------------------------
+
+
+def _fake_record_agent(*, tokens=(0, 0), cost=(None, False)) -> Any:
+    """Minimal agent stub exposing only the facades record_turn_usage calls."""
+    record_usage_calls: list[tuple] = []
+    record_cost_calls: list[tuple] = []
+
+    token_tracker = SimpleNamespace(
+        record_usage=lambda *a, **k: record_usage_calls.append((a, k)),
+    )
+    agent = SimpleNamespace(
+        _extract_tokens_from_response=lambda _msgs: tokens,
+        _get_llm_config_for_thread=lambda _tid: SimpleNamespace(model="gpt-4o"),
+        _compute_turn_cost=lambda _tid, _msgs, _cfg: cost,
+        _token_tracker=token_tracker,
+        _record_turn_cost=lambda tid, uid, c, cu: record_cost_calls.append((tid, uid, c, cu)),
+    )
+    agent._record_usage_calls = record_usage_calls  # type: ignore[attr-defined]
+    agent._record_cost_calls = record_cost_calls  # type: ignore[attr-defined]
+    return agent
+
+
+def test_record_turn_usage_records_when_tokens_present():
+    agent = _fake_record_agent(tokens=(120, 45), cost=(0.0021, False))
+
+    result = record_turn_usage(cast(Any, agent), "t1", "u1", ["msg"])
+
+    assert result == (120, 45, True)
+    assert agent._record_usage_calls == [
+        (("t1", 120, 45), {"cost_usd": 0.0021, "cost_unavailable": False})
+    ]
+    assert agent._record_cost_calls == [("t1", "u1", 0.0021, False)]
+
+
+def test_record_turn_usage_skips_when_nothing_to_record():
+    agent = _fake_record_agent(tokens=(0, 0), cost=(None, False))
+
+    result = record_turn_usage(cast(Any, agent), "t1", "u1", ["msg"])
+
+    assert result == (0, 0, False)
+    assert agent._record_usage_calls == []
+    assert agent._record_cost_calls == []
+
+
+def test_record_turn_usage_records_on_cost_only_even_with_zero_tokens():
+    # Mirrors the original guard: a known cost with zero tokens still records.
+    agent = _fake_record_agent(tokens=(0, 0), cost=(0.005, False))
+
+    result = record_turn_usage(cast(Any, agent), "t1", "u1", ["msg"])
+
+    assert result == (0, 0, True)
+    assert len(agent._record_usage_calls) == 1
+    assert agent._record_cost_calls == [("t1", "u1", 0.005, False)]
+
+
+def test_record_turn_usage_records_when_cost_unavailable():
+    # cost_unavailable=True with zero tokens and no cost still records, so the
+    # status bar can show "cost unavailable" rather than nothing.
+    agent = _fake_record_agent(tokens=(0, 0), cost=(None, True))
+
+    result = record_turn_usage(cast(Any, agent), "t1", "u1", ["msg"])
+
+    assert result == (0, 0, True)
+    assert agent._record_usage_calls == [
+        (("t1", 0, 0), {"cost_usd": None, "cost_unavailable": True})
+    ]
+    assert agent._record_cost_calls == [("t1", "u1", None, True)]
+
+
+# ----- _rehydrate_cost_from_metadata (F10) ------------------------------------
+
+
+def _fake_cost_agent(*, owner, thread_meta: dict, glob_files: list) -> Any:
+    """Stub agent for _rehydrate_cost_from_metadata.
+
+    thread_meta maps user_id -> total_cost_usd_micros for the target thread.
+    glob_files lists the user_ids whose metadata files exist. A counter records
+    whether the glob fallback scan ran (so the fast path can be asserted).
+    """
+    usage = SimpleNamespace(total_cost_usd=0.0)
+    usage_store: dict = {}
+    token_tracker = SimpleNamespace(get_usage=lambda _tid: usage, _usage=usage_store)
+    calls = {"glob": 0}
+
+    def _get_thread(user_id, _tid):
+        micros = thread_meta.get(user_id)
+        return SimpleNamespace(total_cost_usd_micros=micros) if micros is not None else None
+
+    class _MetaDir:
+        def glob(self, _pattern):
+            calls["glob"] += 1
+            return [SimpleNamespace(stem=u) for u in glob_files]
+
+    manager = SimpleNamespace(metadata_dir=_MetaDir(), get_thread=_get_thread)
+    accounts_repo = SimpleNamespace(get_thread_owner=lambda _tid: owner)
+
+    agent = SimpleNamespace(
+        thread_metadata_manager=manager,
+        accounts_repo=accounts_repo,
+        _token_tracker=token_tracker,
+    )
+    agent._usage_obj = usage  # type: ignore[attr-defined]
+    agent._glob_calls = calls  # type: ignore[attr-defined]
+    return agent
+
+
+def test_rehydrate_cost_fast_path_reads_owner_only():
+    from nymeria.core.agent_context_stats import _rehydrate_cost_from_metadata
+
+    agent = _fake_cost_agent(
+        owner="alice", thread_meta={"alice": 2_000_000}, glob_files=["alice", "bob"]
+    )
+
+    _rehydrate_cost_from_metadata(cast(Any, agent), "t1")
+
+    assert agent._usage_obj.total_cost_usd == 2.0
+    assert agent._glob_calls["glob"] == 0  # owner hit -> no full scan
+    assert agent._token_tracker._usage.get("t1") is agent._usage_obj
+
+
+def test_rehydrate_cost_falls_back_to_glob_when_owner_unknown():
+    from nymeria.core.agent_context_stats import _rehydrate_cost_from_metadata
+
+    # No registered owner; the cost lives under bob's metadata file.
+    agent = _fake_cost_agent(
+        owner=None, thread_meta={"bob": 3_500_000}, glob_files=["alice", "bob"]
+    )
+
+    _rehydrate_cost_from_metadata(cast(Any, agent), "t1")
+
+    assert agent._glob_calls["glob"] == 1
+    assert agent._usage_obj.total_cost_usd == 3.5
+
+
+def test_rehydrate_cost_falls_back_when_owner_has_no_metadata_row():
+    from nymeria.core.agent_context_stats import _rehydrate_cost_from_metadata
+
+    # alice is the registered owner but the cost was persisted under bob
+    # (e.g. a callable/shared thread) -> the owner read misses, glob finds it.
+    agent = _fake_cost_agent(
+        owner="alice", thread_meta={"bob": 1_000_000}, glob_files=["alice", "bob"]
+    )
+
+    _rehydrate_cost_from_metadata(cast(Any, agent), "t1")
+
+    assert agent._glob_calls["glob"] == 1
+    assert agent._usage_obj.total_cost_usd == 1.0
+
+
+def test_rehydrate_cost_zero_owner_cost_falls_back_and_seeds_nothing():
+    from nymeria.core.agent_context_stats import _rehydrate_cost_from_metadata
+
+    # Owner row exists but is $0 -> fall back to the scan (which reproduces the
+    # original first-row-wins short-circuit), seeding nothing.
+    agent = _fake_cost_agent(
+        owner="alice", thread_meta={"alice": 0}, glob_files=["alice"]
+    )
+
+    _rehydrate_cost_from_metadata(cast(Any, agent), "t1")
+
+    assert agent._glob_calls["glob"] == 1
+    assert agent._usage_obj.total_cost_usd == 0.0
 
 
 # ----- get_context_stats ------------------------------------------------------

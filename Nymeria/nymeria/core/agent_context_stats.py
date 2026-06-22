@@ -73,29 +73,98 @@ def rehydrate_token_usage(agent: "NymeriaAgent", thread_id: str) -> None:
         logger.debug(f"Could not rehydrate token usage for thread {thread_id}: {e}")
 
 
+def _seed_cost_from_meta(agent: "NymeriaAgent", thread_id: str, meta: Any) -> bool:
+    """Seed the tracker's cumulative cost from one ThreadMetadata row.
+
+    Returns True when a positive cost was found and seeded (so the caller can
+    stop scanning); a missing or zero cost returns False.
+    """
+    micros = getattr(meta, "total_cost_usd_micros", 0) or 0
+    if micros <= 0:
+        return False
+    usage = agent._token_tracker.get_usage(thread_id)
+    # Ensure the usage row exists in the tracker so the seeded cost survives
+    # the read.
+    agent._token_tracker._usage.setdefault(thread_id, usage)
+    usage.total_cost_usd = float(micros) / 1_000_000.0
+    return True
+
+
 def _rehydrate_cost_from_metadata(agent: "NymeriaAgent", thread_id: str) -> None:
-    """Seed the in-memory cumulative cost from persisted ThreadMetadata."""
+    """Seed the in-memory cumulative cost from persisted ThreadMetadata.
+
+    Fast path: read the registered thread owner's metadata directly (one DB
+    lookup + one file read). Fall back to scanning every user's metadata file
+    when the owner is unknown, has no metadata for this thread, or has a zero
+    recorded cost: turn cost is persisted under the turn's user_id, which is
+    not guaranteed to equal the registered owner (callable, dream-shadow,
+    shared, or reassigned threads). The fallback reproduces the original
+    "first metadata row wins" scan exactly.
+    """
     try:
         manager = getattr(agent, "thread_metadata_manager", None)
         if manager is None:
             return
-        # ThreadMetadata is keyed per-user; we don't know the owner from
-        # thread_id alone. Walk known users and pick the first hit.
+
+        # Fast path: go straight to the registered owner's metadata file.
+        accounts_repo = getattr(agent, "accounts_repo", None)
+        owner = None
+        if accounts_repo is not None:
+            try:
+                owner = accounts_repo.get_thread_owner(thread_id)
+            except Exception:  # noqa: BLE001 - owner lookup is best-effort.
+                owner = None
+        if owner is not None:
+            meta = manager.get_thread(owner, thread_id)
+            if meta is not None and _seed_cost_from_meta(agent, thread_id, meta):
+                return
+
+        # Fallback: scan all users' metadata and stop at the first hit.
         for path in manager.metadata_dir.glob("*.json"):
             user_id = path.stem
             meta = manager.get_thread(user_id, thread_id)
             if meta is None:
                 continue
-            micros = getattr(meta, "total_cost_usd_micros", 0) or 0
-            if micros > 0:
-                usage = agent._token_tracker.get_usage(thread_id)
-                # Ensure the usage row exists in the tracker so the seeded
-                # cost survives the read.
-                agent._token_tracker._usage.setdefault(thread_id, usage)
-                usage.total_cost_usd = float(micros) / 1_000_000.0
+            _seed_cost_from_meta(agent, thread_id, meta)
             return
     except Exception as exc:  # noqa: BLE001 - best-effort.
         logger.debug("Cost rehydration skipped for %s: %s", thread_id, exc)
+
+
+def record_turn_usage(
+    agent: "NymeriaAgent",
+    thread_id: str,
+    user_id: str,
+    messages: list,
+) -> tuple[int, int, bool]:
+    """Record a finished turn's token usage and USD cost.
+
+    Extracts input/output tokens and the per-turn cost from ``messages``, then
+    (only when there is something to record) updates the in-memory token tracker
+    and the persisted per-thread cost ledger. Factored out of the three
+    byte-identical copies that lived inline in ``chat`` and ``astream`` (the
+    success and error/overflow paths).
+
+    Returns ``(input_tokens, output_tokens, recorded)`` where ``recorded`` is
+    True iff something was recorded, so the astream-success caller can gate its
+    debug log on the exact same condition the recording used.
+    """
+    input_tok, output_tok = agent._extract_tokens_from_response(messages)
+    llm_config_for_cost = agent._get_llm_config_for_thread(thread_id)
+    cost_usd, cost_unavailable = agent._compute_turn_cost(
+        thread_id, messages, llm_config_for_cost
+    )
+    recorded = bool(input_tok or output_tok or cost_usd is not None or cost_unavailable)
+    if recorded:
+        agent._token_tracker.record_usage(
+            thread_id,
+            input_tok,
+            output_tok,
+            cost_usd=cost_usd,
+            cost_unavailable=cost_unavailable,
+        )
+        agent._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
+    return input_tok, output_tok, recorded
 
 
 def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:

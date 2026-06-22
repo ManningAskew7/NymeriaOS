@@ -32,6 +32,56 @@ def _self_edit_disabled_error() -> str:
     )
 
 
+# Directories self_file_write / self_file_delete may modify, relative to the
+# project root. This is the single source of truth for the writable allowlist;
+# read/list use the broader project-root containment check instead.
+_WRITABLE_SUBDIRS: tuple[tuple[str, ...], ...] = (
+    ("nymeria", "tools"),
+    ("nymeria", "agents"),
+    ("nymeria", "triggers", "sources"),
+)
+
+
+def _canonical_path(file_path: str, project_root: Path) -> Path:
+    """Resolve ``file_path`` to an absolute, symlink-canonical path.
+
+    Relative inputs are taken against ``project_root``. ``.resolve()`` runs
+    last so the containment checks below see a path with ``..`` segments and
+    symlinks already collapsed: this ordering is the traversal/symlink guard.
+    """
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = project_root / file_path
+    return path.resolve()
+
+
+def _resolve_in_project(file_path: str, project_root: Path) -> "Path | None":
+    """Return the resolved path if it stays within ``project_root``, else None."""
+    path = _canonical_path(file_path, project_root)
+    try:
+        path.relative_to(project_root)
+    except ValueError:
+        return None
+    return path
+
+
+def _writable_dirs(project_root: Path) -> tuple[Path, ...]:
+    """The absolute writable allowlist, in (tools, agents, trigger_sources) order."""
+    return tuple(project_root.joinpath(*parts) for parts in _WRITABLE_SUBDIRS)
+
+
+def _resolve_in_writable_dir(file_path: str, project_root: Path) -> "Path | None":
+    """Return the resolved path if it lands inside a writable dir, else None."""
+    path = _canonical_path(file_path, project_root)
+    for allowed_dir in _writable_dirs(project_root):
+        try:
+            path.relative_to(allowed_dir)
+            return path
+        except ValueError:
+            continue
+    return None
+
+
 # Self-modification tools (optional — enabled per-thread)
 @tool
 def self_file_read(file_path: str) -> str:
@@ -47,16 +97,9 @@ def self_file_read(file_path: str) -> str:
     settings = get_settings()
     project_root = settings.project_root
 
-    # Resolve path
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = project_root / file_path
-    path = path.resolve()
-
     # Security check: must be within project
-    try:
-        path.relative_to(project_root)
-    except ValueError:
+    path = _resolve_in_project(file_path, project_root)
+    if path is None:
         return f"[Error]: Access denied. File must be within {project_root}"
 
     if not path.exists():
@@ -91,27 +134,11 @@ def self_file_write(file_path: str, content: str) -> str:
 
     settings = get_settings()
     project_root = settings.project_root
-    tools_dir = project_root / "nymeria" / "tools"
-    agents_dir = project_root / "nymeria" / "agents"
-    trigger_sources_dir = project_root / "nymeria" / "triggers" / "sources"
-
-    # Resolve path
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = project_root / file_path
-    path = path.resolve()
+    tools_dir, agents_dir, trigger_sources_dir = _writable_dirs(project_root)
 
     # Security check: must be within tools, agents, or trigger sources directory
-    in_allowed = False
-    for allowed_dir in (tools_dir, agents_dir, trigger_sources_dir):
-        try:
-            path.relative_to(allowed_dir)
-            in_allowed = True
-            break
-        except ValueError:
-            pass  # not a valid override entry, skip
-
-    if not in_allowed:
+    path = _resolve_in_writable_dir(file_path, project_root)
+    if path is None:
         return f"[Error]: Access denied. Can only write to files in {tools_dir}, {agents_dir}, or {trigger_sources_dir}"
 
     # Validate Python syntax
@@ -162,15 +189,9 @@ def self_file_list(directory: str = "nymeria/tools") -> str:
     settings = get_settings()
     project_root = settings.project_root
 
-    path = Path(directory)
-    if not path.is_absolute():
-        path = project_root / directory
-    path = path.resolve()
-
     # Security check
-    try:
-        path.relative_to(project_root)
-    except ValueError:
+    path = _resolve_in_project(directory, project_root)
+    if path is None:
         return "[Error]: Access denied. Directory must be within project"
 
     if not path.exists():
@@ -227,27 +248,11 @@ def self_file_delete(file_path: str) -> str:
 
     settings = get_settings()
     project_root = settings.project_root
-    tools_dir = project_root / "nymeria" / "tools"
-    agents_dir = project_root / "nymeria" / "agents"
-    trigger_sources_dir = project_root / "nymeria" / "triggers" / "sources"
-
-    # Resolve path
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = project_root / file_path
-    path = path.resolve()
+    tools_dir, agents_dir, trigger_sources_dir = _writable_dirs(project_root)
 
     # Security check: must be within tools, agents, or trigger sources directory
-    in_allowed = False
-    for allowed_dir in (tools_dir, agents_dir, trigger_sources_dir):
-        try:
-            path.relative_to(allowed_dir)
-            in_allowed = True
-            break
-        except ValueError:
-            pass  # not a valid override entry, skip
-
-    if not in_allowed:
+    path = _resolve_in_writable_dir(file_path, project_root)
+    if path is None:
         return f"[Error]: Access denied. Can only delete files in {tools_dir}, {agents_dir}, or {trigger_sources_dir}"
 
     # Don't allow deleting __init__.py
