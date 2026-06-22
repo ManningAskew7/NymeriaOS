@@ -1,6 +1,7 @@
 """Web search tool for Nymeria."""
 
 import logging
+import os
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -33,7 +34,6 @@ def _get_perplexity_api_key(config: Optional[RunnableConfig] = None) -> Optional
         return cred.value
 
     from ..config import get_settings
-    import os
     settings = get_settings()
     return settings.perplexity_api_key or os.environ.get("PERPLEXITY_API_KEY")
 

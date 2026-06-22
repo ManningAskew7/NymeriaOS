@@ -108,6 +108,16 @@ def generated_image_dir(user_id: str) -> Path:
     return _workspace_dir() / "images" / "generated" / _safe_user_id(user_id)
 
 
+def screenshot_dir(user_id: str) -> Path:
+    """Per-user workspace directory where browser screenshots are written.
+
+    A sibling of :func:`generated_image_dir` under ``<workspace>/images/`` so the
+    agent can browse and re-view screenshots with file_read/bash, kept separate
+    from AI-generated images.
+    """
+    return _workspace_dir() / "images" / "screenshots" / _safe_user_id(user_id)
+
+
 def _write_image_file(
     *,
     user_id: str,
@@ -115,6 +125,7 @@ def _write_image_file(
     mime_type: str,
     output_name: Optional[str],
     prompt: str,
+    output_dir: Optional[Path] = None,
 ) -> Path:
     extension = mimetypes.guess_extension(mime_type) or ".png"
     if extension == ".jpe":
@@ -125,7 +136,7 @@ def _write_image_file(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     filename = f"{timestamp}-{slug}-{uuid4().hex[:8]}{extension}"
 
-    output_dir = generated_image_dir(user_id)
+    output_dir = output_dir or generated_image_dir(user_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = (output_dir / filename).resolve()
 
@@ -381,6 +392,55 @@ def finalize_image(
         provider=provider,
         model=model,
         mime_type=mime_type,
+        native_context_enabled=native_context_enabled,
+    )
+    return content, artifact
+
+
+def finalize_screenshot(
+    *,
+    raw: bytes,
+    config: Optional[RunnableConfig],
+    page_url: str = "",
+    native_context_enabled: bool = True,
+) -> tuple[str, dict[str, Any]]:
+    """Write screenshot PNG bytes to the workspace and build the (content, artifact) return.
+
+    The browser-screenshot analogue of :func:`finalize_image`: resolves the
+    calling user from the injected config, writes the PNG under the per-user
+    ``images/screenshots/`` workspace dir, embeds an ``[attach:<path>]`` marker so
+    the shot surfaces to the chat, and attaches the native-vision artifact
+    (``source="browser_screenshot"``) so vision-capable models can see the
+    screenshot on the next reasoning step. Raises on write failure; callers wrap
+    the call and return an ``[Error]: ...`` string.
+
+    Subject to the same per-model image cap as generated images (see
+    core/generated_image_context.py): an oversized shot still attaches to the
+    chat but is not replayed to the model.
+    """
+    user_id = get_user_id(config)
+    label = page_url or "browser screenshot"
+    path = _write_image_file(
+        user_id=user_id,
+        raw=raw,
+        mime_type="image/png",
+        output_name="screenshot",
+        prompt=label,
+        output_dir=screenshot_dir(user_id),
+    )
+    where = f" of {page_url}" if page_url else ""
+    content = (
+        f"Captured a browser screenshot{where} and saved it to {path}.\n"
+        f"It is attached for you to view (when the active model supports image input).\n"
+        f"[attach:{path}]"
+    )
+    artifact = build_native_image_artifact(
+        path,
+        "image/png",
+        source="browser_screenshot",
+        prompt=label,
+        provider="browser",
+        model="playwright",
         native_context_enabled=native_context_enabled,
     )
     return content, artifact

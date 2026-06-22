@@ -137,7 +137,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `browser_get_content` | `nymeria/tools/browser.py` | Get the text content of the current page. |
 | `browser_navigate` | `nymeria/tools/browser.py` | Navigate browser to a URL. Opens browser if not already open. |
 | `browser_press_key` | `nymeria/tools/browser.py` | Press a keyboard key. |
-| `browser_screenshot` | `nymeria/tools/browser.py` | Take a screenshot of the current page. Returns base64 encoded image. |
+| `browser_screenshot` | `nymeria/tools/browser.py` | Take a screenshot of the current page so you can visually inspect it. |
 | `browser_scroll` | `nymeria/tools/browser.py` | Scroll the page. |
 | `browser_status` | `nymeria/tools/browser.py` | Check the browser status and Playwright availability. |
 | `browser_type` | `nymeria/tools/browser.py` | Type text into an input field. |

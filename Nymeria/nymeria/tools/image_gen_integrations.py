@@ -22,6 +22,7 @@ policy via ``download_image_bytes``. ``tools/__init__.py`` folds
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Annotated, Any, Callable, Optional
 
@@ -145,7 +146,6 @@ def _get_openai_image_api_key(config: Optional[RunnableConfig] = None) -> Option
     if key:
         return key
     from ..config import get_settings
-    import os
     return get_settings().openai_api_key or os.environ.get("OPENAI_API_KEY")
 
 
@@ -218,7 +218,6 @@ def _get_gemini_image_api_key(config: Optional[RunnableConfig] = None) -> Option
     if key:
         return key
     from ..config import get_settings
-    import os
     return get_settings().gemini_api_key or os.environ.get("GEMINI_API_KEY")
 
 
@@ -288,7 +287,6 @@ def _get_bfl_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     if key:
         return key
     from ..config import get_settings
-    import os
     return get_settings().bfl_api_key or os.environ.get("BFL_API_KEY")
 
 
@@ -385,7 +383,6 @@ def _get_replicate_api_key(config: Optional[RunnableConfig] = None) -> Optional[
     if key:
         return key
     from ..config import get_settings
-    import os
     return (
         get_settings().replicate_api_key
         or os.environ.get("REPLICATE_API_KEY")
@@ -507,7 +504,6 @@ def _get_fal_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     if key:
         return key
     from ..config import get_settings
-    import os
     return (
         get_settings().fal_api_key
         or os.environ.get("FAL_API_KEY")
