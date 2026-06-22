@@ -21,7 +21,12 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
-from ..core.time_utils import ensure_aware_utc, parse_tool_ttl, utc_now
+from ..core.time_utils import (
+    ensure_aware_utc,
+    parse_tool_ttl,
+    parse_usage_timestamp,
+    utc_now,
+)
 from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from .utils import get_thread_id, get_user_id
 
@@ -87,7 +92,7 @@ def _short_desc(desc: str, max_len: int = 60) -> str:
 
 def _build_catalog() -> Dict[str, dict]:
     """Build a searchable catalog from ALL tools (core + optional + dynamic)."""
-    from . import SEED_TOOLS, CATALOG_TOOLS
+    from . import static_tool_catalog
     from .metadata import (
         CUSTOM_TOOL_METADATA,
         MCP_SERVER_TOOL_METADATA,
@@ -96,8 +101,7 @@ def _build_catalog() -> Dict[str, dict]:
 
     catalog = {}
 
-    all_tools = {t.name: t for t in SEED_TOOLS}
-    all_tools.update(CATALOG_TOOLS)
+    all_tools = static_tool_catalog()
 
     for name, tool_obj in all_tools.items():
         meta = get_all_tool_metadata(name)
@@ -154,10 +158,9 @@ def _resolve_tool_object(name: str, agent) -> Optional[Any]:
     no live tool object (typically MCP server tools whose backing server
     is installed but disabled).
     """
-    from . import SEED_TOOLS, CATALOG_TOOLS
+    from . import static_tool_catalog
 
-    all_tools_dict = {t.name: t for t in SEED_TOOLS}
-    all_tools_dict.update(CATALOG_TOOLS)
+    all_tools_dict = static_tool_catalog()
     if name in all_tools_dict:
         return all_tools_dict[name]
     if agent is not None and getattr(agent, "tool_registry", None):
@@ -993,15 +996,6 @@ def _default_bound_tools(agent: Any, user_id: str) -> set[str]:
     return set(names)
 
 
-def _parse_usage_timestamp(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return ensure_aware_utc(datetime.fromisoformat(str(value)))
-    except Exception:
-        return None
-
-
 def _tool_is_known(name: str, catalog: dict[str, Any], agent: Any) -> bool:
     if name in catalog:
         return True
@@ -1096,7 +1090,7 @@ def _prune_tools(
             ):
                 continue
             usage = usage_store.get_tool(user_id=user_id, thread_id=thread_id, name=name)
-            last_used = _parse_usage_timestamp(usage.last_used_at)
+            last_used = parse_usage_timestamp(usage.last_used_at)
             if last_used is not None and last_used <= stale_cutoff:
                 stale_enabled.append(name)
 

@@ -15,6 +15,7 @@ from langgraph.types import Command
 
 from nymeria.core.tool_reload import (
     TOOL_RELOAD_QUEUED_KEY,
+    command_or_text,
     tool_reload_command,
 )
 from nymeria.core.agent import NymeriaAgent
@@ -113,6 +114,43 @@ def test_autonomous_forwarding_helper_forwards_tool_reload_and_strips_only_type(
             "reason": "required",
         },
     )
+
+
+def test_command_or_text_returns_plain_text_when_no_rebuild_needed():
+    # Not queued: always plain text.
+    assert command_or_text("done", queued_reload=False, tool_call_id="call-1") == "done"
+    # Queued but no tool_call_id to attach the marked ToolMessage to: plain text.
+    assert command_or_text("done", queued_reload=True, tool_call_id=None) == "done"
+    assert command_or_text("done", queued_reload=True, tool_call_id="") == "done"
+
+
+def test_command_or_text_emits_reload_command_when_rebuild_required():
+    # With no current agent, should_emit_reload_command defaults to True (legacy
+    # rebuild path), so a queued reload with a tool_call_id force-ends the graph.
+    result = command_or_text("reload queued", queued_reload=True, tool_call_id="call-1")
+
+    assert isinstance(result, Command)
+    message = result.update["messages"][0]
+    assert message.content == "reload queued"
+    assert message.tool_call_id == "call-1"
+    assert message.additional_kwargs[TOOL_RELOAD_QUEUED_KEY] is True
+
+
+def test_command_or_text_returns_plain_text_in_dynamic_binding_mode(monkeypatch):
+    # Dynamic-binding mode is the whole reason command_or_text exists: even with a
+    # queued reload and a tool_call_id, the next agent step rebinds tools from the
+    # live resolver, so should_emit_reload_command short-circuits and plain text
+    # is returned instead of a graph-ending Command.
+    dynamic_agent = SimpleNamespace(settings=SimpleNamespace(dynamic_tool_binding=True))
+    monkeypatch.setattr(
+        "nymeria.core.agent.get_current_agent", lambda: dynamic_agent
+    )
+
+    result = command_or_text(
+        "done", queued_reload=True, tool_call_id="call-1", new_tool_names=["hello"]
+    )
+
+    assert result == "done"
 
 
 def test_tool_reload_command_marks_tool_result_and_routes_to_end():

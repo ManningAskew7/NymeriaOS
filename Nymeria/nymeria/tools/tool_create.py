@@ -7,7 +7,6 @@ default for other users or threads.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime
@@ -37,7 +36,7 @@ from .definitions.custom_tool_schema import (
     ToolParameter,
 )
 from .tool_search import DEFAULT_TTL, _enable
-from .utils import get_thread_id, get_user_id
+from .utils import get_thread_id, get_user_id, versioned_json_result
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +140,7 @@ def _draft_store() -> ToolDraftStore:
 
 
 def _json_result(**payload: Any) -> str:
-    return json.dumps({"tool_version": TOOL_CREATE_VERSION, **payload}, indent=2, default=str)
+    return versioned_json_result(TOOL_CREATE_VERSION, **payload)
 
 
 def _normalize_tool_id(tool_id: str) -> str:

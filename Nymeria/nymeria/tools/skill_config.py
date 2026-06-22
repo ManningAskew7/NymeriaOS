@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import stat
@@ -18,7 +17,7 @@ from pydantic import BaseModel
 
 from ..core.http_policy import SECRET_PATTERNS
 from ..core.time_utils import parse_tool_ttl
-from ..core.tool_reload import should_emit_reload_command, tool_reload_command
+from ..core.tool_reload import command_or_text, should_emit_reload_command
 from ..core.thread_config import ThreadConfig
 from ..skills import (
     DEFAULT_SKILL_KIT_TOOL_TTL,
@@ -33,7 +32,7 @@ from .tool_search import (
     _format_unloadable_error,
     _resolve_tool_object,
 )
-from .utils import get_thread_id, get_user_id
+from .utils import get_thread_id, get_user_id, versioned_json_result
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ SKILL_CONFIG_VERSION = "2026-05-01.1"
 
 
 def _json_result(**payload: Any) -> str:
-    return json.dumps({"tool_version": SKILL_CONFIG_VERSION, **payload}, indent=2, default=str)
+    return versioned_json_result(SKILL_CONFIG_VERSION, **payload)
 
 
 def _normalize_skill_name(name: str) -> str:
@@ -459,27 +458,6 @@ def _queue_skill_reload(
     return True, False
 
 
-def _command_or_text(
-    text: str,
-    queued_reload: bool,
-    tool_call_id: str,
-    new_tool_names: Optional[list[str]] = None,
-    thread_id: str = "",
-) -> Union[str, Command]:
-    """Decide whether to emit Command(goto=END) or a plain string.
-
-    ``new_tool_names`` lets dynamic-binding mode short-circuit the rebuild.
-    The next agent step resolves tools and skill metadata from the live
-    resolver. Default empty list is correct for skill-only changes.
-    """
-    if queued_reload and tool_call_id and should_emit_reload_command(
-        new_tool_names or [],
-        thread_id=thread_id,
-    ):
-        return tool_reload_command(text, tool_call_id)
-    return text
-
-
 def _ensure_global_scope_allowed(agent: Any, scope: SkillScope, user_id: str) -> None:
     if scope != "global":
         return
@@ -688,7 +666,7 @@ def _write_skill_package(
             "thread, but it will not be visible to the model until the next "
             "user message."
         )
-    return _command_or_text(text, will_reload, tool_call_id, [], thread_id=thread_id)
+    return command_or_text(text, will_reload, tool_call_id, [], thread_id=thread_id)
 
 
 @tool

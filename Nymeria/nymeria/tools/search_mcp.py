@@ -30,31 +30,21 @@ from ..core.mcp_tool_names import (
     format_mcp_tool_name,
     registered_mcp_tool_names,
 )
-from ..core.tool_reload import should_emit_reload_command, tool_reload_command
+from ..core.tool_reload import command_or_text
 from .tool_search import DEFAULT_TTL, bind_tools_for_thread
-from .utils import get_user_id
+from .utils import current_agent, get_user_id, json_result
 
 logger = logging.getLogger(__name__)
-
-
-def _agent():
-    """Lazy import to avoid a tool->agent circular import at module load."""
-    from ..core.agent import get_current_agent
-    return get_current_agent()
 
 
 def _caller_is_admin(config: Optional[RunnableConfig]) -> bool:
     user_id = get_user_id(config)
     try:
-        agent = _agent()
+        agent = current_agent()
         caller = agent.accounts_repo.get_user_by_id(user_id) if agent else None
         return bool(caller and caller.role == "admin")
     except Exception:
         return False
-
-
-def _json_result(**payload) -> str:
-    return json.dumps(payload, indent=2, default=str)
 
 
 @tool
@@ -139,7 +129,7 @@ def _inspect_mcp(name: str = "") -> str:
                 "credential_requirements": server.credential_requirements,
             }
         )
-    return _json_result(count=len(payload), servers=payload)
+    return json_result(count=len(payload), servers=payload)
 
 
 def _preview_mcp_source(source: str, name: Optional[str] = None) -> str:
@@ -147,7 +137,7 @@ def _preview_mcp_source(source: str, name: Optional[str] = None) -> str:
     from ..core.mcp_runtime import analyze_text_source, save_preview
 
     if not source:
-        return _json_result(error="source is required for preview")
+        return json_result(error="source is required for preview")
     try:
         candidates = analyze_text_source(source, name=name)
         first = candidates[0]
@@ -158,12 +148,12 @@ def _preview_mcp_source(source: str, name: Optional[str] = None) -> str:
             candidates=candidates,
         )
     except MCPInstallError as e:
-        return _json_result(error=f"could not parse source: {e}")
+        return json_result(error=f"could not parse source: {e}")
     except Exception as e:
         logger.exception("manage_mcp preview failed")
-        return _json_result(error=f"{type(e).__name__}: {e}")
+        return json_result(error=f"{type(e).__name__}: {e}")
 
-    return _json_result(
+    return json_result(
         preview_token=token,
         selected_candidate_id=first.id if len(candidates) == 1 else None,
         server={
@@ -175,28 +165,6 @@ def _preview_mcp_source(source: str, name: Optional[str] = None) -> str:
         plan=first.plan.to_dict(),
         candidates=[candidate.to_dict() for candidate in candidates],
     )
-
-
-def _command_or_text(
-    text: str,
-    queued_reload: bool,
-    tool_call_id: Optional[str],
-    new_tool_names: Optional[list[str]] = None,
-    thread_id: str = "",
-) -> Union[str, Command]:
-    """Emit Command(goto=END) for rebuild, else return plain text.
-
-    In dynamic-binding mode, ``should_emit_reload_command`` short-circuits
-    the Command because the next model step resolves tools from the live
-    resolver and SafeToolNode can register post-build MCP tools before
-    dispatch.
-    """
-    if queued_reload and tool_call_id and should_emit_reload_command(
-        new_tool_names or [],
-        thread_id=thread_id,
-    ):
-        return tool_reload_command(text, tool_call_id)
-    return text
 
 
 def _install_mcp_server_impl(
@@ -361,7 +329,7 @@ def _install_mcp_server_impl(
             f"Cause: {e}"
         )
 
-    agent = _agent()
+    agent = current_agent()
     if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
         try:
             agent.reload_mcp_server_tools()
@@ -406,7 +374,7 @@ def _install_mcp_server_impl(
         + "\n\nThread binding result:\n"
         + binding.text
     )
-    return _command_or_text(
+    return command_or_text(
         result_text,
         bool(binding.reload_tools and not binding.cap_hit),
         tool_call_id,
@@ -474,7 +442,7 @@ def _find_server(server_id_or_name: str):
 
 
 def _reload_mcp_agent_tools() -> None:
-    agent = _agent()
+    agent = current_agent()
     if agent is not None and hasattr(agent, "reload_mcp_server_tools"):
         agent.reload_mcp_server_tools()
 
@@ -482,8 +450,8 @@ def _reload_mcp_agent_tools() -> None:
 def _mcp_logs(server_id_or_name: str) -> str:
     _registry, server = _find_server(server_id_or_name)
     if server is None:
-        return _json_result(error="server_id or name is required/found")
-    return _json_result(
+        return json_result(error="server_id or name is required/found")
+    return json_result(
         id=server.id,
         install_status=server.install_status,
         last_error=server.last_error,
@@ -495,14 +463,14 @@ def _mcp_logs(server_id_or_name: str) -> str:
 def _mcp_test(server_id_or_name: str) -> str:
     registry, server = _find_server(server_id_or_name)
     if server is None:
-        return _json_result(error="server_id or name is required/found")
-    return _json_result(**registry.test_connection(server.id))
+        return json_result(error="server_id or name is required/found")
+    return json_result(**registry.test_connection(server.id))
 
 
 def _mcp_discover(server_id_or_name: str) -> str:
     registry, server = _find_server(server_id_or_name)
     if server is None:
-        return _json_result(error="server_id or name is required/found")
+        return json_result(error="server_id or name is required/found")
     try:
         tools = registry.discover_tools(server.id)
         server = registry.get_server(server.id) or server
@@ -511,7 +479,7 @@ def _mcp_discover(server_id_or_name: str) -> str:
         server.registered_tool_names = registered_mcp_tool_names(server, tools)
         registry.save_server(server)
         _reload_mcp_agent_tools()
-        return _json_result(
+        return json_result(
             status="ok",
             server_id=server.id,
             count=len(tools),
@@ -524,7 +492,7 @@ def _mcp_discover(server_id_or_name: str) -> str:
         server.last_error = str(e)
         registry.save_server(server)
         _reload_mcp_agent_tools()
-        return _json_result(error=f"Discovery failed: {e}", server_id=server.id)
+        return json_result(error=f"Discovery failed: {e}", server_id=server.id)
 
 
 def _mcp_retry(
@@ -537,9 +505,9 @@ def _mcp_retry(
 ) -> str:
     registry, server = _find_server(server_id_or_name)
     if server is None:
-        return _json_result(error="server_id or name is required/found")
+        return json_result(error="server_id or name is required/found")
     if not server.install_plan:
-        return _json_result(error="server has no install plan to retry", server_id=server.id)
+        return json_result(error="server has no install plan to retry", server_id=server.id)
     from ..core.mcp_runtime import MCPInstallPlan, make_failed_draft, prepare_runtime
     from ..core.mcp_auth_bridge import apply_mcp_auth_presets
 
@@ -552,7 +520,7 @@ def _mcp_retry(
     if plan.confirmation_required and not (
         confirmed or required_risks <= set(confirmed_risk_ids or [])
     ):
-        return _json_result(
+        return json_result(
             requires_confirmation=True,
             server_id=server.id,
             plan=plan.to_dict(),
@@ -581,7 +549,7 @@ def _mcp_retry(
             failed.install_status = "needs_config"
         registry.save_server(failed)
         _reload_mcp_agent_tools()
-        return _json_result(status=failed.install_status, server_id=failed.id, error=str(e))
+        return json_result(status=failed.install_status, server_id=failed.id, error=str(e))
 
     server = registry.get_server(server.id) or server
     server.install_status = "ready"
@@ -589,7 +557,7 @@ def _mcp_retry(
     server.registered_tool_names = registered_mcp_tool_names(server, tools)
     registry.save_server(server)
     _reload_mcp_agent_tools()
-    return _json_result(
+    return json_result(
         status="ok",
         server_id=server.id,
         tool_names=server.registered_tool_names,
@@ -600,7 +568,7 @@ def _mcp_retry(
 def _mcp_set_enabled(server_id_or_name: str, *, enabled: bool) -> str:
     registry, server = _find_server(server_id_or_name)
     if server is None:
-        return _json_result(error="server_id or name is required/found")
+        return json_result(error="server_id or name is required/found")
     server.enabled = enabled
     if not enabled:
         server.install_status = "disabled"
@@ -608,16 +576,16 @@ def _mcp_set_enabled(server_id_or_name: str, *, enabled: bool) -> str:
         server.install_status = "ready" if server.discovered_tools else "needs_config"
     registry.save_server(server)
     _reload_mcp_agent_tools()
-    return _json_result(status="ok", server_id=server.id, enabled=server.enabled)
+    return json_result(status="ok", server_id=server.id, enabled=server.enabled)
 
 
 def _mcp_delete(server_id_or_name: str) -> str:
     registry, server = _find_server(server_id_or_name)
     if server is None:
-        return _json_result(error="server_id or name is required/found")
+        return json_result(error="server_id or name is required/found")
     deleted = registry.delete_server(server.id)
     _reload_mcp_agent_tools()
-    return _json_result(status="ok" if deleted else "missing", deleted=server.id)
+    return json_result(status="ok" if deleted else "missing", deleted=server.id)
 
 
 def _mcp_configure_credentials(
@@ -628,7 +596,7 @@ def _mcp_configure_credentials(
 ) -> str:
     registry, server = _find_server(server_id_or_name)
     if server is None:
-        return _json_result(error="server_id or name is required/found")
+        return json_result(error="server_id or name is required/found")
     # The agent cannot receive plaintext secrets. This action creates or
     # refreshes pending vault records that the user can complete in Settings.
     from ..core.mcp_runtime import MCPInstallPlan, apply_config_values
@@ -643,7 +611,7 @@ def _mcp_configure_credentials(
     server.missing_config = missing or server.missing_config
     server.install_status = "needs_config" if server.missing_config else server.install_status
     registry.save_server(server)
-    return _json_result(
+    return json_result(
         status=server.install_status,
         server_id=server.id,
         missing_config=server.missing_config,
@@ -713,7 +681,7 @@ def mcp_manage(
         "test",
     }
     if action_key in admin_actions and not _caller_is_admin(config):
-        return _json_result(error="manage_mcp lifecycle actions require admin role")
+        return json_result(error="manage_mcp lifecycle actions require admin role")
     if action_key == "install":
         return _install_mcp_server_impl(
             source=source or query,
@@ -755,7 +723,7 @@ def mcp_manage(
             config_values=config_values,
             user_id=get_user_id(config),
         )
-    return _json_result(
+    return json_result(
         error=(
             "action must be one of: search, preview, install, inspect, logs, "
             "test, discover, retry, disable, enable, delete, configure_credentials"
