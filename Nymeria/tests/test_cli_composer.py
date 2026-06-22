@@ -8,6 +8,7 @@ from cli_fixtures import (  # type: ignore[import-not-found]
     DelayedEvent,
     FakeAgentClient,
     FakeTerminalCapabilities,
+    run,
     simple_response_events,
 )
 from prompt_toolkit.completion import CompleteEvent
@@ -44,10 +45,6 @@ from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenPromptToolkitShell,
     FullScreenShellConfig,
 )
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def _slash_registry() -> CommandRegistry:

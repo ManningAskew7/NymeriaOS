@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 
+from cli_fixtures import run
 from nymeria.triggers.cli.app import CLIApp
 from nymeria.triggers.cli.commands import (
     CommandContext,
@@ -18,10 +18,6 @@ from nymeria.triggers.cli.rendering.form_panel import (
     FormSpec,
     FormTab,
 )
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class FakeModelClient:

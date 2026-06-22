@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
 
-from cli_fixtures import FakeAgentClient, FakeTerminalCapabilities
+from cli_fixtures import FakeAgentClient, FakeTerminalCapabilities, run
 
 from nymeria.triggers.cli.commands import (
     Command,
@@ -20,10 +19,6 @@ from nymeria.triggers.cli.rendering.full_screen import (
     FullScreenShellConfig,
 )
 from nymeria.triggers.cli.state import start_turn
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def test_parse_and_resolve_root_alias_and_subcommand_alias() -> None:

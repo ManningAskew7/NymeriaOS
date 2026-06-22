@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 import io
 from types import SimpleNamespace
 from typing import Any
 
-from cli_fixtures import FakeTerminalCapabilities
+from cli_fixtures import FakeTerminalCapabilities, run
 from rich.cells import cell_len
 from rich.console import Console
 
@@ -21,10 +20,6 @@ from nymeria.triggers.cli.header import (
 )
 from nymeria.triggers.cli.rendering.welcome import render_welcome
 from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class HeaderFakeClient:

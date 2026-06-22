@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
 import pytest
 
+from cli_fixtures import run
 from nymeria.triggers.cli.app import CLIRuntimeConfig
 from nymeria.triggers.cli.credentials import CLIConnectionProfile
 from nymeria.triggers.cli.events import DoneEvent, ErrorEvent, ResponseEvent
@@ -19,10 +19,6 @@ from nymeria.triggers.cli.transport.api import (
     suggest_reachable_backend,
 )
 from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 @dataclass(slots=True)

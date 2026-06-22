@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -8,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from cli_fixtures import run
 from nymeria.api.routers.commands import create_commands_router
 from nymeria.core.accounts import AuthenticatedUser
 from nymeria.core.command_service import (
@@ -16,10 +16,6 @@ from nymeria.core.command_service import (
     CommandHttpClient,
     CommandService,
 )
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class FakeCommandApi:

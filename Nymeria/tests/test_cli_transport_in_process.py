@@ -6,6 +6,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from cli_fixtures import run
 from nymeria.triggers.cli.events import DoneEvent, ResponseEvent
 from nymeria.triggers.cli.transport.in_process import InProcessAgentClient
 
@@ -212,10 +215,6 @@ class FakeAgent:
 
     def sync_agent_tools(self) -> None:
         self.sync_agent_tools_count += 1
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def test_stream_chat_normalizes_local_astream_events() -> None:
@@ -437,7 +436,9 @@ def test_thread_metadata_operations_stay_behind_client_boundary() -> None:
     assert agent.sync_agent_tools_count == 1
 
 
-def test_stream_autonomous_subscribes_to_event_bus_and_filters_user() -> None:
+def test_stream_autonomous_subscribes_to_event_bus_and_filters_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from collections.abc import AsyncGenerator
     from typing import cast
 
@@ -447,8 +448,9 @@ def test_stream_autonomous_subscribes_to_event_bus_and_filters_user() -> None:
     agent = FakeAgent()
     client = InProcessAgentClient(agent, default_user_id="alice")
     bus = EventBus()
-    previous_bus = event_bus_module._event_bus
-    event_bus_module.set_event_bus(bus)
+    # monkeypatch restores the previous _event_bus automatically, even on an
+    # assertion failure, without poking the private global by hand.
+    monkeypatch.setattr(event_bus_module, "_event_bus", bus)
 
     async def scenario():
         # The method is typed AsyncIterator; the concrete object is an async
@@ -479,10 +481,7 @@ def test_stream_autonomous_subscribes_to_event_bus_and_filters_user() -> None:
         await gen.aclose()
         return event, bus.get_subscriber_count()
 
-    try:
-        event, subscribers_after_close = run(scenario())
-    finally:
-        event_bus_module._event_bus = previous_bus
+    event, subscribers_after_close = run(scenario())
 
     assert event.type == "task_completed"
     assert event.thread_id == "t-1"

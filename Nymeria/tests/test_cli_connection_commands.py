@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
 import httpx
 
+from cli_fixtures import run
 from nymeria.triggers.cli.commands import CommandContext, CommandRegistry, ListCommandOutputSink
 from nymeria.triggers.cli.commands import connection
 from nymeria.triggers.cli.transport.api import APIAgentClient
 from nymeria.triggers.cli.transport.disconnected import DisconnectedAgentClient
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def http_status_error(status_code: int, detail: str) -> httpx.HTTPStatusError:

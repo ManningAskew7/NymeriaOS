@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 import json
 from typing import Any
 
+from cli_fixtures import run
 from nymeria.triggers.cli.commands import (
     CommandContext,
     CommandRegistry,
     ListCommandOutputSink,
 )
 from nymeria.triggers.cli.commands import mcp, skills, tools
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class CapabilityFakeClient:
