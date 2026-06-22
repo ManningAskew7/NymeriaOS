@@ -10,87 +10,112 @@ This is a one-shot static audit. Run from the repo root:
 
     python3 scripts/audit_contrast.py
 
-The token dictionaries are kept in sync with
-nymeria-desktop/src/lib/themes.ts and nymeria-mobile/src/lib/themes.ts
-(both files are byte-identical by design).
+The color tokens are parsed at runtime from
+nymeria-desktop/src/lib/themes.ts (the UI source of truth). The desktop and
+mobile copies are byte-identical by design, enforced by
+scripts/check_cross_app_drift.py, so reading the desktop copy is sufficient.
+Parsing rather than hand-mirroring keeps this audit honest: a color change in
+themes.ts is always audited against the value that actually ships.
 """
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 
-# Tokens mirrored from nymeria-{desktop,mobile}/src/lib/themes.ts.
-# Update both sides when these change.
-THEMES = {
-    "midnight": {
-        "bgBase": "#121417",
-        "bgElevated": "#1a1d21",
-        "bgElevated2": "#22262b",
-        "bgHover": "#2a2e33",
-        "bgActive": "#32373d",
-        "textPrimary": "#e8eaed",
-        "textSecondary": "#b9c0c5",
-        "textMuted": "#a9b0b6",
-        "accentPrimary": "#6fa0db",
-        "accentSecondary": "#6fa0db",
-        "accentHover": "#5b8bc7",
-        "textOnAccent": "#0b1416",
-        "success": "#34d399",
-        "warning": "#fbbf24",
-        "error": "#f87171",
-        "info": "#818cf8",
-        "bubbleUser": "#1a2636",
-        "bubbleAi": "#1a1d21",
-        "bubbleTool": "#1a1f2e",
-        "borderSubtle": "#24282d",
-        "borderDefault": "#343a40",
-    },
-    "light": {
-        "bgBase": "#f1ead7",
-        "bgElevated": "#fdfbf2",
-        "bgElevated2": "#e7e0c7",
-        "bgHover": "#dbd2b7",
-        "bgActive": "#c9bf9d",
-        "textPrimary": "#1a1612",
-        "textSecondary": "#3d3830",
-        "textMuted": "#544c3f",
-        "accentPrimary": "#2d6b69",
-        "accentSecondary": "#b07a3a",
-        "accentHover": "#3a7e7c",
-        "textOnAccent": "#fdfbf2",
-        "success": "#2a6b4c",
-        "warning": "#885705",
-        "error": "#b03333",
-        "info": "#3357cc",
-        "bubbleUser": "#c9e3df",
-        "bubbleAi": "#fdfbf2",
-        "bubbleTool": "#efe3c4",
-        "borderSubtle": "#d4ccb1",
-        "borderDefault": "#ab9f81",
-    },
-    "platinum": {
-        "bgBase": "#0d0e12",
-        "bgElevated": "#15171c",
-        "bgElevated2": "#1d2026",
-        "bgHover": "#282c33",
-        "bgActive": "#333841",
-        "textPrimary": "#f0f0f2",
-        "textSecondary": "#c0c0c7",
-        "textMuted": "#afb0b5",
-        "accentPrimary": "#e0f0ff",
-        "accentSecondary": "#8291a8",
-        "accentHover": "#f0f8ff",
-        "textOnAccent": "#0c0e12",
-        "success": "#86efac",
-        "warning": "#fcd34d",
-        "error": "#f87171",
-        "info": "#a5b4fc",
-        "bubbleUser": "#2a2d36",
-        "bubbleAi": "#15171c",
-        "bubbleTool": "#1c2027",
-        "borderSubtle": "#232831",
-        "borderDefault": "#333a44",
-    },
-}
+
+# themes.ts lives at the desktop client; this script sits in repo-root scripts/.
+_THEMES_TS = (
+    Path(__file__).resolve().parents[1]
+    / "nymeria-desktop"
+    / "src"
+    / "lib"
+    / "themes.ts"
+)
+
+
+def _theme_names(text: str) -> list[str]:
+    """Pull the theme ids from the `ThemeName` union in themes.ts."""
+    match = re.search(r"export type ThemeName\s*=\s*([^;]+);", text)
+    if not match:
+        raise ValueError("could not find the ThemeName union in themes.ts")
+    return re.findall(r"'([^']+)'", match.group(1))
+
+
+def load_themes(path: Path | None = None) -> dict[str, dict[str, str]]:
+    """Parse the semantic color tokens for every theme out of themes.ts.
+
+    Returns ``{theme_name: {token: "#rrggbb"}}``. Raises ``ValueError`` when the
+    file is not shaped as expected (a renamed/removed theme or colors block), so
+    structural drift surfaces loudly instead of silently auditing stale values.
+    """
+    path = path or _THEMES_TS
+    text = path.read_text(encoding="utf-8")
+
+    # Bound parsing to the `export const themes = { ... };` object so nothing
+    # before it (the css-variable map) or after it (helper functions) can match.
+    start = text.find("export const themes")
+    if start == -1:
+        raise ValueError("could not find the `themes` object in themes.ts")
+    end = text.find("\n};", start)
+    if end == -1:
+        raise ValueError("could not find the end of the `themes` object in themes.ts")
+    body = text[start:end]
+
+    themes: dict[str, dict[str, str]] = {}
+    for name in _theme_names(text):
+        block = re.search(
+            re.escape(name) + r":\s*\{.*?colors:\s*\{(.*?)\n\s*\},",
+            body,
+            re.DOTALL,
+        )
+        if not block:
+            raise ValueError(
+                f"could not find the colors block for theme {name!r} in themes.ts"
+            )
+        # `token: '#rrggbb'` lines only: 6-digit hex, the only form themes.ts
+        # ships and the only form hex_to_rgb() supports. Interspersed comments
+        # and the name/description string fields carry no such value and are
+        # skipped. Accept either quote style via the \2 backreference so a
+        # formatter flipping the file to double quotes surfaces as a loud
+        # validation failure, not a silently dropped token.
+        tokens = re.findall(r"""(\w+):\s*(['"])(#[0-9a-fA-F]{6})\2""", block.group(1))
+        if not tokens:
+            raise ValueError(f"no color tokens parsed for theme {name!r} in themes.ts")
+        themes[name] = {token: value for token, _quote, value in tokens}
+    return themes
+
+
+def referenced_tokens() -> set[str]:
+    """Every token name used by any pairing in this audit."""
+    tokens: set[str] = set()
+    for pair_set in (
+        TEXT_BG_PAIRS,
+        ACCENT_TEXT_PAIRS,
+        UI_COMPONENT_PAIRS,
+        SEMANTIC_TEXT_PAIRS,
+    ):
+        for fg_token, bg_token, _threshold, _role in pair_set:
+            tokens.add(fg_token)
+            tokens.add(bg_token)
+    return tokens
+
+
+def validate_themes(themes: dict[str, dict[str, str]]) -> None:
+    """Fail loudly if any token a pairing references is missing from a theme.
+
+    Catches a token renamed in themes.ts that the audit still asks for, which
+    would otherwise raise an opaque KeyError mid-run.
+    """
+    if not themes:
+        raise ValueError("no themes parsed from themes.ts")
+    required = referenced_tokens()
+    for name, tokens in themes.items():
+        missing = sorted(required - set(tokens))
+        if missing:
+            raise ValueError(
+                f"theme {name!r} is missing token(s) referenced by the audit: {missing}"
+            )
 
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -210,9 +235,11 @@ SEMANTIC_TEXT_PAIRS = [
 ]
 
 
-def run_pair_set(theme_name: str, pair_set, label: str) -> list[dict]:
+def run_pair_set(
+    themes: dict[str, dict[str, str]], theme_name: str, pair_set, label: str
+) -> list[dict]:
     results = []
-    theme = THEMES[theme_name]
+    theme = themes[theme_name]
     for fg_token, bg_token, threshold, role in pair_set:
         ratio = contrast_ratio(theme[fg_token], theme[bg_token])
         results.append(
@@ -233,12 +260,15 @@ def run_pair_set(theme_name: str, pair_set, label: str) -> list[dict]:
 
 
 def main() -> None:
+    themes = load_themes()
+    validate_themes(themes)
+
     all_results = []
-    for theme_name in THEMES:
-        all_results.extend(run_pair_set(theme_name, TEXT_BG_PAIRS, "text-bg"))
-        all_results.extend(run_pair_set(theme_name, ACCENT_TEXT_PAIRS, "accent-text"))
-        all_results.extend(run_pair_set(theme_name, UI_COMPONENT_PAIRS, "ui-component"))
-        all_results.extend(run_pair_set(theme_name, SEMANTIC_TEXT_PAIRS, "semantic-text"))
+    for theme_name in themes:
+        all_results.extend(run_pair_set(themes, theme_name, TEXT_BG_PAIRS, "text-bg"))
+        all_results.extend(run_pair_set(themes, theme_name, ACCENT_TEXT_PAIRS, "accent-text"))
+        all_results.extend(run_pair_set(themes, theme_name, UI_COMPONENT_PAIRS, "ui-component"))
+        all_results.extend(run_pair_set(themes, theme_name, SEMANTIC_TEXT_PAIRS, "semantic-text"))
 
     failures = [r for r in all_results if not r["passes"]]
     near_misses = [
@@ -248,7 +278,7 @@ def main() -> None:
     ]
 
     # Group by theme
-    for theme_name in THEMES:
+    for theme_name in themes:
         theme_failures = [r for r in failures if r["theme"] == theme_name]
         theme_near = [r for r in near_misses if r["theme"] == theme_name]
         print()

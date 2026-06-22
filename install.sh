@@ -80,6 +80,16 @@ ask() {
 INTERACTIVE=1
 [ -r /dev/tty ] || INTERACTIVE=0
 
+# Offer to launch the guided setup wizard; shared by the slim and source tracks.
+# `exec`s into `nymeria init` so the wizard replaces this process and owns the
+# terminal. Reattach stdin to the terminal: under `curl ... | sh` the shell's
+# stdin is the pipe, and the wizard refuses non-tty stdin.
+maybe_run_wizard() {
+    [ "$INTERACTIVE" -eq 1 ] || return 0
+    _go="$(ask "Run the setup wizard now (nymeria init)? [Y/n]: " "y")"
+    case "$_go" in n|N|no|No) ;; *) exec nymeria init < /dev/tty ;; esac
+}
+
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
@@ -190,12 +200,7 @@ install_slim() {
         uv tool install nymeriaos
     fi
     info "Installed. ${C_BOLD}nymeria${C_RESET} is on your PATH."
-    if [ "$INTERACTIVE" -eq 1 ]; then
-        _go="$(ask "Run the setup wizard now (nymeria init)? [Y/n]: " "y")"
-        # Reattach stdin to the terminal: under `curl ... | sh` the shell's
-        # stdin is the pipe, and the wizard refuses non-tty stdin.
-        case "$_go" in n|N|no|No) ;; *) exec nymeria init < /dev/tty ;; esac
-    fi
+    maybe_run_wizard
     cat <<EOF
 
 Next steps:
@@ -230,12 +235,7 @@ install_source() {
     # restart, no reinstall needed (reinstall only when dependencies change).
     uv tool install --force --editable "$SRCDIR/Nymeria"
     info "Installed. ${C_BOLD}nymeria${C_RESET} on your PATH runs the live code in $SRCDIR."
-    if [ "$INTERACTIVE" -eq 1 ]; then
-        _go="$(ask "Run the setup wizard now (nymeria init)? [Y/n]: " "y")"
-        # Reattach stdin to the terminal: under `curl ... | sh` the shell's
-        # stdin is the pipe, and the wizard refuses non-tty stdin.
-        case "$_go" in n|N|no|No) ;; *) exec nymeria init < /dev/tty ;; esac
-    fi
+    maybe_run_wizard
     cat <<EOF
 
 Next steps:

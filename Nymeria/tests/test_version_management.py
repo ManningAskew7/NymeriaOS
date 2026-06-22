@@ -10,8 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "sync_versions.py"
 
 spec = importlib.util.spec_from_file_location("sync_versions", SCRIPT_PATH)
+assert spec is not None and spec.loader is not None
 sync_versions = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
 spec.loader.exec_module(sync_versions)
 
 
@@ -85,6 +85,67 @@ def test_set_version_updates_all_manifests(tmp_path: Path) -> None:
     assert 'serde = { version = "1", features = ["derive"] }' in (
         tmp_path / "nymeria-desktop" / "src-tauri" / "Cargo.toml"
     ).read_text(encoding="utf-8")
+
+
+def test_find_package_version_line_locates_version_in_package_section() -> None:
+    toml = "\n".join(
+        [
+            "[package]",
+            'name = "nymeria-desktop"',
+            'version = "1.2.3"',
+            "",
+            "[dependencies]",
+            'version = "9.9.9"',  # a version in another section must be ignored
+        ]
+    )
+    lines = toml.splitlines()
+    index = sync_versions._find_package_version_line(lines)
+    assert index == 2
+    assert lines[index].strip() == 'version = "1.2.3"'
+
+
+def test_find_package_version_line_returns_none_without_package_version() -> None:
+    # version lives only in a non-[package] section -> not found
+    toml = "\n".join(["[dependencies]", 'version = "9.9.9"'])
+    assert sync_versions._find_package_version_line(toml.splitlines()) is None
+    # no [package] section at all
+    assert sync_versions._find_package_version_line(["name = 'x'"]) is None
+
+
+def test_read_and_replace_package_version_round_trip() -> None:
+    toml = "\n".join(
+        [
+            "[package]",
+            'name = "nymeria-desktop"',
+            'version = "1.2.3"',
+            "",
+            "[dependencies]",
+            'serde = { version = "1", features = ["derive"] }',
+            "",
+        ]
+    )
+    assert sync_versions._read_package_version_from_toml(toml, "Cargo.toml") == "1.2.3"
+
+    updated = sync_versions._replace_package_version_in_toml(toml, "4.5.6", "Cargo.toml")
+    assert sync_versions._read_package_version_from_toml(updated, "Cargo.toml") == "4.5.6"
+    # the dependency version line is untouched
+    assert 'serde = { version = "1", features = ["derive"] }' in updated
+
+    with pytest.raises(sync_versions.VersionManagementError):
+        sync_versions._read_package_version_from_toml("[dependencies]\n", "Cargo.toml")
+    with pytest.raises(sync_versions.VersionManagementError):
+        sync_versions._replace_package_version_in_toml("[dependencies]\n", "4.5.6", "Cargo.toml")
+
+
+def test_package_version_handles_indented_version_line() -> None:
+    # The pre-dedup read/replace used different anchors (`^version` on a
+    # stripped line vs `^\s*version` on a raw line). Lock that an indented
+    # version line is still located and replaced identically.
+    toml = "\n".join(["[package]", '    version = "1.2.3"', ""])
+    assert sync_versions._read_package_version_from_toml(toml, "Cargo.toml") == "1.2.3"
+    updated = sync_versions._replace_package_version_in_toml(toml, "4.5.6", "Cargo.toml")
+    assert '    version = "4.5.6"' in updated  # indentation preserved
+    assert sync_versions._read_package_version_from_toml(updated, "Cargo.toml") == "4.5.6"
 
 
 def test_tag_verification_allows_optional_v_prefix() -> None:
