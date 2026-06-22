@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, List, TYPE_CHECKING
+from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from .system import (
@@ -18,90 +18,15 @@ from .system import (
     unsupported_transport_result,
 )
 from ....core.todo_constants import RECURRENCE_FORMAT_HINT, validate_recurrence
-from ..rendering.tables import render_todo_table
-
-if TYPE_CHECKING:
-    from ..state import CLIState
 
 
 TODO_STATUS_VALUES = {"pending", "in_progress", "done"}
-
-
-def _handle_todos(state: "CLIState", args: List[str]) -> None:
-    """List all TODOs."""
-    todo_list = state.todo_manager.get_todos(state.user_id)
-    items = todo_list.items
-    if not items:
-        state.console.print("[dim]No TODOs.[/dim]")
-        return
-    render_todo_table(state.console, items)
-
-
-def _handle_todo_add(state: "CLIState", args: List[str]) -> None:
-    """Add a new TODO."""
-    if not args:
-        state.console.print("[red]Usage: /todo add <task>[/red]")
-        return
-
-    task = " ".join(args)
-    with state.todo_manager.atomic_update(state.user_id) as todo_list:
-        todo_list.add_item(task)
-        if todo_list.items:
-            todo_list.items[-1].thread_id = state.thread_id
-    state.console.print(f"[green]Added TODO: {task}[/green]")
-
-
-def _handle_todo_done(state: "CLIState", args: List[str]) -> None:
-    """Complete a TODO by partial ID."""
-    if not args:
-        state.console.print("[red]Usage: /todo done <id>[/red]")
-        return
-
-    partial = args[0]
-    todo_list = state.todo_manager.get_todos(state.user_id)
-    matches = [item for item in todo_list.items if item.id.startswith(partial)]
-
-    if len(matches) == 0:
-        state.console.print(f"[red]No TODO matching '{partial}'.[/red]")
-    elif len(matches) > 1:
-        state.console.print(
-            f"[yellow]Ambiguous — {len(matches)} TODOs match. Be more specific.[/yellow]"
-        )
-    else:
-        with state.todo_manager.atomic_update(state.user_id) as tl:
-            tl.complete_item(matches[0].id)
-        state.console.print(f"[green]Completed: {matches[0].task}[/green]")
-
-
-def _handle_todo_delete(state: "CLIState", args: List[str]) -> None:
-    """Delete a TODO by partial ID."""
-    if not args:
-        state.console.print("[red]Usage: /todo delete <id>[/red]")
-        return
-
-    partial = args[0]
-    todo_list = state.todo_manager.get_todos(state.user_id)
-    matches = [item for item in todo_list.items if item.id.startswith(partial)]
-
-    if len(matches) == 0:
-        state.console.print(f"[red]No TODO matching '{partial}'.[/red]")
-    elif len(matches) > 1:
-        state.console.print(
-            f"[yellow]Ambiguous — {len(matches)} TODOs match. Be more specific.[/yellow]"
-        )
-    else:
-        with state.todo_manager.atomic_update(state.user_id) as tl:
-            tl.delete_item(matches[0].id)
-        state.console.print(f"[green]Deleted: {matches[0].task}[/green]")
 
 
 async def _handle_todos_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_todos(context.legacy_state, args)
-        return CommandResult.completed()
     return await _list_todos_context(context, args)
 
 
@@ -109,9 +34,6 @@ async def _handle_todo_root_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_todos(context.legacy_state, args)
-        return CommandResult.completed()
     if args:
         return CommandResult.failed(
             "Usage: /todo list|add|edit|done|delete|schedule|repeat",
@@ -147,10 +69,6 @@ async def _handle_todo_add_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_todo_add(context.legacy_state, args)
-        return CommandResult.completed()
-
     parsed = _parse_todo_mutation_args(
         args,
         allow_status=False,
@@ -194,11 +112,6 @@ async def _handle_todo_edit_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/todo edit is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
     if not args:
         return CommandResult.failed(
             "Usage: /todo edit <id> [new task] [--status <status>] "
@@ -268,9 +181,6 @@ async def _handle_todo_done_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_todo_done(context.legacy_state, args)
-        return CommandResult.completed()
     if not args:
         return CommandResult.failed("Usage: /todo done <id>", error_code="usage_error")
 
@@ -296,10 +206,6 @@ async def _handle_todo_delete_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_todo_delete(context.legacy_state, args)
-        return CommandResult.completed()
-
     args, explicit_confirmation = strip_confirmation_flags(args)
     if not args:
         return CommandResult.failed(
@@ -338,11 +244,6 @@ async def _handle_todo_schedule_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/todo schedule is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
     if len(args) < 2:
         return CommandResult.failed(
             "Usage: /todo schedule <id> <when|clear>",
@@ -378,11 +279,6 @@ async def _handle_todo_recurrence_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/todo recurrence is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
     if len(args) < 2:
         return CommandResult.failed(
             f"Usage: /todo recurrence <id> <interval|clear>. {RECURRENCE_FORMAT_HINT}",
@@ -653,7 +549,6 @@ def register(registry: CommandRegistry) -> None:
         description="List TODOs",
         usage="/todos [all|pending|in_progress|done]",
         handler=_handle_todos_context,
-        handler_mode="context",
         category="Personal",
     ))
     registry.register(Command(
@@ -662,7 +557,6 @@ def register(registry: CommandRegistry) -> None:
         description="Manage TODOs",
         usage="/todo list",
         handler=_handle_todo_root_context,
-        handler_mode="context",
         category="Personal",
         subcommands={
             "list": Command(
@@ -670,7 +564,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List TODOs",
                 usage="list [all|pending|in_progress|done]",
                 handler=_list_todos_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "add": Command(
@@ -678,7 +571,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Add TODO",
                 usage="add <task>",
                 handler=_handle_todo_add_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "edit": Command(
@@ -686,7 +578,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Edit TODO",
                 usage="edit <id> [new task] [options]",
                 handler=_handle_todo_edit_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "done": Command(
@@ -695,7 +586,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Complete TODO",
                 usage="done <id>",
                 handler=_handle_todo_done_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "delete": Command(
@@ -704,7 +594,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Delete TODO",
                 usage="delete <id> [--yes]",
                 handler=_handle_todo_delete_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "schedule": Command(
@@ -712,7 +601,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Set or clear TODO schedule",
                 usage="schedule <id> <when|clear>",
                 handler=_handle_todo_schedule_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "recurrence": Command(
@@ -721,7 +609,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Set or clear TODO recurrence",
                 usage="recurrence <id> <interval|clear>",
                 handler=_handle_todo_recurrence_context,
-                handler_mode="context",
                 category="Personal",
             ),
         },

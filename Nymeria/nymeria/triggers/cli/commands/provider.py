@@ -654,7 +654,6 @@ def register(registry: CommandRegistry) -> None:
         description="Manage LLM provider credentials",
         usage="/provider [list|set|test|switch]",
         handler=_handle_provider,
-        handler_mode="context",
         category="Model",
         subcommands={
             "list": Command(
@@ -662,7 +661,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List provider credential status",
                 usage="list",
                 handler=_handle_provider_list,
-                handler_mode="context",
                 category="Model",
             ),
             "set": Command(
@@ -670,7 +668,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Save and apply provider credentials",
                 usage="set <provider> <key=value> [key=value...]",
                 handler=_handle_provider_set,
-                handler_mode="context",
                 category="Model",
             ),
             "test": Command(
@@ -678,7 +675,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Test provider connectivity",
                 usage="test [provider]",
                 handler=_handle_provider_test,
-                handler_mode="context",
                 category="Model",
             ),
             "switch": Command(
@@ -686,7 +682,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Switch the active LLM provider",
                 usage="switch <provider>",
                 handler=_handle_provider_switch,
-                handler_mode="context",
                 category="Model",
             ),
         },

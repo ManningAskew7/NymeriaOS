@@ -559,7 +559,6 @@ def register(registry: CommandRegistry) -> None:
         description="Manage event triggers",
         usage="/triggers list",
         handler=_handle_triggers_root,
-        handler_mode="context",
         category="Automation",
         subcommands={
             "list": Command(
@@ -567,7 +566,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List triggers",
                 usage="list [--enabled] [--thread current|<id>]",
                 handler=_handle_triggers_list,
-                handler_mode="context",
                 category="Automation",
             ),
             "create": Command(
@@ -576,7 +574,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Create a trigger",
                 usage="create <name> [--source webhook] [--prompt <template>]",
                 handler=_handle_triggers_create,
-                handler_mode="context",
                 category="Automation",
             ),
             "edit": Command(
@@ -584,7 +581,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Edit trigger fields",
                 usage="edit <id> key=value [key=value...]",
                 handler=_handle_triggers_edit,
-                handler_mode="context",
                 category="Automation",
             ),
             "enable": Command(
@@ -592,7 +588,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Enable a trigger",
                 usage="enable <id>",
                 handler=_handle_triggers_enable,
-                handler_mode="context",
                 category="Automation",
             ),
             "disable": Command(
@@ -600,7 +595,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Disable a trigger",
                 usage="disable <id>",
                 handler=_handle_triggers_disable,
-                handler_mode="context",
                 category="Automation",
             ),
             "history": Command(
@@ -608,7 +602,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show trigger execution history",
                 usage="history [trigger-id] [limit]",
                 handler=_handle_triggers_history,
-                handler_mode="context",
                 category="Automation",
             ),
             "test": Command(
@@ -616,7 +609,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Dry-run a trigger",
                 usage="test <id>",
                 handler=_handle_triggers_test,
-                handler_mode="context",
                 category="Automation",
             ),
             "delete": Command(
@@ -625,7 +617,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Delete a trigger",
                 usage="delete <id> [--yes]",
                 handler=_handle_triggers_delete,
-                handler_mode="context",
                 category="Automation",
             ),
         },

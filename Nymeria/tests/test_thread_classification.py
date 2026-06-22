@@ -266,10 +266,6 @@ class TestDelegation:
         assert _is_shared_channel_thread is is_shared_channel
         assert _is_native_platform_thread is is_native_platform_thread
 
-    def test_cli_alias(self):
-        from nymeria.triggers.cli.commands.threads import _classify_platform
-        assert _classify_platform is classify_platform
-
     def test_telegram_native_prefixes(self):
         from nymeria.triggers.telegram_bot import _NATIVE_SWITCH_THREAD_PREFIXES
         assert _NATIVE_SWITCH_THREAD_PREFIXES is NATIVE_PLATFORM_PREFIXES

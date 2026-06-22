@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import shlex
 import textwrap
@@ -80,7 +79,6 @@ class CommandRegistry:
                 description="Show help",
                 usage="/help [query]",
                 handler=_handle_help,
-                handler_mode="context",
                 builtin=True,
                 category="System",
             )
@@ -91,7 +89,6 @@ class CommandRegistry:
                 description="Clear screen",
                 usage="/cls",
                 handler=_handle_clear,
-                handler_mode="context",
                 builtin=True,
                 category="System",
             )
@@ -103,7 +100,6 @@ class CommandRegistry:
                 description="Exit the CLI",
                 usage="/exit",
                 handler=_handle_exit,
-                handler_mode="context",
                 builtin=True,
                 category="System",
             )
@@ -263,38 +259,6 @@ class CommandRegistry:
             result = replace(result, command_path=match.path)
         return self._emit_result(context, result)
 
-    def dispatch(self, state: Any, raw_input: str) -> bool:
-        """
-        Legacy synchronous dispatch entry point.
-
-        Returns True when the input was a slash command and the registry
-        handled the command attempt, including structured unknown-command
-        errors. Returns False for non-command input.
-        """
-
-        context = CommandContext(
-            output=RichConsoleCommandOutputSink(state.console),
-            thread_id=getattr(state, "thread_id", None),
-            user_id=getattr(state, "user_id", "default"),
-            legacy_state=state,
-            registry=self,
-        )
-        result = self.dispatch_sync(context, raw_input)
-        return result.handled
-
-    def dispatch_sync(
-        self,
-        context: CommandContext,
-        raw_input: str,
-    ) -> CommandResult:
-        """Synchronous wrapper around ``dispatch_async``."""
-
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.dispatch_async(context, raw_input))
-        raise RuntimeError("dispatch_sync cannot run inside an active event loop")
-
     def get_all_commands(self) -> list[Command]:
         """Return all non-hidden root commands."""
 
@@ -371,19 +335,8 @@ class CommandRegistry:
         match: CommandMatch,
     ) -> CommandResult:
         command = match.command
-        if command.handler_mode == "legacy":
-            if context.legacy_state is None:
-                return CommandResult.failed(
-                    f"/{' '.join(match.path)} is not available in this renderer yet.",
-                    command_path=match.path,
-                    error_code="legacy_command_unavailable",
-                )
-            target = context.legacy_state
-        else:
-            target = context
-
         try:
-            raw_result = command.handler(target, list(match.args))
+            raw_result = command.handler(context, list(match.args))
             if inspect.isawaitable(raw_result):
                 raw_result = await raw_result
         except Exception as exc:  # noqa: BLE001 - command errors surface in UI.
@@ -571,11 +524,6 @@ def _help_output_width(context: CommandContext) -> int:
     width = getattr(capabilities, "width", None)
     if isinstance(width, int) and width > 0:
         return width
-    legacy_state = context.legacy_state
-    console = getattr(legacy_state, "console", None)
-    console_width = getattr(console, "width", None)
-    if isinstance(console_width, int) and console_width > 0:
-        return console_width
     return 88
 
 
@@ -588,21 +536,10 @@ def _help_category(entry: CommandPaletteEntry) -> str:
 
 
 def _handle_exit(context: CommandContext, _args: list[str]) -> CommandResult:
-    if context.legacy_state is not None:
-        context.legacy_state.running = False
     return CommandResult.exit("Goodbye!")
 
 
 def _handle_clear(context: CommandContext, _args: list[str]) -> CommandResult:
-    if context.legacy_state is not None:
-        context.legacy_state.console.clear()
-        try:
-            from ..rendering.welcome import render_welcome
-
-            render_welcome(context.legacy_state)
-        except Exception:  # noqa: BLE001 - clear should still succeed.
-            pass
-        return CommandResult.clear()
     return CommandResult.clear("Cleared.")
 
 

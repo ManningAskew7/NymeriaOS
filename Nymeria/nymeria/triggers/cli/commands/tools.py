@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from difflib import SequenceMatcher
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from .system import (
@@ -16,144 +16,12 @@ from .system import (
     one_line,
     unsupported_transport_result,
 )
-from ..rendering.tables import render_tools_table
-
-if TYPE_CHECKING:
-    from ..state import CLIState
-
-
-def _user_role(state: "CLIState") -> str:
-    try:
-        if state.agent is None:
-            return "user"
-        user = state.agent.accounts_repo.get_user_by_id(state.user_id)
-        return user.role if user else "user"
-    except Exception:
-        return "user"
-
-
-def _get_loaded_tools(state: "CLIState") -> list[dict[str, str]]:
-    """Get tools currently loaded for this thread."""
-    from ....tools import SEED_TOOLS, CATALOG_TOOLS
-
-    tc = state.thread_config_manager.get_config(state.thread_id)
-    disabled = set(tc.disabled_tools) if tc else set()
-    enabled = set(tc.enabled_tools) if tc else set()
-
-    tools = []
-    for tool in SEED_TOOLS:
-        status = "disabled" if tool.name in disabled else "enabled"
-        tools.append({"name": tool.name, "category": "core", "status": status})
-
-    for name in sorted(enabled):
-        if name in CATALOG_TOOLS:
-            tools.append({"name": name, "category": "optional", "status": "enabled"})
-
-    callable_threads = state.thread_config_manager.list_callable_threads()
-    for ct in callable_threads:
-        if ct.callable_name and ct.callable_name not in disabled:
-            tools.append({
-                "name": ct.callable_name,
-                "category": "callable",
-                "status": "enabled",
-            })
-
-    return tools
-
-
-def _handle_tools(state: "CLIState", _args: list[str]) -> None:
-    """List tools loaded for the current thread."""
-    render_tools_table(state.console, _get_loaded_tools(state))
-
-
-def _handle_tools_enable(state: "CLIState", args: list[str]) -> None:
-    """Enable an optional tool for this thread."""
-    if not args:
-        state.console.print("[red]Usage: /tools enable <name>[/red]")
-        return
-
-    tool_name = args[0]
-
-    from ....tools import CATALOG_TOOLS, filter_developer_only_tools
-
-    if tool_name not in CATALOG_TOOLS:
-        state.console.print(f"[red]'{tool_name}' is not an optional tool.[/red]")
-        state.console.print("[dim]Use /tools optional to see available tools.[/dim]")
-        return
-    _, blocked = filter_developer_only_tools([tool_name], _user_role(state))
-    if blocked:
-        state.console.print(f"[red]'{tool_name}' is developer-only.[/red]")
-        return
-
-    tc = state.thread_config_manager.get_config(state.thread_id)
-    if tc is None:
-        from ....core.thread_config import ThreadConfig
-
-        tc = ThreadConfig(thread_id=state.thread_id)
-
-    if tool_name not in tc.enabled_tools:
-        tc.enabled_tools.append(tool_name)
-    if tool_name in tc.disabled_tools:
-        tc.disabled_tools.remove(tool_name)
-
-    state.thread_config_manager.save_config(tc)
-    if state.agent is not None:
-        state.agent.invalidate_thread_config_cache(state.thread_id)
-    state.console.print(f"[green]Enabled: {tool_name}[/green]")
-
-
-def _handle_tools_disable(state: "CLIState", args: list[str]) -> None:
-    """Disable a tool for this thread."""
-    if not args:
-        state.console.print("[red]Usage: /tools disable <name>[/red]")
-        return
-
-    tool_name = args[0]
-    tc = state.thread_config_manager.get_config(state.thread_id)
-    if tc is None:
-        from ....core.thread_config import ThreadConfig
-
-        tc = ThreadConfig(thread_id=state.thread_id)
-
-    if tool_name not in tc.disabled_tools:
-        tc.disabled_tools.append(tool_name)
-    if tool_name in tc.enabled_tools:
-        tc.enabled_tools.remove(tool_name)
-
-    state.thread_config_manager.save_config(tc)
-    if state.agent is not None:
-        state.agent.invalidate_thread_config_cache(state.thread_id)
-    state.console.print(f"[green]Disabled: {tool_name}[/green]")
-
-
-def _handle_tools_optional(state: "CLIState", _args: list[str]) -> None:
-    """List all optional tools with their status for this thread."""
-    from ....tools import CATALOG_TOOLS, filter_discoverable_catalog_tool_names
-
-    tc = state.thread_config_manager.get_config(state.thread_id)
-    enabled = set(tc.enabled_tools) if tc else set()
-    visible_optional = filter_discoverable_catalog_tool_names(
-        CATALOG_TOOLS.keys(),
-        _user_role(state),
-    )
-
-    tools = []
-    for name in sorted(visible_optional):
-        status = "enabled" if name in enabled else "disabled"
-        tools.append({"name": name, "category": "optional", "status": status})
-
-    render_tools_table(state.console, tools, title="Optional Tools")
 
 
 async def _handle_tools_root_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        if args:
-            return await _handle_tools_search_context(context, args)
-        _handle_tools(context.legacy_state, args)
-        return CommandResult.completed()
     if args:
         return await _handle_tools_search_context(context, args)
     return await _handle_tools_list_context(context, [])
@@ -163,10 +31,6 @@ async def _handle_tools_list_context(
     context: CommandContext,
     _args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_tools(context.legacy_state, [])
-        return CommandResult.completed()
-
     config = await _thread_config_or_empty(context)
     try:
         tools = await _list_tool_entries(context)
@@ -188,10 +52,6 @@ async def _handle_tools_optional_context(
     context: CommandContext,
     _args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_tools_optional(context.legacy_state, [])
-        return CommandResult.completed()
-
     try:
         tools = await call_client_method(
             context,
@@ -228,21 +88,6 @@ async def _handle_tools_search_context(
         )
     query = " ".join(args).strip()
 
-    if context.legacy_state is not None:
-        from ....core.tool_search_index import search_tools
-
-        state = context.legacy_state
-        result = search_tools(
-            query,
-            user_id=getattr(state, "user_id", "default"),
-            user_role=_user_role(state),
-            agent=getattr(state, "agent", None),
-            thread_id=getattr(state, "thread_id", None),
-            top_k=10,
-        )
-        state.console.print(_format_tool_search_response(result.to_json()))
-        return CommandResult.completed(json_payload=result.to_json())
-
     try:
         try:
             data = await call_client_method(
@@ -272,11 +117,6 @@ async def _handle_tools_core_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/tools core is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
     if args:
         return CommandResult.failed("Usage: /tools core", error_code="usage_error")
     return await _show_default_tools(context, command="/tools core")
@@ -286,9 +126,6 @@ async def _handle_tools_enable_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_tools_enable(context.legacy_state, args)
-        return CommandResult.completed()
     if not args:
         return CommandResult.failed(
             "Usage: /tools enable <tool-id>",
@@ -301,9 +138,6 @@ async def _handle_tools_disable_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_tools_disable(context.legacy_state, args)
-        return CommandResult.completed()
     if not args:
         return CommandResult.failed(
             "Usage: /tools disable <tool-id>",
@@ -400,7 +234,7 @@ async def _unknown_tool_suggestion_result(
         name = _tool_name(result)
         hint = str(result.get("enable_hint") or f"/tools enable {name}")
         desc = one_line(result.get("description", ""), limit=70)
-        lines.append(f"  {name} — {desc}")
+        lines.append(f"  {name}: {desc}")
         lines.append(f"    {hint}")
     return CommandResult.failed(
         "\n".join(lines),
@@ -413,12 +247,6 @@ async def _handle_tools_defaults_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/tools defaults is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
-
     if not args or args[0].casefold() in {"list", "show"}:
         return await _show_default_tools(context, command="/tools defaults")
 
@@ -581,11 +409,6 @@ async def _handle_tools_test_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/tools test is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
     if not args:
         return CommandResult.failed(
             "Usage: /tools test <custom-tool-id> [json-or-key=value...]",
@@ -954,7 +777,6 @@ def register(registry: CommandRegistry) -> None:
         description="List/manage tools",
         usage="/tools list",
         handler=_handle_tools_root_context,
-        handler_mode="context",
         category="Tools",
         subcommands={
             "list": Command(
@@ -962,7 +784,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List tools",
                 usage="list",
                 handler=_handle_tools_list_context,
-                handler_mode="context",
                 category="Tools",
             ),
             "enable": Command(
@@ -971,7 +792,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Enable a tool for this thread",
                 usage="enable <tool-id>",
                 handler=_handle_tools_enable_context,
-                handler_mode="context",
                 category="Tools",
             ),
             "disable": Command(
@@ -980,7 +800,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Disable a tool for this thread",
                 usage="disable <tool-id>",
                 handler=_handle_tools_disable_context,
-                handler_mode="context",
                 category="Tools",
             ),
             "optional": Command(
@@ -988,7 +807,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List optional tools",
                 usage="optional",
                 handler=_handle_tools_optional_context,
-                handler_mode="context",
                 category="Tools",
             ),
             "core": Command(
@@ -997,7 +815,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List tools enabled by default for new threads",
                 usage="core",
                 handler=_handle_tools_core_context,
-                handler_mode="context",
                 category="Tools",
             ),
             "defaults": Command(
@@ -1005,7 +822,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show or edit the default core toolset",
                 usage="defaults [list|add|remove|set|reset]",
                 handler=_handle_tools_defaults_context,
-                handler_mode="context",
                 category="Tools",
             ),
             "search": Command(
@@ -1013,7 +829,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Search tools",
                 usage="search <query>",
                 handler=_handle_tools_search_context,
-                handler_mode="context",
                 category="Tools",
             ),
             "test": Command(
@@ -1021,7 +836,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Test a custom tool",
                 usage="test <custom-tool-id> [json-or-key=value...]",
                 handler=_handle_tools_test_context,
-                handler_mode="context",
                 category="Tools",
             ),
         },

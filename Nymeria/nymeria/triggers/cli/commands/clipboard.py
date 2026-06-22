@@ -131,6 +131,5 @@ def register(registry: CommandRegistry) -> None:
         description="Copy assistant response to clipboard",
         usage="/copy [N | code]",
         handler=_handle_copy,
-        handler_mode="context",
         category="Session",
     ))

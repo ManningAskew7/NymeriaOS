@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from ..rendering.status_bar import compact_trigger_display_tokens
 from .system import (
     call_client_method,
     unsupported_transport_result,
@@ -107,33 +106,14 @@ async def _show_thread_usage(context: CommandContext) -> CommandResult:
     if not isinstance(stats, Mapping):
         return CommandResult.failed("Could not retrieve usage statistics.")
 
-    compact_trigger = _get_compact_trigger(context, stats)
-
     return CommandResult.completed(
         CommandMessage(
-            _format_thread_usage(stats, compact_trigger=compact_trigger),
+            _format_thread_usage(stats, compact_trigger=None),
             title="Usage",
         ),
         payload=dict(stats),
-        json_payload=_thread_usage_payload(stats, compact_trigger=compact_trigger),
+        json_payload=_thread_usage_payload(stats, compact_trigger=None),
     )
-
-
-def _get_compact_trigger(
-    context: CommandContext,
-    stats: Mapping[str, Any],
-) -> int | None:
-    """Resolve the auto-compact trigger tokens from global settings, if known."""
-    legacy = context.legacy_state
-    if legacy is None:
-        return None
-    try:
-        return compact_trigger_display_tokens(
-            legacy.settings,
-            _int_or(stats, "context_limit", 0) or None,
-        )
-    except Exception:  # noqa: BLE001
-        return None
 
 
 async def _show_session_usage(
@@ -327,7 +307,6 @@ def register(registry: CommandRegistry) -> None:
         description="Show token usage and cost statistics",
         usage="/usage [session]",
         handler=_handle_usage,
-        handler_mode="context",
         category="Context",
         subcommands={
             "session": Command(
@@ -335,7 +314,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show session-wide token usage aggregate",
                 usage="session",
                 handler=_show_session_usage,
-                handler_mode="context",
                 category="Context",
             ),
         },

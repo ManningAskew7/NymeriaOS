@@ -286,7 +286,6 @@ def register(registry: CommandRegistry) -> None:
         description="Manage model fallback chain",
         usage="/fallback [list|add|remove|clear|set]",
         handler=_handle_fallback,
-        handler_mode="context",
         category="Model",
         subcommands={
             "list": Command(
@@ -294,7 +293,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show configured fallback models",
                 usage="list",
                 handler=_handle_fallback_list,
-                handler_mode="context",
                 category="Model",
             ),
             "add": Command(
@@ -302,7 +300,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Add a fallback model",
                 usage="add <model-id> [--position N]",
                 handler=_handle_fallback_add,
-                handler_mode="context",
                 category="Model",
             ),
             "remove": Command(
@@ -311,7 +308,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Remove a fallback model",
                 usage="remove <model-id>",
                 handler=_handle_fallback_remove,
-                handler_mode="context",
                 category="Model",
             ),
             "clear": Command(
@@ -319,7 +315,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Clear all fallback models",
                 usage="clear",
                 handler=_handle_fallback_clear,
-                handler_mode="context",
                 category="Model",
             ),
             "set": Command(
@@ -327,7 +322,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Replace the fallback chain",
                 usage="set <model1> <model2> ...",
                 handler=_handle_fallback_set,
-                handler_mode="context",
                 category="Model",
             ),
         },

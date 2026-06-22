@@ -194,7 +194,7 @@ async def _handle_import(
         CommandMessage(
             f"Imported into new thread {new_thread_id[:8]} \"{title}\" "
             f"({len(messages)} messages, {len(human_messages)} user). "
-            f"Note: message history was not replayed — send a message to start the conversation.",
+            f"Note: message history was not replayed; send a message to start the conversation.",
             level="success",
         ),
         payload={
@@ -358,7 +358,6 @@ def register(registry: CommandRegistry) -> None:
         description="Export current thread to file",
         usage="/export [json|md|jsonl] [--output PATH] [--sanitize]",
         handler=_handle_export,
-        handler_mode="context",
         category="Session",
     ))
     registry.register(Command(
@@ -367,6 +366,5 @@ def register(registry: CommandRegistry) -> None:
         description="Import a thread from an exported JSON file",
         usage="/import <file>",
         handler=_handle_import,
-        handler_mode="context",
         category="Session",
     ))

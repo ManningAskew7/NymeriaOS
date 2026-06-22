@@ -139,7 +139,6 @@ def register(registry: CommandRegistry) -> None:
         description="Re-send last message for a new response",
         usage="/retry [new prompt]",
         handler=_handle_retry,
-        handler_mode="context",
         category="Conversation",
     ))
     registry.register(Command(
@@ -148,6 +147,5 @@ def register(registry: CommandRegistry) -> None:
         description="Remove last user+assistant exchange",
         usage="/undo [--yes]",
         handler=_handle_undo,
-        handler_mode="context",
         category="Conversation",
     ))

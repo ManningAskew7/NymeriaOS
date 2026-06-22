@@ -10,7 +10,6 @@ from pathlib import PurePath
 from typing import Any
 
 from ..events import (
-    CLIStreamEvent,
     CompactingEvent,
     CompactedEvent,
     ContextAttachedEvent,
@@ -1130,8 +1129,6 @@ def _safe_int(value: Any) -> int:
 
 
 def _normalize(event: Any, *, default_thread_id: str | None) -> NormalizedEvent:
-    if isinstance(event, CLIStreamEvent):
-        return normalize_stream_event(event, default_thread_id=default_thread_id)
     return normalize_stream_event(event, default_thread_id=default_thread_id)
 
 

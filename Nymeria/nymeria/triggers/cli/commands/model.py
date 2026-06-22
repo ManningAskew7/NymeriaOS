@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, List, TYPE_CHECKING
+from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from ..rendering.form_panel import FormField, FormOption, FormResult, FormSpec, FormTab
@@ -16,53 +16,6 @@ from .system import (
     CommandClientMethodUnavailable,
 )
 
-if TYPE_CHECKING:
-    from ..state import CLIState
-
-
-def _handle_model(state: "CLIState", args: List[str]) -> None:
-    """Show the effective model for the current thread."""
-    global_model = state.settings.llm_model
-    effective = state.get_effective_model()
-
-    tc = state.thread_config_manager.get_config(state.thread_id)
-    override = (tc.llm_config.model if tc and tc.llm_config and tc.llm_config.model else None)
-
-    state.console.print(f"  [dim]Global:[/dim]   {global_model}")
-    state.console.print(f"  [dim]Effective:[/dim] {effective}")
-    if override:
-        state.console.print(f"  [dim]Override:[/dim] [cyan]{override}[/cyan]")
-    else:
-        state.console.print("  [dim]Override:[/dim] [dim]None (using global)[/dim]")
-
-
-def _handle_model_set(state: "CLIState", args: List[str]) -> None:
-    """Set a per-thread model override."""
-    if not args:
-        state.console.print("[red]Usage: /model set <model-id>[/red]")
-        return
-
-    model_id = args[0]
-    tc = state.thread_config_manager.get_config(state.thread_id)
-
-    if tc is None:
-        from ....core.thread_config import ThreadConfig, ThreadLLMConfig
-        tc = ThreadConfig(
-            thread_id=state.thread_id,
-            llm_config=ThreadLLMConfig(model=model_id),
-        )
-    else:
-        if tc.llm_config is None:
-            from ....core.thread_config import ThreadLLMConfig
-            tc.llm_config = ThreadLLMConfig(model=model_id)
-        else:
-            tc.llm_config.model = model_id
-
-    state.thread_config_manager.save_config(tc)
-    if state.agent is not None:
-        state.agent.invalidate_thread_config_cache(state.thread_id)
-    state.console.print(f"[green]Model set to: {model_id}[/green]")
-
 
 async def _handle_model_context(
     context: CommandContext,
@@ -70,9 +23,6 @@ async def _handle_model_context(
 ) -> CommandResult:
     """Open the model picker form, or show the effective model as a fallback."""
 
-    if context.legacy_state is not None:
-        _handle_model(context.legacy_state, args)
-        return CommandResult.completed()
     if args:
         return CommandResult.failed(
             "Usage: /model show|set|available",
@@ -193,10 +143,6 @@ async def _handle_model_show_context(
     context: CommandContext,
     _args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_model(context.legacy_state, [])
-        return CommandResult.completed()
-
     settings = await _settings_or_none(context)
     config = await _thread_config_or_none(context)
     stats = await _context_stats_or_none(context)
@@ -230,9 +176,6 @@ async def _handle_model_set_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_model_set(context.legacy_state, args)
-        return CommandResult.completed()
     if not args:
         return CommandResult.failed(
             "Usage: /model set <model-id>",
@@ -267,12 +210,6 @@ async def _handle_model_available_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/model available is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
-
     provider = args[0] if args else None
     try:
         entries = await _list_models(context, provider)
@@ -419,7 +356,6 @@ def register(registry: CommandRegistry) -> None:
         description="Show or set model",
         usage="/model show",
         handler=_handle_model_context,
-        handler_mode="context",
         category="Model",
         subcommands={
             "show": Command(
@@ -427,7 +363,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show effective model",
                 usage="show",
                 handler=_handle_model_show_context,
-                handler_mode="context",
                 category="Model",
             ),
             "set": Command(
@@ -435,7 +370,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Set model",
                 usage="set <model-id>",
                 handler=_handle_model_set_context,
-                handler_mode="context",
                 category="Model",
             ),
             "available": Command(
@@ -444,7 +378,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List available models",
                 usage="available [provider]",
                 handler=_handle_model_available_context,
-                handler_mode="context",
                 category="Model",
             ),
         },

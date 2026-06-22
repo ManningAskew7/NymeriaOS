@@ -26,18 +26,6 @@ def run(coro):
     return asyncio.run(coro)
 
 
-class FakeConsole:
-    def __init__(self) -> None:
-        self.lines: list[str] = []
-        self.cleared = False
-
-    def print(self, text: str = "", *args: Any, **kwargs: Any) -> None:
-        self.lines.append(str(text))
-
-    def clear(self) -> None:
-        self.cleared = True
-
-
 def test_parse_and_resolve_root_alias_and_subcommand_alias() -> None:
     registry = CommandRegistry(include_builtins=False)
     registry.register(
@@ -89,7 +77,6 @@ def test_async_context_handler_receives_client_and_helpers() -> None:
             name="ping",
             description="Ping test command",
             handler=handler,
-            handler_mode="context",
         )
     )
     sink = ListCommandOutputSink()
@@ -130,7 +117,6 @@ def test_json_flag_strips_args_and_emits_result_payload(capsys: Any) -> None:
             name="echo",
             description="Echo test command",
             handler=handler,
-            handler_mode="context",
         )
     )
     context = CommandContext(output=sink)
@@ -160,31 +146,15 @@ def test_unknown_command_returns_structured_error() -> None:
     assert "Unknown command: /missing" in sink.messages[0].content
 
 
-def test_legacy_dispatch_calls_legacy_handler_and_prints_structured_errors() -> None:
+def test_non_command_input_is_unhandled() -> None:
     registry = CommandRegistry(include_builtins=False)
-    state = SimpleNamespace(
-        console=FakeConsole(),
-        thread_id="thread-1",
-        user_id="alice",
-        calls=[],
-    )
+    sink = ListCommandOutputSink()
 
-    def handler(legacy_state, args: list[str]) -> None:
-        legacy_state.calls.append(args)
+    result = run(registry.dispatch_async(CommandContext(output=sink), "chat text"))
 
-    registry.register(
-        Command(
-            name="legacy",
-            description="Legacy command",
-            handler=handler,
-        )
-    )
-
-    assert registry.dispatch(state, "/legacy a b") is True
-    assert state.calls == [["a", "b"]]
-    assert registry.dispatch(state, "/nope") is True
-    assert any("Unknown command: /nope" in line for line in state.console.lines)
-    assert registry.dispatch(state, "chat text") is False
+    assert result.handled is False
+    assert result.status == "unhandled"
+    assert sink.messages == []
 
 
 def test_builtin_help_exit_and_clear_are_context_commands() -> None:
@@ -194,20 +164,19 @@ def test_builtin_help_exit_and_clear_are_context_commands() -> None:
             name="thread",
             description="Manage threads",
             usage="/thread list",
-            handler=lambda _state, _args: None,
+            handler=lambda _ctx, _args: None,
         )
     )
     registry.register(
         Command(
             name="help",
             aliases=["/legacy-help"],
-            description="Legacy help should not replace builtin help",
-            handler=lambda _state, _args: None,
+            description="A re-registration should not replace builtin help",
+            handler=lambda _ctx, _args: None,
         )
     )
     sink = ListCommandOutputSink()
-    legacy_state = SimpleNamespace(console=FakeConsole(), running=True)
-    context = CommandContext(output=sink, legacy_state=legacy_state)
+    context = CommandContext(output=sink)
 
     help_result = run(registry.dispatch_async(context, "/help thread"))
     exit_result = run(registry.dispatch_async(context, "/exit"))
@@ -216,9 +185,7 @@ def test_builtin_help_exit_and_clear_are_context_commands() -> None:
     assert help_result.status == "ok"
     assert "/thread list" in sink.messages[0].content
     assert exit_result.status == "exit"
-    assert legacy_state.running is False
     assert clear_result.status == "clear"
-    assert legacy_state.console.cleared is True
     assert "/legacy-help" in registry.get_completions()
 
 
