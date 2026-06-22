@@ -17,6 +17,7 @@ from typing import Any
 
 from .callable_names import dedupe_callable_name, safe_callable_base
 from .checkpoint_cleanup import delete_thread_checkpoints
+from .checkpoint_sql import postgres_table_exists, sqlite_table_exists
 from .thread_config import ThreadConfig
 from .time_utils import utc_now
 
@@ -161,7 +162,7 @@ def _clone_sqlite_checkpoints(
         )
         _sqlite_raise_if_target_exists(conn, target_thread_id)
         for table in CHECKPOINT_BRANCH_TABLES:
-            if not _sqlite_table_exists(conn, table):
+            if not sqlite_table_exists(conn, table):
                 continue
             counts[f"{table}_copied"] = _sqlite_copy_table_rows(
                 conn,
@@ -181,7 +182,7 @@ def _sqlite_selected_checkpoint_ids(
 ) -> set[str] | None:
     if source_checkpoint_id is None:
         return None
-    if not _sqlite_table_exists(conn, "checkpoints"):
+    if not sqlite_table_exists(conn, "checkpoints"):
         return set()
     columns = _sqlite_columns(conn, "checkpoints")
     required = {"thread_id", "checkpoint_ns", "checkpoint_id", "parent_checkpoint_id"}
@@ -213,7 +214,7 @@ def _sqlite_raise_if_target_exists(
     target_thread_id: str,
 ) -> None:
     for table in CHECKPOINT_BRANCH_TABLES:
-        if not _sqlite_table_exists(conn, table):
+        if not sqlite_table_exists(conn, table):
             continue
         columns = _sqlite_columns(conn, table)
         if "thread_id" not in columns:
@@ -578,7 +579,7 @@ def _delete_branch_checkpoint_rows(settings: Any, thread_id: str) -> None:
     if backend == "sqlite":
         with closing(sqlite3.connect(str(settings.db_path))) as conn:
             for table in CHECKPOINT_BRANCH_TABLES:
-                if not _sqlite_table_exists(conn, table):
+                if not sqlite_table_exists(conn, table):
                     continue
                 if "thread_id" not in _sqlite_columns(conn, table):
                     continue
@@ -606,14 +607,6 @@ def _delete_branch_checkpoint_rows(settings: Any, thread_id: str) -> None:
             conn.commit()
 
 
-def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def _sqlite_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [str(row[1]) for row in conn.execute(f"PRAGMA table_info({_quote_sqlite_identifier(table)})")]
 
@@ -623,8 +616,7 @@ def _quote_sqlite_identifier(value: str) -> str:
 
 
 def _postgres_columns(cur: Any, table: str) -> list[str]:
-    cur.execute("SELECT to_regclass(%s)", (table,))
-    if cur.fetchone()[0] is None:
+    if not postgres_table_exists(cur, table):
         return []
     cur.execute(
         """

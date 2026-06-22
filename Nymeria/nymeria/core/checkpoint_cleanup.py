@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Tuple
 
 from ..config import get_settings
+from .checkpoint_sql import postgres_table_exists, sqlite_table_exists
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class SQLiteCheckpointCleaner(CheckpointCleaner):
         with closing(sqlite3.connect(str(self.db_path))) as conn:
             existing_tables: list[str] = []
             for table in CHECKPOINT_TABLES:
-                if not _sqlite_table_exists(conn, table):
+                if not sqlite_table_exists(conn, table):
                     continue
                 cursor = conn.execute(_delete_thread_sql(table, "?"), (thread_id,))
                 counts[f"{table}_deleted"] = _rowcount(cursor.rowcount)
@@ -118,8 +119,7 @@ class PostgresCheckpointCleaner(CheckpointCleaner):
                 cur_any: Any = cur
                 existing_tables: list[str] = []
                 for table in CHECKPOINT_TABLES:
-                    cur_any.execute("SELECT to_regclass(%s)", (table,))
-                    if cur_any.fetchone()[0] is None:
+                    if not postgres_table_exists(cur_any, table):
                         continue
                     existing_tables.append(table)
                     cur_any.execute(_delete_thread_sql(table, "%s"), (thread_id,))
@@ -296,14 +296,6 @@ def _safe_prune_execute(
     except Exception as e:
         logger.warning(f"Thread {thread_id}: prune {label} failed: {e}")
         return 0
-
-
-def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _rowcount(value: int | None) -> int:

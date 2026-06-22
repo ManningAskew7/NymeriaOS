@@ -12,6 +12,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from .checkpoint_sql import postgres_table_exists, sqlite_table_exists
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,7 +43,7 @@ def get_sqlite_latest_checkpoint_revision(
     """Return the latest SQLite checkpoint ID for a thread."""
     try:
         with closing(sqlite3.connect(str(db_path))) as conn:
-            if not _sqlite_table_exists(conn, "checkpoints"):
+            if not sqlite_table_exists(conn, "checkpoints"):
                 return None
             row = conn.execute(
                 "SELECT checkpoint_id FROM checkpoints "
@@ -65,9 +67,7 @@ def get_postgres_latest_checkpoint_revision(
 
         with psycopg.connect(postgres_uri) as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT to_regclass(%s)", ("checkpoints",))
-                regclass_row = cur.fetchone()
-                if regclass_row is None or regclass_row[0] is None:
+                if not postgres_table_exists(cur, "checkpoints"):
                     return None
                 cur.execute(
                     "SELECT checkpoint_id FROM checkpoints "
@@ -95,14 +95,6 @@ def get_graph_state_revision(agent: Any, thread_id: str) -> str | None:
     config = getattr(state, "config", None) or {}
     configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
     return _coerce_revision(configurable.get("checkpoint_id"))
-
-
-def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _coerce_revision(value: Any) -> str | None:

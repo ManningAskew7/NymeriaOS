@@ -14,6 +14,7 @@ from queue import Empty
 from typing import Any, cast
 
 from ....core.checkpoint_cleanup import delete_thread_checkpoints
+from ....core.checkpoint_sql import sqlite_table_exists
 from ....core.event_bus import (
     AutonomousEvent,
     autonomous_event_to_payload,
@@ -628,21 +629,13 @@ def _checkpoint_thread_ids(settings: Any) -> list[str]:
 def _sqlite_checkpoint_thread_ids(db_path: Path) -> list[str]:
     try:
         with sqlite3.connect(str(db_path)) as conn:
-            if not _sqlite_table_exists(conn, "checkpoints"):
+            if not sqlite_table_exists(conn, "checkpoints"):
                 return []
             cursor = conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
             return [str(row[0]) for row in cursor.fetchall() if row[0]]
     except Exception as exc:  # noqa: BLE001 - listing should degrade gracefully.
         logger.warning("Failed to query local SQLite thread IDs: %s", exc)
         return []
-
-
-def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _postgres_checkpoint_thread_ids(postgres_uri: str) -> list[str]:
