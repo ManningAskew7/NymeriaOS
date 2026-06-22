@@ -258,7 +258,7 @@ jobs:
     # private-index job above; you can run either, both, or neither.
     #
     # Tokenless OIDC (Trusted Publishing): there are NO secrets to store. One
-    # time setup before flipping the variable (see docs/release-workflow.md):
+    # time setup before flipping the variable (see docs/deployment/release-workflow.md):
     #   1. On PyPI: project nymeriaos -> Manage -> Publishing -> add a GitHub
     #      Trusted Publisher with owner/repo = this repository, workflow file
     #      name = "release.yml", and environment name = "pypi".

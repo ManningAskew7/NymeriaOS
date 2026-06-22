@@ -500,7 +500,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
             f"--security-profile {args.security_profile} is not available yet: "
             "the approval gate that enforces it is not built. Only 'unleashed' "
             "(the current behavior) is selectable for now; the design lives in "
-            "docs/private/security-profiles.md"
+            "docs/private/security/security-profiles.md"
         )
 
     external_access = None
