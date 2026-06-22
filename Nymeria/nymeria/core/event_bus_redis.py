@@ -250,6 +250,18 @@ class RedisEventBus(EventBus):
                 exc,
             )
 
+    def unsubscribe(self, subscriber_id: str) -> None:
+        """Unsubscribe and also prune the Redis-path per-subscriber counters.
+
+        ``_dispatch_local`` keys its enqueue/drop counters
+        ``f"redis:{sub_id}:{event_type}"``, so the base prune (which targets
+        the ``f"{sub_id}:"`` prefix) does not reach them. Drop them here too so
+        neither path leaks counter keys as subscribers come and go.
+        """
+        super().unsubscribe(subscriber_id)
+        with self._lock:
+            self._prune_counter_keys(f"redis:{subscriber_id}:")
+
     def _dispatch_local(self, event: AutonomousEvent) -> None:
         """
         Dispatch event to local subscribers only (called from Redis subscriber).

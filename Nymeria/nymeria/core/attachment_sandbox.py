@@ -155,18 +155,26 @@ def _decode_data_url(data_url: str) -> bytes:
     return base64.b64decode(payload, validate=False)
 
 
+_MAX_FRIENDLY_SUFFIX = 20
+
+
 def _resolve_unique_path(directory: Path, filename: str) -> Path:
-    """Return ``directory/filename``; on collision append ``_2``, ``_3``, ..."""
+    """Return ``directory/filename``; on collision append ``_2``, ``_3``, ...
+
+    The friendly ``_N`` probe is capped at a small bound: past it (a thread
+    accumulating many same-named uploads) we fall back to a short random suffix
+    rather than running an unbounded ``stat`` scan on the write path.
+    """
     candidate = directory / filename
     if not candidate.exists():
         return candidate
     stem = candidate.stem
     suffix = candidate.suffix
-    for i in range(2, 1000):
+    for i in range(2, _MAX_FRIENDLY_SUFFIX + 1):
         candidate = directory / f"{stem}_{i}{suffix}"
         if not candidate.exists():
             return candidate
-    # Pathological collision — fall back to a random suffix.
+    # Too many collisions; fall back to a random suffix.
     return directory / f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
 
 

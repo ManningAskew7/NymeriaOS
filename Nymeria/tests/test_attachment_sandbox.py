@@ -22,6 +22,25 @@ def _data_url(payload: bytes, mime: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(payload).decode()}"
 
 
+def test_resolve_unique_path_appends_friendly_suffix(tmp_path: Path):
+    (tmp_path / "a.png").write_bytes(b"x")
+    resolved = attachment_sandbox._resolve_unique_path(tmp_path, "a.png")
+    assert resolved.name == "a_2.png"
+
+
+def test_resolve_unique_path_caps_friendly_probe_then_random(tmp_path: Path):
+    # Occupy the base name plus every friendly _2.._20 slot.
+    (tmp_path / "a.png").write_bytes(b"x")
+    for i in range(2, attachment_sandbox._MAX_FRIENDLY_SUFFIX + 1):
+        (tmp_path / f"a_{i}.png").write_bytes(b"x")
+    resolved = attachment_sandbox._resolve_unique_path(tmp_path, "a.png")
+    # Must not run past the cap to a_21; falls back to a random suffix.
+    assert resolved.name != f"a_{attachment_sandbox._MAX_FRIENDLY_SUFFIX + 1}.png"
+    assert resolved.name.startswith("a_")
+    assert resolved.suffix == ".png"
+    assert not resolved.exists()
+
+
 def test_get_thread_attachment_dir_creates_subtree(_isolated_workspace: Path):
     path = attachment_sandbox.get_thread_attachment_dir("thread-a")
     assert path.exists()

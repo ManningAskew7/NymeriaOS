@@ -28,11 +28,12 @@ import hashlib
 import hmac
 import logging
 import secrets
-import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+from .future_rendezvous import FutureRendezvous
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +61,20 @@ class PendingPrompt:
     last_test_error: Optional[str] = None
 
 
-class AuthPromptCoordinator:
+class AuthPromptCoordinator(FutureRendezvous[PendingPrompt]):
     """Tracks in-flight credential prompts keyed by ``prompt_id``."""
 
     def __init__(self) -> None:
-        self._prompts: dict[str, PendingPrompt] = {}
-        self._lock = threading.Lock()
-        self._sweep_task: Optional[asyncio.Task] = None
-        self._sweep_started = False
+        super().__init__(
+            ttl_seconds=_ORPHAN_TTL_SECONDS,
+            sweep_interval_seconds=_SWEEP_INTERVAL_SECONDS,
+            log_label="auth_prompt_coordinator",
+        )
+
+    @property
+    def _prompts(self) -> dict[str, PendingPrompt]:
+        """Read alias for the shared registry (kept for readability/tests)."""
+        return self._items
 
     def register(
         self,
@@ -99,21 +106,15 @@ class AuthPromptCoordinator:
             token_expires_at=token_expires_at,
             token_expires_at_iso=token_expires_at_iso,
         )
-        with self._lock:
-            self._prompts[prompt_id] = prompt
-        self._start_sweep_locked()
+        self._add(prompt_id, prompt)
         return future
-
-    def get(self, prompt_id: str) -> Optional[PendingPrompt]:
-        with self._lock:
-            return self._prompts.get(prompt_id)
 
     def get_for_user_thread(self, *, user_id: str, thread_id: str) -> Optional[PendingPrompt]:
         """Return the oldest unresolved prompt for ``user_id``/``thread_id``."""
         with self._lock:
             matches = [
                 prompt
-                for prompt in self._prompts.values()
+                for prompt in self._items.values()
                 if prompt.user_id == user_id and prompt.thread_id == thread_id
             ]
         if not matches:
@@ -125,7 +126,7 @@ class AuthPromptCoordinator:
         if not raw_token:
             return None
         with self._lock:
-            prompt = self._prompts.get(prompt_id)
+            prompt = self._items.get(prompt_id)
         if prompt is None or not prompt.token_hash:
             return None
         if prompt.token_expires_at is not None and time.monotonic() > prompt.token_expires_at:
@@ -139,7 +140,7 @@ class AuthPromptCoordinator:
         """Bump the attempt counter (call after a failed test, before the
         modal shows its inline retry)."""
         with self._lock:
-            prompt = self._prompts.get(prompt_id)
+            prompt = self._items.get(prompt_id)
             if prompt is None:
                 return 0
             prompt.attempts += 1
@@ -149,82 +150,33 @@ class AuthPromptCoordinator:
     def resolve(self, prompt_id: str, result: dict[str, Any]) -> bool:
         """Wake the tool with ``result``. Returns False if there's nothing to
         wake (already resolved, swept, or never registered)."""
-        with self._lock:
-            prompt = self._prompts.pop(prompt_id, None)
-        if prompt is None:
-            return False
-        future = prompt.future
-        if future.done():
-            return False
         # Fill in the running totals so the agent always sees them.
-        enriched = {
-            "attempts": prompt.attempts,
-            "last_test_error": prompt.last_test_error,
-            **result,
+        return self._resolve(
+            prompt_id,
+            lambda prompt: {
+                "attempts": prompt.attempts,
+                "last_test_error": prompt.last_test_error,
+                **result,
+            },
+        )
+
+    def _swept_result(self, record: PendingPrompt) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "status": "swept",
+            "attempts": record.attempts,
+            "last_test_error": record.last_test_error,
         }
-        future.get_loop().call_soon_threadsafe(_safe_set_result, future, enriched)
-        return True
 
-    def discard(self, prompt_id: str) -> None:
-        """Remove a prompt without resolving its future. Use only when the
-        tool has already returned (e.g. cleanup after a tool-side timeout)."""
-        with self._lock:
-            self._prompts.pop(prompt_id, None)
-
-    def _start_sweep_locked(self) -> None:
-        if self._sweep_started:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._sweep_started = True
-        self._sweep_task = loop.create_task(self._sweep_forever())
-
-    async def _sweep_forever(self) -> None:
-        while True:
-            try:
-                await asyncio.sleep(_SWEEP_INTERVAL_SECONDS)
-                self._sweep_once()
-            except asyncio.CancelledError:
-                return
-            except Exception:
-                logger.exception("auth_prompt_coordinator sweep failed")
-
-    def _sweep_once(self) -> None:
-        cutoff = time.monotonic() - _ORPHAN_TTL_SECONDS
-        orphans: list[PendingPrompt] = []
-        with self._lock:
-            for prompt_id in list(self._prompts.keys()):
-                if self._prompts[prompt_id].created_at < cutoff:
-                    orphans.append(self._prompts.pop(prompt_id))
-        for orphan in orphans:
-            future = orphan.future
-            if future.done():
-                continue
-            logger.warning(
-                "auth_prompt_coordinator swept orphaned prompt %s "
-                "(provider=%s, user=%s, age>%ds)",
-                orphan.prompt_id,
-                orphan.provider,
-                orphan.user_id,
-                _ORPHAN_TTL_SECONDS,
-            )
-            future.get_loop().call_soon_threadsafe(
-                _safe_set_result,
-                future,
-                {
-                    "ok": False,
-                    "status": "swept",
-                    "attempts": orphan.attempts,
-                    "last_test_error": orphan.last_test_error,
-                },
-            )
-
-
-def _safe_set_result(future: asyncio.Future, value: Any) -> None:
-    if not future.done():
-        future.set_result(value)
+    def _on_orphan_swept(self, record: PendingPrompt) -> None:
+        logger.warning(
+            "auth_prompt_coordinator swept orphaned prompt %s "
+            "(provider=%s, user=%s, age>%ds)",
+            record.prompt_id,
+            record.provider,
+            record.user_id,
+            self._ttl_seconds,
+        )
 
 
 _coordinator: Optional[AuthPromptCoordinator] = None
