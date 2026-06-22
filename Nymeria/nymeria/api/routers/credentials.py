@@ -107,15 +107,12 @@ def _fire_oauth_post_clear_hook(record: Any) -> None:
 def _invalidate_llm_graphs(get_agent_fn: Callable[[], Any], record: Any) -> None:
     if not _is_llm_credential(record):
         return
-    agent = get_agent_fn()
     try:
-        with agent._graph_cache_lock:
-            agent._user_graphs.clear()
-            agent._async_user_graphs.clear()
-        agent._default_graph = agent._build_graph_with_prompt(agent._base_system_prompt)
-        agent._default_async_graph = agent._build_async_graph_with_prompt(
-            agent._base_system_prompt
-        )
+        # Single canonical evict-and-rebuild (clears the per-thread graph
+        # caches under the graph lock, then recompiles the defaults) so the
+        # next chat turn picks up the changed credential. Best-effort: a
+        # rebuild failure must not fail the credential write.
+        get_agent_fn()._rebuild_default_graphs()
     except Exception:
         logger.warning("Failed to rebuild LLM graphs after credential change", exc_info=True)
 

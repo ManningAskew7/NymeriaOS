@@ -93,10 +93,23 @@ class FakeAgent:
         self._graph_cache_lock = Lock()
         self._user_graphs = {"owner": object()}
         self._async_user_graphs = {"owner": object()}
+        self._default_graph = object()
+        self._default_async_graph = object()
         self.synced_tools = 0
+        self.rebuild_calls = 0
 
     def sync_agent_tools(self):
         self.synced_tools += 1
+
+    def _rebuild_default_graphs(self) -> None:
+        # Mirror the real agent contract: clear the per-thread caches under
+        # the lock, then swap in fresh default graphs.
+        self.rebuild_calls += 1
+        with self._graph_cache_lock:
+            self._user_graphs.clear()
+            self._async_user_graphs.clear()
+        self._default_graph = object()
+        self._default_async_graph = object()
 
 
 def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent, str]:
@@ -175,5 +188,9 @@ def test_global_skills_update_clears_graph_caches(tmp_path: Path, api_client_bui
     assert response.json() == {"enabled_global_skills": ["kit-skill"]}
     assert agent.profile_manager.saved_profile is agent.profile_manager.profile
     assert agent.profile_manager.profile.enabled_global_skills == ["kit-skill"]
+    # The router delegates to the canonical agent rebuild rather than reaching
+    # into private cache internals; the rebuild both clears the per-thread
+    # caches and recompiles the defaults.
+    assert agent.rebuild_calls == 1
     assert agent._user_graphs == {}
     assert agent._async_user_graphs == {}

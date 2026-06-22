@@ -61,10 +61,23 @@ class _FakeAgent:
         self._graph_cache_lock = threading.RLock()
         self._user_graphs = {}
         self._async_user_graphs = {}
+        self._default_graph = object()
+        self._default_async_graph = object()
+        self.rebuild_calls = 0
         self.invalidated: list[str] = []
 
     def invalidate_thread_config_cache(self, thread_id: str) -> None:
         self.invalidated.append(thread_id)
+
+    def _rebuild_default_graphs(self) -> None:
+        # Mirror the real agent contract: clear the per-thread caches under
+        # the lock, then swap in fresh default graphs.
+        self.rebuild_calls += 1
+        with self._graph_cache_lock:
+            self._user_graphs.clear()
+            self._async_user_graphs.clear()
+        self._default_graph = object()
+        self._default_async_graph = object()
 
 
 def _write_skill(root: Path, name: str, content: str) -> None:

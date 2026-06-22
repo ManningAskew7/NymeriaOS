@@ -393,12 +393,12 @@ def _write_skill_md_atomic(target_dir: Path, markdown: str) -> None:
 
 
 def _invalidate_graph_caches(agent) -> None:
-    with agent._graph_cache_lock:
-        agent._user_graphs.clear()
+    # Canonical lock-correct evict-and-rebuild; best-effort so a skill-config
+    # tool call never fails on a graph rebuild error.
     try:
-        agent._async_user_graphs.clear()
+        agent._rebuild_default_graphs()
     except Exception:
-        logger.debug("Failed to clear async graph cache")
+        logger.debug("Failed to rebuild graphs after skill change", exc_info=True)
 
 
 def _activate_skill_on_thread(agent, thread_id: str, skill_name: str) -> bool:

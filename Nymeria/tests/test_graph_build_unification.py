@@ -35,9 +35,15 @@ def _called_method_names(method) -> set[str]:
     return names
 
 
-def _direct_graph_rebuild_ops(method) -> list[str]:
+def _graph_rebuild_ops_in(node) -> list[str]:
+    """Collect inline graph-rebuild operations within an AST subtree.
+
+    Reports direct ``_user_graphs``/``_async_user_graphs`` clears, default-graph
+    builder calls, and ``_default_graph``/``_default_async_graph`` assignments,
+    so a test can assert where (or whether) they appear.
+    """
     ops = []
-    for node in ast.walk(_method_tree(method)):
+    for node in ast.walk(node):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             func = node.func
             if (
@@ -56,6 +62,10 @@ def _direct_graph_rebuild_ops(method) -> list[str]:
                 ):
                     ops.append(f"assign {target.attr}")
     return ops
+
+
+def _direct_graph_rebuild_ops(method) -> list[str]:
+    return _graph_rebuild_ops_in(_method_tree(method))
 
 
 def _make_agent():
@@ -359,6 +369,7 @@ def test_toolset_mutators_delegate_default_graph_rebuild():
     implementations = [
         NymeriaAgent.register_tool,
         NymeriaAgent.register_tools,
+        NymeriaAgent.reload_base_system_prompt,
         agent_tools.sync_agent_tools,
         agent_tools.reload_mcp_server_tools,
         agent_tools.reload_custom_tools,
@@ -368,3 +379,90 @@ def test_toolset_mutators_delegate_default_graph_rebuild():
     for impl in implementations:
         assert "_rebuild_default_graphs" in _called_method_names(impl)
         assert _direct_graph_rebuild_ops(impl) == []
+
+
+def test_no_inline_graph_cache_rebuild_outside_canonical_helper():
+    """Graph-cache invalidation is centralized in ``rebuild_default_graphs``.
+
+    Every mutation that needs to drop the per-thread graph caches and refresh
+    the defaults must call ``agent._rebuild_default_graphs()`` rather than
+    inlining a ``_user_graphs``/``_async_user_graphs`` clear plus a
+    ``_default_graph`` reassignment. This gate would have caught the copies
+    that had drifted across the API routers and skill tools (each carrying its
+    own, sometimes unlocked, clear). Targeted per-thread eviction
+    (``del _user_graphs[key]`` in ``agent_tools``/``thread_deletion``) is a
+    different operation and is intentionally not matched here.
+    """
+    import pathlib
+
+    import nymeria
+
+    pkg_root = pathlib.Path(nymeria.__file__).resolve().parent
+    allowed = {
+        pkg_root / "core" / "agent.py",          # one-time __init__ build
+        pkg_root / "core" / "agent_tools.py",    # the canonical helper itself
+    }
+
+    offenders: list[tuple[str, list[str]]] = []
+    for path in pkg_root.rglob("*.py"):
+        if path.resolve() in allowed:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        inline = [
+            op
+            for op in _graph_rebuild_ops_in(tree)
+            if op.endswith(".clear") or op.startswith("assign _default")
+        ]
+        if inline:
+            offenders.append((str(path.relative_to(pkg_root)), inline))
+
+    assert offenders == [], (
+        "Inline graph-cache rebuild found; route it through "
+        "agent._rebuild_default_graphs() instead: " + repr(offenders)
+    )
+
+
+def test_rebuild_default_graphs_clears_caches_under_lock():
+    """The canonical rebuild clears the per-thread caches under
+    ``_graph_cache_lock``, then rebuilds the defaults outside it.
+
+    Clearing under the lock matters: ``store_cached_graph_entry`` mutates the
+    same dicts under that lock (including an LRU ``next(iter)``/``del``
+    eviction), so a concurrent unlocked ``clear()`` could raise. The
+    non-reentrant lock must NOT be held across the default-graph rebuild.
+    """
+    from nymeria.core import agent_tools
+
+    func = _method_tree(agent_tools.rebuild_default_graphs).body[0]
+
+    lock_blocks = [
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Attribute)
+            and item.context_expr.attr == "_graph_cache_lock"
+            for item in node.items
+        )
+    ]
+    assert len(lock_blocks) == 1, "expected exactly one _graph_cache_lock block"
+    lock_block = lock_blocks[0]
+
+    # Both cache clears happen inside the lock; nothing builds/assigns there.
+    assert set(_graph_rebuild_ops_in(lock_block)) == {
+        "_user_graphs.clear",
+        "_async_user_graphs.clear",
+    }
+
+    # The default-graph rebuilds happen outside the lock block (and the clears
+    # are not duplicated there).
+    outside_ops: list[str] = []
+    for stmt in func.body:
+        if stmt is not lock_block:
+            outside_ops.extend(_graph_rebuild_ops_in(stmt))
+    assert "_build_graph_with_prompt" in outside_ops
+    assert "_build_async_graph_with_prompt" in outside_ops
+    assert "assign _default_graph" in outside_ops
+    assert "assign _default_async_graph" in outside_ops
+    assert "_user_graphs.clear" not in outside_ops
+    assert "_async_user_graphs.clear" not in outside_ops

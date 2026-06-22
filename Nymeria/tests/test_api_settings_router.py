@@ -314,6 +314,18 @@ class FakeAgent:
         self.prompt_reloads += 1
         return self._base_system_prompt
 
+    def _rebuild_default_graphs(self) -> None:
+        # Mirror the real agent contract: clear the per-thread caches under the
+        # lock, then rebuild the defaults via the build stubs (which record
+        # "sync"/"async" in graph_rebuilds).
+        with self._graph_cache_lock:
+            self._user_graphs.clear()
+            self._async_user_graphs.clear()
+        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
+        self._default_async_graph = self._build_async_graph_with_prompt(
+            self._base_system_prompt
+        )
+
     def sync_agent_tools(self) -> None:
         self.synced_tools += 1
 

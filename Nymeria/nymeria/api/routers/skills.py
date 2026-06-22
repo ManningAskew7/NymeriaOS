@@ -26,13 +26,14 @@ def create_skills_router(
     router = APIRouter(tags=["Skills"])
 
     def _invalidate_graph_caches() -> None:
-        agent = get_agent_fn()
-        with agent._graph_cache_lock:
-            agent._user_graphs.clear()
+        # Canonical evict-and-rebuild: clears the per-thread graph caches under
+        # the graph lock and recompiles the defaults so a skill change is
+        # visible on the next turn. Best-effort: never fail the skill mutation
+        # on a rebuild error.
         try:
-            agent._async_user_graphs.clear()
+            get_agent_fn()._rebuild_default_graphs()
         except Exception:
-            logger.warning("Failed to clear async graph cache", exc_info=True)
+            logger.warning("Failed to rebuild graphs after skill change", exc_info=True)
 
     def _skill_to_metadata(skill) -> dict[str, Any]:
         return {

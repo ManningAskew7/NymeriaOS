@@ -1089,13 +1089,7 @@ class NymeriaAgent:
         Returns the newly loaded base system prompt.
         """
         self._base_system_prompt = self.settings.load_soul()
-        with self._graph_cache_lock:
-            self._user_graphs.clear()
-            self._async_user_graphs.clear()
-        self._default_graph = self._build_graph_with_prompt(self._base_system_prompt)
-        self._default_async_graph = self._build_async_graph_with_prompt(
-            self._base_system_prompt
-        )
+        self._rebuild_default_graphs()
         logger.info("Reloaded base system prompt (%d chars)", len(self._base_system_prompt))
         return self._base_system_prompt
 
