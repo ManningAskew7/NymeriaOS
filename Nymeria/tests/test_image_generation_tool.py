@@ -139,3 +139,28 @@ def test_download_image_bytes_decodes_data_uri():
 
     assert raw == b"data-uri-image"
     assert mime_type == "image/webp"
+
+
+def test_finalize_screenshot_writes_workspace_artifact_and_native_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path))
+
+    content, artifact = image_generation.finalize_screenshot(
+        raw=b"fake-screenshot",
+        config={"configurable": {"user_id": "owner@example.com"}},
+        page_url="https://example.com",
+    )
+
+    metadata = artifact[NATIVE_IMAGE_ARTIFACT_KEY]
+    # Screenshots ride the same native-vision artifact path as generated images,
+    # but tagged with their own source (kept confined to the workspace, since
+    # only source=="file_read" is exempt from confinement).
+    assert metadata["source"] == "browser_screenshot"
+    assert metadata["native_context_enabled"] is True
+    assert "https://example.com" in content
+    assert "[attach:" in content
+    # Written under images/screenshots/<user>, a sibling of generated images.
+    path = tmp_path / "images" / "screenshots" / "owner-example.com"
+    files = list(path.glob("*.png"))
+    assert len(files) == 1
+    assert files[0].read_bytes() == b"fake-screenshot"
+    assert metadata["path"] == str(files[0])

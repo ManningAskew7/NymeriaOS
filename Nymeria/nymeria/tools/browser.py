@@ -11,17 +11,16 @@ Features:
 """
 
 import base64
-from contextlib import contextmanager
 import importlib.util
 import logging
 import os
 import queue
 import threading
-import warnings
-from typing import Any, Optional, Tuple
+from typing import Annotated, Any, Optional, Tuple
 from urllib.parse import urlparse
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 
 from nymeria.core.http_policy import (
     requests_get_with_policy,
@@ -37,6 +36,19 @@ DEFAULT_OPERATION_TIMEOUT = 30  # Default for other operations
 QUEUE_TIMEOUT = 90  # How long to wait for result from browser thread
 ALLOWED_BROWSER_URL_SCHEMES = {"http", "https"}
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+# Page-content extraction caps, shared by the Playwright and requests-fallback
+# paths. (The Playwright link extraction caps in-page JS at the same MAX_LINKS;
+# keep the literal in `get_content`'s evaluate() in sync.)
+MAX_CONTENT_CHARS = 8000
+MAX_LINKS = 20
+
+
+def _truncate(text: str) -> str:
+    """Cap extracted page text at MAX_CONTENT_CHARS with a truncation marker."""
+    if len(text) > MAX_CONTENT_CHARS:
+        return text[:MAX_CONTENT_CHARS] + "\n...[truncated]"
+    return text
 
 
 def _validate_browser_url(url: str) -> Tuple[bool, str]:
@@ -83,35 +95,15 @@ def _browser_verify_ssl() -> bool:
     return True
 
 
-@contextmanager
-def _maybe_suppress_insecure_request_warning(verify_ssl: bool):
-    """Suppress urllib3's warning only when fallback TLS verification is disabled."""
-    if verify_ssl:
-        yield
-        return
-
-    try:
-        from urllib3.exceptions import InsecureRequestWarning
-    except Exception:
-        yield
-        return
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", InsecureRequestWarning)
-        yield
-
-
 def _requests_get(url: str, headers: dict[str, str]):
-    """Issue a fallback GET request with configured TLS verification."""
-    verify_ssl = _browser_verify_ssl()
-    with _maybe_suppress_insecure_request_warning(verify_ssl):
-        response, _redirect_chain, _policy = requests_get_with_policy(
-            url,
-            headers=headers,
-            timeout=30,
-            verify=verify_ssl,
-        )
-        return response
+    """Issue a fallback GET request with TLS verification enforced."""
+    response, _redirect_chain, _policy = requests_get_with_policy(
+        url,
+        headers=headers,
+        timeout=30,
+        verify=_browser_verify_ssl(),
+    )
+    return response
 
 
 def _find_playwright_browsers_path() -> Optional[str]:
@@ -379,6 +371,7 @@ class BrowserThread:
             }''')
             links = self._page.evaluate('''() => {
                 const links = Array.from(document.querySelectorAll('a[href]'));
+                // 20 == MAX_LINKS in browser.py; keep the two in sync.
                 return links.slice(0, 20).map(a => ({
                     text: a.innerText.trim().substring(0, 50),
                     href: a.href
@@ -388,7 +381,10 @@ class BrowserThread:
 
         elif command == "screenshot":
             screenshot_bytes = self._page.screenshot(full_page=False)
-            return base64.b64encode(screenshot_bytes).decode('utf-8')
+            return {
+                "url": self._page.url,
+                "b64": base64.b64encode(screenshot_bytes).decode('utf-8'),
+            }
 
         elif command == "scroll":
             direction = args.get("direction", "down")
@@ -529,11 +525,10 @@ def _fallback_navigate(url: str) -> str:
         for element in soup(['script', 'style', 'noscript']):
             element.decompose()
         text = soup.get_text(separator='\n', strip=True)
-        if len(text) > 8000:
-            text = text[:8000] + "\n...[truncated]"
+        text = _truncate(text)
 
         links = []
-        for a in soup.find_all('a', href=True)[:20]:
+        for a in soup.find_all('a', href=True)[:MAX_LINKS]:
             href = a['href']
             if href.startswith('http'):
                 link_text = a.get_text(strip=True)[:50]
@@ -577,15 +572,11 @@ def _fallback_get_content(url: str) -> str:
             element.decompose()
         
         title = soup.title.string if soup.title else "No title"
-        text = soup.get_text(separator='\n', strip=True)
-        
-        # Truncate if too long
-        if len(text) > 8000:
-            text = text[:8000] + "\n...[truncated]"
-        
+        text = _truncate(soup.get_text(separator='\n', strip=True))
+
         # Get links
         links = []
-        for a in soup.find_all('a', href=True)[:20]:
+        for a in soup.find_all('a', href=True)[:MAX_LINKS]:
             href = a['href']
             if href.startswith('http'):
                 link_text = a.get_text(strip=True)[:50]
@@ -700,8 +691,7 @@ def browser_get_content(include_links: bool = True) -> str:
 
     if success:
         text = result["text"]
-        if len(text) > 8000:
-            text = text[:8000] + "\n...[truncated]"
+        text = _truncate(text)
 
         output = f"URL: {result['url']}\nTitle: {result['title']}\n\nContent:\n{text}"
 
@@ -715,19 +705,39 @@ def browser_get_content(include_links: bool = True) -> str:
         return f"[Error]: Get content failed - {result}"
 
 
-@tool
-def browser_screenshot() -> str:
+@tool(response_format="content_and_artifact")
+def browser_screenshot(
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> Tuple[str, dict]:
     """
-    Take a screenshot of the current page. Returns base64 encoded image.
+    Take a screenshot of the current page so you can visually inspect it.
+
+    The screenshot is shown to you directly, and is also saved to your
+    workspace and attached to the chat.
     """
     logger.info("browser_screenshot")
     browser = _get_browser()
     success, result = browser.execute("screenshot", {})
 
-    if success:
-        return f"[Screenshot]: data:image/png;base64,{result[:100]}... ({len(result)} chars)"
-    else:
-        return f"[Error]: Screenshot failed - {result}"
+    if not success:
+        return f"[Error]: Screenshot failed - {result}", {}
+
+    try:
+        raw = base64.b64decode(result["b64"])
+        page_url = result.get("url", "")
+    except Exception as exc:
+        logger.error("browser_screenshot: base64 decode failed: %s", exc)
+        return f"[Error]: Screenshot decode failed - {exc}", {}
+
+    try:
+        # Deferred import to keep loading browser.py cheap (avoids pulling in the
+        # image stack at module load); there is no import cycle.
+        from nymeria.tools.image_generation import finalize_screenshot
+
+        return finalize_screenshot(raw=raw, config=config, page_url=page_url)
+    except Exception as exc:
+        logger.exception("browser_screenshot: failed to save screenshot")
+        return f"[Error]: Screenshot save failed - {exc}", {}
 
 
 @tool

@@ -12,6 +12,7 @@ into ``CATALOG_TOOLS`` alongside ``WEB_SEARCH_SERVICE_TOOLS``.
 """
 
 import logging
+import os
 import re
 from typing import Annotated, Optional
 
@@ -99,7 +100,6 @@ def _get_tavily_api_key(config: Optional[RunnableConfig] = None) -> Optional[str
         return cred.value
 
     from ..config import get_settings
-    import os
     settings = get_settings()
     return settings.tavily_api_key or os.environ.get("TAVILY_API_KEY")
 
@@ -288,7 +288,6 @@ def _get_exa_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
         return cred.value
 
     from ..config import get_settings
-    import os
     settings = get_settings()
     return settings.exa_api_key or os.environ.get("EXA_API_KEY")
 
@@ -499,7 +498,6 @@ def _get_firecrawl_api_key(config: Optional[RunnableConfig] = None) -> Optional[
         return cred.value
 
     from ..config import get_settings
-    import os
     settings = get_settings()
     return settings.firecrawl_api_key or os.environ.get("FIRECRAWL_API_KEY")
 
@@ -708,7 +706,6 @@ def _get_brave_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]
         return cred.value
 
     from ..config import get_settings
-    import os
     settings = get_settings()
     return settings.brave_api_key or os.environ.get("BRAVE_API_KEY")
 
@@ -750,13 +747,17 @@ def _format_brave_results(data: dict, count: int) -> str:
     return "\n".join(lines) if lines else "[No results]"
 
 
-def _brave_site_filter(include_domains: str, exclude_domains: str) -> str:
-    """Translate include/exclude domain lists into Brave query operators.
+def _build_site_filter(
+    include_domains: str, exclude_domains: str, *, exclude_prefix: str
+) -> str:
+    """Translate include/exclude domain lists into search-operator suffixes.
 
-    Brave has no native include/exclude_domains parameter, so domain scoping is
-    expressed as search operators appended to the query: a single include becomes
+    Engines without a native include/exclude_domains parameter express domain
+    scoping as operators appended to the query: a single include becomes
     "site:host", multiple includes become "(site:a OR site:b)", and each exclude
-    becomes "NOT site:host". Hosts are reduced to bare hostnames first.
+    becomes "<exclude_prefix>host" ("NOT site:" for Brave, "-site:" for SearXNG
+    and the ddgs metasearch that reuses the SearXNG synthesis). Hosts are reduced
+    to bare hostnames first.
     """
     inc = [h for h in (_bare_domain(d) for d in include_domains.split(",")) if h]
     exc = [h for h in (_bare_domain(d) for d in exclude_domains.split(",")) if h]
@@ -765,7 +766,7 @@ def _brave_site_filter(include_domains: str, exclude_domains: str) -> str:
         parts.append(f"site:{inc[0]}")
     elif len(inc) > 1:
         parts.append("(" + " OR ".join(f"site:{h}" for h in inc) + ")")
-    parts.extend(f"NOT site:{h}" for h in exc)
+    parts.extend(f"{exclude_prefix}{h}" for h in exc)
     return " ".join(parts)
 
 
@@ -885,7 +886,9 @@ def web_search_brave(
     base_params["result_filter"] = ",".join(src) if src else "web"
 
     # Brave has no native domain filter; express include/exclude as query operators.
-    site_filter = _brave_site_filter(include_domains, exclude_domains)
+    site_filter = _build_site_filter(
+        include_domains, exclude_domains, exclude_prefix="NOT site:"
+    )
 
     logger.info(
         "Brave search: %d query(ies) (count=%d, filter=%s)",
@@ -933,7 +936,6 @@ def _get_searxng_base_url(config: Optional[RunnableConfig] = None) -> Optional[s
         return cred.value
 
     from ..config import get_settings
-    import os
     settings = get_settings()
     return settings.searxng_base_url or os.environ.get("SEARXNG_BASE_URL")
 
@@ -972,25 +974,6 @@ def _format_searxng_results(data: dict, count: int) -> str:
         lines.append(block)
 
     return "\n".join(lines) if lines else "[No results]"
-
-
-def _searxng_site_filter(include_domains: str, exclude_domains: str) -> str:
-    """Translate include/exclude domain lists into SearXNG query operators.
-
-    SearXNG has no native domain filter; it forwards the query to its engines,
-    which understand the Google-style site: operators. A single include becomes
-    "site:host", multiple includes become "(site:a OR site:b)", and each exclude
-    becomes "-site:host". Hosts are reduced to bare hostnames first.
-    """
-    inc = [h for h in (_bare_domain(d) for d in include_domains.split(",")) if h]
-    exc = [h for h in (_bare_domain(d) for d in exclude_domains.split(",")) if h]
-    parts: list[str] = []
-    if len(inc) == 1:
-        parts.append(f"site:{inc[0]}")
-    elif len(inc) > 1:
-        parts.append("(" + " OR ".join(f"site:{h}" for h in inc) + ")")
-    parts.extend(f"-site:{h}" for h in exc)
-    return " ".join(parts)
 
 
 def _searxng_search_single(base_url: str, params: dict, timeout: float, count: int) -> str:
@@ -1112,7 +1095,9 @@ def web_search_searxng(
     base_params["categories"] = ",".join(cats) if cats else "general"
 
     # SearXNG has no native domain filter; express include/exclude as operators.
-    site_filter = _searxng_site_filter(include_domains, exclude_domains)
+    site_filter = _build_site_filter(
+        include_domains, exclude_domains, exclude_prefix="-site:"
+    )
 
     logger.info(
         "SearXNG search: %d query(ies) (count=%d, categories=%s)",
@@ -1279,9 +1264,11 @@ def web_search_ddgs(
             category = cat
             break
 
-    # The upstream engines understand Google-style site: operators, so the
-    # SearXNG operator synthesis applies unchanged.
-    site_filter = _searxng_site_filter(include_domains, exclude_domains)
+    # The upstream engines understand Google-style site: operators, so ddgs uses
+    # the same "-site:" exclude synthesis as SearXNG.
+    site_filter = _build_site_filter(
+        include_domains, exclude_domains, exclude_prefix="-site:"
+    )
 
     logger.info(
         "ddgs metasearch: %d query(ies) (count=%d, category=%s)",

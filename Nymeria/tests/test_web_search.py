@@ -1554,3 +1554,28 @@ def test_ddgs_registered_in_optional_group():
     # Keyless does not mean default-on: quickstart opts it in per user, the
     # catalog itself stays opt-in.
     assert all(t.name != "web_search_ddgs" for t in SEED_TOOLS)
+
+
+def test_build_site_filter_uses_per_engine_exclude_prefix():
+    from nymeria.tools import web_search_integrations as wsi
+
+    # One shared helper, only the exclude prefix differs per engine: Brave uses
+    # "NOT site:", SearXNG and the ddgs metasearch use "-site:".
+    assert (
+        wsi._build_site_filter(
+            "github.com, docs.rs", "pinterest.com", exclude_prefix="NOT site:"
+        )
+        == "(site:github.com OR site:docs.rs) NOT site:pinterest.com"
+    )
+    assert (
+        wsi._build_site_filter(
+            "github.com, docs.rs", "pinterest.com", exclude_prefix="-site:"
+        )
+        == "(site:github.com OR site:docs.rs) -site:pinterest.com"
+    )
+    # Single include drops the OR-grouping; empty inputs yield an empty filter.
+    assert (
+        wsi._build_site_filter("github.com", "", exclude_prefix="-site:")
+        == "site:github.com"
+    )
+    assert wsi._build_site_filter("", "", exclude_prefix="-site:") == ""
