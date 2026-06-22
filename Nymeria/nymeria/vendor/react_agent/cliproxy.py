@@ -23,6 +23,11 @@ CLIPROXY_BILLING_SYSTEM_BLOCK: dict[str, str] = {
     "text": "x-anthropic-billing-header: cc_version=2.1.63.8f3; cc_entrypoint=cli; cch=54031;",
 }
 
+# Anthropic prompt-cache breakpoint marker. Single source of truth for both the
+# message-sanitization path (nodes.py) and the tool-payload injection path
+# (providers.py); copy it with dict(...) at each use site before mutating.
+CACHE_CONTROL_EPHEMERAL: dict[str, str] = {"type": "ephemeral"}
+
 
 def looks_like_cliproxy_url(base_url: str) -> bool:
     """Return True when *base_url* points at a CLIProxy instance.

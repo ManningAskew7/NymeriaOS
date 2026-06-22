@@ -29,6 +29,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 
 from .cliproxy import (
+    CACHE_CONTROL_EPHEMERAL as _CACHE_CONTROL_EPHEMERAL,
     CLIPROXY_ANTHROPIC_BETA_HEADER,
     CLIPROXY_CLAUDE_USER_AGENT,
     looks_like_cliproxy_url,
@@ -2466,9 +2467,6 @@ def _close_remaining_openai_async_http_pools_at_exit() -> None:
 
 atexit.register(_close_remaining_anthropic_async_http_pools_at_exit)
 atexit.register(_close_remaining_openai_async_http_pools_at_exit)
-
-
-_CACHE_CONTROL_EPHEMERAL: dict[str, str] = {"type": "ephemeral"}
 
 
 def _inject_tool_cache_control(payload: dict) -> None:

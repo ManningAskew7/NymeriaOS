@@ -12,7 +12,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, List, Literal, Optional, cast
 from langchain_core.callbacks.manager import (
     adispatch_custom_event,
@@ -27,7 +27,11 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from .cliproxy import CLIPROXY_BILLING_SYSTEM_BLOCK, looks_like_cliproxy_url
+from .cliproxy import (
+    CACHE_CONTROL_EPHEMERAL as _CACHE_CONTROL_EPHEMERAL,
+    CLIPROXY_BILLING_SYSTEM_BLOCK,
+    looks_like_cliproxy_url,
+)
 from .state import AgentState
 from .config import AgentConfig, LLMConfig, default_config
 from .providers import create_llm_with_tools
@@ -596,6 +600,103 @@ def _llm_candidate(
     return llm
 
 
+@dataclass
+class _RetryDecision:
+    """A single retry/fallback decision returned by `_RetryFallbackController`.
+
+    `action` is one of "raise", "retry", or "fallback". The remaining fields
+    carry everything a caller needs to perform the side effects (logging,
+    event dispatch, backoff sleep) for that decision. `payload` is the raw,
+    side-effect-free event payload; the fallback caller must still run it
+    through `_activate_llm_fallback` (which invokes the activation callback)
+    before dispatch, then call `commit_fallback` after dispatch.
+    """
+
+    action: str
+    candidate_index: int = 0
+    next_index: int = 0
+    attempt: int = 0
+    max_retries: int = 0
+    delay: float = 0.0
+    # Empty for "raise" decisions (never dispatched); populated for retry/fallback.
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+class _RetryFallbackController:
+    """Shared retry/fallback state machine for the sync and async agent nodes.
+
+    Owns the candidate index, retry-attempt counter, and the
+    retry-vs-fallback-vs-raise decision so the synchronous invoke path and the
+    asynchronous streaming path share one policy. The side effects (logging,
+    provider-event dispatch, backoff) stay caller-side because they differ
+    between sync and async (text, `time.sleep` vs `asyncio.sleep`, sync vs
+    awaited dispatch); only the decision logic and payload construction are
+    shared here.
+    """
+
+    def __init__(self, llm_config: Optional[LLMConfig]) -> None:
+        self.llm_config = llm_config
+        self.max_retries = _llm_max_retries(llm_config)
+        self.candidate_count = _llm_candidate_count(llm_config)
+        self.candidate_index = _llm_initial_candidate_index(llm_config)
+        self.retry_attempt = 0
+
+    def classify(self, exc: BaseException) -> _RetryDecision:
+        """Decide what to do about `exc`, advancing retry state as needed.
+
+        Increments the retry counter for a "retry" decision and builds the raw
+        (side-effect-free) event payloads. Does NOT advance the candidate index
+        or mark the active fallback for a "fallback" decision: the caller does
+        that via `commit_fallback` after it has logged and dispatched, so the
+        dispatch-before-mark ordering is preserved.
+        """
+        if not _is_retryable_llm_error(exc):
+            return _RetryDecision(action="raise")
+
+        if self.retry_attempt < self.max_retries:
+            self.retry_attempt += 1
+            delay = _llm_retry_delay(self.llm_config, self.retry_attempt)
+            payload = _llm_retry_payload(
+                self.llm_config,
+                self.candidate_index,
+                attempt=self.retry_attempt,
+                max_retries=self.max_retries,
+                delay=delay,
+                exc=exc,
+            )
+            return _RetryDecision(
+                action="retry",
+                candidate_index=self.candidate_index,
+                attempt=self.retry_attempt,
+                max_retries=self.max_retries,
+                delay=delay,
+                payload=payload,
+            )
+
+        if self.candidate_index + 1 >= self.candidate_count:
+            return _RetryDecision(action="raise")
+
+        next_index = self.candidate_index + 1
+        payload = _llm_fallback_payload(
+            self.llm_config,
+            self.candidate_index,
+            next_index,
+            exc=exc,
+        )
+        return _RetryDecision(
+            action="fallback",
+            candidate_index=self.candidate_index,
+            next_index=next_index,
+            payload=payload,
+        )
+
+    def commit_fallback(self, next_index: int) -> None:
+        """Activate the next candidate after a fallback has been dispatched."""
+        _mark_llm_fallback_active(self.llm_config, next_index)
+        self.candidate_index = next_index
+        self.retry_attempt = 0
+
+
 def _invoke_llm_with_retries(
     invoke: Callable[[BaseChatModel], AIMessage],
     llm_config: Optional[LLMConfig],
@@ -603,73 +704,49 @@ def _invoke_llm_with_retries(
     tools: Optional[List[BaseTool]],
     run_config: Any = None,
 ) -> AIMessage:
-    max_retries = _llm_max_retries(llm_config)
-    candidate_count = _llm_candidate_count(llm_config)
-    candidate_index = _llm_initial_candidate_index(llm_config)
-    retry_attempt = 0
+    controller = _RetryFallbackController(llm_config)
     candidate_cache = {0: primary_llm}
 
     while True:
         try:
             candidate = _llm_candidate(
                 primary_llm,
-                candidate_index=candidate_index,
+                candidate_index=controller.candidate_index,
                 llm_config=llm_config,
                 tools=tools,
                 cache=candidate_cache,
             )
             return invoke(candidate)
         except Exception as exc:
-            if not _is_retryable_llm_error(exc):
+            decision = controller.classify(exc)
+            if decision.action == "raise":
                 raise
 
-            if retry_attempt < max_retries:
-                retry_attempt += 1
-                delay = _llm_retry_delay(llm_config, retry_attempt)
+            if decision.action == "retry":
                 logger.warning(
                     "[LLM RETRY] transient sync call failure on %s; "
                     "retry %d/%d in %.2fs: %s",
-                    _llm_candidate_label(llm_config, candidate_index),
-                    retry_attempt,
-                    max_retries,
-                    delay,
+                    _llm_candidate_label(llm_config, decision.candidate_index),
+                    decision.attempt,
+                    decision.max_retries,
+                    decision.delay,
                     exc,
                 )
-                payload = _llm_retry_payload(
-                    llm_config,
-                    candidate_index,
-                    attempt=retry_attempt,
-                    max_retries=max_retries,
-                    delay=delay,
-                    exc=exc,
-                )
-                _dispatch_provider_event("provider_retry", payload, run_config)
-                if delay > 0:
-                    time.sleep(delay)
+                _dispatch_provider_event("provider_retry", decision.payload, run_config)
+                if decision.delay > 0:
+                    time.sleep(decision.delay)
                 continue
 
-            if candidate_index + 1 >= candidate_count:
-                raise
-
-            next_index = candidate_index + 1
             logger.warning(
                 "[LLM FALLBACK] transient sync call failure on %s after retries; "
                 "switching to %s: %s",
-                _llm_candidate_label(llm_config, candidate_index),
-                _llm_candidate_label(llm_config, next_index),
+                _llm_candidate_label(llm_config, decision.candidate_index),
+                _llm_candidate_label(llm_config, decision.next_index),
                 exc,
             )
-            payload = _llm_fallback_payload(
-                llm_config,
-                candidate_index,
-                next_index,
-                exc=exc,
-            )
-            payload = _activate_llm_fallback(llm_config, payload)
+            payload = _activate_llm_fallback(llm_config, decision.payload)
             _dispatch_provider_event("provider_fallback", payload, run_config)
-            _mark_llm_fallback_active(llm_config, next_index)
-            candidate_index = next_index
-            retry_attempt = 0
+            controller.commit_fallback(decision.next_index)
 
     raise RuntimeError("LLM retry loop exited unexpectedly")
 
@@ -771,14 +848,6 @@ def _current_turn_messages(messages: List[BaseMessage]) -> List[BaseMessage]:
     return current_turn
 
 
-def _count_current_turn_tool_calls(messages: List[BaseMessage]) -> int:
-    return sum(
-        len(msg.tool_calls)
-        for msg in _current_turn_messages(messages)
-        if isinstance(msg, AIMessage) and msg.tool_calls
-    )
-
-
 def _completed_tool_exchanges(
     current_turn_messages: List[BaseMessage],
 ) -> List[_CompletedToolExchange]:
@@ -820,7 +889,15 @@ def analyze_turn_safety(
     last N completed tool exchanges used the same tool args and returned the
     same exact normalized result, and the model asks for that same call again.
     """
-    tool_call_count = _count_current_turn_tool_calls(messages)
+    # Compute the current-turn slice once and reuse it for the tool-call count
+    # and the completed-exchange walk below (the router runs after every step,
+    # so avoid re-walking the slice three times per call).
+    current_turn = _current_turn_messages(messages)
+    tool_call_count = sum(
+        len(msg.tool_calls)
+        for msg in current_turn
+        if isinstance(msg, AIMessage) and msg.tool_calls
+    )
     result = TurnSafetyResult(
         should_stop=False,
         tool_call_count=tool_call_count,
@@ -845,7 +922,6 @@ def analyze_turn_safety(
     if repeated_tool_result_limit <= 0:
         return result
 
-    current_turn = _current_turn_messages(messages)
     prior_messages = current_turn[:-1] if current_turn and current_turn[-1] is last_message else current_turn
     completed_exchanges = _completed_tool_exchanges(prior_messages)
     if not completed_exchanges:
@@ -889,9 +965,6 @@ def _uses_direct_anthropic(llm_config: Optional[LLMConfig]) -> bool:
     if not llm_config or llm_config.provider != "anthropic":
         return False
     return not _uses_cliproxy_anthropic(llm_config)
-
-
-_CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
 
 
 def _format_system_prompt(
@@ -1213,17 +1286,14 @@ def create_agent_node(
         reasoning_chars = 0
         tool_call_chunk_events = 0
 
-        max_retries = _llm_max_retries(llm_config)
-        candidate_count = _llm_candidate_count(llm_config)
-        candidate_index = _llm_initial_candidate_index(llm_config)
-        retry_attempt = 0
+        controller = _RetryFallbackController(llm_config)
         candidate_cache = {0: llm_with_tools}
         while True:
             chunks_this_attempt = 0
             try:
                 candidate = _llm_candidate(
                     llm_with_tools,
-                    candidate_index=candidate_index,
+                    candidate_index=controller.candidate_index,
                     llm_config=llm_config,
                     tools=tools,
                     cache=candidate_cache,
@@ -1284,72 +1354,52 @@ def create_agent_node(
                 if chunks_this_attempt > 0:
                     try:
                         setattr(exc, "nymeria_stream_chunks_before_error", chunks_this_attempt)
-                        setattr(exc, "nymeria_stream_candidate_index", candidate_index)
-                        setattr(exc, "nymeria_stream_candidate_label", _llm_candidate_label(llm_config, candidate_index))
+                        setattr(exc, "nymeria_stream_candidate_index", controller.candidate_index)
+                        setattr(exc, "nymeria_stream_candidate_label", _llm_candidate_label(llm_config, controller.candidate_index))
                     except Exception:
                         logger.debug("Failed to annotate streaming exception", exc_info=True)
                     logger.warning(
                         "[LLM RETRY] stream failed after %d chunk(s) on %s; "
                         "not retrying to avoid duplicated output: %s",
                         chunks_this_attempt,
-                        _llm_candidate_label(llm_config, candidate_index),
+                        _llm_candidate_label(llm_config, controller.candidate_index),
                         exc,
                     )
                     raise
-                if not _is_retryable_llm_error(exc):
+
+                decision = controller.classify(exc)
+                if decision.action == "raise":
                     raise
 
-                if retry_attempt < max_retries:
-                    retry_attempt += 1
-                    delay = _llm_retry_delay(llm_config, retry_attempt)
+                if decision.action == "retry":
                     logger.warning(
                         "[LLM RETRY] transient stream failure before chunks on %s; "
                         "retry %d/%d in %.2fs: %s",
-                        _llm_candidate_label(llm_config, candidate_index),
-                        retry_attempt,
-                        max_retries,
-                        delay,
+                        _llm_candidate_label(llm_config, decision.candidate_index),
+                        decision.attempt,
+                        decision.max_retries,
+                        decision.delay,
                         exc,
-                    )
-                    payload = _llm_retry_payload(
-                        llm_config,
-                        candidate_index,
-                        attempt=retry_attempt,
-                        max_retries=max_retries,
-                        delay=delay,
-                        exc=exc,
                     )
                     await _adispatch_provider_event(
                         "provider_retry",
-                        payload,
+                        decision.payload,
                         config,
                     )
-                    if delay > 0:
-                        await asyncio.sleep(delay)
+                    if decision.delay > 0:
+                        await asyncio.sleep(decision.delay)
                     continue
 
-                if candidate_index + 1 >= candidate_count:
-                    raise
-
-                next_index = candidate_index + 1
                 logger.warning(
                     "[LLM FALLBACK] transient stream failure before chunks on %s "
                     "after retries; switching to %s: %s",
-                    _llm_candidate_label(llm_config, candidate_index),
-                    _llm_candidate_label(llm_config, next_index),
+                    _llm_candidate_label(llm_config, decision.candidate_index),
+                    _llm_candidate_label(llm_config, decision.next_index),
                     exc,
                 )
-                payload = _llm_fallback_payload(
-                    llm_config,
-                    candidate_index,
-                    next_index,
-                    exc=exc,
-                )
-                payload = _activate_llm_fallback(llm_config, payload)
+                payload = _activate_llm_fallback(llm_config, decision.payload)
                 await _adispatch_provider_event("provider_fallback", payload, config)
-                _mark_llm_fallback_active(llm_config, next_index)
-                candidate_index = next_index
-                retry_attempt = 0
+                controller.commit_fallback(decision.next_index)
 
         logger.info(
             "[LLM STREAM] async_complete chunks=%d text_chunks=%d text_chars=%d "

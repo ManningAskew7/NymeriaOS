@@ -139,7 +139,7 @@ def _get_shared_sqlite_saver(db_path: str) -> SqliteSaver:
         _shared_sqlite_saver.setup()
         logger.info(f"[CHECKPOINT] Created SqliteSaver id={id(_shared_sqlite_saver)} for {db_path}")
     else:
-        logger.info(f"[CHECKPOINT] Reusing SqliteSaver id={id(_shared_sqlite_saver)}")
+        logger.debug(f"[CHECKPOINT] Reusing SqliteSaver id={id(_shared_sqlite_saver)}")
 
     return _shared_sqlite_saver
 
@@ -159,7 +159,7 @@ def _get_async_sqlite_wrapper(db_path: str) -> AsyncCheckpointSaverWrapper:
         _async_sqlite_wrapper = AsyncCheckpointSaverWrapper(sync_saver, "SQLite")
         logger.info(f"[CHECKPOINT] Created AsyncWrapper id={id(_async_sqlite_wrapper)} wrapping SqliteSaver id={id(sync_saver)}")
     else:
-        logger.info(f"[CHECKPOINT] Reusing AsyncWrapper id={id(_async_sqlite_wrapper)}")
+        logger.debug(f"[CHECKPOINT] Reusing AsyncWrapper id={id(_async_sqlite_wrapper)}")
 
     return _async_sqlite_wrapper
 
@@ -350,11 +350,11 @@ def create_graph(
     if checkpointer is None:
         checkpointer = create_checkpointer(config.checkpointer)
 
-    logger.info(f"[CHECKPOINT] Compiling graph with {type(checkpointer).__name__} id={id(checkpointer)}")
+    logger.debug(f"[CHECKPOINT] Compiling graph with {type(checkpointer).__name__} id={id(checkpointer)}")
 
     # Compile with recursion limit
     compiled = graph.compile(
         checkpointer=checkpointer,
     )
-    logger.info(f"[CHECKPOINT] Graph compiled, checkpointer={type(compiled.checkpointer).__name__ if compiled.checkpointer else 'None'}")
+    logger.debug(f"[CHECKPOINT] Graph compiled, checkpointer={type(compiled.checkpointer).__name__ if compiled.checkpointer else 'None'}")
     return compiled
