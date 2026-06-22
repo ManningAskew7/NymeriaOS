@@ -325,20 +325,15 @@ def create_mcp_servers_router(
         # admin acting on behalf of a user (or just typo'ing a thread ID) shouldn't
         # be able to mutate a thread the caller doesn't own.
         if thread_id and discovered:
-            require_thread_access_fn(user, thread_id)
-            from ...core.thread_config import ThreadConfig
-
-            tc = agent.thread_config_manager.get_config(thread_id)
-            enabled_tools = list(tc.enabled_tools) if tc and tc.enabled_tools else []
-            for dt in discovered:
-                tool_name = format_mcp_tool_name(request.id, dt.name)
-                if tool_name not in enabled_tools:
-                    enabled_tools.append(tool_name)
-            if tc is None:
-                tc = ThreadConfig(thread_id=thread_id)
-            tc.enabled_tools = enabled_tools
-            agent.thread_config_manager.save_config(tc)
-            agent.invalidate_thread_config_cache(thread_id)
+            _attach_mcp_tools_to_thread(
+                get_agent_fn=get_agent_fn,
+                require_thread_access_fn=require_thread_access_fn,
+                user=user,
+                thread_id=thread_id,
+                tool_names=[
+                    format_mcp_tool_name(request.id, dt.name) for dt in discovered
+                ],
+            )
 
         saved_server = registry.get_server(request.id)
         if saved_server is None:

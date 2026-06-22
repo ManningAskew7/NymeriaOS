@@ -93,151 +93,64 @@ def _env_mapping() -> dict[str, str]:
     return server_settings_env_mapping()
 
 
-def _restart_required_keys() -> set[str]:
+# Settings that persist immediately but require a process restart to apply.
+# Module-level constants (F9): built once at import rather than rebuilt on
+# every request. The accessor functions are retained because CommandService
+# imports `_env_categories`/`_secret_keys` by name. Treat the returned
+# structures as read-only; callers only iterate / membership-test them.
+_RESTART_REQUIRED_KEYS: frozenset[str] = frozenset({
+    "redis_url",
+    "redis_enabled",
+    "postgres_uri",
+    "nymeria_data_dir",
+    "discord_bot_token",
+    "discord_webhook_url",
+    "telegram_bot_token",
+    "telegram_default_chat_id",
+    # The embedder is baked into each cached MemoryIndex at construction, and a
+    # dimension change also needs `nymeria reembed`, so these need a restart.
+    "embedding_provider",
+    "embedding_model",
+    "embedding_dimensions",
+})
+
+
+def _restart_required_keys() -> frozenset[str]:
     """Settings that persist immediately but require process restart to apply."""
-    return {
-        "redis_url",
-        "redis_enabled",
-        "postgres_uri",
-        "nymeria_data_dir",
-        "discord_bot_token",
-        "discord_webhook_url",
-        "telegram_bot_token",
-        "telegram_default_chat_id",
-        # The embedder is baked into each cached MemoryIndex at construction, and a
-        # dimension change also needs `nymeria reembed`, so these need a restart.
-        "embedding_provider",
-        "embedding_model",
-        "embedding_dimensions",
-    }
+    return _RESTART_REQUIRED_KEYS
 
 
-def _env_categories() -> dict[str, list[str]]:
-    """Return grouped admin environment entries for GET /settings/env."""
-    return {
-        "LLM": [
-            "llm_provider",
-            "llm_model",
-            "llm_fast_model",
-            "llm_smart_model",
-            "llm_background_model",
-            "llm_background_base_url",
-            "llm_fallback_models",
-            "llm_temperature",
-            "llm_max_tokens",
-            "llm_top_p",
-            "llm_top_k",
-            "llm_frequency_penalty",
-            "llm_presence_penalty",
-            "llm_reasoning_effort",
-            "llm_extended_thinking",
-            "dynamic_tool_binding",
-            "llm_use_model_defaults",
-            "llm_base_url",
-            "llm_context_length",
-            "llm_ollama_num_ctx",
-            "llm_provider_route",
-            "openai_api_mode",
-            "llm_stream_max_retries",
-            "llm_stream_retry_initial_delay",
-            "llm_stream_retry_max_delay",
-            "llm_fallback_hold_seconds",
-            "cliproxy_management_url",
-        ],
-        "API Keys": [
-            "cliproxy_management_key",
-            "openai_api_key",
-            "anthropic_api_key",
-            "anthropic_direct_api_key",
-            "openrouter_api_key",
-            "embedding_api_key",
-            "perplexity_api_key",
-            "perplexity_search_model",
-            "gemini_api_key",
-            "gemini_extraction_model",
-        ],
-        "Context": [
-            "context_management",
-            "compact_threshold",
-            "compact_threshold_mode",
-            "compact_threshold_tokens",
-            "compact_keep_messages",
-            "compact_model",
-            "sliding_window_cycles",
-            "memory_char_limit",
-            "memory_max_entries",
-            "memory_value_max_chars",
-        ],
-        "System": [
-            "log_level",
-            "watchdog_enabled",
-            "watchdog_interval_minutes",
-            "user_timezone",
-            "nymeria_data_dir",
-            "tool_timeout",
-            "tool_output_max_chars",
-            "agent_max_iterations",
-            "lock_timeout",
-        ],
-        "Tasks": [
-            "ticker_poll_interval",
-            "max_concurrent_autonomous",
-            "todo_staleness_minutes",
-            "todo_auto_archive_days",
-            "activity_retention_hours",
-        ],
-        "Voice": [
-            "tts_provider",
-            "tts_base_url",
-            "tts_api_key",
-            "tts_model",
-            "tts_voice",
-            "tts_output_format",
-            "tts_speed",
-            "stt_provider",
-            "stt_base_url",
-            "stt_api_key",
-            "groq_api_key",
-            "stt_model",
-            "stt_language",
-            "voice_default_thread_id",
-        ],
-        "Infrastructure": [
-            "redis_url",
-            "redis_enabled",
-            "postgres_uri",
-        ],
-        "Discord": [
-            "discord_bot_token",
-            "discord_webhook_url",
-        ],
-        "Telegram": [
-            "telegram_bot_token",
-            "telegram_default_chat_id",
-        ],
-        "Twitch": [
-            "twitch_client_id",
-            "twitch_client_secret",
-            "twitch_bot_access_token",
-            "twitch_bot_refresh_token",
-            "twitch_bot_user_id",
-            "twitch_broadcaster_token",
-            "twitch_broadcaster_refresh_token",
-            "twitch_channel",
-            "twitch_system_prompt",
-            "twitch_buffer_size",
-            "twitch_pulse_enabled",
-            "twitch_pulse_interval",
-            "twitch_respond_mode",
-        ],
-    }
-
-
-def _secret_keys() -> set[str]:
-    """Settings that should be masked in GET /settings/env."""
-    return {
-        # No _SECRET_KEY_SUFFIXES entry matches the bare *_key here, so the
-        # CLIProxy remote-management secret needs an explicit allowlist row.
+_ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "LLM": (
+        "llm_provider",
+        "llm_model",
+        "llm_fast_model",
+        "llm_smart_model",
+        "llm_background_model",
+        "llm_background_base_url",
+        "llm_fallback_models",
+        "llm_temperature",
+        "llm_max_tokens",
+        "llm_top_p",
+        "llm_top_k",
+        "llm_frequency_penalty",
+        "llm_presence_penalty",
+        "llm_reasoning_effort",
+        "llm_extended_thinking",
+        "dynamic_tool_binding",
+        "llm_use_model_defaults",
+        "llm_base_url",
+        "llm_context_length",
+        "llm_ollama_num_ctx",
+        "llm_provider_route",
+        "openai_api_mode",
+        "llm_stream_max_retries",
+        "llm_stream_retry_initial_delay",
+        "llm_stream_retry_max_delay",
+        "llm_fallback_hold_seconds",
+        "cliproxy_management_url",
+    ),
+    "API Keys": (
         "cliproxy_management_key",
         "openai_api_key",
         "anthropic_api_key",
@@ -245,44 +158,145 @@ def _secret_keys() -> set[str]:
         "openrouter_api_key",
         "embedding_api_key",
         "perplexity_api_key",
+        "perplexity_search_model",
         "gemini_api_key",
+        "gemini_extraction_model",
+    ),
+    "Context": (
+        "context_management",
+        "compact_threshold",
+        "compact_threshold_mode",
+        "compact_threshold_tokens",
+        "compact_keep_messages",
+        "compact_model",
+        "sliding_window_cycles",
+        "memory_char_limit",
+        "memory_max_entries",
+        "memory_value_max_chars",
+    ),
+    "System": (
+        "log_level",
+        "watchdog_enabled",
+        "watchdog_interval_minutes",
+        "user_timezone",
+        "nymeria_data_dir",
+        "tool_timeout",
+        "tool_output_max_chars",
+        "agent_max_iterations",
+        "lock_timeout",
+    ),
+    "Tasks": (
+        "ticker_poll_interval",
+        "max_concurrent_autonomous",
+        "todo_staleness_minutes",
+        "todo_auto_archive_days",
+        "activity_retention_hours",
+    ),
+    "Voice": (
+        "tts_provider",
+        "tts_base_url",
+        "tts_api_key",
+        "tts_model",
+        "tts_voice",
+        "tts_output_format",
+        "tts_speed",
+        "stt_provider",
+        "stt_base_url",
+        "stt_api_key",
+        "groq_api_key",
+        "stt_model",
+        "stt_language",
+        "voice_default_thread_id",
+    ),
+    "Infrastructure": (
+        "redis_url",
+        "redis_enabled",
+        "postgres_uri",
+    ),
+    "Discord": (
         "discord_bot_token",
         "discord_webhook_url",
+    ),
+    "Telegram": (
         "telegram_bot_token",
+        "telegram_default_chat_id",
+    ),
+    "Twitch": (
+        "twitch_client_id",
         "twitch_client_secret",
         "twitch_bot_access_token",
         "twitch_bot_refresh_token",
+        "twitch_bot_user_id",
         "twitch_broadcaster_token",
         "twitch_broadcaster_refresh_token",
-        "slack_bot_token",
-        "slack_app_token",
-        "matrix_access_token",
-        "matrix_password",
-        "mattermost_access_token",
-        "zulip_api_key",
-        "rocketchat_auth_token",
-        "webex_access_token",
-        "webex_webhook_secret",
-        "whatsapp_access_token",
-        "whatsapp_webhook_verify_token",
-        "whatsapp_app_secret",
-        "messenger_page_access_token",
-        "messenger_webhook_verify_token",
-        "messenger_app_secret",
-        "instagram_access_token",
-        "instagram_webhook_verify_token",
-        "instagram_app_secret",
-        "teams_bot_app_password",
-        "google_chat_service_account_json",
-        "line_channel_access_token",
-        "line_channel_secret",
-        "microsoft_graph_access_token",
-        "postgres_uri",
-        "redis_url",
-        "tts_api_key",
-        "stt_api_key",
-        "fcm_credentials_json",
-    }
+        "twitch_channel",
+        "twitch_system_prompt",
+        "twitch_buffer_size",
+        "twitch_pulse_enabled",
+        "twitch_pulse_interval",
+        "twitch_respond_mode",
+    ),
+}
+
+
+def _env_categories() -> dict[str, tuple[str, ...]]:
+    """Return grouped admin environment entries for GET /settings/env."""
+    return _ENV_CATEGORIES
+
+
+_SECRET_KEYS: frozenset[str] = frozenset({
+    # No _SECRET_KEY_SUFFIXES entry matches the bare *_key here, so the
+    # CLIProxy remote-management secret needs an explicit allowlist row.
+    "cliproxy_management_key",
+    "openai_api_key",
+    "anthropic_api_key",
+    "anthropic_direct_api_key",
+    "openrouter_api_key",
+    "embedding_api_key",
+    "perplexity_api_key",
+    "gemini_api_key",
+    "discord_bot_token",
+    "discord_webhook_url",
+    "telegram_bot_token",
+    "twitch_client_secret",
+    "twitch_bot_access_token",
+    "twitch_bot_refresh_token",
+    "twitch_broadcaster_token",
+    "twitch_broadcaster_refresh_token",
+    "slack_bot_token",
+    "slack_app_token",
+    "matrix_access_token",
+    "matrix_password",
+    "mattermost_access_token",
+    "zulip_api_key",
+    "rocketchat_auth_token",
+    "webex_access_token",
+    "webex_webhook_secret",
+    "whatsapp_access_token",
+    "whatsapp_webhook_verify_token",
+    "whatsapp_app_secret",
+    "messenger_page_access_token",
+    "messenger_webhook_verify_token",
+    "messenger_app_secret",
+    "instagram_access_token",
+    "instagram_webhook_verify_token",
+    "instagram_app_secret",
+    "teams_bot_app_password",
+    "google_chat_service_account_json",
+    "line_channel_access_token",
+    "line_channel_secret",
+    "microsoft_graph_access_token",
+    "postgres_uri",
+    "redis_url",
+    "tts_api_key",
+    "stt_api_key",
+    "fcm_credentials_json",
+})
+
+
+def _secret_keys() -> frozenset[str]:
+    """Settings that should be masked in GET /settings/env."""
+    return _SECRET_KEYS
 
 
 # Name suffixes that mark a settings key as credential-bearing. Used so any
@@ -326,7 +340,7 @@ def _is_secret_setting_key(key: str) -> bool:
     to extend the allowlist.
     """
     k = key.lower()
-    if k in _secret_keys():
+    if k in _SECRET_KEYS:
         return True
     return k.endswith(_SECRET_KEY_SUFFIXES)
 
@@ -1380,8 +1394,27 @@ def create_settings_router(
                     ),
                 })
             return result
+        except httpx.HTTPStatusError as e:
+            # Distinguish provider-side rejections (e.g. 401 bad key, 404 wrong
+            # endpoint) from transport failures so the log is actionable. The
+            # response contract stays "[] == no models" for the frontend.
+            logger.warning(
+                "Model fetch from %s returned HTTP %s: %s",
+                models_url,
+                e.response.status_code,
+                e,
+            )
+            return []
+        except httpx.HTTPError as e:
+            logger.warning("Model fetch from %s failed (transport): %s", models_url, e)
+            return []
         except Exception as e:
-            logger.warning("Failed to fetch models from %s: %s", models_url, e)
+            logger.error(
+                "Unexpected error fetching models from %s: %s",
+                models_url,
+                e,
+                exc_info=True,
+            )
             return []
 
     return router

@@ -10,14 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from ...core.accounts import AuthenticatedUser
 from ...core.custom_tools import get_custom_tool_loader, reload_custom_tools
 from ...core.time_utils import utc_now
-from ...tools.definitions.custom_tool_schema import CustomToolDefinition
 from ..schemas.custom_tools import (
     CustomToolCreateRequest,
     CustomToolUpdateRequest,
-    http_config_to_core,
-    mcp_config_to_core,
-    python_config_to_core,
-    tool_parameters_to_core,
+    apply_custom_tool_update,
+    build_custom_tool_definition,
 )
 from ..schemas.unified_tools import (
     UnifiedToolConfigRequest,
@@ -361,43 +358,7 @@ def create_unified_tools_router(
                 detail=f"Tool '{request.id}' already exists",
             )
 
-        http_config = None
-        mcp_config = None
-        python_config = None
-        if request.implementation_type == "http":
-            if not request.http_config:
-                raise HTTPException(
-                    status_code=400,
-                    detail="http_config is required for HTTP tools",
-                )
-            http_config = http_config_to_core(request.http_config)
-        elif request.implementation_type == "mcp":
-            if not request.mcp_config:
-                raise HTTPException(
-                    status_code=400,
-                    detail="mcp_config is required for MCP tools",
-                )
-            mcp_config = mcp_config_to_core(request.mcp_config)
-        elif request.implementation_type == "python":
-            if not request.python_config:
-                raise HTTPException(
-                    status_code=400,
-                    detail="python_config is required for Python tools",
-                )
-            python_config = python_config_to_core(request.python_config)
-
-        definition = CustomToolDefinition(
-            id=request.id,
-            name=request.name,
-            description=request.description,
-            parameters=tool_parameters_to_core(request.parameters or {}),
-            implementation_type=request.implementation_type,
-            http_config=http_config,
-            mcp_config=mcp_config,
-            python_config=python_config,
-            enabled=request.enabled,
-            tags=request.tags,
-        )
+        definition = build_custom_tool_definition(request)
 
         loader.save_definition(definition)
         get_agent_fn().reload_tools()
@@ -427,22 +388,7 @@ def create_unified_tools_router(
                 detail=f"Tool '{tool_id}' not found",
             )
 
-        if request.name is not None:
-            definition.name = request.name
-        if request.description is not None:
-            definition.description = request.description
-        if request.parameters is not None:
-            definition.parameters = tool_parameters_to_core(request.parameters)
-        if request.http_config is not None and definition.implementation_type == "http":
-            definition.http_config = http_config_to_core(request.http_config)
-        if request.mcp_config is not None and definition.implementation_type == "mcp":
-            definition.mcp_config = mcp_config_to_core(request.mcp_config)
-        if request.python_config is not None and definition.implementation_type == "python":
-            definition.python_config = python_config_to_core(request.python_config)
-        if request.enabled is not None:
-            definition.enabled = request.enabled
-        if request.tags is not None:
-            definition.tags = request.tags
+        apply_custom_tool_update(definition, request)
 
         loader.save_definition(definition)
         get_agent_fn().reload_tools()
