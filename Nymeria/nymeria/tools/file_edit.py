@@ -15,7 +15,7 @@ from typing import Any, Literal, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, ValidationError
 
-from .filesystem import NYMERIA_PROTECTED_DIRS, _NYMERIA_ROOT, resolve_workspace_write_path
+from .filesystem import protected_path_error, resolve_workspace_write_path
 
 logger = logging.getLogger(__name__)
 
@@ -118,24 +118,6 @@ def _error_result(
     if original_sha256 is not None:
         result["original_sha256"] = original_sha256
     return _json_result(**result)
-
-
-def _protected_write_error(path: Path) -> Optional[str]:
-    try:
-        rel_path = path.relative_to(_NYMERIA_ROOT)
-        rel_path_str = str(rel_path).replace("\\", "/")
-
-        for protected in NYMERIA_PROTECTED_DIRS:
-            if rel_path_str.startswith(protected) or rel_path_str == protected:
-                logger.warning("Blocked edit to protected path: %s", rel_path_str)
-                return (
-                    f"Cannot modify protected system file: {rel_path_str}\n"
-                    f"Protected directories: {', '.join(NYMERIA_PROTECTED_DIRS)}\n"
-                    f"Use self_modify() to modify tools or agents instead."
-                )
-    except ValueError:
-        pass  # not a valid integer, skip
-    return None
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -420,7 +402,7 @@ def file_edit(
             )
         assert path is not None
 
-        protected_error = _protected_write_error(path)
+        protected_error = protected_path_error(path)
         if protected_error:
             return _error_result(
                 "protected_path",

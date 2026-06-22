@@ -216,6 +216,20 @@ def test_file_edit_rejects_protected_nymeria_paths(monkeypatch):
     assert result["error"]["type"] == "protected_path"
 
 
+def test_file_write_rejects_protected_nymeria_paths(monkeypatch):
+    # file_write and file_edit must enforce the same protected-dir policy via the
+    # shared filesystem.protected_path_error helper.
+    project_root = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(project_root))
+    protected_path = project_root / "nymeria" / "core" / "agent.py"
+
+    result = file_write.func(str(protected_path), "should not be written")
+
+    assert result.startswith("[Error]:")
+    assert "Cannot modify protected system file" in result
+    assert "nymeria/core/agent.py" in result
+
+
 def test_file_edit_rejects_paths_outside_workspace_when_enabled(tmp_path, monkeypatch):
     monkeypatch.setattr(
         filesystem,

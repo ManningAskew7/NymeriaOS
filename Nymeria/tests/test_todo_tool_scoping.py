@@ -149,6 +149,36 @@ def test_nym_todo_recurring_done_preserves_scheduled_anchor(
     assert updated.last_execution == scheduled_anchor
 
 
+def test_todo_complete_internal_reschedules_recurring(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The MCP completion path shares _advance_recurring_done with the nym_todo
+    update path, so a recurring TODO completed via _todo_complete_internal is
+    rescheduled to the next slot with last_execution stamped to the prior slot."""
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+    scheduled_anchor = utc_now() - timedelta(minutes=3)
+
+    with manager.atomic_update("owner") as todo_list:
+        recurring = todo_list.add_item(
+            "Recurring task",
+            scheduled_for=scheduled_anchor,
+            thread_id="thread-a",
+            recurrence="2h",
+        )
+        assert recurring is not None
+
+    result = todo_tools._todo_complete_internal(recurring.id, "owner")
+
+    updated = manager.get_todos("owner").get_item(recurring.id)
+    assert result.startswith("[Completed]:")
+    assert "auto-rescheduled" in result.lower()
+    assert updated.status == TodoStatus.PENDING
+    assert updated.scheduled_for == scheduled_anchor + timedelta(hours=2)
+    assert updated.last_execution == scheduled_anchor
+
+
 def test_nym_todo_delete_cannot_remove_another_thread(
     tmp_path: Path,
     monkeypatch,

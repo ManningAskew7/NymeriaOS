@@ -90,12 +90,14 @@ def _build_thread_summary(entries: List[ActivityEntry]) -> str:
         lines.append(f"  TODOs: {', '.join(parts)}")
 
     if notifications:
-        platforms = []
+        # notify() records the delivered channels under "delivered_to"; surface
+        # them when present, otherwise fall back to a bare count.
+        channels = []
         for e in notifications:
-            if e.metadata and "platforms" in e.metadata:
-                platforms.extend(e.metadata["platforms"])
-        if platforms:
-            lines.append(f"  Notifications sent: {', '.join(platforms)}")
+            if e.metadata and e.metadata.get("delivered_to"):
+                channels.extend(e.metadata["delivered_to"])
+        if channels:
+            lines.append(f"  Notifications sent: {', '.join(channels)}")
         else:
             lines.append(f"  Notifications sent: {len(notifications)}")
 
