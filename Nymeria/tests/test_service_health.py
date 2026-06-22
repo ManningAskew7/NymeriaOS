@@ -46,3 +46,42 @@ def test_service_heartbeat_rejects_stale_timestamp(tmp_path, monkeypatch) -> Non
     errors = service_health.check_heartbeat("telegram-bot", max_age_seconds=30)
 
     assert any("heartbeat is stale" in error for error in errors)
+
+
+class _StubSettings:
+    def __init__(self, *, database_backend="sqlite", redis_enabled=False):
+        self.database_backend = database_backend
+        self.redis_enabled = redis_enabled
+        self.postgres_uri = None
+        self.redis_url = None
+
+
+def test_check_service_worker_loads_settings_once(monkeypatch) -> None:
+    calls = {"n": 0}
+
+    def _fake_load():
+        calls["n"] += 1
+        return _StubSettings()
+
+    monkeypatch.setattr(service_health, "_load_settings", _fake_load)
+    monkeypatch.setattr(service_health, "check_heartbeat", lambda *a, **k: [])
+
+    errors = service_health.check_service("worker")
+
+    assert errors == []
+    # Previously _check_postgres and _check_redis each loaded settings.
+    assert calls["n"] == 1
+
+
+def test_check_service_worker_reports_postgres_misconfig(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service_health,
+        "_load_settings",
+        lambda: _StubSettings(database_backend="postgres"),
+    )
+    monkeypatch.setattr(service_health, "check_heartbeat", lambda *a, **k: [])
+
+    errors = service_health.check_service("worker")
+
+    # Confirms the single shared settings object reaches _check_postgres.
+    assert any("POSTGRES_URI is unset" in error for error in errors)

@@ -189,8 +189,7 @@ def _load_settings():
     return get_settings()
 
 
-def _check_postgres(errors: list[str]) -> None:
-    settings = _load_settings()
+def _check_postgres(errors: list[str], settings) -> None:
     if settings.database_backend != "postgres":
         return
     if not settings.postgres_uri:
@@ -207,8 +206,7 @@ def _check_postgres(errors: list[str]) -> None:
         errors.append(f"postgres: SELECT 1 failed: {exc}")
 
 
-def _check_redis(errors: list[str]) -> None:
-    settings = _load_settings()
+def _check_redis(errors: list[str], settings) -> None:
     if not settings.redis_enabled:
         return
     if not settings.redis_url:
@@ -245,8 +243,9 @@ def check_service(
         errors.extend(check_heartbeat(service, max_age_seconds=max_age_seconds))
 
     if service == "worker":
-        _check_postgres(errors)
-        _check_redis(errors)
+        settings = _load_settings()
+        _check_postgres(errors, settings)
+        _check_redis(errors, settings)
 
     if service in {"watchdog", "discord-bot", "slack-bot", "matrix-bot", "telegram-bot", "mcp"}:
         _check_api(api_url or "http://nymeria-api:8000", errors)

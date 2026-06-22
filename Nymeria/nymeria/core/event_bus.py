@@ -85,6 +85,20 @@ class EventBus:
         counter[key] = counter.get(key, 0) + 1
         return counter[key]
 
+    def _prune_counter_keys(self, prefix: str) -> None:
+        """Drop per-subscriber diagnostic counter keys with ``prefix``.
+
+        The enqueue/drop counters are keyed ``f"{sub_id}:{event_type}"`` (and,
+        in the Redis subclass, ``f"redis:{sub_id}:{event_type}"``), so without
+        pruning on unsubscribe they would grow without bound over the lifetime
+        of a long-running process as short-lived SSE subscribers come and go.
+        Caller must hold ``self._lock``. The publish counters are keyed by
+        event type only (bounded), so they are left alone.
+        """
+        for counter in (self._enqueue_counts, self._drop_counts):
+            for key in [k for k in counter if k.startswith(prefix)]:
+                del counter[key]
+
     def subscribe(self, subscriber_id: str) -> Queue:
         """
         Subscribe to autonomous events.
@@ -116,6 +130,9 @@ class EventBus:
             if subscriber_id in self._subscribers:
                 del self._subscribers[subscriber_id]
                 logger.info(f"[EVENT BUS] Subscriber disconnected: {subscriber_id[:8]}..., total: {len(self._subscribers)}")
+            # Always prune this subscriber's diagnostic counters, even if the
+            # queue was already gone, so the counter dicts can't leak.
+            self._prune_counter_keys(f"{subscriber_id}:")
 
     def publish(self, event: AutonomousEvent) -> None:
         """

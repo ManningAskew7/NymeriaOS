@@ -1,11 +1,16 @@
 """USD cost extraction and computation for LLM responses.
 
 Normalises provider-specific ``usage`` shapes into a single ``NormalizedUsage``
-dataclass, then applies the formula from
-``/home/nymeria/chat_completions_cost_spec.md`` §3 to get a USD figure.
+dataclass, then multiplies each token bucket by its per-token rate to get a USD
+figure: non-cached prompt tokens and completion tokens at the model's
+input/output rates (which switch to an above-200k tier for large prompts), plus
+cache-read and cache-write tokens at their discounted/premium rates
+where the provider reports them (``cached_tokens`` is a subset of
+``prompt_tokens``; ``reasoning_tokens`` a subset of ``completion_tokens``). If
+the provider reports its own cost, that value is preferred.
 
-Pure functions, no I/O. Provider response parsing happens here; rate lookup
-lives in :mod:`nymeria.config.pricing_table`.
+Pure functions, no I/O. Provider response parsing happens here; the per-token
+rates live in :mod:`nymeria.config.pricing_table`.
 """
 
 from __future__ import annotations
@@ -201,7 +206,7 @@ def compute_cost_usd(usage: NormalizedUsage, rates: Optional[ModelRates]) -> Opt
     Returns:
         - ``usage.provider_reported_cost_usd`` when the provider supplied a
           dollar figure (OpenRouter / Perplexity) -- treated as ground truth.
-        - The spec §3 cache-aware sum otherwise.
+        - The cache-aware per-bucket sum otherwise.
         - ``None`` when ``rates`` is None and no provider-reported cost.
     """
     if usage.provider_reported_cost_usd is not None:

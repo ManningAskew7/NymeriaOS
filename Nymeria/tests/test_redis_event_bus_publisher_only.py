@@ -156,6 +156,37 @@ def test_create_event_bus_propagates_enable_subscriber_false(fake_redis_module):
     bus.close()
 
 
+def test_unsubscribe_prunes_redis_local_dispatch_counters(fake_redis_module):
+    """RedisEventBus.unsubscribe must drop the redis:{sub}: counter keys that
+    _dispatch_local creates, which the base f"{sub}:" prune does not reach."""
+    from nymeria.core.event_bus import AutonomousEvent
+    from nymeria.core.event_bus_redis import RedisEventBus
+
+    with patch.object(RedisEventBus, "_start_subscriber"):
+        bus = RedisEventBus("redis://localhost:6379", enable_subscriber=False)
+
+    # A cross-process event with no local subscriber records a bounded,
+    # event-type-keyed "no_subscribers" drop counter.
+    event = AutonomousEvent(event_type="response", thread_id="t1", user_id="u1")
+    bus._dispatch_local(event)
+    assert any(k.startswith("redis:no_subscribers:") for k in bus._drop_counts)
+
+    # With a local subscriber, _dispatch_local enqueues and records a
+    # per-subscriber redis:{sub}: counter.
+    bus.subscribe("sub_x")
+    bus._dispatch_local(event)
+    assert any(k.startswith("redis:sub_x:") for k in bus._enqueue_counts)
+
+    bus.unsubscribe("sub_x")
+
+    # The per-subscriber redis counters are pruned; the bounded
+    # event-type-keyed no_subscribers counter survives.
+    assert not any(k.startswith("redis:sub_x:") for k in bus._enqueue_counts)
+    assert not any(k.startswith("redis:sub_x:") for k in bus._drop_counts)
+    assert any(k.startswith("redis:no_subscribers:") for k in bus._drop_counts)
+    bus.close()
+
+
 def test_create_event_bus_default_starts_subscriber(fake_redis_module):
     """create_event_bus default preserves the API's subscriber behavior."""
     from nymeria.core.event_bus import create_event_bus

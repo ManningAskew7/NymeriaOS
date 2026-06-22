@@ -32,10 +32,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+from .future_rendezvous import FutureRendezvous, safe_set_result
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +55,20 @@ class PendingCommand:
     created_at: float = field(default_factory=time.monotonic)
 
 
-class BrowserCommandCoordinator:
+class BrowserCommandCoordinator(FutureRendezvous[PendingCommand]):
     """Tracks in-flight browser commands keyed by ``command_id``."""
 
     def __init__(self) -> None:
-        self._commands: dict[str, PendingCommand] = {}
-        self._lock = threading.Lock()
-        self._sweep_task: Optional[asyncio.Task] = None
-        self._sweep_started = False
+        super().__init__(
+            ttl_seconds=_ORPHAN_TTL_SECONDS,
+            sweep_interval_seconds=_SWEEP_INTERVAL_SECONDS,
+            log_label="browser_command_coordinator",
+        )
+
+    @property
+    def _commands(self) -> dict[str, PendingCommand]:
+        """Read alias for the shared registry (kept for readability/tests)."""
+        return self._items
 
     def register(
         self,
@@ -83,34 +90,13 @@ class BrowserCommandCoordinator:
             future=future,
             metadata=metadata or {},
         )
-        with self._lock:
-            self._commands[command_id] = command
-        self._start_sweep_locked()
+        self._add(command_id, command)
         return future
-
-    def get(self, command_id: str) -> Optional[PendingCommand]:
-        with self._lock:
-            return self._commands.get(command_id)
 
     def resolve(self, command_id: str, result: dict[str, Any]) -> bool:
         """Wake the tool with ``result``. Returns False if there's nothing to
         wake (already resolved, swept, or never registered)."""
-        with self._lock:
-            command = self._commands.pop(command_id, None)
-        if command is None:
-            return False
-        future = command.future
-        if future.done():
-            return False
-        future.get_loop().call_soon_threadsafe(_safe_set_result, future, result)
-        return True
-
-    def discard(self, command_id: str) -> None:
-        """Remove a command without resolving its future. Use after a
-        tool-side timeout, when the tool has already returned the timeout
-        error."""
-        with self._lock:
-            self._commands.pop(command_id, None)
+        return self._resolve(command_id, lambda command: result)
 
     def abort_thread(self, thread_id: str) -> int:
         """Resolve every pending command for ``thread_id`` with
@@ -120,21 +106,14 @@ class BrowserCommandCoordinator:
         ``POST /threads/{id}/stop`` snaps awaiting browser tools back
         immediately instead of waiting for their per-command timeout.
         """
-        with self._lock:
-            matched = [
-                cmd
-                for cmd_id, cmd in list(self._commands.items())
-                if cmd.thread_id == thread_id
-            ]
-            for cmd in matched:
-                self._commands.pop(cmd.command_id, None)
+        matched = self._drain_matching(lambda cmd: cmd.thread_id == thread_id)
         aborted = 0
         for cmd in matched:
             future = cmd.future
             if future.done():
                 continue
             future.get_loop().call_soon_threadsafe(
-                _safe_set_result,
+                safe_set_result,
                 future,
                 {"ok": False, "status": "aborted", "error": "thread aborted"},
             )
@@ -147,60 +126,19 @@ class BrowserCommandCoordinator:
             )
         return aborted
 
-    def pending_count(self) -> int:
-        with self._lock:
-            return len(self._commands)
+    def _swept_result(self, record: PendingCommand) -> dict[str, Any]:
+        return {"ok": False, "status": "swept", "error": "command orphaned"}
 
-    def _start_sweep_locked(self) -> None:
-        if self._sweep_started:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._sweep_started = True
-        self._sweep_task = loop.create_task(self._sweep_forever())
-
-    async def _sweep_forever(self) -> None:
-        while True:
-            try:
-                await asyncio.sleep(_SWEEP_INTERVAL_SECONDS)
-                self._sweep_once()
-            except asyncio.CancelledError:
-                return
-            except Exception:
-                logger.exception("browser_command_coordinator sweep failed")
-
-    def _sweep_once(self) -> None:
-        cutoff = time.monotonic() - _ORPHAN_TTL_SECONDS
-        orphans: list[PendingCommand] = []
-        with self._lock:
-            for command_id in list(self._commands.keys()):
-                if self._commands[command_id].created_at < cutoff:
-                    orphans.append(self._commands.pop(command_id))
-        for orphan in orphans:
-            future = orphan.future
-            if future.done():
-                continue
-            logger.warning(
-                "browser_command_coordinator swept orphaned command %s "
-                "(type=%s, user=%s, thread=%s, age>%ds)",
-                orphan.command_id,
-                orphan.command_type,
-                orphan.user_id,
-                orphan.thread_id,
-                _ORPHAN_TTL_SECONDS,
-            )
-            future.get_loop().call_soon_threadsafe(
-                _safe_set_result,
-                future,
-                {"ok": False, "status": "swept", "error": "command orphaned"},
-            )
-
-
-def _safe_set_result(future: asyncio.Future, value: Any) -> None:
-    if not future.done():
-        future.set_result(value)
+    def _on_orphan_swept(self, record: PendingCommand) -> None:
+        logger.warning(
+            "browser_command_coordinator swept orphaned command %s "
+            "(type=%s, user=%s, thread=%s, age>%ds)",
+            record.command_id,
+            record.command_type,
+            record.user_id,
+            record.thread_id,
+            self._ttl_seconds,
+        )
 
 
 _coordinator: Optional[BrowserCommandCoordinator] = None
