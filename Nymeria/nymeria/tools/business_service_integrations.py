@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 from typing import Annotated, Any, Optional
@@ -10,6 +9,15 @@ from urllib.parse import quote, urlparse
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
+
+from .service_integration_base import (
+    base_url as _base_url,
+    basic_auth as _basic_auth,
+    credential_value as _credential_value,
+    dump_json,
+    settings_value as _settings_value,
+    setup_hint as _setup_hint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +37,7 @@ _PHANTOMBUSTER_BASE_URL = "https://api.phantombuster.com/api/v2"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
-    text = json.dumps(data, indent=2, ensure_ascii=False, default=str)
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+    return dump_json(data, max_chars=max_chars)
 
 
 def _split_csv(value: str) -> list[str]:
@@ -84,69 +89,11 @@ def _limit(value: int, *, default: int = 20, max_value: int = 100) -> int:
         return default
 
 
-def _base_url(value: str) -> str:
-    parsed = urlparse(value.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("base URL must be an absolute http(s) URL")
-    from ..core.http_policy import validate_http_egress_url
-
-    return validate_http_egress_url(value.strip().rstrip("/"), label="base URL", resolve_dns=False)
-
-
 def _absolute_url(value: str, *, field_name: str = "url") -> str:
     parsed = urlparse(value.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"{field_name} must be an absolute http(s) URL")
     return value.strip()
-
-
-def _basic_auth(username: str, password: str = "") -> str:
-    return base64.b64encode(f"{username}:{password}".encode()).decode()
-
-
-def _settings_value(name: str) -> Optional[str]:
-    from ..config import get_settings
-
-    return getattr(get_settings(), name)
-
-
-def _credential_value(
-    *,
-    provider: str,
-    field_names: tuple[str, ...],
-    tool_name: str,
-    config: Optional[RunnableConfig],
-    provider_aliases: tuple[str, ...] = (),
-) -> Optional[str]:
-    from .native_credentials import get_native_credential_value
-
-    credential = get_native_credential_value(
-        provider=provider,
-        provider_aliases=provider_aliases,
-        field_names=field_names,
-        tool_name=tool_name,
-        config=config,
-    )
-    return credential.value if credential else None
-
-
-def _setup_hint(
-    *,
-    provider: str,
-    field_names: tuple[str, ...],
-    tool_name: str,
-    env_var: str,
-    display_name: str,
-) -> str:
-    from .native_credentials import native_credential_setup_hint
-
-    return native_credential_setup_hint(
-        provider=provider,
-        field_names=field_names,
-        tool_name=tool_name,
-        env_var=env_var,
-        display_name=display_name,
-    )
 
 
 def _request_json(

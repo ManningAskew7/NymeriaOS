@@ -22,6 +22,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .service_integration_base import (
+    credential_value as _credential_value,
+    settings_value as _settings_value,
+    setup_hint as _setup_hint,
+)
+
 logger = logging.getLogger(__name__)
 
 _MAX_TEXT_CHARS = 1_000_000
@@ -58,51 +64,6 @@ def _json_object(value: str, *, field_name: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError(f"{field_name} must be a JSON object")
     return parsed
-
-
-def _settings_value(name: str) -> Optional[str]:
-    from ..config import get_settings
-
-    return getattr(get_settings(), name)
-
-
-def _credential_value(
-    *,
-    provider: str,
-    field_names: tuple[str, ...],
-    tool_name: str,
-    config: Optional[RunnableConfig],
-    provider_aliases: tuple[str, ...] = (),
-) -> Optional[str]:
-    from .native_credentials import get_native_credential_value
-
-    credential = get_native_credential_value(
-        provider=provider,
-        provider_aliases=provider_aliases,
-        field_names=field_names,
-        tool_name=tool_name,
-        config=config,
-    )
-    return credential.value if credential else None
-
-
-def _setup_hint(
-    *,
-    provider: str,
-    field_names: tuple[str, ...],
-    tool_name: str,
-    env_var: str,
-    display_name: str,
-) -> str:
-    from .native_credentials import native_credential_setup_hint
-
-    return native_credential_setup_hint(
-        provider=provider,
-        field_names=field_names,
-        tool_name=tool_name,
-        env_var=env_var,
-        display_name=display_name,
-    )
 
 
 def _secret_value(
