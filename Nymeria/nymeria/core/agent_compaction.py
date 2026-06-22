@@ -52,7 +52,7 @@ right after this turn.
 **Structure your summary using EXACTLY these sections:**
 
 ## Active Goal
-What is the user's current objective? Be specific — the exact request,
+What is the user's current objective? Be specific: the exact request,
 not a paraphrase. Include any constraints or preferences stated.
 
 ## Progress
@@ -90,7 +90,7 @@ memory store. Target key concepts, decisions, and findings from this thread.
 Format as a bulleted list of quoted strings.
 
 **Rules:**
-- Be specific — exact file paths, variable names, error messages
+- Be specific: exact file paths, variable names, error messages
 - If you were mid-task, record precisely where you stopped and the next step
 - Omit greetings, failed-then-corrected attempts, verbose tool outputs
 - Aim for under 1500 words total"""
@@ -564,7 +564,7 @@ class CompactionManager:
             floor_versions = cp_tuple.checkpoint.get("channel_versions", {}) or {}
         counts = prune_checkpoints_before(thread_id, post_cp_id, floor_versions)
         logger.info(
-            f"Thread {thread_id}: Pruned pre-compact history — "
+            f"Thread {thread_id}: Pruned pre-compact history: "
             f"{counts[0]} checkpoints, {counts[1]} writes, {counts[2]} blobs"
         )
 
@@ -755,7 +755,7 @@ class CompactionManager:
         remaining = verify_state.values.get("messages", [])
         if len(remaining) != expected_len:
             logger.error(
-                f"Thread {thread_id}: Retained-tail verification failed — "
+                f"Thread {thread_id}: Retained-tail verification failed: "
                 f"{len(remaining)} messages remain (expected {expected_len})"
             )
             return False
@@ -776,7 +776,7 @@ class CompactionManager:
         Retained tail (built by ``build_resume_compaction_tail``): a
         ``memory_seed_marker`` resume opener carrying the summary inline, an
         ``AIMessage`` with memory_read tool calls, and the two authentic
-        (post-edit) ``ToolMessage`` results — no trailing assistant message, so a
+        (post-edit) ``ToolMessage`` results: no trailing assistant message, so a
         ``{"messages": []}`` re-drive resumes the agent. The summary is also
         stamped onto the opener's metadata for the frontend compaction notice.
         """
@@ -832,7 +832,7 @@ class CompactionManager:
             self._estimate_messages_tokens(tail, self._model_for(thread_id)),
         )
         logger.info(
-            f"Thread {thread_id}: Compaction complete — summarized "
+            f"Thread {thread_id}: Compaction complete, summarized "
             f"{conversational_removed} conversation messages "
             f"({len(pre_ids)} checkpoint objects removed), "
             f"retained {len(tail)} (resume opener + memory read-back)"
@@ -912,7 +912,7 @@ class CompactionManager:
             self._estimate_messages_tokens(tail, self._model_for(thread_id)),
         )
         logger.info(
-            f"Thread {thread_id}: Sync compaction complete — summarized "
+            f"Thread {thread_id}: Sync compaction complete, summarized "
             f"{conversational_removed} conversation messages "
             f"({len(pre_ids)} checkpoint objects removed), retained {len(tail)}"
         )

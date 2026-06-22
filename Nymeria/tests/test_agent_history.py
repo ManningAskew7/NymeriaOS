@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -11,6 +12,9 @@ from nymeria.core import agent_history as agent_history_module
 from nymeria.core.agent_history import (
     TIMESTAMP_SCAN_LIMIT,
     build_message_timestamp_map,
+    extract_reasoning_parts,
+    extract_reasoning_text_from_block,
+    extract_reasoning_text_from_details,
     extract_timestamp,
     format_conversation_history,
 )
@@ -363,3 +367,106 @@ def test_memory_init_seed_visible_with_include_internal():
 
     # opener (user) + a consolidated assistant turn carrying the reads
     assert any(e["role"] == "assistant" for e in history)
+
+
+# ---------------------------------------------------------------------------
+# Reasoning-text extraction (F3: shared _walk_reasoning_value recursion)
+# ---------------------------------------------------------------------------
+
+
+def test_walk_reasoning_value_collects_strings_lists_and_dicts():
+    collected: list[str] = []
+    agent_history_module._walk_reasoning_value(
+        ["a", {"text": "b"}, ["c", {"content": "d"}]],
+        collected.append,
+    )
+    assert collected == ["a", "b", "c", "d"]
+
+
+def test_walk_reasoning_value_skips_empty_and_none():
+    collected: list[str] = []
+    agent_history_module._walk_reasoning_value(["", None, "x", {}], collected.append)
+    assert collected == ["x"]
+
+
+def test_walk_reasoning_value_field_precedence_is_text_content_reasoning_summary():
+    collected: list[str] = []
+    # text wins over all siblings
+    agent_history_module._walk_reasoning_value(
+        {"text": "t", "content": "c", "reasoning": "r", "summary": "s"},
+        collected.append,
+    )
+    # with text/content absent, reasoning wins over summary
+    agent_history_module._walk_reasoning_value(
+        {"reasoning": "r2", "summary": "s2"}, collected.append
+    )
+    assert collected == ["t", "r2"]
+
+
+def test_walk_reasoning_value_skips_encrypted_blocks():
+    collected: list[str] = []
+    agent_history_module._walk_reasoning_value(
+        {"type": "reasoning.encrypted", "text": "secret"}, collected.append
+    )
+    assert collected == []
+
+
+def test_extract_reasoning_text_from_block_joins_content_then_summary():
+    block = {"reasoning": "think-", "content": "more", "summary": ["s1", "s2"]}
+    assert extract_reasoning_text_from_block(block) == ["think-more\n\ns1\n\ns2"]
+
+
+def test_extract_reasoning_text_from_block_drops_encrypted():
+    block = {"reasoning": [{"type": "reasoning.encrypted", "text": "x"}]}
+    assert extract_reasoning_text_from_block(block) == []
+
+
+def test_extract_reasoning_text_from_details_concatenates_and_skips_encrypted():
+    details = [
+        {"text": "alpha"},
+        {"type": "reasoning.encrypted", "text": "nope"},
+        "beta",
+    ]
+    assert extract_reasoning_text_from_details(details) == ["alphabeta"]
+
+
+def test_block_and_details_share_the_same_recursion():
+    # Both extractors delegate to _walk_reasoning_value, so the same nested
+    # value (precedence + encrypted-skip) collects identically through each.
+    nested = [{"content": "p"}, {"reasoning": "q"}]
+    assert extract_reasoning_text_from_details(nested) == ["pq"]
+    assert extract_reasoning_text_from_block({"reasoning": nested}) == ["pq"]
+
+
+def test_extract_reasoning_parts_dedupes_repeated_text():
+    msg = SimpleNamespace(additional_kwargs={"reasoning": ["dup", "dup", "fresh"]})
+    assert extract_reasoning_parts(msg) == ["dup", "fresh"]
+
+
+def test_extract_reasoning_parts_diverges_from_shared_walk():
+    # extract_reasoning_parts intentionally keeps its own walk: a summary list is
+    # consumed before the sibling `reasoning`, the opposite of the shared helper.
+    msg = SimpleNamespace(
+        additional_kwargs={"reasoning": {"summary": ["s1", "s2"], "reasoning": "ignored"}}
+    )
+    assert extract_reasoning_parts(msg) == ["s1", "s2"]
+
+
+# ---------------------------------------------------------------------------
+# Best-effort soft-fail observability (F8)
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingValues:
+    def get(self, *args, **kwargs):
+        raise RuntimeError("boom")
+
+
+def test_build_message_timestamp_map_skips_unreadable_state(caplog):
+    graph = FakeHistoryGraph(
+        [SimpleNamespace(created_at="2026-05-03T10:00:00Z", values=_ExplodingValues())]
+    )
+    with caplog.at_level(logging.DEBUG, logger="nymeria.core.agent_history"):
+        result = build_message_timestamp_map(graph, "thread-x")
+    assert result == {}
+    assert any("Skipped a state" in record.message for record in caplog.records)

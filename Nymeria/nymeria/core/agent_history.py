@@ -128,6 +128,7 @@ def build_message_timestamp_map(
                 try:
                     msgs = state.values.get("messages", [])
                 except Exception:
+                    logger.debug("[Timestamps] Skipped a state with no readable messages", exc_info=True)
                     continue
                 for msg in msgs:
                     try:
@@ -135,6 +136,7 @@ def build_message_timestamp_map(
                         if mid:
                             timestamp_map[mid] = ts
                     except Exception:
+                        logger.debug("[Timestamps] Skipped a message with no readable id", exc_info=True)
                         continue
         except Exception as e:
             logger.warning("[Timestamps] Failed to build checkpoint map for thread %s: %s", thread_id, e)
@@ -155,6 +157,7 @@ def build_message_timestamp_map(
                 }
                 msg_ids_here.discard(None)
             except Exception:
+                logger.debug("[Timestamps] Skipped a state with unreadable message ids", exc_info=True)
                 continue
 
             for mid in still_active & msg_ids_here:
@@ -189,37 +192,49 @@ def classify_autonomous_source(text: str) -> str:
     return "trigger"
 
 
+def _walk_reasoning_value(value: Any, sink: Callable[[str], None]) -> None:
+    """Recursively feed plaintext reasoning to ``sink``, skipping encrypted blocks.
+
+    Shared by ``extract_reasoning_text_from_block`` and
+    ``extract_reasoning_text_from_details``: non-empty strings are sent to the
+    sink, dicts recurse on the first present of text/content/reasoning/summary
+    (dropping ``reasoning.encrypted`` blocks entirely), and lists recurse
+    element-wise. ``extract_reasoning_parts`` deliberately does NOT use this
+    helper: it carries a different field precedence (summary before reasoning),
+    a seen-set dedupe, and no encrypted-skip, so it keeps its own walk.
+    """
+    if isinstance(value, str):
+        if value:
+            sink(value)
+    elif isinstance(value, dict):
+        if value.get("type") == "reasoning.encrypted":
+            return
+        _walk_reasoning_value(
+            value.get("text")
+            or value.get("content")
+            or value.get("reasoning")
+            or value.get("summary"),
+            sink,
+        )
+    elif isinstance(value, list):
+        for item in value:
+            _walk_reasoning_value(item, sink)
+
+
 def extract_reasoning_text_from_block(block: Dict[str, Any]) -> List[str]:
     """Extract plaintext reasoning from one Responses API reasoning block."""
     content_parts: List[str] = []
     summary_parts: List[str] = []
 
-    def add(value: Any, parts: List[str]) -> None:
-        if isinstance(value, str) and value:
-            parts.append(value)
-        elif isinstance(value, dict):
-            if value.get("type") == "reasoning.encrypted":
-                return
-            add(
-                value.get("text")
-                or value.get("content")
-                or value.get("reasoning")
-                or value.get("summary"),
-                parts,
-            )
-        elif isinstance(value, list):
-            for item in value:
-                add(item, parts)
-
-    add(block.get("reasoning"), content_parts)
-    add(block.get("content"), content_parts)
+    _walk_reasoning_value(block.get("reasoning"), content_parts.append)
+    _walk_reasoning_value(block.get("content"), content_parts.append)
 
     summary = block.get("summary")
     if isinstance(summary, str):
-        add(summary, summary_parts)
+        _walk_reasoning_value(summary, summary_parts.append)
     elif isinstance(summary, list):
         for part in summary:
-            add(part, summary_parts)
+            _walk_reasoning_value(part, summary_parts.append)
 
     sections: List[str] = []
     if content_parts:
@@ -234,24 +249,7 @@ def extract_reasoning_text_from_block(block: Dict[str, Any]) -> List[str]:
 def extract_reasoning_text_from_details(details: Any) -> List[str]:
     """Extract displayable plaintext from OpenRouter reasoning_details metadata."""
     parts: List[str] = []
-
-    def add(value: Any) -> None:
-        if isinstance(value, str) and value:
-            parts.append(value)
-        elif isinstance(value, dict):
-            if value.get("type") == "reasoning.encrypted":
-                return
-            add(
-                value.get("text")
-                or value.get("content")
-                or value.get("reasoning")
-                or value.get("summary")
-            )
-        elif isinstance(value, list):
-            for item in value:
-                add(item)
-
-    add(details)
+    _walk_reasoning_value(details, parts.append)
     joined = "".join(parts)
     return [joined] if joined else []
 
@@ -435,6 +433,9 @@ def extract_reasoning_parts(msg: Any) -> List[str]:
     parts: List[str] = []
     seen: set[str] = set()
 
+    # NOTE: intentionally NOT _walk_reasoning_value. This walk has a different
+    # field precedence (summary before reasoning), a seen-set dedupe, and no
+    # reasoning.encrypted skip; merging it would change behavior.
     def add_text(value: Any) -> None:
         if isinstance(value, str):
             text = value
@@ -863,6 +864,7 @@ def _parse_human_content(
             return "\n".join(text_parts), attachments
         return content if isinstance(content, str) else str(content), attachments
     except Exception:
+        logger.debug("Failed to parse human content; returning text-only fallback", exc_info=True)
         return str(content), []
 
 
