@@ -14,9 +14,9 @@ from nymeria.triggers.cli.commands import (
     CommandResult,
     ListCommandOutputSink,
 )
-from nymeria.triggers.cli.rendering.full_screen import (
-    FullScreenPromptToolkitShell,
-    FullScreenShellConfig,
+from nymeria.triggers.cli.rendering.full_screen_legacy import (
+    LegacyFullScreenPromptToolkitShell,
+    LegacyFullScreenShellConfig,
 )
 from nymeria.triggers.cli.state import start_turn
 
@@ -270,11 +270,11 @@ def test_completion_items_and_palette_entries_include_descriptions() -> None:
 
 def make_shell_with_registry(
     registry: CommandRegistry,
-) -> FullScreenPromptToolkitShell:
-    return FullScreenPromptToolkitShell(
+) -> LegacyFullScreenPromptToolkitShell:
+    return LegacyFullScreenPromptToolkitShell(
         client=FakeAgentClient(),
         capabilities=FakeTerminalCapabilities(width=100),
-        config=FullScreenShellConfig(
+        config=LegacyFullScreenShellConfig(
             thread_id="thread-1",
             user_id="alice",
             model="test-model",

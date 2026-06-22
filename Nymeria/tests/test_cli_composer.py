@@ -41,9 +41,9 @@ from nymeria.triggers.cli.input import (
 )
 from nymeria.triggers.cli.rendering.rich_repl import RichReplRenderer
 from nymeria.triggers.cli.state import CLIState
-from nymeria.triggers.cli.rendering.full_screen import (
-    FullScreenPromptToolkitShell,
-    FullScreenShellConfig,
+from nymeria.triggers.cli.rendering.full_screen_legacy import (
+    LegacyFullScreenPromptToolkitShell,
+    LegacyFullScreenShellConfig,
 )
 
 
@@ -756,11 +756,11 @@ def test_rich_repl_queued_submissions_run_in_order() -> None:
     assert [request.message for request in client.chat_requests] == ["first", "second"]
 
 
-def make_shell(client: FakeAgentClient) -> FullScreenPromptToolkitShell:
-    return FullScreenPromptToolkitShell(
+def make_shell(client: FakeAgentClient) -> LegacyFullScreenPromptToolkitShell:
+    return LegacyFullScreenPromptToolkitShell(
         client=client,
         capabilities=FakeTerminalCapabilities(width=100),
-        config=FullScreenShellConfig(
+        config=LegacyFullScreenShellConfig(
             thread_id="thread-1",
             user_id="alice",
             model="test-model",

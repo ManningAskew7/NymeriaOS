@@ -13,6 +13,7 @@ from ..state.selectors import (
     select_last_assistant_message,
     select_running_tool_calls,
 )
+from .markdown import coerce_width
 
 ActivityPhase = AssistantActivityPhase
 
@@ -119,7 +120,7 @@ class ActivityIndicator:
         if activity is None or not activity.active:
             return None
 
-        render_width = _positive_width(
+        render_width = coerce_width(
             width if width is not None else getattr(capabilities, "width", 80)
         )
         label = PHASE_LABELS[activity.phase]
@@ -239,7 +240,7 @@ def normalize_detail(detail: str) -> str:
 def truncate_text(text: str, width: int) -> str:
     """Truncate a rendered line to the available terminal width."""
 
-    width = _positive_width(width)
+    width = coerce_width(width)
     if len(text) <= width:
         return text
     if width <= 3:
@@ -263,16 +264,6 @@ def _queue_detail(state: CLIUIState) -> str:
     if state.queue.holder:
         return f"thread lock: {state.queue.holder}"
     return "thread lock"
-
-
-def _positive_width(width: int | None) -> int:
-    if width is None:
-        return 80
-    try:
-        parsed = int(width)
-    except (TypeError, ValueError):
-        return 80
-    return max(1, parsed)
 
 
 __all__ = [

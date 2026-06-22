@@ -29,6 +29,7 @@ from ..theme import CLITheme, DEFAULT_CLI_THEME, rich_style
 from .markdown import (
     BLOCKQUOTE_RE,
     BULLET_RE,
+    coerce_width,
     collapse_inline,
     FENCE_RE,
     HEADING_RE,
@@ -81,7 +82,7 @@ class RichReplRenderer:
         self.capabilities = capabilities
         self._download_base_url = download_base_url
         self.theme = theme or DEFAULT_CLI_THEME
-        self.width = _positive_width(width or getattr(capabilities, "width", 80))
+        self.width = coerce_width(width or getattr(capabilities, "width", 80))
         self.console = console or _make_console(
             capabilities,
             file=stdout or sys.stdout,
@@ -122,7 +123,7 @@ class RichReplRenderer:
     def update_terminal_width(self, width: int) -> bool:
         """Update render width for future Rich transcript output."""
 
-        new_width = _positive_width(width)
+        new_width = coerce_width(width)
         if new_width == self.width:
             return False
         self.width = new_width
@@ -1075,7 +1076,7 @@ def render_tool_row(
     """Return a Rich compact tool row."""
 
     selected_theme = theme or DEFAULT_CLI_THEME
-    width = _positive_width(width)
+    width = coerce_width(width)
     row = format_tool_row(
         tool,
         width=max(1, width - 2),
@@ -1257,18 +1258,8 @@ def _tool_steps(state: CLIUIState) -> list[ToolCallStep]:
     return steps
 
 
-def _positive_width(width: int | None) -> int:
-    if width is None:
-        return 80
-    try:
-        parsed = int(width)
-    except (TypeError, ValueError):
-        return 80
-    return max(1, parsed)
-
-
 def _stream_flush_width(width: int | None) -> int:
-    return max(32, min(72, _positive_width(width) - 8))
+    return max(32, min(72, coerce_width(width) - 8))
 
 
 def _line_prefers_rich_markdown(line: str) -> bool:

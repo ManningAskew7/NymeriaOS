@@ -7,9 +7,9 @@ from cli_fixtures import CapturedRenderOutput, FakeAgentClient, FakeTerminalCapa
 
 from nymeria.triggers.cli.app import CLIRuntimeConfig
 from nymeria.triggers.cli.capabilities import detect_terminal_capabilities
-from nymeria.triggers.cli.rendering.full_screen import (
-    FullScreenPromptToolkitShell,
-    FullScreenShellConfig,
+from nymeria.triggers.cli.rendering.full_screen_legacy import (
+    LegacyFullScreenPromptToolkitShell,
+    LegacyFullScreenShellConfig,
     _transcript_render_width,
 )
 from nymeria.triggers.cli.rendering.plain import PlainRenderer
@@ -52,7 +52,9 @@ def test_rendering_fallback_matrix_covers_non_tty_no_color_and_dumb_terminal() -
     assert non_tty.color_enabled is False
     assert non_tty.alt_screen_enabled is False
 
-    assert no_color.renderer == "full"
+    # NO_COLOR disables color/animation but keeps the default interactive
+    # renderer (rich); it does not force the plain fallback.
+    assert no_color.renderer == "rich"
     assert no_color.color_enabled is False
     assert no_color.animation_enabled is False
 
@@ -119,11 +121,11 @@ def test_plain_stream_contract_keeps_status_off_stdout_and_removes_ansi() -> Non
     assert not ANSI_RE.search(output.stderr_text)
 
 
-def make_shell(*, width: int = 80) -> FullScreenPromptToolkitShell:
-    return FullScreenPromptToolkitShell(
+def make_shell(*, width: int = 80) -> LegacyFullScreenPromptToolkitShell:
+    return LegacyFullScreenPromptToolkitShell(
         client=FakeAgentClient(),
         capabilities=FakeTerminalCapabilities(width=width),
-        config=FullScreenShellConfig(
+        config=LegacyFullScreenShellConfig(
             thread_id="thread-1",
             user_id="alice",
             model="provider/" + ("model-" * 16),

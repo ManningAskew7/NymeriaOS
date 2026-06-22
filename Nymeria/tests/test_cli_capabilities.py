@@ -29,15 +29,18 @@ def detect(*, config=None, env=None, stdin=None, stdout=None, stderr=None):
     )
 
 
-def test_interactive_auto_renderer_prefers_full_screen():
+def test_interactive_auto_renderer_prefers_rich():
     caps = detect()
 
-    assert caps.renderer == "full"
+    # Rich is the default and actively maintained renderer; auto resolves to it
+    # on an interactive terminal. The legacy full-screen shell is opt-in only.
+    assert caps.renderer == "rich"
     assert caps.renderer_reason == "auto-interactive"
     assert caps.full_screen_allowed is True
-    assert caps.alt_screen_enabled is True
     assert caps.animation_enabled is True
-    assert caps.mouse_enabled is True
+    # Alt-screen and mouse are full-screen-only affordances.
+    assert caps.alt_screen_enabled is False
+    assert caps.mouse_enabled is False
 
 
 def test_non_tty_stdout_forces_plain_renderer():
@@ -167,7 +170,7 @@ def test_non_utf8_locale_disables_unicode_glyphs():
 
 
 def test_no_alt_screen_disables_alt_screen_without_disabling_full_renderer():
-    caps = detect(config=runtime_config(alt_screen=False))
+    caps = detect(config=runtime_config(alt_screen=False, renderer="full"))
 
     assert caps.renderer == "full"
     assert caps.supports_alt_screen is True
@@ -175,7 +178,7 @@ def test_no_alt_screen_disables_alt_screen_without_disabling_full_renderer():
 
 
 def test_no_animation_disables_animation_only():
-    caps = detect(config=runtime_config(animation=False))
+    caps = detect(config=runtime_config(animation=False, renderer="full"))
 
     assert caps.supports_animation is True
     assert caps.animation_enabled is False
@@ -190,6 +193,18 @@ def test_renderer_explicit_rich_is_respected_when_terminal_is_interactive():
     assert caps.renderer_reason == "rich-requested"
     assert caps.alt_screen_enabled is False
     assert caps.rich_allowed is True
+
+
+def test_legacy_full_screen_renderer_is_opt_in_only():
+    # The legacy full-screen shell is no longer the auto default; it is reached
+    # only by explicitly requesting it.
+    caps = detect(config=runtime_config(renderer="full"))
+
+    assert caps.requested_renderer == "full"
+    assert caps.renderer == "full"
+    assert caps.renderer_reason == "full-requested"
+    assert caps.alt_screen_enabled is True
+    assert caps.mouse_enabled is True
 
 
 def test_color_depth_detects_truecolor_and_terminal_size_from_env():

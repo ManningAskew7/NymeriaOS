@@ -1,4 +1,10 @@
-"""Full-screen prompt_toolkit shell for the CLI/TUI runtime."""
+"""Legacy full-screen prompt_toolkit shell for the CLI/TUI runtime.
+
+Legacy: the Rich REPL (``rendering/rich_repl.py`` driven from ``app.py``) is the
+default and actively maintained CLI renderer. This full-screen TUI shell is
+retained for terminals that explicitly request it via ``--renderer full``; it is
+not the auto default and receives only maintenance, not new features.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +32,11 @@ from prompt_toolkit.widgets import Frame, TextArea
 
 from ..autonomous import AutonomousStreamMonitor
 from ..input import ComposerController, ComposerSubmission, create_full_screen_composer
+from ..command_routing import (
+    chat_stream_command_from_result as _chat_stream_command_from_result,
+    is_chat_stream_command as _is_chat_stream_command,
+    queued_notice as _queued_notice,
+)
 from ..commands import CommandContext, CommandResult, ListCommandOutputSink
 from ..commands.fast import fast_prompt_payload
 from ..commands.system import call_client_method, mapping_get
@@ -77,8 +88,8 @@ _STREAM_DONE = object()
 
 
 @dataclass(frozen=True, slots=True)
-class FullScreenShellConfig:
-    """Runtime labels used by the full-screen shell."""
+class LegacyFullScreenShellConfig:
+    """Runtime labels used by the legacy full-screen shell."""
 
     thread_id: str
     user_id: str = "default"
@@ -88,15 +99,19 @@ class FullScreenShellConfig:
     fast_mode_active: bool = False
 
 
-class FullScreenPromptToolkitShell:
-    """Retained prompt_toolkit Application backed by AgentClient events."""
+class LegacyFullScreenPromptToolkitShell:
+    """Legacy full-screen prompt_toolkit Application backed by AgentClient events.
+
+    Retained for ``--renderer full``. The Rich REPL is the default, actively
+    maintained shell; prefer it for new work.
+    """
 
     def __init__(
         self,
         *,
         client: AgentClient,
         capabilities: Any,
-        config: FullScreenShellConfig,
+        config: LegacyFullScreenShellConfig,
         initial_state: CLIUIState | None = None,
         on_turn_complete: Callable[[str], None] | None = None,
         command_registry: Any | None = None,
@@ -996,28 +1011,6 @@ def _wrapped_prefixed_lines(prefix: str, content: str, width: int) -> list[str]:
     ]
 
 
-def _queued_notice(count: int) -> str:
-    if count == 1:
-        return "Queued message (1)"
-    return f"Queued messages ({count})"
-
-
-def _chat_stream_command_from_result(result: Any) -> str:
-    payload = getattr(result, "payload", {}) or {}
-    command = payload.get("chat_stream_command")
-    return str(command or "").strip()
-
-
-def _is_chat_stream_command(registry: Any, raw_input: str) -> bool:
-    try:
-        match = registry.resolve(raw_input)
-    except Exception:  # noqa: BLE001 - fall back to normal command handling.
-        return False
-    command = getattr(match, "command", None)
-    metadata = getattr(command, "metadata", {}) or {}
-    return str(metadata.get("execution_kind") or "") == "chat_stream"
-
-
 def _first_status_line(text: str) -> str:
     line = str(text or "").strip().splitlines()
     return line[0] if line else "Command completed."
@@ -1155,7 +1148,7 @@ def _style_dict(theme: CLITheme) -> dict[str, str]:
 
 
 __all__ = [
-    "FullScreenPromptToolkitShell",
-    "FullScreenShellConfig",
+    "LegacyFullScreenPromptToolkitShell",
+    "LegacyFullScreenShellConfig",
     "render_transcript",
 ]

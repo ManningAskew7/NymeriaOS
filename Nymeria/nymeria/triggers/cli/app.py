@@ -21,6 +21,11 @@ from typing import Any, Literal, Optional, Protocol, TYPE_CHECKING
 from rich.cells import cell_len
 
 from .capabilities import TerminalCapabilities, detect_terminal_capabilities
+from .command_routing import (
+    chat_stream_command_from_result as _chat_stream_command_from_result,
+    is_chat_stream_command as _is_chat_stream_command,
+    queued_notice as _queued_notice,
+)
 from .commands import (
     CommandContext,
     ListCommandOutputSink,
@@ -1321,7 +1326,11 @@ class _RichReplRuntime:
 
 
 class _RichReplPromptToolkitShell:
-    """Non-full-screen prompt_toolkit shell for Rich REPL status/composer."""
+    """Default prompt_toolkit shell for the Rich REPL status/composer.
+
+    The Rich REPL is the default, actively maintained CLI renderer; the
+    full-screen TUI shell (``rendering/full_screen_legacy.py``) is legacy.
+    """
 
     def __init__(
         self,
@@ -1783,10 +1792,14 @@ class CLIApp:
         return asyncio.run(_run())
 
     def _run_full_screen(self, capabilities: TerminalCapabilities) -> None:
-        """Run the retained full-screen TUI shell."""
-        from .rendering.full_screen import (
-            FullScreenPromptToolkitShell,
-            FullScreenShellConfig,
+        """Run the legacy full-screen TUI shell (opt-in via ``--renderer full``).
+
+        The Rich REPL is the default, actively maintained shell; this path is
+        reached only when the terminal explicitly requests the full renderer.
+        """
+        from .rendering.full_screen_legacy import (
+            LegacyFullScreenPromptToolkitShell,
+            LegacyFullScreenShellConfig,
         )
         from .transport.api import APITransportStartupError
 
@@ -1804,10 +1817,10 @@ class CLIApp:
             on_turn_complete = (
                 self._maybe_auto_title if client is self._local_client else None
             )
-            shell = FullScreenPromptToolkitShell(
+            shell = LegacyFullScreenPromptToolkitShell(
                 client=client,
                 capabilities=capabilities,
-                config=FullScreenShellConfig(
+                config=LegacyFullScreenShellConfig(
                     thread_id=self.state.thread_id,
                     user_id=self.state.user_id,
                     model=self.state.get_effective_model(),
@@ -2264,83 +2277,6 @@ class CLIApp:
             ),
             download_base_url=getattr(self._client, "base_url", "") or "",
         )
-
-    async def _repl_loop_async(
-        self,
-        session: Any,
-        capabilities: TerminalCapabilities,
-        renderer: _ReplRenderer,
-        runtime: _RichReplRuntime,
-    ) -> None:
-        """Async Rich REPL loop that keeps the prompt/status bar active."""
-
-        try:
-            while self.state.running:
-                try:
-                    user_input = await session.prompt_async(
-                        runtime.prompt_fragments,
-                        **runtime.prompt_kwargs(),
-                    )
-
-                    if not user_input.strip():
-                        continue
-
-                    stripped = user_input.strip()
-
-                    if stripped.startswith("/"):
-                        await self._dispatch_command_async(
-                            stripped,
-                            capabilities,
-                            renderer,
-                            session=session,
-                            runtime=runtime,
-                        )
-                        continue
-
-                    lower = stripped.lower()
-                    if lower in ("exit", "quit", "q"):
-                        self.state.running = False
-                        self.state.console.print("[dim]Goodbye![/dim]")
-                        continue
-                    if lower == "clear":
-                        self.state.console.clear()
-                        if capabilities.renderer != "plain":
-                            await self._refresh_header_snapshot_async(capabilities)
-                            self._render_current_header(capabilities)
-                        self._reset_active_repl_state()
-                        continue
-                    if lower == "help":
-                        await self._dispatch_command_async(
-                            "/help",
-                            capabilities,
-                            renderer,
-                            session=session,
-                            runtime=runtime,
-                        )
-                        continue
-
-                    await self._submit_repl_message_async(
-                        stripped,
-                        renderer,
-                        runtime=runtime,
-                    )
-
-                except KeyboardInterrupt:
-                    if runtime.busy:
-                        await self._stop_current_turn_async()
-                        runtime.set_status_notice("Stop requested")
-                    else:
-                        self.state.console.print()
-                    continue
-                except EOFError:
-                    self.state.running = False
-                    self.state.console.print("[dim]Goodbye![/dim]")
-        finally:
-            task = runtime.current_turn_task
-            if task is not None and not task.done():
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
 
     def _repl_loop(
         self,
@@ -3463,12 +3399,6 @@ def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
     }
 
 
-def _queued_notice(count: int) -> str:
-    if count == 1:
-        return "Queued message (1)"
-    return f"Queued messages ({count})"
-
-
 def _disconnected_notice_text(client: Any, *, auto_reconnect: bool = False) -> str:
     """Notice text for a disconnected client.
 
@@ -3502,22 +3432,6 @@ def _fast_prompt_from_result(result: Any) -> tuple[str, str] | None:
     from .commands.fast import fast_prompt_payload
 
     return fast_prompt_payload(result)
-
-
-def _chat_stream_command_from_result(result: Any) -> str:
-    payload = getattr(result, "payload", {}) or {}
-    command = payload.get("chat_stream_command")
-    return str(command or "").strip()
-
-
-def _is_chat_stream_command(registry: Any, raw_input: str) -> bool:
-    try:
-        match = registry.resolve(raw_input)
-    except Exception:  # noqa: BLE001 - fall back to normal command handling.
-        return False
-    command = getattr(match, "command", None)
-    metadata = getattr(command, "metadata", {}) or {}
-    return str(metadata.get("execution_kind") or "") == "chat_stream"
 
 
 def _set_renderer_active_model(renderer: Any, model: str) -> None:
