@@ -1,0 +1,130 @@
+"""Tests for core.storage_paths.safe_path_segment and its storage-manager wiring.
+
+safe_path_segment is the canonical owner (slice 06 / F6) of the path-segment
+sanitization idiom previously inlined across ~10 core storage modules. These
+tests lock the helper's behavior, prove byte-equivalence to the retired inline
+idiom, and assert that each migrated storage manager still resolves a hostile
+identifier to a path inside its own directory (no traversal escape).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from nymeria.core.storage_paths import safe_path_segment
+
+
+def _legacy(value: str, default: str = "default") -> str:
+    """The exact inline idiom this helper replaced, for differential testing."""
+    return "".join(c for c in value if c.isalnum() or c in "-_") or default
+
+
+class TestSafePathSegment:
+    def test_alnum_passthrough(self):
+        assert safe_path_segment("user1") == "user1"
+
+    def test_keeps_hyphen_and_underscore(self):
+        assert safe_path_segment("a-b_c") == "a-b_c"
+
+    def test_drops_separators_and_dots(self):
+        # The dropped "/" "\\" and "." are exactly what prevents traversal.
+        assert safe_path_segment("../../etc/passwd") == "etcpasswd"
+        assert safe_path_segment("a/b\\c.d") == "abcd"
+
+    def test_empty_input_returns_default(self):
+        assert safe_path_segment("") == "default"
+
+    def test_all_punctuation_returns_default(self):
+        assert safe_path_segment("...") == "default"
+        assert safe_path_segment("/././") == "default"
+
+    def test_custom_default(self):
+        assert safe_path_segment("", default="anon") == "anon"
+        assert safe_path_segment("..", default="anon") == "anon"
+
+    def test_empty_default_preserves_legacy_empty_contract(self):
+        # Non-core callers that historically returned "" opt out of the fallback.
+        assert safe_path_segment("...", default="") == ""
+        assert safe_path_segment("", default="") == ""
+
+    def test_unicode_alphanumerics_are_kept(self):
+        # str.isalnum() is True for unicode letters/digits, matching the old idiom.
+        assert safe_path_segment("déjà-vu") == "déjà-vu"
+        assert safe_path_segment("用户42") == "用户42"
+
+    def test_no_stripping_of_leading_trailing_allowed_chars(self):
+        assert safe_path_segment("_-user-_") == "_-user-_"
+
+    def test_whitespace_is_dropped(self):
+        assert safe_path_segment("U S E R") == "USER"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "user1",
+        "default",
+        "../etc/passwd",
+        "../../../",
+        "",
+        "...",
+        "a/b\\c",
+        "user.name",
+        "déjà-vu",
+        "___",
+        "-_-",
+        "U S E R",
+        "user@host:1234",
+        "%2e%2e%2f",
+        "线程-1",
+    ],
+)
+def test_equivalence_with_legacy_idiom(value):
+    assert safe_path_segment(value) == _legacy(value)
+    assert safe_path_segment(value, default="") == _legacy(value, "")
+    assert safe_path_segment(value, default="x") == _legacy(value, "x")
+
+
+# (manager class, path-builder method name, dir attribute) for each migrated
+# storage manager. UserProfileManager nests under a per-user directory, the rest
+# write a flat file, but all must keep the result inside their dir attribute.
+_MANAGERS = [
+    ("nymeria.core.goal_manager", "GoalManager", "_path_for", "goals_dir"),
+    ("nymeria.core.trigger_manager", "TriggerManager", "_path_for", "triggers_dir"),
+    ("nymeria.core.trigger_manager", "TriggerManager", "_executions_path", "triggers_dir"),
+    ("nymeria.core.todo_manager", "TodoManager", "_get_todos_path", "todos_dir"),
+    ("nymeria.core.activity_log", "ActivityLog", "_get_activity_path", "activity_dir"),
+    ("nymeria.core.thread_metadata", "ThreadMetadataManager", "_get_path", "metadata_dir"),
+    ("nymeria.core.user_profile", "UserProfileManager", "_get_profile_path", "users_dir"),
+    ("nymeria.core.notifications", "NotificationStore", "_get_notifications_path", "notifications_dir"),
+]
+
+
+def _build(module_name: str, cls_name: str, data_dir: Path):
+    import importlib
+
+    cls = getattr(importlib.import_module(module_name), cls_name)
+    return cls(data_dir)
+
+
+@pytest.mark.parametrize("module_name,cls_name,method,dir_attr", _MANAGERS)
+class TestManagerWiringResistsTraversal:
+    def test_traversal_id_stays_inside_manager_dir(
+        self, tmp_path: Path, module_name, cls_name, method, dir_attr
+    ):
+        manager = _build(module_name, cls_name, tmp_path)
+        base = getattr(manager, dir_attr).resolve()
+        path = getattr(manager, method)("../../etc/passwd").resolve()
+        # The hostile id must not escape the manager's own directory.
+        assert base == path or base in path.parents
+        assert "etcpasswd" in path.name or "etcpasswd" in path.parent.name
+        assert ".." not in path.parts
+
+    def test_empty_id_uses_default_segment(
+        self, tmp_path: Path, module_name, cls_name, method, dir_attr
+    ):
+        manager = _build(module_name, cls_name, tmp_path)
+        path = getattr(manager, method)("").resolve()
+        assert "default" in (path.name + "/" + path.parent.name)

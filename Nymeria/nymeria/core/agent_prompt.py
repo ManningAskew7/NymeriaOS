@@ -29,6 +29,7 @@ from .prompts import (
     format_untrusted_json_record,
     get_time_context,
 )
+from .storage_paths import safe_path_segment
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
 
 if TYPE_CHECKING:
@@ -309,11 +310,7 @@ def get_memory_index(agent: "NymeriaAgent", user_id: str) -> Optional[MemoryInde
 
     # Create new index
     try:
-        # Sanitize user_id for path safety
-        safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
-        if not safe_user_id:
-            safe_user_id = "default"
-
+        safe_user_id = safe_path_segment(user_id)
         db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
         index = MemoryIndex(db_path)
         agent._memory_indexes[user_id] = index

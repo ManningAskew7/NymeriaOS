@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, TYPE_CHECKING
 from pydantic import BaseModel, Field, field_validator
 
 from .keyed_locks import KeyedRLockMap
+from .storage_paths import safe_path_segment
 from .time_utils import ensure_aware_utc, utc_now
 
 if TYPE_CHECKING:
@@ -190,7 +191,7 @@ class TriggerManager:
     # -- persistence ------------------------------------------------------
 
     def _path_for(self, user_id: str) -> Path:
-        safe = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+        safe = safe_path_segment(user_id)
         return self.triggers_dir / f"{safe}.json"
 
     def _load(self, user_id: str) -> TriggerStore:
@@ -393,7 +394,7 @@ class TriggerManager:
     # -- execution log ----------------------------------------------------
 
     def _executions_path(self, user_id: str) -> Path:
-        safe = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+        safe = safe_path_segment(user_id)
         return self.triggers_dir / f"{safe}_executions.json"
 
     def log_execution(self, user_id: str, execution: TriggerExecution) -> None:
