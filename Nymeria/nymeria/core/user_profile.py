@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .keyed_locks import KeyedRLockMap
+from .storage_paths import safe_path_segment
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -431,10 +432,7 @@ class UserProfileManager:
 
     def _get_profile_path(self, user_id: str) -> Path:
         """Get the path to a user's profile file."""
-        # Sanitize user_id to prevent path traversal
-        safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
-        if not safe_user_id:
-            safe_user_id = "default"
+        safe_user_id = safe_path_segment(user_id)
         return self.users_dir / safe_user_id / "profile.json"
 
     def get_profile(self, user_id: str = "default") -> UserProfile:

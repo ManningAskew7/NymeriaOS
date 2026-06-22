@@ -24,6 +24,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
+from .storage_paths import safe_path_segment
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ class GoalManager:
         return _goal_locks.get(user_id)
 
     def _path_for(self, user_id: str) -> Path:
-        safe = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+        safe = safe_path_segment(user_id)
         return self.goals_dir / f"{safe}.json"
 
     def get_store(self, user_id: str = "default") -> GoalStore:

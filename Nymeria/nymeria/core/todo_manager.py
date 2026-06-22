@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .keyed_locks import KeyedRLockMap
+from .storage_paths import safe_path_segment
 from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -369,10 +370,7 @@ class TodoManager:
 
     def _get_todos_path(self, user_id: str) -> Path:
         """Get the path to a user's TODO file."""
-        # Sanitize user_id to prevent path traversal
-        safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
-        if not safe_user_id:
-            safe_user_id = "default"
+        safe_user_id = safe_path_segment(user_id)
         return self.todos_dir / f"{safe_user_id}.json"
 
     def get_todos(self, user_id: str = "default") -> TodoList:

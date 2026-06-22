@@ -24,6 +24,7 @@ from .memory_index import MemoryIndex
 from .notification_dispatch import create_autonomous_notification, should_notify_autonomous
 from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
 from .scheduler_state import SchedulerStateManager
+from .storage_paths import safe_path_segment
 from .stream_bridge import StreamCollection, stream_and_collect
 from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
@@ -1314,7 +1315,7 @@ class Ticker:
                 return
 
             # Get or create memory index
-            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_") or "default"
+            safe_user_id = safe_path_segment(user_id)
             db_path = self.settings.data_dir / "users" / safe_user_id / "memory.db"
             # Throwaway instance: close its cached connection after use rather
             # than relying on GC finalization.

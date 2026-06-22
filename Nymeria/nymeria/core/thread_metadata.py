@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
+from .storage_paths import safe_path_segment
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -122,9 +123,7 @@ class ThreadMetadataManager:
     # -- file I/O --
 
     def _get_path(self, user_id: str) -> Path:
-        safe_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
-        if not safe_id:
-            safe_id = "default"
+        safe_id = safe_path_segment(user_id)
         return self.metadata_dir / f"{safe_id}.json"
 
     def get_store(self, user_id: str = "default") -> ThreadMetadataStore:

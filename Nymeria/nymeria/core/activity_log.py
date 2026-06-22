@@ -15,6 +15,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from .keyed_locks import KeyedRLockMap
+from .storage_paths import safe_path_segment
 from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -83,9 +84,7 @@ class ActivityLog:
 
     def _get_activity_path(self, user_id: str) -> Path:
         """Get the path to a user's activity file."""
-        safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
-        if not safe_user_id:
-            safe_user_id = "default"
+        safe_user_id = safe_path_segment(user_id)
         return self.activity_dir / f"{safe_user_id}.json"
 
     def log(
