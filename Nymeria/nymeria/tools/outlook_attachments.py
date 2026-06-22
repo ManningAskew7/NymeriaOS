@@ -217,6 +217,7 @@ def _extract_with_gemini(data_b64: str, mime_type: str, filename: str) -> str:
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_INSTRUCTION,
             ),
+            # pyrefly: ignore[bad-argument-type]  # genai contents= union; list[Part|str] is valid
             contents=[
                 types.Part.from_bytes(
                     data=file_bytes,

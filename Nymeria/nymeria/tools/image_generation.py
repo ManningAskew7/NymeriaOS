@@ -292,6 +292,7 @@ def _generate_gemini(
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model=model,
+        # pyrefly: ignore[bad-argument-type]  # genai contents= union; list[str] is valid
         contents=[prompt],
         config=types.GenerateContentConfig(
             # pyrefly: ignore[unexpected-keyword]
