@@ -17,10 +17,46 @@ Usage — autonomous single-event dispatch::
 from __future__ import annotations
 
 import inspect
+import json
 import re
-from typing import Any, AsyncIterable, Dict, List, Protocol, runtime_checkable
+from typing import Any, AsyncIterable, Dict, List, Optional, Protocol, runtime_checkable
 
 from ..core.agent_compaction import COMPACTING_MESSAGE
+
+# ---------------------------------------------------------------------------
+# SSE wire-format line parsing
+# ---------------------------------------------------------------------------
+
+_SSE_DATA_PREFIX = "data: "
+
+
+def parse_sse_data_line(line: str) -> Optional[Any]:
+    """Decode one raw SSE line into its JSON payload, or ``None`` to skip.
+
+    Returns the decoded object for a ``data: <json>`` payload line. Returns
+    ``None`` for anything a consumer should skip: a blank line, a non-``data:``
+    line (including FastAPI's bare ``: keepalive`` comment frames), a
+    ``data: :...`` comment payload, or a payload that is not valid JSON.
+
+    This is the shared parser for the SSE line grammar that the in-slice
+    streaming consumers (``api_client.chat_stream``/``autonomous_stream`` and
+    the ``trigger_api`` fire peek) previously hand-rolled with an inline
+    ``[6:]`` slice. The ``discord_bot``/``telegram_bot`` stream loops still
+    carry their own copies of this grammar (a tracked follow-up). Because real
+    events are always JSON objects, a bare ``data: null`` line decodes to
+    ``None`` and is therefore skipped like any other no-op line; that edge
+    never occurs on the wire.
+    """
+    if not line or not line.startswith(_SSE_DATA_PREFIX):
+        return None
+    raw = line[len(_SSE_DATA_PREFIX):]
+    if raw.startswith(":"):
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
 
 _ATTACH_RE = re.compile(r"\[attach:(.+?)\]")
 

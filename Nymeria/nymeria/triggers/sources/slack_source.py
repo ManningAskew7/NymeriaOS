@@ -157,12 +157,12 @@ class SlackSource(BaseTriggerSource):
             if keyword_filter and keyword_filter.lower() not in text.lower():
                 continue
 
-            user_id = msg.get("user", "unknown")
+            author = msg.get("user", "unknown")
             thread_ts = msg.get("thread_ts", "")
 
             events.append({
                 "channel_name": channel_name,
-                "author": user_id,
+                "author": author,
                 "content": text[:2000],
                 "message_url": f"https://slack.com/archives/{channel_id}/p{ts.replace('.', '')}",
                 "thread_ts": thread_ts,

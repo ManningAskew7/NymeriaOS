@@ -358,6 +358,33 @@ def _make_rate_limited_auth(scope: str) -> Callable[..., Any]:
     return _dependency
 
 
+def _resolve_act_as_target(
+    agent: Optional[NymeriaAgent], act_as_user_id: str
+) -> AuthenticatedUser:
+    """Resolve an ``X-Nymeria-Act-As`` header into the impersonated user.
+
+    The caller owns the admin-role gate and must apply it *before* invoking
+    this helper; it only performs the target lookup and ``AuthenticatedUser``
+    reconstruction shared by :func:`resolve_authenticated_user` and
+    :func:`require_admin_caller`.
+
+    Raises 503 when the agent is not yet initialized, and 404 when the target
+    user is missing or disabled.
+    """
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    target = agent.accounts_repo.get_user_by_id(act_as_user_id)
+    if target is None or target.disabled:
+        raise HTTPException(status_code=404, detail="Act-As target not found")
+    return AuthenticatedUser(
+        id=target.id,
+        email=target.email,
+        display_name=target.display_name,
+        role=target.role,
+        via_act_as=True,
+    )
+
+
 async def resolve_authenticated_user(
     request: Request,
     authorization: Optional[str] = Header(None),
@@ -367,8 +394,8 @@ async def resolve_authenticated_user(
     """
     Resolve the caller to an :class:`AuthenticatedUser`.
 
-    Only per-user account tokens (``nym_...``) are accepted — the legacy
-    ``NYMERIA_API_KEY`` shared key was retired in Step 3c.
+    Only per-user account tokens (``nym_...``) are accepted; the legacy
+    ``NYMERIA_API_KEY`` shared key is no longer recognized.
 
     ``X-Nymeria-Act-As: <user_id>`` is honored only for admin-role callers.
     When present, the dep returns the target user instead of the admin, so
@@ -384,18 +411,7 @@ async def resolve_authenticated_user(
     if x_nymeria_act_as:
         if caller.role != "admin":
             raise HTTPException(status_code=403, detail="Act-As requires admin")
-        if agent is None:
-            raise HTTPException(status_code=503, detail="Agent not initialized")
-        target = agent.accounts_repo.get_user_by_id(x_nymeria_act_as)
-        if target is None or target.disabled:
-            raise HTTPException(status_code=404, detail="Act-As target not found")
-        return AuthenticatedUser(
-            id=target.id,
-            email=target.email,
-            display_name=target.display_name,
-            role=target.role,
-            via_act_as=True,
-        )
+        return _resolve_act_as_target(agent, x_nymeria_act_as)
 
     return caller
 
@@ -482,18 +498,7 @@ async def require_admin_caller(
         raise HTTPException(status_code=403, detail="Admin only")
 
     if x_nymeria_act_as:
-        if agent is None:
-            raise HTTPException(status_code=503, detail="Agent not initialized")
-        target = agent.accounts_repo.get_user_by_id(x_nymeria_act_as)
-        if target is None or target.disabled:
-            raise HTTPException(status_code=404, detail="Act-As target not found")
-        return AuthenticatedUser(
-            id=target.id,
-            email=target.email,
-            display_name=target.display_name,
-            role=target.role,
-            via_act_as=True,
-        )
+        return _resolve_act_as_target(agent, x_nymeria_act_as)
 
     return caller
 

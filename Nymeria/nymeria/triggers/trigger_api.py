@@ -21,6 +21,7 @@ from ..core.trigger_manager import (
     TriggerManager,
     _safe_format,
 )
+from .sse_consumer import parse_sse_data_line
 
 if TYPE_CHECKING:
     pass
@@ -571,7 +572,6 @@ def create_trigger_router(
                     trigger_id, trigger_name,
                 )
                 return
-            import json as _json
 
             was_queued = False
             try:
@@ -607,12 +607,9 @@ def create_trigger_router(
                         # target thread was busy. Body content is otherwise
                         # discarded.
                         for line in resp.iter_lines():
-                            if was_queued or not line.startswith("data: "):
+                            if was_queued:
                                 continue
-                            try:
-                                evt = _json.loads(line[6:])
-                            except (ValueError, TypeError):
-                                continue
+                            evt = parse_sse_data_line(line)
                             if isinstance(evt, dict) and evt.get("type") == "prompt_queued":
                                 was_queued = True
                 elapsed = _time.monotonic() - start
