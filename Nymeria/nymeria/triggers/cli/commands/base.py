@@ -9,7 +9,6 @@ from typing import Any, Literal, Protocol, TypeAlias
 
 CommandLevel: TypeAlias = Literal["info", "success", "warning", "error"]
 CommandStatus: TypeAlias = Literal["ok", "error", "exit", "clear", "unhandled"]
-CommandHandlerMode: TypeAlias = Literal["legacy", "context"]
 
 CommandReturn: TypeAlias = Any
 CommandHandler: TypeAlias = Callable[[Any, list[str]], Any]
@@ -141,7 +140,6 @@ class CommandContext:
     thread_id: str | None = None
     user_id: str = "default"
     registry: Any | None = None
-    legacy_state: Any | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def emit(
@@ -220,7 +218,6 @@ class Command:
     usage: str = ""
     subcommands: dict[str, "Command"] = field(default_factory=dict)
     hidden: bool = False
-    handler_mode: CommandHandlerMode = "legacy"
     category: str = ""
     palette_title: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -298,7 +295,6 @@ __all__ = [
     "CommandCompletion",
     "CommandContext",
     "CommandHandler",
-    "CommandHandlerMode",
     "CommandInvocation",
     "CommandLevel",
     "CommandMatch",

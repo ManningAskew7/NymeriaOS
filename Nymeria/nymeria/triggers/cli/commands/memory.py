@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, List, TYPE_CHECKING
+from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from .system import (
@@ -14,87 +14,12 @@ from .system import (
     one_line,
     unsupported_transport_result,
 )
-from ..rendering.tables import render_memory_table
-
-if TYPE_CHECKING:
-    from ..state import CLIState
-
-
-def _handle_memory(state: "CLIState", args: List[str]) -> None:
-    """Default: show usage hint."""
-    state.console.print(
-        "[dim]Usage: /memory list | search <query> | save <key> <value> | forget <key>[/dim]"
-    )
-
-
-def _handle_memory_list(state: "CLIState", args: List[str]) -> None:
-    """List all user memories."""
-    profile = state.profile_manager.get_profile(state.user_id)
-    render_memory_table(state.console, profile.memories)
-
-
-def _handle_memory_save(state: "CLIState", args: List[str]) -> None:
-    """Save a memory: /memory save <key> <value>."""
-    if len(args) < 2:
-        state.console.print("[red]Usage: /memory save <key> <value>[/red]")
-        return
-
-    key = args[0]
-    value = " ".join(args[1:])
-
-    profile = state.profile_manager.get_profile(state.user_id)
-    from ....core.memory_limits import (
-        get_global_memory_char_limit,
-        get_memory_max_entries,
-        get_memory_value_max_chars,
-        memory_entries_full_error,
-        validate_profile_memory_write,
-    )
-
-    max_entries = get_memory_max_entries(state.settings)
-    value_cap = get_memory_value_max_chars(state.settings)
-    limit_error = validate_profile_memory_write(
-        profile,
-        key=key,
-        value=value,
-        limit=get_global_memory_char_limit(state.settings),
-        max_entries=max_entries,
-        max_value_chars=value_cap,
-    )
-    if limit_error:
-        state.console.print(f"[red]{limit_error}[/red]")
-        return
-    if not profile.add_memory(
-        key, value, max_entries=max_entries, max_value_chars=value_cap
-    ):
-        state.console.print(f"[red]{memory_entries_full_error(max_entries)}[/red]")
-        return
-    state.profile_manager.save_profile(profile)
-    state.console.print(f"[green]Saved memory: {key}[/green]")
-
-
-def _handle_memory_forget(state: "CLIState", args: List[str]) -> None:
-    """Remove a memory by key."""
-    if not args:
-        state.console.print("[red]Usage: /memory forget <key>[/red]")
-        return
-
-    key = args[0]
-    profile = state.profile_manager.get_profile(state.user_id)
-    if profile.remove_memory(key):
-        state.profile_manager.save_profile(profile)
-        state.console.print(f"[green]Forgot: {key}[/green]")
-    else:
-        state.console.print(f"[red]No memory with key '{key}'.[/red]")
 
 
 async def _handle_memory_root_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_memory(context.legacy_state, args)
-        return CommandResult.completed()
     if args:
         return CommandResult.failed(
             "Usage: /memory list|search|save|forget",
@@ -107,10 +32,6 @@ async def _handle_memory_list_context(
     context: CommandContext,
     _args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_memory_list(context.legacy_state, [])
-        return CommandResult.completed()
-
     try:
         memories = await call_client_method(context, "list_memories", context.user_id)
     except CommandClientMethodUnavailable as exc:
@@ -128,11 +49,6 @@ async def _handle_memory_search_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/memory search is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
     query = " ".join(args).strip()
     if not query:
         return CommandResult.failed("Usage: /memory search <query>", error_code="usage_error")
@@ -164,9 +80,6 @@ async def _handle_memory_save_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_memory_save(context.legacy_state, args)
-        return CommandResult.completed()
     if len(args) < 2:
         return CommandResult.failed(
             "Usage: /memory save <key> <value>",
@@ -190,9 +103,6 @@ async def _handle_memory_forget_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        _handle_memory_forget(context.legacy_state, args)
-        return CommandResult.completed()
     if not args:
         return CommandResult.failed("Usage: /memory forget <key>", error_code="usage_error")
 
@@ -242,7 +152,6 @@ def register(registry: CommandRegistry) -> None:
         description="Manage memories",
         usage="/memory list",
         handler=_handle_memory_root_context,
-        handler_mode="context",
         category="Personal",
         subcommands={
             "list": Command(
@@ -251,7 +160,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List memories",
                 usage="list",
                 handler=_handle_memory_list_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "search": Command(
@@ -260,7 +168,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Search memories",
                 usage="search <query>",
                 handler=_handle_memory_search_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "save": Command(
@@ -269,7 +176,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Save memory",
                 usage="save <key> <value>",
                 handler=_handle_memory_save_context,
-                handler_mode="context",
                 category="Personal",
             ),
             "forget": Command(
@@ -278,7 +184,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Forget memory",
                 usage="forget <key>",
                 handler=_handle_memory_forget_context,
-                handler_mode="context",
                 category="Personal",
             ),
         },

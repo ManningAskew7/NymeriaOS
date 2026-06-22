@@ -23,11 +23,6 @@ async def _handle_mcp_root(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/mcp is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
     if args:
         return CommandResult.failed(
             "Usage: /mcp list|add|remove|discover|test|retry|status|logs",
@@ -486,7 +481,6 @@ def register(registry: CommandRegistry) -> None:
         description="Manage MCP servers",
         usage="/mcp list",
         handler=_handle_mcp_root,
-        handler_mode="context",
         category="MCP",
         subcommands={
             "list": Command(
@@ -494,7 +488,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List MCP servers",
                 usage="list",
                 handler=_handle_mcp_list,
-                handler_mode="context",
                 category="MCP",
             ),
             "add": Command(
@@ -503,7 +496,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Install an MCP server",
                 usage="add <source> [--name name] [--thread id] [--yes]",
                 handler=_handle_mcp_add,
-                handler_mode="context",
                 category="MCP",
             ),
             "remove": Command(
@@ -512,7 +504,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Remove an MCP server",
                 usage="remove <server-id> [--yes]",
                 handler=_handle_mcp_remove,
-                handler_mode="context",
                 category="MCP",
             ),
             "discover": Command(
@@ -520,7 +511,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Rediscover MCP tools",
                 usage="discover <server-id>",
                 handler=_handle_mcp_discover,
-                handler_mode="context",
                 category="MCP",
             ),
             "test": Command(
@@ -528,7 +518,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Test MCP connectivity",
                 usage="test <server-id>",
                 handler=_handle_mcp_test,
-                handler_mode="context",
                 category="MCP",
             ),
             "retry": Command(
@@ -536,7 +525,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Retry MCP setup",
                 usage="retry <server-id> [--yes]",
                 handler=_handle_mcp_retry,
-                handler_mode="context",
                 category="MCP",
             ),
             "status": Command(
@@ -544,7 +532,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show MCP status",
                 usage="status [server-id]",
                 handler=_handle_mcp_status,
-                handler_mode="context",
                 category="MCP",
             ),
             "logs": Command(
@@ -552,7 +539,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show MCP install logs",
                 usage="logs <server-id> [limit]",
                 handler=_handle_mcp_logs,
-                handler_mode="context",
                 category="MCP",
             ),
         },

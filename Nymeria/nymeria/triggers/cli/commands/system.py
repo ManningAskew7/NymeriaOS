@@ -1,18 +1,18 @@
-"""System commands: /help, /clear, /exit, /history, /settings."""
+"""System commands: /history, /settings, /redraw, /verbose.
+
+The shared command toolkit (transport shim, confirmation, formatting, and
+scalar-parse helpers) imported by the other command modules also lives here.
+(/help, /cls, and /exit are registered as renderer-agnostic builtins in
+``registry.register_builtins``.)
+"""
 
 from __future__ import annotations
 
 import inspect
 from collections.abc import Mapping, Sequence
-from typing import Any, List, TYPE_CHECKING
-
-from rich.panel import Panel
-from rich.text import Text
+from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-
-if TYPE_CHECKING:
-    from ..state import CLIState
 
 
 SAFE_SETTINGS_PATCH_FIELDS = {
@@ -68,161 +68,6 @@ class CommandClientMethodUnavailable(RuntimeError):
     def __init__(self, method_name: str) -> None:
         super().__init__(method_name)
         self.method_name = method_name
-
-
-def _handle_help(state: "CLIState", args: List[str]) -> None:
-    """Show categorized help."""
-    sections = {
-        "Thread": [
-            ("/threads, /t", "List all threads"),
-            ("/threads switch <id>, /t s <id>", "Switch thread (partial ID)"),
-            ("/threads new [name], /t n", "Create new thread"),
-            ("/threads delete <id>", "Delete a thread"),
-            ("/threads info", "Current thread details"),
-            ("/threads rename <title>", "Rename current thread"),
-            ("/branch [title], /fork", "Create a branched thread"),
-        ],
-        "Model": [
-            ("/model", "Show effective model"),
-            ("/model set <model-id>", "Set per-thread model override"),
-            ("/provider [list|set|test|switch]", "Manage LLM providers"),
-            ("/fallback [list|add|remove|clear|set]", "Manage model fallbacks"),
-            ("/fast [prompt]", "Toggle or use the fast model for one turn"),
-            ("/reasoning [on|off|low|medium|high|xhigh|max]", "Toggle extended thinking"),
-        ],
-        "Tools": [
-            ("/tools", "List tools for current thread"),
-            ("/tools enable <name>", "Enable an optional tool"),
-            ("/tools disable <name>", "Disable a tool"),
-            ("/tools optional", "List all optional tools"),
-        ],
-        "TODOs": [
-            ("/todos", "List all TODOs"),
-            ("/todo add <task>", "Add a TODO"),
-            ("/todo done <id>", "Complete a TODO"),
-            ("/todo delete <id>", "Delete a TODO"),
-        ],
-        "Memory": [
-            ("/memory list", "List saved memories"),
-            ("/memory save <key> <value>", "Save a memory"),
-            ("/memory forget <key>", "Remove a memory"),
-        ],
-        "Context": [
-            ("/context", "Show context window stats"),
-            ("/usage [session]", "Token usage and cost statistics"),
-            ("/compact", "Trigger manual compaction"),
-        ],
-        "Session": [
-            ("/export [json|md|jsonl]", "Export thread to file"),
-            ("/import <file>", "Import thread from JSON file"),
-            ("/copy [N | code]", "Copy response to clipboard"),
-        ],
-        "Conversation": [
-            ("/retry [new prompt]", "Re-send last message for a new response"),
-            ("/undo [--yes]", "Remove last user+assistant exchange"),
-        ],
-        "System": [
-            ("/login [api-url], /connect", "Connect to a Nymeria API"),
-            ("/logout", "Disconnect and remove saved CLI token"),
-            ("/help, /h", "Show this help"),
-            ("/settings", "Show global settings"),
-            ("/history", "Show conversation history"),
-            ("/cls", "Clear screen"),
-            ("/exit, /quit", "Exit the CLI"),
-        ],
-    }
-
-    body = Text()
-    for section_name, cmds in sections.items():
-        body.append(f"\n {section_name}\n", style="bold")
-        for cmd, desc in cmds:
-            body.append(f"  {cmd:<38}", style="cyan")
-            body.append(f" {desc}\n", style="dim")
-
-    state.console.print(Panel(body, title="Commands", border_style="green", padding=(0, 1)))
-
-
-def _handle_clear(state: "CLIState", args: List[str]) -> None:
-    """Clear terminal and re-render welcome."""
-    from ..rendering.welcome import render_welcome
-
-    state.console.clear()
-    render_welcome(state)
-
-
-def _handle_exit(state: "CLIState", args: List[str]) -> None:
-    """Exit the CLI."""
-    state.running = False
-    state.console.print("[dim]Goodbye![/dim]")
-
-
-def _handle_history(state: "CLIState", args: List[str]) -> None:
-    """Show conversation history."""
-    if state.agent is None:
-        state.console.print("[red]Not available in API mode.[/red]")
-        return
-    history = state.agent.get_conversation_history(state.thread_id)
-    if not history:
-        state.console.print("[dim]No conversation history.[/dim]")
-        return
-
-    for msg in history:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-
-        if role == "human":
-            text = content if isinstance(content, str) else str(content)
-            state.console.print(f"\n[bold cyan]You:[/bold cyan] {text[:200]}")
-        elif role == "assistant":
-            if isinstance(content, str):
-                preview = content[:200]
-            elif isinstance(content, list):
-                # Collect text from content blocks
-                parts = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        parts.append(block.get("text", ""))
-                preview = " ".join(parts)[:200]
-            else:
-                preview = str(content)[:200]
-            if preview:
-                state.console.print(f"[bold green]Nymeria:[/bold green] {preview}...")
-
-        # Show tool calls inline
-        tool_calls = msg.get("toolCalls", [])
-        for tc in tool_calls:
-            name = tc.get("name", "unknown")
-            state.console.print(f"  [yellow]> {name}[/yellow]")
-
-
-def _handle_settings(state: "CLIState", args: List[str]) -> None:
-    """Display current global settings."""
-    s = state.settings
-
-    if getattr(s, "compact_threshold_mode", "") == "percentage":
-        compact_label = f"{int(s.compact_threshold * 100)}%"
-    else:
-        compact_label = f"{getattr(s, 'compact_threshold_tokens', '?')} tokens"
-
-    lines = [
-        f"  Provider        {s.llm_provider}",
-        f"  Model           {s.llm_model}",
-        f"  Fast model      {s.llm_fast_model or 'auto'}",
-        f"  Fallbacks       {getattr(s, 'llm_fallback_models', '') or 'none'}",
-        f"  Temperature     {s.llm_temperature}",
-        f"  Extended think  {s.llm_extended_thinking}",
-        f"  Context mgmt    {s.context_management}",
-        f"  Compact at      {compact_label}",
-        f"  Database        {s.database_backend}",
-        f"  Watchdog        {'on' if s.watchdog_enabled else 'off'} (every {s.watchdog_interval_minutes}m)",
-        f"  Timezone        {s.user_timezone}",
-    ]
-
-    if s.llm_base_url:
-        lines.insert(2, f"  Base URL        {s.llm_base_url}")
-
-    body = "\n".join(lines)
-    state.console.print(Panel(body, title="Settings", border_style="dim", padding=(0, 1)))
 
 
 def _method_owner(context: CommandContext, method_name: str) -> Any | None:
@@ -477,10 +322,6 @@ async def _handle_history_context(
 ) -> CommandResult:
     """Show conversation history through the active client."""
 
-    if context.legacy_state is not None:
-        _handle_history(context.legacy_state, args)
-        return CommandResult.completed()
-
     thread_id = context.thread_id
     if not thread_id:
         return CommandResult.failed("No active thread is selected.")
@@ -584,10 +425,6 @@ async def _handle_settings_context(
 ) -> CommandResult:
     """Display settings through the active client."""
 
-    if context.legacy_state is not None:
-        _handle_settings(context.legacy_state, args)
-        return CommandResult.completed()
-
     if args:
         return CommandResult.failed(
             "Usage: /settings view or /settings patch <key=value> [--yes]",
@@ -670,13 +507,6 @@ async def _handle_redraw_context(
     context: CommandContext,
     _args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        context.legacy_state.console.clear()
-        from ..rendering.welcome import render_welcome
-
-        render_welcome(context.legacy_state)
-        return CommandResult.completed()
-
     await context.dispatch({"type": "redraw"})
     return CommandResult.completed("Redrawn.")
 
@@ -710,32 +540,18 @@ async def _handle_verbose_context(
 
 
 def register(registry: CommandRegistry) -> None:
-    """Register all system commands."""
-    registry.register(Command(
-        name="help",
-        aliases=["/h"],
-        description="Show help",
-        handler=_handle_help,
-    ))
-    registry.register(Command(
-        name="cls",
-        aliases=[],
-        description="Clear screen",
-        handler=_handle_clear,
-    ))
-    registry.register(Command(
-        name="exit",
-        aliases=["/quit", "/q"],
-        description="Exit the CLI",
-        handler=_handle_exit,
-    ))
+    """Register system commands.
+
+    /help, /cls, and /exit are renderer-agnostic builtins registered by
+    ``CommandRegistry.register_builtins``; system.py owns /history, /settings,
+    /redraw, and /verbose.
+    """
     registry.register(Command(
         name="history",
         aliases=[],
         description="Show conversation history",
         usage="/history [--internal] [limit]",
         handler=_handle_history_context,
-        handler_mode="context",
         category="System",
     ))
     registry.register(Command(
@@ -744,7 +560,6 @@ def register(registry: CommandRegistry) -> None:
         description="View or patch global settings",
         usage="/settings view",
         handler=_handle_settings_context,
-        handler_mode="context",
         category="System",
         subcommands={
             "view": Command(
@@ -752,7 +567,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show global settings",
                 usage="view",
                 handler=_handle_settings_view_context,
-                handler_mode="context",
                 category="System",
             ),
             "patch": Command(
@@ -760,7 +574,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Patch safe global settings",
                 usage="patch <key=value> [key=value...] [--yes]",
                 handler=_handle_settings_patch_context,
-                handler_mode="context",
                 category="System",
             ),
         },
@@ -771,7 +584,6 @@ def register(registry: CommandRegistry) -> None:
         description="Redraw the CLI",
         usage="/redraw",
         handler=_handle_redraw_context,
-        handler_mode="context",
         category="System",
     ))
     registry.register(Command(
@@ -780,6 +592,5 @@ def register(registry: CommandRegistry) -> None:
         description="Toggle full-screen transcript verbosity",
         usage="/verbose on|off|status",
         handler=_handle_verbose_context,
-        handler_mode="context",
         category="System",
     ))

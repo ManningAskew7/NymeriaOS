@@ -117,7 +117,6 @@ def _backend_group_command(root: str, info: Mapping[str, Any]) -> Command:
         description=f"{root} commands",
         usage=f"/{root} <subcommand>",
         handler=_handle_group,
-        handler_mode="context",
         category=category,
         metadata={"backend_command": True, "backend_group": True},
     )
@@ -149,7 +148,6 @@ def _backend_command(
         description=str(info.get("description") or ""),
         usage=usage,
         handler=_handler,
-        handler_mode="context",
         category=_cli_category(info),
         metadata={
             "backend_command": True,

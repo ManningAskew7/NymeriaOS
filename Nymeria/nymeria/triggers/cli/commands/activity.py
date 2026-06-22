@@ -161,7 +161,6 @@ def register(registry: CommandRegistry) -> None:
         description="Inspect recent activity",
         usage="/activity recent",
         handler=_handle_activity_root,
-        handler_mode="context",
         category="Personal",
         subcommands={
             "recent": Command(
@@ -170,7 +169,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show recent activity",
                 usage="recent [limit]",
                 handler=_handle_activity_recent,
-                handler_mode="context",
                 category="Personal",
             ),
             "notifications": Command(
@@ -179,7 +177,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show notifications",
                 usage="notifications",
                 handler=_handle_notifications,
-                handler_mode="context",
                 category="Personal",
             ),
         },

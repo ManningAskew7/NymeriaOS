@@ -270,7 +270,6 @@ def register(registry: CommandRegistry) -> None:
             description="Connect the CLI to a Nymeria API backend",
             usage="/login [api-url] [--user-id <id>]",
             handler=_handle_login,
-            handler_mode="context",
             category="System",
         )
     )
@@ -280,7 +279,6 @@ def register(registry: CommandRegistry) -> None:
             description="Reconnect using the saved connection without re-entering it",
             usage="/reconnect",
             handler=_handle_reconnect,
-            handler_mode="context",
             category="System",
         )
     )
@@ -290,7 +288,6 @@ def register(registry: CommandRegistry) -> None:
             description="Disconnect the CLI and remove the saved token",
             usage="/logout",
             handler=_handle_logout,
-            handler_mode="context",
             category="System",
         )
     )

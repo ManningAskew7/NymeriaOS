@@ -35,21 +35,6 @@ async def _handle_account_current(
     context: CommandContext,
     _args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        state = context.legacy_state
-        return CommandResult.completed(
-            CommandMessage(
-                "\n".join(
-                    [
-                        "Current Account",
-                        f"  User ID  {state.user_id}",
-                        "  Mode     local",
-                    ]
-                ),
-                title="Account",
-            )
-        )
-
     try:
         me = await _get_me(context, context.user_id)
     except CommandClientMethodUnavailable as exc:
@@ -72,14 +57,6 @@ async def _handle_account_switch(
         )
     user_id = args[0]
 
-    if context.legacy_state is not None:
-        context.legacy_state.user_id = user_id
-        context.user_id = user_id
-        return CommandResult.completed(
-            CommandMessage(f"Switched account: {user_id}", level="success"),
-            payload={"user_id": user_id},
-        )
-
     try:
         me = await _get_me(context, user_id)
     except CommandClientMethodUnavailable:
@@ -98,11 +75,6 @@ async def _handle_account_tokens(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/account tokens is only available in API mode.",
-            error_code="legacy_command_unavailable",
-        )
     if not args or args[0].casefold() in {"list", "ls"}:
         return await _handle_tokens_list(context, args[1:] if args else [])
     action = args[0].casefold()
@@ -219,12 +191,6 @@ async def _handle_account_platforms(
     context: CommandContext,
     _args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/account platforms is only available in API mode.",
-            error_code="legacy_command_unavailable",
-        )
-
     try:
         platforms = await call_client_method(
             context,
@@ -295,7 +261,6 @@ def register(registry: CommandRegistry) -> None:
         description="Inspect account, tokens, and linked platforms",
         usage="/account current",
         handler=_handle_account_root,
-        handler_mode="context",
         category="Personal",
         subcommands={
             "current": Command(
@@ -304,7 +269,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show current account",
                 usage="current",
                 handler=_handle_account_current,
-                handler_mode="context",
                 category="Personal",
             ),
             "switch": Command(
@@ -313,7 +277,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Switch API act-as user",
                 usage="switch <user-id>",
                 handler=_handle_account_switch,
-                handler_mode="context",
                 category="Personal",
             ),
             "tokens": Command(
@@ -321,7 +284,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List, issue, or revoke API tokens",
                 usage="tokens [list|issue|revoke]",
                 handler=_handle_account_tokens,
-                handler_mode="context",
                 category="Personal",
             ),
             "platforms": Command(
@@ -330,7 +292,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List linked chat platforms",
                 usage="platforms",
                 handler=_handle_account_platforms,
-                handler_mode="context",
                 category="Personal",
             ),
         },

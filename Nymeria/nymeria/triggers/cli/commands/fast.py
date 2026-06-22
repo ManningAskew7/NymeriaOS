@@ -29,6 +29,5 @@ def register(registry: CommandRegistry) -> None:
         description="Toggle between default and fast models",
         usage="/fast [on|off|set <model-id>] or /fast <prompt>",
         handler=_handle_fast,
-        handler_mode="context",
         category="Model",
     ))

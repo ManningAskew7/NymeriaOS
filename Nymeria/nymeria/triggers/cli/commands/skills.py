@@ -20,11 +20,6 @@ async def _handle_skills_root(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if context.legacy_state is not None:
-        return CommandResult.failed(
-            "/skills is only available in the new command layer.",
-            error_code="legacy_command_unavailable",
-        )
     if args:
         return CommandResult.failed(
             "Usage: /skills list|search|install|enable|disable|inspect",
@@ -438,7 +433,6 @@ def register(registry: CommandRegistry) -> None:
         description="Manage skills",
         usage="/skills list",
         handler=_handle_skills_root,
-        handler_mode="context",
         category="Skills",
         subcommands={
             "list": Command(
@@ -446,7 +440,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List installed skills",
                 usage="list [scope]",
                 handler=_handle_skills_list,
-                handler_mode="context",
                 category="Skills",
             ),
             "search": Command(
@@ -454,7 +447,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Search the skills marketplace",
                 usage="search [query] [--source source]",
                 handler=_handle_skills_search,
-                handler_mode="context",
                 category="Skills",
             ),
             "install": Command(
@@ -462,7 +454,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Install a marketplace skill",
                 usage="install <name> [--source source] [--scope user|global]",
                 handler=_handle_skills_install,
-                handler_mode="context",
                 category="Skills",
             ),
             "enable": Command(
@@ -470,7 +461,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Enable a skill for this thread or globally",
                 usage="enable [--global] <name>",
                 handler=_handle_skills_enable,
-                handler_mode="context",
                 category="Skills",
             ),
             "disable": Command(
@@ -478,7 +468,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Disable a skill for this thread or globally",
                 usage="disable [--global] <name>",
                 handler=_handle_skills_disable,
-                handler_mode="context",
                 category="Skills",
             ),
             "inspect": Command(
@@ -487,7 +476,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show skill details",
                 usage="inspect <name>",
                 handler=_handle_skills_inspect,
-                handler_mode="context",
                 category="Skills",
             ),
         },

@@ -308,7 +308,7 @@ def _success_message(
 
 def _bool_label(value: Any) -> str:
     if value is None:
-        return "—"
+        return "-"
     return "on" if value else "off"
 
 
@@ -346,6 +346,5 @@ def register(registry: CommandRegistry) -> None:
         description="Toggle extended thinking mode",
         usage="/reasoning [on|off|low|medium|high|xhigh|max]",
         handler=_handle_reasoning,
-        handler_mode="context",
         category="Model",
     ))

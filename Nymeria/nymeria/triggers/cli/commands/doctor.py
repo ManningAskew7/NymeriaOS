@@ -194,7 +194,6 @@ def register(registry: CommandRegistry) -> None:
         description="Inspect recent hidden transcript details",
         usage="/details [tool|thinking|artifact|error] [id-or-index]",
         handler=_handle_details,
-        handler_mode="context",
         category="Personal",
     ))
     registry.register(Command(
@@ -203,7 +202,6 @@ def register(registry: CommandRegistry) -> None:
         description="Run CLI diagnostics",
         usage="/doctor terminal",
         handler=_handle_doctor_root,
-        handler_mode="context",
         category="System",
         subcommands={
             "terminal": Command(
@@ -211,7 +209,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show terminal capability diagnostics",
                 usage="terminal",
                 handler=_handle_doctor_terminal,
-                handler_mode="context",
                 category="System",
             ),
             "api": Command(
@@ -219,7 +216,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Check API connectivity",
                 usage="api",
                 handler=_handle_doctor_api,
-                handler_mode="context",
                 category="System",
             ),
             "auth": Command(
@@ -227,7 +223,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Check API auth identity",
                 usage="auth",
                 handler=_handle_doctor_auth,
-                handler_mode="context",
                 category="System",
             ),
             "model": Command(
@@ -235,7 +230,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show model/provider diagnostics",
                 usage="model",
                 handler=_handle_doctor_model,
-                handler_mode="context",
                 category="System",
             ),
         },

@@ -23,6 +23,5 @@ def register(registry: CommandRegistry) -> None:
         description="Toggle between default and smart models",
         usage="/smart [on|off|set <model-id>] or /smart <prompt>",
         handler=_handle_smart,
-        handler_mode="context",
         category="Model",
     ))

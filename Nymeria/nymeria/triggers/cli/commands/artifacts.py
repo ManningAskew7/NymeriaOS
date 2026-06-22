@@ -276,7 +276,6 @@ def register(registry: CommandRegistry) -> None:
         description="Inspect recent workspace artifacts",
         usage="/artifacts recent",
         handler=_handle_artifacts_root,
-        handler_mode="context",
         category="Personal",
         subcommands={
             "recent": Command(
@@ -285,7 +284,6 @@ def register(registry: CommandRegistry) -> None:
                 description="List recent workspace artifacts",
                 usage="recent [limit]",
                 handler=_handle_artifacts_recent,
-                handler_mode="context",
                 category="Personal",
             ),
             "open": Command(
@@ -293,7 +291,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Show artifact path and metadata",
                 usage="open <index-or-path>",
                 handler=_handle_artifacts_open,
-                handler_mode="context",
                 category="Personal",
             ),
             "download": Command(
@@ -302,7 +299,6 @@ def register(registry: CommandRegistry) -> None:
                 description="Download a workspace artifact through the API",
                 usage="download <index-or-path>",
                 handler=_handle_artifacts_download,
-                handler_mode="context",
                 category="Personal",
             ),
         },

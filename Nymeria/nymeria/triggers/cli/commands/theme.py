@@ -137,7 +137,6 @@ def register(registry: CommandRegistry) -> None:
             description="Customize local CLI colors",
             usage="/theme show",
             handler=_handle_theme,
-            handler_mode="context",
             category="System",
             subcommands={
                 "show": Command(
@@ -145,7 +144,6 @@ def register(registry: CommandRegistry) -> None:
                     description="Show CLI theme colors",
                     usage="show",
                     handler=_handle_theme_show,
-                    handler_mode="context",
                     category="System",
                 ),
                 "preset": Command(
@@ -153,7 +151,6 @@ def register(registry: CommandRegistry) -> None:
                     description="Apply a built-in CLI theme preset",
                     usage="preset default",
                     handler=_handle_theme_preset,
-                    handler_mode="context",
                     category="System",
                 ),
                 "set": Command(
@@ -161,7 +158,6 @@ def register(registry: CommandRegistry) -> None:
                     description="Set one CLI theme color",
                     usage="set <slot> <#RRGGBB>",
                     handler=_handle_theme_set,
-                    handler_mode="context",
                     category="System",
                 ),
                 "reset": Command(
@@ -169,7 +165,6 @@ def register(registry: CommandRegistry) -> None:
                     description="Reset one CLI theme color or all overrides",
                     usage="reset [slot]",
                     handler=_handle_theme_reset,
-                    handler_mode="context",
                     category="System",
                 ),
             },
