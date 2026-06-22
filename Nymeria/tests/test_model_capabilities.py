@@ -409,3 +409,118 @@ def test_concurrent_cache_misses_share_one_openrouter_fetch(monkeypatch):
     assert calls == 1
     assert len(results) == 2
     assert all("provider/test-model" in result for result in results)
+
+
+# ---------------------------------------------------------------------------
+# register_model_metadata merge semantics (F3: dataclasses.replace refactor)
+# ---------------------------------------------------------------------------
+
+
+def _fresh_caches(monkeypatch) -> None:
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+    monkeypatch.setattr(capabilities, "_live_model_cache", {})
+
+
+def test_register_new_model_records_id_name_and_limits(monkeypatch):
+    _fresh_caches(monkeypatch)
+
+    capabilities.register_model_metadata(
+        model_id="acme/widget-1",
+        name="Widget One",
+        context_length=64000,
+        max_completion_tokens=4096,
+    )
+
+    info = capabilities._model_cache["acme/widget-1"]
+    assert info.id == "acme/widget-1"
+    assert info.name == "Widget One"
+    assert info.context_length == 64000
+    assert info.max_completion_tokens == 4096
+    # The same object is mirrored into the live cache.
+    assert capabilities._live_model_cache["acme/widget-1"] is info
+
+
+def test_register_empty_name_falls_back_to_model_id(monkeypatch):
+    _fresh_caches(monkeypatch)
+
+    capabilities.register_model_metadata(model_id="acme/widget-2", context_length=8000)
+
+    assert capabilities._model_cache["acme/widget-2"].name == "acme/widget-2"
+
+
+def test_register_preserves_existing_fields_when_not_provided(monkeypatch):
+    # The silent-data-loss guard: a partial update must not wipe prior metadata.
+    _fresh_caches(monkeypatch)
+    monkeypatch.setattr(
+        capabilities,
+        "_model_cache",
+        {
+            "acme/widget-3": ModelInfo(
+                id="acme/widget-3",
+                name="Widget Three",
+                context_length=200000,
+                input_modalities={"text", "image"},
+                tokenizer="GPT",
+            )
+        },
+    )
+
+    capabilities.register_model_metadata(
+        model_id="acme/widget-3",
+        max_completion_tokens=8192,
+    )
+
+    info = capabilities._model_cache["acme/widget-3"]
+    assert info.max_completion_tokens == 8192          # newly merged
+    assert info.context_length == 200000               # preserved
+    assert info.name == "Widget Three"                 # preserved
+    assert info.input_modalities == {"text", "image"}  # preserved
+    assert info.tokenizer == "GPT"                      # preserved
+
+
+def test_register_zero_numeric_is_treated_as_absent(monkeypatch):
+    _fresh_caches(monkeypatch)
+    monkeypatch.setattr(
+        capabilities,
+        "_model_cache",
+        {"acme/widget-4": ModelInfo(id="acme/widget-4", context_length=128000)},
+    )
+
+    capabilities.register_model_metadata(model_id="acme/widget-4", context_length=0)
+
+    # 0 means "no provider number reported"; the prior value must survive.
+    assert capabilities._model_cache["acme/widget-4"].context_length == 128000
+
+
+def test_register_does_not_alias_caller_or_prior_set(monkeypatch):
+    _fresh_caches(monkeypatch)
+
+    caller_set = {"text"}
+    capabilities.register_model_metadata(
+        model_id="acme/widget-5",
+        input_modalities=caller_set,
+    )
+    first = capabilities._model_cache["acme/widget-5"]
+    # Mutating the caller's set after the call must not leak into the cache.
+    caller_set.add("image")
+    assert first.input_modalities == {"text"}
+
+    # A follow-up partial update keeps the modalities, as an independent copy.
+    capabilities.register_model_metadata(model_id="acme/widget-5", tokenizer="GPT")
+    second = capabilities._model_cache["acme/widget-5"]
+    assert second.input_modalities == {"text"}
+    assert second.input_modalities is not first.input_modalities
+
+
+def test_register_ignores_blank_model_id(monkeypatch):
+    _fresh_caches(monkeypatch)
+    capabilities.register_model_metadata(model_id="")
+    assert capabilities._model_cache == {}
+
+
+def test_get_context_limit_prefers_longest_static_match(monkeypatch):
+    # F5: the precomputed length-desc list must keep longest-match-first so the
+    # more specific "claude-opus-4-8" (1M) wins over "claude-opus-4" (200k).
+    _clear_model_cache(monkeypatch)
+    assert capabilities.get_context_limit("my-claude-opus-4-8-preview") == 1000000
+    assert capabilities.get_context_limit("my-claude-opus-4-preview") == 200000

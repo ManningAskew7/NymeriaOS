@@ -156,3 +156,65 @@ def test_load_soul_prefers_override_then_packaged_default(tmp_path):
     # A blank/whitespace override is ignored; falls back to the packaged default.
     override.write_text("   \n\t ", encoding="utf-8")
     assert settings.load_soul() == packaged
+
+
+# ---------------------------------------------------------------------------
+# validate_runtime bot-key warnings (F9: data-table refactor)
+# ---------------------------------------------------------------------------
+
+# Bot-token env vars are commonly set on deployment hosts (e.g. the Docker
+# convention DISCORD_BOT_TOKEN=disabled), so these tests must clear them to stay
+# hermetic and not pick up an ambient platform's token.
+_BOT_TOKEN_ENV_VARS = (
+    "TWITCH_BOT_ACCESS_TOKEN",
+    "DISCORD_BOT_TOKEN",
+    "SLACK_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "MATRIX_ACCESS_TOKEN",
+    "MATRIX_PASSWORD",
+    "SIGNAL_HTTP_URL",
+    "SIGNAL_ACCOUNT",
+    "INSTAGRAM_ACCESS_TOKEN",
+    "INSTAGRAM_IG_USER_ID",
+)
+
+
+def _clear_bot_token_env(monkeypatch) -> None:
+    for var in _BOT_TOKEN_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_validate_runtime_warns_when_bot_token_set_without_provider_key(monkeypatch):
+    _clear_bot_token_env(monkeypatch)
+    settings = Settings(
+        _env_file=None,
+        slack_bot_token="xoxb-test",
+        instagram_access_token="ig-test",
+    )
+    # Force "no LLM key" regardless of ambient env so the bot-warning branch fires.
+    monkeypatch.setattr(Settings, "get_api_key_for_provider", lambda self: "")
+
+    _errors, warnings = settings.validate_runtime()
+
+    assert any(
+        "SLACK_BOT_TOKEN or SLACK_APP_TOKEN is set but no LLM API key configured.\n"
+        "  The Slack bot will not be able to process messages." == w
+        for w in warnings
+    )
+    assert any(
+        "INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_IG_USER_ID is set but no LLM API key configured.\n"
+        "  The Instagram bot will not be able to process messages." == w
+        for w in warnings
+    )
+    # A platform whose token is unset must not warn.
+    assert not any("Discord bot will not be able" in w for w in warnings)
+
+
+def test_validate_runtime_suppresses_bot_warning_when_provider_key_present(monkeypatch):
+    _clear_bot_token_env(monkeypatch)
+    settings = Settings(_env_file=None, twitch_bot_access_token="oauth:test")
+    monkeypatch.setattr(Settings, "get_api_key_for_provider", lambda self: "sk-present")
+
+    _errors, warnings = settings.validate_runtime()
+
+    assert not any("Twitch bot will not be able" in w for w in warnings)

@@ -8,7 +8,7 @@ import logging
 import math
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Set, TypedDict
@@ -151,6 +151,16 @@ DEFAULT_CONTEXT_LIMITS = {
     "google/gemini-2.5-pro": 1000000,
     "_default": 128000,
 }
+
+# Length-desc ordering of the (non-default) entries for the substring fallback
+# in get_context_limit. Precomputed once at import: the sort key never changes,
+# so re-sorting on every cache-miss call is pure repeated work. Stable sort keeps
+# the dict insertion order among equal-length keys, matching the prior inline sort.
+_DEFAULT_CONTEXT_LIMITS_BY_LEN = sorted(
+    ((name, limit) for name, limit in DEFAULT_CONTEXT_LIMITS.items() if name != "_default"),
+    key=lambda item: len(item[0]),
+    reverse=True,
+)
 
 _OPENAI_SNAPSHOT_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 _CAPABILITY_SNAPSHOT_SUFFIX_RE = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
@@ -1248,79 +1258,48 @@ def register_model_metadata(
     if not model_id:
         return
 
+    # Per-field "provided" filter: an entry mapped to None here means the caller
+    # did not supply a meaningful value, so the existing cached value (or the
+    # dataclass default) survives the merge. Numeric limits treat <= 0 as
+    # "not provided"; name/tokenizer treat "" as "not provided". Anything left in
+    # ``updates`` overrides the base via ``dataclasses.replace``, so adding a new
+    # ModelInfo field only needs one row here (no risk of forgetting the
+    # existing-value fallback, the silent data-loss trap of the old hand merge).
+    provided: dict[str, Any] = {
+        "name": name or None,
+        "context_length": context_length if (context_length and context_length > 0) else None,
+        "max_completion_tokens": (
+            max_completion_tokens if (max_completion_tokens and max_completion_tokens > 0) else None
+        ),
+        "input_modalities": input_modalities,
+        "supported_parameters": supported_parameters,
+        "reasoning_efforts": reasoning_efforts,
+        "default_temperature": default_temperature,
+        "default_top_p": default_top_p,
+        "default_frequency_penalty": default_frequency_penalty,
+        "pricing_prompt": pricing_prompt,
+        "pricing_completion": pricing_completion,
+        "tokenizer": tokenizer or None,
+        "max_images_per_request": max_images_per_request,
+        "max_image_bytes": max_image_bytes,
+        "max_pdf_pages": max_pdf_pages,
+        "max_total_attachment_bytes": max_total_attachment_bytes,
+    }
+    updates = {field_name: value for field_name, value in provided.items() if value is not None}
+
     key = model_id.lower()
     with _cache_lock:
-        existing = _model_cache.get(key)
-        info = ModelInfo(
+        # A fresh entry defaults name to model_id (ModelInfo's own default is "").
+        base = _model_cache.get(key) or ModelInfo(id=model_id, name=model_id)
+        # Always own independent copies of the mutable set fields so a later
+        # mutation of the cached entry never aliases a prior cache generation or
+        # the caller's set.
+        info = replace(
+            base,
             id=model_id,
-            name=name or (existing.name if existing else model_id),
-            context_length=(
-                context_length
-                if context_length and context_length > 0
-                else (existing.context_length if existing else 0)
-            ),
-            max_completion_tokens=(
-                max_completion_tokens
-                if max_completion_tokens and max_completion_tokens > 0
-                else (existing.max_completion_tokens if existing else None)
-            ),
-            input_modalities=input_modalities
-            if input_modalities is not None
-            else (existing.input_modalities.copy() if existing else set()),
-            supported_parameters=supported_parameters
-            if supported_parameters is not None
-            else (existing.supported_parameters.copy() if existing else set()),
-            reasoning_efforts=(
-                reasoning_efforts
-                if reasoning_efforts is not None
-                else (existing.reasoning_efforts if existing else None)
-            ),
-            default_temperature=(
-                default_temperature
-                if default_temperature is not None
-                else (existing.default_temperature if existing else None)
-            ),
-            default_top_p=(
-                default_top_p
-                if default_top_p is not None
-                else (existing.default_top_p if existing else None)
-            ),
-            default_frequency_penalty=(
-                default_frequency_penalty
-                if default_frequency_penalty is not None
-                else (existing.default_frequency_penalty if existing else None)
-            ),
-            pricing_prompt=(
-                pricing_prompt
-                if pricing_prompt is not None
-                else (existing.pricing_prompt if existing else None)
-            ),
-            pricing_completion=(
-                pricing_completion
-                if pricing_completion is not None
-                else (existing.pricing_completion if existing else None)
-            ),
-            tokenizer=tokenizer or (existing.tokenizer if existing else None),
-            max_images_per_request=(
-                max_images_per_request
-                if max_images_per_request is not None
-                else (existing.max_images_per_request if existing else None)
-            ),
-            max_image_bytes=(
-                max_image_bytes
-                if max_image_bytes is not None
-                else (existing.max_image_bytes if existing else None)
-            ),
-            max_pdf_pages=(
-                max_pdf_pages
-                if max_pdf_pages is not None
-                else (existing.max_pdf_pages if existing else None)
-            ),
-            max_total_attachment_bytes=(
-                max_total_attachment_bytes
-                if max_total_attachment_bytes is not None
-                else (existing.max_total_attachment_bytes if existing else None)
-            ),
+            input_modalities=set(updates.pop("input_modalities", base.input_modalities)),
+            supported_parameters=set(updates.pop("supported_parameters", base.supported_parameters)),
+            **updates,
         )
         _live_model_cache[key] = info
         _model_cache[key] = info
@@ -1343,9 +1322,7 @@ def get_context_limit(model_id: str) -> int:
             return limit
 
     model_lower = model_id.lower()
-    for known_model, limit in sorted(DEFAULT_CONTEXT_LIMITS.items(), key=lambda item: len(item[0]), reverse=True):
-        if known_model == "_default":
-            continue
+    for known_model, limit in _DEFAULT_CONTEXT_LIMITS_BY_LEN:
         if known_model.lower() in model_lower or model_lower in known_model.lower():
             return limit
 
