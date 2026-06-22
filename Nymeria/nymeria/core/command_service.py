@@ -8,6 +8,7 @@ out-of-process compatibility shims.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shlex
@@ -77,7 +78,6 @@ DEFAULT_GLOBAL_SURFACES: tuple[CommandSurface, ...] = (
     "agent",
 )
 
-GROUPED = {"config", "env", "tools", "memory", "notepad", "todos"}
 AGENT_BLOCKED = {"ask", "stop", "clear", "restart", "compact", "start"}
 SKILL_SHOW_MAX_CHARS = 12_000
 
@@ -322,38 +322,6 @@ def _split_args(rest: str) -> list[str]:
         return shlex.split(rest, posix=True) if rest else []
     except ValueError:
         return rest.split()
-
-
-def parse_command(raw: str) -> tuple[Optional[str], Optional[str], list[str], str]:
-    """Parse a command string into command, subcommand, args, and raw rest."""
-    s = raw.strip()
-    if not s:
-        return None, None, [], ""
-    if s.startswith("/"):
-        s = s[1:].lstrip()
-    if not s:
-        return None, None, [], ""
-
-    head, _, tail = s.partition(" ")
-    command = head.lower()
-
-    if command in GROUPED:
-        tail = tail.strip()
-        if not tail:
-            return command, None, [], ""
-        sub_head, _, sub_tail = tail.partition(" ")
-        subcommand = sub_head.lower()
-        rest = sub_tail.strip()
-    else:
-        subcommand = None
-        rest = tail.strip()
-
-    try:
-        args = shlex.split(rest, posix=True) if rest else []
-    except ValueError:
-        args = rest.split()
-
-    return command, subcommand, args, rest
 
 
 def _consume_option(
@@ -3856,7 +3824,6 @@ class _CommandExecutor:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        import asyncio
         settings, ctx, tools_data, todos = await asyncio.gather(
             self.api.get_settings(),
             self.api.get_context_stats(self.thread_id),
@@ -3941,7 +3908,6 @@ class _CommandExecutor:
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
-        import asyncio
         ctx, thread_cfg, settings, categories, tools_data = await asyncio.gather(
             self.api.get_context_stats(self.thread_id),
             self.api.get_thread_config(self.thread_id),
@@ -4844,7 +4810,6 @@ class _CommandExecutor:
             get_global_memory_char_limit,
             profile_memory_text_from_records,
         )
-        from ..config import get_settings
         from ..tools.thread_notes import read_notepad
 
         def parse_limit(raw: str) -> int | None:
