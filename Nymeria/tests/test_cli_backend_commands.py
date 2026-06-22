@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Optional
 
+from cli_fixtures import run
 from nymeria.triggers.cli.commands import (
     Command,
     CommandContext,
@@ -45,10 +45,6 @@ class _FakeCommandClient:
             "command": command.lstrip("/"),
             "level": "success",
         }
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def command_info(

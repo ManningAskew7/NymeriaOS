@@ -9,6 +9,7 @@ from cli_fixtures import (
     DelayedEvent,
     FakeAgentClient,
     FakeTerminalCapabilities,
+    run,
 )
 
 from nymeria.triggers.cli.input import ComposerSubmission
@@ -26,10 +27,6 @@ from nymeria.triggers.cli.state import (
     reduce_stream_event,
     start_turn,
 )
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def make_shell(client: Any) -> FullScreenPromptToolkitShell:

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 from typing import Any
 
-from cli_fixtures import FakeTerminalCapabilities
+from cli_fixtures import FakeTerminalCapabilities, run
 
 from nymeria.triggers.cli.commands import (
     CommandContext,
@@ -32,10 +31,6 @@ from nymeria.triggers.cli.state import (
     reduce_events,
     start_turn,
 )
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class PersonalFakeClient:

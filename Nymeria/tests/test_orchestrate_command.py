@@ -8,16 +8,12 @@ command directly (it is handled by the chat endpoint).
 
 from __future__ import annotations
 
-import asyncio
 
+from cli_fixtures import run
 from nymeria.core.command_service import (
     CommandContext,
     CommandService,
 )
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class _FakeApi:

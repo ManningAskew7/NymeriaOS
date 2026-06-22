@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
 
-from cli_fixtures import FakeTerminalCapabilities
+from cli_fixtures import FakeTerminalCapabilities, run
 
 from nymeria.triggers.cli.app import _repl_prompt_style
 from nymeria.triggers.cli.commands import CommandContext, CommandRegistry, ListCommandOutputSink
@@ -20,10 +19,6 @@ from nymeria.triggers.cli.theme import (
     load_cli_theme,
     save_cli_theme,
 )
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def test_default_theme_uses_soft_repl_palette() -> None:

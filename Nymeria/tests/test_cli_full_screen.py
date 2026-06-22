@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import time
 
-from cli_fixtures import FakeAgentClient, FakeTerminalCapabilities, simple_response_events
+from cli_fixtures import FakeAgentClient, FakeTerminalCapabilities, run, simple_response_events
 
 from nymeria.triggers.cli.commands import CommandRegistry
 from nymeria.triggers.cli.commands import system as system_commands
@@ -17,10 +16,6 @@ from nymeria.triggers.cli.rendering.full_screen import (
 )
 from nymeria.triggers.cli.state import create_initial_state, reduce_stream_event, start_turn
 from nymeria.triggers.cli.theme import DEFAULT_THEME_VALUES
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def make_shell(

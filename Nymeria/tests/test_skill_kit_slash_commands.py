@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from cli_fixtures import run
 import nymeria.core.command_service as command_service_mod
 from nymeria.core.command_service import (
     CommandContext,
@@ -22,10 +22,6 @@ from nymeria.core.thread_config import (
 )
 from nymeria.core.time_utils import utc_now
 from nymeria.skills import Skill
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def _skill(

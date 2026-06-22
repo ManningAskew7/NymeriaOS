@@ -11,6 +11,7 @@ from cli_fixtures import (
     DelayedEvent,
     FakeAgentClient,
     FakeTerminalCapabilities,
+    run,
     simple_response_events,
     tool_call_result_events,
 )
@@ -23,10 +24,6 @@ from nymeria.triggers.cli.rendering.stream import StreamRenderer
 
 class DummyAgent:
     pass
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def make_app(client: FakeAgentClient) -> CLIApp:

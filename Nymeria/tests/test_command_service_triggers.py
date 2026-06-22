@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from cli_fixtures import run
 import nymeria.core.agent as agent_module
 from nymeria.core.command_service import CommandContext, CommandService
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def _make_trigger(

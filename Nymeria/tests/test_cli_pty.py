@@ -14,7 +14,7 @@ from typing import IO
 
 import pytest
 
-from cli_fixtures import DelayedEvent, FakeAgentClient, FakeTerminalCapabilities
+from cli_fixtures import DelayedEvent, FakeAgentClient, FakeTerminalCapabilities, run
 
 from nymeria.triggers.cli.app import CLIRuntimeConfig
 from nymeria.triggers.cli.capabilities import detect_terminal_capabilities
@@ -25,10 +25,6 @@ from nymeria.triggers.cli.rendering.full_screen import (
 )
 
 pty = pytest.importorskip("pty")
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def runtime_config(**overrides):

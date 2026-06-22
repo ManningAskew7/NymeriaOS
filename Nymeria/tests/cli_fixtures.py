@@ -19,6 +19,16 @@ import pytest
 EventDict = dict[str, Any]
 
 
+def run(coro):
+    """Drive a coroutine to completion in a fresh event loop.
+
+    Shared one-liner for the CLI/command test suite so the byte-identical
+    ``asyncio.run`` wrapper is defined once instead of per file.
+    """
+
+    return asyncio.run(coro)
+
+
 @dataclass(frozen=True, slots=True)
 class DelayedEvent:
     """A stream event that becomes available after ``delay_seconds``."""
