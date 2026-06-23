@@ -96,6 +96,14 @@ class SkillEmbeddingIndex:
         self._last_error: Optional[str] = None
         self._vec_available = False
         self._lock = threading.RLock()
+        # Cached SQLite connection (lazily opened on the first search, sqlite-vec
+        # loaded once). The instance is long-lived (constructed once per agent
+        # and held by SkillManager), and the latency-sensitive search() path runs
+        # on every agent turn, so reusing one connection avoids re-opening the DB
+        # and re-loading the sqlite-vec C extension on each search. All DB access
+        # is serialized by ``self._lock`` (an RLock), so a single shared
+        # connection is safe. ``close()`` releases it; the next search reopens.
+        self._conn: Optional[sqlite3.Connection] = None
 
         self._init_db()
 
@@ -103,7 +111,16 @@ class SkillEmbeddingIndex:
     # connection + schema
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
+    def _open_connection(self) -> sqlite3.Connection:
+        """Open a NEW SQLite connection with sqlite-vec loaded.
+
+        Used by the one-shot / occasional methods that manage their own
+        short-lived connection (``_init_db`` at construction, ``rebuild``,
+        ``clear_namespace``). The repeated hot path (``search``) reuses the
+        cached ``_get_connection()`` instead, so the sqlite-vec C extension is
+        loaded once there rather than on every call. Sets ``self._vec_available``
+        from whether the extension loaded.
+        """
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         try:
@@ -117,9 +134,38 @@ class SkillEmbeddingIndex:
             logger.debug("sqlite-vec unavailable for skills index: %s", e)
         return conn
 
+    def _get_connection(self) -> sqlite3.Connection:
+        """Return the cached connection with sqlite-vec loaded, opening it on
+        first use.
+
+        Reused across repeated ``search`` calls (the per-turn hot path). Callers
+        always hold ``self._lock`` (an RLock), so the single connection is never
+        touched concurrently. This pays the sqlite-vec extension load once
+        instead of on every search. ``close()`` clears the cache so the next call
+        reopens transparently. Searches read in autocommit, so this connection
+        always observes rows committed by the short-lived rebuild/clear
+        connections.
+        """
+        if self._conn is None:
+            self._conn = self._open_connection()
+        return self._conn
+
+    def close(self) -> None:
+        """Close the cached connection if open. Idempotent; the next search
+        reopens transparently. Used for explicit teardown (e.g. tests) and to
+        release the file handle when an index is no longer needed."""
+        with self._lock:
+            conn = self._conn
+            self._conn = None
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.debug("Error closing skills-index connection", exc_info=True)
+
     def _init_db(self) -> None:
         with self._lock:
-            conn = self._connect()
+            conn = self._open_connection()
             try:
                 c = conn.cursor()
                 # Metadata — one row per (namespace, name).
@@ -261,7 +307,7 @@ class SkillEmbeddingIndex:
         table. The FTS5 + metadata tables are always populated.
         """
         with self._lock:
-            conn = self._connect()
+            conn = self._open_connection()
             try:
                 c = conn.cursor()
                 c.execute("DELETE FROM skills_meta WHERE namespace = ?", (namespace,))
@@ -326,7 +372,7 @@ class SkillEmbeddingIndex:
 
     def clear_namespace(self, namespace: str) -> None:
         with self._lock:
-            conn = self._connect()
+            conn = self._open_connection()
             try:
                 c = conn.cursor()
                 c.execute("DELETE FROM skills_meta WHERE namespace = ?", (namespace,))
@@ -435,36 +481,38 @@ class SkillEmbeddingIndex:
         Tries semantic first, then FTS5/BM25, then substring. Returns all
         matches it found plus a ``mode`` string and (when degraded) a
         ``warning`` suitable for surfacing to the agent / user.
+
+        Runs on the cached connection (``_get_connection``): this is the per-turn
+        hot path, so it must not re-open the DB and re-load sqlite-vec each call.
+        Read-only and serialized by ``self._lock``; the connection is left open
+        for reuse.
         """
         with self._lock:
-            conn = self._connect()
-            try:
-                warning: Optional[str] = None
-                # Attempt semantic.
-                if self._vec_available and self.is_semantic_available():
-                    q_vec = self._embed(query)
-                    if q_vec is not None:
-                        hits = self._vec_search(conn, q_vec, namespace, top_k)
-                        if hits:
-                            return SearchResponse(results=hits, mode="semantic")
-                        # Empty semantic result — fall through to keyword to catch edge cases.
-                if not self.is_semantic_available():
-                    warning = (
-                        f"semantic search unavailable ({self._last_error}); "
-                        "falling back to keyword search. "
-                        "Set EMBEDDING_API_KEY on the server for better skill discovery."
-                    )
+            conn = self._get_connection()
+            warning: Optional[str] = None
+            # Attempt semantic.
+            if self._vec_available and self.is_semantic_available():
+                q_vec = self._embed(query)
+                if q_vec is not None:
+                    hits = self._vec_search(conn, q_vec, namespace, top_k)
+                    if hits:
+                        return SearchResponse(results=hits, mode="semantic")
+                    # Empty semantic result — fall through to keyword to catch edge cases.
+            if not self.is_semantic_available():
+                warning = (
+                    f"semantic search unavailable ({self._last_error}); "
+                    "falling back to keyword search. "
+                    "Set EMBEDDING_API_KEY on the server for better skill discovery."
+                )
 
-                # Attempt BM25 / FTS5.
-                hits = self._fts_search(conn, query, namespace, top_k)
-                if hits:
-                    return SearchResponse(results=hits, mode="bm25", warning=warning)
+            # Attempt BM25 / FTS5.
+            hits = self._fts_search(conn, query, namespace, top_k)
+            if hits:
+                return SearchResponse(results=hits, mode="bm25", warning=warning)
 
-                # Final: substring match.
-                hits = self._substring_search(conn, query, namespace, top_k)
-                return SearchResponse(results=hits, mode="substring", warning=warning)
-            finally:
-                conn.close()
+            # Final: substring match.
+            hits = self._substring_search(conn, query, namespace, top_k)
+            return SearchResponse(results=hits, mode="substring", warning=warning)
 
 
 def _safe_tokens(query: str) -> List[str]:
