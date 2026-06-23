@@ -13,11 +13,11 @@ from ...config import Settings
 from ...core.accounts import AuthenticatedUser, UserNotFound
 from ...core.chat_bindings import BindCodeInvalid, BindingAlreadyExists
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
+from ...triggers.bot_helpers import SeenEventCache
 from ...triggers.line_bot import (
     BotAPIError,
     LineRESTClient,
     NymeriaLineBot,
-    _SeenEventCache,
     credential_source_present,
     validate_line_signature,
 )
@@ -25,7 +25,7 @@ from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
 
-_LINE_SEEN_CACHE = _SeenEventCache()
+_LINE_SEEN_CACHE = SeenEventCache()
 
 
 class InProcessLineAPI:

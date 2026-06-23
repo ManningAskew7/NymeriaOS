@@ -12,6 +12,12 @@ import httpx
 
 USER_CACHE_TTL_SECONDS = 30 * 60
 
+# Defaults for the shared event-dedupe cache. A platform event id stays
+# "seen" for this long, and the cache evicts down to half capacity once it
+# exceeds the cap. Values match the per-bot constants the cache replaced.
+SEEN_EVENT_TTL_SECONDS = 10 * 60
+SEEN_EVENT_MAX = 5000
+
 
 class PlatformResolverAPI(Protocol):
     async def resolve_platform_user(self, platform: str, platform_user_id: str) -> Optional[str]:
@@ -117,3 +123,46 @@ class UserResolver:
     def invalidate(self, platform_user_id: int | str) -> None:
         """Drop one cached platform-user lookup."""
         self._cache.pop(str(platform_user_id), None)
+
+
+class SeenEventCache:
+    """TTL cache for deduping platform events by id, shared by bot clients.
+
+    Used by the chat-platform thin clients (Slack, Signal, Google Chat, LINE)
+    and the API-hosted webhook routers to drop redelivered events. Keys expire
+    after ``ttl_seconds`` and the cache evicts down to half ``max_items`` once
+    it exceeds the cap.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int = SEEN_EVENT_TTL_SECONDS,
+        max_items: int = SEEN_EVENT_MAX,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._max_items = max_items
+        self._clock = clock
+        self._items: dict[str, float] = {}
+
+    def mark_seen(self, key: str) -> bool:
+        """Return True when *key* was already seen and still fresh."""
+        now = self._clock()
+        expires_at = self._items.get(key)
+        if expires_at and expires_at > now:
+            return True
+        self._items[key] = now + self._ttl_seconds
+        self._prune(now)
+        return False
+
+    def _prune(self, now: float) -> None:
+        if len(self._items) <= self._max_items:
+            stale = [key for key, expiry in self._items.items() if expiry <= now]
+        else:
+            stale_count = len(self._items) - (self._max_items // 2)
+            stale = [
+                key for key, expiry in self._items.items() if expiry <= now
+            ] + list(self._items)[:stale_count]
+        for key in stale:
+            self._items.pop(key, None)

@@ -13,7 +13,6 @@ import base64
 import json
 import logging
 import re
-import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterable, Mapping
 from dataclasses import dataclass
@@ -23,7 +22,7 @@ from urllib.parse import quote
 import httpx
 
 from .api_client import NymeriaAPIClient
-from .bot_helpers import UserResolver, http_error_detail
+from .bot_helpers import SeenEventCache, UserResolver, http_error_detail
 from .message_splitter import split_signal_message as split_message
 from .sse_consumer import consume_sse_stream
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -32,8 +31,6 @@ logger = logging.getLogger(__name__)
 
 SIGNAL_TEXT_LIMIT = 8000
 BINDING_REFRESH_INTERVAL_SECONDS = 60
-SEEN_EVENT_TTL_SECONDS = 10 * 60
-SEEN_EVENT_MAX = 5000
 OBJECT_REPLACEMENT = "\uFFFC"
 
 
@@ -317,44 +314,6 @@ class SignalInboundMessage:
     @property
     def platform_chat_id(self) -> str:
         return make_platform_chat_id(sender_id=self.sender_id, group_id=self.group_id)
-
-
-class _SeenEventCache:
-    """TTL cache for Signal event dedupe by envelope timestamp/sender."""
-
-    def __init__(
-        self,
-        *,
-        ttl_seconds: int = SEEN_EVENT_TTL_SECONDS,
-        max_items: int = SEEN_EVENT_MAX,
-        clock=time.monotonic,
-    ) -> None:
-        self._ttl_seconds = ttl_seconds
-        self._max_items = max_items
-        self._clock = clock
-        self._items: dict[str, float] = {}
-
-    def mark_seen(self, key: str) -> bool:
-        now = self._clock()
-        expires_at = self._items.get(key)
-        if expires_at and expires_at > now:
-            return True
-        self._items[key] = now + self._ttl_seconds
-        self._prune(now)
-        return False
-
-    def _prune(self, now: float) -> None:
-        if len(self._items) <= self._max_items:
-            stale = [key for key, expiry in self._items.items() if expiry <= now]
-        else:
-            stale_count = len(self._items) - (self._max_items // 2)
-            stale = [
-                key
-                for key, expiry in self._items.items()
-                if expiry <= now
-            ] + list(self._items)[:stale_count]
-        for key in stale:
-            self._items.pop(key, None)
 
 
 class SignalCommand:
@@ -655,7 +614,7 @@ class NymeriaSignalBot:
         allowed_users: str | list[str] | tuple[str, ...] | None = None,
         allowed_groups: str | list[str] | tuple[str, ...] | None = None,
         show_tool_events: bool = False,
-        seen_cache: Optional[_SeenEventCache] = None,
+        seen_cache: Optional[SeenEventCache] = None,
     ) -> None:
         self.api = api
         self.signal = signal
@@ -669,7 +628,7 @@ class NymeriaSignalBot:
         }
         self.allowed_groups = _csv_set(allowed_groups)
         self.show_tool_events = show_tool_events
-        self._seen = seen_cache or _SeenEventCache()
+        self._seen = seen_cache or SeenEventCache()
         self._bindings: dict[str, str] = {}
         self._binding_users: dict[str, str] = {}
         self._user_resolver = UserResolver(self.api, "signal", logger=logger)
