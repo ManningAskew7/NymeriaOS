@@ -36,6 +36,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _resolve_owner_role(agent: "NymeriaAgent", account_id: str) -> str:
+    """Resolve an account's role for tool gating, defaulting to ``"user"``.
+
+    ``account_id`` is whichever id owns the tools being gated: the caller's
+    ``user_id`` for the default/dream/enabled paths, or the thread *owner's*
+    id for callable-thread tools. Returns ``"user"`` when the id is empty or
+    the account is unknown, the conservative least-privilege default used at
+    every graph-build role gate.
+    """
+    owner = agent.accounts_repo.get_user_by_id(account_id) if account_id else None
+    return owner.role if owner else "user"
+
+
+def _apply_role_gates(tool_names, owner_role: str) -> tuple[set, set]:
+    """Strip admin-only then developer-only tools for ``owner_role``.
+
+    Returns ``(allowed, blocked)`` where ``blocked`` is the union of the
+    admin-gated and developer-gated names. This is the defense-in-depth
+    graph-build filter; the authoritative gate runs at tool-enable time.
+    Callers keep their own context-specific warning log for ``blocked`` so the
+    four gating sites preserve their distinct thread/owner/scope messages.
+    """
+    from ..tools import filter_admin_only_tools, filter_developer_only_tools
+
+    allowed, blocked_admin = filter_admin_only_tools(tool_names, owner_role)
+    allowed, blocked_dev = filter_developer_only_tools(allowed, owner_role)
+    return allowed, blocked_admin | blocked_dev
+
+
 def get_team_scoped_callable_threads(
     agent: "NymeriaAgent",
     *,
@@ -97,8 +126,6 @@ def get_callable_thread_tools(agent: "NymeriaAgent", tc) -> List[BaseTool]:
     the callable thread itself runs as a sub-agent.
     """
     from ..tools import (
-        filter_admin_only_tools,
-        filter_developer_only_tools,
         resolve_default_tool_names,
         static_tool_catalog,
     )
@@ -113,15 +140,13 @@ def get_callable_thread_tools(agent: "NymeriaAgent", tc) -> List[BaseTool]:
 
     core_names = resolve_default_tool_names(default_tools)
     if default_tools is not None:
-        owner = agent.accounts_repo.get_user_by_id(owner_id) if owner_id else None
-        owner_role = owner.role if owner else "user"
-        allowed_core, blocked_admin_core = filter_admin_only_tools(core_names, owner_role)
-        allowed_core, blocked_dev_core = filter_developer_only_tools(allowed_core, owner_role)
-        if blocked_admin_core or blocked_dev_core:
+        owner_role = _resolve_owner_role(agent, owner_id)
+        allowed_core, blocked_core = _apply_role_gates(core_names, owner_role)
+        if blocked_core:
             logger.warning(
                 "Callable graph build for thread=%s owner=%s: stripped "
                 "role-gated default tools %s",
-                tc.thread_id, owner_id, sorted(blocked_admin_core | blocked_dev_core),
+                tc.thread_id, owner_id, sorted(blocked_core),
             )
         core_names = [name for name in core_names if name in allowed_core]
     tools = [
@@ -219,8 +244,6 @@ def _select_dream_tools_for_graph(
     )
     from ..tools import (
         CATALOG_TOOLS,
-        filter_admin_only_tools,
-        filter_developer_only_tools,
         static_tool_catalog,
     )
 
@@ -243,17 +266,8 @@ def _select_dream_tools_for_graph(
             sorted(ignored_outside_policy),
         )
 
-    owner = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
-    owner_role = owner.role if owner else "user"
-    allowed_extras, blocked_admin_extras = filter_admin_only_tools(
-        extra_names,
-        owner_role,
-    )
-    allowed_extras, blocked_dev_extras = filter_developer_only_tools(
-        allowed_extras,
-        owner_role,
-    )
-    blocked_extras = blocked_admin_extras | blocked_dev_extras
+    owner_role = _resolve_owner_role(agent, user_id)
+    allowed_extras, blocked_extras = _apply_role_gates(extra_names, owner_role)
     if blocked_extras:
         logger.warning(
             "Dream graph build for thread=%s user=%s: stripped role-gated "
@@ -332,6 +346,11 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
     if tc and tc.shadow_parent_id:
         return _select_dream_tools_for_graph(agent, user_id, thread_id, tc), tc
 
+    # Resolved lazily (and at most once) from user_id by the core and extras
+    # role gates below; the callable path leaves it None so the extras gate
+    # resolves it there.
+    owner_role: str | None = None
+
     if tc and tc.callable and tc.callable_name:
         tools = agent._get_callable_thread_tools(tc)
     else:
@@ -339,8 +358,6 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
         default_tools = profile.tool_preferences.default_thread_tools
 
         from ..tools import (
-            filter_admin_only_tools,
-            filter_developer_only_tools,
             resolve_default_tool_names,
             static_tool_catalog,
         )
@@ -348,15 +365,13 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
 
         core_names = resolve_default_tool_names(default_tools)
         if default_tools is not None:
-            owner = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
-            owner_role = owner.role if owner else "user"
-            allowed_core, blocked_admin_core = filter_admin_only_tools(core_names, owner_role)
-            allowed_core, blocked_dev_core = filter_developer_only_tools(allowed_core, owner_role)
-            if blocked_admin_core or blocked_dev_core:
+            owner_role = _resolve_owner_role(agent, user_id)
+            allowed_core, blocked_core = _apply_role_gates(core_names, owner_role)
+            if blocked_core:
                 logger.warning(
                     "Graph build for thread=%s user=%s: stripped "
                     "role-gated default tools %s",
-                    thread_id, user_id, sorted(blocked_admin_core | blocked_dev_core),
+                    thread_id, user_id, sorted(blocked_core),
                 )
             core_names = [name for name in core_names if name in allowed_core]
         tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
@@ -411,16 +426,9 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
         live_temp = agent._resolve_temporary_tools(tc)
         extra_names = (set(tc.enabled_tools) | live_temp) - disabled
         if extra_names:
-            from ..tools import filter_admin_only_tools, filter_developer_only_tools
-            owner = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
-            owner_role = owner.role if owner else "user"
-            allowed_extras, blocked_admin_extras = filter_admin_only_tools(
-                extra_names, owner_role
-            )
-            allowed_extras, blocked_dev_extras = filter_developer_only_tools(
-                allowed_extras, owner_role
-            )
-            blocked_extras = blocked_admin_extras | blocked_dev_extras
+            if owner_role is None:
+                owner_role = _resolve_owner_role(agent, user_id)
+            allowed_extras, blocked_extras = _apply_role_gates(extra_names, owner_role)
             if blocked_extras:
                 logger.warning(
                     "Graph build for thread=%s user=%s: stripped role-gated "

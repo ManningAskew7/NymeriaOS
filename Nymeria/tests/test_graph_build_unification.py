@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import textwrap
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from nymeria.core.thread_config import ThreadConfig
@@ -19,6 +20,7 @@ from nymeria.tools import (
     SEED_TOOLS,
     DEVELOPER_ONLY_TOOL_NAMES,
     CATALOG_TOOLS,
+    static_tool_catalog,
 )
 from nymeria.vendor.react_agent.config import CheckpointerConfig
 
@@ -112,6 +114,136 @@ def _ordinary_optional_tool_name(exclude: set[str] | None = None) -> str:
         if name not in blocked and name not in excluded:
             return name
     raise AssertionError("no ordinary optional tool found")
+
+
+def test_apply_role_gates_strips_admin_and_developer_for_non_admin():
+    """``_apply_role_gates`` removes admin- and developer-gated names for a
+    non-admin role and returns their union as the blocked set."""
+    from nymeria.core.agent_graph import _apply_role_gates
+
+    admin_tool = next(iter(ADMIN_ONLY_TOOL_NAMES))
+    dev_tool = next(iter(DEVELOPER_ONLY_TOOL_NAMES))
+    # Any name not in the gated frozensets passes through untouched.
+    ordinary = "ordinary_tool_not_gated"
+    names = {admin_tool, dev_tool, ordinary}
+
+    allowed, blocked = _apply_role_gates(names, "user")
+
+    assert ordinary in allowed
+    assert admin_tool not in allowed
+    assert dev_tool not in allowed
+    assert blocked == {admin_tool, dev_tool}
+    assert isinstance(allowed, set)
+
+
+def test_apply_role_gates_admin_keeps_everything():
+    """Admins keep all names; nothing is blocked."""
+    from nymeria.core.agent_graph import _apply_role_gates
+
+    names = {
+        next(iter(ADMIN_ONLY_TOOL_NAMES)),
+        next(iter(DEVELOPER_ONLY_TOOL_NAMES)),
+        "ordinary_tool_not_gated",
+    }
+
+    allowed, blocked = _apply_role_gates(names, "admin")
+
+    assert allowed == names
+    assert blocked == set()
+
+
+def test_resolve_owner_role_defaults_to_user_for_unknown_or_empty():
+    """``_resolve_owner_role`` returns the conservative ``"user"`` default for
+    an empty id (no lookup) or an unknown account, and the real role otherwise."""
+    from nymeria.core.agent_graph import _resolve_owner_role
+
+    agent = MagicMock()
+
+    agent.accounts_repo.get_user_by_id.return_value = None
+    assert _resolve_owner_role(agent, "") == "user"
+    agent.accounts_repo.get_user_by_id.assert_not_called()
+
+    assert _resolve_owner_role(agent, "ghost") == "user"
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="admin")
+    assert _resolve_owner_role(agent, "u1") == "admin"
+
+
+def test_select_tools_strips_admin_default_for_non_admin_keeps_for_admin():
+    """Defense-in-depth: an admin-only tool promoted into default_thread_tools
+    is stripped from the bound list for a non-admin owner but kept for an admin."""
+    catalog = static_tool_catalog()
+    admin_tool = next((n for n in ADMIN_ONLY_TOOL_NAMES if n in catalog), None)
+    assert admin_tool is not None, "expected an admin-only tool present in the catalog"
+    default_core = SEED_TOOLS[0].name
+
+    agent = _make_agent()
+    agent.profile_manager.get_profile.return_value = SimpleNamespace(
+        tool_preferences=SimpleNamespace(
+            default_thread_tools=[default_core, admin_tool],
+        ),
+    )
+    agent._get_team_scoped_callable_threads = MagicMock(return_value=[])
+    agent.thread_config_manager.get_config.return_value = None
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="user")
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    names = {t.name for t in tools}
+    assert default_core in names
+    assert admin_tool not in names
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="admin")
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    names = {t.name for t in tools}
+    assert default_core in names
+    assert admin_tool in names
+
+
+def test_select_tools_strips_admin_extra_for_non_admin_keeps_for_admin():
+    """Defense-in-depth on the extras gate: an admin-only tool enabled on a
+    thread is stripped for a non-admin owner but kept for an admin."""
+    catalog = static_tool_catalog()
+    admin_tool = next((n for n in ADMIN_ONLY_TOOL_NAMES if n in catalog), None)
+    assert admin_tool is not None, "expected an admin-only tool present in the catalog"
+
+    agent = _make_agent()
+    # Default profile (default_thread_tools=None) means the core gate is
+    # skipped, so this isolates the enabled_tools (extras) gate.
+    agent._get_team_scoped_callable_threads = MagicMock(return_value=[])
+    agent.thread_config_manager.get_config.return_value = ThreadConfig(
+        thread_id="t1",
+        enabled_tools=[admin_tool],
+    )
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="user")
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    assert admin_tool not in {t.name for t in tools}
+
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="admin")
+    tools, _ = agent._select_tools_for_graph("u1", "t1")
+    assert admin_tool in {t.name for t in tools}
+
+
+def test_select_tools_resolves_owner_role_once_across_core_and_extras():
+    """The core and extras role gates share a single owner-role lookup, so the
+    common (defaults + enabled extras) path does one get_user_by_id, not two."""
+    agent = _make_agent()
+    default_core = SEED_TOOLS[0].name
+    thread_extra = _ordinary_optional_tool_name()
+
+    agent.profile_manager.get_profile.return_value = SimpleNamespace(
+        tool_preferences=SimpleNamespace(default_thread_tools=[default_core]),
+    )
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="user")
+    agent._get_team_scoped_callable_threads = MagicMock(return_value=[])
+    agent.thread_config_manager.get_config.return_value = ThreadConfig(
+        thread_id="t1",
+        enabled_tools=[thread_extra],
+    )
+
+    agent._select_tools_for_graph("u1", "t1")
+
+    assert cast(MagicMock, agent.accounts_repo.get_user_by_id).call_count == 1
 
 
 def test_select_tools_shared_by_both_build_paths():
