@@ -149,9 +149,72 @@ def test_api_client_uses_loop_local_httpx_clients(monkeypatch):
     asyncio.run(request_once())
     asyncio.run(client.close())
 
+    # One httpx client is created per event loop (loop-local).
     assert len(FakeAsyncClient.instances) == 2
-    assert all(fake.closed for fake in FakeAsyncClient.instances)
-    assert [fake.close_count for fake in FakeAsyncClient.instances] == [1, 1]
+    first, second = FakeAsyncClient.instances
+    # The first loop's client is pruned when that loop closes (its sockets
+    # cannot be aclosed from a dead loop), so close() only closes the
+    # surviving second-loop client rather than every client ever created.
+    assert first.close_count == 0
+    assert second.closed is True
+    assert second.close_count == 1
+
+
+def test_api_client_prunes_clients_from_closed_loops(monkeypatch):
+    """A long-lived client reused across many one-shot ``asyncio.run`` loops
+    must not accumulate one httpx client per dead loop. Each loop still gets
+    its own client, but stale closed-loop entries are pruned on next access so
+    the map stays bounded (the CLI REPL reuses one client across every
+    command)."""
+    _patch_async_client(monkeypatch)
+
+    client = NymeriaAPIClient(base_url="http://api/", api_key="secret")
+
+    async def request_once() -> None:
+        await client.get_settings()
+
+    for _ in range(5):
+        asyncio.run(request_once())
+        # The map only ever retains the most-recent loop's entry; the prior
+        # loop's (now-closed) client was dropped on this call's access.
+        assert len(client._clients) == 1
+
+    # Five short-lived loops were used, so five clients were created over the
+    # run, but the map never grew past one entry (without the prune it would
+    # hold all five dead-loop clients and their sockets).
+    assert len(FakeAsyncClient.instances) == 5
+    asyncio.run(client.close())
+
+
+def test_client_for_loop_keeps_current_loop_when_sibling_dead(monkeypatch):
+    """The prune must drop only closed *sibling* loops, never the current
+    loop's own client. Without the ``other is not loop`` guard a re-access
+    could evict the client the in-flight request is about to use."""
+    _patch_async_client(monkeypatch)
+
+    client = NymeriaAPIClient(base_url="http://api/", api_key="secret")
+
+    # A real, already-closed event loop standing in for a one-shot caller's
+    # dead loop (is_closed() is genuinely True, unlike a stub).
+    dead_loop = asyncio.new_event_loop()
+    dead_loop.close()
+
+    async def run() -> None:
+        await client.get_settings()  # binds a client to the current (live) loop
+        loop = asyncio.get_running_loop()
+        client._clients[dead_loop] = api_client.httpx.AsyncClient(
+            timeout=api_client._DEFAULT_TIMEOUT
+        )
+        assert len(client._clients) == 2
+
+        client._client_for_loop()  # triggers the prune
+
+        # The dead sibling is dropped; the current live loop's client survives.
+        assert dead_loop not in client._clients
+        assert loop in client._clients
+        assert len(client._clients) == 1
+
+    asyncio.run(run())
 
 
 def test_api_client_reuses_client_for_streaming_and_workspace_download(monkeypatch):

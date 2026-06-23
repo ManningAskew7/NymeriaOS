@@ -88,9 +88,24 @@ class NymeriaAPIClient:
         return f"{self.base_url}{path}"
 
     def _client_for_loop(self) -> httpx.AsyncClient:
-        """Return the HTTP client bound to the current event loop."""
+        """Return the HTTP client bound to the current event loop.
+
+        Prunes entries keyed to loops that have since closed so the map cannot
+        grow without bound. A long-lived client reused across many one-shot
+        ``asyncio.run(...)`` loops (the CLI REPL, ``run.py`` helpers) would
+        otherwise accumulate one ``AsyncClient`` per dead loop, each holding
+        open sockets that can never be ``aclose``d from here (their loop is
+        gone). The current loop's entry is never pruned; the stale references
+        are simply dropped for garbage collection.
+        """
 
         loop = asyncio.get_running_loop()
+        for dead in [
+            other
+            for other in list(self._clients)
+            if other is not loop and other.is_closed()
+        ]:
+            self._clients.pop(dead, None)
         client = self._clients.get(loop)
         if client is None:
             client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
