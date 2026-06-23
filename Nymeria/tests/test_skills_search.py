@@ -172,3 +172,67 @@ def test_embedding_client_uses_bounded_timeout_and_no_retries(tmp_path):
 
     assert captured["timeout"] == EMBED_REQUEST_TIMEOUT_SECONDS
     assert captured["max_retries"] == 0
+
+
+def test_search_reuses_one_cached_connection(tmp_path):
+    """F11: the latency-sensitive search() path reuses a single cached SQLite
+    connection (one sqlite-vec load) instead of reopening on every call, while
+    the one-shot/bulk ops (init, rebuild) keep their own short-lived connection.
+    """
+    idx = _fresh_index(tmp_path)
+    idx.rebuild("installed", SAMPLE_SKILLS)
+    # rebuild + init manage their own short-lived connections, so the cache is
+    # still empty after them.
+    assert idx._conn is None
+
+    idx.search("pdf", namespace="installed", top_k=5)
+    first = idx._conn
+    assert first is not None  # search opened and cached a connection
+
+    idx.search("ocr", namespace="installed", top_k=5)
+    assert idx._conn is first  # reused, not reopened
+
+
+def test_close_is_idempotent_and_search_reopens(tmp_path):
+    """close() releases the cached connection and is safe to call twice; the
+    next search transparently reopens and still returns results."""
+    idx = _fresh_index(tmp_path)
+    idx.rebuild("installed", SAMPLE_SKILLS)
+    idx.search("pdf", namespace="installed", top_k=5)
+    before = idx._conn
+    assert before is not None
+
+    idx.close()
+    assert idx._conn is None
+    idx.close()  # idempotent: no error on a second close
+    assert idx._conn is None
+
+    r = idx.search("pdf", namespace="installed", top_k=5)
+    assert r.results and r.results[0].name == "pdf"
+    assert idx._conn is not None  # reopened transparently
+    assert idx._conn is not before  # a genuinely new connection, not the closed one
+
+
+def test_cached_search_connection_sees_later_committed_writes(tmp_path):
+    """A search that already opened the cached read connection must still observe
+    rows that a later rebuild/clear commits on its own short-lived connection
+    (cross-connection visibility; the cached connection reads in autocommit)."""
+    idx = _fresh_index(tmp_path)
+    idx.rebuild("installed", SAMPLE_SKILLS)
+
+    r1 = idx.search("pdf", namespace="installed", top_k=5)
+    assert any(h.name == "pdf" for h in r1.results)
+    cached = idx._conn
+    assert cached is not None
+
+    # clear_namespace commits a delete on a separate (fresh) connection.
+    idx.clear_namespace("installed")
+    r2 = idx.search("pdf", namespace="installed", top_k=5)
+    assert idx._conn is cached  # same cached read connection, not reopened
+    assert r2.results == []  # but it observes the committed delete
+
+    # And a subsequent rebuild's inserts are visible on the same cached conn too.
+    idx.rebuild("installed", SAMPLE_SKILLS)
+    r3 = idx.search("pdf", namespace="installed", top_k=5)
+    assert idx._conn is cached
+    assert any(h.name == "pdf" for h in r3.results)
