@@ -510,6 +510,41 @@ def _http_request_impl(
     started = time.perf_counter()
     logger.info("HTTP request tool: %s %s", method, _redact_text(normalized_url, redact_values))
 
+    def _finish_error(
+        error_type: str,
+        message: str,
+        *,
+        redirect_chain: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Build, audit, and redact an error result for the failure arms below.
+
+        ``_audit_http_result`` redacts its own copy of the result internally, so
+        the audit event is scrubbed regardless of call order; the returned
+        result is redacted separately before it leaves the tool.
+        ``redirect_chain`` is attached before auditing so the audit event records
+        it too.
+        """
+        result = _request_error(
+            error_type,
+            message,
+            request={"method": method, "url": normalized_url},
+            elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+        if redirect_chain is not None:
+            result["redirect_chain"] = redirect_chain
+        _audit_http_result(
+            tool_name=audit_tool_name,
+            method=method,
+            url=normalized_url,
+            result=result,
+            headers=parsed_headers,
+            body=body,
+            used_env_secrets=used_env_secrets,
+            used_credentials=used_credentials,
+            redact_values=redact_values,
+        )
+        return _redact_sensitive(result, redact_values)
+
     try:
         # Test transports are frequently backed by synthetic hostnames; still
         # apply literal IP/metadata/domain policy, but skip DNS in that mode.
@@ -556,87 +591,22 @@ def _http_request_impl(
             redact_values=redact_values,
         )
     except _HTTPTooManyRedirects as exc:
-        result = _request_error(
+        return _finish_error(
             "TooManyRedirects",
             f"Exceeded maximum redirect count of {policy_config.max_redirects}",
-            request={"method": method, "url": normalized_url},
-            elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+            redirect_chain=exc.redirect_chain,
         )
-        result["redirect_chain"] = exc.redirect_chain
-        _audit_http_result(
-            tool_name=audit_tool_name,
-            method=method,
-            url=normalized_url,
-            result=result,
-            headers=parsed_headers,
-            body=body,
-            used_env_secrets=used_env_secrets,
-            used_credentials=used_credentials,
-            redact_values=redact_values,
-        )
-        result = _redact_sensitive(result, redact_values)
-        return result
-    except httpx.TimeoutException as exc:
-        result = _request_error(
-            type(exc).__name__,
-            f"Request timed out after {timeout_seconds} seconds",
-            request={"method": method, "url": normalized_url},
-            elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
-        )
-        _audit_http_result(
-            tool_name=audit_tool_name,
-            method=method,
-            url=normalized_url,
-            result=result,
-            headers=parsed_headers,
-            body=body,
-            used_env_secrets=used_env_secrets,
-            used_credentials=used_credentials,
-            redact_values=redact_values,
-        )
-        result = _redact_sensitive(result, redact_values)
-        return result
     except httpx.RequestError as exc:
-        result = _request_error(
-            type(exc).__name__,
-            str(exc),
-            request={"method": method, "url": normalized_url},
-            elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
-        )
-        _audit_http_result(
-            tool_name=audit_tool_name,
-            method=method,
-            url=normalized_url,
-            result=result,
-            headers=parsed_headers,
-            body=body,
-            used_env_secrets=used_env_secrets,
-            used_credentials=used_credentials,
-            redact_values=redact_values,
-        )
-        result = _redact_sensitive(result, redact_values)
-        return result
+        # httpx.TimeoutException is a RequestError subclass; keep its dedicated
+        # wording while every other transport error reports str(exc).
+        if isinstance(exc, httpx.TimeoutException):
+            message = f"Request timed out after {timeout_seconds} seconds"
+        else:
+            message = str(exc)
+        return _finish_error(type(exc).__name__, message)
     except Exception as exc:
         logger.error("HTTP request tool failed", exc_info=True)
-        result = _request_error(
-            type(exc).__name__,
-            str(exc),
-            request={"method": method, "url": normalized_url},
-            elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
-        )
-        _audit_http_result(
-            tool_name=audit_tool_name,
-            method=method,
-            url=normalized_url,
-            result=result,
-            headers=parsed_headers,
-            body=body,
-            used_env_secrets=used_env_secrets,
-            used_credentials=used_credentials,
-            redact_values=redact_values,
-        )
-        result = _redact_sensitive(result, redact_values)
-        return result
+        return _finish_error(type(exc).__name__, str(exc))
 
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
     body_info = _parse_response_body(
