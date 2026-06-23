@@ -198,6 +198,96 @@ def test_http_request_timeout_error_shape():
     assert "timed out" in result["error"]["message"]
 
 
+def test_http_request_too_many_redirects_error_shape():
+    """The ``_HTTPTooManyRedirects`` arm reports a ``TooManyRedirects`` error
+    and attaches the redirect chain accumulated before bailing."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Always bounce onward so the follower exceeds max_redirects.
+        return httpx.Response(
+            302,
+            headers={"location": "https://api.example.com/next"},
+            request=request,
+        )
+
+    result = _http_request_impl(
+        method="GET",
+        url="https://api.example.com/start",
+        follow_redirects=True,
+        transport=httpx.MockTransport(handler),
+        policy_config=HTTPPolicyConfig(resolve_dns=False, max_redirects=1),
+    )
+
+    assert result["ok"] is False
+    assert result["http_ok"] is None
+    assert result["error"]["type"] == "TooManyRedirects"
+    assert "redirect count" in result["error"]["message"]
+    assert isinstance(result["redirect_chain"], list)
+    assert result["redirect_chain"]  # at least one hop recorded before bailing
+
+
+def test_http_request_connect_error_reports_exception_type():
+    """A non-timeout ``httpx.RequestError`` flows through the merged
+    transport-error arm and reports its concrete class name and message."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    result = _http_request_impl(
+        method="GET",
+        url="https://api.example.com/down",
+        transport=httpx.MockTransport(handler),
+        policy_config=PUBLIC_TEST_POLICY,
+    )
+
+    assert result["ok"] is False
+    assert result["http_ok"] is None
+    assert result["error"]["type"] == "ConnectError"
+    assert result["error"]["message"] == "connection refused"
+
+
+def test_http_request_unexpected_error_is_caught_and_shaped():
+    """A non-httpx exception hits the generic arm: it is shaped as an error
+    result (and audited/redacted via the shared finisher) rather than
+    propagating out of the tool."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("kaboom")
+
+    result = _http_request_impl(
+        method="GET",
+        url="https://api.example.com/boom",
+        transport=httpx.MockTransport(handler),
+        policy_config=PUBLIC_TEST_POLICY,
+    )
+
+    assert result["ok"] is False
+    assert result["http_ok"] is None
+    assert result["error"]["type"] == "RuntimeError"
+    assert result["error"]["message"] == "kaboom"
+
+
+def test_http_request_error_path_redacts_sensitive_values():
+    """The consolidated error finisher redacts the returned result, so secrets
+    surfaced in a transport error message or URL are scrubbed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("auth failed for token=SECRET123", request=request)
+
+    result = _http_request_impl(
+        method="GET",
+        url="https://api.example.com/x?token=SECRET123",
+        transport=httpx.MockTransport(handler),
+        policy_config=PUBLIC_TEST_POLICY,
+        redact_values=["SECRET123"],
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "ConnectError"
+    assert "SECRET123" not in json.dumps(result)
+    assert "[redacted]" in result["error"]["message"]
+
+
 def test_http_request_validation_error_has_consistent_fields():
     result = _http_request_impl(
         method="GET",
