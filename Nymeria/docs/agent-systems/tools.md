@@ -2143,7 +2143,7 @@ activity_feed(minutes_ago: int = 10)
 
 **Returns:** Structured text report grouped by thread showing user messages, autonomous tasks, TODO changes, and notifications. Returns "No activity" if the window is empty.
 
-**Data source:** Reads from the persisted activity log (`data/activity/{user_id}.json`). Only as complete as what gets logged  -  user messages, TODO state changes, autonomous task execution, and notifications are all captured.
+**Data source:** Reads from the persisted activity log (`data/activity/{user_id}.jsonl`, append-only JSON Lines). Only as complete as what gets logged: user messages, TODO state changes, autonomous task execution, and notifications are all captured.
 
 ### watchdog_dispatch
 
