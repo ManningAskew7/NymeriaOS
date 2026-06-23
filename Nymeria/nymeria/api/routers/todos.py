@@ -15,7 +15,7 @@ from ...core.todo_constants import (
     calculate_next_recurrence_time,
     validate_recurrence,
 )
-from ...core.todo_manager import TodoItem, TodoManager, TodoStatus
+from ...core.todo_manager import TodoItem, TodoList, TodoManager, TodoStatus
 from ...core.todo_schedule_db import TodoScheduleDB
 from ..schemas.todos import TodoCreateRequest, TodoItemResponse, TodoListResponse, TodoUpdateRequest
 
@@ -34,12 +34,12 @@ def _parse_scheduled_for(scheduled_for: Optional[str]) -> Optional[datetime]:
     if not scheduled_for:
         return None
 
-    logger.info(f"[API] Parsing scheduled_for: '{scheduled_for}'")
+    logger.debug(f"[API] Parsing scheduled_for: '{scheduled_for}'")
     try:
         result = parse_future_scheduled_time(scheduled_for)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    logger.info(
+    logger.debug(
         f"[API] Parsed scheduled_for '{scheduled_for}' -> {result} (UTC), timestamp={result.timestamp()}"
     )
     return result
@@ -49,6 +49,38 @@ def _recurrence_anchor(item: TodoItem | None) -> datetime:
     if item and item.scheduled_for:
         return ensure_aware_utc(item.scheduled_for)
     return utc_now()
+
+
+def _reschedule_recurring_done(
+    todo_list: TodoList,
+    item: TodoItem,
+    todo_id: str,
+) -> None:
+    """Roll a just-completed recurring TODO forward to its next occurrence.
+
+    ``item`` is the live (in-list) TODO that was marked done; when it carries a
+    recurrence and a future slot exists, it is rescheduled to that slot as a
+    PENDING item and the completion anchor is recorded in ``last_execution``.
+    No-op when there is no recurrence or no future slot. ``update_item`` mutates
+    the same object ``item`` references, so the caller's reference is updated in
+    place.
+    """
+    if not item.recurrence:
+        return
+    recurrence_anchor = _recurrence_anchor(item)
+    next_execution = calculate_next_recurrence_time(item.recurrence, recurrence_anchor)
+    if next_execution is None:
+        return
+    todo_list.update_item(
+        todo_id,
+        scheduled_for=next_execution,
+        status=TodoStatus.PENDING,
+    )
+    item.last_execution = recurrence_anchor
+    logger.debug(
+        f"[API] Auto-rescheduled recurring TODO {todo_id} "
+        f"from anchor {recurrence_anchor} for {next_execution}"
+    )
 
 
 def _todo_to_response(item: TodoItem) -> TodoItemResponse:
@@ -228,14 +260,12 @@ def create_todos_router(
         # Sync schedule AFTER atomic_update saves the file
         # (sync_schedule_to_db reads from disk, so file must be saved first)
         if created_item.scheduled_for:
-            logger.info(
+            logger.debug(
                 f"[API] TODO {created_item.id} has scheduled_for={created_item.scheduled_for}, syncing to schedule DB"
             )
             schedule_db = _get_todo_schedule_db(settings)
             todo_manager.sync_schedule_to_db(user_id, created_item.id, schedule_db)
-            logger.info(f"[API] Schedule synced for TODO {created_item.id}")
-        else:
-            logger.info(f"[API] TODO {created_item.id} has no schedule, skipping sync")
+            logger.debug(f"[API] Schedule synced for TODO {created_item.id}")
 
         return _todo_to_response(created_item)
 
@@ -316,23 +346,8 @@ def create_todos_router(
             # Auto-reschedule recurring TODOs marked as done
             if status == TodoStatus.DONE:
                 updated = todo_list.get_item(todo_id)
-                if updated and updated.recurrence:
-                    recurrence_anchor = _recurrence_anchor(updated)
-                    next_execution = calculate_next_recurrence_time(
-                        updated.recurrence,
-                        recurrence_anchor,
-                    )
-                    if next_execution:
-                        todo_list.update_item(
-                            todo_id,
-                            scheduled_for=next_execution,
-                            status=TodoStatus.PENDING,
-                        )
-                        updated.last_execution = recurrence_anchor
-                        logger.info(
-                            f"[API] Auto-rescheduled recurring TODO {todo_id} "
-                            f"from anchor {recurrence_anchor} for {next_execution}"
-                        )
+                if updated:
+                    _reschedule_recurring_done(todo_list, updated, todo_id)
 
             # Re-fetch the updated item (still in memory)
             updated_item = todo_list.get_item(todo_id)
@@ -345,7 +360,7 @@ def create_todos_router(
         # Sync schedule AFTER atomic_update saves the file
         # (sync_schedule_to_db reads from disk, so file must be saved first)
         todo_manager.sync_schedule_to_db(user_id, updated_item.id, schedule_db)
-        logger.info(f"[API] Schedule synced for TODO {updated_item.id}")
+        logger.debug(f"[API] Schedule synced for TODO {updated_item.id}")
 
         return _todo_to_response(updated_item)
 
@@ -429,24 +444,7 @@ def create_todos_router(
 
             # Auto-reschedule recurring TODOs
             if has_recurrence:
-                recurrence_anchor = _recurrence_anchor(item)
-                next_execution = calculate_next_recurrence_time(
-                    has_recurrence,
-                    recurrence_anchor,
-                )
-                if next_execution:
-                    todo_list.update_item(
-                        todo_id,
-                        scheduled_for=next_execution,
-                        status=TodoStatus.PENDING,
-                    )
-                    refreshed = todo_list.get_item(todo_id)
-                    if refreshed:
-                        refreshed.last_execution = recurrence_anchor
-                    logger.info(
-                        f"[API] Auto-rescheduled recurring TODO {todo_id} "
-                        f"from anchor {recurrence_anchor} for {next_execution}"
-                    )
+                _reschedule_recurring_done(todo_list, item, todo_id)
 
             # Re-fetch the updated item
             item = todo_list.get_item(todo_id)

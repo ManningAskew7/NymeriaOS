@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from nymeria.api.routers.todos import _reschedule_recurring_done
 from nymeria.core.accounts import AccountsRepo
-from nymeria.core.todo_manager import TodoList, TodoManager
+from nymeria.core.todo_manager import TodoList, TodoManager, TodoStatus
 
 
 class FakeAgent:
@@ -187,3 +189,77 @@ def test_todo_routes_are_effective_user_scoped_and_users_endpoint_remains(
     assert set(users_with_todos.json()) == {"owner", "other"}
 
     assert manager.get_todos("other").get_item(other_todo.json()["id"]) is not None
+
+
+def test_patch_to_done_reschedules_recurring_todo(
+    tmp_path: Path,
+    api_client_builder,
+):
+    # The PATCH status=done path shares the recurrence-rollover helper with the
+    # /complete path; assert it rolls the recurring TODO forward instead of
+    # leaving it done (the call site that had no prior coverage).
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    headers = api_client_builder.auth(token)
+
+    created = client.post(
+        "/todos",
+        headers=headers,
+        json={
+            "task": "Recurring via patch",
+            "scheduled_for": "30m",
+            "recurrence": "daily",
+            "thread_id": "thread-1",
+        },
+    )
+    assert created.status_code == 200
+    todo_id = created.json()["id"]
+    assert _scheduled_row_count(tmp_path, todo_id) == 1
+
+    patched = client.patch(
+        f"/todos/{todo_id}",
+        headers=headers,
+        json={"status": "done"},
+    )
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["status"] == "pending"
+    assert body["recurrence"] == "1d"
+    assert body["scheduled_for"] is not None
+    assert body["last_execution"] is not None
+    # Still scheduled after the rollover.
+    assert _scheduled_row_count(tmp_path, todo_id) == 1
+
+
+def test_reschedule_recurring_done_rolls_forward_and_records_anchor():
+    todo_list = TodoList(user_id="owner")
+    past_anchor = datetime.now(timezone.utc) - timedelta(hours=2)
+    item = todo_list.add_item(task="ping", scheduled_for=past_anchor, recurrence="1h")
+    assert item is not None
+    original_schedule = item.scheduled_for
+    item.status = TodoStatus.DONE
+
+    _reschedule_recurring_done(todo_list, item, item.id)
+
+    # Live in-list item is rolled forward to a future PENDING slot, with the
+    # prior fire time recorded as the completion anchor.
+    assert item.status == TodoStatus.PENDING
+    assert item.last_execution == original_schedule
+    assert item.scheduled_for is not None
+    assert item.scheduled_for > original_schedule
+    # The caller's reference and the stored item are the same object.
+    assert todo_list.get_item(item.id) is item
+
+
+def test_reschedule_recurring_done_is_noop_without_recurrence():
+    todo_list = TodoList(user_id="owner")
+    anchor = datetime.now(timezone.utc) - timedelta(hours=2)
+    item = todo_list.add_item(task="ping", scheduled_for=anchor)
+    assert item is not None
+    item.status = TodoStatus.DONE
+
+    _reschedule_recurring_done(todo_list, item, item.id)
+
+    assert item.status == TodoStatus.DONE
+    assert item.last_execution is None
+    assert item.scheduled_for == anchor
