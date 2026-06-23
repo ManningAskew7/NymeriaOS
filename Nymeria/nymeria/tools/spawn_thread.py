@@ -1016,7 +1016,7 @@ def _invoke_spawned(
         tracing_v2_callback_var,
     )
 
-    from ..core.event_bus import publish_agent_stream_chunk, publish_autonomous_event
+    from ..core.autonomous_turn import AutonomousTurnEmitter
     from ..core.stream_bridge import stream_and_collect
 
     task_id = f"spawned-{uuid.uuid4().hex[:8]}"
@@ -1028,9 +1028,26 @@ def _invoke_spawned(
     callback_token = tracing_v2_callback_var.set(None)
     collector_token = run_collector_var.set(None)
 
-    try:
-        started_published = False
+    # Bound before the parent-title resolution (which is internally guarded) so
+    # the error handler below can always publish the task_completed event.
+    # Note: unlike background_bash, spawn intentionally does NOT force
+    # task_started before task_completed; it only fires task_started from a
+    # streamed chunk (via emitter.handle_chunk). Do not add an
+    # emitter.publish_started() call on the success/error paths here without
+    # intending to change spawn's SSE contract.
+    emitter = AutonomousTurnEmitter(
+        thread_id=child_thread_id,
+        user_id=user_id,
+        task_id=task_id,
+        started_data={
+            "prompt": task,
+            "callable_name": title,
+            "trigger": "spawn_thread",
+        },
+        meta_event_types=("queued", "prompt_queued"),
+    )
 
+    try:
         parent_name = parent_thread_id or "unknown"
         if parent_thread_id:
             try:
@@ -1042,25 +1059,6 @@ def _invoke_spawned(
             except Exception:
                 logger.debug("Failed to resolve parent thread title")
         trigger_override = f'SpawnedBy("{parent_thread_id}", "{parent_name}")'
-
-        def handle_chunk(chunk: Dict[str, Any], _collection) -> None:
-            nonlocal started_published
-            if not started_published and chunk.get("type") not in ("queued", "prompt_queued"):
-                publish_autonomous_event(
-                    event_type="task_started",
-                    thread_id=child_thread_id,
-                    user_id=user_id,
-                    task_id=task_id,
-                    data={"prompt": task, "callable_name": title, "trigger": "spawn_thread"},
-                )
-                started_published = True
-
-            publish_agent_stream_chunk(
-                chunk,
-                thread_id=child_thread_id,
-                user_id=user_id,
-                task_id=task_id,
-            )
 
         def stream_error_message(chunk: Dict[str, Any]) -> str:
             content = chunk.get("content")
@@ -1075,7 +1073,7 @@ def _invoke_spawned(
                 "_is_self_invoke": True,
                 "_trigger_override": trigger_override,
             },
-            on_chunk=handle_chunk,
+            on_chunk=emitter.handle_chunk,
             error_message_factory=stream_error_message,
         )
 
@@ -1092,12 +1090,8 @@ def _invoke_spawned(
                 "[Spawned thread hit iteration limit without producing a response.]"
             )
 
-        publish_autonomous_event(
-            event_type="task_completed",
-            thread_id=child_thread_id,
-            user_id=user_id,
-            task_id=task_id,
-            data={"content": response_text, "callable_name": title},
+        emitter.publish_completed(
+            {"content": response_text, "callable_name": title}
         )
 
         return response_text or "[Spawned thread returned no content.]"
@@ -1107,17 +1101,13 @@ def _invoke_spawned(
             f"spawn_thread dispatch failed for {child_thread_id}: {e}", exc_info=True
         )
         try:
-            publish_autonomous_event(
-                event_type="task_completed",
-                thread_id=child_thread_id,
-                user_id=user_id,
-                task_id=task_id,
-                data={
+            emitter.publish_completed(
+                {
                     "error": True,
                     "error_message": str(e)[:200],
                     "content": f"Task failed: {str(e)[:200]}",
                     "callable_name": title,
-                },
+                }
             )
         except Exception:
             logger.warning("Failed to publish task-completed error event", exc_info=True)

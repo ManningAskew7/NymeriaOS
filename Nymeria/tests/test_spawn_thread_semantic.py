@@ -23,6 +23,7 @@ from nymeria.tools.spawn_thread import (
     PLATFORM_META_IDLE_TIMEOUT,
     PLATFORM_META_LAST_ACTIVE,
     PLATFORM_META_LIFETIME,
+    _invoke_spawned,
     _resolve_semantic_tools,
     spawn_thread,
 )
@@ -420,3 +421,179 @@ class TestExistingArgsStillWork:
 
         assert captured.get("task") == "Hello there"
         assert "child says: hello back" in result
+
+
+# ---------------------------------------------------------------------------
+# _invoke_spawned internals (the autonomous-turn SSE scaffold, slice 18 F3)
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeSpawnedInternals:
+    """Lock the SSE-publishing behavior of _invoke_spawned through the refactor
+    onto the shared AutonomousTurnEmitter (slice 18 F3)."""
+
+    @staticmethod
+    def _spawn_agent(register, unregister, parent_title="Parent Title"):
+        meta = (
+            SimpleNamespace(title=parent_title) if parent_title is not None else None
+        )
+        return SimpleNamespace(
+            register_callable_invocation=register,
+            unregister_callable_invocation=unregister,
+            thread_metadata_manager=SimpleNamespace(
+                get_thread=lambda uid, tid: meta
+            ),
+        )
+
+    @staticmethod
+    def _patch_publishers(monkeypatch, events, chunks):
+        def fake_publish_autonomous_event(
+            event_type, thread_id, user_id, task_id, data
+        ):
+            events.append((event_type, thread_id, user_id, task_id, data))
+
+        def fake_publish_agent_stream_chunk(chunk, *, thread_id, user_id, task_id):
+            chunks.append(chunk)
+            return True
+
+        monkeypatch.setattr(
+            "nymeria.core.event_bus.publish_autonomous_event",
+            fake_publish_autonomous_event,
+        )
+        monkeypatch.setattr(
+            "nymeria.core.event_bus.publish_agent_stream_chunk",
+            fake_publish_agent_stream_chunk,
+        )
+
+    def test_publishes_bookends_trigger_and_registers(self, monkeypatch):
+        events: list[tuple] = []
+        chunks: list[dict] = []
+        captured_kwargs: dict[str, Any] = {}
+        registered: list[tuple[str, str]] = []
+        unregistered: list[tuple[str, str]] = []
+        self._patch_publishers(monkeypatch, events, chunks)
+
+        class FakeStreamResult:
+            iteration_limit_hit = False
+
+            def response_text(self, *, fallback_to_thinking: bool = True) -> str:
+                return "child reply"
+
+        def fake_stream_and_collect(
+            agent_arg, *, astream_kwargs, on_chunk, error_message_factory
+        ):
+            captured_kwargs.update(astream_kwargs)
+            on_chunk({"type": "response", "content": "child reply"}, SimpleNamespace())
+            return FakeStreamResult()
+
+        monkeypatch.setattr(
+            "nymeria.core.stream_bridge.stream_and_collect",
+            fake_stream_and_collect,
+        )
+        agent = self._spawn_agent(
+            register=lambda p, c: registered.append((p, c)),
+            unregister=lambda p, c: unregistered.append((p, c)),
+        )
+
+        result = _invoke_spawned(
+            agent,
+            child_thread_id="child-1",
+            parent_thread_id="parent-1",
+            title="ResponderBot",
+            task="do the thing",
+            user_id="u1",
+        )
+
+        assert result == "child reply"
+        assert [e[0] for e in events] == ["task_started", "task_completed"]
+        assert events[0][1] == "child-1" and events[0][2] == "u1"
+        # both bookend events carry the same spawned-* task id
+        assert events[0][3] == events[1][3]
+        assert events[0][3].startswith("spawned-")
+        assert events[0][4] == {
+            "prompt": "do the thing",
+            "callable_name": "ResponderBot",
+            "trigger": "spawn_thread",
+        }
+        assert events[1][4] == {"content": "child reply", "callable_name": "ResponderBot"}
+        assert chunks == [{"type": "response", "content": "child reply"}]
+        assert captured_kwargs["_trigger_override"] == 'SpawnedBy("parent-1", "Parent Title")'
+        assert captured_kwargs["_is_self_invoke"] is True
+        assert captured_kwargs["message"] == "do the thing"
+        assert registered == [("parent-1", "child-1")]
+        assert unregistered == [("parent-1", "child-1")]
+
+    def test_error_path_returns_error_and_skips_task_started(self, monkeypatch):
+        events: list[tuple] = []
+        chunks: list[dict] = []
+        unregistered: list[tuple[str, str]] = []
+        self._patch_publishers(monkeypatch, events, chunks)
+
+        def boom(agent_arg, *, astream_kwargs, on_chunk, error_message_factory):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr("nymeria.core.stream_bridge.stream_and_collect", boom)
+        agent = self._spawn_agent(
+            register=lambda p, c: None,
+            unregister=lambda p, c: unregistered.append((p, c)),
+        )
+
+        result = _invoke_spawned(
+            agent,
+            child_thread_id="child-1",
+            parent_thread_id="parent-1",
+            title="Bot",
+            task="t",
+            user_id="u1",
+        )
+
+        assert result == "[Error]: Initial message failed: kaboom"
+        # spawn does not force task_started: an error before any chunk yields only
+        # the error task_completed event.
+        assert [e[0] for e in events] == ["task_completed"]
+        err = events[0][4]
+        assert err == {
+            "error": True,
+            "error_message": "kaboom",
+            "content": "Task failed: kaboom",
+            "callable_name": "Bot",
+        }
+        assert unregistered == [("parent-1", "child-1")]  # finally still runs
+
+    def test_iteration_limit_appends_note_to_response_and_completed(self, monkeypatch):
+        events: list[tuple] = []
+        chunks: list[dict] = []
+        self._patch_publishers(monkeypatch, events, chunks)
+
+        class FakeStreamResult:
+            iteration_limit_hit = True
+
+            def response_text(self, *, fallback_to_thinking: bool = True) -> str:
+                return "partial answer"
+
+        def fake_stream_and_collect(
+            agent_arg, *, astream_kwargs, on_chunk, error_message_factory
+        ):
+            on_chunk({"type": "response", "content": "partial answer"}, SimpleNamespace())
+            return FakeStreamResult()
+
+        monkeypatch.setattr(
+            "nymeria.core.stream_bridge.stream_and_collect",
+            fake_stream_and_collect,
+        )
+        agent = self._spawn_agent(register=lambda p, c: None, unregister=lambda p, c: None)
+
+        result = _invoke_spawned(
+            agent,
+            child_thread_id="child-1",
+            parent_thread_id=None,
+            title="Bot",
+            task="t",
+            user_id="u1",
+        )
+
+        assert "partial answer" in result
+        assert result.endswith("result may be incomplete.]")
+        # the completed event carries the same iteration-limit-adjusted text
+        assert events[-1][0] == "task_completed"
+        assert events[-1][4]["content"] == result

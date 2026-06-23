@@ -262,42 +262,24 @@ def _fire_autonomous_turn(
         return
 
     from ..core.activity_log import ActivityType
-    from ..core.event_bus import publish_agent_stream_chunk, publish_autonomous_event
-    from ..core.pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
+    from ..core.autonomous_turn import AutonomousTurnEmitter
     from ..core.stream_bridge import stream_and_collect
 
     task_id = _task_id(record)
-    started_published = False
 
-    def publish_started() -> None:
-        nonlocal started_published
-        if started_published:
-            return
-        publish_autonomous_event(
-            event_type="task_started",
-            thread_id=record.thread_id,
-            user_id=record.user_id,
-            task_id=task_id,
-            data={
-                "prompt": prompt_text,
-                "source": SOURCE,
-                "job_id": record.id,
-                "pid": record.pid,
-                "command": record.command,
-                "exit_code": record.exit_code,
-            },
-        )
-        started_published = True
-
-    def handle_chunk(chunk: dict, collection) -> None:
-        if chunk.get("type") not in PENDING_QUEUE_META_EVENT_TYPES:
-            publish_started()
-        publish_agent_stream_chunk(
-            chunk,
-            thread_id=record.thread_id,
-            user_id=record.user_id,
-            task_id=task_id,
-        )
+    emitter = AutonomousTurnEmitter(
+        thread_id=record.thread_id,
+        user_id=record.user_id,
+        task_id=task_id,
+        started_data={
+            "prompt": prompt_text,
+            "source": SOURCE,
+            "job_id": record.id,
+            "pid": record.pid,
+            "command": record.command,
+            "exit_code": record.exit_code,
+        },
+    )
 
     def stream_error_message(chunk: dict) -> str:
         error_content = chunk.get("content", "")
@@ -318,10 +300,10 @@ def _fire_autonomous_turn(
         result = stream_and_collect(
             agent,
             astream_kwargs=astream_kwargs,
-            on_chunk=handle_chunk,
+            on_chunk=emitter.handle_chunk,
             error_message_factory=stream_error_message,
         )
-        publish_started()
+        emitter.publish_started()
         response = result.response_text(fallback_to_thinking=True)
         completed_data = {
             "content": response,
@@ -335,13 +317,7 @@ def _fire_autonomous_turn(
         }
         if result.iteration_limit_hit:
             completed_data["partial"] = True
-        publish_autonomous_event(
-            event_type="task_completed",
-            thread_id=record.thread_id,
-            user_id=record.user_id,
-            task_id=task_id,
-            data=completed_data,
-        )
+        emitter.publish_completed(completed_data)
         activity_type = (
             ActivityType.TASK_COMPLETED
             if record.exit_code == 0
@@ -370,13 +346,9 @@ def _fire_autonomous_turn(
             record.id,
             record.thread_id,
         )
-        publish_started()
-        publish_autonomous_event(
-            event_type="task_completed",
-            thread_id=record.thread_id,
-            user_id=record.user_id,
-            task_id=task_id,
-            data={
+        emitter.publish_started()
+        emitter.publish_completed(
+            {
                 "content": f"Background bash job {record.id} failed: {safe_error}",
                 "source": SOURCE,
                 "job_id": record.id,
@@ -386,7 +358,7 @@ def _fire_autonomous_turn(
                 "status": "error",
                 "error": safe_error,
                 "error_message": safe_error,
-            },
+            }
         )
         _log_activity(
             ActivityType.TASK_FAILED,
