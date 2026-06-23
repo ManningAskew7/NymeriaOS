@@ -295,6 +295,9 @@ def _row_to_record(row: sqlite3.Row, secret_fields: Iterable[str]) -> Credential
 class CredentialVaultRepo:
     """Thread-safe SQLite repository for encrypted credentials."""
 
+    # SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds; 500 stays well under it.
+    _SECRET_FIELDS_BATCH = 500
+
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -320,6 +323,30 @@ class CredentialVaultRepo:
             (credential_id,),
         ).fetchall()
         return [r["field_name"] for r in rows]
+
+    def _secret_field_names_for(
+        self, conn: sqlite3.Connection, credential_ids: list[str]
+    ) -> dict[str, list[str]]:
+        """Group secret field names for many credentials in one query per batch.
+
+        Avoids the N+1 the per-row ``_secret_field_names`` would issue when
+        building records for a whole list. Field order within each list is left
+        as returned; callers sort via ``_row_to_record``.
+        """
+        grouped: dict[str, list[str]] = {}
+        if not credential_ids:
+            return grouped
+        for start in range(0, len(credential_ids), self._SECRET_FIELDS_BATCH):
+            batch = credential_ids[start : start + self._SECRET_FIELDS_BATCH]
+            placeholders = ",".join("?" for _ in batch)
+            rows = conn.execute(
+                f"SELECT credential_id, field_name FROM credential_secret_fields "
+                f"WHERE credential_id IN ({placeholders})",
+                tuple(batch),
+            ).fetchall()
+            for row in rows:
+                grouped.setdefault(row["credential_id"], []).append(row["field_name"])
+        return grouped
 
     def create_credential(
         self,
@@ -554,8 +581,9 @@ class CredentialVaultRepo:
                 f"SELECT * FROM credentials {where} ORDER BY provider ASC, name ASC",
                 tuple(params),
             ).fetchall()
+            field_names = self._secret_field_names_for(conn, [row["id"] for row in rows])
             return [
-                _row_to_record(row, self._secret_field_names(conn, row["id"]))
+                _row_to_record(row, field_names.get(row["id"], []))
                 for row in rows
             ]
 
@@ -1093,6 +1121,7 @@ class CredentialVaultRepo:
 
 
 _vault_repo: Optional[CredentialVaultRepo] = None
+_vault_repo_lock = threading.Lock()
 
 
 def get_credential_vault_repo(db_path: Optional[Path] = None) -> CredentialVaultRepo:
@@ -1101,9 +1130,17 @@ def get_credential_vault_repo(db_path: Optional[Path] = None) -> CredentialVault
         from ..config import get_settings
 
         db_path = get_settings().data_dir / "accounts.db"
-    if _vault_repo is None or _vault_repo.db_path != Path(db_path):
-        _vault_repo = CredentialVaultRepo(Path(db_path))
-    return _vault_repo
+    db_path = Path(db_path)
+    # Fast path: already initialized for this db. Guard the lazy construction
+    # with a lock so concurrent first-access from request handlers cannot race
+    # two CredentialVaultRepo builds onto the global.
+    repo = _vault_repo
+    if repo is not None and repo.db_path == db_path:
+        return repo
+    with _vault_repo_lock:
+        if _vault_repo is None or _vault_repo.db_path != db_path:
+            _vault_repo = CredentialVaultRepo(db_path)
+        return _vault_repo
 
 
 def migrate_auth_token_files(data_dir: Path, repo: CredentialVaultRepo) -> list[str]:
