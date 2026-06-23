@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 
 from nymeria.core.llm_provider_test_suite import (
     ProviderTestSuiteOptions,
+    _resolve_credentials,
     run_provider_test_suite,
 )
 
@@ -205,6 +207,143 @@ def test_provider_suite_reports_unknown_provider_without_base_url(monkeypatch):
     assert report.ok is False
     assert report.steps[0].error_type == "unknown_provider"
     assert SequenceAsyncClient.calls == []
+
+
+def test_provider_suite_missing_api_key_fails_authentication(monkeypatch):
+    # A hosted provider with no request key, no vault credential, and no
+    # settings/env key must short-circuit on the authentication guard before any
+    # network call. Locks the missing_api_key early-return after the F4 split.
+    _patch_suite_client(monkeypatch)
+    SequenceAsyncClient.queue()
+    monkeypatch.setattr(
+        "nymeria.core.llm_provider_test_suite.get_llm_provider_credential",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "nymeria.core.llm_provider_test_suite.resolve_provider_api_key",
+        lambda *a, **k: None,
+    )
+
+    import anyio
+
+    report = anyio.run(
+        _run,
+        ProviderTestSuiteOptions(provider="openrouter"),
+    )
+
+    assert report.ok is False
+    assert report.credential_source == "none"
+    assert [step.name for step in report.steps] == ["authentication"]
+    assert report.steps[0].error_type == "missing_api_key"
+    assert SequenceAsyncClient.calls == []
+
+
+def test_provider_suite_no_selectable_model_fails(monkeypatch):
+    # Custom (unregistered) endpoint, no requested model, empty /models, and no
+    # spec default -> nothing to select. Locks the missing_model early-return and
+    # exercises the custom-provider base-URL branch of _resolve_effective_base_url.
+    _patch_suite_client(monkeypatch)
+    SequenceAsyncClient.queue((200, {"data": []}))
+
+    import anyio
+
+    report = anyio.run(
+        _run,
+        ProviderTestSuiteOptions(
+            provider="custom-endpoint",
+            base_url="https://custom.example/v1",
+            api_key="sk-test-secret",
+        ),
+    )
+
+    assert report.ok is False
+    assert report.model is None
+    assert report.models_count == 0
+    assert [step.name for step in report.steps] == [
+        "configuration",
+        "model_list",
+        "model_selection",
+    ]
+    assert report.steps[-1].error_type == "missing_model"
+    assert len(SequenceAsyncClient.calls) == 1
+
+
+def test_provider_suite_anthropic_base_url_falls_back_to_default(monkeypatch):
+    # Anthropic resolves through the dedicated branch of
+    # _resolve_effective_base_url; with no configured base URL it falls back to
+    # the public endpoint. No live checks requested, so the run passes cleanly.
+    _patch_suite_client(monkeypatch)
+    SequenceAsyncClient.queue()
+    monkeypatch.setattr(
+        "nymeria.core.llm_provider_test_suite.resolve_provider_base_url",
+        lambda *a, **k: None,
+    )
+
+    import anyio
+
+    report = anyio.run(
+        _run,
+        ProviderTestSuiteOptions(
+            provider="anthropic",
+            model="claude-test",
+            api_key="sk-ant-test",
+            run_model_list=False,
+            run_chat_completion=False,
+            run_tool_call=False,
+        ),
+    )
+
+    assert report.ok is True
+    assert report.effective_base_url == "https://api.anthropic.com"
+    assert [step.name for step in report.steps] == [
+        "configuration",
+        "model_selection",
+    ]
+    assert SequenceAsyncClient.calls == []
+
+
+def test_resolve_credentials_seeds_base_url_from_vault(monkeypatch):
+    # No request key: the vault credential supplies the key, the credential
+    # source, and (since no request base URL) the base URL.
+    monkeypatch.setattr(
+        "nymeria.core.llm_provider_test_suite.get_llm_provider_credential",
+        lambda *a, **k: SimpleNamespace(
+            api_key="sk-vault",
+            credential_id="cred-123",
+            base_url="https://vault.example/v1",
+        ),
+    )
+
+    api_key, base_url, source = _resolve_credentials(
+        ProviderTestSuiteOptions(provider="openrouter"), "openrouter"
+    )
+
+    assert api_key == "sk-vault"
+    assert base_url == "https://vault.example/v1"
+    assert source == "vault:cred-123"
+
+
+def test_resolve_credentials_keeps_request_base_url_over_vault(monkeypatch):
+    # A request-supplied base URL is not overwritten by the vault credential.
+    monkeypatch.setattr(
+        "nymeria.core.llm_provider_test_suite.get_llm_provider_credential",
+        lambda *a, **k: SimpleNamespace(
+            api_key="sk-vault",
+            credential_id="cred-123",
+            base_url="https://vault.example/v1",
+        ),
+    )
+
+    api_key, base_url, source = _resolve_credentials(
+        ProviderTestSuiteOptions(
+            provider="openrouter", base_url="https://req.example/v1"
+        ),
+        "openrouter",
+    )
+
+    assert api_key == "sk-vault"
+    assert base_url == "https://req.example/v1"
+    assert source == "vault:cred-123"
 
 
 def test_provider_suite_endpoint_is_admin_only_and_does_not_call_provider(

@@ -547,43 +547,15 @@ def _report(
     )
 
 
-async def run_provider_test_suite(
-    options: ProviderTestSuiteOptions,
-) -> ProviderTestSuiteReport:
-    """Run a sanitized compatibility suite for one LLM provider setup."""
-    requested_provider = options.provider
-    provider = normalize_llm_provider(options.provider)
-    spec = get_llm_provider_spec(provider)
-    steps: list[ProviderTestStep] = []
-
-    is_known_openai = is_openai_compatible_provider(provider)
-    api_format = spec.api_format if spec else "openai_chat"
-    if provider == "anthropic":
-        api_format = "anthropic_messages"
-
-    if spec is None and not options.base_url:
-        steps.append(
-            ProviderTestStep(
-                name="configuration",
-                status="failed",
-                message=(
-                    f"Provider '{provider}' is not registered. Supply a base URL "
-                    "to test it as a custom OpenAI-compatible endpoint."
-                ),
-                error_type="unknown_provider",
-            )
-        )
-        return _report(
-            provider=provider,
-            requested_provider=requested_provider,
-            model=options.model,
-            base_url=None,
-            api_mode=None,
-            credential_source="none",
-            models_count=None,
-            steps=steps,
-        )
-
+def _resolve_credentials(
+    options: ProviderTestSuiteOptions, provider: str
+) -> tuple[str | None, str | None, str]:
+    """Resolve ``(api_key, base_url, credential_source)`` from the request, then
+    the credential vault, then settings/env, mirroring runtime resolution. Pure
+    resolution with no guards: the api-key-required guard and the
+    ``not-required`` fallback stay inline in the caller. ``base_url`` is seeded
+    from a vault credential only when the request did not supply one, and is
+    returned so the caller can normalize it."""
     credential_source = "request" if options.api_key else "none"
     api_key = options.api_key
     base_url = options.base_url.strip().rstrip("/") if options.base_url else None
@@ -605,11 +577,25 @@ async def run_provider_test_suite(
         if api_key:
             credential_source = "settings/env"
 
+    return api_key, base_url, credential_source
+
+
+def _resolve_effective_base_url(
+    provider: str,
+    base_url: str | None,
+    options: ProviderTestSuiteOptions,
+    *,
+    is_known_openai: bool,
+) -> tuple[str | None, str | None]:
+    """Normalize the provider base URL. Returns ``(base_url, clean_base_url)``:
+    the resolved-but-unnormalized ``base_url`` is still referenced by the
+    redaction ``secrets`` tuple, while ``clean_base_url`` drives every endpoint."""
     if provider == "anthropic":
-        base_url = base_url or resolve_provider_base_url(
-            provider,
-            settings=options.settings,
-        ) or "https://api.anthropic.com"
+        base_url = (
+            base_url
+            or resolve_provider_base_url(provider, settings=options.settings)
+            or "https://api.anthropic.com"
+        )
         clean_base_url = base_url.strip().rstrip("/")
     else:
         if is_known_openai:
@@ -619,6 +605,159 @@ async def run_provider_test_suite(
                 settings=options.settings,
             )
         clean_base_url = _normalize_openai_base_url(provider, base_url)
+    return base_url, clean_base_url
+
+
+async def _run_live_checks(
+    client: httpx.AsyncClient,
+    *,
+    options: ProviderTestSuiteOptions,
+    api_format: str,
+    effective_api_mode: ApiMode,
+    clean_base_url: str,
+    selected_model: str,
+    selected_metadata: dict[str, Any] | None,
+    headers: dict[str, str],
+    secrets: tuple[str | None, ...],
+) -> list[ProviderTestStep]:
+    """Run the optional chat-completion and tool-call checks against an
+    already-open client. Returns the steps to append, in emission order. Reached
+    only after a non-empty model has been selected (the caller's missing-model
+    guard returns first)."""
+    out: list[ProviderTestStep] = []
+    chat_endpoint = (
+        "v1/messages"
+        if api_format == "anthropic_messages" and not clean_base_url.endswith("/v1")
+        else "messages"
+        if api_format == "anthropic_messages"
+        else "responses"
+        if effective_api_mode == "responses"
+        else "chat/completions"
+    )
+    chat_url = _append_endpoint(clean_base_url, chat_endpoint)
+
+    if options.run_chat_completion:
+        validator = (
+            _response_has_responses_text
+            if effective_api_mode == "responses"
+            else _response_has_chat_text
+            if api_format == "openai_chat"
+            else lambda body: isinstance(body, dict) and bool(body.get("content"))
+        )
+        step, _body = await _timed_post(
+            client,
+            chat_url,
+            headers=headers,
+            payload=_chat_payload(
+                api_format=api_format,
+                api_mode=effective_api_mode,
+                model=selected_model,
+            ),
+            step_name="chat_completion",
+            success_message="Provider returned a valid non-streaming chat response.",
+            validator=validator,
+            secrets=secrets,
+        )
+        out.append(step)
+
+    if options.run_tool_call:
+        if api_format != "openai_chat":
+            out.append(
+                ProviderTestStep(
+                    name="tool_call",
+                    status="skipped",
+                    message="Tool-call suite currently covers OpenAI-compatible providers only.",
+                )
+            )
+        else:
+            supported_params = set(extract_model_metadata(selected_metadata or {}).get("supported_parameters") or [])
+            if selected_metadata and supported_params and "tools" not in supported_params:
+                out.append(
+                    ProviderTestStep(
+                        name="tool_call",
+                        status="failed",
+                        message="Selected model metadata does not advertise the Chat Completions tools parameter.",
+                        error_type="tools_not_supported",
+                        metadata={"supported_parameters": sorted(supported_params)},
+                    )
+                )
+            else:
+                step, _body = await _timed_post(
+                    client,
+                    chat_url,
+                    headers=headers,
+                    payload=_tool_payload(api_mode=effective_api_mode, model=selected_model),
+                    step_name="tool_call",
+                    success_message="Provider accepted a forced tool call and returned tool-call metadata.",
+                    validator=lambda body: _response_has_tool_call(
+                        body,
+                        api_mode=effective_api_mode,
+                    ),
+                    secrets=secrets,
+                )
+                out.append(step)
+    return out
+
+
+async def run_provider_test_suite(
+    options: ProviderTestSuiteOptions,
+) -> ProviderTestSuiteReport:
+    """Run a sanitized compatibility suite for one LLM provider setup."""
+    requested_provider = options.provider
+    provider = normalize_llm_provider(options.provider)
+    spec = get_llm_provider_spec(provider)
+    steps: list[ProviderTestStep] = []
+
+    def _finish(
+        *,
+        model: str | None,
+        base_url: str | None,
+        api_mode: ApiMode | None,
+        credential_source: str,
+        models_count: int | None,
+    ) -> ProviderTestSuiteReport:
+        """Build the terminal report over the stable provider/steps context,
+        collapsing the repeated ``_report(...)`` argument list at every return."""
+        return _report(
+            provider=provider,
+            requested_provider=requested_provider,
+            model=model,
+            base_url=base_url,
+            api_mode=api_mode,
+            credential_source=credential_source,
+            models_count=models_count,
+            steps=steps,
+        )
+
+    is_known_openai = is_openai_compatible_provider(provider)
+    api_format = spec.api_format if spec else "openai_chat"
+    if provider == "anthropic":
+        api_format = "anthropic_messages"
+
+    if spec is None and not options.base_url:
+        steps.append(
+            ProviderTestStep(
+                name="configuration",
+                status="failed",
+                message=(
+                    f"Provider '{provider}' is not registered. Supply a base URL "
+                    "to test it as a custom OpenAI-compatible endpoint."
+                ),
+                error_type="unknown_provider",
+            )
+        )
+        return _finish(
+            model=options.model,
+            base_url=None,
+            api_mode=None,
+            credential_source="none",
+            models_count=None,
+        )
+
+    api_key, base_url, credential_source = _resolve_credentials(options, provider)
+    base_url, clean_base_url = _resolve_effective_base_url(
+        provider, base_url, options, is_known_openai=is_known_openai
+    )
 
     local_provider = base_url_allows_no_api_key(clean_base_url)
     if not api_key and provider_requires_api_key(provider) and not local_provider:
@@ -630,15 +769,12 @@ async def run_provider_test_suite(
                 error_type="missing_api_key",
             )
         )
-        return _report(
-            provider=provider,
-            requested_provider=requested_provider,
+        return _finish(
             model=options.model,
             base_url=clean_base_url,
             api_mode=None,
             credential_source=credential_source,
             models_count=None,
-            steps=steps,
         )
     if not api_key:
         api_key = "not-needed"
@@ -653,15 +789,12 @@ async def run_provider_test_suite(
                 error_type="missing_base_url",
             )
         )
-        return _report(
-            provider=provider,
-            requested_provider=requested_provider,
+        return _finish(
             model=options.model,
             base_url=None,
             api_mode=None,
             credential_source=credential_source,
             models_count=None,
-            steps=steps,
         )
 
     effective_api_mode: ApiMode = "chat_completions"
@@ -772,15 +905,12 @@ async def run_provider_test_suite(
                     error_type="missing_model",
                 )
             )
-            return _report(
-                provider=provider,
-                requested_provider=requested_provider,
+            return _finish(
                 model=None,
                 base_url=clean_base_url,
                 api_mode=effective_api_mode,
                 credential_source=credential_source,
                 models_count=models_count,
-                steps=steps,
             )
 
         allow_live_generation = (
@@ -809,96 +939,32 @@ async def run_provider_test_suite(
                         message="Skipped tool-call check because live generation was not allowed.",
                     )
                 )
-            return _report(
-                provider=provider,
-                requested_provider=requested_provider,
+            return _finish(
                 model=selected_model,
                 base_url=clean_base_url,
                 api_mode=effective_api_mode,
                 credential_source=credential_source,
                 models_count=models_count,
-                steps=steps,
             )
 
-        chat_endpoint = (
-            "v1/messages"
-            if api_format == "anthropic_messages" and not clean_base_url.endswith("/v1")
-            else "messages"
-            if api_format == "anthropic_messages"
-            else "responses"
-            if effective_api_mode == "responses"
-            else "chat/completions"
-        )
-        chat_url = _append_endpoint(clean_base_url, chat_endpoint)
-
-        if options.run_chat_completion:
-            validator = (
-                _response_has_responses_text
-                if effective_api_mode == "responses"
-                else _response_has_chat_text
-                if api_format == "openai_chat"
-                else lambda body: isinstance(body, dict) and bool(body.get("content"))
-            )
-            step, _body = await _timed_post(
+        steps.extend(
+            await _run_live_checks(
                 client,
-                chat_url,
+                options=options,
+                api_format=api_format,
+                effective_api_mode=effective_api_mode,
+                clean_base_url=clean_base_url,
+                selected_model=selected_model,
+                selected_metadata=selected_metadata,
                 headers=headers,
-                payload=_chat_payload(
-                    api_format=api_format,
-                    api_mode=effective_api_mode,
-                    model=selected_model,
-                ),
-                step_name="chat_completion",
-                success_message="Provider returned a valid non-streaming chat response.",
-                validator=validator,
                 secrets=secrets,
             )
-            steps.append(step)
+        )
 
-        if options.run_tool_call:
-            if api_format != "openai_chat":
-                steps.append(
-                    ProviderTestStep(
-                        name="tool_call",
-                        status="skipped",
-                        message="Tool-call suite currently covers OpenAI-compatible providers only.",
-                    )
-                )
-            else:
-                supported_params = set(extract_model_metadata(selected_metadata or {}).get("supported_parameters") or [])
-                if selected_metadata and supported_params and "tools" not in supported_params:
-                    steps.append(
-                        ProviderTestStep(
-                            name="tool_call",
-                            status="failed",
-                            message="Selected model metadata does not advertise the Chat Completions tools parameter.",
-                            error_type="tools_not_supported",
-                            metadata={"supported_parameters": sorted(supported_params)},
-                        )
-                    )
-                else:
-                    step, _body = await _timed_post(
-                        client,
-                        chat_url,
-                        headers=headers,
-                        payload=_tool_payload(api_mode=effective_api_mode, model=selected_model),
-                        step_name="tool_call",
-                        success_message="Provider accepted a forced tool call and returned tool-call metadata.",
-                        validator=lambda body: _response_has_tool_call(
-                            body,
-                            api_mode=effective_api_mode,
-                        ),
-                        secrets=secrets,
-                    )
-                    steps.append(step)
-
-    return _report(
-        provider=provider,
-        requested_provider=requested_provider,
+    return _finish(
         model=selected_model,
         base_url=clean_base_url,
         api_mode=effective_api_mode,
         credential_source=credential_source,
         models_count=models_count,
-        steps=steps,
     )
