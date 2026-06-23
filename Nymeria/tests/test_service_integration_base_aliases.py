@@ -1,0 +1,192 @@
+"""Locks the slice-15 foundation-helper migration onto ``service_integration_base``.
+
+Each ``*_service_integrations.py`` module in the slice-15 corpus replaced its local
+copies of the byte-identical foundation helpers with aliased imports from
+``service_integration_base`` (preserving the per-module ``monkeypatch.setattr``
+test seam), while keeping a thin local ``_dump_json`` wrapper for its own
+``_MAX_JSON_CHARS`` budget and keeping any agent-visibly divergent helper local.
+
+These tests assert that invariant directly:
+
+* every alias resolves to the canonical base function object (identity),
+* every ``_dump_json`` is a LOCAL wrapper (not the base object) that truncates at
+  the module's own budget, not the base 60k default,
+* every deliberately-kept-local divergent helper is NOT the base object.
+
+A regression that re-localises an aliased helper, or that swaps a divergent
+helper for the base one (a behavior change), fails here.
+"""
+
+import importlib
+
+import pytest
+
+from nymeria.tools import service_integration_base as base
+
+# module name -> {local alias name: canonical base attribute it must resolve to}
+ALIASED = {
+    "relationship_crm_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_json_object": "json_object",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "enterprise_business_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "microsoft_graph_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "time_hr_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "developer_platform_integrations": {
+        "_credential_value": "credential_value",
+        "_settings_value": "settings_value",
+    },
+    "lead_enrichment_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_json_object": "json_object",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "build_ci_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_json_object": "json_object",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "productivity_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "personal_device_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "notification_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "media_discovery_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "public_info_integrations": {
+        "_credential_value": "credential_value",
+        "_settings_value": "settings_value",
+    },
+    "bookmark_link_service_integrations": {
+        "_base_url": "base_url",
+        "_credential_value": "credential_value",
+        "_filtered": "filtered",
+        "_json_object": "json_object",
+        "_settings_value": "settings_value",
+        "_setup_hint": "setup_hint",
+    },
+    "google_business_profile_service_integrations": {},
+    "google_analytics_service_integrations": {},
+}
+
+# module name -> its _MAX_JSON_CHARS budget (the thin _dump_json wrapper must honour it)
+BUDGETS = {
+    "relationship_crm_service_integrations": 60_000,
+    "enterprise_business_service_integrations": 60_000,
+    "microsoft_graph_service_integrations": 80_000,
+    "time_hr_service_integrations": 80_000,
+    "developer_platform_integrations": 60_000,
+    "lead_enrichment_service_integrations": 70_000,
+    "build_ci_service_integrations": 70_000,
+    "productivity_service_integrations": 60_000,
+    "personal_device_service_integrations": 80_000,
+    "notification_service_integrations": 60_000,
+    "media_discovery_service_integrations": 80_000,
+    "public_info_integrations": 60_000,
+    "bookmark_link_service_integrations": 60_000,
+    "google_business_profile_service_integrations": 80_000,
+    "google_analytics_service_integrations": 80_000,
+}
+
+# module name -> {local helper that must NOT be the base object: base attribute it diverges from}
+# These are the deliberately-kept-local helpers whose behavior differs from the
+# canonical base helper (different prefix, error string, drop-set, or defaults).
+LOCAL_DIVERGENT = {
+    "relationship_crm_service_integrations": {"_basic_auth": "basic_auth"},
+    "time_hr_service_integrations": {"_json_object": "json_object"},
+    "personal_device_service_integrations": {"_json_object": "json_object"},
+    "enterprise_business_service_integrations": {"_json_object": "json_object"},
+    "developer_platform_integrations": {
+        "_filtered_params": "filtered",
+        "_json_object": "json_object",
+        "_require_absolute_base_url": "base_url",
+    },
+    "productivity_service_integrations": {"_filtered_params": "filtered"},
+    "public_info_integrations": {
+        "_filtered_params": "filtered",
+        "_setup_hint": "setup_hint",
+    },
+}
+
+
+def _load(module_name: str):
+    return importlib.import_module("nymeria.tools." + module_name)
+
+
+@pytest.mark.parametrize("module_name", sorted(ALIASED))
+def test_aliases_resolve_to_canonical_base_objects(module_name):
+    mod = _load(module_name)
+    for alias, canonical in ALIASED[module_name].items():
+        assert getattr(mod, alias) is getattr(base, canonical), (
+            f"{module_name}.{alias} should be service_integration_base.{canonical}"
+        )
+
+
+@pytest.mark.parametrize("module_name", sorted(BUDGETS))
+def test_dump_json_is_local_wrapper_honouring_module_budget(module_name):
+    mod = _load(module_name)
+    # Must be a local wrapper, never the raw base object, so the per-module budget
+    # is applied and any future monkeypatch seam on _dump_json keeps working.
+    assert mod._dump_json is not base.dump_json
+    budget = BUDGETS[module_name]
+    out = mod._dump_json({"x": "y" * (budget + 50_000)})
+    assert "...[truncated " in out and " chars]" in out
+    # Truncated length reflects THIS module's budget, not the base 60k default.
+    assert budget < len(out) < budget + 200
+
+
+@pytest.mark.parametrize("module_name", sorted(LOCAL_DIVERGENT))
+def test_divergent_helpers_stay_local(module_name):
+    mod = _load(module_name)
+    for local_name, base_attr in LOCAL_DIVERGENT[module_name].items():
+        assert getattr(mod, local_name) is not getattr(base, base_attr), (
+            f"{module_name}.{local_name} diverges from base.{base_attr} and must stay local"
+        )

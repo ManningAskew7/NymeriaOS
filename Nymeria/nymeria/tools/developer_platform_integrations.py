@@ -17,6 +17,12 @@ from ..core.http_policy import (
     validate_http_egress_url,
 )
 
+from .service_integration_base import (
+    credential_value as _credential_value,
+    dump_json,
+    settings_value as _settings_value,
+)
+
 logger = logging.getLogger(__name__)
 
 _HTTP_TIMEOUT = 30.0
@@ -26,10 +32,7 @@ _GITLAB_DEFAULT_BASE_URL = "https://gitlab.com/api/v4"
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
-    text = json.dumps(data, indent=2, ensure_ascii=False, default=str)
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+    return dump_json(data, max_chars=max_chars)
 
 
 def _split_csv(value: str) -> list[str]:
@@ -79,32 +82,6 @@ def _require_absolute_base_url(base_url: str) -> str:
 def _gitlab_api_base_url(base_url: str) -> str:
     base = _require_absolute_base_url(base_url)
     return base if base.endswith("/api/v4") else f"{base}/api/v4"
-
-
-def _credential_value(
-    *,
-    provider: str,
-    field_names: tuple[str, ...],
-    tool_name: str,
-    config: Optional[RunnableConfig],
-    provider_aliases: tuple[str, ...] = (),
-) -> Optional[str]:
-    from .native_credentials import get_native_credential_value
-
-    credential = get_native_credential_value(
-        provider=provider,
-        provider_aliases=provider_aliases,
-        field_names=field_names,
-        tool_name=tool_name,
-        config=config,
-    )
-    return credential.value if credential else None
-
-
-def _settings_value(name: str) -> Optional[str]:
-    from ..config import get_settings
-
-    return getattr(get_settings(), name)
 
 
 def _github_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str]]:

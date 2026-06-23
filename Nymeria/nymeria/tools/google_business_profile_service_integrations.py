@@ -13,6 +13,7 @@ from langchain_core.tools import InjectedToolArg, tool
 
 from ..config.oauth_providers import GOOGLE_BUSINESS_PROFILE_SCOPES as _GBP_SCOPES_TUPLE
 from . import auth_cache_utils as auth_utils
+from .service_integration_base import dump_json
 from .utils import get_user_id
 
 PROVIDER = "google_business_profile"
@@ -31,10 +32,7 @@ _MAX_JSON_CHARS = 80_000
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
-    text = json.dumps(data, indent=2, ensure_ascii=False, default=str)
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+    return dump_json(data, max_chars=max_chars)
 
 
 def _parse_json(value: str, *, expected: type, label: str) -> Any:
