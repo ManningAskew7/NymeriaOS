@@ -14,6 +14,7 @@ from ...core.checkpoint_status import (
     get_latest_checkpoint_revision,
     has_direct_checkpoint_revision_backend,
 )
+from ...core.checkpointer_config import enumerate_checkpoint_thread_ids
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.thread_classification import (
     classify_platform as _classify_thread_platform_from_id,
@@ -114,36 +115,6 @@ def _thread_list_platform(agent: Any, thread_id: str, meta: Any = None) -> str:
         platform = "desktop"
 
     return platform
-
-
-def _get_checkpoint_thread_ids(settings: Any) -> list[str]:
-    """Query distinct thread IDs from the checkpoint database."""
-    thread_ids: list[str] = []
-
-    if settings.database_backend == "sqlite":
-        import sqlite3 as _sqlite3
-
-        db_path = str(settings.db_path)
-        try:
-            conn = _sqlite3.connect(db_path)
-            cursor = conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
-            thread_ids = [row[0] for row in cursor.fetchall()]
-            conn.close()
-        except Exception as e:
-            logger.warning(f"Failed to query thread IDs from SQLite: {e}")
-
-    elif settings.database_backend == "postgres":
-        import psycopg  # type: ignore[import-untyped]
-
-        try:
-            with psycopg.connect(settings.postgres_uri) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
-                    thread_ids = [row[0] for row in cur.fetchall()]
-        except Exception as e:
-            logger.warning(f"Failed to query thread IDs from PostgreSQL: {e}")
-
-    return thread_ids
 
 
 def _add_thread_source(
@@ -680,7 +651,7 @@ def create_threads_router(
             ]
             return {"threads": threads, "total": len(threads)}
 
-        all_checkpoint_ids = _get_checkpoint_thread_ids(settings)
+        all_checkpoint_ids = enumerate_checkpoint_thread_ids(settings)
         checkpoint_ids = [t for t in all_checkpoint_ids if t in owned_ids]
         checkpoint_set = set(checkpoint_ids)
 
