@@ -301,3 +301,111 @@ def test_get_credential_vault_repo_is_singleton_and_swaps_on_db_change(tmp_path,
     second = get_credential_vault_repo(db_two)
     assert second is not first  # swapped on db_path change
     assert get_credential_vault_repo(db_two) is second
+
+
+def _capture_binding_selects(repo: CredentialVaultRepo, monkeypatch) -> list[str]:
+    """Record normalized SELECTs issued against ``credential_bindings``.
+
+    Mirrors ``_count_secret_field_selects``: the trace callback is installed
+    after the real connect (so the ``_connect`` PRAGMA setup is not recorded).
+    The caller reads the returned list after the traced call.
+    """
+    statements: list[str] = []
+    real_connect = repo._connect
+
+    def traced_connect():
+        conn = real_connect()
+
+        def tracer(statement: str) -> None:
+            normalized = " ".join(statement.strip().upper().split())
+            if normalized.startswith("SELECT") and "CREDENTIAL_BINDINGS" in normalized:
+                statements.append(normalized)
+
+        conn.set_trace_callback(tracer)
+        return conn
+
+    monkeypatch.setattr(repo, "_connect", traced_connect)
+    return statements
+
+
+def test_get_binding_returns_correct_row_and_none(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Alice API",
+        provider="example",
+        kind="api_key",
+        allowed_targets=["*"],
+        secret_fields={"value": "alice-secret"},
+        created_by_user_id="alice",
+    )
+    first_id = repo.bind_credential(
+        record.id,
+        target_type="custom_tool",
+        target_id="tool_a",
+        binding_name="A",
+        actor_user_id="alice",
+    )
+    second_id = repo.bind_credential(
+        record.id,
+        target_type="custom_tool",
+        target_id="tool_b",
+        binding_name="B",
+        actor_user_id="alice",
+    )
+
+    first = repo.get_binding(first_id)
+    assert first is not None
+    assert first["id"] == first_id
+    assert first["credential_id"] == record.id
+    assert first["target_type"] == "custom_tool"
+    assert first["target_id"] == "tool_a"
+    # Same row shape as list_bindings, so CredentialBindingResponse(**row) holds.
+    assert first == next(r for r in repo.list_bindings(record.id) if r["id"] == first_id)
+
+    assert repo.get_binding(second_id)["target_id"] == "tool_b"
+    assert repo.get_binding("cbind-does-not-exist") is None
+
+    # Deleting one binding does not affect lookups of the other.
+    assert repo.delete_binding(first_id, actor_user_id="alice") is True
+    assert repo.get_binding(first_id) is None
+    assert repo.get_binding(second_id) is not None
+
+
+def test_get_binding_is_indexed_single_row_lookup(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Alice API",
+        provider="example",
+        kind="api_key",
+        allowed_targets=["*"],
+        secret_fields={"value": "alice-secret"},
+        created_by_user_id="alice",
+    )
+    target = repo.bind_credential(
+        record.id,
+        target_type="custom_tool",
+        target_id="tool_target",
+        actor_user_id="alice",
+    )
+    for i in range(4):
+        repo.bind_credential(
+            record.id,
+            target_type="custom_tool",
+            target_id=f"other_{i}",
+            actor_user_id="alice",
+        )
+
+    statements = _capture_binding_selects(repo, monkeypatch)
+    row = repo.get_binding(target)
+
+    assert row is not None and row["id"] == target
+    # Exactly one binding read, filtered by primary key rather than scanning
+    # every binding (guards against reverting to a list_bindings() full scan).
+    assert len(statements) == 1
+    assert "FROM CREDENTIAL_BINDINGS" in statements[0]
+    assert "WHERE ID =" in statements[0]
+    assert "ORDER BY" not in statements[0]

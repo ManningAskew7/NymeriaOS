@@ -802,6 +802,19 @@ class CredentialVaultRepo:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def get_binding(self, binding_id: str) -> Optional[dict[str, Any]]:
+        """Return a single binding row by id, or None if it does not exist.
+
+        Indexed lookup on the ``credential_bindings`` primary key, mirroring the
+        row shape of ``list_bindings`` so callers can build a
+        ``CredentialBindingResponse`` directly.
+        """
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM credential_bindings WHERE id = ?", (binding_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
     def delete_binding(self, binding_id: str, *, actor_user_id: Optional[str] = None) -> bool:
         with self._lock, self._connect() as conn:
             row = conn.execute(

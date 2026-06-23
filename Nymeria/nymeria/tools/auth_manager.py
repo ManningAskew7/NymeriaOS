@@ -484,7 +484,7 @@ def auth_bindings(
     if normalized == "unbind":
         if not binding_id:
             return _json({"ok": False, "error": "binding_id is required"})
-        row = next((r for r in repo.list_bindings() if r["id"] == binding_id), None)
+        row = repo.get_binding(binding_id)
         if not row:
             return _json({"ok": False, "error": "binding not found"})
         record = repo.get_credential(row["credential_id"])
