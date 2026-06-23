@@ -633,13 +633,21 @@ class Ticker:
         days_old = getattr(self.settings, "todo_auto_archive_days", 7)
         users = self.todo_manager.get_all_users_with_todos()
         for user_id in users:
-            with self.todo_manager.atomic_update(user_id) as todo_list:
-                archived = todo_list.archive_completed(days_old=days_old)
-                if archived > 0:
-                    logger.info(
-                        f"Archived {archived} completed TODO(s) older than "
-                        f"{days_old} day(s) for user {user_id}"
-                    )
+            # Isolate per-user failures (e.g. a disk error now surfaced by
+            # ``atomic_update``) so one user cannot abort the rest of the sweep.
+            try:
+                with self.todo_manager.atomic_update(user_id) as todo_list:
+                    archived = todo_list.archive_completed(days_old=days_old)
+                    if archived > 0:
+                        logger.info(
+                            f"Archived {archived} completed TODO(s) older than "
+                            f"{days_old} day(s) for user {user_id}"
+                        )
+            except Exception as e:
+                logger.error(
+                    f"TODO archival failed for user {user_id}: {e}", exc_info=True
+                )
+                continue
 
     def _check_triggers(self) -> None:
         """Check all poll-based trigger sources for events and fire actions.
@@ -657,25 +665,35 @@ class Ticker:
             # short-circuit on a busy thread before allocating a worker slot.
             # In Docker, the worker passes None — the API handles contention
             # in agent.astream() via its pending-prompt queue.
-            fired = manager.check_triggers(user_id, agent=self._busy_agent)
-            logger.info(f"[TRIGGER POLL] user={user_id}: {len(fired)} trigger(s) fired")
-            for trigger, events in fired:
-                logger.info(
-                    f"[TRIGGER POLL] Firing trigger '{trigger.name}' ({trigger.id}) "
-                    f"with {len(events)} event(s)"
+            #
+            # Isolate per-user failures (e.g. a disk error now surfaced by
+            # ``atomic_update``) so one user cannot block the rest of the cycle.
+            try:
+                fired = manager.check_triggers(user_id, agent=self._busy_agent)
+                logger.info(f"[TRIGGER POLL] user={user_id}: {len(fired)} trigger(s) fired")
+                for trigger, events in fired:
+                    logger.info(
+                        f"[TRIGGER POLL] Firing trigger '{trigger.name}' ({trigger.id}) "
+                        f"with {len(events)} event(s)"
+                    )
+                    if self._executor:
+                        self._executor.submit(
+                            manager.fire_action_batch,
+                            trigger,
+                            events,
+                            self._turn_executor,
+                            user_id,
+                        )
+                    else:
+                        manager.fire_action_batch(
+                            trigger, events, self._turn_executor, user_id
+                        )
+            except Exception as e:
+                logger.error(
+                    f"[TRIGGER POLL] Trigger check failed for user {user_id}: {e}",
+                    exc_info=True,
                 )
-                if self._executor:
-                    self._executor.submit(
-                        manager.fire_action_batch,
-                        trigger,
-                        events,
-                        self._turn_executor,
-                        user_id,
-                    )
-                else:
-                    manager.fire_action_batch(
-                        trigger, events, self._turn_executor, user_id
-                    )
+                continue
 
     def _check_and_execute(self) -> None:
         """Check for due scheduled TODOs and execute them."""
@@ -683,25 +701,7 @@ class Ticker:
 
         # Log ticker poll - less frequently when no due items
         # Get entries from DB (this will also log what's in the DB)
-        due_entries = self.schedule_db.get_due(before=now)
-
-        if self._pending_startup_missed_ids and due_entries:
-            held_entries = [
-                entry
-                for entry in due_entries
-                if entry.todo_id in self._pending_startup_missed_ids
-            ]
-            if held_entries:
-                due_entries = [
-                    entry
-                    for entry in due_entries
-                    if entry.todo_id not in self._pending_startup_missed_ids
-                ]
-                logger.info(
-                    "[TICKER POLL] Holding %s startup-missed TODO(s) "
-                    "pending explicit release",
-                    len(held_entries),
-                )
+        due_entries = self._filter_held_missed(self.schedule_db.get_due(before=now))
 
         if due_entries:
             logger.info(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - Found {len(due_entries)} due TODO(s)!")
@@ -712,14 +712,7 @@ class Ticker:
             if int(now) % 30 < self.poll_interval:
                 logger.debug(f"[TICKER POLL] NOW={now} ({datetime.fromtimestamp(now)}) - No due TODOs")
 
-        # Clean up completed futures
-        with self._lock:
-            done_ids = [tid for tid, f in self._active_futures.items() if f.done()]
-            for tid in done_ids:
-                f = self._active_futures.pop(tid)
-                exc = f.exception()
-                if exc:
-                    logger.error(f"Task {tid} failed in thread pool: {exc}")
+        self._reap_finished_futures()
 
         for entry in due_entries:
             # Skip if already running in the pool
@@ -732,6 +725,41 @@ class Ticker:
                 future = self._executor.submit(self._execute_scheduled_todo, entry)
                 with self._lock:
                     self._active_futures[entry.todo_id] = future
+
+    def _filter_held_missed(self, due_entries: list) -> list:
+        """Drop startup-missed TODOs held pending an explicit release.
+
+        Returns ``due_entries`` unchanged when nothing is being held.
+        """
+        if not (self._pending_startup_missed_ids and due_entries):
+            return due_entries
+        held_entries = [
+            entry
+            for entry in due_entries
+            if entry.todo_id in self._pending_startup_missed_ids
+        ]
+        if not held_entries:
+            return due_entries
+        logger.info(
+            "[TICKER POLL] Holding %s startup-missed TODO(s) "
+            "pending explicit release",
+            len(held_entries),
+        )
+        return [
+            entry
+            for entry in due_entries
+            if entry.todo_id not in self._pending_startup_missed_ids
+        ]
+
+    def _reap_finished_futures(self) -> None:
+        """Pop completed execution futures and log any that raised."""
+        with self._lock:
+            done_ids = [tid for tid, f in self._active_futures.items() if f.done()]
+            for tid in done_ids:
+                f = self._active_futures.pop(tid)
+                exc = f.exception()
+                if exc:
+                    logger.error(f"Task {tid} failed in thread pool: {exc}")
 
     def _calculate_next_execution(self, recurrence: str, from_time: datetime) -> Optional[datetime]:
         """
@@ -818,11 +846,14 @@ class Ticker:
         except Exception as e:
             self._handle_execution_failure(entry, todo, thread_id, e)
 
-        # Single execution-marker cleanup for every path that reaches here
-        # (success, finalize, and the double-iteration-limit backoff). The
-        # early-return guards above (not-found, inactive, status-update
-        # failure) clear their own marker before returning.
-        self.schedule_db.clear_execution(todo.id, entry.user_id)
+        finally:
+            # Single execution-marker cleanup for every path that reaches here
+            # (success, finalize, the double-iteration-limit backoff, and a
+            # failure handler that itself raises, e.g. a disk-save error now
+            # surfaced by ``atomic_update``). The early-return guards above
+            # (not-found, inactive, status-update failure) clear their own
+            # marker before returning.
+            self.schedule_db.clear_execution(todo.id, entry.user_id)
 
     # ------------------------------------------------------------------
     # Helpers for _execute_scheduled_todo

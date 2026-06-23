@@ -120,3 +120,32 @@ def test_goal_lock_blocks_pre_approval_too(tmp_path: Path, monkeypatch):
         assert "locked under goal" in result
     finally:
         set_goal_manager(None)
+
+
+def test_todo_atomic_update_raises_on_save_failure(tmp_path: Path):
+    """F11: a failed save inside ``TodoManager.atomic_update`` raises instead of
+    silently dropping the mutation."""
+    tm = TodoManager(tmp_path)
+    tm.save_todos = lambda todo_list: False  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="Failed to persist TODOs"):
+        with tm.atomic_update("u1") as todo_list:
+            todo_list.add_item("task", created_by="user", thread_id="t1")
+
+
+def test_todo_atomic_update_does_not_mask_body_exception(tmp_path: Path):
+    """F11: an exception raised inside the block propagates (not masked by the
+    save-failure check), and the save is still attempted in ``finally``."""
+    tm = TodoManager(tmp_path)
+    saves = {"n": 0}
+    real_save = tm.save_todos
+
+    def _counting_save(todo_list):
+        saves["n"] += 1
+        return real_save(todo_list)
+
+    tm.save_todos = _counting_save  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="boom"):
+        with tm.atomic_update("u1"):
+            raise ValueError("boom")
+    # The save still ran in ``finally`` despite the body exception.
+    assert saves["n"] == 1

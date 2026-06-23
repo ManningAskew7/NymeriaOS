@@ -452,6 +452,41 @@ def test_ticker_clears_active_execution_marker_after_failed_run(tmp_path: Path, 
     assert not agent._schedule_db.is_execution_active(todo.id, "owner")
 
 
+def test_ticker_clears_marker_even_if_failure_handler_raises(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """F11 regression: if the execution-failure handler itself raises (e.g. a
+    disk-save error now surfaced by ``atomic_update``), the active-execution
+    marker must still be cleared by the ``finally`` so the TODO is not blocked
+    until the stale sweep."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    todo = _add_todo(agent)
+    entry = ScheduledTodoEntry(
+        todo_id=todo.id,
+        user_id="owner",
+        thread_id=todo.thread_id,
+        scheduled_for=time.time() - 1,
+        task_preview=todo.task,
+        created_at=time.time(),
+    )
+
+    def _stream_boom(*args, **kwargs):
+        raise RuntimeError("stream failed")
+
+    def _handler_boom(*args, **kwargs):
+        raise RuntimeError("Failed to persist TODOs for user owner")
+
+    monkeypatch.setattr(ticker, "_stream_todo_execution", _stream_boom)
+    monkeypatch.setattr(ticker, "_handle_execution_failure", _handler_boom)
+
+    with pytest.raises(RuntimeError, match="Failed to persist"):
+        ticker._execute_scheduled_todo(entry)
+
+    # Despite the failure handler raising, the marker was cleared in finally.
+    assert not agent._schedule_db.is_execution_active(todo.id, "owner")
+
+
 def test_ticker_archives_completed_todos_using_configured_retention(tmp_path: Path, api_client_builder):
     agent = _agent(tmp_path, api_client_builder)
     agent.settings.todo_auto_archive_days = 3

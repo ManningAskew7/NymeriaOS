@@ -331,3 +331,56 @@ def test_double_iteration_limit_triggers_backoff(tmp_path: Path, monkeypatch):
 
     refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
     assert refreshed.scheduled_for > datetime.now(timezone.utc) + timedelta(minutes=9)
+
+
+def test_check_triggers_isolates_per_user_failure(tmp_path: Path, monkeypatch):
+    """F11: one user's failed trigger check (e.g. a disk error now surfaced by
+    ``atomic_update``) must not abort the rest of the poll cycle."""
+    ticker, _agent = _make_ticker(tmp_path)
+    processed: list[str] = []
+
+    class _FakeTriggerManager:
+        def get_all_users_with_triggers(self):
+            return ["u1", "u2"]
+
+        def check_triggers(self, user_id, agent=None):
+            processed.append(user_id)
+            if user_id == "u1":
+                raise RuntimeError("Failed to persist triggers for user u1")
+            return []
+
+    monkeypatch.setattr(ticker, "_get_trigger_manager", lambda: _FakeTriggerManager())
+
+    # Must not raise; u2 is still processed after u1's failure.
+    ticker._check_triggers()
+    assert processed == ["u1", "u2"]
+
+
+def test_archive_isolates_per_user_failure(tmp_path: Path, monkeypatch):
+    """F11: one user's failed archival save must not abort the sweep for the
+    remaining users."""
+    import contextlib
+
+    ticker, _agent = _make_ticker(tmp_path)
+    processed: list[str] = []
+
+    class _FakeList:
+        def archive_completed(self, days_old):
+            return 0
+
+    class _FakeTodoManager:
+        def get_all_users_with_todos(self):
+            return ["u1", "u2"]
+
+        @contextlib.contextmanager
+        def atomic_update(self, user_id):
+            processed.append(user_id)
+            if user_id == "u1":
+                raise RuntimeError("Failed to persist TODOs for user u1")
+            yield _FakeList()
+
+    monkeypatch.setattr(ticker, "todo_manager", _FakeTodoManager())
+
+    # Must not raise; u2 is still processed after u1's failure.
+    ticker._archive_completed_todos()
+    assert processed == ["u1", "u2"]
