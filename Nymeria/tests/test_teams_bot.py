@@ -342,3 +342,16 @@ def test_unlinked_sender_is_rejected_without_agent_call() -> None:
 
     assert api.chat_stream_calls == []
     assert "not linked to a Nymeria user" in client.sent[0]["text"]
+
+
+def test_active_chats_set_stays_bounded(monkeypatch) -> None:
+    # F7: the active-conversation set must not grow without bound, mirroring
+    # the rocketchat/mattermost _remember_active_thread cap-and-evict.
+    monkeypatch.setattr("nymeria.triggers.teams_bot.ACTIVE_CHAT_MAX", 10)
+    bot = NymeriaTeamsBot(api=FakeTeamsAPI(), teams_client=FakeTeamsClient())
+
+    for i in range(50):
+        bot._remember_active_chat(f"chat-{i}")
+
+    assert len(bot._active_chats) <= 10
+    assert bot._active_chats  # eviction keeps the set non-empty, not cleared
