@@ -6,6 +6,9 @@ from typing import Optional
 import httpx
 
 from nymeria.triggers.bot_helpers import (
+    SEEN_EVENT_MAX,
+    SEEN_EVENT_TTL_SECONDS,
+    SeenEventCache,
     UserResolver,
     coerce_value,
     context_bar,
@@ -87,3 +90,57 @@ def test_user_resolver_caches_hits_misses_and_invalidates() -> None:
         ("telegram", "123"),
         ("telegram", "123"),
     ]
+
+
+def test_seen_event_cache_default_constants_match_legacy_bot_values() -> None:
+    # The shared cache replaced four per-bot copies that all used these values;
+    # locking them guards against a silent default drift.
+    assert SEEN_EVENT_TTL_SECONDS == 10 * 60
+    assert SEEN_EVENT_MAX == 5000
+
+
+def test_seen_event_cache_dedupes_within_ttl_and_re_admits_after_expiry() -> None:
+    clock = [100.0]
+    cache = SeenEventCache(ttl_seconds=30, max_items=100, clock=lambda: clock[0])
+
+    # First sighting is novel; an immediate repeat is a duplicate.
+    assert cache.mark_seen("evt-1") is False
+    assert cache.mark_seen("evt-1") is True
+
+    # A distinct key is independent.
+    assert cache.mark_seen("evt-2") is False
+
+    # Past the TTL the key is no longer fresh and is admitted again.
+    clock[0] = 131.0
+    assert cache.mark_seen("evt-1") is False
+    assert cache.mark_seen("evt-1") is True
+
+
+def test_seen_event_cache_evicts_to_half_capacity_when_over_max() -> None:
+    clock = [0.0]
+    cache = SeenEventCache(ttl_seconds=10_000, max_items=4, clock=lambda: clock[0])
+
+    # Fill beyond the cap with still-fresh keys; eviction drops the oldest down
+    # to half capacity rather than letting the cache grow unbounded.
+    for i in range(6):
+        clock[0] = float(i)
+        assert cache.mark_seen(f"evt-{i}") is False
+
+    assert len(cache._items) <= cache._max_items
+    # The two oldest keys were evicted, so they read as novel again.
+    assert cache.mark_seen("evt-0") is False
+    # The most recent key is still tracked as seen.
+    assert cache.mark_seen("evt-5") is True
+
+
+def test_seen_event_cache_prunes_expired_keys_on_insert() -> None:
+    clock = [0.0]
+    cache = SeenEventCache(ttl_seconds=10, max_items=100, clock=lambda: clock[0])
+
+    assert cache.mark_seen("stale") is False
+    # Advance past the stale key's TTL, then insert a fresh key. The expired key
+    # is pruned even though capacity was not exceeded.
+    clock[0] = 50.0
+    assert cache.mark_seen("fresh") is False
+    assert "stale" not in cache._items
+    assert "fresh" in cache._items

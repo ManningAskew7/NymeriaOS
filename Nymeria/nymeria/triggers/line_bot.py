@@ -7,13 +7,13 @@ import hashlib
 import hmac
 import logging
 import re
-import time
 from collections.abc import AsyncIterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
 import httpx
 
+from .bot_helpers import SeenEventCache
 from .message_splitter import split_line_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -21,8 +21,6 @@ logger = logging.getLogger(__name__)
 
 LINE_TEXT_LIMIT = 5000
 LINE_API_BASE_URL = "https://api.line.me/v2/bot"
-SEEN_EVENT_TTL_SECONDS = 10 * 60
-SEEN_EVENT_MAX = 5000
 
 
 class BotAPIError(Exception):
@@ -295,41 +293,6 @@ def event_from_payload(
     )
 
 
-class _SeenEventCache:
-    """TTL cache for LINE webhook event dedupe."""
-
-    def __init__(
-        self,
-        *,
-        ttl_seconds: int = SEEN_EVENT_TTL_SECONDS,
-        max_items: int = SEEN_EVENT_MAX,
-        clock=time.monotonic,
-    ) -> None:
-        self._ttl_seconds = ttl_seconds
-        self._max_items = max_items
-        self._clock = clock
-        self._items: dict[str, float] = {}
-
-    def mark_seen(self, key: str) -> bool:
-        now = self._clock()
-        expires_at = self._items.get(key)
-        if expires_at and expires_at > now:
-            return True
-        self._items[key] = now + self._ttl_seconds
-        self._prune(now)
-        return False
-
-    def _prune(self, now: float) -> None:
-        if len(self._items) <= self._max_items:
-            stale = [key for key, expiry in self._items.items() if expiry <= now]
-        else:
-            stale_count = len(self._items) - (self._max_items // 2)
-            stale = [key for key, expiry in self._items.items() if expiry <= now]
-            stale += list(self._items)[:stale_count]
-        for key in stale:
-            self._items.pop(key, None)
-
-
 class LineRESTClient:
     """Minimal LINE Messaging API client for push-message replies."""
 
@@ -412,7 +375,7 @@ class NymeriaLineBot:
         bot_user_id: Optional[str] = None,
         respond_mode: str = "mention",
         show_tool_events: bool = False,
-        seen_cache: Optional[_SeenEventCache] = None,
+        seen_cache: Optional[SeenEventCache] = None,
     ) -> None:
         self.api = api
         self.line = line_client
@@ -420,7 +383,7 @@ class NymeriaLineBot:
         self.bot_user_id = bot_user_id
         self.respond_mode = respond_mode
         self.show_tool_events = show_tool_events
-        self._seen = seen_cache or _SeenEventCache()
+        self._seen = seen_cache or SeenEventCache()
         self._bindings: dict[str, str] = {}
         self._binding_users: dict[str, str] = {}
         self._active_chats: set[str] = set()
