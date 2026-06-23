@@ -155,14 +155,22 @@ class GoalManager:
 
     @contextmanager
     def atomic_update(self, user_id: str = "default"):
-        """Read-modify-write a user's GoalStore under the per-user RLock."""
+        """Read-modify-write a user's GoalStore under the per-user RLock.
+
+        Raises ``RuntimeError`` if the save fails, so a disk error is surfaced
+        rather than silently dropping the mutation. The save still runs in
+        ``finally``, but its result is only raised on the success path, so an
+        exception from inside the block propagates first and is never masked.
+        """
         lock = self._get_lock(user_id)
         with lock:
             store = self.get_store(user_id)
             try:
                 yield store
             finally:
-                self.save_store(store)
+                saved_ok = self.save_store(store)
+            if not saved_ok:
+                raise RuntimeError(f"Failed to persist goals for user {user_id}")
 
     # -- goal CRUD ------------------------------------------------------------
 

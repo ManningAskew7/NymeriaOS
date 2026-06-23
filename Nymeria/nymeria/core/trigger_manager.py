@@ -177,6 +177,12 @@ class TriggerManager:
 
         Only persists when the block actually changed the store, so a no-op
         poll (the common case in ``check_triggers``) does no disk write.
+
+        Raises ``RuntimeError`` if a needed save fails, so a disk error is
+        surfaced rather than silently dropping the mutation (matching the
+        ``delete_triggers_for_thread`` contract). The save is still attempted
+        in ``finally``, but its result is only raised on the success path, so
+        an exception from inside the block propagates first and is never masked.
         """
         lock = self._get_lock(user_id)
         with lock:
@@ -185,8 +191,11 @@ class TriggerManager:
             try:
                 yield store
             finally:
+                saved_ok = True
                 if self._snapshot(store) != before:
-                    self._save(store)
+                    saved_ok = self._save(store)
+            if not saved_ok:
+                raise RuntimeError(f"Failed to persist triggers for user {user_id}")
 
     # -- persistence ------------------------------------------------------
 
@@ -1143,14 +1152,15 @@ class TriggerManager:
 
     def _fire_create_todo(self, config: dict, template_vars: dict, user_id: str) -> None:
         """Create a TODO item (no LLM call)."""
-        from ..config import get_settings
-        from .todo_manager import TodoManager
+        # Reuse the canonical lazy TodoManager singleton (over
+        # ``get_settings().data_dir``) instead of constructing a fresh manager
+        # (with its mkdir + log) on every trigger fire.
+        from ..tools.todo import _get_todo_manager
 
         template = config.get("task_template", "Triggered: {trigger_name}")
         task = _safe_format(template, template_vars)
 
-        settings = get_settings()
-        todo_manager = TodoManager(settings.data_dir)
+        todo_manager = _get_todo_manager()
 
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(

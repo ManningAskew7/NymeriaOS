@@ -204,3 +204,60 @@ def test_non_agent_actions_fire_even_when_thread_is_busy(
     assert len(results) == 1
     # Nothing queued (the queue is only used for agent_prompt actions).
     assert isolated_queue.size("t1") == 0
+
+
+def test_atomic_update_raises_on_save_failure(tmp_path):
+    """F11: a failed save inside ``atomic_update`` raises instead of silently
+    dropping the mutation."""
+    tm = TriggerManager(tmp_path)
+    tm._save = lambda store: False  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="Failed to persist triggers"):
+        with tm.atomic_update("u1") as store:
+            store.triggers.append(_make_trigger())
+
+
+def test_atomic_update_no_raise_on_noop_even_when_save_would_fail(tmp_path):
+    """F11 + F1: a no-op block must neither save nor raise, even when ``_save``
+    would fail (dirty-aware short-circuit happens before the save check)."""
+    tm = TriggerManager(tmp_path)
+    tm._save = lambda store: False  # type: ignore[method-assign]
+
+    # No mutation -> snapshot unchanged -> no save attempted -> no raise.
+    with tm.atomic_update("u1"):
+        pass
+
+
+def test_create_todo_action_reuses_canonical_singleton(tmp_path, monkeypatch):
+    """F9: ``_fire_create_todo`` routes through the canonical
+    ``tools.todo._get_todo_manager`` singleton instead of constructing a fresh
+    ``TodoManager`` (mkdir + log) on every fire."""
+    from nymeria.core.todo_manager import TodoManager
+    from nymeria.tools import todo as todo_tools
+
+    singleton = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", singleton)
+
+    calls = {"get": 0}
+    real_get = todo_tools._get_todo_manager
+
+    def _spy_get():
+        calls["get"] += 1
+        return real_get()
+
+    monkeypatch.setattr(todo_tools, "_get_todo_manager", _spy_get)
+
+    tm = TriggerManager(tmp_path)
+    tm._fire_create_todo(
+        config={"task_template": "Triggered: {trigger_name}"},
+        template_vars={"trigger_name": "My Trigger", "trigger_id": "trig-1"},
+        user_id="u1",
+    )
+
+    # Routed through the canonical accessor exactly once...
+    assert calls["get"] == 1
+    # ...and the TODO landed in that singleton's store.
+    items = singleton.get_todos("u1").items
+    assert len(items) == 1
+    assert items[0].task == "Triggered: My Trigger"
+    assert items[0].created_by == "trigger"

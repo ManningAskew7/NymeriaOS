@@ -252,3 +252,31 @@ class TestLookups:
     def test_unknown_goal_raises(self, gm: GoalManager):
         with pytest.raises(GoalNotFoundError):
             gm.require_goal("u1", "ffffffff")
+
+
+class TestAtomicUpdateSaveFailure:
+    def test_raises_on_save_failure(self, gm: GoalManager):
+        """F11: a failed save inside ``atomic_update`` raises instead of
+        silently dropping the mutation. ``GoalManager`` is always-save, so the
+        save runs (and fails) even without an explicit mutation."""
+        gm.save_store = lambda store: False  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="Failed to persist goals"):
+            with gm.atomic_update("u1"):
+                pass
+
+    def test_body_exception_not_masked(self, gm: GoalManager):
+        """F11: an exception raised inside the block propagates (not masked by
+        the save-failure check), and the save still runs in ``finally``."""
+        saves = {"n": 0}
+
+        def _failing_save(store):
+            saves["n"] += 1
+            return False
+
+        gm.save_store = _failing_save  # type: ignore[method-assign]
+        with pytest.raises(ValueError, match="boom"):
+            with gm.atomic_update("u1"):
+                raise ValueError("boom")
+        # The save was attempted in ``finally`` despite the body exception, and
+        # its failure did not mask the body's ValueError with a RuntimeError.
+        assert saves["n"] == 1

@@ -359,6 +359,12 @@ class TodoManager:
             # List is automatically saved when exiting the context
 
         This ensures that multiple concurrent modifications don't overwrite each other.
+
+        Raises ``RuntimeError`` if the save fails, so a disk error is surfaced
+        rather than silently dropping the mutation (matching the
+        ``delete_todos_for_thread`` contract). The save still runs in
+        ``finally``, but its result is only raised on the success path, so an
+        exception from inside the block propagates first and is never masked.
         """
         lock = self._get_lock(user_id)
         with lock:
@@ -366,7 +372,9 @@ class TodoManager:
             try:
                 yield todo_list
             finally:
-                self.save_todos(todo_list)
+                saved_ok = self.save_todos(todo_list)
+            if not saved_ok:
+                raise RuntimeError(f"Failed to persist TODOs for user {user_id}")
 
     def _get_todos_path(self, user_id: str) -> Path:
         """Get the path to a user's TODO file."""
