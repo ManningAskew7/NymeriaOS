@@ -142,7 +142,11 @@ async def poll_device_token(
                             "device-code poll: prompt %s vanished before finalize", prompt_id
                         )
                         return
-                    finalize_oauth_credential(
+                    # Run the synchronous, blocking finalize (userinfo HTTP +
+                    # SQLite writes) off the event loop. Its side effects are
+                    # thread-safe; see oauth_callback_handler for details.
+                    await asyncio.to_thread(
+                        finalize_oauth_credential,
                         prompt=fresh,
                         descriptor=descriptor,
                         token_data=payload,
