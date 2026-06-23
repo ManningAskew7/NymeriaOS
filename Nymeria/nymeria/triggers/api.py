@@ -4,7 +4,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any, Callable, NoReturn, Optional
+from typing import Any, Awaitable, Callable, NoReturn, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
@@ -1204,6 +1204,99 @@ def _register_slim_watchdog_lifecycle(
     app.router.add_event_handler("shutdown", _stop_slim_watchdog)
 
 
+def _register_periodic_task(
+    app: FastAPI,
+    *,
+    state_prefix: str,
+    run_pass: Callable[[], Awaitable[None]],
+    interval_seconds: float,
+    startup_delay_seconds: float,
+    start_log: str,
+    error_label: str,
+    use_wake_event: bool = False,
+    on_loop_start: Callable[..., Awaitable[None]] | None = None,
+) -> None:
+    """Wire one background heartbeat loop's startup/shutdown handlers.
+
+    Consolidates the start/stop scaffold shared by the API-side periodic
+    tasks (spawn-thread housekeeping, dream scheduling, tool-index warm).
+    Each task supplies a single-pass ``run_pass`` coroutine; this helper
+    owns the stop event, the interruptible startup delay, the
+    ``while not stop.is_set()`` heartbeat, and the standard shutdown (set
+    stop, wait up to 5s, then cancel).
+
+    ``app.state`` is populated with ``{state_prefix}_task`` and
+    ``{state_prefix}_stop`` (plus ``{state_prefix}_wake`` when
+    ``use_wake_event`` is set). When a wake event is used the heartbeat
+    waits on it instead of the stop event, and it is cleared before each
+    pass so a signal raised mid-pass re-triggers the next one. The optional
+    ``on_loop_start`` hook runs once at loop entry, before the startup
+    delay, receiving the stop event and the wake event (or None).
+    """
+    import asyncio
+
+    stop_event: "asyncio.Event | None" = None
+    wake_event: "asyncio.Event | None" = None
+    task: "asyncio.Task[None] | None" = None
+
+    async def _loop(stop: asyncio.Event, wake: "asyncio.Event | None") -> None:
+        if on_loop_start is not None:
+            await on_loop_start(stop, wake)
+
+        # Startup delay, interruptible by stop so shutdown during boot is prompt.
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=startup_delay_seconds)
+        except asyncio.TimeoutError:
+            pass  # Expected: the first pass fires after the delay.
+
+        while not stop.is_set():
+            if wake is not None:
+                # Clear before the pass so a signal raised mid-pass is not lost:
+                # it stays set and immediately re-triggers the next pass.
+                wake.clear()
+            try:
+                await run_pass()
+            except Exception:
+                logger.exception("%s pass failed", error_label)
+            if stop.is_set():
+                break
+            heartbeat = wake if wake is not None else stop
+            try:
+                await asyncio.wait_for(heartbeat.wait(), timeout=interval_seconds)
+            except asyncio.TimeoutError:
+                pass  # Normal heartbeat tick.
+
+    async def _start() -> None:
+        nonlocal stop_event, wake_event, task
+        stop_event = asyncio.Event()
+        if use_wake_event:
+            wake_event = asyncio.Event()
+        task = asyncio.create_task(_loop(stop_event, wake_event))
+        setattr(app.state, f"{state_prefix}_task", task)
+        setattr(app.state, f"{state_prefix}_stop", stop_event)
+        if use_wake_event:
+            setattr(app.state, f"{state_prefix}_wake", wake_event)
+        logger.info(start_log)
+
+    async def _stop() -> None:
+        if stop_event is not None:
+            stop_event.set()
+        if wake_event is not None:
+            wake_event.set()  # Break the wake wait promptly.
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    app.router.add_event_handler("startup", _start)
+    app.router.add_event_handler("shutdown", _stop)
+
+
 def _register_spawn_thread_housekeeping_lifecycle(
     app: FastAPI,
     *,
@@ -1219,70 +1312,36 @@ def _register_spawn_thread_housekeeping_lifecycle(
     code path with an API-side, 30-minute heartbeat that mirrors the
     ticker's existing cadence.
     """
-    import asyncio
-
     SWEEP_INTERVAL_SECONDS = 1800  # 30 minutes (matches Ticker._spawn_sweep_interval)
-    stop_event: "asyncio.Event | None" = None
-    task: "asyncio.Task[None] | None" = None
 
-    async def _housekeeping_loop(event: asyncio.Event) -> None:
+    async def _run_pass() -> None:
+        # Lazy import so a test monkeypatch on the submodule attribute is
+        # honored when the pass runs.
         from ..tools.spawn_thread import sweep_idle_spawned_threads
 
-        # Short startup delay so we don't race the agent's first
-        # ``sync_agent_tools()`` call during app boot.
-        try:
-            await asyncio.wait_for(event.wait(), timeout=30)
-        except asyncio.TimeoutError:
-            pass  # Expected — first heartbeat tick fires after the delay.
-
-        while not event.is_set():
+        agent = agent_getter()
+        deleted = sweep_idle_spawned_threads(agent)
+        if deleted:
+            logger.info(
+                "Spawn idle-sweep deleted %d temporary thread(s)",
+                deleted,
+            )
+            # Resync tool registry so the callable-thread tool list reflects
+            # the deletions on the next prompt.
             try:
-                agent = agent_getter()
-                deleted = sweep_idle_spawned_threads(agent)
-                if deleted:
-                    logger.info(
-                        "Spawn idle-sweep deleted %d temporary thread(s)",
-                        deleted,
-                    )
-                    # Resync tool registry so the callable-thread tool list
-                    # reflects the deletions on the next prompt.
-                    try:
-                        agent.sync_agent_tools()
-                    except Exception:
-                        logger.exception(
-                            "Failed to sync agent tools after spawn sweep"
-                        )
+                agent.sync_agent_tools()
             except Exception:
-                logger.exception("Spawn-thread housekeeping pass failed")
+                logger.exception("Failed to sync agent tools after spawn sweep")
 
-            try:
-                await asyncio.wait_for(event.wait(), timeout=SWEEP_INTERVAL_SECONDS)
-            except asyncio.TimeoutError:
-                pass  # Normal heartbeat tick.
-
-    async def _start() -> None:
-        nonlocal stop_event, task
-        stop_event = asyncio.Event()
-        task = asyncio.create_task(_housekeeping_loop(stop_event))
-        app.state.spawn_housekeeping_task = task
-        app.state.spawn_housekeeping_stop = stop_event
-        logger.info("Spawn-thread housekeeping task started (Docker mode)")
-
-    async def _stop() -> None:
-        if stop_event is not None:
-            stop_event.set()
-        if task is not None:
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except asyncio.TimeoutError:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-
-    app.router.add_event_handler("startup", _start)
-    app.router.add_event_handler("shutdown", _stop)
+    _register_periodic_task(
+        app,
+        state_prefix="spawn_housekeeping",
+        run_pass=_run_pass,
+        interval_seconds=SWEEP_INTERVAL_SECONDS,
+        startup_delay_seconds=30,
+        start_log="Spawn-thread housekeeping task started (Docker mode)",
+        error_label="Spawn-thread housekeeping",
+    )
 
 
 def _register_dream_scheduler_lifecycle(
@@ -1302,57 +1361,23 @@ def _register_dream_scheduler_lifecycle(
 
     from ..core.dreaming import DREAM_SWEEP_INTERVAL_SECONDS
 
-    stop_event: "asyncio.Event | None" = None
-    task: "asyncio.Task[None] | None" = None
-
-    async def _dream_loop(event: asyncio.Event) -> None:
+    async def _run_pass() -> None:
         from ..core.dreaming import sweep_dreamable_threads
 
-        # Short startup delay so the first sweep doesn't race app boot.
-        try:
-            await asyncio.wait_for(event.wait(), timeout=60)
-        except asyncio.TimeoutError:
-            pass  # Expected — first sweep fires after the delay.
+        agent = agent_getter()
+        started = await asyncio.to_thread(sweep_dreamable_threads, agent)
+        if started:
+            logger.info("Dream sweep started %d dream(s)", started)
 
-        while not event.is_set():
-            try:
-                agent = agent_getter()
-                started = await asyncio.to_thread(sweep_dreamable_threads, agent)
-                if started:
-                    logger.info("Dream sweep started %d dream(s)", started)
-            except Exception:
-                logger.exception("Dream scheduler pass failed")
-
-            try:
-                await asyncio.wait_for(
-                    event.wait(), timeout=DREAM_SWEEP_INTERVAL_SECONDS
-                )
-            except asyncio.TimeoutError:
-                pass  # Normal heartbeat tick.
-
-    async def _start() -> None:
-        nonlocal stop_event, task
-        stop_event = asyncio.Event()
-        task = asyncio.create_task(_dream_loop(stop_event))
-        app.state.dream_scheduler_task = task
-        app.state.dream_scheduler_stop = stop_event
-        logger.info("Dream scheduler task started (Docker mode)")
-
-    async def _stop() -> None:
-        if stop_event is not None:
-            stop_event.set()
-        if task is not None:
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except asyncio.TimeoutError:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-
-    app.router.add_event_handler("startup", _start)
-    app.router.add_event_handler("shutdown", _stop)
+    _register_periodic_task(
+        app,
+        state_prefix="dream_scheduler",
+        run_pass=_run_pass,
+        interval_seconds=DREAM_SWEEP_INTERVAL_SECONDS,
+        startup_delay_seconds=60,
+        start_log="Dream scheduler task started (Docker mode)",
+        error_label="Dream scheduler",
+    )
 
 
 # Tool-index warm: startup delay (let app boot settle) and the heartbeat that
@@ -1375,66 +1400,25 @@ def _register_tool_index_warm_lifecycle(app: FastAPI) -> None:
 
     from ..core.tool_search_index import get_tool_search_index
 
-    stop_event: "asyncio.Event | None" = None
-    wake_event: "asyncio.Event | None" = None
-    task: "asyncio.Task[None] | None" = None
+    async def _on_loop_start(
+        stop: asyncio.Event, wake: "asyncio.Event | None"
+    ) -> None:
+        get_tool_search_index().register_warm_loop(asyncio.get_running_loop(), wake)
 
-    async def _warm_loop(stop: asyncio.Event, wake: asyncio.Event) -> None:
-        index = get_tool_search_index()
-        index.register_warm_loop(asyncio.get_running_loop(), wake)
+    async def _run_pass() -> None:
+        await asyncio.to_thread(get_tool_search_index().warm_embeddings)
 
-        # Short startup delay so the first warm doesn't race app boot.
-        try:
-            await asyncio.wait_for(
-                stop.wait(), timeout=TOOL_INDEX_WARM_STARTUP_DELAY_SECONDS
-            )
-        except asyncio.TimeoutError:
-            pass  # Expected: the first warm fires after the delay.
-
-        while not stop.is_set():
-            # Clear before warming so a change signaled mid-pass is not lost: it
-            # stays set and immediately re-triggers the next pass.
-            wake.clear()
-            try:
-                await asyncio.to_thread(index.warm_embeddings)
-            except Exception:
-                logger.exception("Tool index warm pass failed")
-            if stop.is_set():
-                break
-            try:
-                await asyncio.wait_for(
-                    wake.wait(), timeout=TOOL_INDEX_WARM_HEARTBEAT_SECONDS
-                )
-            except asyncio.TimeoutError:
-                pass  # Heartbeat tick: re-warm (idempotent, delta-cheap).
-
-    async def _start() -> None:
-        nonlocal stop_event, wake_event, task
-        stop_event = asyncio.Event()
-        wake_event = asyncio.Event()
-        task = asyncio.create_task(_warm_loop(stop_event, wake_event))
-        app.state.tool_index_warm_task = task
-        app.state.tool_index_warm_stop = stop_event
-        app.state.tool_index_warm_wake = wake_event
-        logger.info("Tool index warm task started")
-
-    async def _stop() -> None:
-        if stop_event is not None:
-            stop_event.set()
-        if wake_event is not None:
-            wake_event.set()  # Break the wake wait promptly.
-        if task is not None:
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except asyncio.TimeoutError:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-
-    app.router.add_event_handler("startup", _start)
-    app.router.add_event_handler("shutdown", _stop)
+    _register_periodic_task(
+        app,
+        state_prefix="tool_index_warm",
+        run_pass=_run_pass,
+        interval_seconds=TOOL_INDEX_WARM_HEARTBEAT_SECONDS,
+        startup_delay_seconds=TOOL_INDEX_WARM_STARTUP_DELAY_SECONDS,
+        start_log="Tool index warm task started",
+        error_label="Tool index warm",
+        use_wake_event=True,
+        on_loop_start=_on_loop_start,
+    )
 
 
 def run_api(
