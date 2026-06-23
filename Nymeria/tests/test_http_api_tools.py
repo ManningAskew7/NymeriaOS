@@ -11,6 +11,8 @@ from nymeria.core.custom_tools import (
     execute_http_tool,
     _sync_execute_http,
     _sync_http_request,
+    _extract_json_path,
+    _PATH_NOT_FOUND,
 )
 from nymeria.core.http_policy import HTTPPolicyConfig, evaluate_http_url
 from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
@@ -608,3 +610,109 @@ def test_http_api_tools_are_optional_with_metadata():
         assert meta is not None
         assert meta.security_level == SecurityLevel.MODERATE
         assert meta.default_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# response_path extraction (`_extract_json_path`)
+#
+# Regression for the lenient fallback: a misconfigured response_path used to
+# silently yield the parent object or the entire response body. It now returns
+# the `_PATH_NOT_FOUND` sentinel on any unresolved segment, and the caller
+# surfaces an error instead of leaking the unfiltered payload.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_json_path_nested_field():
+    assert _extract_json_path({"data": {"temperature": 21}}, "$.data.temperature") == 21
+
+
+def test_extract_json_path_array_index():
+    data = {"items": [{"id": "a"}, {"id": "b"}]}
+    assert _extract_json_path(data, "$.items[1]") == {"id": "b"}
+
+
+def test_extract_json_path_array_wildcard_keeps_full_list():
+    assert _extract_json_path({"items": [1, 2, 3]}, "$.items[*]") == [1, 2, 3]
+
+
+def test_extract_json_path_missing_top_level_field_is_not_found():
+    assert _extract_json_path({"a": 1}, "$.b") is _PATH_NOT_FOUND
+
+
+def test_extract_json_path_missing_nested_field_is_not_found():
+    # Previously returned the parent dict ({"b": 1}) rather than signaling a miss.
+    assert _extract_json_path({"a": {"b": 1}}, "$.a.c") is _PATH_NOT_FOUND
+
+
+def test_extract_json_path_traversal_into_non_dict_is_not_found():
+    # Previously returned the whole root body.
+    assert _extract_json_path({"a": 5}, "$.a.b") is _PATH_NOT_FOUND
+
+
+def test_extract_json_path_index_out_of_bounds_is_not_found():
+    # Previously returned None, which the caller rendered as the literal "None".
+    assert _extract_json_path({"items": [1, 2]}, "$.items[5]") is _PATH_NOT_FOUND
+
+
+def test_extract_json_path_index_on_non_list_is_not_found():
+    # Asking for [0] on a dict-valued field is a genuine mismatch.
+    assert _extract_json_path({"data": {"x": 1}}, "$.data[0]") is _PATH_NOT_FOUND
+
+
+def test_extract_json_path_non_dollar_prefix_is_not_found():
+    # A malformed path (no leading "$.") is a config error, not "return all".
+    assert _extract_json_path({"a": 1}, "data") is _PATH_NOT_FOUND
+
+
+def test_extract_json_path_present_null_resolves_to_none_not_sentinel():
+    # A legitimately-present null is distinct from a path that did not match.
+    result = _extract_json_path({"data": None}, "$.data")
+    assert result is None
+    assert result is not _PATH_NOT_FOUND
+
+
+# `_sync_http_request` does not plumb a `transport` into `_http_request_impl`,
+# so (unlike the `_http_request_impl` tests above) these end-to-end cases stub
+# the impl via its function-local import seam rather than `httpx.MockTransport`.
+def _fake_http_impl(payload):
+    """A drop-in `_http_request_impl` returning a fixed successful body."""
+
+    def _impl(**_kwargs):
+        return {"ok": True, "body": payload}
+
+    return _impl
+
+
+def test_sync_http_request_response_path_match_extracts_value(monkeypatch):
+    monkeypatch.setattr(
+        "nymeria.tools.http_api._http_request_impl",
+        _fake_http_impl({"data": {"temperature": 21}}),
+    )
+    config = HTTPToolConfig(
+        method="GET",
+        url="https://api.example.com/weather",
+        response_path="$.data.temperature",
+    )
+
+    assert _sync_http_request(config, {}) == "21"
+
+
+def test_sync_http_request_response_path_no_match_returns_error_not_body(monkeypatch):
+    payload = {"data": {"temperature": 21}, "secret": "TOPSECRET"}
+    monkeypatch.setattr(
+        "nymeria.tools.http_api._http_request_impl",
+        _fake_http_impl(payload),
+    )
+    config = HTTPToolConfig(
+        method="GET",
+        url="https://api.example.com/weather",
+        response_path="$.data.humidity",
+    )
+
+    result = _sync_http_request(config, {})
+
+    assert result == (
+        "[Error]: response_path '$.data.humidity' did not match the response body"
+    )
+    # The unfiltered body (and any secret inside it) must not leak into the result.
+    assert "TOPSECRET" not in result

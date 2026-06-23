@@ -88,7 +88,10 @@ class HTTPToolConfig(BaseModel):
     )
     response_path: Optional[str] = Field(
         default=None,
-        description="JSONPath to extract result (e.g., '$.data.items')",
+        description=(
+            "JSONPath to extract result (e.g., '$.data.items'). A path that does "
+            "not match the response returns an error instead of the full body."
+        ),
     )
     response_format: Literal["json", "text", "auto"] = Field(
         default="auto",

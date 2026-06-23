@@ -66,7 +66,10 @@ class HTTPToolConfigModel(BaseModel):
     timeout_seconds: int = Field(default=30, description="Request timeout in seconds")
     response_path: str | None = Field(
         default=None,
-        description="Optional JSON path to extract from a JSON response",
+        description=(
+            "Optional JSON path to extract from a JSON response. A path that does "
+            "not match the response returns an error instead of the full body."
+        ),
     )
     response_format: ResponseFormat = Field(
         default="auto",
