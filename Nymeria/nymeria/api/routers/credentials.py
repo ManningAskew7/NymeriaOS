@@ -404,7 +404,7 @@ def create_credentials_router(
             )
         except CredentialNotFound as exc:
             raise HTTPException(status_code=404, detail="Credential not found") from exc
-        row = next((r for r in repo.list_bindings(credential_id) if r["id"] == binding_id), None)
+        row = repo.get_binding(binding_id)
         if row is None:
             raise HTTPException(status_code=500, detail="Binding was not saved")
         _invalidate_llm_graphs(get_agent_fn, record)
@@ -416,7 +416,7 @@ def create_credentials_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         repo = _repo(get_agent_fn)
-        row = next((r for r in repo.list_bindings() if r["id"] == binding_id), None)
+        row = repo.get_binding(binding_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Binding not found")
         record = repo.get_credential(row["credential_id"])
