@@ -8,13 +8,40 @@ from cryptography.fernet import Fernet
 
 from nymeria.core.http_policy import HTTPPolicyConfig
 from nymeria.core.accounts import AccountsRepo
+from nymeria.core import credential_vault as vault_module
 from nymeria.core.credential_vault import (
     CredentialAccessDenied,
     CredentialVaultRepo,
+    get_credential_vault_repo,
     migrate_mcp_encrypted_env_vars,
 )
 from nymeria.core import secrets as nymeria_secrets
 from nymeria.tools.http_api import _http_request_impl
+
+
+def _count_secret_field_selects(repo: CredentialVaultRepo, monkeypatch) -> dict[str, int]:
+    """Patch ``repo._connect`` to count SELECTs against credential_secret_fields.
+
+    Returns a mutable counter dict the caller reads after the traced call. The
+    trace callback is installed after the real connect (so the PRAGMA setup in
+    ``_connect`` is not counted).
+    """
+    counts = {"selects": 0}
+    real_connect = repo._connect
+
+    def traced_connect():
+        conn = real_connect()
+
+        def tracer(statement: str) -> None:
+            normalized = statement.strip().upper()
+            if normalized.startswith("SELECT") and "CREDENTIAL_SECRET_FIELDS" in normalized:
+                counts["selects"] += 1
+
+        conn.set_trace_callback(tracer)
+        return conn
+
+    monkeypatch.setattr(repo, "_connect", traced_connect)
+    return counts
 
 
 def _repo(tmp_path, monkeypatch) -> CredentialVaultRepo:
@@ -184,3 +211,93 @@ def test_http_result_redacts_resolved_credential_values_from_metadata():
     assert "cred_example" in serialized
     assert secret not in serialized
     assert "[redacted]" in serialized
+
+
+def test_list_credentials_groups_secret_field_queries(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    for i in range(5):
+        repo.create_credential(
+            owner_type="user",
+            owner_user_id="alice",
+            name=f"cred-{i}",
+            provider="example",
+            kind="api_key",
+            allowed_targets=["*"],
+            secret_fields={"value": f"secret-{i}", "extra": f"extra-{i}"},
+            created_by_user_id="alice",
+        )
+    # A credential with no secret fields must still resolve to an empty list.
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="cred-empty",
+        provider="example",
+        kind="api_key",
+        allowed_targets=["*"],
+        secret_fields={},
+        created_by_user_id="alice",
+    )
+
+    counts = _count_secret_field_selects(repo, monkeypatch)
+    records = repo.list_credentials(owner_user_id="alice")
+
+    assert len(records) == 6
+    assert counts["selects"] == 1  # one grouped query, not N+1
+    by_name = {record.name: record for record in records}
+    for i in range(5):
+        assert by_name[f"cred-{i}"].secret_fields == ["extra", "value"]  # sorted
+    assert by_name["cred-empty"].secret_fields == []
+
+
+def test_list_credentials_empty_result_issues_no_secret_field_query(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    counts = _count_secret_field_selects(repo, monkeypatch)
+    records = repo.list_credentials(owner_user_id="bob")
+    assert records == []
+    assert counts["selects"] == 0
+
+
+def test_secret_field_names_for_batches_large_id_lists(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(repo, "_SECRET_FIELDS_BATCH", 2)
+    ids = []
+    expected: dict[str, list[str]] = {}
+    for i in range(5):
+        # Distinct field names per credential so a cross-batch stitching bug
+        # (fields attributed to the wrong id) would be caught.
+        fields = {f"k{i}_a": f"secret-{i}-a", f"k{i}_b": f"secret-{i}-b"}
+        record = repo.create_credential(
+            owner_type="user",
+            owner_user_id="alice",
+            name=f"cred-{i}",
+            provider="example",
+            kind="api_key",
+            allowed_targets=["*"],
+            secret_fields=fields,
+            created_by_user_id="alice",
+        )
+        ids.append(record.id)
+        expected[record.id] = sorted(fields)
+
+    counts = _count_secret_field_selects(repo, monkeypatch)
+    with repo._lock, repo._connect() as conn:
+        grouped = repo._secret_field_names_for(conn, ids)
+
+    assert set(grouped) == set(ids)
+    assert {cid: sorted(names) for cid, names in grouped.items()} == expected
+    # 5 ids batched at size 2 -> ceil(5/2) == 3 grouped queries.
+    assert counts["selects"] == 3
+
+
+def test_get_credential_vault_repo_is_singleton_and_swaps_on_db_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
+    monkeypatch.setattr(vault_module, "_vault_repo", None)
+    db_one = tmp_path / "one.db"
+    db_two = tmp_path / "two.db"
+
+    first = get_credential_vault_repo(db_one)
+    assert get_credential_vault_repo(db_one) is first  # cached for same db
+
+    second = get_credential_vault_repo(db_two)
+    assert second is not first  # swapped on db_path change
+    assert get_credential_vault_repo(db_two) is second
