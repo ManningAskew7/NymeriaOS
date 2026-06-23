@@ -212,6 +212,24 @@ def _offline_environment_detection(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def clear_settings_cache():
+    """Reset the cached ``get_settings()`` between tests, suite-wide.
+
+    Previously duplicated as a byte-identical per-file autouse fixture in ~34
+    test modules (optimization slice 34 F1). ``get_settings`` is a side-effect
+    free ``lru_cache``, so clearing it at every test boundary only increases
+    isolation. Modules that need to clear additional caches (e.g. a tool's token
+    cache) define their own same-named autouse fixture, which overrides this one
+    for that module.
+    """
+    from nymeria.config.settings import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 def api_client_builder(monkeypatch: pytest.MonkeyPatch) -> ApiTestClientBuilder:
     api_module._reset_auth_failure_rate_limiter_for_tests()

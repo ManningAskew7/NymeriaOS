@@ -5,19 +5,9 @@ the SSRF-gated fetch path, content extraction dispatch, batch handling, error
 envelopes, and the optional extraction step (secondary-model gating + attribution).
 """
 
-import pytest
 
 from nymeria.tools import web_fetch
 from nymeria.core.http_policy import HTTPPolicyDecision, HTTPPolicyViolation
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache():
-    from nymeria.config.settings import get_settings
-
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
 
 
 class FakeResponse:

@@ -25,6 +25,10 @@ class FakeAgent:
         self.synced_tools += 1
 
 
+# Intentional route changes must update this snapshot. Regenerate it from Nymeria/
+# with:
+#   PYTHONPATH=. python3 tests/test_api_route_inventory.py
+# and paste the printed body between the brackets below.
 EXPECTED_ROUTES = [
     ('/activity', ('GET',)),
     ('/admin/chatapp/bindings', ('GET',)),
@@ -282,14 +286,18 @@ def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent]:
     return api_client_builder.client(agent, settings), agent
 
 
-def _auth(token: str, **headers: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}", **headers}
-
-
 def test_api_schema_route_inventory_is_stable(tmp_path: Path, api_client_builder):
     client, agent = _client(tmp_path, api_client_builder)
 
-    assert _schema_routes(client.app) == EXPECTED_ROUTES
+    actual = _schema_routes(client.app)
+    added = sorted(set(actual) - set(EXPECTED_ROUTES))
+    removed = sorted(set(EXPECTED_ROUTES) - set(actual))
+    assert actual == EXPECTED_ROUTES, (
+        "Route inventory drift. If intentional, regenerate EXPECTED_ROUTES from "
+        "Nymeria/ with:\n"
+        "    PYTHONPATH=. python3 tests/test_api_route_inventory.py\n"
+        f"added: {added}\nremoved: {removed}"
+    )
     assert agent.synced_tools == 1
 
 
@@ -475,7 +483,7 @@ def test_device_registration_is_bound_to_authenticated_user(tmp_path: Path, api_
 
     response = client.post(
         "/devices/register",
-        headers=_auth(token),
+        headers=api_client_builder.auth(token),
         json={
             "token": "device-token",
             "platform": "android",
@@ -526,7 +534,7 @@ def test_workspace_download_scopes_non_admin_to_own_generated_images(
     admin_token = agent.accounts_repo.issue_token("admin")
 
     def _get(token, path):
-        return client.get("/workspace/download", headers=_auth(token), params={"path": str(path)})
+        return client.get("/workspace/download", headers=api_client_builder.auth(token), params={"path": str(path)})
 
     # Non-admin: can read their own generated image, but not arbitrary workspace
     # files nor another user's generated images.
@@ -547,8 +555,8 @@ def test_user_auth_contract_for_me_endpoint(tmp_path: Path, api_client_builder):
     token = agent.accounts_repo.issue_token("alice")
 
     missing = client.get("/me")
-    invalid = client.get("/me", headers=_auth("nym_invalid"))
-    valid = client.get("/me", headers=_auth(token))
+    invalid = client.get("/me", headers=api_client_builder.auth("nym_invalid"))
+    valid = client.get("/me", headers=api_client_builder.auth(token))
 
     assert missing.status_code == 401
     assert invalid.status_code == 401
@@ -574,8 +582,8 @@ def test_failed_auth_attempts_are_rate_limited_without_blocking_valid_tokens(
 
     first = client.get("/me")
     second = client.get("/me", headers={"Authorization": "Basic nope"})
-    limited = client.get("/me", headers=_auth("nym_invalid_3"))
-    valid = client.get("/me", headers=_auth(token))
+    limited = client.get("/me", headers=api_client_builder.auth("nym_invalid_3"))
+    valid = client.get("/me", headers=api_client_builder.auth(token))
 
     assert first.status_code == 401
     assert second.status_code == 401
@@ -593,8 +601,8 @@ def test_admin_only_endpoint_rejects_user_and_allows_admin(tmp_path: Path, api_c
     user_token = agent.accounts_repo.issue_token("alice")
     admin_token = agent.accounts_repo.issue_token("admin")
 
-    forbidden = client.get("/admin/users", headers=_auth(user_token))
-    allowed = client.get("/admin/users", headers=_auth(admin_token))
+    forbidden = client.get("/admin/users", headers=api_client_builder.auth(user_token))
+    allowed = client.get("/admin/users", headers=api_client_builder.auth(admin_token))
 
     assert forbidden.status_code == 403
     assert allowed.status_code == 200
@@ -606,15 +614,15 @@ def test_deprecated_nymeria_api_key_is_hidden_from_config_api(tmp_path: Path, ap
     agent.accounts_repo.create_user("admin", "admin@example.com", "Admin", role="admin")
     admin_token = agent.accounts_repo.issue_token("admin")
 
-    listed = client.get("/settings/env", headers=_auth(admin_token))
+    listed = client.get("/settings/env", headers=api_client_builder.auth(admin_token))
 
     assert listed.status_code == 200
     entries = listed.json()["entries"]
     assert "nymeria_api_key" not in {entry["name"] for entry in entries}
     assert "NYMERIA_API_KEY" not in {entry["env_var"] for entry in entries}
 
-    lower = client.get("/settings/env/nymeria_api_key", headers=_auth(admin_token))
-    upper = client.get("/settings/env/NYMERIA_API_KEY", headers=_auth(admin_token))
+    lower = client.get("/settings/env/nymeria_api_key", headers=api_client_builder.auth(admin_token))
+    upper = client.get("/settings/env/NYMERIA_API_KEY", headers=api_client_builder.auth(admin_token))
 
     assert lower.status_code == 404
     assert upper.status_code == 404
@@ -636,24 +644,24 @@ def test_admin_bot_endpoint_rate_limit_is_per_admin_and_endpoint(
     for _ in range(2):
         response = client.get(
             "/admin/chatapp/bindings",
-            headers=_auth(service_token),
+            headers=api_client_builder.auth(service_token),
             params={"provider": "telegram"},
         )
         assert response.status_code == 200
 
     limited = client.get(
         "/admin/chatapp/bindings",
-        headers=_auth(service_token),
+        headers=api_client_builder.auth(service_token),
         params={"provider": "telegram"},
     )
     same_admin_other_endpoint = client.get(
         "/admin/chatapp/bindings/lookup",
-        headers=_auth(service_token),
+        headers=api_client_builder.auth(service_token),
         params={"provider": "telegram", "platform_chat_id": "123"},
     )
     other_admin_same_endpoint = client.get(
         "/admin/chatapp/bindings",
-        headers=_auth(other_token),
+        headers=api_client_builder.auth(other_token),
         params={"provider": "telegram"},
     )
 
@@ -673,7 +681,7 @@ def test_admin_service_token_style_act_as_resolves_target_user(
     agent.accounts_repo.create_user("service", "service@example.com", "Service", role="admin")
     service_token = agent.accounts_repo.issue_token("service")
 
-    response = client.get("/me", headers=_auth(service_token, **{"X-Nymeria-Act-As": "alice"}))
+    response = client.get("/me", headers=api_client_builder.auth(service_token, **{"X-Nymeria-Act-As": "alice"}))
 
     assert response.status_code == 200
     assert response.json() == {
@@ -690,7 +698,7 @@ def test_non_admin_act_as_is_rejected(tmp_path: Path, api_client_builder):
     agent.accounts_repo.create_user("bob", "bob@example.com", "Bob")
     token = agent.accounts_repo.issue_token("alice")
 
-    response = client.get("/me", headers=_auth(token, **{"X-Nymeria-Act-As": "bob"}))
+    response = client.get("/me", headers=api_client_builder.auth(token, **{"X-Nymeria-Act-As": "bob"}))
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Act-As requires admin"
@@ -737,3 +745,18 @@ def test_create_api_app_without_redis_does_not_mint_service_token(
 
     assert not (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).exists()
     assert getattr(settings, "nymeria_service_token", None) is None
+
+
+if __name__ == "__main__":
+    # Dump the current route inventory formatted as the EXPECTED_ROUTES literal so
+    # an intentional route change is a copy-paste rather than a hand-edit. The
+    # schema route set is independent of settings/agent (frontend SPA mounts are
+    # registered with include_in_schema=False), so a throwaway agent is enough.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as _tmp:
+        _app = api_module.create_api_app(FakeAgent(Path(_tmp)))  # type: ignore[bad-argument-type]
+        print("EXPECTED_ROUTES = [")
+        for _path, _methods in _schema_routes(_app):
+            print(f"    {(_path, _methods)!r},")
+        print("]")
