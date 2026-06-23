@@ -17,6 +17,7 @@ provider, this module:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ import httpx
 from ..config.oauth_providers import OAuthProviderDescriptor, get_oauth_provider
 from . import secrets as nymeria_secrets
 from .auth_prompt_coordinator import (
+    AuthPromptCoordinator,
     PendingPrompt,
     get_auth_prompt_coordinator,
     hash_prompt_token,
@@ -207,6 +209,41 @@ def _disable_replaced_credentials(
             logger.debug("Failed to disable replaced OAuth credential %s", replacement.id, exc_info=True)
 
 
+def _fail(
+    coordinator: AuthPromptCoordinator,
+    prompt: PendingPrompt,
+    message: str,
+    *,
+    credential_id: Optional[str],
+) -> OAuthFinalizeResult:
+    """Resolve the pending prompt with an error payload and return the matching
+    failure result.
+
+    Shared by the finalize failure branches so the coordinator resolve dict and
+    the returned ``OAuthFinalizeResult`` cannot drift. Callers that need to log
+    do so before calling this. ``coordinator.resolve`` already merges
+    ``attempts``/``last_test_error`` into the payload, so this must not.
+    """
+    coordinator.resolve(
+        prompt.prompt_id,
+        {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "credential_id": credential_id,
+        },
+    )
+    return OAuthFinalizeResult(
+        ok=False,
+        status="error",
+        credential_id=credential_id,
+        email=None,
+        name=None,
+        scopes=[],
+        message=message,
+    )
+
+
 def finalize_oauth_credential(
     *,
     prompt: PendingPrompt,
@@ -231,24 +268,11 @@ def finalize_oauth_credential(
 
     access_token = str(token_data.get("access_token") or "")
     if not access_token:
-        message = "Provider returned no access_token."
-        coordinator.resolve(
-            prompt.prompt_id,
-            {
-                "ok": False,
-                "status": "error",
-                "message": message,
-                "credential_id": prompt.credential_id,
-            },
-        )
-        return OAuthFinalizeResult(
-            ok=False,
-            status="error",
+        return _fail(
+            coordinator,
+            prompt,
+            "Provider returned no access_token.",
             credential_id=prompt.credential_id,
-            email=None,
-            name=None,
-            scopes=[],
-            message=message,
         )
 
     refresh_token = token_data.get("refresh_token") or ""
@@ -265,19 +289,11 @@ def finalize_oauth_credential(
 
     current = repo.get_credential(prompt.credential_id)
     if current is None:
-        message = "Pending credential record vanished before completion."
-        coordinator.resolve(
-            prompt.prompt_id,
-            {"ok": False, "status": "error", "message": message},
-        )
-        return OAuthFinalizeResult(
-            ok=False,
-            status="error",
+        return _fail(
+            coordinator,
+            prompt,
+            "Pending credential record vanished before completion.",
             credential_id=None,
-            email=None,
-            name=None,
-            scopes=[],
-            message=message,
         )
 
     replacements = _matching_oauth_credentials(
@@ -341,44 +357,14 @@ def finalize_oauth_credential(
             "NYMERIA_SECRETS_KEY before retrying."
         )
         logger.error("OAuth finalize failed due to vault secrets-key error: %s", exc)
-        coordinator.resolve(
-            prompt.prompt_id,
-            {
-                "ok": False,
-                "status": "error",
-                "credential_id": prompt.credential_id,
-                "message": message,
-            },
-        )
-        return OAuthFinalizeResult(
-            ok=False,
-            status="error",
-            credential_id=prompt.credential_id,
-            email=None,
-            name=None,
-            scopes=[],
-            message=message,
-        )
+        return _fail(coordinator, prompt, message, credential_id=prompt.credential_id)
     except Exception as exc:  # noqa: BLE001 - safety net so the agent never hangs.
         logger.exception("OAuth finalize crashed during upsert_credential")
-        message = f"Failed to store OAuth credential: {exc}"
-        coordinator.resolve(
-            prompt.prompt_id,
-            {
-                "ok": False,
-                "status": "error",
-                "credential_id": prompt.credential_id,
-                "message": message,
-            },
-        )
-        return OAuthFinalizeResult(
-            ok=False,
-            status="error",
+        return _fail(
+            coordinator,
+            prompt,
+            f"Failed to store OAuth credential: {exc}",
             credential_id=prompt.credential_id,
-            email=None,
-            name=None,
-            scopes=[],
-            message=message,
         )
 
     if replacements:
@@ -409,6 +395,11 @@ def finalize_oauth_credential(
                 f"Connected, but provider-specific post-save step failed for {descriptor.display_name}."
             )
 
+    connected_msg = (
+        f"Connected {descriptor.display_name} as {email}."
+        if email and email != "unknown"
+        else f"Connected {descriptor.display_name}."
+    )
     coordinator.resolve(
         prompt.prompt_id,
         {
@@ -419,11 +410,7 @@ def finalize_oauth_credential(
             "name": name,
             "scopes": granted_scopes,
             "account_label": updated.account_label,
-            "message": (
-                f"Connected {descriptor.display_name} as {email}."
-                if email and email != "unknown"
-                else f"Connected {descriptor.display_name}."
-            ),
+            "message": connected_msg,
             "hook_message": hook_message,
         },
     )
@@ -436,11 +423,7 @@ def finalize_oauth_credential(
             "prompt_id": prompt.prompt_id,
             "credential_id": updated.id,
             "status": "active",
-            "message": (
-                f"Connected {descriptor.display_name} as {email}."
-                if email and email != "unknown"
-                else f"Connected {descriptor.display_name}."
-            ),
+            "message": connected_msg,
             "email": email,
             "name": name,
         },
@@ -453,11 +436,7 @@ def finalize_oauth_credential(
         email=email,
         name=name,
         scopes=granted_scopes,
-        message=(
-            f"Connected {descriptor.display_name} as {email}."
-            if email and email != "unknown"
-            else f"Connected {descriptor.display_name}."
-        ),
+        message=connected_msg,
         hook_message=hook_message,
     )
 
@@ -680,7 +659,13 @@ async def handle_auth_code_callback(
             status_code=502,
         )
 
-    result = finalize_oauth_credential(
+    # Run the (synchronous, blocking) finalize off the event loop: it does a
+    # blocking userinfo HTTP fetch plus synchronous SQLite writes, and a slow
+    # provider would otherwise stall every request on this worker. Its side
+    # effects are thread-safe (coordinator.resolve wakes the future via
+    # call_soon_threadsafe; the event bus uses a thread-safe queue).
+    result = await asyncio.to_thread(
+        finalize_oauth_credential,
         prompt=prompt,
         descriptor=descriptor,
         token_data=token_data,

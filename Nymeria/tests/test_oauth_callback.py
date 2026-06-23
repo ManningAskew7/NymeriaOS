@@ -20,6 +20,7 @@ These tests stub the provider HTTP exchanges so they run offline.
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,11 @@ from nymeria.core.auth_prompt_coordinator import (
     new_prompt_id,
     new_prompt_token,
 )
-from nymeria.core.oauth_callback_handler import handle_auth_code_callback
+from nymeria.core.oauth_callback_handler import (
+    _fail,
+    handle_auth_code_callback,
+)
+from nymeria.core.oauth_device_flow import poll_device_token
 from nymeria.core.oauth_start import _pack_state
 
 
@@ -432,3 +437,140 @@ def test_missing_oauth_state_blob_returns_500(env, monkeypatch):
     assert result.ok is False
     assert result.status_code == 500
     assert "incomplete" in result.message.lower()
+
+
+# ---------------------------------------------------------------------------
+# F6: the shared ``_fail`` failure-result helper
+# ---------------------------------------------------------------------------
+
+
+def test_fail_helper_resolves_prompt_and_returns_error_result(env):
+    """``_fail`` resolves the coordinator future with an error payload and
+    returns a matching ``OAuthFinalizeResult``. Covers both the
+    explicit-credential-id and ``None`` (record-vanished) call shapes."""
+
+    async def run():
+        prompt_with, _, _ = await _register_pending_prompt()
+        prompt_without, _, _ = await _register_pending_prompt()
+        coord = get_auth_prompt_coordinator()
+        result_with = _fail(
+            coord, prompt_with, "boom", credential_id=prompt_with.credential_id
+        )
+        result_without = _fail(coord, prompt_without, "vanished", credential_id=None)
+        return prompt_with, prompt_without, result_with, result_without
+
+    prompt_with, prompt_without, result_with, result_without = asyncio.run(run())
+
+    # Returned dataclass shape.
+    assert result_with.ok is False
+    assert result_with.status == "error"
+    assert result_with.credential_id == prompt_with.credential_id
+    assert result_with.message == "boom"
+    assert result_with.email is None
+    assert result_with.name is None
+    assert result_with.scopes == []
+    assert result_without.credential_id is None
+
+    # The waiting futures were resolved with the matching error payloads.
+    payload_with = prompt_with.future.result()
+    assert payload_with["ok"] is False
+    assert payload_with["status"] == "error"
+    assert payload_with["message"] == "boom"
+    assert payload_with["credential_id"] == prompt_with.credential_id
+    # ``coordinator.resolve`` always merges the running attempt totals in.
+    assert "attempts" in payload_with
+
+    payload_without = prompt_without.future.result()
+    # The record-vanished path now carries an explicit ``credential_id: None``
+    # (previously the key was omitted); ``.get("credential_id")`` consumers are
+    # unaffected.
+    assert payload_without["credential_id"] is None
+    assert payload_without["message"] == "vanished"
+
+
+# ---------------------------------------------------------------------------
+# F7: finalize runs off the event loop (asyncio.to_thread)
+# ---------------------------------------------------------------------------
+
+
+def test_callback_finalize_runs_off_event_loop(env, monkeypatch):
+    """The blocking ``finalize_oauth_credential`` must run in a worker thread,
+    not on the API event loop, so a slow userinfo fetch can't stall the loop."""
+    import nymeria.core.oauth_callback_handler as handler_mod
+
+    monkeypatch.setattr(handler_mod.httpx, "AsyncClient", _FakeAsyncClient)
+    _stub_userinfo(monkeypatch)
+
+    main_ident = threading.get_ident()
+    recorded: dict[str, int] = {}
+    real_finalize = handler_mod.finalize_oauth_credential
+
+    def _spy(**kwargs):
+        recorded["ident"] = threading.get_ident()
+        return real_finalize(**kwargs)
+
+    monkeypatch.setattr(handler_mod, "finalize_oauth_credential", _spy)
+
+    async def run():
+        _prompt, _, state = await _register_pending_prompt()
+        return await handle_auth_code_callback(code="auth-code-123", state=state)
+
+    result = asyncio.run(run())
+    assert result.ok is True
+    assert recorded.get("ident") is not None
+    assert recorded["ident"] != main_ident
+
+
+def test_device_flow_finalize_runs_off_event_loop(env, monkeypatch):
+    """The device-code poller hands a successful token off to ``finalize`` via
+    ``asyncio.to_thread`` too, and the credential is promoted to active."""
+    import nymeria.core.oauth_device_flow as poll_mod
+
+    _stub_userinfo(monkeypatch)
+
+    class _DeviceAsyncClient(_FakeAsyncClient):
+        async def post(self, url, *_args, **_kwargs):
+            return _FakeResponse(
+                payload={
+                    "access_token": "dev_access",
+                    "refresh_token": "dev_refresh",
+                    "expires_in": 3599,
+                    "token_type": "Bearer",
+                }
+            )
+
+    monkeypatch.setattr(poll_mod.httpx, "AsyncClient", _DeviceAsyncClient)
+
+    main_ident = threading.get_ident()
+    recorded: dict[str, int] = {}
+    real_finalize = poll_mod.finalize_oauth_credential
+
+    def _spy(**kwargs):
+        recorded["ident"] = threading.get_ident()
+        return real_finalize(**kwargs)
+
+    monkeypatch.setattr(poll_mod, "finalize_oauth_credential", _spy)
+
+    async def run():
+        prompt, _, _ = await _register_pending_prompt()
+        descriptor = OAUTH_PROVIDERS["google_calendar"]
+        await poll_device_token(
+            prompt_id=prompt.prompt_id,
+            descriptor=descriptor,
+            client_id="cid",
+            client_secret=None,
+            device_code="dev-code",
+            interval=1,
+            expires_in=30,
+        )
+        return prompt
+
+    prompt = asyncio.run(run())
+    assert recorded.get("ident") is not None
+    assert recorded["ident"] != main_ident
+
+    _settings, repo = env
+    active = repo.get_credential(prompt.credential_id)
+    assert active is not None
+    assert active.status == "active"
+    assert active.kind == "oauth_token"
