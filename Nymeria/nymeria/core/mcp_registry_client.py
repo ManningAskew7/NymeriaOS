@@ -79,6 +79,44 @@ class _TTLCache:
             self._store[key] = (value, time.time() + self._ttl)
 
 
+def _fetch_registry_json(
+    http_session: Any,
+    url: str,
+    *,
+    label: str,
+    params: Optional[Dict[str, Any]] = None,
+    not_found_message: Optional[str] = None,
+) -> Any:
+    """GET ``url`` through the egress policy and return the parsed JSON payload.
+
+    Owns the request/error envelope shared by every registry call: policy
+    blocks and transport failures, an optional 404 message, HTTP >= 400, and
+    non-JSON bodies are all surfaced as ``RegistryError``. Callers keep their
+    own caching and the mapping of the returned payload into entries/records.
+    """
+    try:
+        resp, _redirect_chain, _policy = requests_get_with_policy(
+            url,
+            session=http_session,
+            params=params,
+            timeout=15,
+        )
+    except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
+        raise RegistryError(f"{label} request blocked: {e}") from e
+    except Exception as e:
+        raise RegistryError(f"{label} request failed: {e}") from e
+
+    if not_found_message is not None and resp.status_code == 404:
+        raise RegistryError(not_found_message)
+    if resp.status_code >= 400:
+        raise RegistryError(f"{label} HTTP {resp.status_code}: {resp.text[:200]}")
+
+    try:
+        return resp.json()
+    except Exception as e:
+        raise RegistryError(f"{label} returned non-JSON: {e}") from e
+
+
 # ---- Official MCP Registry ----
 
 class OfficialMCPRegistryFetcher:
@@ -118,25 +156,9 @@ class OfficialMCPRegistryFetcher:
         if query:
             params["search"] = query
 
-        try:
-            resp, _redirect_chain, _policy = requests_get_with_policy(
-                url,
-                session=self._http,
-                params=params,
-                timeout=15,
-            )
-        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
-            raise RegistryError(f"official registry request blocked: {e}") from e
-        except Exception as e:
-            raise RegistryError(f"official registry request failed: {e}") from e
-
-        if resp.status_code >= 400:
-            raise RegistryError(f"official registry HTTP {resp.status_code}: {resp.text[:200]}")
-
-        try:
-            payload = resp.json()
-        except Exception as e:
-            raise RegistryError(f"official registry returned non-JSON: {e}") from e
+        payload = _fetch_registry_json(
+            self._http, url, label="official registry", params=params
+        )
 
         servers = payload.get("servers") or payload.get("data") or []
         entries: List[MCPRegistryEntry] = []
@@ -163,24 +185,12 @@ class OfficialMCPRegistryFetcher:
 
         from urllib.parse import quote
         url = f"{self._base}/v0/servers/{quote(server_id, safe='')}/versions"
-        try:
-            resp, _redirect_chain, _policy = requests_get_with_policy(
-                url,
-                session=self._http,
-                timeout=15,
-            )
-        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
-            raise RegistryError(f"official registry request blocked: {e}") from e
-        except Exception as e:
-            raise RegistryError(f"official registry request failed: {e}") from e
-        if resp.status_code == 404:
-            raise RegistryError(f"server not found in official registry: {server_id}")
-        if resp.status_code >= 400:
-            raise RegistryError(f"official registry HTTP {resp.status_code}: {resp.text[:200]}")
-        try:
-            payload = resp.json()
-        except Exception as e:
-            raise RegistryError(f"official registry returned non-JSON: {e}") from e
+        payload = _fetch_registry_json(
+            self._http,
+            url,
+            label="official registry",
+            not_found_message=f"server not found in official registry: {server_id}",
+        )
 
         envelopes = payload.get("servers") or payload.get("versions") or payload.get("data") or []
         if not isinstance(envelopes, list) or not envelopes:
@@ -308,23 +318,9 @@ class SmitheryFetcher:
         if query:
             params["q"] = query
 
-        try:
-            resp, _redirect_chain, _policy = requests_get_with_policy(
-                url,
-                session=self._http,
-                params=params,
-                timeout=15,
-            )
-        except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
-            raise RegistryError(f"smithery request blocked: {e}") from e
-        except Exception as e:
-            raise RegistryError(f"smithery request failed: {e}") from e
-        if resp.status_code >= 400:
-            raise RegistryError(f"smithery HTTP {resp.status_code}: {resp.text[:200]}")
-        try:
-            payload = resp.json()
-        except Exception as e:
-            raise RegistryError(f"smithery returned non-JSON: {e}") from e
+        payload = _fetch_registry_json(
+            self._http, url, label="smithery", params=params
+        )
 
         servers = payload.get("servers") or payload.get("data") or []
         entries: List[MCPRegistryEntry] = []
