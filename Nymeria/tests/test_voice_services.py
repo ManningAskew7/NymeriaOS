@@ -281,6 +281,110 @@ def test_stt_service_passes_multipart_fields(fake_http):
     assert req["data"] == {"model": "whisper-1", "language": "en"}
 
 
+# ── HTTP services: shared _post_audio error translation + kwarg forwarding ───
+
+
+class _StatusErrorClient:
+    """Stand-in AsyncClient whose response raises HTTPStatusError on status check.
+
+    The instance is callable so ``httpx.AsyncClient(timeout=...)`` returns it,
+    and ``post`` returns a real ``httpx.Response`` with the configured status so
+    ``raise_for_status()`` raises the genuine ``HTTPStatusError`` the helper
+    catches.
+    """
+
+    def __init__(self, status_code: int, body: str) -> None:
+        self._status_code = status_code
+        self._body = body
+
+    def __call__(self, *args: Any, **kwargs: Any) -> "_StatusErrorClient":
+        return self
+
+    async def __aenter__(self) -> "_StatusErrorClient":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: Any) -> Any:
+        request = voice.httpx.Request("POST", url)
+        return voice.httpx.Response(self._status_code, text=self._body, request=request)
+
+
+class _ConnErrorClient:
+    """Stand-in AsyncClient whose post() raises a transport RequestError."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> "_ConnErrorClient":
+        return self
+
+    async def __aenter__(self) -> "_ConnErrorClient":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: Any) -> Any:
+        raise voice.httpx.RequestError("network down")
+
+
+def test_post_audio_translates_http_status_error(monkeypatch):
+    """A non-2xx status surfaces as VoiceServiceError with the TTS label,
+    the status code, and the body truncated to 500 chars."""
+    monkeypatch.setattr(voice.httpx, "AsyncClient", _StatusErrorClient(503, "x" * 600))
+    tts = TTSService("http://x/v1", "k", "m", "v")
+    with pytest.raises(VoiceServiceError) as excinfo:
+        asyncio.run(tts.synthesize("hi"))
+    assert str(excinfo.value) == "TTS request failed (503): " + "x" * 500
+
+
+def test_post_audio_status_error_label_is_per_provider(monkeypatch):
+    """Each caller keeps its own distinct status-error label (STT here)."""
+    monkeypatch.setattr(voice.httpx, "AsyncClient", _StatusErrorClient(400, "bad audio"))
+    stt = STTService("http://x/v1", "k", "whisper-1")
+    with pytest.raises(VoiceServiceError, match=r"^STT request failed \(400\): bad audio$"):
+        asyncio.run(stt.transcribe(b"bytes", "a.ogg", "audio/ogg"))
+
+
+def test_post_audio_translates_request_error(monkeypatch):
+    """A transport error surfaces as the provider's connection-error label."""
+    monkeypatch.setattr(voice.httpx, "AsyncClient", _ConnErrorClient())
+    tts = TTSService("http://x/v1", "k", "m", "v")
+    with pytest.raises(VoiceServiceError) as excinfo:
+        asyncio.run(tts.synthesize("hi"))
+    assert str(excinfo.value) == "TTS connection error: network down"
+
+
+def test_post_audio_forwards_only_given_kwargs(monkeypatch):
+    """The helper forwards exactly the caller's post kwargs (no extra None keys),
+    which is what the per-provider capture assertions above rely on."""
+    captured: dict[str, Any] = {}
+
+    class _CaptureClient:
+        def __call__(self, *args: Any, **kwargs: Any) -> "_CaptureClient":
+            return self
+
+        async def __aenter__(self) -> "_CaptureClient":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+            captured.update({"url": url, **kwargs})
+            return _FakeResponse()
+
+    monkeypatch.setattr(voice.httpx, "AsyncClient", _CaptureClient())
+    resp = asyncio.run(voice._post_audio(
+        "http://x/v1/audio/speech",
+        json={"a": 1},
+        headers={"H": "v"},
+        status_error_label="L",
+        connection_error_label="C",
+    ))
+    assert captured == {"url": "http://x/v1/audio/speech", "json": {"a": 1}, "headers": {"H": "v"}}
+    assert resp.content == b"fake-audio"
+
+
 # ── in-process engines: guard rails without the optional packages ───────────
 
 
