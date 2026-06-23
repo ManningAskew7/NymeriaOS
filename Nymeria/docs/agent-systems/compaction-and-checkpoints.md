@@ -407,4 +407,4 @@ On failure (state read or write error): `{"success": false, "reason": "..."}`.
 | `core/command_service.py` | `/compact` (chat_stream) and `/prune` (command) registration; `_CommandExecutor._cmd_prune`; `CommandBackendClient.prune_thread` |
 | `api/routers/thread_operations.py` | `POST /threads/{id}/compact` and `POST /threads/{id}/prune` endpoints |
 | `triggers/api.py` | `/threads/{id}/history` endpoint |
-| `triggers/api.py` | `_get_checkpoint_thread_ids`  -  reference pattern for raw SQL checkpoint reads |
+| `core/checkpointer_config.py` | `enumerate_checkpoint_thread_ids`  -  canonical guarded raw-SQL "distinct checkpoint thread ids" read (thread-list route, in-process CLI transport, startup backfill) |

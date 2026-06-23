@@ -5,16 +5,14 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import sqlite3
 import threading
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
-from pathlib import Path
 from queue import Empty
 from typing import Any, cast
 
 from ....core.checkpoint_cleanup import delete_thread_checkpoints
-from ....core.checkpoint_sql import sqlite_table_exists
+from ....core.checkpointer_config import enumerate_checkpoint_thread_ids
 from ....core.event_bus import (
     AutonomousEvent,
     autonomous_event_to_payload,
@@ -242,7 +240,7 @@ class InProcessAgentClient:
         """Return checkpoint and metadata-backed threads for ``user_id``."""
 
         user_id = user_id or self.default_user_id
-        checkpoint_ids = _checkpoint_thread_ids(_settings_for_agent(self.agent))
+        checkpoint_ids = enumerate_checkpoint_thread_ids(_settings_for_agent(self.agent))
         checkpoint_set = set(checkpoint_ids)
         metadata_manager = self.agent.thread_metadata_manager
         store = metadata_manager.get_store(user_id)
@@ -615,40 +613,6 @@ def _settings_for_agent(agent: Any) -> Any:
     from ....config.settings import get_settings
 
     return get_settings()
-
-
-def _checkpoint_thread_ids(settings: Any) -> list[str]:
-    backend = getattr(settings, "database_backend", "sqlite")
-    if backend == "sqlite":
-        return _sqlite_checkpoint_thread_ids(Path(settings.db_path))
-    if backend == "postgres":
-        return _postgres_checkpoint_thread_ids(str(settings.postgres_uri))
-    return []
-
-
-def _sqlite_checkpoint_thread_ids(db_path: Path) -> list[str]:
-    try:
-        with sqlite3.connect(str(db_path)) as conn:
-            if not sqlite_table_exists(conn, "checkpoints"):
-                return []
-            cursor = conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
-            return [str(row[0]) for row in cursor.fetchall() if row[0]]
-    except Exception as exc:  # noqa: BLE001 - listing should degrade gracefully.
-        logger.warning("Failed to query local SQLite thread IDs: %s", exc)
-        return []
-
-
-def _postgres_checkpoint_thread_ids(postgres_uri: str) -> list[str]:
-    try:
-        import psycopg  # type: ignore[import-untyped]
-
-        with psycopg.connect(postgres_uri) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
-                return [str(row[0]) for row in cur.fetchall() if row[0]]
-    except Exception as exc:  # noqa: BLE001 - listing should degrade gracefully.
-        logger.warning("Failed to query local PostgreSQL thread IDs: %s", exc)
-        return []
 
 
 __all__ = ["InProcessAgentClient"]

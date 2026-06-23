@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import sqlite3
+import sys
+import types
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -27,6 +32,32 @@ def _fake_settings(
         db_path=db_path,
         postgres_uri=postgres_uri,
     )
+
+
+def _make_checkpoints_db(
+    db_path: Path,
+    rows: list[tuple[Any, str, str]],
+    *,
+    thread_id_type: str = "TEXT",
+) -> None:
+    """Create a minimal ``checkpoints`` table and insert ``rows``.
+
+    Only ``thread_id`` matters to the enumerator; the namespace/id columns
+    mirror enough of the real LangGraph schema to make DISTINCT meaningful.
+    ``thread_id_type=""`` declares a no-affinity column so an inserted integer
+    is preserved (used to exercise the ``str(...)`` coercion).
+    """
+    col = f"thread_id {thread_id_type}".strip()
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.execute(
+            f"CREATE TABLE checkpoints ({col}, checkpoint_ns TEXT, checkpoint_id TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id) "
+            "VALUES (?, ?, ?)",
+            rows,
+        )
+        conn.commit()
 
 
 def test_build_checkpointer_config_memory():
@@ -94,4 +125,106 @@ def test_enumerate_checkpoint_thread_ids_memory_backend_returns_empty():
 
 def test_enumerate_checkpoint_thread_ids_unknown_backend_returns_empty():
     settings = _fake_settings(database_backend="something-else")
+    assert enumerate_checkpoint_thread_ids(cast(Any, settings)) == []
+
+
+def test_enumerate_checkpoint_thread_ids_sqlite_returns_distinct(tmp_path: Path):
+    db_path = tmp_path / "ckpt.db"
+    _make_checkpoints_db(
+        db_path,
+        [
+            ("alpha", "", "c1"),
+            ("alpha", "", "c2"),  # same thread, multiple checkpoints -> deduped
+            ("beta", "ns", "c1"),
+        ],
+    )
+    settings = _fake_settings(database_backend="sqlite", db_path=db_path)
+
+    result = enumerate_checkpoint_thread_ids(cast(Any, settings))
+
+    assert sorted(result) == ["alpha", "beta"]
+    assert all(isinstance(t, str) for t in result)
+
+
+def test_enumerate_checkpoint_thread_ids_sqlite_filters_null_and_empty(tmp_path: Path):
+    db_path = tmp_path / "ckpt.db"
+    _make_checkpoints_db(
+        db_path,
+        [
+            (None, "", "c1"),  # NULL thread_id -> dropped
+            ("", "", "c2"),  # empty string -> dropped
+            ("0", "", "c3"),  # non-empty but falsy-looking -> KEPT
+            ("keep", "", "c4"),
+        ],
+    )
+    settings = _fake_settings(database_backend="sqlite", db_path=db_path)
+
+    result = enumerate_checkpoint_thread_ids(cast(Any, settings))
+
+    assert sorted(result) == ["0", "keep"]
+
+
+def test_enumerate_checkpoint_thread_ids_sqlite_coerces_to_str(tmp_path: Path):
+    db_path = tmp_path / "ckpt.db"
+    # A no-affinity thread_id column keeps the integer, so str() must coerce it.
+    _make_checkpoints_db(db_path, [(12345, "", "c1")], thread_id_type="")
+    settings = _fake_settings(database_backend="sqlite", db_path=db_path)
+
+    result = enumerate_checkpoint_thread_ids(cast(Any, settings))
+
+    assert result == ["12345"]
+    assert isinstance(result[0], str)
+
+
+def test_enumerate_checkpoint_thread_ids_sqlite_missing_table_is_silent(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    # A fresh DB with no checkpoints table returns [] via the table-existence
+    # guard, with NO warning (a fresh install must not log spurious failures).
+    db_path = tmp_path / "fresh.db"
+    settings = _fake_settings(database_backend="sqlite", db_path=db_path)
+
+    with caplog.at_level(logging.WARNING):
+        result = enumerate_checkpoint_thread_ids(cast(Any, settings))
+
+    assert result == []
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_enumerate_checkpoint_thread_ids_sqlite_real_failure_warns(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    # Pointing db_path at a directory makes the connection fail: a genuine
+    # error that must still be logged (the guard must not silence real faults).
+    db_dir = tmp_path / "not_a_db"
+    db_dir.mkdir()
+    settings = _fake_settings(database_backend="sqlite", db_path=db_dir)
+
+    with caplog.at_level(logging.WARNING):
+        result = enumerate_checkpoint_thread_ids(cast(Any, settings))
+
+    assert result == []
+    assert any(
+        "Enumerate checkpoint thread_ids (sqlite) failed" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_enumerate_checkpoint_thread_ids_postgres_missing_uri_skips_connect(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # No postgres_uri must short-circuit to [] WITHOUT calling psycopg.connect
+    # (it must never pass None into connect).
+    fake_psycopg = types.ModuleType("psycopg")
+
+    def _no_connect(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("psycopg.connect must not be called without a URI")
+
+    fake_psycopg.connect = _no_connect  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
+
+    settings = _fake_settings(database_backend="postgres", postgres_uri=None)
+
     assert enumerate_checkpoint_thread_ids(cast(Any, settings)) == []
