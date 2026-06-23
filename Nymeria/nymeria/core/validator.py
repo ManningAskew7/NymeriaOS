@@ -165,43 +165,6 @@ class CodeValidator:
         except Exception as e:
             return False, f"Import test error: {str(e)}"
 
-    def run_quick_tests(self, test_file: Optional[Path] = None) -> Tuple[bool, str]:
-        """
-        Run quick tests to verify Nymeria still works.
-
-        Args:
-            test_file: Specific test file to run (uses test_nymeria.py if None)
-
-        Returns:
-            Tuple of (success, output message)
-        """
-        if test_file is None:
-            test_file = self.project_root / "test_nymeria.py"
-
-        if not test_file.exists():
-            # Just do import test if no test file
-            return self.test_tool_import()
-
-        try:
-            result = subprocess.run(
-                [sys.executable, str(test_file), "--quick"],
-                cwd=str(self.project_root),
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-
-            output = result.stdout + result.stderr
-            if result.returncode == 0:
-                return True, f"Tests passed:\n{output[:500]}"
-            else:
-                return False, f"Tests failed:\n{output[:1000]}"
-
-        except subprocess.TimeoutExpired:
-            return False, "Tests timed out (60s)"
-        except Exception as e:
-            return False, f"Test error: {str(e)}"
-
     def validate_path_allowed(self, file_path: Path, allowed_paths: List[Path]) -> Tuple[bool, str]:
         """
         Check if a file path is within allowed directories.

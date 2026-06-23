@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import subprocess
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -319,3 +321,83 @@ def test_validator_rejects_bad_syntax_missing_tool_and_disallowed_path(tmp_path)
     assert "No @tool decorated function found" in tool_msg
     assert valid_path is False
     assert "Path not allowed" in path_msg
+
+
+def test_tool_import_success_runs_seed_tools_import_in_subprocess(tmp_path, monkeypatch):
+    """The post-modification guarantee is an import smoke test: it shells out to a
+    fresh interpreter importing ``SEED_TOOLS`` from ``project_root`` and reports the
+    trimmed stdout on a clean exit."""
+    validator = CodeValidator(tmp_path)
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="Loaded 42 tools\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    success, msg = validator.test_tool_import()
+
+    assert success is True
+    assert msg == "Loaded 42 tools"
+    assert len(captured["cmd"]) == 3
+    assert captured["cmd"][0] == sys.executable
+    assert captured["cmd"][1] == "-c"
+    assert "SEED_TOOLS" in captured["cmd"][2]
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert captured["kwargs"]["timeout"] == 30
+    assert captured["kwargs"]["capture_output"] is True
+    assert captured["kwargs"]["text"] is True
+
+
+def test_tool_import_failure_returns_stderr(tmp_path, monkeypatch):
+    validator = CodeValidator(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="ImportError: boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    success, msg = validator.test_tool_import()
+
+    assert success is False
+    assert "Import failed:" in msg
+    assert "ImportError: boom" in msg
+
+
+def test_tool_import_timeout_is_reported(tmp_path, monkeypatch):
+    validator = CodeValidator(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=30)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    success, msg = validator.test_tool_import()
+
+    assert success is False
+    assert "timed out" in msg
+
+
+def test_tool_import_unexpected_error_is_reported(tmp_path, monkeypatch):
+    validator = CodeValidator(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        raise OSError("no interpreter")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    success, msg = validator.test_tool_import()
+
+    assert success is False
+    assert "Import test error:" in msg
+    assert "no interpreter" in msg
+
+
+def test_validator_has_no_dead_quick_test_runner(tmp_path):
+    """``run_quick_tests`` referenced a never-built ``test_nymeria.py --quick``
+    harness and had no callers; it was removed (slice 08 F12). Guard against
+    re-introduction."""
+    validator = CodeValidator(tmp_path)
+    assert not hasattr(validator, "run_quick_tests")
