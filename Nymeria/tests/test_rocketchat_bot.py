@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Mapping
 
+import httpx
+import pytest
+
 from nymeria.triggers.rocketchat_bot import (
     NymeriaRocketChatBot,
     RocketChatCommand,
@@ -311,3 +314,54 @@ def test_send_text_splits_large_rocketchat_messages():
 
     assert len(client.sent) == 2
     assert all(len(item["text"]) <= 4000 for item in client.sent)
+
+
+def _http_status_error(status_code: int, detail: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("DELETE", "https://api.test/binding")
+    response = httpx.Response(status_code, json={"detail": detail}, request=request)
+    return httpx.HTTPStatusError("error", request=request, response=response)
+
+
+class RaisingAPI(FakeAPI):
+    def __init__(self, *, exc: Exception) -> None:
+        super().__init__()
+        self._exc = exc
+
+    async def unbind_chatapp_by_chat(self, **kwargs):
+        raise self._exc
+
+    async def stop(self, thread_id: str, user_id: str | None = None):
+        raise self._exc
+
+
+def test_unbind_http_error_shows_server_detail():
+    # F11: a 4xx from unbind renders the server-provided detail, matching
+    # _cmd_link/_cmd_bind, instead of a raw exception repr.
+    bot, _api, client = make_bot(
+        RaisingAPI(exc=_http_status_error(409, "binding owned by another user"))
+    )
+
+    asyncio.run(bot.handle_websocket_event(event(message_id="m8", room_id="D1", text="unbind")))
+
+    assert client.sent == [
+        {"room_id": "D1", "text": "Couldn't unbind: binding owned by another user", "thread_id": None}
+    ]
+
+
+def test_stop_http_error_shows_server_detail():
+    bot, _api, client = make_bot(RaisingAPI(exc=_http_status_error(404, "thread not found")))
+
+    asyncio.run(bot.handle_websocket_event(event(message_id="m9", room_id="D1", text="stop")))
+
+    assert client.sent == [
+        {"room_id": "D1", "text": "Couldn't stop the current run: thread not found", "thread_id": None}
+    ]
+
+
+def test_unbind_non_http_error_propagates():
+    # F11: the narrowed catch no longer swallows unexpected (non-HTTP) errors;
+    # they propagate to the loop-level handler that logs with exc_info.
+    bot, _api, _client = make_bot(RaisingAPI(exc=RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(bot.handle_websocket_event(event(message_id="m10", room_id="D1", text="unbind")))

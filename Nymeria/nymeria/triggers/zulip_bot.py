@@ -623,9 +623,8 @@ class NymeriaZulipBot:
                 platform_chat_id=chat_id,
                 user_id=user_id,
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Zulip unbind failed")
-            await self._send_text(target, f"Couldn't unbind: {exc}")
+        except httpx.HTTPStatusError as exc:
+            await self._send_text(target, f"Couldn't unbind: {http_error_detail(exc)}")
             return
         if not result.get("unbound"):
             await self._send_text(target, "This Zulip conversation is not bound.")
@@ -642,8 +641,8 @@ class NymeriaZulipBot:
         thread_id = self._resolve_thread_id(message)
         try:
             await self.api.stop(thread_id, user_id=user_id)
-        except Exception as exc:  # noqa: BLE001
-            await self._send_text(target, f"Couldn't stop the current run: {exc}")
+        except httpx.HTTPStatusError as exc:
+            await self._send_text(target, f"Couldn't stop the current run: {http_error_detail(exc)}")
             return
         await self._send_text(target, "Stopped the current run for this Zulip conversation.")
 

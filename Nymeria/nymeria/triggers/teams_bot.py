@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 TEAMS_TEXT_LIMIT = 4000
 SEEN_ACTIVITY_TTL_SECONDS = 10 * 60
 SEEN_ACTIVITY_MAX = 5000
+ACTIVE_CHAT_MAX = 5000
 BOT_FRAMEWORK_TOKEN_URL = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token"
 BOT_FRAMEWORK_SCOPE = "https://api.botframework.com/.default"
 BOT_FRAMEWORK_OPENID_CONFIG_URL = "https://login.botframework.com/v1/.well-known/openidconfiguration"
@@ -606,13 +607,19 @@ class NymeriaTeamsBot:
             prompt = clean_text
         else:
             prompt = f"[Microsoft Teams {sender} in {activity.conversation_type}]\n{clean_text}"
-        self._active_chats.add(target.platform_chat_id or self._chat_id_for_activity(activity))
+        self._remember_active_chat(target.platform_chat_id or self._chat_id_for_activity(activity))
         await self._stream_to_teams(
             message=prompt,
             thread_id=thread_id,
             user_id=user_id,
             target=target,
         )
+
+    def _remember_active_chat(self, key: str) -> None:
+        self._active_chats.add(key)
+        if len(self._active_chats) > ACTIVE_CHAT_MAX:
+            for old_key in list(self._active_chats)[: ACTIVE_CHAT_MAX // 2]:
+                self._active_chats.discard(old_key)
 
     async def refresh_bindings(self) -> None:
         try:
