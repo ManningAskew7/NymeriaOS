@@ -501,7 +501,13 @@ def _sync_http_request(
             return str(result["body_preview"])
 
         if config.response_path and isinstance(data, (dict, list)):
-            data = _extract_json_path(data, config.response_path)
+            extracted = _extract_json_path(data, config.response_path)
+            if extracted is _PATH_NOT_FOUND:
+                return (
+                    f"[Error]: response_path '{config.response_path}' did not match "
+                    "the response body"
+                )
+            data = extracted
 
         return json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data)
 
@@ -549,6 +555,12 @@ def _sync_execute_python(
     return _sync_execute_python_tool(config, params, target_id=target_id)
 
 
+# Sentinel returned by ``_extract_json_path`` when a ``response_path`` segment
+# cannot be resolved. The caller surfaces an error instead of the unfiltered
+# body, so a misconfigured path cannot silently leak the whole payload.
+_PATH_NOT_FOUND = object()
+
+
 def _extract_json_path(data: Any, path: str) -> Any:
     """Extract a value from JSON data using a simple path syntax.
 
@@ -563,10 +575,14 @@ def _extract_json_path(data: Any, path: str) -> Any:
         path: JSONPath-like expression.
 
     Returns:
-        Extracted value.
+        The extracted value, or the ``_PATH_NOT_FOUND`` sentinel when the path
+        does not resolve against ``data`` (missing field, traversal into a
+        non-dict, an out-of-bounds or non-list index, or a path that is not in
+        ``$.``-prefixed form). A legitimately-present ``null`` value resolves to
+        ``None`` and is therefore distinct from the not-found sentinel.
     """
     if not path.startswith("$."):
-        return data
+        return _PATH_NOT_FOUND
 
     parts = path[2:].split(".")
     current = data
@@ -575,30 +591,34 @@ def _extract_json_path(data: Any, path: str) -> Any:
         if not part:
             continue
 
-        # Handle array access
+        # Handle array access, e.g. "field[0]" or "field[*]". The field group
+        # is `[^\[]+` (one or more), so it is always present when the pattern
+        # matches; a bare "[0]" falls through to regular field access below.
         array_match = re.match(r"([^\[]+)\[(\d+|\*)\]", part)
         if array_match:
             field = array_match.group(1)
             index = array_match.group(2)
 
-            if field:
-                if isinstance(current, dict):
-                    current = current.get(field, current)
-                else:
-                    return data
-
-            if isinstance(current, list):
-                if index == "*":
-                    pass  # Keep the full list
-                else:
-                    idx = int(index)
-                    current = current[idx] if idx < len(current) else None
-        else:
-            # Regular field access
-            if isinstance(current, dict):
-                current = current.get(part, current)
+            if isinstance(current, dict) and field in current:
+                current = current[field]
             else:
-                return data
+                return _PATH_NOT_FOUND
+
+            if not isinstance(current, list):
+                return _PATH_NOT_FOUND
+            if index == "*":
+                pass  # Keep the full list
+            else:
+                idx = int(index)
+                if idx >= len(current):
+                    return _PATH_NOT_FOUND
+                current = current[idx]
+        else:
+            # Regular field access.
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return _PATH_NOT_FOUND
 
     return current
 
