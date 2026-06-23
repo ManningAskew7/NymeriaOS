@@ -19,6 +19,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .keyed_locks import KeyedRLockMap
+from .storage_paths import safe_path_segment
 from .time_utils import ensure_aware_utc, utc_now
 from .user_profile import migrate_tool_names
 
@@ -348,9 +349,7 @@ class ThreadConfigManager:
 
     def _get_config_path(self, thread_id: str) -> Path:
         """Get the path to a thread's config file."""
-        safe_id = "".join(c for c in thread_id if c.isalnum() or c in "-_")
-        if not safe_id:
-            safe_id = "default"
+        safe_id = safe_path_segment(thread_id)
         return self.configs_dir / f"{safe_id}.json"
 
     def get_config(self, thread_id: str) -> Optional[ThreadConfig]:

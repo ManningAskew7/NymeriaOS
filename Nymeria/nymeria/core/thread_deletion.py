@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, TYPE_CHECKING
 
 from .checkpoint_cleanup import delete_thread_checkpoints
+from .storage_paths import safe_path_segment
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent
@@ -141,7 +142,7 @@ def _delete_thread_config(agent: "NymeriaAgent", thread_id: str, result: ThreadD
 
 
 def _safe_thread_file(data_dir: Path, folder: str, thread_id: str, suffix: str) -> Path:
-    safe_id = "".join(c for c in thread_id if c.isalnum() or c in "-_") or "default"
+    safe_id = safe_path_segment(thread_id)
     return data_dir / folder / f"{safe_id}{suffix}"
 
 

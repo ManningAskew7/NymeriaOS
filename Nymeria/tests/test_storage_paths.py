@@ -97,6 +97,7 @@ _MANAGERS = [
     ("nymeria.core.todo_manager", "TodoManager", "_get_todos_path", "todos_dir"),
     ("nymeria.core.activity_log", "ActivityLog", "_get_activity_path", "activity_dir"),
     ("nymeria.core.thread_metadata", "ThreadMetadataManager", "_get_path", "metadata_dir"),
+    ("nymeria.core.thread_config", "ThreadConfigManager", "_get_config_path", "configs_dir"),
     ("nymeria.core.user_profile", "UserProfileManager", "_get_profile_path", "users_dir"),
     ("nymeria.core.notifications", "NotificationStore", "_get_notifications_path", "notifications_dir"),
 ]
@@ -128,3 +129,29 @@ class TestManagerWiringResistsTraversal:
         manager = _build(module_name, cls_name, tmp_path)
         path = getattr(manager, method)("").resolve()
         assert "default" in (path.name + "/" + path.parent.name)
+
+
+class TestThreadDeletionSafeFile:
+    """thread_deletion._safe_thread_file is a module-level helper (not a manager
+    method), so it gets its own coverage rather than the _MANAGERS table above."""
+
+    def test_traversal_id_stays_inside_folder(self, tmp_path: Path):
+        from nymeria.core.thread_deletion import _safe_thread_file
+
+        base = (tmp_path / "thread_notes").resolve()
+        path = _safe_thread_file(tmp_path, "thread_notes", "../../etc/passwd", ".md").resolve()
+        assert base in path.parents
+        assert path.name == "etcpasswd.md"
+        assert ".." not in path.parts
+
+    def test_empty_id_uses_default_segment(self, tmp_path: Path):
+        from nymeria.core.thread_deletion import _safe_thread_file
+
+        path = _safe_thread_file(tmp_path, "thread_notes", "", ".md").resolve()
+        assert path.name == "default.md"
+
+    def test_alnum_id_passthrough(self, tmp_path: Path):
+        from nymeria.core.thread_deletion import _safe_thread_file
+
+        path = _safe_thread_file(tmp_path, "thread_notes", "thread-1_abc", ".md")
+        assert path == tmp_path / "thread_notes" / "thread-1_abc.md"
