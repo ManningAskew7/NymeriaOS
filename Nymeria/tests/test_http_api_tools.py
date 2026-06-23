@@ -659,6 +659,23 @@ def test_extract_json_path_index_on_non_list_is_not_found():
     assert _extract_json_path({"data": {"x": 1}}, "$.data[0]") is _PATH_NOT_FOUND
 
 
+def test_extract_json_path_chained_index_is_not_found():
+    # The anchored match rejects chained indexing. A prefix match used to accept
+    # "items[0][1]" as "items[0]" and silently drop the "[1]".
+    assert _extract_json_path({"items": [10, 20]}, "$.items[0][1]") is _PATH_NOT_FOUND
+
+
+def test_extract_json_path_trailing_chars_after_index_is_not_found():
+    # Likewise, trailing characters after a valid index used to be dropped.
+    assert _extract_json_path({"items": [10, 20]}, "$.items[0]extra") is _PATH_NOT_FOUND
+
+
+def test_extract_json_path_non_numeric_index_is_not_found():
+    # Always returned not-found (the regex requires a digit or "*"); this pins
+    # that it now exits via the malformed-bracket branch.
+    assert _extract_json_path({"items": [10, 20]}, "$.items[abc]") is _PATH_NOT_FOUND
+
+
 def test_extract_json_path_non_dollar_prefix_is_not_found():
     # A malformed path (no leading "$.") is a config error, not "return all".
     assert _extract_json_path({"a": 1}, "data") is _PATH_NOT_FOUND

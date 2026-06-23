@@ -591,10 +591,13 @@ def _extract_json_path(data: Any, path: str) -> Any:
         if not part:
             continue
 
-        # Handle array access, e.g. "field[0]" or "field[*]". The field group
-        # is `[^\[]+` (one or more), so it is always present when the pattern
-        # matches; a bare "[0]" falls through to regular field access below.
-        array_match = re.match(r"([^\[]+)\[(\d+|\*)\]", part)
+        # Array access must be exactly "field[<int>]" or "field[*]". An anchored
+        # full match (not re.match) rejects malformed segments such as
+        # "field[0][1]" or "field[0]extra", which a prefix match would accept
+        # while silently dropping the trailing characters. The field group
+        # `[^\[]+` is always present when the pattern matches; a bare "[0]" has no
+        # field and is treated as malformed below.
+        array_match = re.fullmatch(r"([^\[]+)\[(\d+|\*)\]", part)
         if array_match:
             field = array_match.group(1)
             index = array_match.group(2)
@@ -613,6 +616,11 @@ def _extract_json_path(data: Any, path: str) -> Any:
                 if idx >= len(current):
                     return _PATH_NOT_FOUND
                 current = current[idx]
+        elif "[" in part or "]" in part:
+            # A bracketed segment that is not a clean "field[index]" is a
+            # malformed array access (e.g. "field[0][1]", "field[abc]", "[0]");
+            # signal not-found rather than treating it as a literal field name.
+            return _PATH_NOT_FOUND
         else:
             # Regular field access.
             if isinstance(current, dict) and part in current:
