@@ -41,6 +41,37 @@ class SupportsTranscribe(Protocol):
                          content_type: str = "audio/wav") -> str: ...
 
 
+async def _post_audio(
+    url: str,
+    *,
+    status_error_label: str,
+    connection_error_label: str,
+    **post_kwargs: Any,
+) -> httpx.Response:
+    """POST to an audio HTTP endpoint, returning the response or raising.
+
+    Owns the one-shot ``AsyncClient``, the ``post`` + ``raise_for_status``, and
+    the HTTP-status / transport error translation to :class:`VoiceServiceError`
+    shared by the OpenAI-compatible, Cartesia, and ElevenLabs TTS paths and the
+    STT path. Callers build the URL/headers/payload, pass them as keyword
+    arguments, and read ``.content`` / ``.json()`` off the returned response (the
+    body is fully read before this returns, so reading it after the client closes
+    is safe for these non-streaming requests). ``status_error_label`` and
+    ``connection_error_label`` are the per-provider message prefixes, passed in
+    verbatim so each ``VoiceServiceError`` string is unchanged.
+    """
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        try:
+            resp = await client.post(url, **post_kwargs)
+            resp.raise_for_status()
+            return resp
+        except httpx.HTTPStatusError as e:
+            detail = e.response.text[:500] if e.response else str(e)
+            raise VoiceServiceError(f"{status_error_label} ({e.response.status_code}): {detail}")
+        except httpx.RequestError as e:
+            raise VoiceServiceError(f"{connection_error_label}: {e}")
+
+
 class TTSService:
     """Text-to-Speech via OpenAI-compatible /audio/speech endpoint."""
 
@@ -81,17 +112,15 @@ class TTSService:
         }
         content_type = format_to_mime.get(output_format, "audio/mpeg")
 
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            try:
-                resp = await client.post(url, json=payload, headers=headers)
-                resp.raise_for_status()
-                logger.info(f"TTS synthesized {len(resp.content)} bytes ({output_format})")
-                return resp.content, content_type
-            except httpx.HTTPStatusError as e:
-                detail = e.response.text[:500] if e.response else str(e)
-                raise VoiceServiceError(f"TTS request failed ({e.response.status_code}): {detail}")
-            except httpx.RequestError as e:
-                raise VoiceServiceError(f"TTS connection error: {e}")
+        resp = await _post_audio(
+            url,
+            json=payload,
+            headers=headers,
+            status_error_label="TTS request failed",
+            connection_error_label="TTS connection error",
+        )
+        logger.info(f"TTS synthesized {len(resp.content)} bytes ({output_format})")
+        return resp.content, content_type
 
 
 def _audio_to_mp3(audio_bytes: bytes, mime_type: str) -> bytes:
@@ -223,17 +252,15 @@ class CartesiaTTSService:
         if self.speed != 1.0:
             payload["generation_config"] = {"speed": self.speed}
 
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            try:
-                resp = await client.post(self._API_URL, json=payload, headers=headers)
-                resp.raise_for_status()
-                logger.info(f"TTS synthesized {len(resp.content)} bytes (mp3 via Cartesia)")
-                return resp.content, "audio/mpeg"
-            except httpx.HTTPStatusError as e:
-                detail = e.response.text[:500] if e.response else str(e)
-                raise VoiceServiceError(f"Cartesia TTS failed ({e.response.status_code}): {detail}")
-            except httpx.RequestError as e:
-                raise VoiceServiceError(f"Cartesia TTS connection error: {e}")
+        resp = await _post_audio(
+            self._API_URL,
+            json=payload,
+            headers=headers,
+            status_error_label="Cartesia TTS failed",
+            connection_error_label="Cartesia TTS connection error",
+        )
+        logger.info(f"TTS synthesized {len(resp.content)} bytes (mp3 via Cartesia)")
+        return resp.content, "audio/mpeg"
 
 
 class ElevenLabsTTSService:
@@ -260,18 +287,17 @@ class ElevenLabsTTSService:
         if self.speed != 1.0:
             payload["voice_settings"] = {"speed": self.speed}
 
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            try:
-                resp = await client.post(url, json=payload, params=params, headers=headers)
-                resp.raise_for_status()
-                content_type = "audio/ogg" if voice_note else "audio/mpeg"
-                logger.info(f"TTS synthesized {len(resp.content)} bytes ({params['output_format']} via ElevenLabs)")
-                return resp.content, content_type
-            except httpx.HTTPStatusError as e:
-                detail = e.response.text[:500] if e.response else str(e)
-                raise VoiceServiceError(f"ElevenLabs TTS failed ({e.response.status_code}): {detail}")
-            except httpx.RequestError as e:
-                raise VoiceServiceError(f"ElevenLabs TTS connection error: {e}")
+        resp = await _post_audio(
+            url,
+            json=payload,
+            params=params,
+            headers=headers,
+            status_error_label="ElevenLabs TTS failed",
+            connection_error_label="ElevenLabs TTS connection error",
+        )
+        content_type = "audio/ogg" if voice_note else "audio/mpeg"
+        logger.info(f"TTS synthesized {len(resp.content)} bytes ({params['output_format']} via ElevenLabs)")
+        return resp.content, content_type
 
 
 class EdgeTTSService:
@@ -331,19 +357,18 @@ class STTService:
         if self.language:
             data["language"] = self.language
 
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            try:
-                resp = await client.post(url, files=files, data=data, headers=headers)
-                resp.raise_for_status()
-                result = resp.json()
-                text = result.get("text", "").strip()
-                logger.info(f"STT transcribed {len(audio_bytes)} bytes -> {len(text)} chars")
-                return text
-            except httpx.HTTPStatusError as e:
-                detail = e.response.text[:500] if e.response else str(e)
-                raise VoiceServiceError(f"STT request failed ({e.response.status_code}): {detail}")
-            except httpx.RequestError as e:
-                raise VoiceServiceError(f"STT connection error: {e}")
+        resp = await _post_audio(
+            url,
+            files=files,
+            data=data,
+            headers=headers,
+            status_error_label="STT request failed",
+            connection_error_label="STT connection error",
+        )
+        result = resp.json()
+        text = result.get("text", "").strip()
+        logger.info(f"STT transcribed {len(audio_bytes)} bytes -> {len(text)} chars")
+        return text
 
 
 def _resolve_api_key(provider_key: Optional[str], settings: Settings,
