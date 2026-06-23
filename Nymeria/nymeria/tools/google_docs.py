@@ -397,10 +397,14 @@ class Block:
     rows: list[list[str]] = field(default_factory=list)  # for tables
 
 
-def _parse_inline(text: str) -> tuple[str, list[InlineSpan]]:
+def _parse_inline(text: str, *, allow_links: bool = True) -> tuple[str, list[InlineSpan]]:
     """Parse inline markdown (bold, italic, links) from a line of text.
 
     Returns (plain_text, spans) where spans reference positions in plain_text.
+
+    When ``allow_links`` is False the link branch is skipped (only bold/italic
+    are scanned). This is used when parsing the text inside a link so that
+    nested links are not re-parsed, avoiding infinite recursion.
     """
     spans: list[InlineSpan] = []
     # We process the text by scanning for patterns and building a plain-text
@@ -411,14 +415,14 @@ def _parse_inline(text: str) -> tuple[str, list[InlineSpan]]:
 
     while i < length:
         # Link: [text](url)
-        if text[i] == '[':
+        if allow_links and text[i] == '[':
             m = re.match(r'\[([^\]]+)\]\(([^)]+)\)', text[i:])
             if m:
                 link_text = m.group(1)
                 link_url = m.group(2)
                 start_pos = len("".join(result))
-                # Parse inline styles within link text
-                plain_link, inner_spans = _parse_inline_simple(link_text)
+                # Parse inline styles within link text (no nested links)
+                plain_link, inner_spans = _parse_inline(link_text, allow_links=False)
                 result.append(plain_link)
                 end_pos = len("".join(result))
                 # Add link span
@@ -470,50 +474,6 @@ def _parse_inline(text: str) -> tuple[str, list[InlineSpan]]:
                 i = end + 1
                 continue
 
-        result.append(text[i])
-        i += 1
-
-    return "".join(result), spans
-
-
-def _parse_inline_simple(text: str) -> tuple[str, list[InlineSpan]]:
-    """Simple inline parser for bold/italic only (no links, to avoid recursion)."""
-    spans: list[InlineSpan] = []
-    result: list[str] = []
-    i = 0
-    length = len(text)
-
-    while i < length:
-        if text[i:i+3] == '***':
-            end = text.find('***', i + 3)
-            if end != -1:
-                inner = text[i+3:end]
-                start_pos = len("".join(result))
-                result.append(inner)
-                end_pos = len("".join(result))
-                spans.append(InlineSpan(start=start_pos, end=end_pos, bold=True, italic=True))
-                i = end + 3
-                continue
-        if text[i:i+2] == '**':
-            end = text.find('**', i + 2)
-            if end != -1:
-                inner = text[i+2:end]
-                start_pos = len("".join(result))
-                result.append(inner)
-                end_pos = len("".join(result))
-                spans.append(InlineSpan(start=start_pos, end=end_pos, bold=True))
-                i = end + 2
-                continue
-        if text[i] == '*' and (i + 1 < length and text[i+1] != '*'):
-            end = text.find('*', i + 1)
-            if end != -1:
-                inner = text[i+1:end]
-                start_pos = len("".join(result))
-                result.append(inner)
-                end_pos = len("".join(result))
-                spans.append(InlineSpan(start=start_pos, end=end_pos, italic=True))
-                i = end + 1
-                continue
         result.append(text[i])
         i += 1
 
