@@ -1,33 +1,10 @@
 import json
 
-import pytest
-from cryptography.fernet import Fernet
 
-from nymeria.core.accounts import AccountsRepo
-from nymeria.core.credential_vault import CredentialVaultRepo
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache():
-    from nymeria.config.settings import get_settings
-
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
-def _repo(tmp_path, monkeypatch) -> CredentialVaultRepo:
-    monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
-    db_path = tmp_path / "accounts.db"
-    accounts = AccountsRepo(db_path)
-    accounts.create_user("alice", "alice@example.com", "Alice")
-    return CredentialVaultRepo(db_path)
-
-
-def _use_repo(monkeypatch, repo: CredentialVaultRepo) -> None:
-    import nymeria.core.credential_vault as credential_vault
-
-    monkeypatch.setattr(credential_vault, "get_credential_vault_repo", lambda: repo)
+from _service_integration_helpers import (  # type: ignore[import-not-found]
+    bind_vault_repo as _use_repo,
+    make_vault_repo as _repo,
+)
 
 
 def test_github_search_repositories_builds_request(monkeypatch):

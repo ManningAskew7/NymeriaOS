@@ -1,16 +1,5 @@
 import json
 
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache():
-    from nymeria.config.settings import get_settings
-
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
 
 class _Executable:
     def __init__(self, value):
