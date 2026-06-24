@@ -75,3 +75,66 @@ def test_download_attachments_keeps_large_inline_images(patch_graph):
 
     assert skipped == 0
     assert [a["name"] for a in attachments] == ["photo.png"]
+
+
+# --- _extract_xlsx markdown-table rendering (slice 16 F8) ------------------
+
+
+def _xlsx_b64(sheets):
+    """Build a base64-encoded .xlsx. ``sheets`` maps sheet name -> list of rows."""
+    import base64
+    import io
+
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)  # drop the default sheet so we control names/order
+    for name, rows in sheets.items():
+        ws = wb.create_sheet(title=name)
+        for row in rows:
+            ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_extract_xlsx_renders_single_sheet_table():
+    from nymeria.tools import outlook_attachments as oa
+
+    out = oa._extract_xlsx(
+        _xlsx_b64({"Data": [["Name", "Role"], ["Alice", "Dev"]]}), "people.xlsx"
+    )
+
+    # Single sheet: no **Sheet:** heading, just the GFM table.
+    assert out == "| Name | Role |\n| --- | --- |\n| Alice | Dev |"
+
+
+def test_extract_xlsx_escapes_pipe_in_cell():
+    from nymeria.tools import outlook_attachments as oa
+
+    out = oa._extract_xlsx(
+        _xlsx_b64({"Data": [["Header"], ["Dev|Ops"]]}), "x.xlsx"
+    )
+
+    assert "| Dev\\|Ops |" in out
+    assert "| Dev|Ops |" not in out
+
+
+def test_extract_xlsx_multi_sheet_keeps_sheet_headings():
+    from nymeria.tools import outlook_attachments as oa
+
+    out = oa._extract_xlsx(
+        _xlsx_b64(
+            {
+                "First": [["a"], ["1"]],
+                "Second": [["b"], ["2"]],
+            }
+        ),
+        "two.xlsx",
+    )
+
+    assert out == (
+        "**Sheet: First**\n\n| a |\n| --- |\n| 1 |"
+        "\n\n"
+        "**Sheet: Second**\n\n| b |\n| --- |\n| 2 |"
+    )

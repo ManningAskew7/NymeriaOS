@@ -21,7 +21,7 @@ from langchain_core.tools import InjectedToolArg, tool
 
 from ..config.oauth_providers import GOOGLE_DOCS_SCOPES as _GOOGLE_DOCS_SCOPES_TUPLE
 from . import auth_cache_utils as auth_utils
-from .utils import get_user_id
+from .utils import get_user_id, rows_to_markdown_table
 
 PROVIDER = "google_docs"
 GOOGLE_SCOPES = list(_GOOGLE_DOCS_SCOPES_TUPLE)
@@ -363,11 +363,7 @@ def _extract_markdown(document: dict) -> str:
                     row_cells.append(cell_text)
                 rows_data.append(row_cells)
             if rows_data:
-                # Header row
-                parts.append("| " + " | ".join(rows_data[0]) + " |\n")
-                parts.append("| " + " | ".join("---" for _ in rows_data[0]) + " |\n")
-                for row in rows_data[1:]:
-                    parts.append("| " + " | ".join(row) + " |\n")
+                parts.append(rows_to_markdown_table(rows_data) + "\n")
             parts.append("\n")
 
     return "".join(parts)

@@ -39,6 +39,45 @@ def versioned_json_result(version: str, **payload: Any) -> str:
     return json.dumps({"tool_version": version, **payload}, indent=2, default=str)
 
 
+def _escape_md_table_cell(value: Any) -> str:
+    """Sanitize one cell so it cannot break a GitHub-flavored-markdown table.
+
+    Two characters corrupt a GFM table row: a literal ``|`` ends the cell early,
+    and a newline splits the cell across table rows. We collapse CR/LF to a
+    single space and escape ``|`` as ``\\|``. Backslashes are left untouched
+    (the minimal, standard GFM cell escaping); cells without a pipe or newline
+    are returned unchanged.
+    """
+    text = value if isinstance(value, str) else str(value)
+    text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return text.replace("|", "\\|")
+
+
+def rows_to_markdown_table(rows: list[list[Any]]) -> str:
+    """Render ``rows`` as a GitHub-flavored-markdown table.
+
+    ``rows[0]`` is the header; the ``---`` separator width follows the header.
+    Cells may be any type (each is stringified by :func:`_escape_md_table_cell`).
+    Each cell is escaped so a literal ``|`` or
+    newline in the source text cannot break the layout (the two call sites,
+    Google Docs export and Outlook ``.xlsx`` extraction, previously emitted cells
+    raw and silently corrupted any table whose text contained a pipe).
+
+    Returns the table block joined by ``"\\n"`` with no trailing newline, and
+    ``""`` for empty input. Per-row cell shaping (padding/trimming to the header
+    width) is left to the caller, so each emitter keeps its own row geometry.
+    """
+    if not rows:
+        return ""
+    lines = [
+        "| " + " | ".join(_escape_md_table_cell(c) for c in rows[0]) + " |",
+        "| " + " | ".join("---" for _ in rows[0]) + " |",
+    ]
+    for row in rows[1:]:
+        lines.append("| " + " | ".join(_escape_md_table_cell(c) for c in row) + " |")
+    return "\n".join(lines)
+
+
 def get_user_id(config: Optional[RunnableConfig]) -> str:
     """Extract user_id from RunnableConfig, defaulting to ``'default'``.
 

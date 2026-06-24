@@ -7,7 +7,45 @@ text + span offsets) so the merge is provably behavior-preserving and future
 edits to the asterisk-scanning state machine stay covered.
 """
 
-from nymeria.tools.google_docs import InlineSpan, _parse_inline, _parse_markdown
+from nymeria.tools.google_docs import (
+    InlineSpan,
+    _extract_markdown,
+    _parse_inline,
+    _parse_markdown,
+)
+
+
+def _docs_table(rows):
+    """Build a minimal Google Docs API document holding one table of ``rows``."""
+    return {
+        "body": {
+            "content": [
+                {
+                    "table": {
+                        "tableRows": [
+                            {
+                                "tableCells": [
+                                    {
+                                        "content": [
+                                            {
+                                                "paragraph": {
+                                                    "elements": [
+                                                        {"textRun": {"content": cell}}
+                                                    ]
+                                                }
+                                            }
+                                        ]
+                                    }
+                                    for cell in row
+                                ]
+                            }
+                            for row in rows
+                        ]
+                    }
+                }
+            ]
+        }
+    }
 
 
 def _spans_as_tuples(spans):
@@ -154,3 +192,23 @@ def test_parse_markdown_heading_with_link():
     assert block.level == 1
     assert block.text == "Title docs"
     assert InlineSpan(start=6, end=10, link_url="http://d") in block.spans
+
+
+# --- table extraction via the shared helper (slice 16 F8) ------------------
+
+
+def test_extract_markdown_renders_table_as_gfm():
+    out = _extract_markdown(_docs_table([["Name", "Role"], ["Alice", "Dev"]]))
+
+    # Exact output pins the trailing-newline glue around the table block: the
+    # helper result + "\n" then the inter-element "\n", matching the old emitter.
+    assert out == "| Name | Role |\n| --- | --- |\n| Alice | Dev |\n\n"
+
+
+def test_extract_markdown_escapes_pipe_in_table_cell():
+    # The shared rows_to_markdown_table helper now escapes pipes that previously
+    # corrupted the rendered table (F8 latent-correctness fix).
+    out = _extract_markdown(_docs_table([["Cmd"], ["a | b"]]))
+
+    assert "| a \\| b |" in out
+    assert "| a | b |" not in out

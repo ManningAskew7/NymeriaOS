@@ -16,7 +16,7 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
-from .utils import get_user_id
+from .utils import get_user_id, rows_to_markdown_table
 
 logger = logging.getLogger(__name__)
 
@@ -163,23 +163,17 @@ def _extract_xlsx(data_b64: str, filename: str) -> str:
             if not data_rows:
                 continue
 
-            # Build markdown table
-            lines = []
-            if len(wb.sheetnames) > 1:
-                lines.append(f"**Sheet: {sheet_name}**\n")
-
-            # Header row
+            # Build markdown table (pad/trim each data row to the header width).
             header = data_rows[0]
-            lines.append("| " + " | ".join(header) + " |")
-            lines.append("| " + " | ".join("---" for _ in header) + " |")
-
-            # Data rows
+            table_rows = [header]
             for row in data_rows[1:]:
-                # Pad or trim to match header length
-                padded = row[:len(header)] + [""] * max(0, len(header) - len(row))
-                lines.append("| " + " | ".join(padded) + " |")
+                table_rows.append(row[: len(header)] + [""] * max(0, len(header) - len(row)))
 
-            sections.append("\n".join(lines))
+            table_md = rows_to_markdown_table(table_rows)
+            if len(wb.sheetnames) > 1:
+                sections.append(f"**Sheet: {sheet_name}**\n\n{table_md}")
+            else:
+                sections.append(table_md)
 
         wb.close()
 
