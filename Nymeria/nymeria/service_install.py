@@ -362,10 +362,54 @@ def build_launchd_plist(
     }
 
 
+# --- shared service-manager plumbing -----------------------------------------
+
+
+class _SubprocessServiceBase:
+    """Subprocess plumbing shared by the platform service managers.
+
+    Both managers drive their CLI (systemctl/loginctl, launchctl) through one
+    `_run`: capture+text output under COMMAND_TIMEOUT_SECONDS, the
+    OSError/TimeoutExpired -> _RunResult(127) translation, and the
+    check-raises-ServiceInstallError contract. The single per-manager axis is
+    the process env (systemd repairs XDG_RUNTIME_DIR/DBus for headless shells;
+    launchd inherits the caller's env), held in `_env` and passed to the runner
+    only when set, so the runner call shape stays identical to each manager's
+    former hand-rolled copy.
+    """
+
+    _runner: Runner
+    _env: dict[str, str] | None
+
+    def _run(self, argv: Sequence[str], *, check: bool = False) -> _RunResult:
+        run_kwargs: dict[str, object] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": COMMAND_TIMEOUT_SECONDS,
+        }
+        if self._env is not None:
+            run_kwargs["env"] = self._env
+        try:
+            result = self._runner(list(argv), **run_kwargs)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            if check:
+                raise ServiceInstallError(f"{argv[0]} failed: {exc}") from exc
+            return _RunResult(returncode=127, stderr=str(exc))
+        run = _RunResult(
+            returncode=result.returncode,
+            stdout=(result.stdout or "").strip(),
+            stderr=(result.stderr or "").strip(),
+        )
+        if check and run.returncode != 0:
+            detail = run.stderr or run.stdout or f"exit {run.returncode}"
+            raise ServiceInstallError(f"{' '.join(argv)} failed: {detail}")
+        return run
+
+
 # --- systemd user service (Linux) --------------------------------------------
 
 
-class SystemdUserService:
+class SystemdUserService(_SubprocessServiceBase):
     """Install/manage the slim backend as a systemd user unit."""
 
     name = "systemd user service"
@@ -402,29 +446,6 @@ class SystemdUserService:
                 "DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus"
             )
         return env
-
-    def _run(self, argv: Sequence[str], *, check: bool = False) -> _RunResult:
-        try:
-            result = self._runner(
-                list(argv),
-                capture_output=True,
-                text=True,
-                timeout=COMMAND_TIMEOUT_SECONDS,
-                env=self._env,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            if check:
-                raise ServiceInstallError(f"{argv[0]} failed: {exc}") from exc
-            return _RunResult(returncode=127, stderr=str(exc))
-        run = _RunResult(
-            returncode=result.returncode,
-            stdout=(result.stdout or "").strip(),
-            stderr=(result.stderr or "").strip(),
-        )
-        if check and run.returncode != 0:
-            detail = run.stderr or run.stdout or f"exit {run.returncode}"
-            raise ServiceInstallError(f"{' '.join(argv)} failed: {detail}")
-        return run
 
     def ensure_available(self) -> None:
         """Raise ServiceUnavailableError unless `systemctl --user` is usable."""
@@ -577,7 +598,7 @@ class SystemdUserService:
 # --- launchd agent (macOS) ----------------------------------------------------
 
 
-class LaunchdAgentService:
+class LaunchdAgentService(_SubprocessServiceBase):
     """Install/manage the slim backend as a launchd LaunchAgent."""
 
     name = "launchd agent"
@@ -587,6 +608,10 @@ class LaunchdAgentService:
     ) -> None:
         self._home = home or Path.home()
         self._runner = runner
+        # launchd commands inherit the caller's environment (no XDG/DBus repair
+        # is needed, unlike systemd --user); _env=None tells the base _run to
+        # omit the env kwarg, matching the former hand-rolled call exactly.
+        self._env = None
         self._uid = os.getuid()
 
     @property
@@ -616,28 +641,6 @@ class LaunchdAgentService:
             return None
         path = payload.get("StandardOutPath")
         return path if isinstance(path, str) else None
-
-    def _run(self, argv: Sequence[str], *, check: bool = False) -> _RunResult:
-        try:
-            result = self._runner(
-                list(argv),
-                capture_output=True,
-                text=True,
-                timeout=COMMAND_TIMEOUT_SECONDS,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            if check:
-                raise ServiceInstallError(f"{argv[0]} failed: {exc}") from exc
-            return _RunResult(returncode=127, stderr=str(exc))
-        run = _RunResult(
-            returncode=result.returncode,
-            stdout=(result.stdout or "").strip(),
-            stderr=(result.stderr or "").strip(),
-        )
-        if check and run.returncode != 0:
-            detail = run.stderr or run.stdout or f"exit {run.returncode}"
-            raise ServiceInstallError(f"{' '.join(argv)} failed: {detail}")
-        return run
 
     def ensure_available(self) -> None:
         """Raise ServiceUnavailableError unless the GUI launchd domain exists."""

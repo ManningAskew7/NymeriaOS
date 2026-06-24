@@ -302,6 +302,7 @@ def test_systemd_env_injects_runtime_dir_when_missing(monkeypatch, tmp_path):
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
     manager = SystemdUserService(home=tmp_path, runner=ScriptedRunner())
     env = manager._env
+    assert env is not None  # systemd always builds a repaired env (never None)
     assert env["XDG_RUNTIME_DIR"].startswith("/run/user/")
     assert env["DBUS_SESSION_BUS_ADDRESS"].startswith("unix:path=/run/user/")
 
@@ -446,6 +447,83 @@ def test_launchd_uninstall_boots_out_and_removes(tmp_path):
     assert not manager.artifact_path.exists()
     assert any(argv[:2] == ["launchctl", "bootout"] for argv in runner.calls)
     assert any("Removed" in line for line in lines)
+
+
+# --- shared subprocess base (_run) --------------------------------------------
+
+
+class KwargRunner:
+    """Record argv + kwargs of each call; optionally raise or return a code."""
+
+    def __init__(self, *, returncode=0, stdout="", stderr="", raises=None):
+        self.calls: list[tuple[list[str], dict]] = []
+        self._returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+        self._raises = raises
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((list(argv), kwargs))
+        if self._raises is not None:
+            raise self._raises
+        return subprocess.CompletedProcess(argv, self._returncode, self._stdout, self._stderr)
+
+
+def test_systemd_run_forwards_repaired_env(tmp_path):
+    # systemd --user needs XDG_RUNTIME_DIR/DBus repaired for headless shells,
+    # so the shared base must forward the manager's _env to the runner.
+    runner = KwargRunner(stdout="ok")
+    manager = SystemdUserService(home=tmp_path, runner=runner)
+    manager._run(["systemctl", "--user", "daemon-reload"])
+    _argv, kwargs = runner.calls[-1]
+    assert kwargs["env"] is manager._env
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    assert kwargs["timeout"] == si.COMMAND_TIMEOUT_SECONDS
+
+
+def test_launchd_run_omits_env(tmp_path):
+    # launchd inherits the caller's env: the base must NOT pass an env kwarg,
+    # exactly as the former hand-rolled launchd _run did.
+    runner = KwargRunner(stdout="ok")
+    manager = LaunchdAgentService(home=tmp_path, runner=runner)
+    manager._run(["launchctl", "print", manager._gui_target()])
+    _argv, kwargs = runner.calls[-1]
+    assert "env" not in kwargs
+    assert manager._env is None
+
+
+def test_subprocess_base_translates_oserror_to_127(tmp_path):
+    # Both managers share the base: a spawn failure degrades to rc 127 with the
+    # error text, never an exception, when check is False.
+    for manager in (
+        SystemdUserService(home=tmp_path, runner=KwargRunner(raises=OSError("boom"))),
+        LaunchdAgentService(home=tmp_path, runner=KwargRunner(raises=OSError("boom"))),
+    ):
+        result = manager._run(["some", "cmd"])
+        assert result.returncode == 127
+        assert "boom" in result.stderr
+
+
+def test_subprocess_base_check_reraises_spawn_failure(tmp_path):
+    runner = KwargRunner(raises=subprocess.TimeoutExpired(cmd="systemctl", timeout=1))
+    manager = SystemdUserService(home=tmp_path, runner=runner)
+    with pytest.raises(ServiceInstallError, match="systemctl failed"):
+        manager._run(["systemctl", "--user", "daemon-reload"], check=True)
+
+
+def test_subprocess_base_check_raises_on_nonzero_for_both_managers(tmp_path):
+    systemd = SystemdUserService(
+        home=tmp_path, runner=KwargRunner(returncode=1, stderr="nope")
+    )
+    with pytest.raises(ServiceInstallError, match="nope"):
+        systemd._run(["systemctl", "--user", "enable", "x"], check=True)
+
+    launchd = LaunchdAgentService(
+        home=tmp_path, runner=KwargRunner(returncode=2, stdout="bad")
+    )
+    with pytest.raises(ServiceInstallError, match="bad"):
+        launchd._run(["launchctl", "enable", "y"], check=True)
 
 
 # --- platform selection and CLI -------------------------------------------------
