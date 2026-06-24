@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +13,38 @@ from nymeria.core.trigger_manager import (
 )
 from nymeria.triggers import trigger_api as trigger_api_module
 from nymeria.triggers.sources.webhook_source import WebhookSource
+from nymeria.triggers.webhook_security import verify_meta_signature
+
+
+def _meta_signature(raw_body: bytes, app_secret: str) -> str:
+    digest = hmac.new(app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
+def test_verify_meta_signature_accepts_matching_hmac() -> None:
+    body = b'{"object":"page"}'
+    secret = "app-secret"
+    assert verify_meta_signature(body, _meta_signature(body, secret), secret) is True
+
+
+def test_verify_meta_signature_rejects_missing_secret_or_header() -> None:
+    body = b"payload"
+    # No app secret configured -> never trust the request.
+    assert verify_meta_signature(body, "sha256=anything", None) is False
+    assert verify_meta_signature(body, "sha256=anything", "") is False
+    # Missing or non-sha256 header is rejected without raising.
+    assert verify_meta_signature(body, None, "secret") is False
+    assert verify_meta_signature(body, "sha1=deadbeef", "secret") is False
+
+
+def test_verify_meta_signature_rejects_tampered_body_or_secret() -> None:
+    body = b'{"object":"page"}'
+    secret = "app-secret"
+    good = _meta_signature(body, secret)
+    # A signature computed for a different body or a different secret fails.
+    assert verify_meta_signature(b'{"object":"instagram"}', good, secret) is False
+    assert verify_meta_signature(body, _meta_signature(body, "other-secret"), secret) is False
+    assert verify_meta_signature(body, "sha256=bad", secret) is False
 
 
 class FakeAgent:

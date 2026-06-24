@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import re
 import time
@@ -13,6 +11,7 @@ from typing import Any, Optional, Protocol
 
 import httpx
 
+from .bot_helpers import safe_id as _safe_id
 from .message_splitter import split_whatsapp_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -84,10 +83,6 @@ class WhatsAppNymeriaAPI(Protocol):
         ...
 
 
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
-
-
 def normalize_sender_id(value: str) -> str:
     """Normalize Cloud API sender IDs for platform-link storage."""
     cleaned = re.sub(r"\D+", "", str(value or ""))
@@ -107,24 +102,6 @@ def make_platform_chat_id(sender_id: str) -> str:
 def make_thread_id(sender_id: str) -> str:
     """Generate a native Nymeria thread ID for a WhatsApp direct chat."""
     return f"whatsapp_{_safe_id(normalize_sender_id(sender_id))}"
-
-
-def verify_meta_signature(
-    raw_body: bytes,
-    signature_header: Optional[str],
-    app_secret: Optional[str],
-) -> bool:
-    """Verify Meta's X-Hub-Signature-256 header."""
-    if not app_secret:
-        return False
-    if not signature_header or not signature_header.startswith("sha256="):
-        return False
-    expected = "sha256=" + hmac.new(
-        app_secret.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, signature_header)
 
 
 @dataclass(frozen=True)

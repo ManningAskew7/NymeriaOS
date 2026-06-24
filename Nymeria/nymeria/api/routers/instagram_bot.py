@@ -23,9 +23,11 @@ from ...triggers.instagram_bot import (
     NymeriaInstagramBot,
     _SeenMessageCache,
     extract_inbound_messages,
-    verify_meta_signature,
 )
-from ...triggers.webhook_security import webhook_timestamp_is_fresh
+from ...triggers.webhook_security import (
+    verify_meta_signature,
+    webhook_timestamp_is_fresh,
+)
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)

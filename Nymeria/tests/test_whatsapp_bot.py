@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 from typing import Any
 
 from nymeria.triggers.whatsapp_bot import (
@@ -14,7 +12,6 @@ from nymeria.triggers.whatsapp_bot import (
     make_platform_chat_id,
     make_platform_user_id,
     make_thread_id,
-    verify_meta_signature,
 )
 
 
@@ -155,17 +152,6 @@ def _payload(*messages: dict[str, Any]) -> dict[str, Any]:
             }
         ]
     }
-
-
-def test_signature_verification_uses_meta_hmac_header() -> None:
-    body = b'{"entry":[]}'
-    secret = "app-secret"
-    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-
-    assert verify_meta_signature(body, None, None) is False
-    assert verify_meta_signature(body, f"sha256={digest}", secret) is True
-    assert verify_meta_signature(body, "sha256=bad", secret) is False
-    assert verify_meta_signature(body, None, secret) is False
 
 
 def test_extract_inbound_messages_supports_text_buttons_and_interactive_replies() -> None:

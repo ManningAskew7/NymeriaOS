@@ -18,7 +18,7 @@ import httpx
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token, service_account
 
-from .bot_helpers import SeenEventCache
+from .bot_helpers import SeenEventCache, safe_id as _safe_id
 from .message_splitter import split_googlechat_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -103,10 +103,6 @@ class GoogleChatClientProtocol(Protocol):
 
     async def close(self) -> None:
         ...
-
-
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
 
 
 def _resource_tail(value: str, marker: str) -> str:

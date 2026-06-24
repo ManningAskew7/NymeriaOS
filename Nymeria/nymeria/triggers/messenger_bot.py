@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import re
 import time
@@ -13,6 +11,7 @@ from typing import Any, Optional, Protocol
 
 import httpx
 
+from .bot_helpers import safe_id as _safe_id
 from .message_splitter import split_messenger_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -84,10 +83,6 @@ class MessengerNymeriaAPI(Protocol):
         ...
 
 
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-") or "unknown"
-
-
 def normalize_psid(value: str) -> str:
     """Normalize Messenger Page-scoped IDs for stable storage."""
     return _safe_id(str(value or "unknown"))
@@ -114,24 +109,6 @@ def make_thread_id(sender_id: str, page_id: Optional[str] = None) -> str:
     if page != "unknown":
         return f"messenger_{page}_{psid}"
     return f"messenger_{psid}"
-
-
-def verify_meta_signature(
-    raw_body: bytes,
-    signature_header: Optional[str],
-    app_secret: Optional[str],
-) -> bool:
-    """Verify Meta's X-Hub-Signature-256 header."""
-    if not app_secret:
-        return False
-    if not signature_header or not signature_header.startswith("sha256="):
-        return False
-    expected = "sha256=" + hmac.new(
-        app_secret.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, signature_header)
 
 
 @dataclass(frozen=True)

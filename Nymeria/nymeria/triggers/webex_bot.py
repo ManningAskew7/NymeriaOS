@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .bot_helpers import safe_id as _safe_id
 from .message_splitter import split_webex_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -83,10 +84,6 @@ class WebexNymeriaAPI(Protocol):
 
     async def chat(self, message: str, thread_id: str, user_id: str) -> dict[str, Any]:
         ...
-
-
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
 
 
 def make_platform_user_id(person_id: str) -> str:

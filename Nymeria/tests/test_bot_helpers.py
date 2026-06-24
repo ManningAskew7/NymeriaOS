@@ -14,6 +14,9 @@ from nymeria.triggers.bot_helpers import (
     context_bar,
     fmt_tokens,
     http_error_detail,
+    join_api_base,
+    normalize_base_url,
+    safe_id,
 )
 
 
@@ -144,3 +147,57 @@ def test_seen_event_cache_prunes_expired_keys_on_insert() -> None:
     assert cache.mark_seen("fresh") is False
     assert "stale" not in cache._items
     assert "fresh" in cache._items
+
+
+def test_safe_id_sanitizes_charset_and_trims_hyphens() -> None:
+    # A-Z, a-z, 0-9, underscore, dot, and hyphen pass through untouched. Each
+    # run of out-of-charset characters collapses to a single hyphen, and
+    # leading/trailing hyphens are stripped. This charset is the stable contract
+    # every bot relies on to build native thread ids and platform keys.
+    assert safe_id("U123.abc_DE-9") == "U123.abc_DE-9"
+    assert safe_id("user@host name!!") == "user-host-name"
+    assert safe_id("a@@@b") == "a-b"
+    assert safe_id("///lead-and-trail///") == "lead-and-trail"
+    # An out-of-charset char adjacent to an in-charset hyphen is not merged with
+    # it (only consecutive out-of-charset chars collapse).
+    assert safe_id("café-99") == "caf--99"
+
+
+def test_safe_id_falls_back_to_unknown_for_empty_or_falsy_input() -> None:
+    # The canonical helper standardizes on the str(value or "") superset: empty
+    # strings and any falsy/None input map to "unknown" rather than a literal
+    # "None"/"0", matching what the messenger/instagram bots already did.
+    assert safe_id("") == "unknown"
+    assert safe_id("!!!") == "unknown"
+    assert safe_id(None) == "unknown"
+    assert safe_id(0) == "unknown"
+
+
+def test_safe_id_matches_legacy_plain_variant_for_all_string_inputs() -> None:
+    # The 11 bots that used str(value) and the 2 that used str(value or "")
+    # produce identical output for every in-contract string input, so the
+    # consolidation is behavior-preserving for real ids.
+    import re
+
+    def legacy_plain(value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
+
+    for value in ["abc", "A.B_c-d", "  spaced  ", "", "0", "None", "x/y\\z", "té-1"]:
+        assert safe_id(value) == legacy_plain(value)
+
+
+def test_normalize_base_url_strips_only_trailing_slash() -> None:
+    assert normalize_base_url("https://chat.example.com/") == "https://chat.example.com"
+    assert normalize_base_url("https://chat.example.com") == "https://chat.example.com"
+    assert normalize_base_url("https://chat.example.com/api/") == "https://chat.example.com/api"
+
+
+def test_join_api_base_appends_suffix_idempotently() -> None:
+    # Appends the suffix to a normalized base, but never doubles it when already
+    # present (covers both the /api/v1 and /api/v4 self-hosted bots).
+    assert join_api_base("https://rc.example.com/", "/api/v1") == "https://rc.example.com/api/v1"
+    assert (
+        join_api_base("https://mm.example.com/api/v4", "/api/v4")
+        == "https://mm.example.com/api/v4"
+    )
+    assert join_api_base("https://rc.example.com", "/api/v1") == "https://rc.example.com/api/v1"
