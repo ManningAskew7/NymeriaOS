@@ -787,6 +787,11 @@ def _live_temporary_tool_names(agent: Any, tc: ThreadConfig) -> set[str]:
             if ensure_aware_utc(entry.expires_at) > now:
                 live.add(name)
         except Exception:
+            logger.debug(
+                "Skipping temporary tool %s with unparseable expiry",
+                name,
+                exc_info=True,
+            )
             continue
     return live
 

@@ -67,22 +67,32 @@ def _serialize_thread_teams(agent: Any, user_id: str) -> dict[str, Any]:
     return {"teams": result, "total": len(result)}
 
 
-def _get_thread_team(agent: Any, user_id: str, team_id: str) -> dict[str, Any] | None:
-    for team in _serialize_thread_teams(agent, user_id)["teams"]:
+def _find_team(teams: list[dict[str, Any]], team_id: str) -> dict[str, Any] | None:
+    """Return the team with ``team_id`` from an already-serialized team list.
+
+    Pure over the pre-computed list so a handler can scan the config store once
+    (``_serialize_thread_teams`` is an O(N) uncached read over every owned
+    thread's config) and reuse the result for several lookups.
+    """
+    for team in teams:
         if team["id"] == team_id:
             return team
     return None
 
 
-def _thread_team_name_exists(
-    agent: Any,
-    user_id: str,
+def _team_name_taken(
+    teams: list[dict[str, Any]],
     name: str,
     *,
     excluding_team_id: str | None = None,
 ) -> bool:
+    """Report whether ``name`` collides with a team in the serialized list.
+
+    Case-insensitive over the trimmed name; ``excluding_team_id`` lets a rename
+    ignore the team being edited. Pure over the pre-computed team list.
+    """
     needle = name.strip().lower()
-    for team in _serialize_thread_teams(agent, user_id)["teams"]:
+    for team in teams:
         if excluding_team_id and team["id"] == excluding_team_id:
             continue
         if str(team["name"]).strip().lower() == needle:
@@ -432,7 +442,8 @@ def create_thread_config_router(
         """Create a callable team and move the requested threads into it."""
         agent = get_agent_fn()
         name = normalize_thread_team_name(request.name)
-        if _thread_team_name_exists(agent, user_id, name):
+        teams = _serialize_thread_teams(agent, user_id)["teams"]
+        if _team_name_taken(teams, name):
             raise HTTPException(
                 status_code=409,
                 detail=f"Thread team '{name}' already exists",
@@ -454,7 +465,8 @@ def create_thread_config_router(
         from ...core.tool_search_index import mark_tool_search_dirty
 
         mark_tool_search_dirty()
-        team = _get_thread_team(agent, user_id, team_id)
+        saved_teams = _serialize_thread_teams(agent, user_id)["teams"]
+        team = _find_team(saved_teams, team_id)
         return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
 
     @router.patch("/thread-teams/{team_id}")
@@ -466,14 +478,15 @@ def create_thread_config_router(
     ):
         """Rename a callable team and/or replace its thread membership."""
         agent = get_agent_fn()
-        existing = _get_thread_team(agent, user_id, team_id)
+        teams = _serialize_thread_teams(agent, user_id)["teams"]
+        existing = _find_team(teams, team_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Thread team not found")
 
         name = str(existing["name"])
         if request.name is not None:
             name = normalize_thread_team_name(request.name)
-            if _thread_team_name_exists(agent, user_id, name, excluding_team_id=team_id):
+            if _team_name_taken(teams, name, excluding_team_id=team_id):
                 raise HTTPException(
                     status_code=409,
                     detail=f"Thread team '{name}' already exists",
@@ -509,7 +522,8 @@ def create_thread_config_router(
         from ...core.tool_search_index import mark_tool_search_dirty
 
         mark_tool_search_dirty()
-        team = _get_thread_team(agent, user_id, team_id)
+        saved_teams = _serialize_thread_teams(agent, user_id)["teams"]
+        team = _find_team(saved_teams, team_id)
         return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
 
     @router.delete("/thread-teams/{team_id}")
@@ -519,7 +533,8 @@ def create_thread_config_router(
     ):
         """Delete a callable team by clearing membership from its threads."""
         agent = get_agent_fn()
-        existing = _get_thread_team(agent, user_id, team_id)
+        teams = _serialize_thread_teams(agent, user_id)["teams"]
+        existing = _find_team(teams, team_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Thread team not found")
         for thread_id in existing["thread_ids"]:
