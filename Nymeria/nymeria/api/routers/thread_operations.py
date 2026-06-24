@@ -69,6 +69,10 @@ def _thread_share_available_skill_names(agent: Any, user_id: str) -> set[str]:
     try:
         return {s.name for s in agent.skill_manager.list_installed(user_id=user_id)}
     except Exception:
+        logger.warning(
+            "Failed to list installed skills for thread-share export",
+            exc_info=True,
+        )
         return set()
 
 

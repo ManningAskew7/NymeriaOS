@@ -213,3 +213,56 @@ def test_thread_team_api_moves_membership_and_clears_on_delete(tmp_path: Path, a
     assert agent.thread_config_manager.get_config("thread-b").callable_team_id is None
     assert agent.thread_config_manager.get_config("thread-c").callable_team_id is None
     assert "" in agent.invalidated
+
+
+def test_team_handlers_avoid_redundant_config_scans(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """Each team mutation scans the (uncached) config store the minimum times.
+
+    ``_serialize_thread_teams`` is an O(N) read over every owned thread's config
+    (``get_config`` is uncached). Before slice 09 F9, ``update`` scanned three
+    times (existing lookup + name-collision check + post-save fetch). The fix
+    collapses the two same-state pre-save reads onto one shared list, leaving a
+    single fresh post-save scan: create 2, update 2, delete 1.
+    """
+    from nymeria.api.routers import thread_config as tc_module
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = {"Authorization": f"Bearer {token}"}
+    for thread_id in ("thread-a", "thread-b", "thread-c"):
+        agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    real_serialize = tc_module._serialize_thread_teams
+    scans = {"count": 0}
+
+    def counting_serialize(agent_arg, user_id):
+        scans["count"] += 1
+        return real_serialize(agent_arg, user_id)
+
+    monkeypatch.setattr(tc_module, "_serialize_thread_teams", counting_serialize)
+
+    scans["count"] = 0
+    created = client.post(
+        "/thread-teams",
+        headers=headers,
+        json={"name": "Ops", "thread_ids": ["thread-a", "thread-b"]},
+    )
+    assert created.status_code == 200
+    assert scans["count"] == 2  # pre-save name check + post-save fetch
+    team_id = created.json()["id"]
+
+    scans["count"] = 0
+    renamed = client.patch(
+        f"/thread-teams/{team_id}",
+        headers=headers,
+        json={"name": "Ops Team", "thread_ids": ["thread-b", "thread-c"]},
+    )
+    assert renamed.status_code == 200
+    assert set(renamed.json()["thread_ids"]) == {"thread-b", "thread-c"}
+    assert scans["count"] == 2  # one shared pre-save scan + one post-save fetch
+
+    scans["count"] = 0
+    deleted = client.delete(f"/thread-teams/{team_id}", headers=headers)
+    assert deleted.status_code == 200
+    assert scans["count"] == 1  # single existing lookup, no return-value scan

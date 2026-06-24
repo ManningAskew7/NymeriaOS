@@ -445,3 +445,40 @@ def test_attachment_download_denies_non_owner(
     )
     assert response.status_code == 404
     assert response.json()["detail"] == "Not found"
+
+
+def test_thread_share_available_skill_names_logs_on_failure(caplog):
+    """A failing skill_manager surfaces a warning instead of silently emptying."""
+    import logging
+
+    from nymeria.api.routers.thread_operations import (
+        _thread_share_available_skill_names,
+    )
+
+    def boom(*, user_id):
+        raise RuntimeError("skill store unavailable")
+
+    agent = SimpleNamespace(skill_manager=SimpleNamespace(list_installed=boom))
+
+    with caplog.at_level(logging.WARNING):
+        result = _thread_share_available_skill_names(agent, "owner")
+
+    assert result == set()
+    assert "Failed to list installed skills" in caplog.text
+
+
+def test_thread_share_available_skill_names_no_manager_is_quiet(caplog):
+    """No skill_manager is a normal empty result, not a logged failure."""
+    import logging
+
+    from nymeria.api.routers.thread_operations import (
+        _thread_share_available_skill_names,
+    )
+
+    agent = SimpleNamespace(skill_manager=None)
+
+    with caplog.at_level(logging.WARNING):
+        result = _thread_share_available_skill_names(agent, "owner")
+
+    assert result == set()
+    assert "Failed to list installed skills" not in caplog.text

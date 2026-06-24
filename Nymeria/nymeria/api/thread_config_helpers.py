@@ -6,7 +6,8 @@ from typing import Any, NamedTuple
 
 from fastapi import HTTPException
 
-_CALLABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+from ..core.callable_names import CALLABLE_NAME_RE
+
 _THREAD_TEAM_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
 
 
@@ -34,8 +35,16 @@ def effective_provider_model(agent: Any, thread_id: str) -> EffectiveLLM:
 
 
 def validate_callable_name(name: str) -> None:
-    """Reject callable names that would fail LLM tool/function binding."""
-    if not _CALLABLE_NAME_RE.match(name):
+    """Reject callable names that would fail LLM tool/function binding.
+
+    The grammar (``^[a-zA-Z0-9_-]{1,64}$``) is shared with the branch and import
+    callable-name paths via :data:`nymeria.core.callable_names.CALLABLE_NAME_RE`,
+    so those copies cannot silently drift. The agent-threads create endpoint
+    enforces the same shape through a separate Pydantic
+    ``Field(pattern=..., min_length, max_length)`` that is not wired to this
+    constant.
+    """
+    if not CALLABLE_NAME_RE.match(name):
         raise HTTPException(
             status_code=400,
             detail=(

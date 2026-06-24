@@ -434,3 +434,26 @@ def test_thread_overview_enforces_thread_access(tmp_path: Path, api_client_build
 
     assert owner_response.status_code == 200
     assert other_response.status_code == 404
+
+
+def test_live_temporary_tool_names_logs_unparseable_expiry(caplog):
+    """A temporary-tool entry with a corrupt expiry is skipped with a debug log."""
+    import logging
+    from types import SimpleNamespace
+
+    from nymeria.api.thread_overview import _live_temporary_tool_names
+
+    class _BadEntry:
+        @property
+        def expires_at(self):
+            raise ValueError("corrupt expiry")
+
+    # No `_resolve_temporary_tools` attr -> the manual expiry-loop path runs.
+    agent = SimpleNamespace()
+    tc = SimpleNamespace(temporary_tools={"badtool": _BadEntry()})
+
+    with caplog.at_level(logging.DEBUG, logger="nymeria.api.thread_overview"):
+        result = _live_temporary_tool_names(agent, tc)
+
+    assert result == set()
+    assert "Skipping temporary tool badtool" in caplog.text
