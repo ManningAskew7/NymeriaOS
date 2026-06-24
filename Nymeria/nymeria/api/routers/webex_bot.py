@@ -20,18 +20,12 @@ from ...triggers.webex_bot import (
     _SeenMessageCache,
     verify_webex_signature,
 )
+from ...triggers.webhook_security import require_configured_secret
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
 
 _WEBEX_SEEN_CACHE = _SeenMessageCache()
-
-
-def _require_configured_secret(value: Optional[str], setting_name: str) -> str:
-    secret = (value or "").strip()
-    if not secret:
-        raise HTTPException(status_code=503, detail=f"{setting_name} is required")
-    return secret
 
 
 class InProcessWebexAPI:
@@ -294,7 +288,7 @@ def create_webex_bot_router(
     ):
         settings = get_settings_fn()
         raw_body = await request.body()
-        webhook_secret = _require_configured_secret(
+        webhook_secret = require_configured_secret(
             settings.webex_webhook_secret,
             "WEBEX_WEBHOOK_SECRET",
         )

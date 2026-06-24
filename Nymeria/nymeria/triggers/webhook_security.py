@@ -5,11 +5,53 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
-from typing import Any, Literal
+from collections.abc import Callable, Iterable
+from typing import Any, Literal, Protocol
+
+from fastapi import HTTPException
 
 WEBHOOK_MAX_AGE_SECONDS = 10 * 60
 WEBHOOK_MAX_FUTURE_SKEW_SECONDS = 5 * 60
 TimestampUnit = Literal["seconds", "milliseconds"]
+
+
+class _TimestampedMessage(Protocol):
+    """Any inbound-message object exposing a provider event timestamp."""
+
+    @property
+    def timestamp(self) -> Any: ...
+
+
+def require_configured_secret(value: str | None, setting_name: str) -> str:
+    """Return a configured webhook secret, or raise 503 when it is unset.
+
+    Shared by the Meta-style webhook routers (WhatsApp, Messenger, Instagram)
+    and Webex, which each gate signature verification on a server-configured
+    secret. The error detail names the missing setting verbatim so the
+    per-router tests (e.g. ``WHATSAPP_APP_SECRET is required``) stay exact.
+    """
+    secret = (value or "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail=f"{setting_name} is required")
+    return secret
+
+
+def reject_stale_messages(
+    payload: dict[str, Any],
+    extract_messages: Callable[[dict[str, Any]], Iterable[_TimestampedMessage]],
+    *,
+    unit: TimestampUnit,
+) -> None:
+    """Raise 403 if any inbound message timestamp is outside the replay window.
+
+    ``extract_messages`` is the platform's ``extract_inbound_messages`` and
+    ``unit`` is the platform's timestamp unit (WhatsApp emits seconds; Messenger
+    and Instagram emit milliseconds). A payload with no inbound messages is a
+    no-op, matching the prior per-router behavior.
+    """
+    for message in extract_messages(payload):
+        if not webhook_timestamp_is_fresh(message.timestamp, unit=unit):
+            raise HTTPException(status_code=403, detail="Stale webhook event")
 
 
 def verify_meta_signature(
