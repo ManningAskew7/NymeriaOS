@@ -27,7 +27,7 @@ from .token_usage import extract_last_from_messages
 from .agent_history import (
     extract_content_parts as _extract_content_parts,
 )
-from .agent_streaming import GraphStreamProcessor
+from .agent_streaming import GraphStreamProcessor, compact_with_progress
 from .agent_compaction import COMPACTING_MESSAGE, CompactionManager
 from .agent_prune import PruneManager
 from .ticker import Ticker, set_ticker
@@ -2260,40 +2260,17 @@ class NymeriaAgent:
                         user_id,
                         rehydrate_if_empty=True,
                     ):
-                        compact_started = asyncio.Event()
-
-                        async def _on_compaction_started() -> None:
-                            compact_started.set()
-
-                        compact_task = asyncio.create_task(
-                            self._check_and_compact_for_next_turn(
+                        _compact_sink: list[Optional[dict[str, Any]]] = []
+                        async for evt in compact_with_progress(
+                            lambda on_started: self._check_and_compact_for_next_turn(
                                 thread_id,
                                 user_id,
-                                on_started=_on_compaction_started,
-                            )
-                        )
-                        start_task = asyncio.create_task(compact_started.wait())
-                        sent_compacting = False
-                        try:
-                            await asyncio.wait(
-                                {compact_task, start_task},
-                                return_when=asyncio.FIRST_COMPLETED,
-                            )
-                            if compact_started.is_set():
-                                yield {
-                                    "type": "compacting",
-                                    "message": COMPACTING_MESSAGE,
-                                }
-                                sent_compacting = True
-                            compact_result = await compact_task
-                            if compact_started.is_set() and not sent_compacting:
-                                yield {
-                                    "type": "compacting",
-                                    "message": COMPACTING_MESSAGE,
-                                }
-                        finally:
-                            if not start_task.done():
-                                start_task.cancel()
+                                on_started=on_started,
+                            ),
+                            _compact_sink,
+                        ):
+                            yield evt
+                        compact_result = _compact_sink[0] if _compact_sink else None
                         if compact_result and compact_result.get("success"):
                             yield {
                                 "type": "compacted",
@@ -2677,40 +2654,17 @@ class NymeriaAgent:
                 if self.settings.context_management == "auto_compact":
                     compact_result = None
                     if self._should_auto_compact_now(thread_id, user_id):
-                        compact_started = asyncio.Event()
-
-                        async def _on_compaction_started() -> None:
-                            compact_started.set()
-
-                        compact_task = asyncio.create_task(
-                            self._check_and_compact(
+                        _compact_sink: list[Optional[dict[str, Any]]] = []
+                        async for evt in compact_with_progress(
+                            lambda on_started: self._check_and_compact(
                                 thread_id,
                                 user_id,
-                                on_started=_on_compaction_started,
-                            )
-                        )
-                        start_task = asyncio.create_task(compact_started.wait())
-                        sent_compacting = False
-                        try:
-                            await asyncio.wait(
-                                {compact_task, start_task},
-                                return_when=asyncio.FIRST_COMPLETED,
-                            )
-                            if compact_started.is_set():
-                                yield {
-                                    "type": "compacting",
-                                    "message": COMPACTING_MESSAGE,
-                                }
-                                sent_compacting = True
-                            compact_result = await compact_task
-                            if compact_started.is_set() and not sent_compacting:
-                                yield {
-                                    "type": "compacting",
-                                    "message": COMPACTING_MESSAGE,
-                                }
-                        finally:
-                            if not start_task.done():
-                                start_task.cancel()
+                                on_started=on_started,
+                            ),
+                            _compact_sink,
+                        ):
+                            yield evt
+                        compact_result = _compact_sink[0] if _compact_sink else None
                     if compact_result and compact_result.get("success"):
                         # Post-turn compaction fires after the turn ENDED (the
                         # agent produced a final, no-tool-call response = done),
@@ -2753,41 +2707,18 @@ class NymeriaAgent:
                     self.settings.context_management == "auto_compact"
                     and is_context_overflow_error(e)
                 ):
-                    compact_started = asyncio.Event()
-
-                    async def _on_compaction_started() -> None:
-                        compact_started.set()
-
-                    compact_task = asyncio.create_task(
-                        self._compaction.rewind_and_compact(
+                    _compact_sink: list[Optional[dict[str, Any]]] = []
+                    async for evt in compact_with_progress(
+                        lambda on_started: self._compaction.rewind_and_compact(
                             thread_id,
                             user_id,
-                            on_started=_on_compaction_started,
-                        )
-                    )
-                    start_task = asyncio.create_task(compact_started.wait())
-                    sent_compacting = False
-                    try:
-                        await asyncio.wait(
-                            {compact_task, start_task},
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        if compact_started.is_set():
-                            yield {
-                                "type": "compacting",
-                                "message": COMPACTING_MESSAGE,
-                            }
-                            sent_compacting = True
-                        compact_result = await compact_task
-                        if compact_started.is_set() and not sent_compacting:
-                            yield {
-                                "type": "compacting",
-                                "message": COMPACTING_MESSAGE,
-                            }
-                    finally:
-                        if not start_task.done():
-                            start_task.cancel()
-                    if compact_result.get("success"):
+                            on_started=on_started,
+                        ),
+                        _compact_sink,
+                    ):
+                        yield evt
+                    compact_result = _compact_sink[0] if _compact_sink else None
+                    if compact_result and compact_result.get("success"):
                         yield {
                             "type": "compacted",
                             "messages_removed": compact_result.get("messages_removed", 0),
@@ -2800,7 +2731,7 @@ class NymeriaAgent:
                     logger.warning(
                         "Thread %s: Context overflow recovery failed in astream(): %s",
                         thread_id,
-                        compact_result.get("reason", compact_result),
+                        (compact_result or {}).get("reason", compact_result),
                     )
                 yield self._classify_stream_exception(e)
 

@@ -5,7 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, AsyncGenerator, Callable, Iterable, List, Optional
+from typing import (
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    List,
+    Optional,
+)
 
 from ..vendor.react_agent.nodes import (
     is_retryable_llm_error,
@@ -14,6 +23,7 @@ from ..vendor.react_agent.nodes import (
     llm_retry_delay,
     llm_retry_payload_for_active_candidate,
 )
+from .agent_compaction import COMPACTING_MESSAGE
 from .agent_history import (
     InlineThinkingTextStripper,
     extract_reasoning_text_from_block,
@@ -44,6 +54,60 @@ async def drive_with_fanout(
             if prompt.fanout_mailbox is not None:
                 prompt.fanout_mailbox.put(evt)
         yield evt
+
+
+# A factory that, given the helper-internal ``on_started`` callback, returns the
+# compaction coroutine to run (e.g. ``check_and_compact``/``rewind_and_compact``).
+CompactionCoroFactory = Callable[
+    [Callable[[], Awaitable[None]]],
+    Coroutine[Any, Any, Optional[dict[str, Any]]],
+]
+
+
+async def compact_with_progress(
+    coro_factory: CompactionCoroFactory,
+    result_sink: list[Optional[dict[str, Any]]],
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Run a compaction coroutine, emitting a single ``compacting`` event.
+
+    Races the compaction coroutine against an internal ``started`` signal so the
+    ``compacting`` progress event can be yielded *mid-flight* (during the
+    potentially multi-second summarization) without blocking, and is emitted
+    **exactly once** (the double-guard covers the case where the coroutine
+    signals start and completes within the same ``asyncio.wait`` batch). The
+    coroutine's return value is appended to ``result_sink`` (a one-element sink)
+    so the caller can build its own ``compacted`` event; an async generator
+    cannot ``return`` a value. ``coro_factory`` receives the internal
+    ``on_started`` callback and must return the compaction coroutine.
+
+    The ``finally`` only cancels the lightweight start-waiter task
+    **synchronously**, so this is safe on the SSE-disconnect (``GeneratorExit``)
+    path where awaiting is forbidden. ``compact_task`` is intentionally not
+    cancelled here (it never was inline either): on disconnect it is orphaned to
+    run to completion on the loop, matching the prior behavior.
+    """
+    compact_started = asyncio.Event()
+
+    async def _on_compaction_started() -> None:
+        compact_started.set()
+
+    compact_task = asyncio.create_task(coro_factory(_on_compaction_started))
+    start_task = asyncio.create_task(compact_started.wait())
+    sent_compacting = False
+    try:
+        await asyncio.wait(
+            {compact_task, start_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if compact_started.is_set():
+            yield {"type": "compacting", "message": COMPACTING_MESSAGE}
+            sent_compacting = True
+        result_sink.append(await compact_task)
+        if compact_started.is_set() and not sent_compacting:
+            yield {"type": "compacting", "message": COMPACTING_MESSAGE}
+    finally:
+        if not start_task.done():
+            start_task.cancel()
 
 
 TOOL_CALL_CONTENT_DELTA_TYPES = frozenset({

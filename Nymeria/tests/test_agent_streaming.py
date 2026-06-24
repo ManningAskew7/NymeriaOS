@@ -7,12 +7,15 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from nymeria.vendor.react_agent.config import LLMConfig, LLMFallbackConfig
+from nymeria.core.agent_compaction import COMPACTING_MESSAGE
 from nymeria.core.agent_streaming import (
     GraphStreamProcessor,
     ReasoningChunkDeduper,
+    compact_with_progress,
     has_tool_call_content_delta,
     has_tool_call_delta,
 )
@@ -506,3 +509,147 @@ def test_astream_orchestrates_graph_stream_processor_without_inner_driver():
 
     assert "async def _drive_graph_events" not in text
     assert "GraphStreamProcessor(" in text
+
+
+# ---------------------------------------------------------------------------
+# compact_with_progress (slice 01 F9): the compaction-progress async race.
+# ---------------------------------------------------------------------------
+
+
+def _collect_compact_with_progress(coro_factory):
+    """Drive compact_with_progress to completion, returning (events, sink)."""
+
+    async def _run():
+        sink: list = []
+        events = [evt async for evt in compact_with_progress(coro_factory, sink)]
+        return events, sink
+
+    return asyncio.run(_run())
+
+
+def test_compact_with_progress_emits_compacting_once_when_started_signaled():
+    async def _coro(on_started):
+        await on_started()
+        await asyncio.sleep(0)  # let the start-waiter observe the signal mid-flight
+        return {"success": True, "messages_removed": 3, "summary": "s"}
+
+    events, sink = _collect_compact_with_progress(lambda on_started: _coro(on_started))
+
+    assert events == [{"type": "compacting", "message": COMPACTING_MESSAGE}]
+    assert sink == [{"success": True, "messages_removed": 3, "summary": "s"}]
+
+
+def test_compact_with_progress_no_event_when_compaction_skips():
+    async def _coro(on_started):
+        # Compaction decided not to run: it never signals started.
+        return {"success": False, "reason": "below threshold"}
+
+    events, sink = _collect_compact_with_progress(lambda on_started: _coro(on_started))
+
+    assert events == []
+    assert sink == [{"success": False, "reason": "below threshold"}]
+
+
+def test_compact_with_progress_single_emit_when_started_and_completes_together():
+    # Guards the double-emit invariant: a coroutine that signals start and
+    # returns in one step must still yield exactly one "compacting" event.
+    async def _coro(on_started):
+        await on_started()
+        return {"success": True}
+
+    events, sink = _collect_compact_with_progress(lambda on_started: _coro(on_started))
+
+    assert events == [{"type": "compacting", "message": COMPACTING_MESSAGE}]
+    assert events.count({"type": "compacting", "message": COMPACTING_MESSAGE}) == 1
+    assert sink == [{"success": True}]
+
+
+def test_compact_with_progress_surfaces_none_result():
+    async def _coro(on_started):
+        await on_started()
+        return None
+
+    events, sink = _collect_compact_with_progress(lambda on_started: _coro(on_started))
+
+    assert events == [{"type": "compacting", "message": COMPACTING_MESSAGE}]
+    assert sink == [None]
+    # The caller idiom `sink[0] if sink else None` recovers a None result.
+    assert (sink[0] if sink else None) is None
+
+
+def test_compact_with_progress_propagates_coroutine_exception():
+    async def _coro(on_started):
+        await on_started()
+        raise RuntimeError("boom")
+
+    async def _run():
+        sink: list = []
+        collected: list = []
+        with pytest.raises(RuntimeError, match="boom"):
+            async for evt in compact_with_progress(lambda on_started: _coro(on_started), sink):
+                collected.append(evt)
+        return collected, sink
+
+    collected, sink = asyncio.run(_run())
+
+    # The "compacting" event is emitted before the await re-raises; the result
+    # is never appended (the await raised), matching the inline `await` behavior.
+    assert collected == [{"type": "compacting", "message": COMPACTING_MESSAGE}]
+    assert sink == []
+
+
+def test_compact_with_progress_aclose_during_yield_is_generatorexit_safe():
+    # Mirrors an SSE disconnect mid-"compacting": closing the generator while it
+    # is suspended at the yield runs the sync `finally` without awaiting (the
+    # GeneratorExit-safe contract) and leaves the in-flight compaction task
+    # running (orphaned), exactly as the inline code did.
+    async def _run():
+        sink: list = []
+        gate = asyncio.Event()  # never set: keeps the compaction in-flight
+
+        async def _coro(on_started):
+            await on_started()
+            await gate.wait()  # block so the helper suspends at the compacting yield
+            return {"success": True}
+
+        gen = compact_with_progress(lambda on_started: _coro(on_started), sink)
+        first = await anext(gen)
+        await gen.aclose()  # GeneratorExit thrown into the suspended yield
+        pending = [
+            t
+            for t in asyncio.all_tasks()
+            if t is not asyncio.current_task() and not t.done()
+        ]
+        for t in pending:  # clean up the orphan so the loop does not warn
+            t.cancel()
+        return first, sink, pending
+
+    first, sink, pending = asyncio.run(_run())
+
+    assert first == {"type": "compacting", "message": COMPACTING_MESSAGE}
+    assert sink == []  # the result was never appended (compaction never completed)
+    assert len(pending) == 1  # the compaction task survived aclose (orphaned)
+
+
+def test_compact_with_progress_cancels_start_waiter_on_skip():
+    # The skip path leaves the start-waiter task pending (the started Event is
+    # never set); the sync `finally` must cancel it so no task leaks.
+    async def _coro(on_started):
+        return {"success": False, "reason": "skip"}
+
+    async def _run():
+        sink: list = []
+        events = [evt async for evt in compact_with_progress(lambda on_started: _coro(on_started), sink)]
+        await asyncio.sleep(0)  # let a cancelled start-waiter settle
+        leaked = [
+            t
+            for t in asyncio.all_tasks()
+            if t is not asyncio.current_task() and not t.done()
+        ]
+        return events, sink, leaked
+
+    events, sink, leaked = asyncio.run(_run())
+
+    assert events == []
+    assert sink == [{"success": False, "reason": "skip"}]
+    assert leaked == []
