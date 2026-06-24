@@ -136,3 +136,9 @@ initial-load.png
 # a porting reference (allowed-tools.txt lists the curated tool subset).
 /Nymeria/docker-compose.hexstrike.yml
 /Nymeria/docker/hexstrike/
+
+# === Agent scratch dirs (plans, logs, snapshots from in-flight work) ===
+# Coding agents write throwaway working notes here per the repo workflow
+# (e.g. a plan .md for a complex slice); these are never tracked.
+/tmp/
+/Nymeria/tmp/
