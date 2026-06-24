@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.trigger_manager import (
@@ -13,12 +17,78 @@ from nymeria.core.trigger_manager import (
 )
 from nymeria.triggers import trigger_api as trigger_api_module
 from nymeria.triggers.sources.webhook_source import WebhookSource
-from nymeria.triggers.webhook_security import verify_meta_signature
+from nymeria.triggers.webhook_security import (
+    reject_stale_messages,
+    require_configured_secret,
+    verify_meta_signature,
+)
 
 
 def _meta_signature(raw_body: bytes, app_secret: str) -> str:
     digest = hmac.new(app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
+
+
+class _StampedMessage:
+    """Minimal inbound-message stand-in carrying just a `.timestamp`."""
+
+    def __init__(self, timestamp: object) -> None:
+        self.timestamp = timestamp
+
+
+def _stamped(timestamp: object) -> _StampedMessage:
+    return _StampedMessage(timestamp)
+
+
+def test_require_configured_secret_returns_stripped_value() -> None:
+    assert require_configured_secret("  s3cret  ", "WHATSAPP_APP_SECRET") == "s3cret"
+    assert require_configured_secret("token", "WEBEX_WEBHOOK_SECRET") == "token"
+
+
+def test_require_configured_secret_raises_503_when_unset() -> None:
+    for missing in (None, "", "   "):
+        with pytest.raises(HTTPException) as exc_info:
+            require_configured_secret(missing, "WHATSAPP_APP_SECRET")
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "WHATSAPP_APP_SECRET is required"
+
+
+def test_reject_stale_messages_passes_when_all_fresh() -> None:
+    now = time.time()
+    # No raise expected: both epoch-seconds timestamps are inside the window.
+    reject_stale_messages(
+        {"ignored": True},
+        lambda _payload: [_stamped(now), _stamped(now - 30)],
+        unit="seconds",
+    )
+
+
+def test_reject_stale_messages_no_op_when_no_messages() -> None:
+    # An empty extraction must never raise (e.g. status/delivery callbacks).
+    reject_stale_messages({}, lambda _payload: [], unit="seconds")
+
+
+def test_reject_stale_messages_raises_403_on_any_stale_message() -> None:
+    now = time.time()
+    with pytest.raises(HTTPException) as exc_info:
+        reject_stale_messages(
+            {},
+            lambda _payload: [_stamped(now), _stamped(now - 3600)],
+            unit="seconds",
+        )
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Stale webhook event"
+
+
+def test_reject_stale_messages_respects_timestamp_unit() -> None:
+    now_ms = time.time() * 1000.0
+    # The same millisecond value is fresh as milliseconds but reads as a
+    # far-future (stale) instant when interpreted as seconds.
+    reject_stale_messages({}, lambda _payload: [_stamped(now_ms)], unit="milliseconds")
+    with pytest.raises(HTTPException) as exc_info:
+        reject_stale_messages({}, lambda _payload: [_stamped(now_ms)], unit="seconds")
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Stale webhook event"
 
 
 def test_verify_meta_signature_accepts_matching_hmac() -> None:
@@ -168,8 +238,12 @@ def test_public_webhook_fire_derives_owner_from_matching_secret(
 
     manager = TriggerManager(tmp_path)
     assert response.status_code == 200
-    assert manager.get_trigger("owner", "sharedid").fire_count == 1
-    assert manager.get_trigger("attacker", "sharedid").fire_count == 0
+    owner_trigger = manager.get_trigger("owner", "sharedid")
+    attacker_trigger = manager.get_trigger("attacker", "sharedid")
+    assert owner_trigger is not None
+    assert attacker_trigger is not None
+    assert owner_trigger.fire_count == 1
+    assert attacker_trigger.fire_count == 0
 
 
 def test_invalid_bearer_token_does_not_fall_back_to_shared_secret(
