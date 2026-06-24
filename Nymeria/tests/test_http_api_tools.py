@@ -6,9 +6,12 @@ import json
 import asyncio
 
 import httpx
+import pytest
+from pydantic import ValidationError
 
 from nymeria.core.custom_tools import (
     execute_http_tool,
+    _create_pydantic_schema,
     _sync_execute_http,
     _sync_http_request,
     _extract_json_path,
@@ -17,7 +20,7 @@ from nymeria.core.custom_tools import (
 from nymeria.core.http_policy import HTTPPolicyConfig, evaluate_http_url
 from nymeria.tools import SEED_TOOLS, CATALOG_TOOLS
 from nymeria.tools.http_api import TOOL_VERSION, _api_discover_impl, _http_request_impl
-from nymeria.tools.definitions.custom_tool_schema import HTTPToolConfig
+from nymeria.tools.definitions.custom_tool_schema import HTTPToolConfig, ToolParameter
 from nymeria.tools.metadata import SecurityLevel, get_all_tool_metadata
 
 
@@ -826,3 +829,74 @@ def test_sync_http_request_interpolates_params_env_and_credentials(monkeypatch):
     assert call["target_type"] == "custom_http_tool"
     assert call["target_id"] == "tool-9"
     assert call["redact_values"] is not None
+
+
+# --- _create_pydantic_schema: declared enums are honored (slice 05 F8) ---
+
+
+def test_create_pydantic_schema_string_enum_constrains_and_advertises():
+    """A declared enum becomes a Literal: advertised to the model and enforced."""
+    model = _create_pydantic_schema(
+        "color_tool",
+        {
+            "shade": ToolParameter(
+                type="string",
+                required=True,
+                enum=["red", "green", "blue"],
+                description="A shade",
+            )
+        },
+    )
+
+    # Valid value passes; out-of-enum value is rejected.
+    assert model(shade="green").shade == "green"
+    with pytest.raises(ValidationError):
+        model(shade="purple")
+
+    # The allowed values surface in the JSON schema the model sees.
+    props = model.model_json_schema()["properties"]
+    assert props["shade"]["enum"] == ["red", "green", "blue"]
+
+
+def test_create_pydantic_schema_optional_enum_allows_omission_and_none():
+    """An optional enum field keeps its default/None path while enforcing membership."""
+    model = _create_pydantic_schema(
+        "mode_tool",
+        {
+            "mode": ToolParameter(
+                type="string",
+                required=False,
+                enum=["fast", "slow"],
+                default="fast",
+                description="Mode",
+            )
+        },
+    )
+
+    assert model().mode == "fast"  # default applied when omitted
+    assert model(mode=None).mode is None  # optional path preserved
+    assert model(mode="slow").mode == "slow"
+    with pytest.raises(ValidationError):
+        model(mode="warp")
+
+
+def test_create_pydantic_schema_without_enum_is_unconstrained():
+    """A param with no enum keeps the plain type map (regression guard)."""
+    model = _create_pydantic_schema(
+        "free_tool",
+        {"note": ToolParameter(type="string", required=True, description="Any text")},
+    )
+
+    assert model(note="anything at all").note == "anything at all"
+    assert "enum" not in model.model_json_schema()["properties"]["note"]
+
+
+def test_create_pydantic_schema_empty_enum_falls_back_to_plain_type():
+    """An empty enum list is falsy and is ignored rather than building an empty Literal."""
+    model = _create_pydantic_schema(
+        "empty_tool",
+        {"x": ToolParameter(type="string", required=True, enum=[], description="d")},
+    )
+
+    assert model(x="unconstrained").x == "unconstrained"
+    assert "enum" not in model.model_json_schema()["properties"]["x"]

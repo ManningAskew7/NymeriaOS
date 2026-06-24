@@ -18,7 +18,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, cast
 
 import httpx
 from langchain_core.tools import BaseTool, StructuredTool
@@ -603,18 +603,36 @@ def _create_pydantic_schema(tool_id: str, parameters: Dict[str, Any]) -> type:
     """
     from pydantic import Field, create_model
 
+    # Map JSON Schema types to Python types.
+    type_map = {
+        "string": str,
+        "integer": int,
+        "number": float,
+        "boolean": bool,
+        "array": list,
+        "object": dict,
+    }
+
     fields: dict[str, Any] = {}
     for name, param in parameters.items():
-        # Map JSON Schema types to Python types
-        type_map = {
-            "string": str,
-            "integer": int,
-            "number": float,
-            "boolean": bool,
-            "array": list,
-            "object": dict,
-        }
         python_type = type_map.get(param.type, str)
+
+        # Honor a declared enum by constraining the field to the allowed
+        # values (mirrors the MCP args-schema builder in mcp_servers.py), so
+        # custom tools both advertise the allowed values to the model and
+        # reject out-of-enum input. Falls back to the plain type if Literal
+        # construction fails (e.g. an unhashable value).
+        if param.enum:
+            try:
+                python_type = cast(Any, Literal)[tuple(param.enum)]
+            except Exception:
+                logger.debug(
+                    "Could not build a Literal for the enum on parameter %r of "
+                    "tool %r; falling back to the base type",
+                    name,
+                    tool_id,
+                    exc_info=True,
+                )
 
         # Create field with optional default
         if param.required:
