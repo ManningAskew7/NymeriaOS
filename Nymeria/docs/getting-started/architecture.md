@@ -828,7 +828,7 @@ Skills](./skills.md#slash-command-activation).
 | Worker kit | `nymeria/skills_bundled/goal-worker/SKILL.md` |
 | Supervisor kit | `nymeria/skills_bundled/goal-supervisor/SKILL.md` |
 | Orchestrator kit | `nymeria/skills_bundled/orchestrate/SKILL.md` |
-| Slash-command registration | `nymeria/core/command_service.py::_register_defaults` |
+| Slash-command registration | `nymeria/core/command_service.py::_register_defaults` (applies the `nymeria/core/registry_defaults.py` catalog) |
 | Slash-command activation helpers | `nymeria/core/command_service.py::activate_skill_kit` / `deactivate_skill_kit` |
 | Chat-stream intercept + supervisor spawn helper | `nymeria/api/routers/chat.py` |
 | `spawn_thread` modes (`branched`, `temporary`) | `nymeria/tools/spawn_thread.py` |
