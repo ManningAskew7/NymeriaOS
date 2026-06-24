@@ -1087,6 +1087,8 @@ class CommandBackendClient:
         recurrence: Optional[str] = None,
         thread_id: Optional[str] = None,
     ) -> dict:
+        from fastapi import HTTPException
+
         from ..api.routers.todos import (
             _get_todo_schedule_db,
             _parse_scheduled_for,
@@ -1106,10 +1108,12 @@ class CommandBackendClient:
                 _raise_http_status(400, str(exc))
         try:
             parsed_schedule = _parse_scheduled_for(scheduled_for)
-        except Exception as exc:  # noqa: BLE001
-            status = getattr(exc, "status_code", 400)
-            detail = getattr(exc, "detail", str(exc))
-            _raise_http_status(status, str(detail))
+        except HTTPException as exc:
+            # _parse_scheduled_for raises only HTTPException(400) on a bad
+            # schedule string; forward that as the user-facing status. Any other
+            # error is a genuine bug and propagates to the dispatcher's
+            # logger.exception handler instead of being masked as a 400.
+            _raise_http_status(exc.status_code, str(exc.detail))
         todo_thread_id = thread_id or f"default-{target_user_id}"
         with todo_manager.atomic_update(target_user_id) as todo_list:
             item = todo_list.add_item(
@@ -1129,6 +1133,8 @@ class CommandBackendClient:
         return _todo_to_response(created_item).model_dump(mode="json")
 
     async def complete_todo(self, user_id: str, todo_id: str) -> dict:
+        from fastapi import HTTPException
+
         from ..api.routers.todos import (
             _get_todo_schedule_db,
             _raise_if_todo_executing,
@@ -1147,8 +1153,12 @@ class CommandBackendClient:
             _raise_http_status(404, f"TODO '{todo_id}' not found")
         try:
             _raise_if_todo_executing(schedule_db, todo_id, target_user_id, settings)
-        except Exception as exc:  # noqa: BLE001
-            _raise_http_status(getattr(exc, "status_code", 409), str(getattr(exc, "detail", exc)))
+        except HTTPException as exc:
+            # _raise_if_todo_executing raises only HTTPException(409) when a
+            # scheduled run owns the TODO; forward that. A storage/operational
+            # error from is_execution_active is a genuine fault and propagates to
+            # the dispatcher's logger.exception handler rather than masking as 409.
+            _raise_http_status(exc.status_code, str(exc.detail))
         with todo_manager.atomic_update(target_user_id) as todo_list:
             item = todo_list.get_item(todo_id)
             if not item:
@@ -1181,6 +1191,8 @@ class CommandBackendClient:
             return _todo_to_response(item).model_dump(mode="json")
 
     async def delete_todo(self, user_id: str, todo_id: str) -> dict:
+        from fastapi import HTTPException
+
         from ..api.routers.todos import _get_todo_schedule_db, _raise_if_todo_executing
         from .todo_manager import TodoManager
 
@@ -1193,8 +1205,9 @@ class CommandBackendClient:
             _raise_http_status(404, f"TODO '{todo_id}' not found")
         try:
             _raise_if_todo_executing(schedule_db, todo_id, target_user_id, settings)
-        except Exception as exc:  # noqa: BLE001
-            _raise_http_status(getattr(exc, "status_code", 409), str(getattr(exc, "detail", exc)))
+        except HTTPException as exc:
+            # See complete_todo: forward the 409, let real faults propagate.
+            _raise_http_status(exc.status_code, str(exc.detail))
         with todo_manager.atomic_update(target_user_id) as todo_list:
             if not todo_list.get_item(todo_id):
                 _raise_http_status(404, f"TODO '{todo_id}' not found")

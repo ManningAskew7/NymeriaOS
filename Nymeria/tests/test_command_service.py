@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from cli_fixtures import run
+from nymeria.api.routers import todos as todos_router
 from nymeria.api.routers.commands import create_commands_router
 from nymeria.core.accounts import AuthenticatedUser
 from nymeria.core.command_service import (
@@ -15,7 +18,9 @@ from nymeria.core.command_service import (
     CommandContext,
     CommandHttpClient,
     CommandService,
+    _CommandBackendUser,
 )
+from nymeria.core.todo_manager import TodoManager
 
 
 class FakeCommandApi:
@@ -1087,3 +1092,145 @@ def test_commands_api_execute_returns_markdown_shape(monkeypatch: pytest.MonkeyP
         "data": None,
     }
     assert api.closed is False
+
+
+# ── Slice 03 F10: write-path excepts forward HTTPException, propagate real bugs ──
+#
+# CommandBackendClient.add_todo/complete_todo/delete_todo wrap router helpers
+# that raise only FastAPI HTTPException. Narrowed from a broad `except Exception`
+# so an intended 400/409 is still rendered cleanly (re-raised as
+# httpx.HTTPStatusError, which the dispatcher turns into a user message) while a
+# genuine bug or storage fault propagates to the dispatcher's logger.exception
+# handler instead of being masked as a misleading 400/409.
+
+
+def _todo_backend(api_client_builder, tmp_path):
+    settings = api_client_builder.settings(tmp_path)
+    user = _CommandBackendUser(id="owner", role="admin")
+    backend = CommandBackendClient(
+        SimpleNamespace(), user=user, settings_fn=lambda: settings
+    )
+    return backend, settings
+
+
+def _seed_todo(settings, user_id: str = "owner") -> str:
+    todo_manager = TodoManager(settings.data_dir)
+    with todo_manager.atomic_update(user_id) as todo_list:
+        item = todo_list.add_item(
+            "task",
+            scheduled_for=datetime.now(timezone.utc) + timedelta(minutes=5),
+            thread_id="t1",
+            created_by="user",
+        )
+    assert item is not None
+    return item.id
+
+
+def test_add_todo_forwards_httpexception_status(
+    api_client_builder, tmp_path, monkeypatch
+) -> None:
+    backend, _ = _todo_backend(api_client_builder, tmp_path)
+
+    def _bad_schedule(_value):
+        raise HTTPException(status_code=400, detail="bad schedule")
+
+    monkeypatch.setattr(todos_router, "_parse_scheduled_for", _bad_schedule)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(backend.add_todo("owner", "task", scheduled_for="nonsense"))
+    assert excinfo.value.response.status_code == 400
+    assert excinfo.value.response.json()["detail"] == "bad schedule"
+
+
+def test_add_todo_propagates_unexpected_error(
+    api_client_builder, tmp_path, monkeypatch
+) -> None:
+    backend, _ = _todo_backend(api_client_builder, tmp_path)
+
+    def _parser_bug(_value):
+        raise RuntimeError("parser blew up")
+
+    monkeypatch.setattr(todos_router, "_parse_scheduled_for", _parser_bug)
+
+    # Previously masked as httpx.HTTPStatusError(400); now surfaces as the real bug.
+    with pytest.raises(RuntimeError, match="parser blew up"):
+        run(backend.add_todo("owner", "task", scheduled_for="1d"))
+
+
+def test_add_todo_out_of_range_schedule_returns_clean_400(
+    api_client_builder, tmp_path
+) -> None:
+    # End-to-end (no monkeypatch): an out-of-range duration used to raise
+    # OverflowError out of _parse_scheduled_for, which the old broad except
+    # quietly turned into a 400 and the narrowed except would have leaked as a
+    # logged 500. The source fix in parse_scheduled_time keeps it a clean 400.
+    backend, _ = _todo_backend(api_client_builder, tmp_path)
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(backend.add_todo("owner", "task", scheduled_for="999999999999d"))
+    assert excinfo.value.response.status_code == 400
+    # The clean invalid-format message, not a leaked OverflowError string.
+    assert "Invalid scheduled_for format" in excinfo.value.response.json()["detail"]
+
+
+def test_complete_todo_forwards_httpexception_status(
+    api_client_builder, tmp_path, monkeypatch
+) -> None:
+    backend, settings = _todo_backend(api_client_builder, tmp_path)
+    todo_id = _seed_todo(settings)
+
+    def _executing(*_args, **_kwargs):
+        raise HTTPException(status_code=409, detail="currently executing")
+
+    monkeypatch.setattr(todos_router, "_raise_if_todo_executing", _executing)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(backend.complete_todo("owner", todo_id))
+    assert excinfo.value.response.status_code == 409
+    assert excinfo.value.response.json()["detail"] == "currently executing"
+
+
+def test_complete_todo_propagates_unexpected_error(
+    api_client_builder, tmp_path, monkeypatch
+) -> None:
+    backend, settings = _todo_backend(api_client_builder, tmp_path)
+    todo_id = _seed_todo(settings)
+
+    def _store_fault(*_args, **_kwargs):
+        raise RuntimeError("schedule db unavailable")
+
+    monkeypatch.setattr(todos_router, "_raise_if_todo_executing", _store_fault)
+
+    with pytest.raises(RuntimeError, match="schedule db unavailable"):
+        run(backend.complete_todo("owner", todo_id))
+
+
+def test_delete_todo_forwards_httpexception_status(
+    api_client_builder, tmp_path, monkeypatch
+) -> None:
+    backend, settings = _todo_backend(api_client_builder, tmp_path)
+    todo_id = _seed_todo(settings)
+
+    def _executing(*_args, **_kwargs):
+        raise HTTPException(status_code=409, detail="currently executing")
+
+    monkeypatch.setattr(todos_router, "_raise_if_todo_executing", _executing)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(backend.delete_todo("owner", todo_id))
+    assert excinfo.value.response.status_code == 409
+    assert excinfo.value.response.json()["detail"] == "currently executing"
+
+
+def test_delete_todo_propagates_unexpected_error(
+    api_client_builder, tmp_path, monkeypatch
+) -> None:
+    backend, settings = _todo_backend(api_client_builder, tmp_path)
+    todo_id = _seed_todo(settings)
+
+    def _store_fault(*_args, **_kwargs):
+        raise RuntimeError("schedule db unavailable")
+
+    monkeypatch.setattr(todos_router, "_raise_if_todo_executing", _store_fault)
+
+    with pytest.raises(RuntimeError, match="schedule db unavailable"):
+        run(backend.delete_todo("owner", todo_id))
