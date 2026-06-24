@@ -469,11 +469,31 @@ class AccountsRepo:
     # -- tokens ------------------------------------------------------------
 
     def issue_token(self, user_id: str, label: Optional[str] = None) -> str:
-        """Create a new token for ``user_id``. Returns the raw token once."""
-        if self.get_user_by_id(user_id) is None:
-            raise UserNotFound(user_id)
-        raw = generate_raw_token()
+        """Create a new token for ``user_id``. Returns the raw token once.
+
+        The user-existence check, active-token count, and insert run inside one
+        ``self._lock`` hold so a concurrent ``delete_user_cascade`` on the same
+        ``AccountsRepo`` instance (which takes the same lock) cannot delete the
+        user between the check and the insert. The existence query is inlined
+        rather than calling the lock-acquiring ``get_user_by_id`` because
+        ``self._lock`` is non-reentrant.
+
+        ``self._lock`` only serializes a single instance, so a cross-process
+        delete (the ``nymeria users`` CLI has direct repo access alongside the
+        API) can still drop the user between the check and the insert and trip
+        the ``ON DELETE CASCADE`` FK, enforced immediately under
+        ``PRAGMA foreign_keys = ON``. The insert converts that ``IntegrityError``
+        into a clean ``UserNotFound`` when the user has vanished, so callers
+        never see a raw integrity error from this race.
+        """
         with self._lock, self._connect() as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM users WHERE id = ?", (user_id,)
+                ).fetchone()
+                is None
+            ):
+                raise UserNotFound(user_id)
             self._revoke_expired_tokens_locked(conn, user_id=user_id)
             active = conn.execute(
                 "SELECT COUNT(*) AS n FROM user_tokens "
@@ -485,20 +505,35 @@ class AccountsRepo:
                     f"User {user_id} already has the maximum "
                     f"{self.max_active_tokens_per_user} active token(s)"
                 )
+            raw = generate_raw_token()
             created_at = _now()
-            conn.execute(
-                "INSERT INTO user_tokens "
-                "(token_hash, user_id, label, created_at, expires_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    _hash_token(raw),
-                    user_id,
-                    label,
-                    created_at,
-                    self._expiry_for_label(label, created_at=created_at),
-                ),
-            )
-            conn.commit()
+            try:
+                conn.execute(
+                    "INSERT INTO user_tokens "
+                    "(token_hash, user_id, label, created_at, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        _hash_token(raw),
+                        user_id,
+                        label,
+                        created_at,
+                        self._expiry_for_label(label, created_at=created_at),
+                    ),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                # A cross-process delete can drop the user between the check
+                # above and this insert (self._lock only serializes one
+                # instance), tripping the user_id FK. Surface the clean
+                # UserNotFound when the user is gone; re-raise anything else.
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM users WHERE id = ?", (user_id,)
+                    ).fetchone()
+                    is None
+                ):
+                    raise UserNotFound(user_id) from None
+                raise
         return raw
 
     def _expiry_for_label(self, label: Optional[str], *, created_at: str) -> str:
