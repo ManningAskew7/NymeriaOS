@@ -402,3 +402,134 @@ def test_google_workspace_tool_schemas_hide_runtime_config():
     assert "config" not in google_drive_upload_text_file.args_schema.model_json_schema()["properties"]
     assert "config" not in google_slides_create_presentation.args_schema.model_json_schema()["properties"]
     assert "config" not in google_chat_send_message.args_schema.model_json_schema()["properties"]
+
+
+# ---------------------------------------------------------------------------
+# F3: shared _workspace_tool decorator + _render helper (boilerplate dedup)
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_tool_decorator_passes_through_success():
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    @tools._workspace_tool("Some label")
+    def f(x):
+        """Sample tool."""
+        return f"ok:{x}"
+
+    # functools.wraps preserves the LLM-visible contract carriers (name +
+    # docstring), which is what LangChain @tool reads to build the schema.
+    assert f("hi") == "ok:hi"
+    assert f.__name__ == "f"
+    assert f.__doc__ == "Sample tool."
+
+
+def test_workspace_tool_decorator_catches_and_labels(caplog):
+    import logging
+
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    @tools._workspace_tool("My API label")
+    def boom():
+        raise ValueError("kaboom")
+
+    with caplog.at_level(logging.ERROR, logger=tools.logger.name):
+        result = boom()
+
+    # Exact per-tool error string preserved: "[Error]: <api_label>: {e}".
+    assert result == "[Error]: My API label: kaboom"
+    # Log line is "<fn.__name__> failed", byte-identical to the old per-tool form.
+    assert any(record.getMessage() == "boom failed" for record in caplog.records)
+    assert any(record.exc_info for record in caplog.records)
+
+
+def test_render_plain_success_dumps_result():
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    assert json.loads(tools._render(True, {"a": 1})) == {"a": 1}
+
+
+def test_render_error_branch_formats_result():
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    assert tools._render(False, "boom message") == "[Error]: boom message"
+
+
+def test_render_list_key_unwraps_named_list():
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    out = tools._render(True, {"items": [1, 2], "etag": "x"}, list_key="items")
+    assert json.loads(out) == [1, 2]
+
+
+def test_render_list_key_missing_returns_whole_dict():
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    # result.get(list_key, result) falls back to the whole dict when absent,
+    # matching the original inline idiom.
+    payload = {"nextPageToken": "p"}
+    assert json.loads(tools._render(True, payload, list_key="items")) == payload
+
+
+def test_render_list_key_non_dict_passthrough():
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    # success + non-dict result: the unwrap is skipped, result dumped as-is.
+    assert json.loads(tools._render(True, [1, 2, 3], list_key="items")) == [1, 2, 3]
+
+
+def test_google_tasks_list_tasklists_unwraps_items(monkeypatch):
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    class TaskListsResource:
+        def list(self, **kwargs):
+            return _Executable({"items": [{"id": "l1"}, {"id": "l2"}], "etag": "e"})
+
+    class TasksService:
+        def tasklists(self):
+            return TaskListsResource()
+
+    _patch_google_request(monkeypatch, TasksService())
+
+    result = json.loads(
+        tools.google_tasks_list_tasklists.func(config={"configurable": {"user_id": "alice"}})
+    )
+
+    assert result == [{"id": "l1"}, {"id": "l2"}]
+
+
+def test_google_workspace_tool_failsoft_on_unexpected_exception(monkeypatch):
+    # An exception raised inside the tool body (here, the request helper itself)
+    # must be caught by the shared decorator and returned as the tool's own
+    # labeled "[Error]: ..." string, preserving the fail-soft contract.
+    from nymeria.tools import google_workspace_service_integrations as tools
+
+    def boom_request(*args, **kwargs):
+        raise RuntimeError("network exploded")
+
+    monkeypatch.setattr(tools.auth_utils, "google_api_request", boom_request)
+
+    result = tools.google_drive_get_file.func(
+        file_id="f1",
+        config={"configurable": {"user_id": "alice"}},
+    )
+
+    assert result == "[Error]: Google Drive metadata lookup failed: network exploded"
+
+
+def test_all_workspace_tools_preserve_schema_contract():
+    from langchain_core.tools import BaseTool
+
+    from nymeria.tools.google_workspace_service_integrations import (
+        GOOGLE_WORKSPACE_SERVICE_TOOLS,
+    )
+
+    # The decorator wraps every tool; confirm the whole set still exposes a
+    # valid LangChain tool with the runtime config hidden from the LLM schema.
+    assert len(GOOGLE_WORKSPACE_SERVICE_TOOLS) == 34
+    for tool_obj in GOOGLE_WORKSPACE_SERVICE_TOOLS:
+        assert isinstance(tool_obj, BaseTool)
+        assert tool_obj.name.startswith("google_")
+        assert tool_obj.description  # docstring survived functools.wraps
+        props = tool_obj.args_schema.model_json_schema().get("properties", {})
+        assert "config" not in props
