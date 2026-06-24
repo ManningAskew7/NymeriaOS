@@ -14,7 +14,7 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Dict, Iterator, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -341,6 +341,12 @@ class ThreadConfigManager:
     def __init__(self, data_dir: Path):
         self.configs_dir = data_dir / "thread_configs"
         self.configs_dir.mkdir(parents=True, exist_ok=True)
+        # Parsed-config-dict cache for the callable-thread scan paths only
+        # (list_callable_threads / get_callable_thread_by_name); get_config
+        # stays uncached as the read-modify-write accessor. Keyed by sanitized
+        # filename -> ((st_mtime_ns, st_size), data). Cached dicts are treated
+        # as immutable; see _load_scan_config_data for the invariants.
+        self._callable_scan_cache: Dict[str, tuple[tuple[int, int], dict]] = {}
         logger.info(f"ThreadConfigManager initialized: {self.configs_dir}")
 
     def _get_lock(self, thread_id: str) -> threading.RLock:
@@ -380,6 +386,12 @@ class ThreadConfigManager:
                 with open(temp_path, "w", encoding="utf-8") as f:
                     json.dump(config.model_dump(mode="json"), f, indent=2, default=str)
                 temp_path.replace(config_path)
+                # Drop this file's callable-scan cache entry so the next scan
+                # re-reads. The mtime/size cache key is the source of truth for
+                # freshness; this pop is a fast-path invalidation (fully
+                # serialized with the scan when a thread_id equals its sanitized
+                # stem, the common case).
+                self._callable_scan_cache.pop(config_path.name, None)
                 logger.debug(f"Saved thread config for {config.thread_id}")
                 return True
             except Exception as e:
@@ -395,6 +407,7 @@ class ThreadConfigManager:
             if config_path.exists():
                 try:
                     config_path.unlink()
+                    self._callable_scan_cache.pop(config_path.name, None)
                     logger.info(f"Deleted thread config for {thread_id}")
                     return True
                 except Exception as e:
@@ -410,6 +423,92 @@ class ThreadConfigManager:
                 if path.is_file() and path.suffix == ".json":
                     result.append(path.stem)
         return sorted(result)
+
+    def _load_scan_config_data(self, stem: str) -> Optional[dict]:
+        """Locked, mtime-memoized read of a config file's parsed JSON dict.
+
+        Used ONLY by the callable-thread scan paths below, not by
+        ``get_config``. Returns the cached dict for the current on-disk version
+        of the file; the dict is treated as immutable and callers must validate
+        a fresh ``ThreadConfig`` from a COPY of it (the model's
+        ``_migrate_legacy_fields`` before-validator mutates its input). Returns
+        ``None`` if the file is missing, unreadable, or not a JSON object.
+
+        The cache avoids the repeated open+read+parse of unchanged configs on
+        the per-turn scan path. It is keyed by file identity and
+        ``(st_mtime_ns, st_size)``, which is the source of truth for freshness:
+        a save (atomic temp+replace) or any out-of-band edit changes the key and
+        is picked up on the next read. ``save_config`` / ``delete_config`` also
+        pop the entry as a fast-path invalidation (fully serialized with the
+        scan when a thread_id equals its sanitized stem, the common case).
+        """
+        config_path = self._get_config_path(stem)
+        cache_key = config_path.name
+        try:
+            st = config_path.stat()
+        except OSError:
+            self._callable_scan_cache.pop(cache_key, None)
+            return None
+        sig = (st.st_mtime_ns, st.st_size)
+        cached = self._callable_scan_cache.get(cache_key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+        lock = self._get_lock(stem)
+        with lock:
+            # Re-check under the lock: another thread may have refreshed the
+            # entry. For a thread_id equal to its sanitized stem, in-process
+            # writers also take this lock, closing the read/write window; the
+            # mtime/size key covers any other case.
+            try:
+                st = config_path.stat()
+            except OSError:
+                self._callable_scan_cache.pop(cache_key, None)
+                return None
+            sig = (st.st_mtime_ns, st.st_size)
+            cached = self._callable_scan_cache.get(cache_key)
+            if cached is not None and cached[0] == sig:
+                return cached[1]
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                self._callable_scan_cache.pop(cache_key, None)
+                return None
+            except Exception as e:
+                logger.error(f"Failed to load thread config for {stem}: {e}")
+                return None
+            if not isinstance(data, dict):
+                logger.error(f"Failed to load thread config for {stem}: not a JSON object")
+                return None
+            self._callable_scan_cache[cache_key] = (sig, data)
+            return data
+
+    def _iter_callable_configs(
+        self,
+        owned_thread_ids: Optional[set] = None,
+    ) -> Iterator[ThreadConfig]:
+        """Yield callable ThreadConfigs, validating only configs that could be
+        callable. Shared by ``list_callable_threads`` (materializes) and
+        ``get_callable_thread_by_name`` (short-circuits via ``next``)."""
+        for stem in self.list_configured_threads():
+            data = self._load_scan_config_data(stem)
+            # Cost pre-filter: only validate configs that could be callable.
+            # Must include the legacy ``is_agent`` alias that
+            # ``ThreadConfig._migrate_legacy_fields`` maps to ``callable``; the
+            # post-validate ``tc.callable`` check below is authoritative.
+            if not data or not (data.get("callable") or data.get("is_agent")):
+                continue
+            try:
+                # Copy first: the model's before-validator mutates its input.
+                tc = ThreadConfig.model_validate(dict(data))
+            except Exception as e:
+                logger.error(f"Failed to load thread config for {stem}: {e}")
+                continue
+            if not tc.callable:
+                continue
+            if owned_thread_ids is not None and tc.thread_id not in owned_thread_ids:
+                continue
+            yield tc
 
     def list_callable_threads(
         self,
@@ -430,15 +529,7 @@ class ThreadConfigManager:
         filter on the loaded ``tc.thread_id`` — otherwise callable_names with
         spaces or punctuation would be silently excluded.
         """
-        result = []
-        for stem in self.list_configured_threads():
-            tc = self.get_config(stem)
-            if not (tc and tc.callable):
-                continue
-            if owned_thread_ids is not None and tc.thread_id not in owned_thread_ids:
-                continue
-            result.append(tc)
-        return result
+        return list(self._iter_callable_configs(owned_thread_ids=owned_thread_ids))
 
     def get_callable_thread_by_name(
         self,
@@ -451,7 +542,11 @@ class ThreadConfigManager:
         callable threads — used for rename-collision checks so two users can
         each have a callable named "Helper" without conflict.
         """
-        for tc in self.list_callable_threads(owned_thread_ids=owned_thread_ids):
-            if tc.callable_name == name:
-                return tc
-        return None
+        return next(
+            (
+                tc
+                for tc in self._iter_callable_configs(owned_thread_ids=owned_thread_ids)
+                if tc.callable_name == name
+            ),
+            None,
+        )
