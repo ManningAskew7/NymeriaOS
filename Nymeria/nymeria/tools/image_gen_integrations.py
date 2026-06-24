@@ -21,6 +21,7 @@ policy via ``download_image_bytes``. ``tools/__init__.py`` folds
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import time
@@ -82,6 +83,43 @@ _FAL_IMAGE_SIZES = {
 
 
 # --- Shared helpers ----------------------------------------------------------
+_ImageToolFn = Callable[..., tuple[str, dict[str, Any]]]
+
+
+def _image_gen_tool(fn: _ImageToolFn) -> _ImageToolFn:
+    """Wrap an ``image_gen_*`` body in the shared prompt-guard + fail-soft envelope.
+
+    Centralizes the two byte-identical halves every provider tool repeated: the
+    empty-prompt guard (``return "[Error]: prompt is required.", {}``) and the
+    broad fail-soft ``[Error]: <tool> failed: {exc}`` envelope, where ``<tool>``
+    is ``fn.__name__`` (matching each former literal). Must sit directly UNDER
+    ``@tool`` (innermost decorator) so LangChain reads the wrapped function's
+    signature; ``functools.wraps`` carries ``__name__``/``__doc__``/
+    ``__wrapped__`` so each tool's name, description, and args schema are
+    unchanged. The broad ``except Exception`` is deliberate (fail-soft: the agent
+    always receives a ``(str, dict)`` tuple, never an unhandled raise). The
+    wrapped body receives the already-stripped ``prompt``. Each tool keeps its
+    per-provider key resolution, request body, and ``finalize_image`` call inline
+    (so the ``monkeypatch.setattr(igi, "_get_*_image_api_key", ...)`` test seam
+    still resolves by module-global name at call time); the envelope therefore
+    also covers key resolution, so a vault/settings lookup that raises now
+    fail-softs to ``[Error]`` like the rest of the body instead of propagating.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(prompt: str, *args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return "[Error]: prompt is required.", {}
+        try:
+            return fn(prompt, *args, **kwargs)
+        except Exception as exc:
+            logger.exception("%s failed", fn.__name__)
+            return f"[Error]: {fn.__name__} failed: {exc}", {}
+
+    return wrapper
+
+
 def _missing_key_error(label: str, provider: str, tool_name: str, env_var: str) -> str:
     return (
         f"[Error]: No {label} credential found. Set {env_var} or call "
@@ -150,6 +188,7 @@ def _get_openai_image_api_key(config: Optional[RunnableConfig] = None) -> Option
 
 
 @tool(response_format="content_and_artifact")
+@_image_gen_tool
 def image_gen_openai(
     prompt: str,
     size: Optional[str] = None,
@@ -180,10 +219,6 @@ def image_gen_openai(
     Returns:
         A summary with the generated image attached, or "[Error]: <reason>".
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return "[Error]: prompt is required.", {}
-
     api_key = _get_openai_image_api_key(config)
     if not api_key:
         return _missing_key_error("OpenAI", "openai", "image_gen_openai", "OPENAI_API_KEY"), {}
@@ -195,20 +230,16 @@ def image_gen_openai(
         "openai_output_format": output_format,
         "openai_moderation": "auto",
     }
-    try:
-        raw, mime_type, used_model = _generate_openai(prompt, cfg, api_key=api_key)
-        return finalize_image(
-            raw=raw,
-            mime_type=mime_type,
-            provider="openai",
-            model=used_model,
-            prompt=prompt,
-            output_name=output_name,
-            config=config,
-        )
-    except Exception as exc:
-        logger.exception("image_gen_openai failed")
-        return f"[Error]: image_gen_openai failed: {exc}", {}
+    raw, mime_type, used_model = _generate_openai(prompt, cfg, api_key=api_key)
+    return finalize_image(
+        raw=raw,
+        mime_type=mime_type,
+        provider="openai",
+        model=used_model,
+        prompt=prompt,
+        output_name=output_name,
+        config=config,
+    )
 
 
 # --- Gemini ------------------------------------------------------------------
@@ -222,6 +253,7 @@ def _get_gemini_image_api_key(config: Optional[RunnableConfig] = None) -> Option
 
 
 @tool(response_format="content_and_artifact")
+@_image_gen_tool
 def image_gen_gemini(
     prompt: str,
     aspect_ratio: Optional[str] = None,
@@ -251,10 +283,6 @@ def image_gen_gemini(
     Returns:
         A summary with the generated image attached, or "[Error]: <reason>".
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return "[Error]: prompt is required.", {}
-
     api_key = _get_gemini_image_api_key(config)
     if not api_key:
         return _missing_key_error("Gemini", "gemini", "image_gen_gemini", "GEMINI_API_KEY"), {}
@@ -264,20 +292,16 @@ def image_gen_gemini(
         "gemini_aspect_ratio": aspect_ratio,
         "gemini_image_size": image_size,
     }
-    try:
-        raw, mime_type, used_model = _generate_gemini(prompt, cfg, api_key=api_key)
-        return finalize_image(
-            raw=raw,
-            mime_type=mime_type,
-            provider="gemini",
-            model=used_model,
-            prompt=prompt,
-            output_name=output_name,
-            config=config,
-        )
-    except Exception as exc:
-        logger.exception("image_gen_gemini failed")
-        return f"[Error]: image_gen_gemini failed: {exc}", {}
+    raw, mime_type, used_model = _generate_gemini(prompt, cfg, api_key=api_key)
+    return finalize_image(
+        raw=raw,
+        mime_type=mime_type,
+        provider="gemini",
+        model=used_model,
+        prompt=prompt,
+        output_name=output_name,
+        config=config,
+    )
 
 
 # --- Black Forest Labs FLUX --------------------------------------------------
@@ -291,6 +315,7 @@ def _get_bfl_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
 
 
 @tool(response_format="content_and_artifact")
+@_image_gen_tool
 def image_gen_flux(
     prompt: str,
     aspect_ratio: Optional[str] = None,
@@ -317,10 +342,6 @@ def image_gen_flux(
     Returns:
         A summary with the generated image attached, or "[Error]: <reason>".
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return "[Error]: prompt is required.", {}
-
     api_key = _get_bfl_api_key(config)
     if not api_key:
         return _missing_key_error("Black Forest Labs", "bfl", "image_gen_flux", "BFL_API_KEY"), {}
@@ -341,39 +362,35 @@ def image_gen_flux(
             raise RuntimeError(f"FLUX job {status}: {data.get('details') or ''}".strip())
         return status == "Ready"
 
-    try:
-        import httpx
+    import httpx
 
-        with httpx.Client(timeout=60.0) as client:
-            submit = client.post(
-                f"{_BFL_BASE_URL}/{endpoint_slug}", headers=submit_headers, json=payload
-            )
-            submit.raise_for_status()
-            submitted = submit.json()
-            polling_url = submitted.get("polling_url")
-            if not polling_url:
-                job_id = submitted.get("id")
-                if not job_id:
-                    return "[Error]: image_gen_flux returned no polling URL or job id.", {}
-                polling_url = f"{_BFL_BASE_URL}/get_result?id={job_id}"
-            result = _poll_json(client, polling_url, headers=poll_headers, is_done=_is_ready)
-
-        sample_url = ((result or {}).get("result") or {}).get("sample")
-        if not sample_url:
-            return "[Error]: image_gen_flux returned no image URL.", {}
-        raw, mime_type = download_image_bytes(sample_url)
-        return finalize_image(
-            raw=raw,
-            mime_type=mime_type,
-            provider="bfl",
-            model=model_key,
-            prompt=prompt,
-            output_name=output_name,
-            config=config,
+    with httpx.Client(timeout=60.0) as client:
+        submit = client.post(
+            f"{_BFL_BASE_URL}/{endpoint_slug}", headers=submit_headers, json=payload
         )
-    except Exception as exc:
-        logger.exception("image_gen_flux failed")
-        return f"[Error]: image_gen_flux failed: {exc}", {}
+        submit.raise_for_status()
+        submitted = submit.json()
+        polling_url = submitted.get("polling_url")
+        if not polling_url:
+            job_id = submitted.get("id")
+            if not job_id:
+                return "[Error]: image_gen_flux returned no polling URL or job id.", {}
+            polling_url = f"{_BFL_BASE_URL}/get_result?id={job_id}"
+        result = _poll_json(client, polling_url, headers=poll_headers, is_done=_is_ready)
+
+    sample_url = ((result or {}).get("result") or {}).get("sample")
+    if not sample_url:
+        return "[Error]: image_gen_flux returned no image URL.", {}
+    raw, mime_type = download_image_bytes(sample_url)
+    return finalize_image(
+        raw=raw,
+        mime_type=mime_type,
+        provider="bfl",
+        model=model_key,
+        prompt=prompt,
+        output_name=output_name,
+        config=config,
+    )
 
 
 # --- Replicate ---------------------------------------------------------------
@@ -391,6 +408,7 @@ def _get_replicate_api_key(config: Optional[RunnableConfig] = None) -> Optional[
 
 
 @tool(response_format="content_and_artifact")
+@_image_gen_tool
 def image_gen_replicate(
     prompt: str,
     aspect_ratio: Optional[str] = None,
@@ -418,10 +436,6 @@ def image_gen_replicate(
     Returns:
         A summary with the generated image attached, or "[Error]: <reason>".
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return "[Error]: prompt is required.", {}
-
     api_key = _get_replicate_api_key(config)
     if not api_key:
         return _missing_key_error("Replicate", "replicate", "image_gen_replicate", "REPLICATE_API_KEY"), {}
@@ -451,50 +465,46 @@ def image_gen_replicate(
             raise RuntimeError(f"Replicate prediction {status}: {data.get('error') or ''}".strip())
         return status == "succeeded"
 
-    try:
-        import httpx
+    import httpx
 
-        with httpx.Client(timeout=120.0) as client:
-            submit = client.post(
-                f"{_REPLICATE_BASE_URL}/models/{slug}/predictions",
-                headers=submit_headers,
-                json=payload,
-            )
-            submit.raise_for_status()
-            data = submit.json()
-            if data.get("status") != "succeeded":
-                get_url = (data.get("urls") or {}).get("get")
-                if not get_url:
-                    return "[Error]: image_gen_replicate returned no polling URL.", {}
-                data = _poll_json(
-                    client,
-                    get_url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    is_done=_is_done,
-                )
-
-        output = data.get("output")
-        if isinstance(output, list):
-            image_url = output[0] if output else None
-        elif isinstance(output, str):
-            image_url = output
-        else:
-            image_url = None
-        if not image_url:
-            return "[Error]: image_gen_replicate returned no image.", {}
-        raw, mime_type = download_image_bytes(image_url)
-        return finalize_image(
-            raw=raw,
-            mime_type=mime_type,
-            provider="replicate",
-            model=model_key,
-            prompt=prompt,
-            output_name=output_name,
-            config=config,
+    with httpx.Client(timeout=120.0) as client:
+        submit = client.post(
+            f"{_REPLICATE_BASE_URL}/models/{slug}/predictions",
+            headers=submit_headers,
+            json=payload,
         )
-    except Exception as exc:
-        logger.exception("image_gen_replicate failed")
-        return f"[Error]: image_gen_replicate failed: {exc}", {}
+        submit.raise_for_status()
+        data = submit.json()
+        if data.get("status") != "succeeded":
+            get_url = (data.get("urls") or {}).get("get")
+            if not get_url:
+                return "[Error]: image_gen_replicate returned no polling URL.", {}
+            data = _poll_json(
+                client,
+                get_url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                is_done=_is_done,
+            )
+
+    output = data.get("output")
+    if isinstance(output, list):
+        image_url = output[0] if output else None
+    elif isinstance(output, str):
+        image_url = output
+    else:
+        image_url = None
+    if not image_url:
+        return "[Error]: image_gen_replicate returned no image.", {}
+    raw, mime_type = download_image_bytes(image_url)
+    return finalize_image(
+        raw=raw,
+        mime_type=mime_type,
+        provider="replicate",
+        model=model_key,
+        prompt=prompt,
+        output_name=output_name,
+        config=config,
+    )
 
 
 # --- fal.ai ------------------------------------------------------------------
@@ -512,6 +522,7 @@ def _get_fal_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
 
 
 @tool(response_format="content_and_artifact")
+@_image_gen_tool
 def image_gen_fal(
     prompt: str,
     image_size: Optional[str] = None,
@@ -538,10 +549,6 @@ def image_gen_fal(
     Returns:
         A summary with the generated image attached, or "[Error]: <reason>".
     """
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return "[Error]: prompt is required.", {}
-
     api_key = _get_fal_api_key(config)
     if not api_key:
         return _missing_key_error("fal.ai", "fal", "image_gen_fal", "FAL_API_KEY"), {}
@@ -555,32 +562,28 @@ def image_gen_fal(
 
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
 
-    try:
-        import httpx
+    import httpx
 
-        with httpx.Client(timeout=120.0) as client:
-            response = client.post(f"{_FAL_BASE_URL}/{slug}", headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(f"{_FAL_BASE_URL}/{slug}", headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
 
-        images = data.get("images") or []
-        first = images[0] if images and isinstance(images[0], dict) else {}
-        image_url = first.get("url")
-        if not image_url:
-            return "[Error]: image_gen_fal returned no image.", {}
-        raw, mime_type = download_image_bytes(image_url)
-        return finalize_image(
-            raw=raw,
-            mime_type=mime_type,
-            provider="fal",
-            model=model_key,
-            prompt=prompt,
-            output_name=output_name,
-            config=config,
-        )
-    except Exception as exc:
-        logger.exception("image_gen_fal failed")
-        return f"[Error]: image_gen_fal failed: {exc}", {}
+    images = data.get("images") or []
+    first = images[0] if images and isinstance(images[0], dict) else {}
+    image_url = first.get("url")
+    if not image_url:
+        return "[Error]: image_gen_fal returned no image.", {}
+    raw, mime_type = download_image_bytes(image_url)
+    return finalize_image(
+        raw=raw,
+        mime_type=mime_type,
+        provider="fal",
+        model=model_key,
+        prompt=prompt,
+        output_name=output_name,
+        config=config,
+    )
 
 
 # Opt-in per-provider image generation tools. tools/__init__.py folds this into

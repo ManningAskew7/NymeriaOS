@@ -236,3 +236,105 @@ def test_image_generate_tool_retired():
     from nymeria.tools import CATALOG_TOOLS
 
     assert "image_generate" not in CATALOG_TOOLS
+
+
+# --- Shared _image_gen_tool envelope decorator -------------------------------
+def test_image_gen_tool_passes_through_body_result():
+    @igi._image_gen_tool
+    def body(prompt, *args, **kwargs):
+        return f"ok:{prompt}", {"args": args, "kwargs": kwargs}
+
+    # The decorator strips the prompt and forwards positional + keyword args
+    # verbatim to the wrapped body.
+    assert body("  hello  ", "pos", config=None) == (
+        "ok:hello",
+        {"args": ("pos",), "kwargs": {"config": None}},
+    )
+
+
+def test_image_gen_tool_empty_prompt_guard_short_circuits():
+    calls = []
+
+    @igi._image_gen_tool
+    def body(prompt, **kwargs):
+        calls.append(prompt)
+        return "should not run", {}
+
+    assert body("   ", config=None) == ("[Error]: prompt is required.", {})
+    assert body(None, config=None) == ("[Error]: prompt is required.", {})
+    # The wrapped body must never run when the prompt is empty/whitespace.
+    assert calls == []
+
+
+def test_image_gen_tool_failsoft_envelope_uses_function_name(caplog):
+    import logging
+
+    @igi._image_gen_tool
+    def image_gen_demo(prompt, **kwargs):
+        raise RuntimeError("kaboom")
+
+    with caplog.at_level(logging.ERROR, logger=igi.logger.name):
+        content, artifact = image_gen_demo("x", config=None)
+
+    assert content == "[Error]: image_gen_demo failed: kaboom"
+    assert artifact == {}
+    # logger.exception renders "<name> failed" at ERROR with the traceback.
+    assert "image_gen_demo failed" in caplog.text
+
+
+_TOOL_NAMES = [
+    "image_gen_openai",
+    "image_gen_gemini",
+    "image_gen_flux",
+    "image_gen_replicate",
+    "image_gen_fal",
+]
+
+_EXPECTED_PROPS = {
+    "image_gen_openai": {"prompt", "size", "quality", "output_format", "model", "output_name"},
+    "image_gen_gemini": {"prompt", "aspect_ratio", "image_size", "model", "output_name"},
+    "image_gen_flux": {"prompt", "aspect_ratio", "model", "seed", "output_name"},
+    "image_gen_replicate": {"prompt", "aspect_ratio", "model", "seed", "output_name"},
+    "image_gen_fal": {"prompt", "image_size", "model", "seed", "output_name"},
+}
+
+
+@pytest.mark.parametrize("tool_name", _TOOL_NAMES)
+def test_empty_prompt_guard_wired_into_every_tool(tool_name):
+    # An empty prompt must short-circuit before any credential resolution, so
+    # this needs no key monkeypatch; a fall-through would surface a *different*
+    # missing-key error instead.
+    tool = getattr(igi, tool_name)
+    content, artifact = tool.func(prompt="   ", config=_CONFIG)
+    assert content == "[Error]: prompt is required."
+    assert artifact == {}
+
+
+@pytest.mark.parametrize("tool_name", _TOOL_NAMES)
+def test_tool_schema_unchanged_by_decorator(tool_name):
+    # Stacking the functools.wraps decorator under @tool must leave the
+    # agent-facing contract (name, args schema, hidden InjectedToolArg, response
+    # format) byte-for-shape identical.
+    tool = getattr(igi, tool_name)
+    schema = tool.args_schema.model_json_schema()
+    assert set(schema["properties"]) == _EXPECTED_PROPS[tool_name]
+    assert schema["required"] == ["prompt"]
+    assert "config" not in schema["properties"]
+    assert tool.name == tool_name
+    assert tool.response_format == "content_and_artifact"
+
+
+def test_failsoft_envelope_wired_into_synchronous_producer_path(monkeypatch):
+    # The flux timeout test covers the poll path; this covers the
+    # synchronous-producer path end to end through openai (gemini shares it).
+    monkeypatch.setattr(igi, "_get_openai_image_api_key", lambda config=None: "k")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(igi, "_generate_openai", boom)
+
+    content, artifact = igi.image_gen_openai.func(prompt="a cat", config=_CONFIG)
+
+    assert content == "[Error]: image_gen_openai failed: provider exploded"
+    assert artifact == {}
