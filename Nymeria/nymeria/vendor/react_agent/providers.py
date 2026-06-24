@@ -726,6 +726,80 @@ def _convert_responses_chunk_to_generation_chunk_compat(
         raise
 
 
+def _process_responses_stream_chunk(
+    chunk: Any,
+    current_index: int,
+    current_output_index: int,
+    current_sub_index: int,
+    *,
+    is_openrouter: bool,
+    schema: Any | None,
+    metadata: dict[str, Any],
+    has_reasoning: bool,
+    output_version: str | None,
+) -> tuple[int, int, int, Any | None]:
+    """Convert one Responses stream chunk to a generation chunk.
+
+    Pure transform shared by the sync (`_stream_responses`) and async
+    (`_astream_responses`) Responses stream shells: tries the OpenRouter
+    fallback converter, then the LangChain-compat converter, threading the
+    running output-index state. Returns the updated (current_index,
+    current_output_index, current_sub_index, generation_chunk), with
+    generation_chunk None when the chunk produces no output.
+    """
+    generation_chunk = None
+    event_type = _openrouter_event_value(chunk, "type")
+    if is_openrouter and event_type in _OPENROUTER_RESPONSES_FALLBACK_EVENTS:
+        (
+            current_index,
+            current_output_index,
+            current_sub_index,
+            generation_chunk,
+        ) = _convert_openrouter_responses_chunk_to_generation_chunk(
+            chunk,
+            current_index,
+            current_output_index,
+            current_sub_index,
+            metadata=metadata,
+        )
+
+    if generation_chunk is None:
+        try:
+            (
+                current_index,
+                current_output_index,
+                current_sub_index,
+                generation_chunk,
+            ) = _convert_responses_chunk_to_generation_chunk_compat(
+                chunk,
+                current_index,
+                current_output_index,
+                current_sub_index,
+                schema=schema,
+                metadata=metadata,
+                has_reasoning=has_reasoning,
+                output_version=output_version,
+            )
+        except (AttributeError, KeyError, TypeError):
+            if not is_openrouter:
+                raise
+            generation_chunk = None
+
+    return current_index, current_output_index, current_sub_index, generation_chunk
+
+
+def _responses_chunk_indicates_reasoning(generation_chunk: Any) -> bool:
+    """True when a streamed generation chunk carries reasoning content."""
+    chunk_content = generation_chunk.message.content
+    return "reasoning" in generation_chunk.message.additional_kwargs or (
+        isinstance(chunk_content, list)
+        and any(
+            isinstance(block, dict) and block.get("type") == "reasoning"
+            for block in chunk_content
+        )
+    )
+
+
 def _extract_reasoning_text_from_reasoning_details(details: Any) -> str:
     """Extract displayable plaintext from OpenRouter reasoning_details blocks."""
     parts: list[str] = []
@@ -1118,47 +1192,22 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
                 )
                 for chunk in response:
                     metadata = headers if is_first_chunk else {}
-                    generation_chunk = None
-                    event_type = _openrouter_event_value(chunk, "type")
-                    if (
-                        is_openrouter
-                        and event_type in _OPENROUTER_RESPONSES_FALLBACK_EVENTS
-                    ):
-                        (
-                            current_index,
-                            current_output_index,
-                            current_sub_index,
-                            generation_chunk,
-                        ) = _convert_openrouter_responses_chunk_to_generation_chunk(
-                            chunk,
-                            current_index,
-                            current_output_index,
-                            current_sub_index,
-                            metadata=metadata,
-                        )
-
-                    if generation_chunk is None:
-                        try:
-                            (
-                                current_index,
-                                current_output_index,
-                                current_sub_index,
-                                generation_chunk,
-                            ) = _convert_responses_chunk_to_generation_chunk_compat(
-                                chunk,
-                                current_index,
-                                current_output_index,
-                                current_sub_index,
-                                schema=original_schema_obj,
-                                metadata=metadata,
-                                has_reasoning=has_reasoning,
-                                output_version=self.output_version,
-                            )
-                        except (AttributeError, KeyError, TypeError):
-                            if not is_openrouter:
-                                raise
-                            generation_chunk = None
-
+                    (
+                        current_index,
+                        current_output_index,
+                        current_sub_index,
+                        generation_chunk,
+                    ) = _process_responses_stream_chunk(
+                        chunk,
+                        current_index,
+                        current_output_index,
+                        current_sub_index,
+                        is_openrouter=is_openrouter,
+                        schema=original_schema_obj,
+                        metadata=metadata,
+                        has_reasoning=has_reasoning,
+                        output_version=self.output_version,
+                    )
                     if generation_chunk:
                         if run_manager:
                             run_manager.on_llm_new_token(
@@ -1166,18 +1215,7 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
                                 chunk=generation_chunk,
                             )
                         is_first_chunk = False
-                        chunk_content = generation_chunk.message.content
-                        if (
-                            "reasoning" in generation_chunk.message.additional_kwargs
-                            or (
-                                isinstance(chunk_content, list)
-                                and any(
-                                    isinstance(block, dict)
-                                    and block.get("type") == "reasoning"
-                                    for block in chunk_content
-                                )
-                            )
-                        ):
+                        if _responses_chunk_indicates_reasoning(generation_chunk):
                             has_reasoning = True
                         yield generation_chunk
         except openai.BadRequestError as e:
@@ -1247,47 +1285,22 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
                 )
                 async for chunk in response:
                     metadata = headers if is_first_chunk else {}
-                    generation_chunk = None
-                    event_type = _openrouter_event_value(chunk, "type")
-                    if (
-                        is_openrouter
-                        and event_type in _OPENROUTER_RESPONSES_FALLBACK_EVENTS
-                    ):
-                        (
-                            current_index,
-                            current_output_index,
-                            current_sub_index,
-                            generation_chunk,
-                        ) = _convert_openrouter_responses_chunk_to_generation_chunk(
-                            chunk,
-                            current_index,
-                            current_output_index,
-                            current_sub_index,
-                            metadata=metadata,
-                        )
-
-                    if generation_chunk is None:
-                        try:
-                            (
-                                current_index,
-                                current_output_index,
-                                current_sub_index,
-                                generation_chunk,
-                            ) = _convert_responses_chunk_to_generation_chunk_compat(
-                                chunk,
-                                current_index,
-                                current_output_index,
-                                current_sub_index,
-                                schema=original_schema_obj,
-                                metadata=metadata,
-                                has_reasoning=has_reasoning,
-                                output_version=self.output_version,
-                            )
-                        except (AttributeError, KeyError, TypeError):
-                            if not is_openrouter:
-                                raise
-                            generation_chunk = None
-
+                    (
+                        current_index,
+                        current_output_index,
+                        current_sub_index,
+                        generation_chunk,
+                    ) = _process_responses_stream_chunk(
+                        chunk,
+                        current_index,
+                        current_output_index,
+                        current_sub_index,
+                        is_openrouter=is_openrouter,
+                        schema=original_schema_obj,
+                        metadata=metadata,
+                        has_reasoning=has_reasoning,
+                        output_version=self.output_version,
+                    )
                     if generation_chunk:
                         if run_manager:
                             await run_manager.on_llm_new_token(
@@ -1295,18 +1308,7 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
                                 chunk=generation_chunk,
                             )
                         is_first_chunk = False
-                        chunk_content = generation_chunk.message.content
-                        if (
-                            "reasoning" in generation_chunk.message.additional_kwargs
-                            or (
-                                isinstance(chunk_content, list)
-                                and any(
-                                    isinstance(block, dict)
-                                    and block.get("type") == "reasoning"
-                                    for block in chunk_content
-                                )
-                            )
-                        ):
+                        if _responses_chunk_indicates_reasoning(generation_chunk):
                             has_reasoning = True
                         yield generation_chunk
         except openai.BadRequestError as e:

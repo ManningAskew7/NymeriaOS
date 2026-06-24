@@ -8,6 +8,7 @@ import warnings
 
 import anthropic
 import httpx
+import pytest
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
@@ -31,6 +32,8 @@ from nymeria.vendor.react_agent.providers import (
     ChatOpenAIWithReasoning,
     _convert_responses_chunk_to_generation_chunk_compat,
     _convert_openrouter_responses_chunk_to_generation_chunk,
+    _process_responses_stream_chunk,
+    _responses_chunk_indicates_reasoning,
     _flat_reasoning_content_replay_mode,
     _looks_like_deepseek_base_url,
     _normalize_groq_responses_payload,
@@ -2010,3 +2013,259 @@ def test_gateway_openai_compat_route_still_uses_openai_adapter():
         )
     )
     assert isinstance(llm, ChatOpenAIWithReasoning)
+
+
+# --- Responses stream per-chunk dispatch (slice 25 F3) --------------------
+#
+# The sync `_stream_responses` and async `_astream_responses` shells share one
+# pure per-chunk transform (`_process_responses_stream_chunk`) plus a pure
+# reasoning predicate (`_responses_chunk_indicates_reasoning`). These lock the
+# helpers and the previously-untested sync/async shell equivalence.
+
+
+def test_process_responses_stream_chunk_uses_openrouter_fallback():
+    result = _process_responses_stream_chunk(
+        {
+            "type": "response.reasoning.delta",
+            "delta": "Need context",
+            "output_index": 0,
+        },
+        -1,
+        -1,
+        -1,
+        is_openrouter=True,
+        schema=None,
+        metadata={},
+        has_reasoning=False,
+        output_version="responses/v1",
+    )
+
+    _, _, _, generation_chunk = result
+    assert generation_chunk is not None
+    assert generation_chunk.message.content == [
+        {
+            "type": "reasoning",
+            "summary": [
+                {"index": 0, "type": "summary_text", "text": "Need context"}
+            ],
+            "index": 0,
+        }
+    ]
+
+
+def test_process_responses_stream_chunk_uses_compat_converter():
+    result = _process_responses_stream_chunk(
+        SimpleNamespace(
+            type="response.output_text.delta",
+            delta="Hello",
+            output_index=0,
+            content_index=0,
+        ),
+        -1,
+        -1,
+        -1,
+        is_openrouter=False,
+        schema=None,
+        metadata={},
+        has_reasoning=False,
+        output_version="responses/v1",
+    )
+
+    _, _, _, generation_chunk = result
+    assert generation_chunk is not None
+    assert generation_chunk.text == "Hello"
+
+
+def test_process_responses_stream_chunk_swallows_converter_error_for_openrouter(
+    monkeypatch,
+):
+    # A non-reasoning event skips the OpenRouter fallback branch and reaches the
+    # compat converter; for an OpenRouter base URL a converter error is
+    # swallowed (returns no chunk, indices unchanged).
+    def _boom(*args, **kwargs):
+        raise KeyError("bad chunk")
+
+    monkeypatch.setattr(
+        providers, "_convert_responses_chunk_to_generation_chunk_compat", _boom
+    )
+
+    result = _process_responses_stream_chunk(
+        SimpleNamespace(type="response.output_text.delta", delta="x"),
+        3,
+        4,
+        5,
+        is_openrouter=True,
+        schema=None,
+        metadata={},
+        has_reasoning=False,
+        output_version=None,
+    )
+
+    assert result == (3, 4, 5, None)
+
+
+def test_process_responses_stream_chunk_reraises_converter_error_when_not_openrouter(
+    monkeypatch,
+):
+    def _boom(*args, **kwargs):
+        raise KeyError("bad chunk")
+
+    monkeypatch.setattr(
+        providers, "_convert_responses_chunk_to_generation_chunk_compat", _boom
+    )
+
+    with pytest.raises(KeyError):
+        _process_responses_stream_chunk(
+            SimpleNamespace(type="response.output_text.delta", delta="x"),
+            -1,
+            -1,
+            -1,
+            is_openrouter=False,
+            schema=None,
+            metadata={},
+            has_reasoning=False,
+            output_version=None,
+        )
+
+
+def test_responses_chunk_indicates_reasoning_via_additional_kwargs():
+    generation_chunk = SimpleNamespace(
+        message=SimpleNamespace(
+            additional_kwargs={"reasoning": "thinking"}, content="hi"
+        )
+    )
+    assert _responses_chunk_indicates_reasoning(generation_chunk) is True
+
+
+def test_responses_chunk_indicates_reasoning_via_content_block():
+    generation_chunk = SimpleNamespace(
+        message=SimpleNamespace(
+            additional_kwargs={},
+            content=[{"type": "reasoning", "summary": []}],
+        )
+    )
+    assert _responses_chunk_indicates_reasoning(generation_chunk) is True
+
+
+def test_responses_chunk_indicates_reasoning_false_for_plain_text():
+    list_content = SimpleNamespace(
+        message=SimpleNamespace(
+            additional_kwargs={}, content=[{"type": "text", "text": "hi"}]
+        )
+    )
+    str_content = SimpleNamespace(
+        message=SimpleNamespace(additional_kwargs={}, content="hi")
+    )
+    assert _responses_chunk_indicates_reasoning(list_content) is False
+    assert _responses_chunk_indicates_reasoning(str_content) is False
+
+
+def _fake_text_delta_chunk(text, output_index=0, content_index=0):
+    return SimpleNamespace(
+        type="response.output_text.delta",
+        delta=text,
+        output_index=output_index,
+        content_index=content_index,
+    )
+
+
+class _SyncRecordingRunManager:
+    def __init__(self):
+        self.tokens: list[str] = []
+
+    def on_llm_new_token(self, token, chunk=None):
+        self.tokens.append(token)
+
+
+class _AsyncRecordingRunManager:
+    def __init__(self):
+        self.tokens: list[str] = []
+
+    async def on_llm_new_token(self, token, chunk=None):
+        self.tokens.append(token)
+
+
+class _FakeSyncResponseStream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __enter__(self):
+        return iter(self._chunks)
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeAsyncResponseStream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    async def __aenter__(self):
+        async def _gen():
+            for chunk in self._chunks:
+                yield chunk
+
+        return _gen()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def test_stream_responses_sync_and_async_yield_identical_sequences(monkeypatch):
+    # End-to-end equivalence of the two shells over identical fake chunks. The
+    # shells had no prior direct coverage; this guards against the sync/async
+    # paths drifting after the shared-helper extraction.
+    chunks = [_fake_text_delta_chunk("Hel"), _fake_text_delta_chunk("lo")]
+
+    monkeypatch.setattr(
+        ChatOpenAIWithReasoning,
+        "_ensure_sync_client_available",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        ChatOpenAIWithReasoning,
+        "_get_request_payload",
+        lambda self, messages, stop=None, **kwargs: {},
+    )
+
+    sync_llm = create_llm(_openai_config())
+    assert isinstance(sync_llm, ChatOpenAIWithReasoning)
+    object.__setattr__(
+        sync_llm,
+        "root_client",
+        SimpleNamespace(
+            responses=SimpleNamespace(
+                create=lambda **kwargs: _FakeSyncResponseStream(chunks)
+            )
+        ),
+    )
+    sync_rm = _SyncRecordingRunManager()
+    sync_chunks = list(sync_llm._stream_responses([], run_manager=sync_rm))
+
+    async_llm = create_llm(_openai_config())
+    assert isinstance(async_llm, ChatOpenAIWithReasoning)
+
+    async def _async_create(**kwargs):
+        return _FakeAsyncResponseStream(chunks)
+
+    object.__setattr__(
+        async_llm,
+        "root_async_client",
+        SimpleNamespace(responses=SimpleNamespace(create=_async_create)),
+    )
+    async_rm = _AsyncRecordingRunManager()
+
+    async def _collect():
+        out = []
+        async for chunk in async_llm._astream_responses([], run_manager=async_rm):
+            out.append(chunk)
+        return out
+
+    async_chunks = _run_in_new_event_loop(_collect)
+
+    assert [chunk.text for chunk in sync_chunks] == ["Hel", "lo"]
+    assert [chunk.text for chunk in async_chunks] == ["Hel", "lo"]
+    assert [chunk.message.content for chunk in sync_chunks] == [
+        chunk.message.content for chunk in async_chunks
+    ]
+    assert sync_rm.tokens == async_rm.tokens == ["Hel", "lo"]
