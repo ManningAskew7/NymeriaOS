@@ -39,6 +39,7 @@ from .http_policy import (
     httpx_request_with_policy,
     validate_http_egress_url,
 )
+from .secret_interpolation import resolve_env_and_credential_refs
 
 logger = logging.getLogger(__name__)
 
@@ -234,20 +235,13 @@ class MCPServerManager:
         env = os.environ.copy()
         used_credentials: set[str] = set()
         for key, value in config.env_vars.items():
-            if value.startswith("${env:") and value.endswith("}"):
-                var_name = value[6:-1]
-                env[key] = os.environ.get(var_name, "")
-            else:
-                env[key] = value
-            if "${credential:" in env[key]:
-                from .credential_vault import get_credential_vault_repo
-
-                env[key] = get_credential_vault_repo().resolve_references(
-                    env[key],
-                    target_type="mcp_server",
-                    target_id=config.server_id or config.server_command,
-                    used_credentials=used_credentials,
-                )
+            env[key] = resolve_env_and_credential_refs(
+                value,
+                target_type="mcp_server",
+                target_id=config.server_id or config.server_command,
+                used_credentials=used_credentials,
+                missing_env="empty",
+            )
         if config.encrypted_env_vars:
             from . import secrets as nymeria_secrets
             for key, value in config.encrypted_env_vars.items():
@@ -360,32 +354,26 @@ class MCPServerManager:
         except ValueError as e:
             raise RuntimeError(str(e)) from e
 
-        # Interpolate ${env:VAR} in headers.
+        # Interpolate ${env:VAR} and ${credential:ID.FIELD} in headers.
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        used_credentials: set[str] = set()
         for k, v in config.headers.items():
-            if v.startswith("${env:") and v.endswith("}"):
-                headers[k] = os.environ.get(v[6:-1], "")
-            else:
-                headers[k] = v
-            if "${credential:" in headers[k]:
-                from .credential_vault import get_credential_vault_repo
-
-                used_credentials: set[str] = set()
-                headers[k] = get_credential_vault_repo().resolve_references(
-                    headers[k],
-                    target_type="mcp_server",
-                    target_id=config.server_id or config.url,
-                    used_credentials=used_credentials,
-                )
-                if used_credentials:
-                    logger.info(
-                        "Resolved %d credential reference(s) for MCP HTTP server %s",
-                        len(used_credentials),
-                        config.server_id or config.url,
-                    )
+            headers[k] = resolve_env_and_credential_refs(
+                v,
+                target_type="mcp_server",
+                target_id=config.server_id or config.url,
+                used_credentials=used_credentials,
+                missing_env="empty",
+            )
+        if used_credentials:
+            logger.info(
+                "Resolved %d credential reference(s) for MCP HTTP server %s",
+                len(used_credentials),
+                config.server_id or config.url,
+            )
 
         # Not using base_url: httpx appends a trailing slash on empty paths which
         # some MCP servers reject. We POST directly to config.url each request.

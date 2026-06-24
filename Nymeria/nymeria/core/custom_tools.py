@@ -16,7 +16,6 @@ Based on MCP best practices 2025-2026:
 import asyncio
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -31,6 +30,10 @@ from ..tools.metadata import (
     register_custom_tool_metadata,
     unregister_custom_tool_metadata,
 )
+from .secret_interpolation import (
+    interpolate_env_vars_with_names,
+    resolve_credential_refs,
+)
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -38,10 +41,8 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from .mcp_manager import MCPServerManager
 
-# Regex for environment variable interpolation: ${env:VAR_NAME}
-ENV_VAR_PATTERN = re.compile(r"\$\{env:([A-Z_][A-Z0-9_]*)\}")
-
-# Regex for parameter interpolation: ${param_name}
+# Env-reference interpolation (``${env:VAR}``) lives in ``secret_interpolation``;
+# it is imported above. Parameter interpolation (``${param_name}``) is local.
 PARAM_PATTERN = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
 
@@ -303,43 +304,6 @@ class CustomToolLoader:
         return None
 
 
-def interpolate_env_vars(value: str) -> str:
-    """Replace ${env:VAR_NAME} placeholders with environment variable values.
-
-    Args:
-        value: String containing environment variable placeholders.
-
-    Returns:
-        String with placeholders replaced by actual values.
-
-    Raises:
-        ValueError: If an environment variable is not set.
-    """
-    def replace_env(match: re.Match) -> str:
-        var_name = match.group(1)
-        var_value = os.environ.get(var_name)
-        if var_value is None:
-            raise ValueError(f"Environment variable not set: {var_name}")
-        return var_value
-
-    return ENV_VAR_PATTERN.sub(replace_env, value)
-
-
-def interpolate_env_vars_with_names(value: str) -> tuple[str, set[str]]:
-    """Replace env placeholders and return the variable names used."""
-    used: set[str] = set()
-
-    def replace_env(match: re.Match) -> str:
-        var_name = match.group(1)
-        var_value = os.environ.get(var_name)
-        if var_value is None:
-            raise ValueError(f"Environment variable not set: {var_name}")
-        used.add(var_name)
-        return var_value
-
-    return ENV_VAR_PATTERN.sub(replace_env, value), used
-
-
 def interpolate_params(template: str, params: Dict[str, Any]) -> str:
     """Replace ${param_name} placeholders with parameter values.
 
@@ -423,11 +387,7 @@ def _sync_http_request(
         redact_values: set[str] = set()
 
         def resolve_credentials(value: str) -> str:
-            if "${credential:" not in value:
-                return value
-            from .credential_vault import get_credential_vault_repo
-
-            return get_credential_vault_repo().resolve_references(
+            return resolve_credential_refs(
                 value,
                 actor_user_id=actor_user_id,
                 target_type=target_type,

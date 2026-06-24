@@ -733,3 +733,96 @@ def test_sync_http_request_response_path_no_match_returns_error_not_body(monkeyp
     )
     # The unfiltered body (and any secret inside it) must not leak into the result.
     assert "TOPSECRET" not in result
+
+
+class _RecordingVault:
+    """Resolves the known credential ref and records the resolve_references call."""
+
+    def __init__(self):
+        self.calls = []
+
+    def resolve_references(
+        self,
+        value,
+        *,
+        actor_user_id=None,
+        target_type=None,
+        target_id=None,
+        used_credentials=None,
+        redact_values=None,
+    ):
+        self.calls.append(
+            {
+                "actor_user_id": actor_user_id,
+                "target_type": target_type,
+                "target_id": target_id,
+                "used_credentials": used_credentials,
+                "redact_values": redact_values,
+            }
+        )
+        if used_credentials is not None:
+            used_credentials.add("cred1")
+        if redact_values is not None:
+            redact_values.add("SEKRET")
+        return value.replace("${credential:cred1.token}", "SEKRET")
+
+
+def test_sync_http_request_interpolates_params_env_and_credentials(monkeypatch):
+    """End-to-end wiring of param -> env -> credential resolution in _sync_http_request.
+
+    This path (the resolve_credentials closure plus the env-interpolation call
+    sites) had no prior direct coverage; it now drives the shared
+    secret_interpolation helpers, so lock the order and the vault call shape.
+    """
+    from nymeria.core import credential_vault
+
+    monkeypatch.setenv("API_HOST", "api.example.com")
+    monkeypatch.setenv("API_KEY", "key-xyz")
+
+    vault = _RecordingVault()
+    monkeypatch.setattr(
+        credential_vault, "get_credential_vault_repo", lambda: vault
+    )
+
+    captured: dict = {}
+
+    def _capture_impl(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "body": {"done": True}}
+
+    monkeypatch.setattr("nymeria.tools.http_api._http_request_impl", _capture_impl)
+
+    config = HTTPToolConfig(
+        method="POST",
+        url="https://${env:API_HOST}/users/${param_user}",
+        headers={
+            "Authorization": "Bearer ${credential:cred1.token}",
+            "X-Key": "${env:API_KEY}",
+        },
+        query_params={"name": "${param_name}"},
+        body_template='{"token": "${credential:cred1.token}", "key": "${env:API_KEY}"}',
+    )
+
+    result = _sync_http_request(
+        config,
+        {"param_user": "u-1", "param_name": "alice"},
+        target_type="custom_http_tool",
+        target_id="tool-9",
+        actor_user_id="user-7",
+    )
+
+    assert "done" in result
+    # params interpolated BEFORE env (the url proves the order is preserved)
+    assert captured["url"] == "https://api.example.com/users/u-1"
+    assert captured["headers"]["Authorization"] == "Bearer SEKRET"
+    assert captured["headers"]["X-Key"] == "key-xyz"
+    assert captured["query"] == {"name": "alice"}
+    assert captured["body"] == {"token": "SEKRET", "key": "key-xyz"}
+    assert set(captured["used_env_secrets"]) == {"API_HOST", "API_KEY"}
+    assert captured["used_credentials"] == ["cred1"]
+    # The vault was called with the custom-tool target, actor, and a redact set.
+    call = vault.calls[0]
+    assert call["actor_user_id"] == "user-7"
+    assert call["target_type"] == "custom_http_tool"
+    assert call["target_id"] == "tool-9"
+    assert call["redact_values"] is not None
