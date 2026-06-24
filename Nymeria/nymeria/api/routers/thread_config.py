@@ -1,9 +1,10 @@
 """Thread configuration and callable-team routes."""
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from ...core.accounts import AuthenticatedUser
 from ...core.thread_config import DreamingConfig, ThreadConfig, ThreadLLMConfig
@@ -18,6 +19,32 @@ from ..thread_config_helpers import (
     normalize_thread_team_name,
     validate_callable_name,
 )
+
+_SubmodelT = TypeVar("_SubmodelT", bound=BaseModel)
+
+
+def _merge_optional_submodel(
+    existing: _SubmodelT | None,
+    update_request: BaseModel,
+    ctor: Callable[..., _SubmodelT],
+) -> _SubmodelT:
+    """Apply a partial-update request onto an optional nested submodel.
+
+    The ``llm_config`` and ``dreaming`` thread-config fields are nested pydantic
+    models that callers patch field-by-field. When the stored field is unset a
+    fresh model is built from only the request's set fields, dropping explicit
+    ``None`` values so untouched optional fields keep their model defaults. When
+    the field already exists every set field (including an explicit ``None``) is
+    assigned onto it, so a caller can null a single nested field without losing
+    the rest. This preserves the exact clear-vs-set precedence the two merge
+    blocks relied on inline.
+    """
+    data = update_request.model_dump(exclude_unset=True)
+    if existing is None:
+        return ctor(**{key: value for key, value in data.items() if value is not None})
+    for key, value in data.items():
+        setattr(existing, key, value)
+    return existing
 
 
 def _config_response(config: ThreadConfig) -> dict[str, Any]:
@@ -238,14 +265,9 @@ def create_thread_config_router(
             tc.disabled_skills = request.disabled_skills
         if request.llm_config is not None and not request.clear_llm_config:
             tc.active_llm_fallback = None
-            llm_data = request.llm_config.model_dump(exclude_unset=True)
-            if tc.llm_config is None:
-                tc.llm_config = ThreadLLMConfig(
-                    **{k: v for k, v in llm_data.items() if v is not None}
-                )
-            else:
-                for key, value in llm_data.items():
-                    setattr(tc.llm_config, key, value)
+            tc.llm_config = _merge_optional_submodel(
+                tc.llm_config, request.llm_config, ThreadLLMConfig
+            )
         if request.system_prompt is not None and not request.clear_system_prompt:
             tc.system_prompt = request.system_prompt
         if request.callable is not None:
@@ -316,14 +338,9 @@ def create_thread_config_router(
         if request.clear_dreaming:
             tc.dreaming = None
         elif request.dreaming is not None:
-            dream_data = request.dreaming.model_dump(exclude_unset=True)
-            if tc.dreaming is None:
-                tc.dreaming = DreamingConfig(
-                    **{k: v for k, v in dream_data.items() if v is not None}
-                )
-            else:
-                for key, value in dream_data.items():
-                    setattr(tc.dreaming, key, value)
+            tc.dreaming = _merge_optional_submodel(
+                tc.dreaming, request.dreaming, DreamingConfig
+            )
 
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to save thread config")
