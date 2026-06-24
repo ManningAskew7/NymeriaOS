@@ -379,8 +379,14 @@ class RedisEventBus(EventBus):
                 local_delivery_status,
             )
 
-    def close(self) -> None:
-        """Close Redis connections and stop subscriber thread."""
+    def _teardown(self, *, quiet: bool = False) -> None:
+        """Close Redis connections and stop the subscriber thread.
+
+        ``quiet`` suppresses all logging and is used by ``__del__``: a finalizer
+        can run during interpreter shutdown when the ``logging`` module and the
+        ``redis`` library internals may already be half torn down, where a log
+        call can raise or emit "Exception ignored in" noise to stderr.
+        """
         self._running = False
 
         if self._pubsub:
@@ -388,30 +394,49 @@ class RedisEventBus(EventBus):
                 self._pubsub.unsubscribe()
                 self._pubsub.close()
             except Exception:
-                logger.debug("Error closing Redis pubsub during shutdown")
+                if not quiet:
+                    logger.debug("Error closing Redis pubsub during shutdown")
             self._pubsub = None
 
         if self._redis_client:
             try:
                 self._redis_client.close()
             except Exception:
-                logger.debug("Error closing Redis client during shutdown")
+                if not quiet:
+                    logger.debug("Error closing Redis client during shutdown")
             self._redis_client = None
 
         if self._subscriber_client:
             try:
                 self._subscriber_client.close()
             except Exception:
-                logger.debug("Error closing Redis subscriber client during shutdown")
+                if not quiet:
+                    logger.debug("Error closing Redis subscriber client during shutdown")
             self._subscriber_client = None
 
         self._connected = False
-        logger.info("[REDIS EVENT BUS] Closed")
+        if not quiet:
+            logger.info("[REDIS EVENT BUS] Closed")
+
+    def close(self) -> None:
+        """Close Redis connections and stop subscriber thread (logs on completion)."""
+        self._teardown(quiet=False)
 
     def is_connected(self) -> bool:
         """Check if connected to Redis."""
         return self._connected
 
     def __del__(self):
-        """Cleanup on garbage collection."""
-        self.close()
+        """Best-effort cleanup at GC / interpreter shutdown.
+
+        Kept as a safety net because the bus is a process-lived singleton that
+        is often never explicitly closed, so its finalizer is the only teardown
+        that runs. It runs the quiet teardown so it never logs: the ``logging``
+        module may be half-finalized at shutdown, where a log call can raise and
+        surface as an "Exception ignored in" traceback on stderr. The teardown
+        is self-contained: each Redis ``close()``/``unsubscribe()`` is already
+        wrapped in its own handler (silent when quiet) and the rest is plain
+        attribute resets that cannot raise, so no outer guard is needed here.
+        Explicit ``close()`` remains the owned teardown path and logs as before.
+        """
+        self._teardown(quiet=True)
