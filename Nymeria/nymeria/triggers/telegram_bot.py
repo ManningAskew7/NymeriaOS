@@ -28,7 +28,6 @@ from typing import Any, Callable, Coroutine, Dict, List, Mapping, Optional, Sequ
 
 import httpx
 
-from nymeria.core.agent_compaction import COMPACTING_MESSAGE
 from nymeria.core.thread_classification import NATIVE_PLATFORM_PREFIXES as _NATIVE_SWITCH_THREAD_PREFIXES
 
 from . import attachment_helpers
@@ -46,8 +45,8 @@ from .message_splitter import split_telegram_message as split_message
 from .voice_helpers import is_voice_message_mime, strip_markdown_for_speech
 from .sse_consumer import (
     consume_sse_stream,
+    dispatch_event,
     format_auth_prompt_message,
-    parse_attach_paths as _parse_attach_paths,
 )
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
@@ -95,8 +94,6 @@ logger = logging.getLogger(__name__)
 # format_compaction_notice_html) live in ``telegram_format`` and are imported at
 # the top of this module, then re-exported here so existing call sites and tests
 # keep importing them from ``telegram_bot``.
-
-parse_attach_paths = _parse_attach_paths
 
 
 # =============================================================================
@@ -368,7 +365,8 @@ class NymeriaTelegramBot:
         self._start_time = time.time()
         self._show_tool_calls: Dict[int, bool] = {}  # chat_id -> show
         # Per-thread streaming state for autonomous task delivery.
-        # thread_id -> { chat_id, buffer (response text), tool_count, response_seen }
+        # thread_id -> { "handler": _AutonomousSSEHandler } (owns the per-thread
+        # response buffer, tool count, and response-seen flag).
         self._autonomous_state: Dict[str, Dict[str, Any]] = {}
         self._application = None
         self._user_resolver = UserResolver(self.api, "telegram", logger=logger)
@@ -2846,20 +2844,189 @@ class NymeriaTelegramBot:
                 return sub
         return None
 
+    class _AutonomousSSEHandler:
+        """SSE event handler for Telegram autonomous task delivery.
+
+        Implements :class:`~triggers.sse_consumer.SSEEventHandler` and owns the
+        per-thread response buffer, tool count, and response-seen flag. Mirrors
+        the per-event splitting that ``_stream_to_chat`` does for regular chat:
+        response chunks accumulate in the buffer and flush at every tool_call
+        boundary, so preamble text, tool announcements, and post-tool replies
+        each land in their own Telegram bubble. No wrapper header, no
+        progressive editing, and no stop button: autonomous bubbles look like
+        plain chat messages.
+
+        Sends go through ``bot._send_html`` / ``bot._send_file_attachment``
+        with no Telegram update context, so they fall back to
+        ``bot._application.bot`` (the autonomous firehose has no update).
+        """
+
+        def __init__(self, bot: "NymeriaTelegramBot", chat_id: int) -> None:
+            self._bot = bot
+            self._chat_id = chat_id
+            self._text_buffer = ""
+            self._tool_count = 0
+            self._response_seen = False
+
+        async def flush_text(self, final: bool = False) -> None:
+            """Send the buffered response text as its own bubble, then reset.
+
+            Renders the whole buffer through ``markdown_to_html`` then splits
+            the formatted text at 4000 chars (Telegram's hard limit is 4096)
+            as a safety net. ``final`` is accepted for the ``SSEEventHandler``
+            protocol; the autonomous handler always fully flushes and resets.
+            """
+            buf = self._text_buffer
+            if not buf.strip():
+                self._text_buffer = ""
+                return
+            display = markdown_to_html(buf)
+            for chunk in split_message(display, 4000):
+                try:
+                    await self._bot._send_html(self._chat_id, chunk)
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous chunk: {e}")
+            self._text_buffer = ""
+
+        # -- SSEEventHandler callbacks ----------------------------------------
+
+        async def on_thinking(self) -> None:
+            pass  # same as regular chat: silently ignored
+
+        async def on_response_chunk(self, content: str) -> None:
+            self._response_seen = True
+            self._text_buffer += content
+            # Flush early if a single segment grows large enough that we'd
+            # otherwise risk hitting the 4096-char Telegram limit mid-stream.
+            if len(self._text_buffer) > 3800:
+                await self.flush_text()
+
+        async def on_compacting(self, message: str) -> None:
+            try:
+                await self._bot._send_html(
+                    self._chat_id, f"<i>{escape_html(message)}</i>"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send autonomous compacting status: {e}")
+
+        async def on_compacted(
+            self,
+            summary: str,
+            messages_removed: int,
+            title: str = "Context compacted",
+        ) -> None:
+            try:
+                await self._bot._send_html(
+                    self._chat_id,
+                    format_compaction_notice_html(
+                        summary, messages_removed, title=title
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send autonomous compaction notice: {e}")
+
+        async def on_tool_call(
+            self,
+            name: str,
+            args: Dict[str, Any],
+            call_id: str,
+            count: int,
+        ) -> None:
+            # Finalize preamble text as its own bubble so the tool call marker
+            # (if shown) and any post-tool reply land in fresh ones.
+            await self.flush_text(final=True)
+            self._tool_count = count
+            if self._bot._show_tool_calls.get(self._chat_id, False):
+                try:
+                    await self._bot._send_html(
+                        self._chat_id, format_tool_call_html(name, args)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous tool call: {e}")
+
+        async def on_tool_result(
+            self,
+            call_id: str,
+            result: str,
+            attachments: List[str],
+        ) -> None:
+            if self._bot._show_tool_calls.get(self._chat_id, False):
+                try:
+                    await self._bot._send_html(
+                        self._chat_id, format_tool_result_html(result)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send autonomous tool result: {e}")
+            for attach_path in attachments:
+                await self._bot._send_file_attachment(self._chat_id, attach_path)
+
+        async def on_tool_reload(self, tools: List[str], ttl: str) -> None:
+            # dispatch_event passes the raw event values through, so a
+            # present-but-null tools/ttl arrives as None, coerce as the old
+            # inline copy did (``event.get("tools") or []``).
+            tools = tools or []
+            ttl = ttl or ""
+            names = ", ".join(str(tool) for tool in tools) if tools else "tools"
+            try:
+                await self._bot._send_html(
+                    self._chat_id,
+                    (
+                        f"<i>Tool Binding: <b>{escape_html(names)}</b>"
+                        f"{f' ({escape_html(str(ttl))})' if ttl else ''}</i>"
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send autonomous tool reload message: {e}")
+
+        async def on_workspace_artifact(self, path: str) -> None:
+            await self._bot._send_file_attachment(self._chat_id, path)
+
+        async def on_auth_prompt(self, event: Dict[str, Any]) -> None:
+            try:
+                message = escape_html(format_auth_prompt_message(event)).replace(
+                    "\n", "<br>"
+                )
+                await self._bot._send_html(self._chat_id, message)
+            except Exception as e:
+                logger.warning(f"Failed to send autonomous auth prompt: {e}")
+
+        async def on_error(self, content: str) -> None:
+            try:
+                await self._bot._send_html(
+                    self._chat_id, f"<i>{escape_html(str(content))}</i>"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send autonomous error: {e}")
+
+        async def on_iteration_limit(self, content: str) -> None:
+            try:
+                await self._bot._send_html(
+                    self._chat_id, f"<i>{escape_html(str(content))}</i>"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send autonomous iteration notice: {e}")
+
+        async def on_done(self, tool_call_count: int) -> None:
+            pass  # autonomous uses task_completed, not done
+
+        async def on_stream_end(self, tool_call_count: int) -> None:
+            pass  # autonomous stream is event-by-event, not consumed as a stream
+
     async def _handle_sse_event(self, event: Dict[str, Any]) -> None:
         """Stream an autonomous-task event to the matching Telegram chat.
 
-        Mirrors the per-event splitting that ``_stream_to_chat`` does for
-        regular chat: response chunks accumulate in a per-thread buffer and
-        get flushed at every tool_call boundary, so preamble text, tool
-        announcements, and post-tool replies each land in their own bubble.
-        No wrapper header — bubbles look identical to regular chat.
+        Standard SSE event types are routed through the shared
+        :func:`~triggers.sse_consumer.dispatch_event` (the same dispatcher the
+        interactive ``_ChatSSEHandler`` and the Discord bot use) into a
+        per-thread :class:`_AutonomousSSEHandler`. The autonomous-only event
+        types (notification, task_started, task_completed) and the
+        Telegram-specific delivery-mode gates are handled inline here.
 
         Two routing cases:
-          1. ``thread_id`` starts with ``telegram_`` — the legacy default;
+          1. ``thread_id`` starts with ``telegram_`` (the legacy default);
              chat_id is encoded in the suffix.
-          2. ``thread_id`` is in ``self._reverse_bindings`` — the user has
-             bound a desktop-created thread to a Telegram chat; chat_id
+          2. ``thread_id`` is in ``self._reverse_bindings`` (the user has
+             bound a desktop-created thread to a Telegram chat); chat_id
              comes from the binding map.
         Anything else is dispatched by another integration (Discord, etc.),
         so we silently drop it.
@@ -2918,169 +3085,20 @@ class NymeriaTelegramBot:
                         logger.warning(f"Failed to send autonomous error: {e}")
             return
 
+        # Full delivery: get-or-create the per-thread handler, then route.
         state = self._autonomous_state.get(thread_id)
-
-        def _ensure_state() -> Dict[str, Any]:
-            nonlocal state
-            if state is None:
-                state = {
-                    "chat_id": chat_id,
-                    "buffer": "",
-                    "tool_count": 0,
-                    "response_seen": False,
-                }
-                self._autonomous_state[thread_id] = state
-            return state
-
-        async def _flush_buffer(footer: Optional[str] = None) -> None:
-            """Send the buffered response text as its own bubble, then reset."""
-            if state is None:
-                return
-            buf = state["buffer"]
-            if footer:
-                buf = (buf + footer) if buf else footer
-            if not buf.strip():
-                state["buffer"] = ""
-                return
-            display = markdown_to_html(buf)
-            # Telegram's hard limit is 4096; we already cap response chunks
-            # below that, but split as a safety net for the footer case.
-            for chunk in split_message(display, 4000):
-                try:
-                    await self._send_html(chat_id, chunk)
-                except Exception as e:
-                    logger.warning(f"Failed to send autonomous chunk: {e}")
-            state["buffer"] = ""
+        if state is None:
+            handler = self._AutonomousSSEHandler(self, chat_id)
+            state = {"handler": handler}
+            self._autonomous_state[thread_id] = state
+        else:
+            handler = state["handler"]
 
         try:
             if event_type == "task_started":
-                _ensure_state()
-
-            elif event_type == "thinking":
-                # Same as regular chat — silently ignored.
                 return
 
-            elif event_type == "compacting":
-                _ensure_state()
-                await _flush_buffer()
-                try:
-                    status = event.get("message") or COMPACTING_MESSAGE
-                    await self._send_html(chat_id, f"<i>{escape_html(status)}</i>")
-                except Exception as e:
-                    logger.warning(f"Failed to send autonomous compacting status: {e}")
-
-            elif event_type == "compacted":
-                _ensure_state()
-                await _flush_buffer()
-                try:
-                    await self._send_html(
-                        chat_id,
-                        format_compaction_notice_html(
-                            event.get("summary", ""),
-                            int(event.get("messages_removed") or 0),
-                        ),
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send autonomous compaction notice: {e}")
-
-            elif event_type == "context_attached":
-                _ensure_state()
-                await _flush_buffer()
-                try:
-                    await self._send_html(
-                        chat_id,
-                        format_compaction_notice_html(
-                            event.get("summary", ""),
-                            title="Context summary attached",
-                        ),
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send autonomous context notice: {e}")
-
-            elif event_type == "response":
-                s = _ensure_state()
-                chunk = event.get("content", "")
-                if not chunk:
-                    return
-                s["response_seen"] = True
-                s["buffer"] += chunk
-                # Flush early if a single segment grows large enough that we'd
-                # otherwise risk hitting the 4096-char Telegram limit mid-stream.
-                if len(s["buffer"]) > 3800:
-                    await _flush_buffer()
-
-            elif event_type == "auth_prompt":
-                _ensure_state()
-                await _flush_buffer()
-                try:
-                    message = escape_html(format_auth_prompt_message(event)).replace(
-                        "\n",
-                        "<br>",
-                    )
-                    await self._send_html(chat_id, message)
-                except Exception as e:
-                    logger.warning(f"Failed to send autonomous auth prompt: {e}")
-
-            elif event_type == "tool_call":
-                s = _ensure_state()
-                # Finalize preamble text as its own bubble so the tool call
-                # marker (if shown) and any post-tool reply land in fresh ones.
-                await _flush_buffer()
-                s["tool_count"] += 1
-                if self._show_tool_calls.get(chat_id, False):
-                    tool_text = format_tool_call_html(
-                        event.get("name", "?"), event.get("args", {})
-                    )
-                    try:
-                        await self._send_html(chat_id, tool_text)
-                    except Exception as e:
-                        logger.warning(f"Failed to send autonomous tool call: {e}")
-
-            elif event_type == "tool_result":
-                _ensure_state()
-                if self._show_tool_calls.get(chat_id, False):
-                    result_text = format_tool_result_html(event.get("result", ""))
-                    try:
-                        await self._send_html(chat_id, result_text)
-                    except Exception as e:
-                        logger.warning(f"Failed to send autonomous tool result: {e}")
-                for attach_path in parse_attach_paths(event.get("result", "")):
-                    await self._send_file_attachment(chat_id, attach_path)
-
-            elif event_type == "tool_reload":
-                _ensure_state()
-                await _flush_buffer()
-                tools = event.get("tools") or []
-                ttl = event.get("ttl") or ""
-                names = ", ".join(str(tool) for tool in tools) if tools else "tools"
-                try:
-                    await self._send_html(
-                        chat_id,
-                        (
-                            f"<i>Tool Binding: <b>{escape_html(names)}</b>"
-                            f"{f' ({escape_html(str(ttl))})' if ttl else ''}</i>"
-                        ),
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send autonomous tool reload message: {e}")
-
-            elif event_type == "workspace_artifact":
-                attach_path = event.get("path")
-                if isinstance(attach_path, str) and attach_path:
-                    await self._send_file_attachment(chat_id, attach_path)
-
-            elif event_type == "iteration_limit":
-                content = event.get("content", "")
-                if content:
-                    try:
-                        await self._send_html(
-                            chat_id,
-                            f"<i>{escape_html(str(content))}</i>",
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send autonomous iteration notice: {e}")
-
-            elif event_type == "task_completed":
+            if event_type == "task_completed":
                 if event.get("error"):
                     err = event.get("content") or "Unknown error"
                     try:
@@ -3091,21 +3109,32 @@ class NymeriaTelegramBot:
                     except Exception as e:
                         logger.warning(f"Failed to send autonomous error: {e}")
                 else:
-                    s = _ensure_state()
                     # If we received no per-event responses (older API or
                     # non-streaming task), fall back to the aggregated content.
-                    if not s["response_seen"] and not s["buffer"] and not s["tool_count"]:
+                    if (
+                        not handler._response_seen
+                        and not handler._text_buffer
+                        and not handler._tool_count
+                    ):
                         fallback = event.get("content") or ""
                         if fallback:
-                            s["buffer"] = fallback
-                    footer = (
-                        f"\n\n_Tool calls: {s['tool_count']}_"
-                        if s["tool_count"]
-                        else None
-                    )
-                    await _flush_buffer(footer=footer)
+                            handler._text_buffer = fallback
+                    if handler._tool_count:
+                        footer = f"\n\n_Tool calls: {handler._tool_count}_"
+                        handler._text_buffer = (
+                            handler._text_buffer + footer
+                            if handler._text_buffer
+                            else footer
+                        )
+                    await handler.flush_text(final=True)
                 self._autonomous_state.pop(thread_id, None)
                 logger.info(f"Streamed autonomous result to Telegram chat {chat_id}")
+                return
+
+            # Standard SSE event types: delegate to the shared dispatcher.
+            handler._tool_count = await dispatch_event(
+                event, handler, handler._tool_count
+            )
 
         except Exception as e:
             logger.error(f"Error handling autonomous event {event_type}: {e}", exc_info=True)
