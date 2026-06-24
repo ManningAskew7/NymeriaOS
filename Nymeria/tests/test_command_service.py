@@ -1234,3 +1234,56 @@ def test_delete_todo_propagates_unexpected_error(
 
     with pytest.raises(RuntimeError, match="schedule db unavailable"):
         run(backend.delete_todo("owner", todo_id))
+
+
+def test_default_catalog_extracted_to_registry_defaults() -> None:
+    """Slice 03 F3: the built-in catalog now lives in ``core.registry_defaults``.
+
+    Locks the extraction's fidelity. ``CommandService()`` runs
+    ``register_default_commands(self)`` then ``validate_registry()``; this
+    asserts the full command count plus one entry per declaration shape (alias
+    normalization, danger flags, chat-stream + note, ``agent_allowed``, a
+    multi-alias and a multi-word alias). A dropped or altered declaration in
+    the extracted table trips this.
+    """
+    from nymeria.core.registry_defaults import register_default_commands
+
+    service = CommandService()
+    by_name = {cmd.name: cmd for cmd in service._commands.values()}
+
+    # Count tripwire: update when adding or removing a built-in command.
+    assert len(service._commands) == 89
+    assert sum(cmd.executable for cmd in service._commands.values()) == 75
+
+    help_cmd = by_name["help"]
+    assert help_cmd.category == "General"
+    assert help_cmd.aliases == (("h",),)
+
+    config_set = by_name["config set"]
+    assert (config_set.requires_admin, config_set.mutates_state) == (True, True)
+    assert config_set.danger_level == "dangerous"
+
+    skill = by_name["skill"]
+    assert skill.execution_kind == "chat_stream"
+    assert skill.executable is False
+    assert skill.requires_thread is True
+    assert skill.note == "Handled by the chat stream endpoint."
+
+    assert by_name["compact"].agent_allowed is False
+    assert by_name["mcp remove"].aliases == (
+        ("mcp_remove",),
+        ("mcp_rm",),
+        ("mcp_delete",),
+    )
+    assert by_name["tools core"].aliases == (("tools_core",), ("tools", "list_core"))
+
+    # The catalog registers onto whichever service instance is passed in.
+    fresh = CommandService()
+    fresh._commands.clear()
+    fresh._path_index.clear()
+    fresh._aliases.clear()
+    register_default_commands(fresh)
+    fresh.validate_registry()
+    # Full per-definition equality (frozen dataclass value-eq), not just id set,
+    # so a kwarg drift between the two construction paths would trip.
+    assert fresh._commands == service._commands
