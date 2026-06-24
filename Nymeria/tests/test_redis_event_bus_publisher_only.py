@@ -202,3 +202,125 @@ def test_create_event_bus_default_starts_subscriber(fake_redis_module):
 
     assert isinstance(bus, RedisEventBus)
     bus.close()
+
+
+# --- close() vs __del__ teardown semantics (slice 08 F9) -------------------
+#
+# The bus is a process-lived singleton whose __del__ only fires at GC /
+# interpreter shutdown, when the logging module and redis internals may be
+# half-finalized. close() (explicit, owned teardown) logs as before; __del__
+# must run the same teardown silently and swallow any error so a finalizer
+# cannot raise or emit "Exception ignored in" noise to stderr.
+
+_REDIS_BUS_LOGGER = "nymeria.core.event_bus_redis"
+
+
+def _make_bus_with_all_clients(fake_redis_module):
+    """Construct a connected bus and force all three teardown branches live."""
+    from nymeria.core.event_bus_redis import RedisEventBus
+
+    _, fake_client, _ = fake_redis_module
+    with patch.object(RedisEventBus, "_start_subscriber"):
+        bus = RedisEventBus("redis://localhost:6379", enable_subscriber=False)
+    # Publisher-only leaves pubsub/subscriber unset; populate every branch so a
+    # teardown test exercises all three close paths.
+    bus._pubsub = MagicMock()
+    bus._subscriber_client = MagicMock()
+    assert bus._redis_client is fake_client
+    return bus
+
+
+def _redis_bus_log_text(caplog):
+    """Captured text from the event_bus_redis logger only (ignore other loggers)."""
+    return "\n".join(
+        r.getMessage() for r in caplog.records if r.name == _REDIS_BUS_LOGGER
+    )
+
+
+def test_close_logs_completion_and_clears_clients(fake_redis_module, caplog):
+    """Explicit close() still logs the completion line and clears every client."""
+    bus = _make_bus_with_all_clients(fake_redis_module)
+    pubsub, redis_client, sub_client = (
+        bus._pubsub,
+        bus._redis_client,
+        bus._subscriber_client,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=_REDIS_BUS_LOGGER):
+        bus.close()
+
+    assert "[REDIS EVENT BUS] Closed" in _redis_bus_log_text(caplog)
+    pubsub.unsubscribe.assert_called_once()
+    pubsub.close.assert_called_once()
+    redis_client.close.assert_called_once()
+    sub_client.close.assert_called_once()
+    assert bus._pubsub is None
+    assert bus._redis_client is None
+    assert bus._subscriber_client is None
+    assert bus._connected is False
+    assert bus._running is False
+
+
+def test_del_tears_down_without_logging(fake_redis_module, caplog):
+    """__del__ closes the same clients but emits no log records."""
+    bus = _make_bus_with_all_clients(fake_redis_module)
+    pubsub, redis_client, sub_client = (
+        bus._pubsub,
+        bus._redis_client,
+        bus._subscriber_client,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=_REDIS_BUS_LOGGER):
+        bus.__del__()
+
+    # Same teardown effects as close()...
+    pubsub.close.assert_called_once()
+    redis_client.close.assert_called_once()
+    sub_client.close.assert_called_once()
+    assert bus._connected is False
+    # ...but completely silent (no completion line, no per-client debug lines).
+    assert _redis_bus_log_text(caplog) == ""
+
+
+def test_del_swallows_teardown_errors_silently(fake_redis_module, caplog):
+    """A raising client.close() in __del__ must not propagate or log.
+
+    The quiet teardown's per-branch handlers absorb each Redis call error
+    without logging (no outer try/except needed in __del__).
+    """
+    bus = _make_bus_with_all_clients(fake_redis_module)
+    bus._pubsub.unsubscribe.side_effect = RuntimeError("pubsub gone")
+    bus._redis_client.close.side_effect = RuntimeError("client gone")
+    bus._subscriber_client.close.side_effect = RuntimeError("subscriber gone")
+
+    with caplog.at_level(logging.DEBUG, logger=_REDIS_BUS_LOGGER):
+        # Must not raise despite every teardown step failing.
+        bus.__del__()
+
+    assert _redis_bus_log_text(caplog) == ""
+    # Even on error each handle is dropped so the next __del__ is a no-op.
+    assert bus._pubsub is None
+    assert bus._redis_client is None
+    assert bus._subscriber_client is None
+    assert bus._connected is False
+
+
+def test_close_logs_per_client_error_when_not_quiet(fake_redis_module, caplog):
+    """close() (quiet=False) preserves the prior per-client debug breadcrumb."""
+    bus = _make_bus_with_all_clients(fake_redis_module)
+    bus._redis_client.close.side_effect = RuntimeError("client gone")
+
+    with caplog.at_level(logging.DEBUG, logger=_REDIS_BUS_LOGGER):
+        bus.close()
+
+    assert "Error closing Redis client during shutdown" in _redis_bus_log_text(caplog)
+    assert bus._redis_client is None
+
+
+def test_close_is_idempotent(fake_redis_module):
+    """Calling close() twice (and then __del__) is safe and a no-op the 2nd time."""
+    bus = _make_bus_with_all_clients(fake_redis_module)
+    bus.close()
+    bus.close()  # second close hits the falsy-client guards, no error
+    bus.__del__()  # finalizer after an explicit close is a silent no-op
+    assert bus._connected is False
