@@ -13,7 +13,7 @@ from typing import Any, Optional, Protocol
 
 import httpx
 
-from .bot_helpers import SeenEventCache
+from .bot_helpers import SeenEventCache, safe_id as _safe_id
 from .message_splitter import split_line_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -92,10 +92,6 @@ class LineClientProtocol(Protocol):
 
     async def close(self) -> None:
         ...
-
-
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
 
 
 def make_platform_user_id(user_id: str) -> str:

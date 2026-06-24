@@ -22,7 +22,7 @@ from urllib.parse import quote
 import httpx
 
 from .api_client import NymeriaAPIClient
-from .bot_helpers import SeenEventCache, UserResolver, http_error_detail
+from .bot_helpers import SeenEventCache, UserResolver, http_error_detail, safe_id as _safe_id
 from .message_splitter import split_signal_message as split_message
 from .sse_consumer import consume_sse_stream
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -122,10 +122,6 @@ class SignalClientProtocol(Protocol):
 
     async def close(self) -> None:
         ...
-
-
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
 
 
 def normalize_phone_number(value: str) -> str:

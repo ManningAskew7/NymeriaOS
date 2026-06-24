@@ -18,7 +18,7 @@ from urllib.parse import quote
 import httpx
 
 from .api_client import NymeriaAPIClient
-from .bot_helpers import UserResolver, http_error_detail
+from .bot_helpers import UserResolver, http_error_detail, safe_id as _safe_id
 from .message_splitter import split_matrix_message as split_message
 from .sse_consumer import consume_sse_stream
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -29,10 +29,6 @@ MATRIX_TEXT_LIMIT = 3500
 BINDING_REFRESH_INTERVAL_SECONDS = 60
 SYNC_TIMEOUT_MS = 30_000
 SEEN_EVENT_MAX = 5000
-
-
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
 
 
 def make_platform_chat_id(room_id: str, thread_root_event_id: Optional[str] = None) -> str:

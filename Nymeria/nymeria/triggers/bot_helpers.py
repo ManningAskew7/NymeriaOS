@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any, Optional, Protocol
@@ -60,6 +61,31 @@ def coerce_value(value_str: str) -> Any:
     except ValueError:
         pass  # not a numeric value, return as string
     return value_str
+
+
+def safe_id(value: Any) -> str:
+    """Sanitize a value into a platform-safe id fragment.
+
+    Collapses every run of characters outside ``[A-Za-z0-9_.-]`` to a single
+    hyphen, trims leading/trailing hyphens, and falls back to ``"unknown"`` for
+    empty or falsy input. This is the canonical builder for the native thread
+    ids and platform-scoped keys every chat-platform bot generates, so the
+    charset must stay stable. ``str(value or "")`` is the safe superset: any
+    non-empty string is sanitized as-is, while ``None``/``0``/``""`` and other
+    falsy inputs map to ``"unknown"`` rather than a literal ``"None"``.
+    """
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-") or "unknown"
+
+
+def normalize_base_url(base_url: str) -> str:
+    """Strip a trailing slash from a self-hosted bot server base URL."""
+    return base_url.rstrip("/")
+
+
+def join_api_base(base_url: str, suffix: str) -> str:
+    """Append an API ``suffix`` (e.g. ``"/api/v1"``) unless already present."""
+    normalized = normalize_base_url(base_url)
+    return normalized if normalized.endswith(suffix) else f"{normalized}{suffix}"
 
 
 def http_error_detail(exc: httpx.HTTPStatusError, *, text_limit: int = 200) -> str:

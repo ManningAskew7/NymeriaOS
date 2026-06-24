@@ -20,7 +20,13 @@ import httpx
 import websockets
 
 from .api_client import NymeriaAPIClient
-from .bot_helpers import UserResolver, http_error_detail
+from .bot_helpers import (
+    UserResolver,
+    http_error_detail,
+    join_api_base,
+    normalize_base_url as _normalize_base_url,
+    safe_id as _safe_id,
+)
 from .message_splitter import split_rocketchat_message as split_message
 from .sse_consumer import consume_sse_stream
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -32,19 +38,6 @@ BINDING_REFRESH_INTERVAL_SECONDS = 60
 SEEN_EVENT_TTL_SECONDS = 10 * 60
 SEEN_EVENT_MAX = 5000
 ACTIVE_THREAD_MAX = 5000
-
-
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
-
-
-def _normalize_base_url(base_url: str) -> str:
-    return base_url.rstrip("/")
-
-
-def _api_base_url(base_url: str) -> str:
-    normalized = _normalize_base_url(base_url)
-    return normalized if normalized.endswith("/api/v1") else f"{normalized}/api/v1"
 
 
 def _websocket_url(base_url: str) -> str:
@@ -282,7 +275,7 @@ class RocketChatHTTPClient:
 
     def __init__(self, base_url: str, auth_token: str, user_id: str) -> None:
         self.base_url = _normalize_base_url(base_url)
-        self.api_base_url = _api_base_url(base_url)
+        self.api_base_url = join_api_base(base_url, "/api/v1")
         self.auth_token = auth_token
         self.user_id = user_id
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10))

@@ -16,6 +16,7 @@ import httpx
 import jwt
 from jwt import InvalidTokenError, PyJWKClient
 
+from .bot_helpers import safe_id as _safe_id
 from .message_splitter import split_teams_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -102,10 +103,6 @@ class TeamsClientProtocol(Protocol):
 
     async def close(self) -> None:
         ...
-
-
-def _safe_id(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-") or "unknown"
 
 
 def normalize_conversation_id(raw: str) -> str:
