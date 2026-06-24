@@ -199,6 +199,89 @@ def test_thread_config_update_syncs_callable_metadata_and_partial_llm(
     assert saved.memory_char_limit is None
 
 
+def test_thread_config_dreaming_partial_merge_and_clear(
+    tmp_path: Path,
+    api_client_builder,
+):
+    # Locks the dreaming call site of the shared `_merge_optional_submodel`
+    # helper: build-from-None drops explicit None, merge-onto-existing applies
+    # explicit None while preserving untouched fields, and clear nulls the whole
+    # submodel.
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "thread-dreaming"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    # Build from None: set fields take effect; unmentioned fields keep model
+    # defaults (min_idle_minutes -> None, enabled -> request value).
+    created = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={
+            "dreaming": {
+                "enabled": True,
+                "min_interval_hours": 12,
+                "model": "dream-model",
+            }
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["dreaming"]["model"] == "dream-model"
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None
+    assert saved.dreaming is not None
+    assert saved.dreaming.enabled is True
+    assert saved.dreaming.min_interval_hours == 12
+    assert saved.dreaming.model == "dream-model"
+    assert saved.dreaming.min_idle_minutes is None
+    # A dreaming-only update touches no callable/tool fields, so no tool sync.
+    assert agent.synced_tools == 0
+
+    # Merge onto existing: an explicit None nulls just that field; the other
+    # fields set above survive (proves the setattr-loop branch, not a rebuild).
+    merged = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"dreaming": {"model": None}},
+    )
+    assert merged.status_code == 200
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None
+    assert saved.dreaming is not None
+    assert saved.dreaming.model is None
+    assert saved.dreaming.enabled is True
+    assert saved.dreaming.min_interval_hours == 12
+
+    # clear_dreaming wins over a same-request dreaming payload and nulls it all.
+    cleared = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"clear_dreaming": True, "dreaming": {"enabled": True}},
+    )
+    assert cleared.status_code == 200
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None
+    assert saved.dreaming is None
+
+    # Build-from-None must DROP an explicit null, not force-set it. A fresh
+    # thread hits the construct branch; DreamingConfig.enabled is a plain bool,
+    # so force-setting enabled=None would raise (422). Dropping it yields the
+    # model default (False), proving the construct-branch None filter.
+    fresh_id = "thread-dreaming-fresh"
+    agent.accounts_repo.claim_thread(fresh_id, "owner")
+    built = client.patch(
+        f"/threads/{fresh_id}/config",
+        headers=headers,
+        json={"dreaming": {"enabled": None, "min_interval_hours": 6}},
+    )
+    assert built.status_code == 200
+    saved = agent.thread_config_manager.get_config(fresh_id)
+    assert saved is not None
+    assert saved.dreaming is not None
+    assert saved.dreaming.enabled is False
+    assert saved.dreaming.min_interval_hours == 6
+
+
 def test_thread_config_reasoning_effort_validation_and_legacy_coercion(
     tmp_path: Path,
     api_client_builder,
