@@ -160,7 +160,13 @@ def parse_scheduled_time(time_str: str, tz: Optional[tzinfo] = None) -> Optional
     # Try relative format first: 30s, 5m, 1h, 1d, 1w (timezone-agnostic)
     seconds = parse_duration(time_str)
     if seconds is not None:
-        return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        try:
+            return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        except OverflowError:
+            # Duration too large to represent (e.g. "999999999999d"). Treat as
+            # unparseable so callers surface a clean "invalid" error via the
+            # existing None/ValueError contract rather than an OverflowError.
+            return None
 
     # Resolve timezone for absolute time parsing
     if tz is None:
@@ -174,8 +180,11 @@ def parse_scheduled_time(time_str: str, tz: Optional[tzinfo] = None) -> Optional
             if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
                 parsed = parsed.replace(tzinfo=tz)
             return parsed.astimezone(timezone.utc)
-        except ValueError:
-            pass  # Not an ISO datetime; try configured absolute formats below.
+        except (ValueError, OverflowError):
+            # ValueError: not an ISO datetime. OverflowError: the UTC conversion
+            # pushed an extreme date out of range. Fall through to the configured
+            # absolute formats below.
+            pass
 
     # Try absolute formats - interpreted in the user's timezone
     formats = [
@@ -191,7 +200,10 @@ def parse_scheduled_time(time_str: str, tz: Optional[tzinfo] = None) -> Optional
             # Localize to user's timezone, then convert to UTC
             local_dt = naive_dt.replace(tzinfo=tz)
             return local_dt.astimezone(timezone.utc)
-        except ValueError:
+        except (ValueError, OverflowError):
+            # ValueError: string does not match this format. OverflowError: an
+            # extreme date overflowed during the UTC conversion. Try the next
+            # format, else fall through to the None (invalid) return.
             continue
 
     return None

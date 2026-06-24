@@ -63,6 +63,41 @@ def test_parse_future_scheduled_time_rejects_past_absolute_time():
         )
 
 
+# An east-of-UTC offset pushes 0001-01-01 below year 1 when the parsed absolute
+# datetime is converted to UTC, which raises OverflowError out of astimezone; the
+# relative cases overflow timedelta regardless of timezone.
+_EAST_OF_UTC = timezone(timedelta(hours=10))
+
+
+@pytest.mark.parametrize(
+    "value, tz",
+    [
+        ("999999999999d", timezone.utc),
+        ("9999999999999999w", timezone.utc),
+        ("0001-01-01 00:00", _EAST_OF_UTC),
+    ],
+)
+def test_parse_scheduled_time_treats_out_of_range_as_unparseable(value: str, tz):
+    # A magnitude/date that cannot be represented must come back as None (the
+    # "invalid" contract) rather than raising OverflowError out of the parser.
+    assert parse_scheduled_time(value, tz=tz) is None
+
+
+@pytest.mark.parametrize(
+    "value, tz",
+    [
+        ("999999999999d", timezone.utc),
+        ("0001-01-01 00:00", _EAST_OF_UTC),
+    ],
+)
+def test_parse_future_scheduled_time_rejects_out_of_range_as_value_error(value: str, tz):
+    # Out-of-range values surface through the existing invalid-format ValueError,
+    # so every caller (HTTP routers, command backend, agent tool) renders a clean
+    # error instead of a 500/OverflowError.
+    with pytest.raises(ValueError, match="Invalid scheduled_for format"):
+        parse_future_scheduled_time(value, tz=tz)
+
+
 @pytest.mark.parametrize("value", [None, "", "not-a-timestamp", "2026-13-99"])
 def test_parse_usage_timestamp_returns_none_for_blank_or_invalid(value):
     assert parse_usage_timestamp(value) is None
