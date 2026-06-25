@@ -2062,13 +2062,27 @@ class CLIApp:
         if not result.messages and not output.messages and not result.ok:
             sink.emit(CommandMessage("Thread list failed.", level="error"))
 
-    async def _resolve_startup_thread_ref(self, ref: str) -> dict[str, str] | None:
+    def _startup_capabilities(self) -> TerminalCapabilities:
+        """Resolve capabilities for a startup-error render, lazily.
+
+        Prefers the active REPL capabilities and only probes the terminal when
+        none are active, preserving the prior inline ``self._active_capabilities
+        or detect_terminal_capabilities(...)`` short-circuit that each startup
+        error branch used.
+        """
+        return self._active_capabilities or detect_terminal_capabilities(self.runtime_config)
+
+    async def _load_threads_for_startup(self, error_prefix: str) -> list[Mapping[str, Any]] | None:
+        """Fetch and coerce the thread list for startup selection.
+
+        Shared preamble of ``_resolve_startup_thread_ref`` and
+        ``_resolve_most_recent_thread``: builds the command context, calls
+        ``list_threads``, and on a missing client method or any failure renders a
+        startup error (using ``error_prefix`` for the message) and returns
+        ``None``. On success returns the coerced list of Mapping threads (possibly
+        empty); each caller applies its own selection.
+        """
         from .commands.system import CommandClientMethodUnavailable, call_client_method
-        from .commands.threads import (
-            _format_thread_resolution_ambiguity,
-            resolve_thread_reference,
-        )
-        from .commands.system import normalize_thread_id, thread_title
 
         context = CommandContext(
             client=self._client,
@@ -2081,20 +2095,31 @@ class CLIApp:
             raw_threads = await call_client_method(context, "list_threads", self.state.user_id)
         except CommandClientMethodUnavailable as exc:
             self._render_startup_error(
-                f"Cannot open thread '{ref}': missing client method {exc.method_name}.",
-                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+                f"{error_prefix}: missing client method {exc.method_name}.",
+                self._startup_capabilities(),
             )
             return None
         except Exception as exc:  # noqa: BLE001 - startup selection should explain and exit.
             self._render_startup_error(
-                f"Cannot open thread '{ref}': {exc or exc.__class__.__name__}",
-                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+                f"{error_prefix}: {exc or exc.__class__.__name__}",
+                self._startup_capabilities(),
             )
             return None
 
         if not isinstance(raw_threads, Sequence) or isinstance(raw_threads, (str, bytes)):
             raw_threads = []
-        threads = [thread for thread in raw_threads if isinstance(thread, Mapping)]
+        return [thread for thread in raw_threads if isinstance(thread, Mapping)]
+
+    async def _resolve_startup_thread_ref(self, ref: str) -> dict[str, str] | None:
+        from .commands.threads import (
+            _format_thread_resolution_ambiguity,
+            resolve_thread_reference,
+        )
+        from .commands.system import normalize_thread_id, thread_title
+
+        threads = await self._load_threads_for_startup(f"Cannot open thread '{ref}'")
+        if threads is None:
+            return None
         resolution = resolve_thread_reference(threads, ref)
         if resolution.matched and resolution.thread is not None:
             thread_id = normalize_thread_id(resolution.thread)
@@ -2103,46 +2128,20 @@ class CLIApp:
             message = _format_thread_resolution_ambiguity(ref, resolution.matches)
         else:
             message = f"No thread matching '{ref}'."
-        self._render_startup_error(
-            message,
-            self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
-        )
+        self._render_startup_error(message, self._startup_capabilities())
         return None
 
     async def _resolve_most_recent_thread(self) -> dict[str, str] | None:
         """Find the most recently updated thread for ``--continue``."""
-        from .commands.system import CommandClientMethodUnavailable, call_client_method
         from .commands.system import normalize_thread_id, thread_title
 
-        context = CommandContext(
-            client=self._client,
-            output=ListCommandOutputSink(),
-            thread_id=self.state.thread_id,
-            user_id=self.state.user_id,
-            registry=self.registry,
-        )
-        try:
-            raw_threads = await call_client_method(context, "list_threads", self.state.user_id)
-        except CommandClientMethodUnavailable as exc:
-            self._render_startup_error(
-                f"Cannot continue: missing client method {exc.method_name}.",
-                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
-            )
+        threads = await self._load_threads_for_startup("Cannot continue")
+        if threads is None:
             return None
-        except Exception as exc:  # noqa: BLE001 - startup selection should explain and exit.
-            self._render_startup_error(
-                f"Cannot continue: {exc or exc.__class__.__name__}",
-                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
-            )
-            return None
-
-        if not isinstance(raw_threads, Sequence) or isinstance(raw_threads, (str, bytes)):
-            raw_threads = []
-        threads = [thread for thread in raw_threads if isinstance(thread, Mapping)]
         if not threads:
             self._render_startup_error(
                 "No threads found to continue.",
-                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+                self._startup_capabilities(),
             )
             return None
 
@@ -2154,7 +2153,7 @@ class CLIApp:
         if not tid:
             self._render_startup_error(
                 "No threads found to continue.",
-                self._active_capabilities or detect_terminal_capabilities(self.runtime_config),
+                self._startup_capabilities(),
             )
             return None
         return {"thread_id": tid, "title": thread_title(most_recent)}
