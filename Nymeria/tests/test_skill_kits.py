@@ -3,18 +3,38 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 from langgraph.types import Command
 
 from nymeria.core.agent import NymeriaAgent, set_current_agent
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager, TemporaryToolEntry
 from nymeria.core.tool_reload import TOOL_RELOAD_QUEUED_KEY
-from nymeria.skills import load_skill_directory
-from nymeria.skills.meta_tool import create_skill_meta_tool
-from nymeria.tools.tool_search import bind_tools_for_thread, tool_manage, tool_search
+from nymeria.skills import SkillManager, load_skill_directory
+from nymeria.skills.meta_tool import (
+    _SkillKitOutcome,
+    _allowed_tools_advisory,
+    _bind_skill_kit_tools,
+    _resolve_active_skill,
+    _resolve_effective_ttl,
+    _skill_kit_reload_notice,
+    create_skill_meta_tool,
+)
+from nymeria.tools.tool_search import (
+    ToolBindingResult,
+    bind_tools_for_thread,
+    tool_manage,
+    tool_search,
+)
+
+# The real submodule, used as the monkeypatch target: the package re-exports a
+# `tool_search` StructuredTool that shadows the `nymeria.tools.tool_search`
+# attribute, so only sys.modules resolves the module the helper imports from.
+tool_search_module = sys.modules["nymeria.tools.tool_search"]
 
 
 KIT_MD = """---
@@ -774,3 +794,226 @@ def test_self_improve_is_text_only_guidance_skill():
     assert skill is not None
     assert skill.required_tools == []
     assert skill.is_skill_kit is False
+
+
+# ---------------------------------------------------------------------------
+# Slice 27 F3: direct unit tests for the extracted skill_meta_tool helpers.
+# The eight end-to-end test_skill_meta_tool_* tests above lock the integrated
+# behavior; these pin the new module-level seams in isolation.
+# ---------------------------------------------------------------------------
+
+ADVISORY_MD = """---
+name: advisory-skill
+description: Skill with portable allowed-tools metadata.
+allowed-tools:
+  - bash_execute
+  - memory_clear_all(args)
+---
+
+# Advisory Skill
+
+Uses some tools.
+"""
+
+
+def _load(tmp_path: Path, name: str, md: str):
+    skill = load_skill_directory(_write_skill(tmp_path, name, md), scope="bundled")
+    assert skill is not None
+    return skill
+
+
+# ----- _resolve_effective_ttl -----
+
+def test_resolve_effective_ttl_kit_default_when_no_override(tmp_path: Path):
+    kit = _load(tmp_path, "hello-kit", KIT_MD)
+    assert kit.tool_ttl == "30m"
+    effective, notice = _resolve_effective_ttl(kit, None)
+    assert effective == "30m"
+    assert notice == ""
+
+
+def test_resolve_effective_ttl_valid_override_wins(tmp_path: Path):
+    kit = _load(tmp_path, "hello-kit", KIT_MD)
+    effective, notice = _resolve_effective_ttl(kit, "4w")
+    assert effective == "4w"
+    assert notice == ""
+
+
+def test_resolve_effective_ttl_no_tools_reports_no_effect(tmp_path: Path):
+    plain = _load(tmp_path, "plain-skill", PLAIN_MD)
+    effective, notice = _resolve_effective_ttl(plain, "2h")
+    # No required_tools -> the kit default is kept and the model is told the
+    # ttl had no effect.
+    assert effective == plain.tool_ttl
+    assert "no effect" in notice
+
+
+def test_resolve_effective_ttl_invalid_falls_back_to_default(tmp_path: Path):
+    kit = _load(tmp_path, "hello-kit", KIT_MD)
+    effective, notice = _resolve_effective_ttl(kit, "banana")
+    assert effective == "30m"
+    assert "Ignored ttl='banana'" in notice
+
+
+# ----- _allowed_tools_advisory -----
+
+def test_allowed_tools_advisory_empty_without_thread_snapshot(tmp_path: Path):
+    skill = _load(tmp_path, "advisory-skill", ADVISORY_MD)
+    assert _allowed_tools_advisory(skill, set()) == ""
+
+
+def test_allowed_tools_advisory_empty_without_allowed_tools(tmp_path: Path):
+    plain = _load(tmp_path, "plain-skill", PLAIN_MD)
+    assert plain.allowed_tools == []
+    assert _allowed_tools_advisory(plain, {"bash_execute"}) == ""
+
+
+def test_allowed_tools_advisory_empty_when_nothing_missing(tmp_path: Path, monkeypatch):
+    skill = _load(tmp_path, "advisory-skill", ADVISORY_MD)
+    # Declared tools are NOT known Nymeria tools -> no advisory (portable names
+    # like Read/Write must not warn).
+    monkeypatch.setattr(
+        "nymeria.skills.meta_tool._known_nymeria_tool_names", lambda: set()
+    )
+    assert _allowed_tools_advisory(skill, {"bash_execute"}) == ""
+
+
+def test_allowed_tools_advisory_warns_on_known_missing_tool(tmp_path: Path, monkeypatch):
+    skill = _load(tmp_path, "advisory-skill", ADVISORY_MD)
+    monkeypatch.setattr(
+        "nymeria.skills.meta_tool._known_nymeria_tool_names",
+        lambda: {"bash_execute", "memory_clear_all"},
+    )
+    # bash_execute is on the thread; memory_clear_all is a known Nymeria tool
+    # declared by the skill but absent from the thread -> it must be flagged.
+    notice = _allowed_tools_advisory(skill, {"bash_execute"})
+    assert "NOT enabled on the current thread" in notice
+    assert "memory_clear_all" in notice
+    assert "bash_execute" not in notice
+    assert notice.startswith("\n\n---\n")
+
+
+# ----- _resolve_active_skill -----
+
+def test_resolve_active_skill_snapshot_hit_without_manager(tmp_path: Path):
+    skill = _load(tmp_path, "plain-skill", PLAIN_MD)
+    resolved = _resolve_active_skill(
+        "plain-skill", ["plain-skill"], {"plain-skill": skill}, None, None
+    )
+    assert resolved is skill
+
+
+def test_resolve_active_skill_prefers_manager_over_snapshot(tmp_path: Path):
+    snapshot_skill = _load(tmp_path, "plain-skill", PLAIN_MD)
+    live_skill = _load(tmp_path, "plain-skill-live", PLAIN_MD)
+    manager = cast(SkillManager, SimpleNamespace(get=lambda name, user_id=None: live_skill))
+    resolved = _resolve_active_skill(
+        "plain-skill", ["plain-skill"], {"plain-skill": snapshot_skill}, manager, "u"
+    )
+    assert resolved is live_skill
+
+
+def test_resolve_active_skill_falls_back_to_snapshot_when_manager_misses(tmp_path: Path):
+    snapshot_skill = _load(tmp_path, "plain-skill", PLAIN_MD)
+    manager = cast(SkillManager, SimpleNamespace(get=lambda name, user_id=None: None))
+    resolved = _resolve_active_skill(
+        "plain-skill", ["plain-skill"], {"plain-skill": snapshot_skill}, manager, "u"
+    )
+    assert resolved is snapshot_skill
+
+
+def test_resolve_active_skill_dynamic_post_reload(tmp_path: Path):
+    # Name absent from the graph-build snapshot but present in the manager
+    # (created/enabled since the graph was built).
+    live_skill = _load(tmp_path, "fresh-skill", PLAIN_MD)
+    manager = cast(SkillManager, SimpleNamespace(get=lambda name, user_id=None: live_skill))
+    resolved = _resolve_active_skill("fresh-skill", [], {}, manager, "u")
+    assert resolved is live_skill
+
+
+def test_resolve_active_skill_unknown_returns_none(tmp_path: Path):
+    assert _resolve_active_skill("nope", [], {}, None, None) is None
+
+
+# ----- _skill_kit_reload_notice -----
+
+def test_skill_kit_reload_notice_emits_command_when_legacy_reload(monkeypatch):
+    binding = cast(ToolBindingResult, SimpleNamespace(reload_tools=["hello_test"]))
+    monkeypatch.setattr(
+        "nymeria.skills.meta_tool.should_emit_reload_command",
+        lambda reload_tools, *, thread_id: True,
+    )
+    notice, emit_command = _skill_kit_reload_notice(
+        binding, {"configurable": {"thread_id": "thread-a"}}
+    )
+    assert emit_command is True
+    assert "[Skill Kit reload queued - STOP NOW]" in notice
+
+
+def test_skill_kit_reload_notice_dynamic_when_no_legacy_reload(monkeypatch):
+    binding = cast(ToolBindingResult, SimpleNamespace(reload_tools=["hello_test"]))
+    monkeypatch.setattr(
+        "nymeria.skills.meta_tool.should_emit_reload_command",
+        lambda reload_tools, *, thread_id: False,
+    )
+    notice, emit_command = _skill_kit_reload_notice(
+        binding, {"configurable": {"thread_id": "thread-a"}}
+    )
+    assert emit_command is False
+    assert "callable on the next model step" in notice
+
+
+# ----- _bind_skill_kit_tools -----
+
+def test_bind_skill_kit_tools_no_required_tools_skips_bind(tmp_path: Path, monkeypatch):
+    plain = _load(tmp_path, "plain-skill", PLAIN_MD)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("bind_tools_for_thread must not be called")
+
+    monkeypatch.setattr(tool_search_module, "bind_tools_for_thread", _boom)
+    outcome = _bind_skill_kit_tools(
+        plain, "30m", {"configurable": {"thread_id": "thread-a", "user_id": "u"}}
+    )
+    assert outcome == _SkillKitOutcome(None, None, "", False, False)
+
+
+def test_bind_skill_kit_tools_failure_carries_verbatim_text(tmp_path: Path, monkeypatch):
+    kit = _load(tmp_path, "hello-kit", KIT_MD)
+    fake_binding = SimpleNamespace(
+        ok=False, text="boom: missing dep", reload_tools=[], cap_hit=False
+    )
+    monkeypatch.setattr(
+        tool_search_module, "bind_tools_for_thread", lambda *a, **k: fake_binding
+    )
+    outcome = _bind_skill_kit_tools(
+        kit, "30m", {"configurable": {"thread_id": "thread-a", "user_id": "u"}}
+    )
+    assert outcome.failure_text == (
+        "[Skill Kit activation failed: hello-kit]\n"
+        "boom: missing dep\n\n"
+        "No required tools were bound. Do not follow this skill's "
+        "instructions until the dependency problem is fixed."
+    )
+    assert outcome.result_suffix == ""
+    assert outcome.reload_queued is False
+    assert outcome.cap_hit is False
+
+
+def test_bind_skill_kit_tools_success_builds_result_suffix(tmp_path: Path, monkeypatch):
+    kit = _load(tmp_path, "hello-kit", KIT_MD)
+    fake_binding = SimpleNamespace(
+        ok=True, text="Newly loaded: hello_test", reload_tools=["hello_test"], cap_hit=False
+    )
+    monkeypatch.setattr(
+        tool_search_module, "bind_tools_for_thread", lambda *a, **k: fake_binding
+    )
+    outcome = _bind_skill_kit_tools(
+        kit, "30m", {"configurable": {"thread_id": "thread-a", "user_id": "u"}}
+    )
+    assert outcome.failure_text is None
+    assert outcome.result_suffix == (
+        "\n\n---\nSkill Kit binding result for hello-kit:\nNewly loaded: hello_test"
+    )
+    assert outcome.reload_queued is True
+    assert outcome.cap_hit is False
