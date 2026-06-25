@@ -32,6 +32,7 @@ from ..core.http_policy import (
     requests_get_with_policy,
 )
 from .llm_extract import run_extraction
+from .web_batch import run_batched
 
 logger = logging.getLogger(__name__)
 
@@ -457,28 +458,17 @@ def fetch_url_nymeria(
         bool(extraction_prompt.strip()),
     )
 
-    if len(url_list) == 1:
-        return _fetch_and_render(
-            url_list[0],
-            extract=extract,
-            extraction_prompt=extraction_prompt,
-            max_length=max_length,
-            config=config,
-        )
-
-    total = len(url_list)
-    sections: list[str] = []
-    for i, u in enumerate(url_list, 1):
-        result = _fetch_and_render(
+    return run_batched(
+        url_list,
+        lambda u: _fetch_and_render(
             u,
             extract=extract,
             extraction_prompt=extraction_prompt,
             max_length=max_length,
             config=config,
-        )
-        sections.append(f"=== URL {i}/{total}: {u} ===\n{result}")
-
-    return "\n\n".join(sections)
+        ),
+        label="URL",
+    )
 
 
 # Opt-in page-fetch tool group. fetch_url_nymeria is the first member; hosted

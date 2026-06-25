@@ -6,6 +6,8 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .web_batch import parse_batch_queries, run_batched
+
 logger = logging.getLogger(__name__)
 
 # Search depth → Perplexity model mapping
@@ -126,16 +128,10 @@ def web_search_perplexity(
         Batch mode: sections separated by "=== Query N/M: <query> ==="
         headers. Errors: "[Error]: <reason>".
     """
-    # Parse queries
-    if queries.strip():
-        query_list = [q.strip() for q in queries.split(" | ")]
-        query_list = [q for q in query_list if q]
-        if len(query_list) > _MAX_BATCH_QUERIES:
-            query_list = query_list[:_MAX_BATCH_QUERIES]
-    elif query.strip():
-        query_list = [query.strip()]
-    else:
-        return "[Error]: Provide a query or pipe-separated queries."
+    # Parse queries (batch takes precedence over single query).
+    query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)
+    if error:
+        return error
 
     logger.info(f"Web search: {len(query_list)} query(ies) (depth={search_depth})")
 
@@ -165,19 +161,10 @@ def web_search_perplexity(
     else:
         max_sources = 5
 
-    # Single query — return directly (identical to previous behavior)
-    if len(query_list) == 1:
-        return _search_single(query_list[0], model, max_sources, timeout, max_tokens, api_key)
-
-    # Batch mode
-    total = len(query_list)
-    sections = []
-    for i, q in enumerate(query_list, 1):
-        header = f"=== Query {i}/{total}: {q} ==="
-        result = _search_single(q, model, max_sources, timeout, max_tokens, api_key)
-        sections.append(f"{header}\n{result}")
-
-    return "\n\n".join(sections)
+    return run_batched(
+        query_list,
+        lambda q: _search_single(q, model, max_sources, timeout, max_tokens, api_key),
+    )
 
 
 # Opt-in web search tool group. web_search_perplexity is the first member;
