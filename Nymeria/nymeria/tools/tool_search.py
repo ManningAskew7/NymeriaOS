@@ -15,7 +15,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Annotated, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Annotated, Any, Dict, List, Optional, Set, Tuple, Union
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
@@ -29,6 +29,9 @@ from ..core.time_utils import (
 )
 from ..core.tool_reload import should_emit_reload_command, tool_reload_command
 from .utils import caller_role, get_thread_id, get_user_id
+
+if TYPE_CHECKING:
+    from ..core.thread_config import TemporaryToolEntry, ThreadConfig
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,37 @@ class ToolBindingResult:
     source: str = "tool_search"
     skill_name: Optional[str] = None
     reason: Optional[str] = None
+
+
+@dataclass
+class _BindingDelta:
+    """Outcome of classifying requested tools against current thread state."""
+
+    newly_added: List[str]
+    refreshed: List[str]
+    promoted: List[str]
+    already_default: List[str]
+    already_permanent: List[str]
+    un_disabled: List[str]
+    new_enabled: Set[str]
+    new_temporary: Dict[str, "TemporaryToolEntry"]
+    new_disabled: Set[str]
+    original_enabled: List[str]
+    original_disabled: List[str]
+    original_temporary: Dict[str, "TemporaryToolEntry"]
+    prior_count: int
+    new_count: int
+
+
+@dataclass
+class _ReloadDecision:
+    """Per-turn reload accounting for a successful binding."""
+
+    will_reload: bool
+    cap_hit: bool
+    reload_tools: List[str]
+    current_reloads: int
+    reload_cap: int
 
 
 def _format_remaining(expires_at: datetime) -> str:
@@ -276,94 +310,24 @@ def _search(
     return "\n".join(lines)
 
 
-def bind_tools_for_thread(
+def _validate_and_gate_tools(
     tool_names: List[str],
-    category: str,
-    thread_id: str,
-    user_id: str,
-    ttl: str = DEFAULT_TTL,
     *,
-    strict: bool = False,
-    source: str = "tool_search",
-    skill_name: Optional[str] = None,
-    reason: Optional[str] = None,
-) -> ToolBindingResult:
-    """Validate and bind tools for a thread.
+    strict: bool,
+    user_role: str,
+    agent: Any,
+) -> Tuple[List[str], List[str], List[str], List[str], Optional[str]]:
+    """Validate requested tool names and apply the admin/developer gates.
 
-    ``strict=True`` is used by Skill Kits: any invalid, unloadable, or
-    admin-blocked dependency aborts before the thread config is mutated.
-    ``strict=False`` preserves tool_search's partial-success behavior for
-    invalid names mixed into an otherwise valid enable request.
+    Returns ``(valid, invalid, unloadable, warnings, gate_error_text)``. When
+    ``gate_error_text`` is not None the caller must abort with that message
+    (wrapped via the caller's ``_fail`` so the ttl/source/skill_name/reason
+    fields are filled). On the success path ``valid`` is already filtered to the
+    admin/developer-allowed subset, so ``len(valid)`` is the request total the
+    result header reports.
     """
-    from ..core.agent import get_current_agent
-    from ..core.thread_config import ThreadConfig, TemporaryToolEntry
-    from . import SEED_TOOLS
-    from .metadata import ToolCategory, get_all_tool_metadata, SecurityLevel
-
-    agent = get_current_agent()
-    if agent is None:
-        return ToolBindingResult(
-            ok=False,
-            text="[Error]: No active agent. Cannot modify thread config.",
-            source=source,
-            skill_name=skill_name,
-            reason=reason,
-        )
-
-    user_role = caller_role(user_id, agent=agent)
-
-    ttl_value = DEFAULT_TTL if ttl is None else ttl
-    try:
-        ttl_key, ttl_seconds = parse_tool_ttl(ttl_value)
-    except ValueError as exc:
-        return ToolBindingResult(
-            ok=False,
-            text=f"[Error]: {exc}",
-            source=source,
-            skill_name=skill_name,
-            reason=reason,
-        )
-
-    if category and not tool_names:
-        cat_key = category.lower().strip().replace("-", "_")
-        try:
-            ToolCategory(cat_key)
-        except ValueError:
-            from .metadata import get_all_categories
-            cats = ", ".join(get_all_categories())
-            return ToolBindingResult(
-                ok=False,
-                text=f"[Error]: Unknown category '{category}'. Available: {cats}",
-                ttl_key=ttl_key,
-                ttl_seconds=ttl_seconds,
-                source=source,
-                skill_name=skill_name,
-                reason=reason,
-            )
-
-        catalog = _build_discovery_catalog(user_role)
-        tool_names = [c["name"] for c in catalog.values() if c["category"] == cat_key]
-        if not tool_names:
-            return ToolBindingResult(
-                ok=False,
-                text=f"[Error]: No tools in category '{category}'.",
-                ttl_key=ttl_key,
-                ttl_seconds=ttl_seconds,
-                source=source,
-                skill_name=skill_name,
-                reason=reason,
-            )
-
-    if not tool_names:
-        return ToolBindingResult(
-            ok=False,
-            text="[Error]: Provide tool names via 'tools' or a category via 'category'.",
-            ttl_key=ttl_key,
-            ttl_seconds=ttl_seconds,
-            source=source,
-            skill_name=skill_name,
-            reason=reason,
-        )
+    from .metadata import get_all_tool_metadata, SecurityLevel
+    from . import filter_admin_only_tools, filter_developer_only_tools
 
     catalog = _build_catalog()
     all_known = set(catalog.keys())
@@ -398,15 +362,7 @@ def bind_tools_for_thread(
             lines.append(f"[Not found]: {', '.join(invalid)}")
         if unloadable:
             lines.append(_format_unloadable_error(unloadable))
-        return ToolBindingResult(
-            ok=False,
-            text="\n".join(lines),
-            ttl_key=ttl_key,
-            ttl_seconds=ttl_seconds,
-            source=source,
-            skill_name=skill_name,
-            reason=reason,
-        )
+        return valid, invalid, unloadable, warnings, "\n".join(lines)
 
     if not valid:
         # Surface unloadable details first (more actionable for the agent).
@@ -414,44 +370,31 @@ def bind_tools_for_thread(
             err = _format_unloadable_error(unloadable)
             if invalid:
                 err += f"\n[Not found]: {', '.join(invalid)}"
-            return ToolBindingResult(
-                ok=False,
-                text=err,
-                ttl_key=ttl_key,
-                ttl_seconds=ttl_seconds,
-                source=source,
-                skill_name=skill_name,
-                reason=reason,
-            )
-        return ToolBindingResult(
-            ok=False,
-            text=f"[Error]: No valid tools to enable. Unknown: {', '.join(invalid)}",
-            ttl_key=ttl_key,
-            ttl_seconds=ttl_seconds,
-            source=source,
-            skill_name=skill_name,
-            reason=reason,
+            return valid, invalid, unloadable, warnings, err
+        return (
+            valid,
+            invalid,
+            unloadable,
+            warnings,
+            f"[Error]: No valid tools to enable. Unknown: {', '.join(invalid)}",
         )
 
     # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config —
     # without this, an agent could call tool_manage(action="enable",
     # tools=["reload_all"]) to escalate to admin-only tools that are
     # equivalent to authenticated RCE on the shared backend.
-    from . import filter_admin_only_tools, filter_developer_only_tools
     allowed, blocked = filter_admin_only_tools(valid, user_role)
     if blocked:
-        return ToolBindingResult(
-            ok=False,
-            text=(
+        return (
+            valid,
+            invalid,
+            unloadable,
+            warnings,
+            (
                 f"[Error]: Admin-only tools cannot be enabled by this user: "
                 f"{sorted(blocked)}. Ask an administrator to enable them on this "
                 f"thread, or pick a non-admin alternative."
             ),
-            ttl_key=ttl_key,
-            ttl_seconds=ttl_seconds,
-            source=source,
-            skill_name=skill_name,
-            reason=reason,
         )
     valid = [n for n in valid if n in allowed]
 
@@ -459,47 +402,34 @@ def bind_tools_for_thread(
     # validation, but regular users should neither discover nor bind them.
     allowed, blocked = filter_developer_only_tools(valid, user_role)
     if blocked:
-        return ToolBindingResult(
-            ok=False,
-            text=(
+        return (
+            valid,
+            invalid,
+            unloadable,
+            warnings,
+            (
                 f"[Error]: Developer-only diagnostic tools cannot be enabled "
                 f"by this user: {sorted(blocked)}."
             ),
-            ttl_key=ttl_key,
-            ttl_seconds=ttl_seconds,
-            source=source,
-            skill_name=skill_name,
-            reason=reason,
         )
     valid = [n for n in valid if n in allowed]
 
-    tc = agent.thread_config_manager.get_config(thread_id)
-    if tc is None:
-        tc = ThreadConfig(thread_id=thread_id)
-    elif hasattr(agent, "_resolve_temporary_tools"):
-        # Expired TTL entries must not make enable look like a refresh-only
-        # no-op. Evict them before classifying requested names.
-        agent._resolve_temporary_tools(tc)
+    return valid, invalid, unloadable, warnings, None
 
-    # Compute the thread's *actual* default-bound tool set. A user profile
-    # can override SEED_TOOLS via profile.tool_preferences.default_thread_tools
-    # (a curated subset), and graph-build uses that subset — not SEED_TOOLS —
-    # to decide which tools to bind by default. Classifying against SEED_TOOLS
-    # silently misclassifies any tool that lives in SEED_TOOLS but is absent
-    # from default_thread_tools (e.g., `rag_search`): the classifier
-    # thinks it's already bound, drops it into the no-op bucket, and never
-    # actually adds it anywhere — the tool then vanishes. Using the same
-    # source of truth as graph-build (`agent.py::_build_graph_with_prompt`)
-    # keeps classification honest.
-    try:
-        profile = agent.profile_manager.get_profile(user_id or "default")
-        default_tools_pref = profile.tool_preferences.default_thread_tools
-    except Exception:
-        default_tools_pref = None
-    if default_tools_pref is None:
-        default_bound = {t.name for t in SEED_TOOLS}
-    else:
-        default_bound = set(default_tools_pref)
+
+def _classify_bindings(
+    valid: List[str],
+    tc: "ThreadConfig",
+    default_bound: Set[str],
+    ttl_seconds: Optional[int],
+) -> _BindingDelta:
+    """Classify each valid tool into the binding-delta buckets.
+
+    Pure given its inputs: it builds local ``new_*`` sets from ``tc``'s current
+    state without mutating ``tc`` (the caller writes ``tc`` and saves it, and
+    rolls back from the ``original_*`` snapshots carried in the delta).
+    """
+    from ..core.thread_config import TemporaryToolEntry
 
     newly_added: List[str] = []       # new binding written to enabled_tools/temporary_tools
     refreshed: List[str] = []         # TTL'd tool whose expires_at was pushed out
@@ -603,55 +533,49 @@ def bind_tools_for_thread(
     prior_count = len(prior_bound_names)
     new_count = len(new_bound_names)
 
-    tc.enabled_tools = sorted(new_enabled)
-    tc.disabled_tools = sorted(new_disabled)
-    tc.temporary_tools = new_temporary
-
-    if not agent.thread_config_manager.save_config(tc):
-        tc.enabled_tools = original_enabled
-        tc.disabled_tools = original_disabled
-        tc.temporary_tools = original_temporary
-        return ToolBindingResult(
-            ok=False,
-            text="[Error]: Failed to save thread config.",
-            ttl_key=ttl_key,
-            ttl_seconds=ttl_seconds,
-            source=source,
-            skill_name=skill_name,
-            reason=reason,
-        )
-
-    if hasattr(agent, "invalidate_thread_config_cache"):
-        agent.invalidate_thread_config_cache(thread_id)
-
-    # An in-turn reload is needed when we added a genuinely new binding —
-    # that's newly_added (optional tools new to the graph) OR un_disabled
-    # (tools that were previously filtered out by tc.disabled_tools, now
-    # un-filtered so they'll be bound on rebuild).
-    reload_tools = sorted(set(newly_added) | set(un_disabled))
-
-    needs_legacy_reload = bool(reload_tools) and should_emit_reload_command(
-        reload_tools or [],
-        thread_id=thread_id,
+    return _BindingDelta(
+        newly_added=newly_added,
+        refreshed=refreshed,
+        promoted=promoted,
+        already_default=already_default,
+        already_permanent=already_permanent,
+        un_disabled=un_disabled,
+        new_enabled=new_enabled,
+        new_temporary=new_temporary,
+        new_disabled=new_disabled,
+        original_enabled=original_enabled,
+        original_disabled=original_disabled,
+        original_temporary=original_temporary,
+        prior_count=prior_count,
+        new_count=new_count,
     )
-    # The reload cap only applies to the legacy rebuild/resume path. Dynamic
-    # binding returns ordinary tool text and lets the next model step resolve
-    # the updated tool set without touching _pending_tool_reload.
-    reload_cap = getattr(agent, "MAX_TOOL_RELOADS_PER_TURN", 1)
-    current_reloads = getattr(agent, "_turn_reload_count", {}).get(thread_id, 0)
-    cap_hit = needs_legacy_reload and current_reloads >= reload_cap
-    will_reload = needs_legacy_reload and not cap_hit
-    if will_reload:
-        if not hasattr(agent, "_pending_tool_reload"):
-            agent._pending_tool_reload = {}
-        agent._pending_tool_reload[thread_id] = {
-            "new_tools": reload_tools,
-            "ttl": ttl_key,
-            "ttl_seconds": ttl_seconds,
-            "source": source,
-            "skill_name": skill_name,
-            "reason": reason,
-        }
+
+
+def _format_binding_result(
+    *,
+    binding: _BindingDelta,
+    reload: _ReloadDecision,
+    valid: List[str],
+    invalid: List[str],
+    unloadable: List[str],
+    warnings: List[str],
+    ttl_key: str,
+    ttl_seconds: Optional[int],
+) -> str:
+    """Render the agent-facing success text for a completed binding."""
+    newly_added = binding.newly_added
+    refreshed = binding.refreshed
+    promoted = binding.promoted
+    already_default = binding.already_default
+    already_permanent = binding.already_permanent
+    un_disabled = binding.un_disabled
+    prior_count = binding.prior_count
+    new_count = binding.new_count
+    will_reload = reload.will_reload
+    cap_hit = reload.cap_hit
+    reload_tools = reload.reload_tools
+    current_reloads = reload.current_reloads
+    reload_cap = reload.reload_cap
 
     ttl_desc = "permanent" if ttl_seconds is None else ttl_key
 
@@ -725,7 +649,188 @@ def bind_tools_for_thread(
         )
     else:
         lines.append("No binding changes; nothing to reload.")
-    result_text = "\n".join(lines)
+    return "\n".join(lines)
+
+
+def bind_tools_for_thread(
+    tool_names: List[str],
+    category: str,
+    thread_id: str,
+    user_id: str,
+    ttl: str = DEFAULT_TTL,
+    *,
+    strict: bool = False,
+    source: str = "tool_search",
+    skill_name: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> ToolBindingResult:
+    """Validate and bind tools for a thread.
+
+    ``strict=True`` is used by Skill Kits: any invalid, unloadable, or
+    admin-blocked dependency aborts before the thread config is mutated.
+    ``strict=False`` preserves tool_search's partial-success behavior for
+    invalid names mixed into an otherwise valid enable request.
+    """
+    from ..core.agent import get_current_agent
+    from ..core.thread_config import ThreadConfig
+    from . import SEED_TOOLS
+    from .metadata import ToolCategory
+
+    def _fail(
+        text: str,
+        *,
+        ttl_key: str = DEFAULT_TTL,
+        ttl_seconds: Optional[int] = None,
+    ) -> ToolBindingResult:
+        return ToolBindingResult(
+            ok=False,
+            text=text,
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+            source=source,
+            skill_name=skill_name,
+            reason=reason,
+        )
+
+    agent = get_current_agent()
+    if agent is None:
+        return _fail("[Error]: No active agent. Cannot modify thread config.")
+
+    user_role = caller_role(user_id, agent=agent)
+
+    ttl_value = DEFAULT_TTL if ttl is None else ttl
+    try:
+        ttl_key, ttl_seconds = parse_tool_ttl(ttl_value)
+    except ValueError as exc:
+        return _fail(f"[Error]: {exc}")
+
+    if category and not tool_names:
+        cat_key = category.lower().strip().replace("-", "_")
+        try:
+            ToolCategory(cat_key)
+        except ValueError:
+            from .metadata import get_all_categories
+            cats = ", ".join(get_all_categories())
+            return _fail(
+                f"[Error]: Unknown category '{category}'. Available: {cats}",
+                ttl_key=ttl_key,
+                ttl_seconds=ttl_seconds,
+            )
+
+        catalog = _build_discovery_catalog(user_role)
+        tool_names = [c["name"] for c in catalog.values() if c["category"] == cat_key]
+        if not tool_names:
+            return _fail(
+                f"[Error]: No tools in category '{category}'.",
+                ttl_key=ttl_key,
+                ttl_seconds=ttl_seconds,
+            )
+
+    if not tool_names:
+        return _fail(
+            "[Error]: Provide tool names via 'tools' or a category via 'category'.",
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+        )
+
+    valid, invalid, unloadable, warnings, gate_error = _validate_and_gate_tools(
+        tool_names, strict=strict, user_role=user_role, agent=agent
+    )
+    if gate_error is not None:
+        return _fail(gate_error, ttl_key=ttl_key, ttl_seconds=ttl_seconds)
+
+    tc = agent.thread_config_manager.get_config(thread_id)
+    if tc is None:
+        tc = ThreadConfig(thread_id=thread_id)
+    elif hasattr(agent, "_resolve_temporary_tools"):
+        # Expired TTL entries must not make enable look like a refresh-only
+        # no-op. Evict them before classifying requested names.
+        agent._resolve_temporary_tools(tc)
+
+    # Compute the thread's *actual* default-bound tool set. A user profile
+    # can override SEED_TOOLS via profile.tool_preferences.default_thread_tools
+    # (a curated subset), and graph-build uses that subset — not SEED_TOOLS —
+    # to decide which tools to bind by default. Classifying against SEED_TOOLS
+    # silently misclassifies any tool that lives in SEED_TOOLS but is absent
+    # from default_thread_tools (e.g., `rag_search`): the classifier
+    # thinks it's already bound, drops it into the no-op bucket, and never
+    # actually adds it anywhere — the tool then vanishes. Using the same
+    # source of truth as graph-build (`agent.py::_build_graph_with_prompt`)
+    # keeps classification honest.
+    try:
+        profile = agent.profile_manager.get_profile(user_id or "default")
+        default_tools_pref = profile.tool_preferences.default_thread_tools
+    except Exception:
+        default_tools_pref = None
+    if default_tools_pref is None:
+        default_bound = {t.name for t in SEED_TOOLS}
+    else:
+        default_bound = set(default_tools_pref)
+
+    delta = _classify_bindings(valid, tc, default_bound, ttl_seconds)
+
+    tc.enabled_tools = sorted(delta.new_enabled)
+    tc.disabled_tools = sorted(delta.new_disabled)
+    tc.temporary_tools = delta.new_temporary
+
+    if not agent.thread_config_manager.save_config(tc):
+        tc.enabled_tools = delta.original_enabled
+        tc.disabled_tools = delta.original_disabled
+        tc.temporary_tools = delta.original_temporary
+        return _fail(
+            "[Error]: Failed to save thread config.",
+            ttl_key=ttl_key,
+            ttl_seconds=ttl_seconds,
+        )
+
+    if hasattr(agent, "invalidate_thread_config_cache"):
+        agent.invalidate_thread_config_cache(thread_id)
+
+    # An in-turn reload is needed when we added a genuinely new binding —
+    # that's newly_added (optional tools new to the graph) OR un_disabled
+    # (tools that were previously filtered out by tc.disabled_tools, now
+    # un-filtered so they'll be bound on rebuild).
+    reload_tools = sorted(set(delta.newly_added) | set(delta.un_disabled))
+
+    needs_legacy_reload = bool(reload_tools) and should_emit_reload_command(
+        reload_tools or [],
+        thread_id=thread_id,
+    )
+    # The reload cap only applies to the legacy rebuild/resume path. Dynamic
+    # binding returns ordinary tool text and lets the next model step resolve
+    # the updated tool set without touching _pending_tool_reload.
+    reload_cap = getattr(agent, "MAX_TOOL_RELOADS_PER_TURN", 1)
+    current_reloads = getattr(agent, "_turn_reload_count", {}).get(thread_id, 0)
+    cap_hit = needs_legacy_reload and current_reloads >= reload_cap
+    will_reload = needs_legacy_reload and not cap_hit
+    if will_reload:
+        if not hasattr(agent, "_pending_tool_reload"):
+            agent._pending_tool_reload = {}
+        agent._pending_tool_reload[thread_id] = {
+            "new_tools": reload_tools,
+            "ttl": ttl_key,
+            "ttl_seconds": ttl_seconds,
+            "source": source,
+            "skill_name": skill_name,
+            "reason": reason,
+        }
+
+    result_text = _format_binding_result(
+        binding=delta,
+        reload=_ReloadDecision(
+            will_reload=will_reload,
+            cap_hit=cap_hit,
+            reload_tools=reload_tools,
+            current_reloads=current_reloads,
+            reload_cap=reload_cap,
+        ),
+        valid=valid,
+        invalid=invalid,
+        unloadable=unloadable,
+        warnings=warnings,
+        ttl_key=ttl_key,
+        ttl_seconds=ttl_seconds,
+    )
 
     return ToolBindingResult(
         ok=True,
