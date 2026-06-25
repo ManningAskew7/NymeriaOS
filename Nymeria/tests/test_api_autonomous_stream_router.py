@@ -4,15 +4,18 @@ import asyncio
 import json
 from pathlib import Path
 from queue import Queue
+from typing import Literal, cast
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
+from nymeria.api.routers import autonomous_stream as autonomous_module
 from nymeria.api.routers.autonomous_stream import (
     _event_to_sse_payload,
     _generate_autonomous_sse_events,
     _resolve_stream_auth,
 )
+from nymeria.api.sse import SSE_KEEPALIVE_FRAME
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.event_bus import AutonomousEvent, EventBus
 
@@ -31,7 +34,9 @@ class FakeRequest:
         return False
 
 
-def _create_user(agent: FakeAgent, user_id: str, *, role: str = "user") -> str:
+def _create_user(
+    agent: FakeAgent, user_id: str, *, role: Literal["admin", "user"] = "user"
+) -> str:
     agent.accounts_repo.create_user(
         user_id,
         f"{user_id}@example.com",
@@ -136,7 +141,7 @@ async def _next_sse_data(
     subscriber_id = "test-subscriber"
     event_bus.subscribe(subscriber_id)
     generator = _generate_autonomous_sse_events(
-        request=FakeRequest(),
+        request=cast(Request, FakeRequest()),
         event_bus=event_bus,
         queue=queue,
         subscriber_id=subscriber_id,
@@ -292,7 +297,7 @@ def test_resolve_stream_auth_invokes_failure_handler_on_bad_token():
             requested_user_id="default",
             presented_token="bad-token",
             x_nymeria_act_as=None,
-            request=object(),
+            request=cast(Request, object()),
             auth_failure_handler=handler,
         )
 
@@ -317,3 +322,112 @@ def test_resolve_stream_auth_still_401s_without_handler():
         )
 
     assert exc_info.value.status_code == 401
+
+
+# -- F10: idle keepalive is decoupled from the 1s poll, not emitted per poll ----
+
+
+class _DisconnectAfter:
+    """A request that reports connected for the first ``polls`` checks."""
+
+    def __init__(self, polls: int):
+        self._polls = polls
+        self._seen = 0
+
+    async def is_disconnected(self) -> bool:
+        self._seen += 1
+        return self._seen > self._polls
+
+
+def _collect_until_disconnect(
+    *,
+    queue: Queue,
+    event_bus: EventBus,
+    user_id: str,
+    polls: int = 10,
+) -> list[str]:
+    """Drain the bare generator until a simulated client disconnect ends it,
+    returning every emitted frame.
+
+    The generator returns on disconnect, so the ``async for`` exhausts naturally
+    and the generator's ``finally`` unsubscribes (no manual ``aclose``). Callers
+    monkeypatch ``_QUEUE_POLL_INTERVAL_SECONDS`` down to keep the run sub-second.
+    """
+    subscriber_id = "test-subscriber"
+    event_bus.subscribe(subscriber_id)
+
+    async def drive() -> list[str]:
+        generator = _generate_autonomous_sse_events(
+            request=cast(Request, _DisconnectAfter(polls=polls)),
+            event_bus=event_bus,
+            queue=queue,
+            subscriber_id=subscriber_id,
+            user_id=user_id,
+            firehose=False,
+            client_id=None,
+        )
+        return [frame async for frame in generator]
+
+    return asyncio.run(drive())
+
+
+def test_autonomous_sse_idle_keepalive_is_decoupled_from_poll(monkeypatch):
+    # Over 10 idle polls with a keepalive cadence of every 3rd poll, the stream
+    # emits exactly 3 `: keepalive` frames (at polls 3, 6, 9), not one per poll
+    # and never the removed `: heartbeat`. Fewer frames than polls proves the
+    # keepalive cadence is decoupled from the poll cadence.
+    monkeypatch.setattr(autonomous_module, "_QUEUE_POLL_INTERVAL_SECONDS", 0.005)
+    monkeypatch.setattr(autonomous_module, "_KEEPALIVE_POLL_INTERVAL", 3)
+    queue: Queue = Queue()
+    event_bus = EventBus()
+
+    frames = _collect_until_disconnect(
+        queue=queue, event_bus=event_bus, user_id="alice", polls=10
+    )
+
+    assert frames.count(SSE_KEEPALIVE_FRAME) == 3
+    assert all(frame == SSE_KEEPALIVE_FRAME for frame in frames)
+    assert ": heartbeat\n\n" not in frames
+    assert event_bus.get_subscriber_count() == 0
+
+
+def test_autonomous_sse_event_delivered_before_any_keepalive(monkeypatch):
+    # A queued event is delivered as the first frame, ahead of any keepalive, so
+    # decoupling the keepalive cadence does not add latency to real events.
+    monkeypatch.setattr(autonomous_module, "_QUEUE_POLL_INTERVAL_SECONDS", 0.005)
+    monkeypatch.setattr(autonomous_module, "_KEEPALIVE_POLL_INTERVAL", 3)
+    queue: Queue = Queue()
+    event_bus = EventBus()
+    queue.put_nowait(
+        AutonomousEvent(
+            event_type="response",
+            thread_id="thread-alice",
+            user_id="alice",
+            data={"content": "visible"},
+        )
+    )
+
+    frames = _collect_until_disconnect(
+        queue=queue, event_bus=event_bus, user_id="alice", polls=5
+    )
+
+    assert frames[0].startswith("data: ")
+    assert '"content": "visible"' in frames[0]
+    assert ": heartbeat\n\n" not in frames
+    assert event_bus.get_subscriber_count() == 0
+
+
+def test_autonomous_sse_keepalive_uses_shared_comment_frame():
+    # The idle frame is the shared `: keepalive` SSE comment (from api/sse.py),
+    # which every consumer skips, not a bespoke literal.
+    assert SSE_KEEPALIVE_FRAME == ": keepalive\n\n"
+    assert SSE_KEEPALIVE_FRAME.startswith(":")
+
+
+def test_autonomous_generator_no_longer_self_emits_heartbeat():
+    # Regression guard: the per-second `: heartbeat` self-emit is gone. Its
+    # return would restore the ~25x idle frame volume this finding removed.
+    import inspect
+
+    source = inspect.getsource(_generate_autonomous_sse_events)
+    assert ": heartbeat" not in source
