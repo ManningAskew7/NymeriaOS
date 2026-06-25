@@ -32,19 +32,14 @@ from ..core.mcp_tool_names import (
 )
 from ..core.tool_reload import command_or_text
 from .tool_search import DEFAULT_TTL, bind_tools_for_thread
-from .utils import current_agent, get_user_id, json_result
+from .utils import current_agent, get_user_id, is_admin, json_result
 
 logger = logging.getLogger(__name__)
 
 
 def _caller_is_admin(config: Optional[RunnableConfig]) -> bool:
-    user_id = get_user_id(config)
-    try:
-        agent = current_agent()
-        caller = agent.accounts_repo.get_user_by_id(user_id) if agent else None
-        return bool(caller and caller.role == "admin")
-    except Exception:
-        return False
+    """Admin gate for MCP search actions; fails closed (see ``utils.is_admin``)."""
+    return is_admin(get_user_id(config))
 
 
 @tool

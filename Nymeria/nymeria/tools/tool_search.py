@@ -28,7 +28,7 @@ from ..core.time_utils import (
     utc_now,
 )
 from ..core.tool_reload import should_emit_reload_command, tool_reload_command
-from .utils import get_thread_id, get_user_id
+from .utils import caller_role, get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -126,18 +126,6 @@ def _build_catalog() -> Dict[str, dict]:
                 }
 
     return catalog
-
-
-def _get_user_role(user_id: str) -> str:
-    """Best-effort role lookup for discovery and enable gates."""
-    from ..core.agent import get_current_agent
-
-    try:
-        agent = get_current_agent()
-        user = agent.accounts_repo.get_user_by_id(user_id) if agent and user_id else None
-        return user.role if user else "user"
-    except Exception:
-        return "user"
 
 
 def _build_discovery_catalog(user_role: str) -> Dict[str, dict]:
@@ -322,11 +310,7 @@ def bind_tools_for_thread(
             reason=reason,
         )
 
-    try:
-        user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
-        user_role = user.role if user else "user"
-    except Exception:
-        user_role = "user"
+    user_role = caller_role(user_id, agent=agent)
 
     ttl_value = DEFAULT_TTL if ttl is None else ttl
     try:
@@ -1169,7 +1153,7 @@ def tool_search(
     """
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
-    user_role = _get_user_role(user_id)
+    user_role = caller_role(user_id)
     logger.info(
         f"tool_search: query={query!r}, category={category!r}, "
         f"top_k={top_k!r}, include_status={include_status!r}"
@@ -1201,7 +1185,7 @@ def _tool_manage_impl(
     action = action.strip().lower()
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)
-    user_role = _get_user_role(user_id)
+    user_role = caller_role(user_id)
     logger.info(
         f"{source}: action={action}, category={category!r}, "
         f"tools={tools}, ttl={ttl!r}"
