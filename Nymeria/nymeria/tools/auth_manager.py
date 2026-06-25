@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NamedTuple
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -247,6 +247,39 @@ def _max_rows(limit: int) -> int:
     return max(1, min(500, int(limit or 100)))
 
 
+class _NormalizedFilters(NamedTuple):
+    provider: str
+    kind: str
+    status: str
+    account_id: str
+    prompt_id: str
+    max_rows: int
+
+
+def _normalize_filters(
+    provider: str,
+    kind: str,
+    status: str,
+    account_id: str,
+    prompt_id: str,
+    limit: int,
+) -> _NormalizedFilters:
+    """Normalize the credential filter args shared by auth_inspect/auth_cleanup.
+
+    provider/kind/status are lowercased; account_id/prompt_id are only stripped
+    (they are opaque identifiers, not case-insensitive enums). max_rows applies
+    the shared clamp.
+    """
+    return _NormalizedFilters(
+        provider=(provider or "").strip().lower(),
+        kind=(kind or "").strip().lower(),
+        status=(status or "").strip().lower(),
+        account_id=(account_id or "").strip(),
+        prompt_id=(prompt_id or "").strip(),
+        max_rows=_max_rows(limit),
+    )
+
+
 @tool
 def auth_inspect(
     view: Literal["list", "status", "oauth_accounts"] = "list",
@@ -272,12 +305,9 @@ def auth_inspect(
     user_id = get_user_id(config)
     repo = get_credential_vault_repo()
     normalized = (view or "list").strip().lower()
-    provider_norm = (provider or "").strip().lower()
-    kind_norm = (kind or "").strip().lower()
-    status_norm = (status or "").strip().lower()
-    account_id_norm = (account_id or "").strip()
-    prompt_id_norm = (prompt_id or "").strip()
-    max_rows = _max_rows(limit)
+    provider_norm, kind_norm, status_norm, account_id_norm, prompt_id_norm, max_rows = (
+        _normalize_filters(provider, kind, status, account_id, prompt_id, limit)
+    )
 
     if normalized == "list":
         records = _filtered_records(
@@ -352,12 +382,9 @@ def auth_cleanup(
     user_id = get_user_id(config)
     repo = get_credential_vault_repo()
     normalized = (operation or "stale_oauth").strip().lower()
-    provider_norm = (provider or "").strip().lower()
-    kind_norm = (kind or "").strip().lower()
-    status_norm = (status or "").strip().lower()
-    account_id_norm = (account_id or "").strip()
-    prompt_id_norm = (prompt_id or "").strip()
-    max_rows = _max_rows(limit)
+    provider_norm, kind_norm, status_norm, account_id_norm, prompt_id_norm, max_rows = (
+        _normalize_filters(provider, kind, status, account_id, prompt_id, limit)
+    )
 
     if normalized == "stale_oauth":
         records = _filtered_records(
