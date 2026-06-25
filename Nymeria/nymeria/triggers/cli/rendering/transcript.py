@@ -28,6 +28,7 @@ from .markdown import (
     truncate_cell_width,
     wrap_plain_text,
 )
+from .shared_helpers import _dispatch_reference_text, _needs_assistant_divider
 from .tool_rows import ToolRowRenderOptions, format_artifact_line, format_tool_row
 
 DEFAULT_TRANSCRIPT_WIDTH = 80
@@ -409,19 +410,6 @@ def _assistant_header_label(
     return f"{label}{separator}{activity}"
 
 
-def _dispatch_reference_text(message: AssistantMessage) -> str:
-    content = str(message.dispatch_info.get("content") or "").strip()
-    if content:
-        return content
-    title = str(message.dispatch_info.get("title") or "").strip()
-    thread_id = str(message.dispatch_info.get("thread_id") or "").strip()
-    if title:
-        return f"Response from {title}"
-    if thread_id:
-        return f"Response from {thread_id}"
-    return ""
-
-
 def _thinking_lines(
     step: ThinkingStep,
     width: int,
@@ -547,14 +535,6 @@ def _append_assistant_block(
             records.append(_assistant_divider_record(width, options))
             records.append(TranscriptLine("", "blank"))
     records.extend(incoming)
-
-
-def _needs_assistant_divider(
-    block_kind: Literal["thinking", "preamble", "tool", "final"],
-    *,
-    previous_block: Literal["thinking", "preamble", "tool", "final"],
-) -> bool:
-    return previous_block == "tool" and block_kind != "tool"
 
 
 def _assistant_divider_record(
