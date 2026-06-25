@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from nymeria.core.agent import get_current_agent
 from nymeria.tools.utils import (
     _escape_md_table_cell,
+    caller_role,
     current_agent,
+    is_admin,
     json_result,
     rows_to_markdown_table,
     versioned_json_result,
@@ -117,3 +121,85 @@ def test_escape_md_table_cell_coerces_non_str():
     # Defensive str() so a shared/public helper never blows up on a stray int.
     assert _escape_md_table_cell(42) == "42"
     assert _escape_md_table_cell("plain") == "plain"
+
+
+# --- caller_role / is_admin (slice 12 F11) ---------------------------------
+
+
+def _fake_agent_with_role(role: str):
+    """A minimal agent whose accounts_repo resolves "u1" to ``role``."""
+    user = SimpleNamespace(id="u1", role=role, disabled=False)
+    repo = SimpleNamespace(get_user_by_id=lambda uid: user if uid == "u1" else None)
+    return SimpleNamespace(accounts_repo=repo)
+
+
+def _raising_agent():
+    def _boom(_uid):
+        raise RuntimeError("repo down")
+
+    return SimpleNamespace(accounts_repo=SimpleNamespace(get_user_by_id=_boom))
+
+
+def test_caller_role_resolves_via_lazy_agent_seam():
+    # The lazy default path resolves through current_agent(), whose function-local
+    # import binds nymeria.core.agent.get_current_agent at call time. Patching that
+    # canonical seam must still work; this is the single most likely silent
+    # breakage if the import is ever hoisted to module level.
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("admin")):
+        assert caller_role("u1") == "admin"
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("user")):
+        assert caller_role("u1") == "user"
+
+
+def test_caller_role_fails_closed_to_user():
+    # No agent, unknown account, falsy user_id, and repo errors all deny.
+    with patch("nymeria.core.agent.get_current_agent", return_value=None):
+        assert caller_role("u1") == "user"
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("admin")):
+        assert caller_role("ghost") == "user"
+        assert caller_role("") == "user"
+        assert caller_role(None) == "user"
+    with patch("nymeria.core.agent.get_current_agent", return_value=_raising_agent()):
+        assert caller_role("u1") == "user"
+
+
+def test_caller_role_preserves_role_string_byte_for_byte():
+    # Locks equivalence with the retired _get_user_role: the resolved role string
+    # is returned verbatim (only a missing user collapses to "user"). An empty
+    # role string is preserved as-is (it is simply not "admin"), matching the old
+    # `user.role if user else "user"` shape rather than coercing falsy to "user".
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("developer")):
+        assert caller_role("u1") == "developer"
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("")):
+        assert caller_role("u1") == ""
+        assert is_admin("u1") is False
+
+
+def test_caller_role_explicit_agent_skips_lazy_lookup():
+    # When an agent is passed in (e.g. a tool that already holds it), current_agent
+    # is never consulted, avoiding a redundant contextvar lookup and a TOCTOU.
+    def _should_not_be_called():
+        raise AssertionError("current_agent() must not be called when agent= is provided")
+
+    with patch("nymeria.core.agent.get_current_agent", side_effect=_should_not_be_called):
+        assert caller_role("u1", agent=_fake_agent_with_role("admin")) == "admin"
+        assert caller_role("ghost", agent=_fake_agent_with_role("admin")) == "user"
+
+
+def test_is_admin_true_only_for_admin_role():
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("admin")):
+        assert is_admin("u1") is True
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("user")):
+        assert is_admin("u1") is False
+    # Fail-closed: no agent, unknown account, and repo errors all deny.
+    with patch("nymeria.core.agent.get_current_agent", return_value=None):
+        assert is_admin("u1") is False
+    with patch("nymeria.core.agent.get_current_agent", return_value=_fake_agent_with_role("admin")):
+        assert is_admin("ghost") is False
+    with patch("nymeria.core.agent.get_current_agent", return_value=_raising_agent()):
+        assert is_admin("u1") is False
+
+
+def test_is_admin_honors_explicit_agent():
+    assert is_admin("u1", agent=_fake_agent_with_role("admin")) is True
+    assert is_admin("u1", agent=_fake_agent_with_role("user")) is False

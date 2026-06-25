@@ -32,7 +32,7 @@ from .tool_search import (
     _format_unloadable_error,
     _resolve_tool_object,
 )
-from .utils import get_thread_id, get_user_id, versioned_json_result
+from .utils import caller_role, get_thread_id, get_user_id, versioned_json_result
 
 logger = logging.getLogger(__name__)
 
@@ -361,11 +361,7 @@ def _validate_required_tools(required_tools: list[str], user_id: str) -> None:
     if unloadable:
         errors.append(_format_unloadable_error(unloadable))
 
-    try:
-        user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
-        role = user.role if user else "user"
-    except Exception:
-        role = "user"
+    role = caller_role(user_id, agent=agent)
     _, blocked = filter_admin_only_tools(valid, role)
     if blocked:
         errors.append(

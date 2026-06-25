@@ -25,6 +25,38 @@ def current_agent() -> Optional[Any]:
     return get_current_agent()
 
 
+def caller_role(user_id: Optional[str], *, agent: Optional[Any] = None) -> str:
+    """Resolve a caller's account role, failing closed to ``"user"``.
+
+    The active ``NymeriaAgent`` is resolved lazily via :func:`current_agent`
+    when ``agent`` is None; a caller that already holds the agent (e.g. inside
+    a tool that received it as a parameter) passes it in to avoid a redundant
+    contextvar lookup. Any failure (no agent, falsy ``user_id``, unknown user,
+    or a repo/lookup error) yields ``"user"``, the non-privileged default
+    several admin gates depend on. This is the shared home for the silent
+    fail-closed role resolution that several tool modules previously
+    re-implemented per file (sites that need to log or raise on failure, e.g.
+    ``tool_create._user_is_admin``, keep their own resolution).
+    """
+    try:
+        resolved = agent if agent is not None else current_agent()
+        if not (resolved and user_id):
+            return "user"
+        user = resolved.accounts_repo.get_user_by_id(user_id)
+        return user.role if user else "user"
+    except Exception:
+        return "user"
+
+
+def is_admin(user_id: Optional[str], *, agent: Optional[Any] = None) -> bool:
+    """Return True only if ``user_id`` resolves to an admin account.
+
+    Thin predicate over :func:`caller_role`; inherits its fail-closed contract
+    (any resolution failure denies).
+    """
+    return caller_role(user_id, agent=agent) == "admin"
+
+
 def json_result(**payload: Any) -> str:
     """Serialize a tool-result payload as pretty JSON (``default=str``)."""
     return json.dumps(payload, indent=2, default=str)
