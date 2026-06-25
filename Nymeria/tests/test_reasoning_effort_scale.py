@@ -31,40 +31,29 @@ from nymeria.vendor.react_agent.providers import (
     create_llm,
 )
 
+from _provider_test_helpers import llm_config  # type: ignore[import-not-found]
+
 
 def _openai_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "openai",
-        "model": "gpt-5.5",
-        "api_key": "test-key",
-        "base_url": "http://example.test/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {"provider": "openai", "model": "gpt-5.5", "base_url": "http://example.test/v1"},
+        **overrides,
+    )
 
 
 def _openrouter_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "openrouter",
-        "model": "qwen/qwen3.6-flash",
-        "api_key": "test-key",
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "openrouter",
+            "model": "qwen/qwen3.6-flash",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+        **overrides,
+    )
 
 
 def _anthropic_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-5",
-        "api_key": "test-key",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config({"provider": "anthropic", "model": "claude-sonnet-4-5"}, **overrides)
 
 
 def _create_anthropic(**overrides):
