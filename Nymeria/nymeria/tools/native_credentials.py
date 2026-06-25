@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -115,6 +116,46 @@ def get_native_credential_value(
     except Exception:
         logger.debug("Native credential lookup failed for provider %s", provider, exc_info=True)
     return None
+
+
+def resolve_native_credential(
+    *,
+    provider: str,
+    tool_name: str,
+    settings_attr: str,
+    config: Optional[RunnableConfig] = None,
+    aliases: tuple[str, ...] = (),
+    env_vars: tuple[str, ...] = (),
+    field_names: Iterable[str] = ("api_key", "token", "value"),
+) -> Optional[str]:
+    """Resolve a native-tool credential string: vault, then settings, then env.
+
+    Tries the credential vault (``get_native_credential_value``), then the named
+    ``Settings`` attribute, then each env var in ``env_vars`` order, returning the
+    first truthy value (or None). ``field_names`` defaults to the standard API-key
+    trio; pass a different tuple for non-key credentials (e.g. the SearXNG base
+    URL). Replaces the per-provider ``_get_<provider>_api_key`` resolvers that each
+    hand-rolled this vault -> settings -> env fallback.
+    """
+    cred = get_native_credential_value(
+        provider=provider,
+        provider_aliases=aliases,
+        field_names=field_names,
+        tool_name=tool_name,
+        config=config,
+    )
+    if cred and cred.value:
+        return cred.value
+
+    from ..config import get_settings
+
+    # Left-fold of ``or`` reproduces ``settings.X or env(A) or env(B)`` exactly,
+    # including the empty-string edge (the original returns the last ``.get()``
+    # verbatim when nothing is truthy).
+    value = getattr(get_settings(), settings_attr)
+    for env_var in env_vars:
+        value = value or os.environ.get(env_var)
+    return value
 
 
 def native_credential_setup_hint(

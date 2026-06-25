@@ -12,7 +12,6 @@ into ``CATALOG_TOOLS`` alongside ``WEB_SEARCH_SERVICE_TOOLS``.
 """
 
 import logging
-import os
 import re
 from typing import Annotated, Optional
 
@@ -87,21 +86,16 @@ _DDGS_TIMEOUT = 15
 
 def _get_tavily_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Tavily API key: credential vault, then settings, then env."""
-    from .native_credentials import get_native_credential_value
+    from .native_credentials import resolve_native_credential
 
-    cred = get_native_credential_value(
+    return resolve_native_credential(
         provider="tavily",
-        provider_aliases=("tavily_api", "tvly"),
-        field_names=("api_key", "token", "value"),
+        aliases=("tavily_api", "tvly"),
         tool_name="web_search_tavily",
         config=config,
+        settings_attr="tavily_api_key",
+        env_vars=("TAVILY_API_KEY",),
     )
-    if cred and cred.value:
-        return cred.value
-
-    from ..config import get_settings
-    settings = get_settings()
-    return settings.tavily_api_key or os.environ.get("TAVILY_API_KEY")
 
 
 def _format_tavily_results(data: dict, max_results: int) -> str:
@@ -275,21 +269,16 @@ def web_search_tavily(
 
 def _get_exa_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Exa API key: credential vault, then settings, then env."""
-    from .native_credentials import get_native_credential_value
+    from .native_credentials import resolve_native_credential
 
-    cred = get_native_credential_value(
+    return resolve_native_credential(
         provider="exa",
-        provider_aliases=("exa_ai", "exaai"),
-        field_names=("api_key", "token", "value"),
+        aliases=("exa_ai", "exaai"),
         tool_name="web_search_exa_ai",
         config=config,
+        settings_attr="exa_api_key",
+        env_vars=("EXA_API_KEY",),
     )
-    if cred and cred.value:
-        return cred.value
-
-    from ..config import get_settings
-    settings = get_settings()
-    return settings.exa_api_key or os.environ.get("EXA_API_KEY")
 
 
 def _format_exa_results(data: dict, max_results: int) -> str:
@@ -485,21 +474,16 @@ def web_search_exa_ai(
 
 def _get_firecrawl_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Firecrawl API key: credential vault, then settings, then env."""
-    from .native_credentials import get_native_credential_value
+    from .native_credentials import resolve_native_credential
 
-    cred = get_native_credential_value(
+    return resolve_native_credential(
         provider="firecrawl",
-        provider_aliases=("firecrawl_api", "fc"),
-        field_names=("api_key", "token", "value"),
+        aliases=("firecrawl_api", "fc"),
         tool_name="web_search_firecrawl",
         config=config,
+        settings_attr="firecrawl_api_key",
+        env_vars=("FIRECRAWL_API_KEY",),
     )
-    if cred and cred.value:
-        return cred.value
-
-    from ..config import get_settings
-    settings = get_settings()
-    return settings.firecrawl_api_key or os.environ.get("FIRECRAWL_API_KEY")
 
 
 def _format_firecrawl_results(data: dict, max_results: int) -> str:
@@ -693,21 +677,16 @@ def web_search_firecrawl(
 
 def _get_brave_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Brave API key: credential vault, then settings, then env."""
-    from .native_credentials import get_native_credential_value
+    from .native_credentials import resolve_native_credential
 
-    cred = get_native_credential_value(
+    return resolve_native_credential(
         provider="brave",
-        provider_aliases=("brave_search", "brave_api"),
-        field_names=("api_key", "token", "value"),
+        aliases=("brave_search", "brave_api"),
         tool_name="web_search_brave",
         config=config,
+        settings_attr="brave_api_key",
+        env_vars=("BRAVE_API_KEY",),
     )
-    if cred and cred.value:
-        return cred.value
-
-    from ..config import get_settings
-    settings = get_settings()
-    return settings.brave_api_key or os.environ.get("BRAVE_API_KEY")
 
 
 def _format_brave_results(data: dict, count: int) -> str:
@@ -923,21 +902,17 @@ def _get_searxng_base_url(config: Optional[RunnableConfig] = None) -> Optional[s
     self-hosted instance (it needs no API key). The base URL is typically an
     internal sidecar such as http://searxng:8080.
     """
-    from .native_credentials import get_native_credential_value
+    from .native_credentials import resolve_native_credential
 
-    cred = get_native_credential_value(
+    return resolve_native_credential(
         provider="searxng",
-        provider_aliases=("searx", "searx_ng"),
-        field_names=("base_url", "url", "value"),
+        aliases=("searx", "searx_ng"),
         tool_name="web_search_searxng",
         config=config,
+        settings_attr="searxng_base_url",
+        env_vars=("SEARXNG_BASE_URL",),
+        field_names=("base_url", "url", "value"),
     )
-    if cred and cred.value:
-        return cred.value
-
-    from ..config import get_settings
-    settings = get_settings()
-    return settings.searxng_base_url or os.environ.get("SEARXNG_BASE_URL")
 
 
 def _format_searxng_results(data: dict, count: int) -> str:

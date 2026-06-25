@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import functools
 import logging
-import os
 import time
 from typing import Annotated, Any, Callable, Optional
 
@@ -128,25 +127,6 @@ def _missing_key_error(label: str, provider: str, tool_name: str, env_var: str) 
     )
 
 
-def _vault_key(
-    provider: str,
-    aliases: tuple[str, ...],
-    tool_name: str,
-    config: Optional[RunnableConfig],
-) -> Optional[str]:
-    """Return a credential-vault API key for a native tool, or None."""
-    from .native_credentials import get_native_credential_value
-
-    cred = get_native_credential_value(
-        provider=provider,
-        provider_aliases=aliases,
-        field_names=("api_key", "token", "value"),
-        tool_name=tool_name,
-        config=config,
-    )
-    return cred.value if cred and cred.value else None
-
-
 def _poll_json(
     client: Any,
     url: str,
@@ -180,11 +160,16 @@ def _get_openai_image_api_key(config: Optional[RunnableConfig] = None) -> Option
     (cpx-*) that cannot call the real OpenAI image API, so a genuine OpenAI key
     supplied through the vault is the primary path for this tool.
     """
-    key = _vault_key("openai", ("openai_api", "gpt_image"), "image_gen_openai", config)
-    if key:
-        return key
-    from ..config import get_settings
-    return get_settings().openai_api_key or os.environ.get("OPENAI_API_KEY")
+    from .native_credentials import resolve_native_credential
+
+    return resolve_native_credential(
+        provider="openai",
+        aliases=("openai_api", "gpt_image"),
+        tool_name="image_gen_openai",
+        config=config,
+        settings_attr="openai_api_key",
+        env_vars=("OPENAI_API_KEY",),
+    )
 
 
 @tool(response_format="content_and_artifact")
@@ -245,11 +230,16 @@ def image_gen_openai(
 # --- Gemini ------------------------------------------------------------------
 def _get_gemini_image_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Gemini key: credential vault, then settings, then env."""
-    key = _vault_key("gemini", ("google_gemini", "genai"), "image_gen_gemini", config)
-    if key:
-        return key
-    from ..config import get_settings
-    return get_settings().gemini_api_key or os.environ.get("GEMINI_API_KEY")
+    from .native_credentials import resolve_native_credential
+
+    return resolve_native_credential(
+        provider="gemini",
+        aliases=("google_gemini", "genai"),
+        tool_name="image_gen_gemini",
+        config=config,
+        settings_attr="gemini_api_key",
+        env_vars=("GEMINI_API_KEY",),
+    )
 
 
 @tool(response_format="content_and_artifact")
@@ -307,11 +297,16 @@ def image_gen_gemini(
 # --- Black Forest Labs FLUX --------------------------------------------------
 def _get_bfl_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Black Forest Labs key: credential vault, then settings, then env."""
-    key = _vault_key("bfl", ("black_forest_labs", "flux"), "image_gen_flux", config)
-    if key:
-        return key
-    from ..config import get_settings
-    return get_settings().bfl_api_key or os.environ.get("BFL_API_KEY")
+    from .native_credentials import resolve_native_credential
+
+    return resolve_native_credential(
+        provider="bfl",
+        aliases=("black_forest_labs", "flux"),
+        tool_name="image_gen_flux",
+        config=config,
+        settings_attr="bfl_api_key",
+        env_vars=("BFL_API_KEY",),
+    )
 
 
 @tool(response_format="content_and_artifact")
@@ -396,14 +391,15 @@ def image_gen_flux(
 # --- Replicate ---------------------------------------------------------------
 def _get_replicate_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Replicate token: credential vault, then settings, then env."""
-    key = _vault_key("replicate", ("replicate_api", "r8"), "image_gen_replicate", config)
-    if key:
-        return key
-    from ..config import get_settings
-    return (
-        get_settings().replicate_api_key
-        or os.environ.get("REPLICATE_API_KEY")
-        or os.environ.get("REPLICATE_API_TOKEN")
+    from .native_credentials import resolve_native_credential
+
+    return resolve_native_credential(
+        provider="replicate",
+        aliases=("replicate_api", "r8"),
+        tool_name="image_gen_replicate",
+        config=config,
+        settings_attr="replicate_api_key",
+        env_vars=("REPLICATE_API_KEY", "REPLICATE_API_TOKEN"),
     )
 
 
@@ -510,14 +506,15 @@ def image_gen_replicate(
 # --- fal.ai ------------------------------------------------------------------
 def _get_fal_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the fal.ai key: credential vault, then settings, then env."""
-    key = _vault_key("fal", ("fal_ai", "falai"), "image_gen_fal", config)
-    if key:
-        return key
-    from ..config import get_settings
-    return (
-        get_settings().fal_api_key
-        or os.environ.get("FAL_API_KEY")
-        or os.environ.get("FAL_KEY")
+    from .native_credentials import resolve_native_credential
+
+    return resolve_native_credential(
+        provider="fal",
+        aliases=("fal_ai", "falai"),
+        tool_name="image_gen_fal",
+        config=config,
+        settings_attr="fal_api_key",
+        env_vars=("FAL_API_KEY", "FAL_KEY"),
     )
 
 

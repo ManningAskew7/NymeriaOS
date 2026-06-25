@@ -1,7 +1,6 @@
 """Web search tool for Nymeria."""
 
 import logging
-import os
 from typing import Annotated, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -21,21 +20,16 @@ _MAX_BATCH_QUERIES = 10
 
 def _get_perplexity_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Perplexity API key: credential vault, then settings, then env."""
-    from .native_credentials import get_native_credential_value
+    from .native_credentials import resolve_native_credential
 
-    cred = get_native_credential_value(
+    return resolve_native_credential(
         provider="perplexity",
-        provider_aliases=("perplexity_api", "pplx"),
-        field_names=("api_key", "token", "value"),
+        aliases=("perplexity_api", "pplx"),
         tool_name="web_search_perplexity",
         config=config,
+        settings_attr="perplexity_api_key",
+        env_vars=("PERPLEXITY_API_KEY",),
     )
-    if cred and cred.value:
-        return cred.value
-
-    from ..config import get_settings
-    settings = get_settings()
-    return settings.perplexity_api_key or os.environ.get("PERPLEXITY_API_KEY")
 
 
 def _search_single(
