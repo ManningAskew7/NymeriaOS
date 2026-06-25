@@ -26,9 +26,32 @@ from ...core.event_bus import (
     get_event_bus,
     should_log_stream_event_sample,
 )
-from ..sse import SSE_RESPONSE_HEADERS
+from ..sse import SSE_KEEPALIVE_FRAME, SSE_RESPONSE_HEADERS
 
 logger = logging.getLogger(__name__)
+
+# Idle subscribers re-poll the synchronous event queue on this cadence. It bounds
+# event-delivery latency and the client-disconnect check interval, and is kept
+# deliberately separate from the keepalive cadence below. (Switching the queue to
+# an awaitable would drop the poll entirely but touches the shared event bus, out
+# of scope here.)
+_QUEUE_POLL_INTERVAL_SECONDS = 1.0
+
+# A `: keepalive` SSE comment frame is emitted after this many seconds of
+# continuous silence to hold the connection open. Decoupling it from the poll
+# cadence means an idle stream no longer emits a comment frame every second. The
+# value sits well under the desktop/mobile autonomous-store idle-reconnect timer
+# (30s) and far under the proxy idle floor (Cloudflare closes at ~100s). It is
+# intentionally not the chat stream's 25s constant, which would leave too thin a
+# margin under that 30s client timer.
+_KEEPALIVE_INTERVAL_SECONDS = 10.0
+
+# Emit one keepalive every Nth consecutive idle poll (always at least one).
+# Derived once at import from the two interval constants above, so a test or
+# reconfig that changes a single interval should patch this value directly.
+_KEEPALIVE_POLL_INTERVAL = max(
+    1, round(_KEEPALIVE_INTERVAL_SECONDS / _QUEUE_POLL_INTERVAL_SECONDS)
+)
 
 
 def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
@@ -119,6 +142,7 @@ async def _generate_autonomous_sse_events(
         return counter[key]
 
     try:
+        idle_polls = 0
         while True:
             if await request.is_disconnected():
                 logger.info(
@@ -198,10 +222,18 @@ async def _generate_autonomous_sse_events(
                         event.task_id,
                     )
                 yield f"data: {serialized}\n\n"
+                idle_polls = 0
 
             except Empty:
-                yield ": heartbeat\n\n"
-                await asyncio.sleep(1)
+                # Emit a keepalive comment frame only after a stretch of silence
+                # (every `_KEEPALIVE_POLL_INTERVAL` idle polls), not on every
+                # poll, so an idle stream is not flooded with one frame per
+                # second. `: keepalive` is an SSE comment that every consumer
+                # skips; the sleep bounds event latency and the disconnect check.
+                idle_polls += 1
+                if idle_polls % _KEEPALIVE_POLL_INTERVAL == 0:
+                    yield SSE_KEEPALIVE_FRAME
+                await asyncio.sleep(_QUEUE_POLL_INTERVAL_SECONDS)
 
     finally:
         event_bus.unsubscribe(subscriber_id)
