@@ -16,6 +16,7 @@ from .service_integration_base import (
     credential_value as _credential_value,
     dump_json,
     filtered as _filtered_params,
+    parse_json as _parse_json,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -51,18 +52,6 @@ def _limit(value: int, *, default: int = 25, max_value: int = 1000) -> int:
         return max(1, min(max_value, int(value)))
     except Exception:
         return default
-
-
-def _parse_json(value: str, *, expected: type, label: str) -> Any:
-    if not value.strip():
-        return {} if expected is dict else []
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"{label} must be valid JSON: {e}") from e
-    if not isinstance(parsed, expected):
-        raise ValueError(f"{label} must be a JSON {expected.__name__}.")
-    return parsed
 
 
 def _request_json(

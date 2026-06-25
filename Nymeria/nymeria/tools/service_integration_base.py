@@ -115,6 +115,27 @@ def json_array_or_object(value: str, *, field_name: str) -> list[dict[str, Any]]
     return records
 
 
+def parse_json(value: str, *, expected: type, label: str) -> Any:
+    """Parse ``value`` as JSON, requiring it to be of type ``expected``.
+
+    The generalized JSON-argument parser shared across the ``*_service_integrations``
+    corpus (slices 13/14/15). Empty/whitespace input yields the empty ``expected``
+    instance (``{}`` for ``dict``, ``[]`` for ``list``); ``expected`` is only ever
+    ``dict`` or ``list`` at the call sites. Distinct from ``json_object`` /
+    ``json_array_or_object`` (which carry their own message wording and a
+    fixed-shape contract); those stay separate.
+    """
+    if not value.strip():
+        return {} if expected is dict else []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{label} must be valid JSON: {e}") from e
+    if not isinstance(parsed, expected):
+        raise ValueError(f"{label} must be a JSON {expected.__name__}.")
+    return parsed
+
+
 def basic_auth(username: str, password: str = "") -> str:
     return base64.b64encode(f"{username}:{password}".encode()).decode()
 
