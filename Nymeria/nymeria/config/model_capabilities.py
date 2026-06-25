@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import time
-from typing import Any, Callable, Dict, List, Optional, Set, TypedDict
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, TypedDict
 
 import httpx
 
@@ -1420,6 +1420,78 @@ class AttachmentCompatibilityReport(TypedDict):
     warnings: List[str]
 
 
+class _ClassifiedAttachment(NamedTuple):
+    """The outcome of classifying one attachment in the compatibility loop.
+
+    Exactly one of the four shapes is produced per attachment:
+    - image:          ("image", False, False, None)
+    - pdf document:   ("file",  True,  False, None)
+    - text document:  ("text",  False, False, None)
+    - other/unknown:  (None,    False, True,  "<warning>")
+    """
+
+    required_modality: Optional[str]
+    is_pdf: bool
+    unsupported: bool
+    warning: Optional[str]
+
+
+def _classify_attachment(attachment: Dict[str, str]) -> _ClassifiedAttachment:
+    """Classify one attachment into the modality it requires (or flag it unsupported)."""
+    mime_type = infer_mime_type(
+        attachment.get("mime_type", ""),
+        attachment.get("file_name", ""),
+    )
+    file_type = normalize_attachment_file_type(
+        attachment.get("file_type", ""),
+        mime_type,
+        attachment.get("file_name", ""),
+    )
+
+    if file_type == "image":
+        return _ClassifiedAttachment("image", False, False, None)
+
+    if file_type == "document":
+        if mime_type == "application/pdf":
+            return _ClassifiedAttachment("file", True, False, None)
+
+        if mime_type in TEXT_DOCUMENT_MIME_TYPES:
+            return _ClassifiedAttachment("text", False, False, None)
+
+        return _ClassifiedAttachment(
+            None,
+            False,
+            True,
+            f"Unsupported document type '{mime_type or 'unknown'}'. "
+            "Supported documents are PDF, TXT, MD, and CSV.",
+        )
+
+    return _ClassifiedAttachment(
+        None,
+        False,
+        True,
+        "Unsupported attachment type. Supported types are image and document.",
+    )
+
+
+def _modality_supported(model_id: str, modality: str, modalities: Set[str]) -> bool:
+    """Whether a required ``modality`` is supported by the model.
+
+    Prefer machine-readable reported ``modalities`` when present; otherwise fall
+    back to the static capability tables. ``text`` has no static fallback, so an
+    unreported text modality is treated as supported (mirroring the prior
+    ``... and modalities and ...`` guard that skipped the text check entirely
+    when no modalities were reported).
+    """
+    if modalities:
+        return modality in modalities
+    if modality == "image":
+        return supports_vision(model_id)
+    if modality == "file":
+        return supports_documents(model_id)
+    return True
+
+
 def evaluate_attachment_compatibility(
     model_id: str,
     provider: str,
@@ -1438,75 +1510,33 @@ def evaluate_attachment_compatibility(
     has_pdf = False
 
     for attachment in attachments or []:
-        mime_type = infer_mime_type(
-            attachment.get("mime_type", ""),
-            attachment.get("file_name", ""),
-        )
-        file_type = normalize_attachment_file_type(
-            attachment.get("file_type", ""),
-            mime_type,
-            attachment.get("file_name", ""),
-        )
-
-        if file_type == "image":
-            required_modalities.add("image")
-            continue
-
-        if file_type == "document":
-            if mime_type == "application/pdf":
-                has_pdf = True
-                required_modalities.add("file")
-                continue
-
-            if mime_type in TEXT_DOCUMENT_MIME_TYPES:
-                required_modalities.add("text")
-                continue
-
+        classified = _classify_attachment(attachment)
+        if classified.required_modality is not None:
+            required_modalities.add(classified.required_modality)
+        if classified.is_pdf:
+            has_pdf = True
+        if classified.unsupported:
             unsupported_modalities.add("document")
-            warnings.append(
-                f"Unsupported document type '{mime_type or 'unknown'}'. "
-                "Supported documents are PDF, TXT, MD, and CSV."
-            )
-            continue
+        if classified.warning is not None:
+            warnings.append(classified.warning)
 
-        unsupported_modalities.add("document")
-        warnings.append("Unsupported attachment type. Supported types are image and document.")
+    # The image and text checks are provider-agnostic: reported modalities win,
+    # else the static capability fallback (and text has no static fallback).
+    if "image" in required_modalities and not _modality_supported(model_id, "image", modalities):
+        unsupported_modalities.add("image")
 
-    if normalized_provider == "openrouter":
-        if "image" in required_modalities:
-            if modalities:
-                if "image" not in modalities:
-                    unsupported_modalities.add("image")
-            elif not supports_vision(model_id):
-                unsupported_modalities.add("image")
-
-        # OpenRouter can parse PDFs even for models without native file input.
-        if has_pdf and modalities and "file" not in modalities:
-            warnings.append(
-                "This model does not report native file input. OpenRouter may parse PDFs before sending text to the model."
-            )
-    elif normalized_provider == "anthropic":
-        if "image" in required_modalities:
-            if modalities:
-                if "image" not in modalities:
-                    unsupported_modalities.add("image")
-            elif not supports_vision(model_id):
-                unsupported_modalities.add("image")
-
-        if has_pdf:
-            if modalities:
-                if "file" not in modalities:
-                    unsupported_modalities.add("file")
-            elif not supports_documents(model_id):
-                unsupported_modalities.add("file")
-    else:
-        if "image" in required_modalities and not supports_vision(model_id):
-            unsupported_modalities.add("image")
-
-        if has_pdf and not supports_documents(model_id):
+    # PDFs are the one provider-specific case: OpenRouter can pre-parse PDFs even
+    # for models without native file input, so it warns rather than blocking.
+    if has_pdf:
+        if normalized_provider == "openrouter":
+            if modalities and "file" not in modalities:
+                warnings.append(
+                    "This model does not report native file input. OpenRouter may parse PDFs before sending text to the model."
+                )
+        elif not _modality_supported(model_id, "file", modalities):
             unsupported_modalities.add("file")
 
-    if "text" in required_modalities and modalities and "text" not in modalities:
+    if "text" in required_modalities and not _modality_supported(model_id, "text", modalities):
         unsupported_modalities.add("text")
 
     return {

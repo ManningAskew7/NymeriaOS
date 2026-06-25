@@ -6,6 +6,7 @@ import json
 import time
 import threading
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -246,6 +247,314 @@ def test_evaluate_attachment_compatibility_anthropic_flags_unreported_file(monke
 
     assert report["compatible"] is False
     assert "file" in report["unsupported_modalities"]
+
+
+# ---------------------------------------------------------------------------
+# F8 characterization suite: full-branch coverage of
+# evaluate_attachment_compatibility. These lock the public contract (the
+# `compatible` bool, the three sorted modality lists, and the warning strings +
+# order) so the decomposition into _classify_attachment / _modality_supported
+# stays behavior-preserving. They pass against the pre- and post-refactor code.
+# ---------------------------------------------------------------------------
+
+def _att(file_type, mime_type, file_name="f"):
+    return {
+        "file_type": file_type,
+        "mime_type": mime_type,
+        "file_name": file_name,
+        "data_url": "data:,",
+    }
+
+
+def test_eval_empty_and_none_attachments_are_compatible(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    for attachments in (None, []):
+        report = capabilities.evaluate_attachment_compatibility("m", "openai", attachments)
+        assert report == {
+            "compatible": True,
+            "model_input_modalities": [],
+            "required_modalities": [],
+            "unsupported_modalities": [],
+            "warnings": [],
+        }
+
+
+def test_eval_else_provider_never_consults_live_modalities(monkeypatch):
+    # A non-openrouter/anthropic provider must NOT report live modalities, even
+    # when the model is cached with them.
+    _set_model_cache(
+        monkeypatch,
+        {"m": ModelInfo(id="m", input_modalities={"text", "image", "file"})},
+    )
+    report = capabilities.evaluate_attachment_compatibility("m", "openai", [_att("image", "image/png")])
+    assert report["model_input_modalities"] == []
+    assert report["compatible"] is True
+
+
+def test_eval_else_provider_image_static_fallback(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: False)
+    monkeypatch.setattr(capabilities, "supports_documents", lambda mid: True)
+    report = capabilities.evaluate_attachment_compatibility("m", "openai", [_att("image", "image/png")])
+    assert report["compatible"] is False
+    assert report["required_modalities"] == ["image"]
+    assert report["unsupported_modalities"] == ["image"]
+
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: True)
+    ok = capabilities.evaluate_attachment_compatibility("m", "openai", [_att("image", "image/png")])
+    assert ok["compatible"] is True
+    assert ok["unsupported_modalities"] == []
+
+
+def test_eval_pdf_required_modality_is_file(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: True)
+    monkeypatch.setattr(capabilities, "supports_documents", lambda mid: True)
+    report = capabilities.evaluate_attachment_compatibility(
+        "m", "openai", [_att("document", "application/pdf", "b.pdf")]
+    )
+    assert report["required_modalities"] == ["file"]
+    assert report["compatible"] is True
+
+
+def test_eval_else_provider_pdf_static_fallback(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: True)
+    monkeypatch.setattr(capabilities, "supports_documents", lambda mid: False)
+    report = capabilities.evaluate_attachment_compatibility(
+        "m", "openai", [_att("document", "application/pdf", "b.pdf")]
+    )
+    assert report["compatible"] is False
+    assert report["unsupported_modalities"] == ["file"]
+
+
+def test_eval_text_document_types_supported(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: True)
+    monkeypatch.setattr(capabilities, "supports_documents", lambda mid: True)
+    for mime, name in (("text/plain", "a.txt"), ("text/markdown", "a.md"), ("text/csv", "a.csv")):
+        report = capabilities.evaluate_attachment_compatibility("m", "openai", [_att("document", mime, name)])
+        assert report["required_modalities"] == ["text"], mime
+        assert report["compatible"] is True, mime
+
+
+def test_eval_unsupported_document_mime_warns_exact_string(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    report = capabilities.evaluate_attachment_compatibility(
+        "m", "openai", [_att("document", "application/msword", "a.doc")]
+    )
+    assert report["compatible"] is False
+    assert report["unsupported_modalities"] == ["document"]
+    assert report["warnings"] == [
+        "Unsupported document type 'application/msword'. "
+        "Supported documents are PDF, TXT, MD, and CSV."
+    ]
+
+
+def test_eval_unsupported_attachment_type_warns_exact_string(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    report = capabilities.evaluate_attachment_compatibility(
+        "m", "openai", [_att("video", "video/mp4", "a.mp4")]
+    )
+    assert report["compatible"] is False
+    assert report["unsupported_modalities"] == ["document"]
+    assert report["warnings"] == [
+        "Unsupported attachment type. Supported types are image and document."
+    ]
+
+
+def test_eval_openrouter_image_unsupported_when_not_reported(monkeypatch):
+    _set_model_cache(monkeypatch, {"m": ModelInfo(id="m", input_modalities={"text"})})
+    report = capabilities.evaluate_attachment_compatibility("m", "openrouter", [_att("image", "image/png")])
+    assert report["compatible"] is False
+    assert report["unsupported_modalities"] == ["image"]
+    assert report["model_input_modalities"] == ["text"]
+
+
+def test_eval_openrouter_pdf_warns_but_stays_compatible(monkeypatch):
+    # OpenRouter can pre-parse PDFs: warn when file input is unreported, but never
+    # mark the attachment incompatible.
+    _set_model_cache(monkeypatch, {"m": ModelInfo(id="m", input_modalities={"text", "image"})})
+    report = capabilities.evaluate_attachment_compatibility(
+        "m", "openrouter", [_att("document", "application/pdf", "b.pdf")]
+    )
+    assert report["compatible"] is True
+    assert "file" not in report["unsupported_modalities"]
+    assert report["warnings"] == [
+        "This model does not report native file input. "
+        "OpenRouter may parse PDFs before sending text to the model."
+    ]
+
+
+def test_eval_openrouter_pdf_no_warning_when_no_modalities_reported(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: True)
+    monkeypatch.setattr(capabilities, "supports_documents", lambda mid: True)
+    report = capabilities.evaluate_attachment_compatibility(
+        "m", "openrouter", [_att("document", "application/pdf", "b.pdf")]
+    )
+    assert report["warnings"] == []
+    assert report["unsupported_modalities"] == []
+    assert report["compatible"] is True
+
+
+def test_eval_anthropic_pdf_static_fallback_when_no_modalities(monkeypatch):
+    _clear_model_cache(monkeypatch)
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: True)
+    monkeypatch.setattr(capabilities, "supports_documents", lambda mid: False)
+    report = capabilities.evaluate_attachment_compatibility(
+        "m", "anthropic", [_att("document", "application/pdf", "b.pdf")]
+    )
+    assert report["compatible"] is False
+    assert report["unsupported_modalities"] == ["file"]
+    assert report["model_input_modalities"] == []
+
+
+def test_eval_text_unsupported_when_reported_modalities_lack_text(monkeypatch):
+    _set_model_cache(monkeypatch, {"m": ModelInfo(id="m", input_modalities={"image"})})
+    report = capabilities.evaluate_attachment_compatibility(
+        "m", "anthropic", [_att("document", "text/plain", "a.txt")]
+    )
+    assert report["compatible"] is False
+    assert report["unsupported_modalities"] == ["text"]
+
+
+def test_eval_mixed_attachments_all_supported_anthropic(monkeypatch):
+    _set_model_cache(
+        monkeypatch,
+        {"m": ModelInfo(id="m", input_modalities={"text", "image", "file"})},
+    )
+    report = capabilities.evaluate_attachment_compatibility(
+        "m",
+        "anthropic",
+        [
+            _att("image", "image/png"),
+            _att("document", "application/pdf", "b.pdf"),
+            _att("document", "text/plain", "a.txt"),
+        ],
+    )
+    assert report["compatible"] is True
+    assert report["required_modalities"] == ["file", "image", "text"]
+    assert report["model_input_modalities"] == ["file", "image", "text"]
+    assert report["warnings"] == []
+
+
+def test_eval_anthropic_image_unsupported_when_reported_modalities_lack_image(monkeypatch):
+    # The image check is now provider-agnostic; assert the anthropic arm too so a
+    # future re-divergence from the openrouter path is caught.
+    _set_model_cache(monkeypatch, {"m": ModelInfo(id="m", input_modalities={"text", "file"})})
+    report = capabilities.evaluate_attachment_compatibility("m", "anthropic", [_att("image", "image/png")])
+    assert report["compatible"] is False
+    assert report["unsupported_modalities"] == ["image"]
+
+
+def test_eval_multiple_unsupported_modalities_are_sorted(monkeypatch):
+    _set_model_cache(monkeypatch, {"m": ModelInfo(id="m", input_modalities={"text"})})
+    report = capabilities.evaluate_attachment_compatibility(
+        "m",
+        "anthropic",
+        [
+            _att("image", "image/png"),
+            _att("document", "application/pdf", "b.pdf"),
+            _att("document", "application/msword", "d.doc"),
+        ],
+    )
+    assert report["compatible"] is False
+    assert report["unsupported_modalities"] == ["document", "file", "image"]
+
+
+def test_eval_provider_normalized_before_match(monkeypatch):
+    _set_model_cache(
+        monkeypatch,
+        {"m": ModelInfo(id="m", input_modalities={"text", "image", "file"})},
+    )
+    report = capabilities.evaluate_attachment_compatibility("m", "  AnThRoPic  ", [_att("image", "image/png")])
+    # Mixed-case/whitespace provider is normalized, so live modalities are consulted.
+    assert report["model_input_modalities"] == ["file", "image", "text"]
+    assert report["compatible"] is True
+
+
+def test_eval_falsy_provider_uses_static_fallback(monkeypatch):
+    # Both "" and None are normalized via `(provider or "")` and must take the
+    # non-live (static-fallback) path. None is off the `str` contract but the
+    # function defends against it, so the test does too.
+    _clear_model_cache(monkeypatch)
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: True)
+    for provider in ("", cast(str, None)):
+        report = capabilities.evaluate_attachment_compatibility("m", provider, [_att("image", "image/png")])
+        assert report["model_input_modalities"] == []
+        assert report["compatible"] is True
+
+
+def test_eval_warning_order_loop_warnings_precede_openrouter_pdf_note(monkeypatch):
+    # An unsupported attachment (loop warning) plus an OpenRouter PDF (post-loop
+    # warning): the loop warning must come first.
+    _set_model_cache(monkeypatch, {"m": ModelInfo(id="m", input_modalities={"text", "image"})})
+    report = capabilities.evaluate_attachment_compatibility(
+        "m",
+        "openrouter",
+        [
+            _att("document", "application/msword", "a.doc"),
+            _att("document", "application/pdf", "b.pdf"),
+        ],
+    )
+    assert report["warnings"] == [
+        "Unsupported document type 'application/msword'. "
+        "Supported documents are PDF, TXT, MD, and CSV.",
+        "This model does not report native file input. "
+        "OpenRouter may parse PDFs before sending text to the model.",
+    ]
+
+
+def test_modality_supported_prefers_reported_modalities(monkeypatch):
+    # When modalities are reported, the static fallbacks must not be consulted.
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: False)
+    monkeypatch.setattr(capabilities, "supports_documents", lambda mid: False)
+    assert capabilities._modality_supported("m", "image", {"image"}) is True
+    assert capabilities._modality_supported("m", "file", {"image"}) is False
+    assert capabilities._modality_supported("m", "text", {"text"}) is True
+    assert capabilities._modality_supported("m", "text", {"image"}) is False
+
+
+def test_modality_supported_static_fallback_when_unreported(monkeypatch):
+    monkeypatch.setattr(capabilities, "supports_vision", lambda mid: True)
+    monkeypatch.setattr(capabilities, "supports_documents", lambda mid: False)
+    assert capabilities._modality_supported("m", "image", set()) is True
+    assert capabilities._modality_supported("m", "file", set()) is False
+    # text has no static fallback: unreported text is treated as supported.
+    assert capabilities._modality_supported("m", "text", set()) is True
+
+
+def test_classify_attachment_outcomes():
+    assert capabilities._classify_attachment(
+        {"file_type": "image", "mime_type": "image/png", "file_name": "a.png"}
+    ) == ("image", False, False, None)
+
+    assert capabilities._classify_attachment(
+        {"file_type": "document", "mime_type": "application/pdf", "file_name": "b.pdf"}
+    ) == ("file", True, False, None)
+
+    assert capabilities._classify_attachment(
+        {"file_type": "document", "mime_type": "text/plain", "file_name": "c.txt"}
+    ) == ("text", False, False, None)
+
+    other = capabilities._classify_attachment(
+        {"file_type": "document", "mime_type": "application/msword", "file_name": "d.doc"}
+    )
+    assert other.required_modality is None
+    assert other.is_pdf is False
+    assert other.unsupported is True
+    assert other.warning == (
+        "Unsupported document type 'application/msword'. "
+        "Supported documents are PDF, TXT, MD, and CSV."
+    )
+
+    unknown = capabilities._classify_attachment(
+        {"file_type": "video", "mime_type": "video/mp4", "file_name": "e.mp4"}
+    )
+    assert unknown.required_modality is None
+    assert unknown.unsupported is True
+    assert unknown.warning == "Unsupported attachment type. Supported types are image and document."
 
 
 def test_refresh_anthropic_models_parses_capability_block(monkeypatch):
