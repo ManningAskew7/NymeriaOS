@@ -86,3 +86,184 @@ def test_format_single_email_keeps_short_body_intact():
     out = oe._format_single_email(_email("text", "just a short note"))
     assert "just a short note" in out
     assert "[truncated" not in out
+
+
+# ---------------------------------------------------------------------------
+# outlook_search_emails / outlook_list_emails dispatch + render (slice 16 F11)
+#
+# The multi-mode search dispatcher and the shared message-render loop had no
+# prior direct coverage. These lock the per-mode behavior (thread / kql /
+# filters-only / single / batch / error) and the exact render spacing before
+# the F11 extraction, then guard it after.
+# ---------------------------------------------------------------------------
+
+_CFG = {"configurable": {"user_id": "u1", "thread_id": "t1"}}
+
+
+def _stub_summary(monkeypatch):
+    """Make format_email_summary deterministic: ``S:<id>`` per message."""
+    monkeypatch.setattr(oe, "format_email_summary", lambda m: f"S:{m.get('id', '')}")
+
+
+def _bind_graph(monkeypatch, responses, calls):
+    """Replace graph_request with a recorder yielding ``responses`` in order."""
+    seq = iter(responses)
+
+    def _fake(user_id, method, endpoint, account_id=None, params=None):
+        calls.append({
+            "user_id": user_id,
+            "method": method,
+            "endpoint": endpoint,
+            "account_id": account_id,
+            "params": dict(params or {}),
+        })
+        return next(seq)
+
+    monkeypatch.setattr(oe, "graph_request", _fake)
+
+
+def test_search_thread_mode_sorts_chronologically_and_renders(monkeypatch):
+    _stub_summary(monkeypatch)
+    calls = []
+    # Returned out of order; the thread branch sorts by receivedDateTime asc.
+    messages = [
+        {"id": "b", "receivedDateTime": "2026-01-02T00:00:00Z"},
+        {"id": "a", "receivedDateTime": "2026-01-01T00:00:00Z"},
+    ]
+    _bind_graph(monkeypatch, [(True, {"value": messages})], calls)
+
+    out = oe.outlook_search_emails.invoke({"thread_id": "THREAD-XYZ"}, config=_CFG)
+
+    assert out == (
+        "[Success]: 2 email(s) in thread (chronological):\n\nS:a\n\nS:b\n"
+    )
+    # Thread mode queries /me/messages with a conversationId filter, no $search,
+    # and the per-call limit cap (min(limit, 25)) reaches $top.
+    assert calls[0]["endpoint"] == "/me/messages"
+    assert calls[0]["params"]["$filter"] == "conversationId eq 'THREAD-XYZ'"
+    assert calls[0]["params"]["$top"] == 10
+    assert "$search" not in calls[0]["params"]
+
+
+def test_search_thread_mode_empty(monkeypatch):
+    _stub_summary(monkeypatch)
+    _bind_graph(monkeypatch, [(True, {"value": []})], [])
+    out = oe.outlook_search_emails.invoke({"thread_id": "abcdefghijklmnopqrstuvwxyz"}, config=_CFG)
+    # Thread id is truncated to 20 chars in the info message.
+    assert out == "[Info]: No emails found for thread 'abcdefghijklmnopqrst...'."
+
+
+def test_search_thread_mode_error(monkeypatch):
+    _stub_summary(monkeypatch)
+    _bind_graph(monkeypatch, [(False, "graph boom")], [])
+    out = oe.outlook_search_emails.invoke({"thread_id": "T1"}, config=_CFG)
+    assert out == "[Error]: graph boom"
+
+
+def test_search_single_query_renders_match_header(monkeypatch):
+    _stub_summary(monkeypatch)
+    calls = []
+    _bind_graph(monkeypatch, [(True, {"value": [{"id": "m1"}, {"id": "m2"}]})], calls)
+
+    out = oe.outlook_search_emails.invoke({"query": "foo"}, config=_CFG)
+
+    assert out == "[Success]: Found 2 email(s) matching 'foo':\n\nS:m1\n\nS:m2\n"
+    assert calls[0]["params"]["$search"] == '"foo"'
+
+
+def test_search_filters_only_uses_kql_suffix_as_query(monkeypatch):
+    _stub_summary(monkeypatch)
+    calls = []
+    _bind_graph(monkeypatch, [(True, {"value": [{"id": "m1"}]})], calls)
+
+    # No query/queries, but a sender filter => kql_suffix becomes the query.
+    out = oe.outlook_search_emails.invoke({"sender": "acme"}, config=_CFG)
+
+    assert out == "[Success]: Found 1 email(s) matching 'from:acme':\n\nS:m1\n"
+    assert calls[0]["params"]["$search"] == '"from:acme"'
+
+
+def test_search_kql_mode_passes_raw_query(monkeypatch):
+    _stub_summary(monkeypatch)
+    calls = []
+    _bind_graph(monkeypatch, [(True, {"value": [{"id": "m1"}]})], calls)
+
+    out = oe.outlook_search_emails.invoke({"kql": "from:x OR from:y"}, config=_CFG)
+
+    assert out == "[Success]: Found 1 email(s) matching 'from:x OR from:y':\n\nS:m1\n"
+    assert calls[0]["params"]["$search"] == '"from:x OR from:y"'
+
+
+def test_search_batch_mode_groups_with_delimiters(monkeypatch):
+    _stub_summary(monkeypatch)
+    calls = []
+    _bind_graph(
+        monkeypatch,
+        [(True, {"value": [{"id": "a1"}]}), (True, {"value": [{"id": "b1"}]})],
+        calls,
+    )
+
+    out = oe.outlook_search_emails.invoke({"queries": "alpha | beta"}, config=_CFG)
+
+    assert out == (
+        "=== Search 1/2: alpha ===\n"
+        "[Success]: Found 1 email(s) matching 'alpha':\n\nS:a1\n"
+        "\n\n"
+        "=== Search 2/2: beta ===\n"
+        "[Success]: Found 1 email(s) matching 'beta':\n\nS:b1\n"
+    )
+    assert [c["params"]["$search"] for c in calls] == ['"alpha"', '"beta"']
+
+
+def test_search_no_criteria_error(monkeypatch):
+    _stub_summary(monkeypatch)
+    _bind_graph(monkeypatch, [], [])  # no graph call expected
+    out = oe.outlook_search_emails.invoke({}, config=_CFG)
+    assert out == "[Error]: Provide a query, filters, or both."
+
+
+def test_list_emails_render_header_and_spacing(monkeypatch):
+    _stub_summary(monkeypatch)
+    calls = []
+    _bind_graph(monkeypatch, [(True, {"value": [{"id": "m1"}, {"id": "m2"}]})], calls)
+
+    out = oe.outlook_list_emails.invoke({"folder": "inbox"}, config=_CFG)
+
+    assert out == "[Success]: Found 2 email(s) in inbox:\n\nS:m1\n\nS:m2\n"
+    assert calls[0]["endpoint"] == "/me/mailFolders/inbox/messages"
+
+
+def test_search_retries_dropping_filter_on_failure(monkeypatch):
+    # _search_single_query (left untouched by F11) retries with the date $filter
+    # dropped when a combined $filter + $search request fails. Lock that path so
+    # the extraction's "don't touch the retry logic" promise stays guarded.
+    _stub_summary(monkeypatch)
+    calls = []
+    _bind_graph(
+        monkeypatch,
+        [(False, "filter rejected"), (True, {"value": [{"id": "m1"}]})],
+        calls,
+    )
+
+    out = oe.outlook_search_emails.invoke({"query": "foo", "days_back": 7}, config=_CFG)
+
+    assert out == "[Success]: Found 1 email(s) matching 'foo':\n\nS:m1\n"
+    # First attempt carries both $search and the date $filter; the retry drops
+    # the filter (and its $orderby) but keeps the search.
+    assert "$filter" in calls[0]["params"] and calls[0]["params"]["$search"] == '"foo"'
+    assert "$filter" not in calls[1]["params"]
+    assert "$orderby" not in calls[1]["params"]
+    assert calls[1]["params"]["$search"] == '"foo"'
+
+
+def test_render_message_list_spacing_contract(monkeypatch):
+    # The shared render helper is the single source of truth for spacing; the
+    # header carries its own trailing newline and each message is followed by a
+    # blank line.
+    _stub_summary(monkeypatch)
+    assert oe._render_message_list("HEAD:\n", []) == "HEAD:\n"
+    assert oe._render_message_list("HEAD:\n", [{"id": "x"}]) == "HEAD:\n\nS:x\n"
+    assert (
+        oe._render_message_list("HEAD:\n", [{"id": "x"}, {"id": "y"}])
+        == "HEAD:\n\nS:x\n\nS:y\n"
+    )

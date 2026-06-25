@@ -408,6 +408,21 @@ def format_email_summary(msg: dict) -> str:
     return "\n".join(lines)
 
 
+def _render_message_list(header: str, messages: List[dict]) -> str:
+    """Render ``header`` followed by a blank-line-separated message summary list.
+
+    ``header`` carries its own trailing punctuation/newline. This collapses the
+    ``lines=[header]; for msg: append(format_email_summary(msg)); append("")``
+    block that was copy-pasted byte-for-byte across the list, search, and thread
+    render paths.
+    """
+    lines = [header]
+    for msg in messages:
+        lines.append(format_email_summary(msg))
+        lines.append("")
+    return "\n".join(lines)
+
+
 @tool
 def outlook_list_emails(
     account_id: Optional[str] = None,
@@ -461,12 +476,9 @@ def outlook_list_emails(
     if not messages:
         return f"[Info]: No emails found in {folder}."
 
-    lines = [f"[Success]: Found {len(messages)} email(s) in {folder}:\n"]
-    for msg in messages:
-        lines.append(format_email_summary(msg))
-        lines.append("")
-
-    return "\n".join(lines)
+    return _render_message_list(
+        f"[Success]: Found {len(messages)} email(s) in {folder}:\n", messages
+    )
 
 
 def _format_single_email(result: dict) -> str:
@@ -705,12 +717,43 @@ def _search_single_query(
     if not messages:
         return f"[Info]: No emails found matching '{query}'."
 
-    lines = [f"[Success]: Found {len(messages)} email(s) matching '{query}':\n"]
-    for msg in messages:
-        lines.append(format_email_summary(msg))
-        lines.append("")
+    return _render_message_list(
+        f"[Success]: Found {len(messages)} email(s) matching '{query}':\n", messages
+    )
 
-    return "\n".join(lines)
+
+def _search_thread(
+    user_id: str,
+    tid: str,
+    account_id: Optional[str],
+    limit: int,
+) -> str:
+    """Fetch and render every message in a conversation thread, chronologically.
+
+    Thread lookup bypasses ``_search_single_query`` because Graph cannot combine
+    the conversationId ``$filter`` with ``$orderby``, so the sort is done
+    client-side.
+    """
+    params: dict = {
+        "$top": min(limit, 25),
+        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
+        "$filter": f"conversationId eq '{tid}'",
+    }
+    success, result = graph_request(user_id, "GET",
+        "/me/messages",
+        account_id=account_id,
+        params=params,
+    )
+    if not success:
+        return f"[Error]: {result}"
+    messages = result.get("value", [])
+    if not messages:
+        return f"[Info]: No emails found for thread '{tid[:20]}...'."
+    # Sort chronologically client-side (Graph can't combine this filter with $orderby)
+    messages.sort(key=lambda m: m.get("receivedDateTime", ""))
+    return _render_message_list(
+        f"[Success]: {len(messages)} email(s) in thread (chronological):\n", messages
+    )
 
 
 @tool
@@ -788,26 +831,7 @@ def outlook_search_emails(
 
     # Thread lookup mode — get all messages in a conversation
     if thread_id.strip():
-        tid = thread_id.strip()
-        params: dict = {
-            "$top": min(limit, 25),
-            "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
-            "$filter": f"conversationId eq '{tid}'",
-        }
-        success, result = graph_request(user_id, "GET", "/me/messages", account_id=account_id, params=params,
-        )
-        if not success:
-            return f"[Error]: {result}"
-        messages = result.get("value", [])
-        if not messages:
-            return f"[Info]: No emails found for thread '{tid[:20]}...'."
-        # Sort chronologically client-side (Graph can't combine this filter with $orderby)
-        messages.sort(key=lambda m: m.get("receivedDateTime", ""))
-        lines = [f"[Success]: {len(messages)} email(s) in thread (chronological):\n"]
-        for msg in messages:
-            lines.append(format_email_summary(msg))
-            lines.append("")
-        return "\n".join(lines)
+        return _search_thread(user_id, thread_id.strip(), account_id, limit)
 
     # Raw KQL mode — bypass structured filters
     if kql.strip():
