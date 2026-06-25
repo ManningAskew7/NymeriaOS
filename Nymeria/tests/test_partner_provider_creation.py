@@ -34,39 +34,31 @@ from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import create_llm
 
+from _provider_test_helpers import llm_config  # type: ignore[import-not-found]
+
 
 def _google_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "google",
-        "model": "gemini-2.5-pro",
-        "api_key": "test-google-key",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {"provider": "google", "model": "gemini-2.5-pro", "api_key": "test-google-key"}, **overrides
+    )
 
 
 def _bedrock_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "bedrock",
-        "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-        "api_key": None,
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "bedrock",
+            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "api_key": None,
+        },
+        **overrides,
+    )
 
 
 def _ollama_native_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "ollama",
-        "provider_route": "native",
-        "model": "qwen3",
-        "api_key": None,
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {"provider": "ollama", "provider_route": "native", "model": "qwen3", "api_key": None},
+        **overrides,
+    )
 
 
 class _CaptureModel:

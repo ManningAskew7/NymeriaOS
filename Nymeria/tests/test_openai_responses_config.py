@@ -47,196 +47,168 @@ from nymeria.vendor.react_agent.providers import (
     create_llm_with_tools,
 )
 
+from _provider_test_helpers import llm_config  # type: ignore[import-not-found]
+
 
 def _openai_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "openai",
-        "model": "gpt-5.5",
-        "api_key": "test-key",
-        "base_url": "http://example.test/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {"provider": "openai", "model": "gpt-5.5", "base_url": "http://example.test/v1"},
+        **overrides,
+    )
 
 
 def _openrouter_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "openrouter",
-        "model": "qwen/qwen3.6-flash",
-        "api_key": "test-key",
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "openrouter",
+            "model": "qwen/qwen3.6-flash",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+        **overrides,
+    )
 
 
 def _groq_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "groq",
-        "model": "openai/gpt-oss-120b",
-        "api_key": "test-key",
-        "base_url": "https://api.groq.com/openai/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "groq",
+            "model": "openai/gpt-oss-120b",
+            "base_url": "https://api.groq.com/openai/v1",
+        },
+        **overrides,
+    )
 
 
 def _sambanova_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "sambanova",
-        "model": "gpt-oss-120b",
-        "api_key": "test-key",
-        "base_url": "https://api.sambanova.ai/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "sambanova",
+            "model": "gpt-oss-120b",
+            "base_url": "https://api.sambanova.ai/v1",
+        },
+        **overrides,
+    )
 
 
 def _vercel_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "vercel",
-        "model": "anthropic/claude-sonnet-4.5",
-        "api_key": "test-key",
-        "base_url": "https://ai-gateway.vercel.sh/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "vercel",
+            "model": "anthropic/claude-sonnet-4.5",
+            "base_url": "https://ai-gateway.vercel.sh/v1",
+        },
+        **overrides,
+    )
 
 
 def _aihubmix_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "aihubmix",
-        "model": "claude-sonnet-4-5",
-        "api_key": "test-key",
-        "base_url": "https://aihubmix.com/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "aihubmix",
+            "model": "claude-sonnet-4-5",
+            "base_url": "https://aihubmix.com/v1",
+        },
+        **overrides,
+    )
 
 
 def _nvidia_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "nvidia",
-        "model": "deepseek-ai/deepseek-v4-pro",
-        "api_key": "test-key",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "nvidia",
+            "model": "deepseek-ai/deepseek-v4-pro",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+        },
+        **overrides,
+    )
 
 
 def _deepseek_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "deepseek",
-        "model": "deepseek-reasoner",
-        "api_key": "test-key",
-        "base_url": "https://api.deepseek.com",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "deepseek",
+            "model": "deepseek-reasoner",
+            "base_url": "https://api.deepseek.com",
+        },
+        **overrides,
+    )
 
 
 def _fireworks_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "fireworks-ai",
-        "model": "accounts/fireworks/models/qwen3-235b-a22b",
-        "api_key": "test-key",
-        "base_url": "https://api.fireworks.ai/inference/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "fireworks-ai",
+            "model": "accounts/fireworks/models/qwen3-235b-a22b",
+            "base_url": "https://api.fireworks.ai/inference/v1",
+        },
+        **overrides,
+    )
 
 
 def _moonshot_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "moonshotai",
-        "model": "kimi-k2-thinking",
-        "api_key": "test-key",
-        "base_url": "https://api.moonshot.ai/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "moonshotai",
+            "model": "kimi-k2-thinking",
+            "base_url": "https://api.moonshot.ai/v1",
+        },
+        **overrides,
+    )
 
 
 def _alibaba_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "alibaba",
-        "model": "qwen3.5-plus",
-        "api_key": "test-key",
-        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "alibaba",
+            "model": "qwen3.5-plus",
+            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        },
+        **overrides,
+    )
 
 
 def _baseten_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "baseten",
-        "model": "deepseek-ai/DeepSeek-V4-Pro",
-        "api_key": "test-key",
-        "base_url": "https://inference.baseten.co/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "baseten",
+            "model": "deepseek-ai/DeepSeek-V4-Pro",
+            "base_url": "https://inference.baseten.co/v1",
+        },
+        **overrides,
+    )
 
 
 def _litellm_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "litellm",
-        "model": "deepseek-reasoner",
-        "api_key": "test-key",
-        "base_url": "http://localhost:4000",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {"provider": "litellm", "model": "deepseek-reasoner", "base_url": "http://localhost:4000"},
+        **overrides,
+    )
 
 
 def _together_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "togetherai",
-        "model": "deepseek-ai/DeepSeek-V3.1",
-        "api_key": "test-key",
-        "base_url": "https://api.together.ai/v1",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "togetherai",
+            "model": "deepseek-ai/DeepSeek-V3.1",
+            "base_url": "https://api.together.ai/v1",
+        },
+        **overrides,
+    )
 
 
 def _novita_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "novita-ai",
-        "model": "deepseek/deepseek-r1",
-        "api_key": "test-key",
-        "base_url": "https://api.novita.ai/openai",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config(
+        {
+            "provider": "novita-ai",
+            "model": "deepseek/deepseek-r1",
+            "base_url": "https://api.novita.ai/openai",
+        },
+        **overrides,
+    )
 
 
 def _anthropic_config(**overrides) -> LLMConfig:
-    values = {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-20250514",
-        "api_key": "test-key",
-        "temperature": None,
-    }
-    values.update(overrides)
-    return LLMConfig(**values)
+    return llm_config({"provider": "anthropic", "model": "claude-sonnet-4-20250514"}, **overrides)
 
 
 def _run_in_new_event_loop(async_fn):
