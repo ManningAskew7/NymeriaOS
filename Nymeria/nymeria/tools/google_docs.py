@@ -701,6 +701,124 @@ def _text_blocks_to_requests(blocks: list[Block], start_index: int) -> tuple[lis
     return [insert_request] + style_requests, start_index + len(full_text)
 
 
+def _write_text_segment(
+    user_id: str,
+    document_id: str,
+    blocks: list[Block],
+    cursor: int,
+    account_id: Optional[str],
+    prefix: Optional[list[dict]],
+) -> tuple[bool, str, int]:
+    """Write one contiguous run of non-table blocks in a single ``batchUpdate``.
+
+    *prefix* (or None) is prepended to the requests (the caller passes it only for
+    the first batch). Returns ``(success, message, new_cursor)``; the cursor is the
+    end index from ``_text_blocks_to_requests`` (unchanged when *blocks* yields no
+    text), and no request is sent when there is nothing to write.
+    """
+    reqs, new_cursor = _text_blocks_to_requests(blocks, cursor)
+    if prefix:
+        reqs = list(prefix) + reqs
+    if reqs:
+        success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": reqs},
+            ).execute(),
+            account_id=account_id,
+        )
+        if not success:
+            return False, result, new_cursor
+    return True, "ok", new_cursor
+
+
+def _write_table_segment(
+    user_id: str,
+    document_id: str,
+    table_block: Block,
+    cursor: int,
+    account_id: Optional[str],
+    prefix: Optional[list[dict]],
+) -> tuple[bool, str, int]:
+    """Insert one table at *cursor*, populate its cells, return ``(success, message, new_cursor)``.
+
+    The caller must skip empty-row tables; this assumes ``table_block.rows`` is
+    non-empty. *prefix* (or None) is prepended to the ``insertTable`` batch (first
+    batch only). Cells are populated in reverse row/col order so earlier inserts do
+    not shift later indices, then the document is re-read so *new_cursor* points past
+    the table.
+    """
+    num_rows = len(table_block.rows)
+    num_cols = max(len(r) for r in table_block.rows)
+
+    # Execute prefix requests if this is the first segment
+    batch_reqs: list[dict] = list(prefix) if prefix else []
+
+    # Insert table
+    batch_reqs.append({
+        "insertTable": {
+            "rows": num_rows,
+            "columns": num_cols,
+            "location": {"index": cursor},
+        }
+    })
+    success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": batch_reqs},
+        ).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return False, result, cursor
+
+    # Re-read document to discover cell indices
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return False, doc, cursor
+
+    table_el = _find_table_at_index(doc, cursor)
+    if not table_el:
+        return False, "Could not locate inserted table in document.", cursor
+
+    cell_indices = _get_cell_indices(table_el)
+
+    # Populate cells in reverse order to preserve indices
+    populate_reqs: list[dict] = []
+    for r in reversed(range(num_rows)):
+        row_data = table_block.rows[r] if r < len(table_block.rows) else []
+        for c in reversed(range(num_cols)):
+            cell_text = row_data[c] if c < len(row_data) else ""
+            if cell_text and r < len(cell_indices) and c < len(cell_indices[r]):
+                populate_reqs.append({
+                    "insertText": {
+                        "location": {"index": cell_indices[r][c]},
+                        "text": cell_text,
+                    }
+                })
+
+    if populate_reqs:
+        success, result = _docs_request(user_id, lambda s: s.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": populate_reqs},
+            ).execute(),
+            account_id=account_id,
+        )
+        if not success:
+            return False, result, cursor
+
+    # Re-read to get fresh end index for next segment
+    success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
+        account_id=account_id,
+    )
+    if not success:
+        return False, doc, cursor
+    new_cursor = _get_doc_end_index(doc) - 1
+    if new_cursor < 1:
+        new_cursor = 1
+    return True, "ok", new_cursor
+
+
 def _execute_write_segments(
     user_id: str,
     document_id: str,
@@ -712,9 +830,10 @@ def _execute_write_segments(
     """Execute a mixed sequence of text and table blocks against the Docs API.
 
     Partitions *blocks* into contiguous text segments and individual table
-    segments, then processes them in order.  Text segments use a single
-    ``batchUpdate``; table segments require ``insertTable`` followed by a
-    document re-read to discover cell indices, then cell population.
+    segments, then dispatches each to ``_write_text_segment`` /
+    ``_write_table_segment`` in order.  Text segments use a single ``batchUpdate``;
+    table segments require ``insertTable`` followed by a document re-read to discover
+    cell indices, then cell population.
 
     *prefix_requests* (e.g. a deleteContentRange for overwrite mode) are
     prepended to the very first batchUpdate.
@@ -735,7 +854,7 @@ def _execute_write_segments(
     if current_text:
         segments.append(("text", current_text))
 
-    # Fast path — no tables, single batchUpdate
+    # Fast path, no tables: single batchUpdate
     has_tables = any(s[0] == "table" for s in segments)
     if not has_tables:
         all_requests = list(prefix_requests or [])
@@ -751,103 +870,31 @@ def _execute_write_segments(
         )
         return (True, "ok") if success else (False, result)
 
-    # Multi-step path for mixed content
+    # Multi-step path for mixed content: dispatch each segment to its writer,
+    # threading the cursor and sending *prefix_requests* with the first batch only.
     cursor = start_index
     first_batch = True
 
     for seg_type, seg_data in segments:
+        # Prefix rides the first batch only; None on every later iteration.
+        prefix = prefix_requests if (first_batch and prefix_requests) else None
         if seg_type == "text":
-            reqs, cursor = _text_blocks_to_requests(seg_data, cursor)
-            if first_batch and prefix_requests:
-                reqs = list(prefix_requests) + reqs
-            if reqs:
-                success, result = _docs_request(user_id, lambda s, r=reqs: s.documents().batchUpdate(
-                        documentId=document_id,
-                        body={"requests": r},
-                    ).execute(),
-                    account_id=account_id,
-                )
-                if not success:
-                    return False, result
+            ok, msg, cursor = _write_text_segment(
+                user_id, document_id, seg_data, cursor, account_id, prefix
+            )
+            if not ok:
+                return False, msg
             first_batch = False
-
-        elif seg_type == "table":
+        else:  # table
             table_block: Block = seg_data
             if not table_block.rows:
                 continue
-
-            num_rows = len(table_block.rows)
-            num_cols = max(len(r) for r in table_block.rows)
-
-            # Execute prefix requests if this is the first segment
-            batch_reqs: list[dict] = []
-            if first_batch and prefix_requests:
-                batch_reqs.extend(prefix_requests)
-
-            # Insert table
-            batch_reqs.append({
-                "insertTable": {
-                    "rows": num_rows,
-                    "columns": num_cols,
-                    "location": {"index": cursor},
-                }
-            })
-            success, result = _docs_request(user_id, lambda s, r=batch_reqs: s.documents().batchUpdate(
-                    documentId=document_id,
-                    body={"requests": r},
-                ).execute(),
-                account_id=account_id,
+            ok, msg, cursor = _write_table_segment(
+                user_id, document_id, table_block, cursor, account_id, prefix
             )
-            if not success:
-                return False, result
+            if not ok:
+                return False, msg
             first_batch = False
-
-            # Re-read document to discover cell indices
-            success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
-                account_id=account_id,
-            )
-            if not success:
-                return False, doc
-
-            table_el = _find_table_at_index(doc, cursor)
-            if not table_el:
-                return False, "Could not locate inserted table in document."
-
-            cell_indices = _get_cell_indices(table_el)
-
-            # Populate cells in reverse order to preserve indices
-            populate_reqs: list[dict] = []
-            for r in reversed(range(num_rows)):
-                row_data = table_block.rows[r] if r < len(table_block.rows) else []
-                for c in reversed(range(num_cols)):
-                    cell_text = row_data[c] if c < len(row_data) else ""
-                    if cell_text and r < len(cell_indices) and c < len(cell_indices[r]):
-                        populate_reqs.append({
-                            "insertText": {
-                                "location": {"index": cell_indices[r][c]},
-                                "text": cell_text,
-                            }
-                        })
-
-            if populate_reqs:
-                success, result = _docs_request(user_id, lambda s, r=populate_reqs: s.documents().batchUpdate(
-                        documentId=document_id,
-                        body={"requests": r},
-                    ).execute(),
-                    account_id=account_id,
-                )
-                if not success:
-                    return False, result
-
-            # Re-read to get fresh end index for next segment
-            success, doc = _docs_request(user_id, lambda s: s.documents().get(documentId=document_id).execute(),
-                account_id=account_id,
-            )
-            if not success:
-                return False, doc
-            cursor = _get_doc_end_index(doc) - 1
-            if cursor < 1:
-                cursor = 1
 
     # If prefix requests were never sent (e.g. blocks was empty), send them now
     if first_batch and prefix_requests:
