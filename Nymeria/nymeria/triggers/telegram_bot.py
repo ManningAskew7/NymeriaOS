@@ -2605,15 +2605,7 @@ class NymeriaTelegramBot:
                     logger.warning(f"Failed to download Telegram document: {e}")
                     errors.append("Couldn't download that file. Try resending.")
 
-        if len(attachments) > attachment_helpers.MAX_FILES_PER_MESSAGE:
-            extra = len(attachments) - attachment_helpers.MAX_FILES_PER_MESSAGE
-            attachments = attachments[: attachment_helpers.MAX_FILES_PER_MESSAGE]
-            errors.append(
-                f"Skipped {extra} extra file(s). Max is "
-                f"{attachment_helpers.MAX_FILES_PER_MESSAGE} per message."
-            )
-
-        return attachments, errors
+        return attachment_helpers.finalize_attachments(attachments, errors)
 
     # Telegram's Bot API refuses getFile downloads above 20 MB, and STT
     # providers cap uploads around 25 MB, so gate at the Bot API limit.

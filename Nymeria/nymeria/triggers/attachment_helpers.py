@@ -9,7 +9,7 @@ uploads into the ``attachments`` payload accepted by ``POST /chat`` /
 from __future__ import annotations
 
 import base64
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Allowed MIME types — must match nymeria-desktop/src/lib/utils/fileProcessing.ts
 ALLOWED_IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -111,6 +111,30 @@ def build_attachment(
         },
         None,
     )
+
+
+def finalize_attachments(
+    attachments: List[Dict[str, Any]],
+    errors: List[str],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Apply the per-message file-count cap to a collected attachment list.
+
+    When more than :data:`MAX_FILES_PER_MESSAGE` files were validated, the list
+    is truncated to the cap and a short user-facing notice is appended to
+    ``errors``. Returns ``(attachments, errors)``; ``errors`` is mutated in
+    place and the (possibly truncated) attachments list is returned so callers
+    can ``return attachment_helpers.finalize_attachments(...)`` directly. The
+    per-platform download/validate loop stays in each bot; only this shared
+    tail belongs here.
+    """
+    if len(attachments) > MAX_FILES_PER_MESSAGE:
+        extra = len(attachments) - MAX_FILES_PER_MESSAGE
+        attachments = attachments[:MAX_FILES_PER_MESSAGE]
+        errors.append(
+            f"Skipped {extra} extra file(s). Max is "
+            f"{MAX_FILES_PER_MESSAGE} per message."
+        )
+    return attachments, errors
 
 
 def size_within_limit(size: Optional[int], mime_type: Optional[str], file_name: Optional[str] = None) -> Tuple[bool, Optional[str]]:
