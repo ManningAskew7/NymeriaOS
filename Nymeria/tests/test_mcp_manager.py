@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import cast
 
 import pytest
 
@@ -247,3 +248,158 @@ def test_start_http_connection_resolves_env_and_credentials_in_headers(monkeypat
     # Credentials resolve against one accumulated set keyed to the http target
     # (the F4 fix unified the prior per-header re-init/log).
     assert vault.targets == {"srv-http"}
+
+
+# ---- exception chaining + read-loop catch narrowing (slice 05 F14) ----
+
+
+def test_start_server_failure_chains_original_cause(monkeypatch):
+    """The ``Failed to start MCP server`` re-wrap preserves ``__cause__``."""
+    boom = OSError("popen exploded")
+
+    def fake_popen(cmd, **kwargs):
+        raise boom
+
+    monkeypatch.setattr(mcp_manager.subprocess, "Popen", fake_popen)
+
+    config = MCPToolConfig(
+        server_command=sys.executable,
+        server_args=["server.py"],
+        tool_name="__discovery__",
+    )
+    manager = MCPServerManager()
+    with pytest.raises(RuntimeError, match="Failed to start MCP server") as exc_info:
+        manager._start_server(config)
+
+    # Without ``from e`` the original OSError would be lost (only on __context__).
+    assert exc_info.value.__cause__ is boom
+
+
+def test_http_init_failure_chains_original_cause(monkeypatch):
+    """The ``MCP HTTP server initialization failed`` re-wrap preserves ``__cause__``."""
+    import httpx
+
+    monkeypatch.setattr(
+        mcp_manager, "validate_http_egress_url", lambda url, label=None: None
+    )
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    boom = RuntimeError("init handshake failed")
+
+    def fake_init(conn, init_timeout):
+        raise boom
+
+    manager = MCPServerManager()
+    monkeypatch.setattr(manager, "_initialize_server", fake_init)
+
+    config = MCPToolConfig(
+        url="https://mcp.example.com/rpc",
+        transport="http",
+        tool_name="__discovery__",
+        server_id="srv-http",
+    )
+    with pytest.raises(
+        RuntimeError, match="MCP HTTP server initialization failed"
+    ) as exc_info:
+        manager._start_http_connection(config)
+
+    assert exc_info.value.__cause__ is boom
+
+
+class _FakeStdin:
+    def write(self, data):
+        return len(data)
+
+    def flush(self):
+        pass
+
+
+class _ScriptedStdout:
+    """``readline()`` replays a script: raise an Exception instance, else return bytes."""
+
+    def __init__(self, script):
+        self._script = list(script)
+
+    def flush(self):
+        pass
+
+    def readline(self):
+        if not self._script:
+            raise AssertionError("readline() called more times than scripted")
+        item = self._script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+class _FakeStdioProcess:
+    def __init__(self, stdout):
+        self.stdin = _FakeStdin()
+        self.stdout = stdout
+
+    def poll(self):
+        return None  # alive
+
+
+class _FakeStdioConn:
+    server_id = "srv-readloop"
+    _stderr_thread = None
+
+    def __init__(self, stdout):
+        self.process = _FakeStdioProcess(stdout)
+
+    def is_alive(self):
+        return True
+
+    def stderr_tail(self):
+        # Matches MCPConnection: the timeout branch reads this for diagnostics.
+        return []
+
+
+def test_stdio_read_loop_retries_on_transient_io_errors(monkeypatch):
+    """OSError/ValueError mid-read are transient pipe hiccups and get retried."""
+    # Force the win32 read branch (plain flush + readline, no real ``select``).
+    monkeypatch.setattr(mcp_manager.sys, "platform", "win32")
+    response = b'{"jsonrpc": "2.0", "id": 7, "result": {"ok": true}}\n'
+    stdout = _ScriptedStdout(
+        [
+            OSError("resource temporarily unavailable"),
+            ValueError("I/O operation on closed file"),
+            response,
+        ]
+    )
+    conn = _FakeStdioConn(stdout)
+    manager = MCPServerManager()
+
+    msg = manager._stdio_send_request_locked(
+        cast(mcp_manager.MCPConnection, conn),
+        {"jsonrpc": "2.0", "id": 7, "method": "ping"},
+        timeout=5,
+    )
+
+    assert msg == {"jsonrpc": "2.0", "id": 7, "result": {"ok": True}}
+
+
+def test_stdio_read_loop_propagates_unexpected_errors(monkeypatch):
+    """A non-IO error in the read path surfaces instead of being masked as transient."""
+    monkeypatch.setattr(mcp_manager.sys, "platform", "win32")
+    boom = RuntimeError("logic bug in read path")
+    conn = _FakeStdioConn(_ScriptedStdout([boom]))
+    manager = MCPServerManager()
+
+    # Before narrowing, this RuntimeError was swallowed and the loop spun until the
+    # deadline raised a misleading "Timeout" error; now the real bug propagates.
+    with pytest.raises(RuntimeError, match="logic bug in read path"):
+        manager._stdio_send_request_locked(
+            cast(mcp_manager.MCPConnection, conn),
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            timeout=5,
+        )

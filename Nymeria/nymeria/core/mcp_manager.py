@@ -279,10 +279,12 @@ class MCPServerManager:
 
         try:
             process = subprocess.Popen(cmd, **popen_kwargs)
-        except FileNotFoundError:
-            raise RuntimeError(f"MCP server command not found: {config.server_command}")
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"MCP server command not found: {config.server_command}"
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"Failed to start MCP server: {e}")
+            raise RuntimeError(f"Failed to start MCP server: {e}") from e
 
         conn = MCPConnection(config=config, process=process)
 
@@ -300,7 +302,7 @@ class MCPServerManager:
             self._initialize_server(conn, init_timeout=init_timeout)
         except Exception as e:
             self._shutdown_connection(conn)
-            raise RuntimeError(f"MCP server initialization failed: {e}")
+            raise RuntimeError(f"MCP server initialization failed: {e}") from e
 
         logger.info(f"MCP server {conn.server_id} started and initialized")
         return conn
@@ -390,7 +392,7 @@ class MCPServerManager:
             self._initialize_server(conn, init_timeout=init_timeout)
         except Exception as e:
             self._shutdown_connection(conn)
-            raise RuntimeError(f"MCP HTTP server initialization failed: {e}")
+            raise RuntimeError(f"MCP HTTP server initialization failed: {e}") from e
 
         logger.info(f"MCP server {conn.server_id} connected over http")
         return conn
@@ -479,8 +481,8 @@ class MCPServerManager:
             if not conn.is_alive():
                 raise RuntimeError(
                     self._stdio_error_detail(conn, f"Failed to send request: {e}")
-                )
-            raise RuntimeError(f"Failed to send request: {e}")
+                ) from e
+            raise RuntimeError(f"Failed to send request: {e}") from e
 
         # Read JSON-RPC lines until we see a response whose id matches this
         # request. Blank lines, notifications (no id), and unrelated responses
@@ -516,7 +518,11 @@ class MCPServerManager:
                     line = stdout.readline()
                     if not line:
                         continue
-            except Exception as e:
+            except (OSError, ValueError) as e:
+                # Transient pipe/fd faults: OSError from select/readline on a
+                # broken pipe, ValueError from readline on an already-closed
+                # file. Retry those; anything else here is a logic bug and
+                # should surface to the caller, not be masked as a read hiccup.
                 logger.debug(f"Read error (may be temporary): {e}")
                 time.sleep(0.1)
                 continue
@@ -594,7 +600,7 @@ class MCPServerManager:
         except (HTTPPolicyViolation, HTTPPolicyRedirectLimit) as e:
             raise RuntimeError(f"HTTP request blocked by egress policy: {e}") from e
         except Exception as e:
-            raise RuntimeError(f"HTTP request failed: {e}")
+            raise RuntimeError(f"HTTP request failed: {e}") from e
 
         if resp.status_code == 404 and conn.session_id:
             # Session expired; drop it and force a fresh connection next time.
@@ -635,7 +641,7 @@ class MCPServerManager:
         try:
             return resp.json()
         except Exception as e:
-            raise RuntimeError(f"Unexpected MCP HTTP response: {e}")
+            raise RuntimeError(f"Unexpected MCP HTTP response: {e}") from e
 
     def _http_send_notification(
         self, conn: MCPConnection, notification: Dict[str, Any]
