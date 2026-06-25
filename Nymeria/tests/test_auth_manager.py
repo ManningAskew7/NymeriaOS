@@ -8,7 +8,13 @@ from cryptography.fernet import Fernet
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.credential_vault import CredentialVaultRepo
-from nymeria.tools.auth_manager import auth_bindings, auth_cleanup, auth_inspect
+from nymeria.tools.auth_manager import (
+    _NormalizedFilters,
+    _normalize_filters,
+    auth_bindings,
+    auth_cleanup,
+    auth_inspect,
+)
 
 
 @dataclass
@@ -128,6 +134,80 @@ def test_auth_cleanup_stale_oauth_dry_run_then_disable(tmp_path, monkeypatch):
     assert repo.get_credential(active.id).status == "active"
     assert repo.get_credential(pending.id).status == "disabled"
     assert repo.get_credential(legacy.id).status == "disabled"
+
+
+def test_normalize_filters_lowercases_enums_and_strips_opaque_ids():
+    result = _normalize_filters(
+        provider="  OutLook ",
+        kind=" OAuth_Token ",
+        status=" Active ",
+        account_id="  Acct-ID_42 ",
+        prompt_id="  Prompt-7 ",
+        limit=10,
+    )
+    assert isinstance(result, _NormalizedFilters)
+    # provider/kind/status are case-insensitive enums: stripped and lowercased.
+    assert result.provider == "outlook"
+    assert result.kind == "oauth_token"
+    assert result.status == "active"
+    # account_id/prompt_id are opaque identifiers: stripped but case preserved.
+    assert result.account_id == "Acct-ID_42"
+    assert result.prompt_id == "Prompt-7"
+    assert result.max_rows == 10
+
+
+def test_normalize_filters_handles_empty_and_clamps_max_rows():
+    # Empty strings stay empty; limit 0 falls back to the default 100.
+    assert _normalize_filters("", "", "", "", "", 0) == _NormalizedFilters(
+        "", "", "", "", "", 100
+    )
+    # max_rows clamps to the floor of 1 and ceiling of 500.
+    assert _normalize_filters("", "", "", "", "", 1).max_rows == 1
+    assert _normalize_filters("", "", "", "", "", 9999).max_rows == 500
+    assert _normalize_filters("", "", "", "", "", -5).max_rows == 1
+
+
+def test_auth_inspect_provider_filter_is_case_and_whitespace_normalized(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Example",
+        provider="example",
+        kind="api_key",
+        status="active",
+        secret_fields={"value": "secret"},
+        created_by_user_id="alice",
+    )
+
+    # A messy-cased, padded provider filter still matches the stored "example",
+    # proving the normalization helper output flows into the record filter.
+    body = _inspect({"view": "list", "provider": "  ExAmPle "})
+    assert body["ok"] is True
+    assert body["total"] == 1
+    assert body["credentials"][0]["id"] == record.id
+
+
+def test_auth_cleanup_provider_filter_is_case_and_whitespace_normalized(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Example",
+        provider="example",
+        kind="api_key",
+        status="active",
+        secret_fields={"value": "secret"},
+        created_by_user_id="alice",
+    )
+
+    # Same wiring proof for auth_cleanup's independent call site: a messy-cased
+    # provider filter matches the stored "example" through disable_matching.
+    body = _cleanup({"operation": "disable_matching", "provider": "  ExAmPle ", "dry_run": True})
+    assert body["ok"] is True
+    assert body["dry_run"] is True
+    assert body["matched_count"] == 1
+    assert body["matched"][0]["id"] == record.id
 
 
 def test_auth_bindings_bind_updates_allowed_targets(tmp_path, monkeypatch):
