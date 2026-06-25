@@ -3,6 +3,7 @@ import { api } from '$lib/services/api.svelte';
 import { debugLog } from '$lib/utils/debug';
 import { generateId } from '$lib/utils/ids';
 import { detectThreadPlatform, isPlatformNativeThreadId } from '$lib/utils/platform';
+import { bucketThreadsByDate, groupThreadsWithPinned, type ThreadDateGroup } from '$lib/utils/threadGrouping';
 import { scopedKey, registerIdentityReloadHook } from './config.svelte';
 
 // localStorage keys are namespaced by the currently-connected user's id
@@ -304,44 +305,8 @@ function createThreadsStore() {
     },
 
     // Group threads by date
-    get groupedThreads(): { label: string; threads: Thread[] }[] {
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const weekAgo = new Date(today);
-      weekAgo.setDate(weekAgo.getDate() - 7);
-
-      const groups: { label: string; threads: Thread[] }[] = [
-        { label: 'Today', threads: [] },
-        { label: 'Yesterday', threads: [] },
-        { label: 'Previous 7 Days', threads: [] },
-        { label: 'Older', threads: [] }
-      ];
-
-      const sorted = [...threads].sort(
-        (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()
-      );
-
-      for (const thread of sorted) {
-        const threadDate = new Date(
-          thread.updatedAt.getFullYear(),
-          thread.updatedAt.getMonth(),
-          thread.updatedAt.getDate()
-        );
-
-        if (threadDate >= today) {
-          groups[0].threads.push(thread);
-        } else if (threadDate >= yesterday) {
-          groups[1].threads.push(thread);
-        } else if (threadDate >= weekAgo) {
-          groups[2].threads.push(thread);
-        } else {
-          groups[3].threads.push(thread);
-        }
-      }
-
-      return groups.filter((g) => g.threads.length > 0);
+    get groupedThreads(): ThreadDateGroup[] {
+      return bucketThreadsByDate(threads);
     },
 
     // Folder & sort getters
@@ -395,56 +360,8 @@ function createThreadsStore() {
           return unfiled;
       }
     },
-    get groupedUnfiledThreads(): { label: string; threads: Thread[] }[] {
-      const unfiled = this.unfiledThreads;
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const weekAgo = new Date(today);
-      weekAgo.setDate(weekAgo.getDate() - 7);
-
-      const pinnedGroup: { label: string; threads: Thread[] } = { label: 'Pinned', threads: [] };
-      const groups: { label: string; threads: Thread[] }[] = [
-        { label: 'Today', threads: [] },
-        { label: 'Yesterday', threads: [] },
-        { label: 'Previous 7 Days', threads: [] },
-        { label: 'Older', threads: [] }
-      ];
-
-      const sorted = [...unfiled].sort(
-        (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()
-      );
-
-      for (const thread of sorted) {
-        if (thread.pinned) {
-          pinnedGroup.threads.push(thread);
-          continue;
-        }
-
-        const threadDate = new Date(
-          thread.updatedAt.getFullYear(),
-          thread.updatedAt.getMonth(),
-          thread.updatedAt.getDate()
-        );
-
-        if (threadDate >= today) {
-          groups[0].threads.push(thread);
-        } else if (threadDate >= yesterday) {
-          groups[1].threads.push(thread);
-        } else if (threadDate >= weekAgo) {
-          groups[2].threads.push(thread);
-        } else {
-          groups[3].threads.push(thread);
-        }
-      }
-
-      const result: { label: string; threads: Thread[] }[] = [];
-      if (pinnedGroup.threads.length > 0) result.push(pinnedGroup);
-      for (const g of groups) {
-        if (g.threads.length > 0) result.push(g);
-      }
-      return result;
+    get groupedUnfiledThreads(): ThreadDateGroup[] {
+      return groupThreadsWithPinned(this.unfiledThreads);
     },
 
     createThread(title?: string): Thread {
