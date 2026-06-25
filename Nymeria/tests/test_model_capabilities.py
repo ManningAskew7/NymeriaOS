@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import time
 import threading
+from pathlib import Path
+
+import pytest
 
 from nymeria.config import model_capabilities as capabilities
 from nymeria.config.model_capabilities import ModelInfo
@@ -524,3 +528,148 @@ def test_get_context_limit_prefers_longest_static_match(monkeypatch):
     _clear_model_cache(monkeypatch)
     assert capabilities.get_context_limit("my-claude-opus-4-8-preview") == 1000000
     assert capabilities.get_context_limit("my-claude-opus-4-preview") == 200000
+
+
+# ============================================================================
+# F7: vision/document capability-set equivalence + invariants
+# ============================================================================
+#
+# The six per-provider sets plus the two unions are derived from one canonical
+# per-provider capability table (vision/document flags) via a separator-aware
+# id-form expander. These tests lock that derivation to the exact membership it
+# replaced and guard the structural invariants the expander relies on.
+
+# Golden snapshot captured from the pre-F7 literal sets (sorted lists). If a new
+# model is added to the capability table, this snapshot must be updated in the
+# same change: that deliberate step is the anti-drift guard the F7 finding wants.
+_F7_GOLDEN = json.loads(
+    (Path(__file__).parent / "_capability_models_f7_golden.json").read_text()
+)
+
+_CAPABILITY_SET_NAMES = (
+    "ANTHROPIC_VISION_CAPABLE_MODELS",
+    "ANTHROPIC_DOCUMENT_CAPABLE_MODELS",
+    "OPENAI_VISION_CAPABLE_MODELS",
+    "OPENAI_DOCUMENT_CAPABLE_MODELS",
+    "GEMINI_VISION_CAPABLE_MODELS",
+    "GEMINI_DOCUMENT_CAPABLE_MODELS",
+    "VISION_CAPABLE_MODELS",
+    "DOCUMENT_CAPABLE_MODELS",
+)
+
+
+def test_f7_golden_snapshot_covers_every_capability_set():
+    # Tripwire: the snapshot file enumerates exactly the eight derived sets, so a
+    # renamed/added/removed set cannot silently skip the equivalence check below.
+    assert set(_F7_GOLDEN) == set(_CAPABILITY_SET_NAMES)
+
+
+@pytest.mark.parametrize("name", _CAPABILITY_SET_NAMES)
+def test_f7_capability_set_matches_golden(name):
+    # The derived set must equal the exact pre-refactor membership, byte-for-byte.
+    assert sorted(getattr(capabilities, name)) == _F7_GOLDEN[name]
+
+
+@pytest.mark.parametrize(
+    "vision, document",
+    [
+        ("ANTHROPIC_VISION_CAPABLE_MODELS", "ANTHROPIC_DOCUMENT_CAPABLE_MODELS"),
+        ("OPENAI_VISION_CAPABLE_MODELS", "OPENAI_DOCUMENT_CAPABLE_MODELS"),
+        ("GEMINI_VISION_CAPABLE_MODELS", "GEMINI_DOCUMENT_CAPABLE_MODELS"),
+        ("VISION_CAPABLE_MODELS", "DOCUMENT_CAPABLE_MODELS"),
+    ],
+)
+def test_f7_document_is_subset_of_vision(vision, document):
+    # The expander assumes document-capable implies vision-capable for every
+    # provider; a future model that breaks this must be added consciously.
+    assert getattr(capabilities, document) <= getattr(capabilities, vision)
+
+
+def test_f7_anthropic_models_carry_both_id_forms():
+    # The fallback matcher is dot/hyphen separator-sensitive, so every Anthropic
+    # model (except the provider-form-only legacy entry) must appear as BOTH the
+    # "anthropic/<dotted>" form and the hyphenated bare form. Stated as one exact
+    # set equality: the bare forms are precisely the hyphenated derivations of the
+    # provider forms minus the provider-form-only entry. This catches a missing
+    # bare, an orphan bare, and a stray bare for the fast entry, all at once.
+    for model_set in (
+        capabilities.ANTHROPIC_VISION_CAPABLE_MODELS,
+        capabilities.ANTHROPIC_DOCUMENT_CAPABLE_MODELS,
+    ):
+        provider_forms = {e for e in model_set if e.startswith("anthropic/")}
+        bare_forms = {e for e in model_set if not e.startswith("anthropic/")}
+        expected_bare = {
+            pf.split("/", 1)[1].replace(".", "-")
+            for pf in provider_forms
+            if pf != "anthropic/claude-opus-4.6-fast"
+        }
+        assert bare_forms == expected_bare
+
+
+def test_f7_fast_irregularity_is_preserved():
+    # claude-opus-4.6-fast is vision-only and provider-form-only today (a likely
+    # drift flagged in 24-config F7). Lock both asymmetries so a future "fix" is a
+    # deliberate edit, not an accident of the refactor.
+    assert "anthropic/claude-opus-4.6-fast" in capabilities.ANTHROPIC_VISION_CAPABLE_MODELS
+    assert "anthropic/claude-opus-4.6-fast" not in capabilities.ANTHROPIC_DOCUMENT_CAPABLE_MODELS
+    assert "claude-opus-4-6-fast" not in capabilities.ANTHROPIC_VISION_CAPABLE_MODELS
+    assert "claude-opus-4-6-fast" not in capabilities.ANTHROPIC_DOCUMENT_CAPABLE_MODELS
+
+
+@pytest.mark.parametrize(
+    "set_name, prefix",
+    [
+        ("OPENAI_VISION_CAPABLE_MODELS", "openai/"),
+        ("OPENAI_DOCUMENT_CAPABLE_MODELS", "openai/"),
+        ("GEMINI_VISION_CAPABLE_MODELS", "google/"),
+        ("GEMINI_DOCUMENT_CAPABLE_MODELS", "google/"),
+    ],
+)
+def test_f7_openai_and_gemini_are_provider_form_only(set_name, prefix):
+    # OpenAI/Gemini ids carry only the "provider/<dotted>" form; the matcher
+    # re-derives the bare/auto-prefixed variants, so no bare form is stored.
+    for entry in getattr(capabilities, set_name):
+        assert entry.startswith(prefix), entry
+
+
+@pytest.mark.parametrize(
+    "vision_count, document_count, set_pair",
+    [
+        (33, 32, ("ANTHROPIC_VISION_CAPABLE_MODELS", "ANTHROPIC_DOCUMENT_CAPABLE_MODELS")),
+        (31, 24, ("OPENAI_VISION_CAPABLE_MODELS", "OPENAI_DOCUMENT_CAPABLE_MODELS")),
+        (18, 15, ("GEMINI_VISION_CAPABLE_MODELS", "GEMINI_DOCUMENT_CAPABLE_MODELS")),
+        (84, 71, ("VISION_CAPABLE_MODELS", "DOCUMENT_CAPABLE_MODELS")),
+    ],
+)
+def test_f7_capability_set_counts(vision_count, document_count, set_pair):
+    # Count tripwires on the expanded sets: an accidental add/drop fails loudly.
+    vision_name, document_name = set_pair
+    assert len(getattr(capabilities, vision_name)) == vision_count
+    assert len(getattr(capabilities, document_name)) == document_count
+
+
+def test_f7_behavioral_spot_checks(monkeypatch):
+    # End-to-end through supports_vision/supports_documents with the static
+    # fallback (empty live cache), one model per capability category.
+    _clear_model_cache(monkeypatch)
+
+    # vision+document model, all three id-forms.
+    for model in ("claude-opus-4-8", "claude-opus-4.8", "anthropic/claude-opus-4.8"):
+        assert capabilities.supports_vision(model), model
+        assert capabilities.supports_documents(model), model
+
+    # OpenAI vision-only (codex): vision yes, document no.
+    assert capabilities.supports_vision("gpt-5.2-codex")
+    assert not capabilities.supports_documents("gpt-5.2-codex")
+
+    # Gemini vision-only image model: vision yes, document no.
+    assert capabilities.supports_vision("google/gemini-2.5-flash-image")
+    assert not capabilities.supports_documents("google/gemini-2.5-flash-image")
+
+    # meta-llama vision extra: vision yes, document no.
+    assert capabilities.supports_vision("meta-llama/llama-3.2-90b-vision-instruct")
+    assert not capabilities.supports_documents("meta-llama/llama-3.2-90b-vision-instruct")
+
+    # Unlisted model: neither (no live metadata, no static match).
+    assert not capabilities.supports_vision("acme/not-a-real-model")
+    assert not capabilities.supports_documents("acme/not-a-real-model")
