@@ -1009,6 +1009,16 @@ class NymeriaAgent:
         from .agent_llm_config import get_llm_config_for_thread
         return get_llm_config_for_thread(self, thread_id)
 
+    def get_llm_config_for_thread(self, thread_id: str = "") -> LLMConfig:
+        """Public accessor for a thread's resolved ``LLMConfig``.
+
+        Stable surface for helper modules outside the ``agent_*`` family (e.g.
+        ``core/rag_quality.py``) so they need not reach into the private
+        ``_get_llm_config_for_thread`` facade. Delegates to that facade so the
+        existing monkeypatch test seam keeps working. See slice 07 F10.
+        """
+        return self._get_llm_config_for_thread(thread_id)
+
     def _clear_expired_llm_fallback_if_idle(self, thread_id: str) -> bool:
         from .agent_llm_config import clear_expired_llm_fallback_if_idle
         return clear_expired_llm_fallback_if_idle(self, thread_id)

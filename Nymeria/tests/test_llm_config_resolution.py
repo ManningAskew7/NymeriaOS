@@ -347,3 +347,25 @@ def test_expired_fallback_is_cleared_when_thread_idle():
     assert config.model == "claude-sonnet-4-6"
     agent.thread_config_manager.delete_config.assert_called_once_with("thread-1")
     agent.invalidate_thread_config_cache.assert_called_once_with("thread-1")
+
+
+def test_public_accessor_matches_private_facade():
+    """Slice 07 F10: the public ``get_llm_config_for_thread`` resolves the same
+    config as the private facade it wraps."""
+    agent = _make_agent()
+
+    public = agent.get_llm_config_for_thread("thread-1")
+    private = agent._get_llm_config_for_thread("thread-1")
+
+    assert public.provider == private.provider
+    assert public.model == private.model
+
+
+def test_public_accessor_preserves_private_monkeypatch_seam():
+    """The public accessor delegates to the private facade, so the many tests
+    that monkeypatch ``_get_llm_config_for_thread`` still control it."""
+    agent = _make_agent()
+    sentinel = object()
+    agent._get_llm_config_for_thread = lambda thread_id: (sentinel, thread_id)
+
+    assert agent.get_llm_config_for_thread("thread-9") == (sentinel, "thread-9")
