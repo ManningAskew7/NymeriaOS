@@ -23,6 +23,7 @@ from ..state import (
 )
 from .indicator import activity_state_from_ui_state
 from .markdown import coerce_width
+from .shared_helpers import _assistant_response_lengths
 
 ANSI_ESCAPE_PREFIX = "\x1b"
 ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -333,14 +334,6 @@ def strip_ansi(text: str) -> str:
     if ANSI_ESCAPE_PREFIX not in text:
         return text
     return ANSI_ESCAPE_RE.sub("", text)
-
-
-def _assistant_response_lengths(state: CLIUIState) -> dict[str, int]:
-    return {
-        message.id: len(select_response_content(message))
-        for message in state.messages
-        if isinstance(message, AssistantMessage)
-    }
 
 
 def _tool_steps(state: CLIUIState) -> list[ToolCallStep]:

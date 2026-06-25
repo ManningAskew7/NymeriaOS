@@ -45,6 +45,11 @@ from .plain import (
     truncate_plain,
 )
 from .rich_markdown import MarkdownBlock, MarkdownStreamBuffer, print_rich_markdown
+from .shared_helpers import (
+    _assistant_response_lengths,
+    _dispatch_reference_text,
+    _needs_assistant_divider,
+)
 from .tool_rows import ToolRowRenderOptions, format_tool_row
 from .transcript import (
     TranscriptLine,
@@ -1090,14 +1095,6 @@ def render_tool_row(
     return Text(f"  {row}", style=style)
 
 
-def _needs_assistant_divider(
-    block_kind: str,
-    *,
-    previous_block: str,
-) -> bool:
-    return previous_block == "tool" and block_kind != "tool"
-
-
 def _make_console(
     capabilities: Any | None,
     *,
@@ -1119,14 +1116,6 @@ def _make_console(
         width=width,
         highlight=False,
     )
-
-
-def _assistant_response_lengths(state: CLIUIState) -> dict[str, int]:
-    return {
-        message.id: len(select_response_content(message))
-        for message in state.messages
-        if isinstance(message, AssistantMessage)
-    }
 
 
 def _assistant_thinking_lengths(state: CLIUIState) -> dict[tuple[str, int], int]:
@@ -1184,19 +1173,6 @@ def _assistant_label_for_message(
         parts.append(source)
     separator = " - " if ascii_only else " \u00b7 "
     return separator.join(parts)
-
-
-def _dispatch_reference_text(message: AssistantMessage) -> str:
-    content = str(message.dispatch_info.get("content") or "").strip()
-    if content:
-        return content
-    title = str(message.dispatch_info.get("title") or "").strip()
-    thread_id = str(message.dispatch_info.get("thread_id") or "").strip()
-    if title:
-        return f"Response from {title}"
-    if thread_id:
-        return f"Response from {thread_id}"
-    return ""
 
 
 def _clean_stream_delta(delta: str) -> str:
