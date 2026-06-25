@@ -86,7 +86,7 @@ def test_ci_runs_backend_lint_and_coverage_gates() -> None:
 
     backend_commands = _run_commands(jobs["backend-tests"])
     assert (
-        "python -m pytest Nymeria/tests --cov=nymeria --cov=run "
+        "python -m pytest Nymeria/tests -n auto --cov=nymeria --cov=run "
         "--cov-report=term --cov-report=xml:Nymeria/coverage.xml "
         "--cov-fail-under=38"
     ) in backend_commands
