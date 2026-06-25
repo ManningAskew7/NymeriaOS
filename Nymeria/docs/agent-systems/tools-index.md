@@ -917,8 +917,8 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `quickbooks_query` | `nymeria/tools/commerce_billing_service_integrations.py` | Run a QuickBooks Online read-only SQL-style query. |
 | `quickbooks_update_customer` | `nymeria/tools/commerce_billing_service_integrations.py` | Update a QuickBooks Online customer using sparse update fields. |
 | `quickchart_create_url` | `nymeria/tools/public_info_integrations.py` | Create a QuickChart chart URL from labels and data arrays. |
-| `rag_search` | `nymeria/tools/memory.py` | Search your own memory: past conversations, saved memories, and completed TODOs. |
-| `rag_settings` | `nymeria/tools/memory.py` | Configure RAG settings. Returns current settings after changes. |
+| `rag_search` | `nymeria/tools/rag_search_tool.py` | Search your own memory: past conversations, saved memories, and completed TODOs. |
+| `rag_settings` | `nymeria/tools/rag_search_tool.py` | Configure RAG settings. Returns current settings after changes. |
 | `raindrop_create_bookmark` | `nymeria/tools/bookmark_link_service_integrations.py` | Create a Raindrop bookmark. |
 | `raindrop_delete_bookmark` | `nymeria/tools/bookmark_link_service_integrations.py` | Delete a Raindrop bookmark by ID. |
 | `raindrop_delete_tags` | `nymeria/tools/bookmark_link_service_integrations.py` | Delete one or more Raindrop tags. |
