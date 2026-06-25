@@ -18,6 +18,8 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .web_batch import parse_batch_queries, run_batched
+
 logger = logging.getLogger(__name__)
 
 _TAVILY_SEARCH_URL = "https://api.tavily.com/search"
@@ -198,15 +200,9 @@ def web_search_tavily(
         Errors: "[Error]: <reason>".
     """
     # Parse queries (batch takes precedence over single query).
-    if queries.strip():
-        query_list = [q.strip() for q in queries.split(" | ")]
-        query_list = [q for q in query_list if q]
-        if len(query_list) > _MAX_BATCH_QUERIES:
-            query_list = query_list[:_MAX_BATCH_QUERIES]
-    elif query.strip():
-        query_list = [query.strip()]
-    else:
-        return "[Error]: Provide a query or pipe-separated queries."
+    query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)
+    if error:
+        return error
 
     api_key = _get_tavily_api_key(config)
     if not api_key:
@@ -250,21 +246,12 @@ def web_search_tavily(
         base_payload.get("search_depth", "basic"),
     )
 
-    # Single query: return directly.
-    if len(query_list) == 1:
-        payload = {**base_payload, "query": query_list[0]}
-        return _tavily_search_single(payload, api_key, timeout, max_results)
-
-    # Batch mode.
-    total = len(query_list)
-    sections = []
-    for i, q in enumerate(query_list, 1):
-        header = f"=== Query {i}/{total}: {q} ==="
-        payload = {**base_payload, "query": q}
-        result = _tavily_search_single(payload, api_key, timeout, max_results)
-        sections.append(f"{header}\n{result}")
-
-    return "\n\n".join(sections)
+    return run_batched(
+        query_list,
+        lambda q: _tavily_search_single(
+            {**base_payload, "query": q}, api_key, timeout, max_results
+        ),
+    )
 
 
 def _get_exa_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
@@ -390,15 +377,9 @@ def web_search_exa_ai(
         Errors: "[Error]: <reason>".
     """
     # Parse queries (batch takes precedence over single query).
-    if queries.strip():
-        query_list = [q.strip() for q in queries.split(" | ")]
-        query_list = [q for q in query_list if q]
-        if len(query_list) > _MAX_BATCH_QUERIES:
-            query_list = query_list[:_MAX_BATCH_QUERIES]
-    elif query.strip():
-        query_list = [query.strip()]
-    else:
-        return "[Error]: Provide a query or pipe-separated queries."
+    query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)
+    if error:
+        return error
 
     api_key = _get_exa_api_key(config)
     if not api_key:
@@ -455,21 +436,12 @@ def web_search_exa_ai(
         base_payload.get("type", "auto"),
     )
 
-    # Single query: return directly.
-    if len(query_list) == 1:
-        payload = {**base_payload, "query": query_list[0]}
-        return _exa_search_single(payload, api_key, 30.0, num_results)
-
-    # Batch mode.
-    total = len(query_list)
-    sections = []
-    for i, q in enumerate(query_list, 1):
-        header = f"=== Query {i}/{total}: {q} ==="
-        payload = {**base_payload, "query": q}
-        result = _exa_search_single(payload, api_key, 30.0, num_results)
-        sections.append(f"{header}\n{result}")
-
-    return "\n\n".join(sections)
+    return run_batched(
+        query_list,
+        lambda q: _exa_search_single(
+            {**base_payload, "query": q}, api_key, 30.0, num_results
+        ),
+    )
 
 
 def _get_firecrawl_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
@@ -600,15 +572,9 @@ def web_search_firecrawl(
         Errors: "[Error]: <reason>".
     """
     # Parse queries (batch takes precedence over single query).
-    if queries.strip():
-        query_list = [q.strip() for q in queries.split(" | ")]
-        query_list = [q for q in query_list if q]
-        if len(query_list) > _MAX_BATCH_QUERIES:
-            query_list = query_list[:_MAX_BATCH_QUERIES]
-    elif query.strip():
-        query_list = [query.strip()]
-    else:
-        return "[Error]: Provide a query or pipe-separated queries."
+    query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)
+    if error:
+        return error
 
     api_key = _get_firecrawl_api_key(config)
     if not api_key:
@@ -658,21 +624,12 @@ def web_search_firecrawl(
         limit,
     )
 
-    # Single query: return directly.
-    if len(query_list) == 1:
-        payload = {**base_payload, "query": query_list[0]}
-        return _firecrawl_search_single(payload, api_key, 30.0, limit)
-
-    # Batch mode.
-    total = len(query_list)
-    sections = []
-    for i, q in enumerate(query_list, 1):
-        header = f"=== Query {i}/{total}: {q} ==="
-        payload = {**base_payload, "query": q}
-        result = _firecrawl_search_single(payload, api_key, 30.0, limit)
-        sections.append(f"{header}\n{result}")
-
-    return "\n\n".join(sections)
+    return run_batched(
+        query_list,
+        lambda q: _firecrawl_search_single(
+            {**base_payload, "query": q}, api_key, 30.0, limit
+        ),
+    )
 
 
 def _get_brave_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
@@ -821,15 +778,9 @@ def web_search_brave(
         "=== Query N/M: <query> ===" headers. Errors: "[Error]: <reason>".
     """
     # Parse queries (batch takes precedence over single query).
-    if queries.strip():
-        query_list = [q.strip() for q in queries.split(" | ")]
-        query_list = [q for q in query_list if q]
-        if len(query_list) > _MAX_BATCH_QUERIES:
-            query_list = query_list[:_MAX_BATCH_QUERIES]
-    elif query.strip():
-        query_list = [query.strip()]
-    else:
-        return "[Error]: Provide a query or pipe-separated queries."
+    query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)
+    if error:
+        return error
 
     api_key = _get_brave_api_key(config)
     if not api_key:
@@ -876,23 +827,12 @@ def web_search_brave(
         base_params["result_filter"],
     )
 
-    # Single query: return directly.
-    if len(query_list) == 1:
-        q = f"{query_list[0]} {site_filter}".strip() if site_filter else query_list[0]
-        params = {**base_params, "q": q}
-        return _brave_search_single(params, api_key, 15.0, count)
-
-    # Batch mode.
-    total = len(query_list)
-    sections = []
-    for i, raw_q in enumerate(query_list, 1):
-        header = f"=== Query {i}/{total}: {raw_q} ==="
+    def _run(raw_q: str) -> str:
+        # Brave has no native domain filter; the site: operators ride the query.
         q = f"{raw_q} {site_filter}".strip() if site_filter else raw_q
-        params = {**base_params, "q": q}
-        result = _brave_search_single(params, api_key, 15.0, count)
-        sections.append(f"{header}\n{result}")
+        return _brave_search_single({**base_params, "q": q}, api_key, 15.0, count)
 
-    return "\n\n".join(sections)
+    return run_batched(query_list, _run)
 
 
 def _get_searxng_base_url(config: Optional[RunnableConfig] = None) -> Optional[str]:
@@ -1032,15 +972,9 @@ def web_search_searxng(
         "=== Query N/M: <query> ===" headers. Errors: "[Error]: <reason>".
     """
     # Parse queries (batch takes precedence over single query).
-    if queries.strip():
-        query_list = [q.strip() for q in queries.split(" | ")]
-        query_list = [q for q in query_list if q]
-        if len(query_list) > _MAX_BATCH_QUERIES:
-            query_list = query_list[:_MAX_BATCH_QUERIES]
-    elif query.strip():
-        query_list = [query.strip()]
-    else:
-        return "[Error]: Provide a query or pipe-separated queries."
+    query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)
+    if error:
+        return error
 
     base_url = _get_searxng_base_url(config)
     if not base_url:
@@ -1084,23 +1018,12 @@ def web_search_searxng(
     # SearXNG fans out to many engines per query, so allow a longer timeout.
     timeout = 20.0
 
-    # Single query: return directly.
-    if len(query_list) == 1:
-        q = f"{query_list[0]} {site_filter}".strip() if site_filter else query_list[0]
-        params = {**base_params, "q": q}
-        return _searxng_search_single(base_url, params, timeout, count)
-
-    # Batch mode.
-    total = len(query_list)
-    sections = []
-    for i, raw_q in enumerate(query_list, 1):
-        header = f"=== Query {i}/{total}: {raw_q} ==="
+    def _run(raw_q: str) -> str:
+        # SearXNG has no native domain filter; the site: operators ride the query.
         q = f"{raw_q} {site_filter}".strip() if site_filter else raw_q
-        params = {**base_params, "q": q}
-        result = _searxng_search_single(base_url, params, timeout, count)
-        sections.append(f"{header}\n{result}")
+        return _searxng_search_single(base_url, {**base_params, "q": q}, timeout, count)
 
-    return "\n\n".join(sections)
+    return run_batched(query_list, _run)
 
 
 def _format_ddgs_results(items: list, count: int) -> str:
@@ -1211,15 +1134,9 @@ def web_search_ddgs(
         by "=== Query N/M: <query> ===" headers. Errors: "[Error]: <reason>".
     """
     # Parse queries (batch takes precedence over single query).
-    if queries.strip():
-        query_list = [q.strip() for q in queries.split(" | ")]
-        query_list = [q for q in query_list if q]
-        if len(query_list) > _MAX_BATCH_QUERIES:
-            query_list = query_list[:_MAX_BATCH_QUERIES]
-    elif query.strip():
-        query_list = [query.strip()]
-    else:
-        return "[Error]: Provide a query or pipe-separated queries."
+    query_list, error = parse_batch_queries(query, queries, max_n=_MAX_BATCH_QUERIES)
+    if error:
+        return error
 
     # Clamp count (top-N cap on an already-ranked merge, not a fetch directive).
     if count is not None:
@@ -1252,21 +1169,12 @@ def web_search_ddgs(
         category,
     )
 
-    # Single query: return directly.
-    if len(query_list) == 1:
-        q = f"{query_list[0]} {site_filter}".strip() if site_filter else query_list[0]
+    def _run(raw_q: str) -> str:
+        # The upstream engines understand Google-style site: operators.
+        q = f"{raw_q} {site_filter}".strip() if site_filter else raw_q
         return _ddgs_search_single(q, category, timelimit, count)
 
-    # Batch mode.
-    total = len(query_list)
-    sections = []
-    for i, raw_q in enumerate(query_list, 1):
-        header = f"=== Query {i}/{total}: {raw_q} ==="
-        q = f"{raw_q} {site_filter}".strip() if site_filter else raw_q
-        result = _ddgs_search_single(q, category, timelimit, count)
-        sections.append(f"{header}\n{result}")
-
-    return "\n\n".join(sections)
+    return run_batched(query_list, _run)
 
 
 # Opt-in web search providers beyond Perplexity. tools/__init__.py folds this
