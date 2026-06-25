@@ -10,7 +10,9 @@ working and there is no import cycle between the two modules.
 """
 
 import logging
-from typing import Annotated, Optional
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Annotated, Callable, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -183,6 +185,166 @@ def _format_retrieval_footer(
     )
 
 
+@dataclass(frozen=True)
+class _RagRuntimeSettings:
+    """The resolved per-search retrieval configuration: server RAG defaults with
+    this user's overrides applied, bundled so ``rag_search`` reads one object
+    instead of ~20 locals."""
+
+    fusion: str
+    retrieval_mode: str
+    apply_recency: bool
+    rerank_enabled: bool
+    rerank_top_n: int
+    rerank_provider: str
+    rerank_model: Optional[str]
+    rerank_api_key: Optional[str]
+    rerank_local_onnx: Optional[str]
+    prose_priority: bool
+    prose_priority_weight: float
+    dedup_enabled: bool
+    dedup_threshold: float
+    result_max_chars: int
+    anchor_enabled: bool
+    anchor_weight: float
+    anchor_floor: float
+    emb_provider: str
+    emb_model: str
+    emb_dims: Optional[int]
+
+
+def _load_rag_runtime_settings(rag_prefs: dict) -> "_RagRuntimeSettings":
+    """Resolve the server RAG retrieval defaults and apply this user's overrides.
+
+    Never raises: the only risky operation (the settings read) is internally
+    caught and replaced with the documented fallback defaults, so the caller can
+    invoke this outside its search-failure try without changing behavior. The
+    per-user ``retrieval_mode``/``rerank_enabled`` overrides are applied before
+    the immutable struct is built, so the returned values are the final ones used
+    for both the search call and the provenance footer.
+    """
+    try:
+        from ..config import get_settings
+        settings = get_settings()
+        fusion = settings.rag_fusion_method
+        retrieval_mode = settings.rag_retrieval_mode
+        apply_recency = settings.rag_recency_enabled
+        rerank_enabled = settings.rag_rerank_enabled
+        rerank_top_n = settings.rag_rerank_top_n
+        rerank_provider = settings.rag_rerank_provider
+        rerank_model = settings.rag_rerank_model
+        rerank_api_key = settings.rag_rerank_api_key
+        rerank_local_onnx = settings.rag_rerank_local_onnx_file
+        prose_priority = settings.rag_prose_priority_enabled
+        prose_priority_weight = settings.rag_prose_priority_weight
+        dedup_enabled = settings.rag_dedup_enabled
+        dedup_threshold = settings.rag_dedup_threshold
+        result_max_chars = settings.rag_result_max_chars
+        anchor_enabled = settings.rag_anchor_enabled
+        anchor_weight = settings.rag_anchor_weight
+        anchor_floor = settings.rag_anchor_floor
+        emb_provider = settings.embedding_provider
+        emb_model = settings.embedding_model
+        emb_dims = settings.embedding_dimensions
+    except Exception:
+        fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", False, False, 20
+        retrieval_mode = "hybrid"
+        rerank_provider, rerank_model, rerank_api_key, rerank_local_onnx = "llm", None, None, None
+        prose_priority, prose_priority_weight = True, 0.4
+        dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
+        anchor_enabled, anchor_weight, anchor_floor = True, 0.5, 0.4
+        emb_provider, emb_model, emb_dims = "openai", "text-embedding-3-small", None
+
+    # Per-user overrides of the server retrieval defaults (RAG is per-user).
+    if rag_prefs.get("retrieval_mode"):
+        retrieval_mode = rag_prefs["retrieval_mode"]
+    if rag_prefs.get("rerank_enabled") is not None:
+        rerank_enabled = rag_prefs["rerank_enabled"]
+
+    return _RagRuntimeSettings(
+        fusion=fusion,
+        retrieval_mode=retrieval_mode,
+        apply_recency=apply_recency,
+        rerank_enabled=rerank_enabled,
+        rerank_top_n=rerank_top_n,
+        rerank_provider=rerank_provider,
+        rerank_model=rerank_model,
+        rerank_api_key=rerank_api_key,
+        rerank_local_onnx=rerank_local_onnx,
+        prose_priority=prose_priority,
+        prose_priority_weight=prose_priority_weight,
+        dedup_enabled=dedup_enabled,
+        dedup_threshold=dedup_threshold,
+        result_max_chars=result_max_chars,
+        anchor_enabled=anchor_enabled,
+        anchor_weight=anchor_weight,
+        anchor_floor=anchor_floor,
+        emb_provider=emb_provider,
+        emb_model=emb_model,
+        emb_dims=emb_dims,
+    )
+
+
+def _render_rag_results(
+    results: list,
+    *,
+    query: str,
+    now: datetime,
+    resolve_title: Callable[[Optional[str]], Optional[str]],
+    result_max_chars: int,
+) -> list[str]:
+    """Build the agent-facing result block (header + numbered entries) for a
+    non-empty result set.
+
+    Pure formatting, kept out of the search-failure try so a rendering bug
+    surfaces as a distinct formatting error rather than being mislabeled a
+    retrieval failure. The trailing ``[retrieval]`` provenance line is appended
+    by the caller (it needs the index's live diagnostics).
+    """
+    top_score = max((r.score for r in results), default=0.0) or 1.0
+
+    lines = [
+        f"Found {len(results)} relevant result(s) for '{query}' "
+        f"(now: {now.isoformat()}):\n"
+    ]
+
+    for i, result in enumerate(results, 1):
+        type_emoji = {
+            'conversation': '💬',
+            'memory': '🧠',
+            'todo': '✅',
+        }.get(result.chunk_type, '📝')
+
+        event_time = result.event_time or result.created_at
+        age = _humanize_age((now - event_time).total_seconds())
+        relevance = result.score / top_score
+
+        # Provenance: thread title + id for thread-scoped chunks; saved
+        # memories are global (no thread).
+        if result.thread_id:
+            title = resolve_title(result.thread_id)
+            if title:
+                source = f'thread "{title}" ({result.thread_id})'
+            else:
+                source = f"thread {result.thread_id}"
+        else:
+            source = "saved memory (global)"
+
+        content = result.content
+        if len(content) > result_max_chars:
+            content = content[:max(0, result_max_chars - 3)] + "..."
+
+        lines.append(
+            f"{i}. {type_emoji} [{result.chunk_type}] "
+            f"({age}, {event_time.isoformat()}, relevance {relevance:.2f})"
+        )
+        lines.append(f"   from {source}")
+        lines.append(f"   {content}")
+        lines.append("")
+
+    return lines
+
+
 @tool
 def rag_search(
     query: str,
@@ -242,6 +404,8 @@ def rag_search(
     if not memory_index:
         return "[Error]: Could not access memory index."
 
+    # Search phase: preparing and running retrieval. Any exception here is a
+    # genuine retrieval failure and keeps the "[Error]: Search failed" contract.
     try:
         rag_prefs = profile.get_rag_preferences()
 
@@ -260,51 +424,15 @@ def rag_search(
 
         max_results = max(1, min(10, max_results))
 
-        try:
-            from ..config import get_settings
-            settings = get_settings()
-            fusion = settings.rag_fusion_method
-            retrieval_mode = settings.rag_retrieval_mode
-            apply_recency = settings.rag_recency_enabled
-            rerank_enabled = settings.rag_rerank_enabled
-            rerank_top_n = settings.rag_rerank_top_n
-            rerank_provider = settings.rag_rerank_provider
-            rerank_model = settings.rag_rerank_model
-            rerank_api_key = settings.rag_rerank_api_key
-            rerank_local_onnx = settings.rag_rerank_local_onnx_file
-            prose_priority = settings.rag_prose_priority_enabled
-            prose_priority_weight = settings.rag_prose_priority_weight
-            dedup_enabled = settings.rag_dedup_enabled
-            dedup_threshold = settings.rag_dedup_threshold
-            result_max_chars = settings.rag_result_max_chars
-            anchor_enabled = settings.rag_anchor_enabled
-            anchor_weight = settings.rag_anchor_weight
-            anchor_floor = settings.rag_anchor_floor
-            emb_provider = settings.embedding_provider
-            emb_model = settings.embedding_model
-            emb_dims = settings.embedding_dimensions
-        except Exception:
-            fusion, apply_recency, rerank_enabled, rerank_top_n = "rrf", False, False, 20
-            retrieval_mode = "hybrid"
-            rerank_provider, rerank_model, rerank_api_key, rerank_local_onnx = "llm", None, None, None
-            prose_priority, prose_priority_weight = True, 0.4
-            dedup_enabled, dedup_threshold, result_max_chars = True, 0.9, 1000
-            anchor_enabled, anchor_weight, anchor_floor = True, 0.5, 0.4
-            emb_provider, emb_model, emb_dims = "openai", "text-embedding-3-small", None
-
-        # Per-user overrides of the server retrieval defaults (RAG is per-user).
-        if rag_prefs.get("retrieval_mode"):
-            retrieval_mode = rag_prefs["retrieval_mode"]
-        if rag_prefs.get("rerank_enabled") is not None:
-            rerank_enabled = rag_prefs["rerank_enabled"]
+        rt = _load_rag_runtime_settings(rag_prefs)
 
         # Parse the date anchor (None unless 'around' is set, valid, and enabled).
-        anchor = parse_anchor_string(around) if (around and anchor_enabled) else None
-        if around and anchor_enabled and anchor is None:
+        anchor = parse_anchor_string(around) if (around and rt.anchor_enabled) else None
+        if around and rt.anchor_enabled and anchor is None:
             return f"[Error]: could not read the date '{around}' (try ISO, e.g. 2026-04)."
 
         now = utc_now()
-        search_limit = max(max_results, rerank_top_n) if rerank_enabled else max_results
+        search_limit = max(max_results, rt.rerank_top_n) if rt.rerank_enabled else max_results
         results = memory_index.search(
             query=query,
             user_id=user_id,
@@ -314,16 +442,16 @@ def rag_search(
             anchor_start=anchor.start if anchor else None,
             anchor_end=anchor.end if anchor else None,
             anchor_edge_sigma_days=anchor.edge_sigma_days if anchor else None,
-            anchor_weight=anchor_weight,
-            anchor_floor=anchor_floor,
-            fusion=fusion,
-            retrieval_mode=retrieval_mode,
-            apply_recency=apply_recency,
+            anchor_weight=rt.anchor_weight,
+            anchor_floor=rt.anchor_floor,
+            fusion=rt.fusion,
+            retrieval_mode=rt.retrieval_mode,
+            apply_recency=rt.apply_recency,
             now=now,
-            apply_prose_priority=prose_priority,
-            prose_priority_weight=prose_priority_weight,
-            dedup=dedup_enabled,
-            dedup_threshold=dedup_threshold,
+            apply_prose_priority=rt.prose_priority,
+            prose_priority_weight=rt.prose_priority_weight,
+            dedup=rt.dedup_enabled,
+            dedup_threshold=rt.dedup_threshold,
         )
 
         # Pool actually retrieved (fused candidates) before rerank + truncation.
@@ -335,85 +463,55 @@ def rag_search(
         # cross-encoder. Any failure falls back to the fused order. rerank_status
         # records what actually happened so the footer can confirm it in testing.
         rerank_status = "off"
-        if rerank_enabled:
+        if rt.rerank_enabled:
             if len(results) <= 1:
                 rerank_status = "skipped (<=1 candidate)"
             else:
-                rerank_status = _do_rerank_with_status(
-                    config, query, results, rerank_provider, rerank_model,
-                    rerank_api_key, rerank_local_onnx, rerank_top_n,
+                rerank_status, results = _do_rerank_with_status(
+                    config, query, results, rt.rerank_provider, rt.rerank_model,
+                    rt.rerank_api_key, rt.rerank_local_onnx, rt.rerank_top_n,
                 )
-                results = rerank_status[1]
-                rerank_status = rerank_status[0]
 
         results = results[:max_results]
+    except Exception as e:
+        logger.error(f"RAG search failed: {e}")
+        return f"[Error]: Search failed - {str(e)}"
 
-        if not results:
-            return f"[No Results]: No relevant context found for '{query}'."
+    if not results:
+        return f"[No Results]: No relevant context found for '{query}'."
 
+    # Render phase: format the retrieved results. Kept OUT of the search try so a
+    # rendering or footer bug is reported as a distinct formatting error instead
+    # of being mislabeled a retrieval failure (which would wrongly prompt the
+    # agent to retry the search). F7.
+    try:
         resolve_title = _thread_title_resolver(user_id)
-        top_score = max((r.score for r in results), default=0.0) or 1.0
-
-        lines = [
-            f"Found {len(results)} relevant result(s) for '{query}' "
-            f"(now: {now.isoformat()}):\n"
-        ]
-
-        for i, result in enumerate(results, 1):
-            type_emoji = {
-                'conversation': '💬',
-                'memory': '🧠',
-                'todo': '✅',
-            }.get(result.chunk_type, '📝')
-
-            event_time = result.event_time or result.created_at
-            age = _humanize_age((now - event_time).total_seconds())
-            relevance = result.score / top_score
-
-            # Provenance: thread title + id for thread-scoped chunks; saved
-            # memories are global (no thread).
-            if result.thread_id:
-                title = resolve_title(result.thread_id)
-                if title:
-                    source = f'thread "{title}" ({result.thread_id})'
-                else:
-                    source = f"thread {result.thread_id}"
-            else:
-                source = "saved memory (global)"
-
-            content = result.content
-            if len(content) > result_max_chars:
-                content = content[:max(0, result_max_chars - 3)] + "..."
-
-            lines.append(
-                f"{i}. {type_emoji} [{result.chunk_type}] "
-                f"({age}, {event_time.isoformat()}, relevance {relevance:.2f})"
-            )
-            lines.append(f"   from {source}")
-            lines.append(f"   {content}")
-            lines.append("")
-
+        lines = _render_rag_results(
+            results,
+            query=query,
+            now=now,
+            resolve_title=resolve_title,
+            result_max_chars=rt.result_max_chars,
+        )
         lines.append(_format_retrieval_footer(
             diag=getattr(memory_index, "_last_search_diag", None),
-            emb_provider=emb_provider,
-            emb_model=emb_model,
-            emb_dims=emb_dims,
-            retrieval_mode=retrieval_mode,
-            rerank_enabled=rerank_enabled,
-            rerank_provider=rerank_provider,
-            rerank_model=rerank_model,
+            emb_provider=rt.emb_provider,
+            emb_model=rt.emb_model,
+            emb_dims=rt.emb_dims,
+            retrieval_mode=rt.retrieval_mode,
+            rerank_enabled=rt.rerank_enabled,
+            rerank_provider=rt.rerank_provider,
+            rerank_model=rt.rerank_model,
             rerank_status=rerank_status,
-            rerank_top_n=rerank_top_n,
+            rerank_top_n=rt.rerank_top_n,
             retrieved=retrieved_count,
             returned=len(results),
             search_limit=search_limit,
         ))
-
         return "\n".join(lines)
-
     except Exception as e:
-        logger.error(f"RAG search failed: {e}")
-        return f"[Error]: Search failed - {str(e)}"
+        logger.error(f"RAG result formatting failed: {e}")
+        return f"[Error]: Found results but failed to format them - {str(e)}"
 
 
 @tool

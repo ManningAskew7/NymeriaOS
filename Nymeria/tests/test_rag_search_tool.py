@@ -235,3 +235,179 @@ def test_format_retrieval_footer_moved_and_intact():
     assert line.startswith("[retrieval] mode=hybrid")
     assert "vector live, 7 cand" in line
     assert "rerank off" in line
+
+
+# --- F7: decomposition + broad-except narrowing -----------------------------
+# rag_search now runs a two-phase body: a SEARCH try that keeps the byte-identical
+# "[Error]: Search failed - <e>" contract for retrieval failures, and a separate
+# RENDER try that reports formatting bugs distinctly instead of mislabeling them
+# as search failures (which would wrongly prompt the agent to retry the search).
+
+
+def _fake_settings(**overrides):
+    """A SimpleNamespace standing in for the global Settings, with every field
+    _load_rag_runtime_settings reads. Overrides win. Keep this field set in sync
+    with the helper if a new setting is added there."""
+    base = dict(
+        rag_fusion_method="rrf",
+        rag_retrieval_mode="hybrid",
+        rag_recency_enabled=False,
+        rag_rerank_enabled=False,
+        rag_rerank_top_n=20,
+        rag_rerank_provider="llm",
+        rag_rerank_model=None,
+        rag_rerank_api_key=None,
+        rag_rerank_local_onnx_file=None,
+        rag_prose_priority_enabled=True,
+        rag_prose_priority_weight=0.4,
+        rag_dedup_enabled=True,
+        rag_dedup_threshold=0.9,
+        rag_result_max_chars=1000,
+        rag_anchor_enabled=True,
+        rag_anchor_weight=0.5,
+        rag_anchor_floor=0.4,
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-small",
+        embedding_dimensions=None,
+    )
+    base.update(overrides)
+    return types.SimpleNamespace(**base)
+
+
+def test_search_failure_keeps_search_failed_contract(monkeypatch):
+    # A genuine retrieval failure (memory_index.search raises) keeps the exact
+    # byte-identical "[Error]: Search failed - <e>" string.
+    from nymeria.tools import memory as mem
+    from nymeria.tools import rag_search_tool as rst
+
+    def _boom(**kw):
+        raise RuntimeError("index exploded")
+
+    monkeypatch.setattr(
+        mem, "_get_profile_manager",
+        lambda: types.SimpleNamespace(get_profile=lambda uid: _rag_profile()),
+    )
+    monkeypatch.setattr(
+        mem, "_get_memory_index",
+        lambda uid: types.SimpleNamespace(search=_boom),
+    )
+    out = rst.rag_search.invoke({"query": "x"}, config={"configurable": {"user_id": "u1"}})
+    assert out == "[Error]: Search failed - index exploded"
+
+
+def test_render_loop_failure_is_not_masked_as_search_failed(monkeypatch):
+    # The core F7 fix: a rendering-LOOP bug (here _humanize_age, called per result
+    # inside the loop) must surface as a DISTINCT formatting error, not be
+    # mislabeled "Search failed". This locks the loop body into the render phase,
+    # separate from the footer (covered below).
+    from nymeria.tools import rag_search_tool as rst
+
+    def _boom_age(_seconds):
+        raise RuntimeError("age broke")
+
+    # Intentionally runs against the live Settings (only the error path matters
+    # here); _load_rag_runtime_settings swallows any settings failure anyway.
+    _patch_accessors(monkeypatch, _fake_results())
+    monkeypatch.setattr(rst, "_humanize_age", _boom_age)
+    out = rst.rag_search.invoke({"query": "x"}, config={"configurable": {"user_id": "u1"}})
+    assert out.startswith("[Error]: Found results but failed to format them")
+    assert "age broke" in out
+    assert "Search failed" not in out
+
+
+def test_render_footer_failure_is_not_masked_as_search_failed(monkeypatch):
+    # The footer is appended inside the render phase, so a footer bug is also
+    # reported distinctly (and the module-global call is monkeypatchable).
+    from nymeria.tools import rag_search_tool as rst
+
+    _patch_accessors(monkeypatch, _fake_results())
+
+    def _boom_footer(**kw):
+        raise RuntimeError("footer broke")
+
+    monkeypatch.setattr(rst, "_format_retrieval_footer", _boom_footer)
+    out = rst.rag_search.invoke({"query": "budget"}, config={"configurable": {"user_id": "u1"}})
+    assert out.startswith("[Error]: Found results but failed to format them")
+    assert "footer broke" in out
+    assert "Search failed" not in out
+
+
+def test_load_rag_runtime_settings_reads_settings_then_applies_overrides(monkeypatch):
+    import nymeria.config as cfg
+    from nymeria.tools.rag_search_tool import _load_rag_runtime_settings
+
+    monkeypatch.setattr(
+        cfg, "get_settings",
+        lambda: _fake_settings(rag_retrieval_mode="hybrid", rag_rerank_enabled=True),
+    )
+
+    # No prefs -> server values flow through unchanged.
+    rt = _load_rag_runtime_settings({})
+    assert rt.retrieval_mode == "hybrid"
+    assert rt.rerank_enabled is True
+    assert rt.fusion == "rrf"
+    assert rt.result_max_chars == 1000
+    assert rt.emb_model == "text-embedding-3-small"
+
+    # Per-user overrides win: retrieval_mode (truthy) and rerank_enabled (False is
+    # "is not None", so it must override a True server default).
+    rt2 = _load_rag_runtime_settings({"retrieval_mode": "vector", "rerank_enabled": False})
+    assert rt2.retrieval_mode == "vector"
+    assert rt2.rerank_enabled is False
+
+    # An empty-string retrieval_mode is falsy and must NOT override.
+    rt3 = _load_rag_runtime_settings({"retrieval_mode": ""})
+    assert rt3.retrieval_mode == "hybrid"
+
+
+def test_load_rag_runtime_settings_falls_back_when_settings_unavailable(monkeypatch):
+    import nymeria.config as cfg
+    from nymeria.tools.rag_search_tool import _load_rag_runtime_settings
+
+    def _boom():
+        raise RuntimeError("no settings")
+
+    monkeypatch.setattr(cfg, "get_settings", _boom)
+
+    rt = _load_rag_runtime_settings({})
+    assert rt.fusion == "rrf"
+    assert rt.retrieval_mode == "hybrid"
+    assert rt.rerank_enabled is False
+    assert rt.rerank_top_n == 20
+    assert rt.rerank_provider == "llm"
+    assert rt.result_max_chars == 1000
+    assert rt.emb_provider == "openai"
+    assert rt.emb_model == "text-embedding-3-small"
+    assert rt.emb_dims is None
+
+    # Overrides still apply on top of the fallback defaults.
+    rt2 = _load_rag_runtime_settings({"retrieval_mode": "vector"})
+    assert rt2.retrieval_mode == "vector"
+
+
+def test_render_rag_results_format():
+    from nymeria.tools.rag_search_tool import _render_rag_results
+
+    now = utc_now()
+    results = [
+        ChunkResult(id="1", content="budget talk", chunk_type="conversation",
+                    thread_id="t-123", created_at=now, metadata={}, score=0.8,
+                    event_time=now - timedelta(days=2)),
+        ChunkResult(id="2", content="X" * 50, chunk_type="memory",
+                    thread_id=None, created_at=now, metadata={}, score=0.4,
+                    event_time=now - timedelta(days=1)),
+    ]
+    lines = _render_rag_results(
+        results, query="budget", now=now,
+        resolve_title=lambda tid: None, result_max_chars=10,
+    )
+    text = "\n".join(lines)
+    assert text.startswith("Found 2 relevant result(s) for 'budget'")
+    assert f"now: {now.isoformat()}" in text
+    assert "[conversation]" in text
+    assert "thread t-123" in text            # no title resolved -> bare id form
+    assert "saved memory (global)" in text   # thread_id None -> global
+    assert "XXXXXXX..." in text              # content (50) truncated to 10 -> 7 + "..."
+    # relevance is normalized to the top score (0.8): 0.8/0.8 and 0.4/0.8.
+    assert "relevance 1.00" in text
+    assert "relevance 0.50" in text
