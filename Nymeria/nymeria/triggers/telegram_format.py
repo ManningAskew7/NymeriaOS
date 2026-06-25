@@ -178,3 +178,92 @@ def format_compaction_notice_html(
             summary_text = summary_text[: max_summary_len - 3].rstrip() + "..."
         parts.append(f"<blockquote>{escape_html(summary_text)}</blockquote>")
     return "\n".join(parts)
+
+
+# =============================================================================
+# Conversation export serializers (the /export command)
+# =============================================================================
+#
+# Pure serializers over the ``messages`` list returned by ``api.get_history``.
+# Each renders one of the /export formats; output is uploaded as a file, so it
+# is user-visible and must stay stable. The two text serializers share the same
+# no-steps content extraction (``_message_plain_text``) but diverge in every
+# emitted line, so they stay as separate functions rather than one parameterized
+# step-walk.
+
+
+def _message_plain_text(message: Mapping[str, Any]) -> str:
+    """Flatten a message's plain content, joining text blocks if it is a list."""
+    text = message.get("content", "")
+    if isinstance(text, list):
+        text = "\n".join(
+            b.get("text", "") for b in text
+            if isinstance(b, dict) and b.get("text")
+        )
+    return text
+
+
+def export_messages_json(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Serialize history messages as pretty JSON (the /export json format)."""
+    return _json.dumps(messages, indent=2, ensure_ascii=False)
+
+
+def export_messages_txt(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Serialize history messages as plain text (the /export txt format)."""
+    lines: List[str] = []
+    for msg in messages:
+        role = msg.get("role", "unknown").capitalize()
+        steps = msg.get("steps", [])
+        if steps:
+            lines.append(f"[{role}]")
+            for step in steps:
+                stype = step.get("type", "")
+                if stype == "thinking":
+                    lines.append(f"  [Thinking] {step.get('content', '')}")
+                elif stype == "tool_call":
+                    name = step.get("name", "?")
+                    args = step.get("arguments") or {}
+                    result = step.get("result", "")
+                    args_str = _json.dumps(args, ensure_ascii=False) if args else ""
+                    lines.append(f"  [Tool: {name}] {args_str}")
+                    if result:
+                        lines.append(f"    \u2192 {str(result)[:200]}")
+                elif stype == "response":
+                    lines.append(step.get("content", ""))
+        else:
+            lines.append(f"[{role}] {_message_plain_text(msg)}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def export_messages_md(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Serialize history messages as Markdown (the /export markdown format)."""
+    parts: List[str] = []
+    for msg in messages:
+        role = msg.get("role", "unknown").capitalize()
+        steps = msg.get("steps", [])
+        if steps:
+            parts.append(f"### {role}")
+            for step in steps:
+                stype = step.get("type", "")
+                if stype == "thinking":
+                    parts.append(f"> *Thinking:* {step.get('content', '')}")
+                elif stype == "tool_call":
+                    name = step.get("name", "?")
+                    args = step.get("arguments") or {}
+                    result = step.get("result", "")
+                    parts.append(
+                        f"**Tool: {name}**\n"
+                        f"```json\n{_json.dumps(args, indent=2, ensure_ascii=False)}\n```"
+                    )
+                    if result:
+                        result_str = str(result)
+                        if len(result_str) > 500:
+                            result_str = result_str[:497] + "..."
+                        parts.append(f"**Result:**\n```\n{result_str}\n```")
+                elif stype == "response":
+                    parts.append(step.get("content", ""))
+        else:
+            parts.append(f"### {role}\n\n{_message_plain_text(msg)}")
+        parts.append("---")
+    return "\n\n".join(parts)

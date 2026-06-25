@@ -35,6 +35,9 @@ from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver, http_error_detail
 from .telegram_format import (
     escape_html,
+    export_messages_json,
+    export_messages_md,
+    export_messages_txt,
     format_compaction_notice_html,
     format_tool_call_html,
     format_tool_result_html,
@@ -2016,78 +2019,14 @@ class NymeriaTelegramBot:
                 await update.message.reply_text("No conversation history to export.")
                 return
 
-            if fmt == "json":
-                content = _json.dumps(messages, indent=2, ensure_ascii=False)
-                ext = "json"
-            elif fmt == "txt":
-                lines = []
-                for msg in messages:
-                    role = msg.get("role", "unknown").capitalize()
-                    steps = msg.get("steps", [])
-                    if steps:
-                        lines.append(f"[{role}]")
-                        for step in steps:
-                            stype = step.get("type", "")
-                            if stype == "thinking":
-                                lines.append(f"  [Thinking] {step.get('content', '')}")
-                            elif stype == "tool_call":
-                                name = step.get("name", "?")
-                                args = step.get("arguments") or {}
-                                result = step.get("result", "")
-                                args_str = _json.dumps(args, ensure_ascii=False) if args else ""
-                                lines.append(f"  [Tool: {name}] {args_str}")
-                                if result:
-                                    lines.append(f"    \u2192 {str(result)[:200]}")
-                            elif stype == "response":
-                                lines.append(step.get("content", ""))
-                    else:
-                        text = msg.get("content", "")
-                        if isinstance(text, list):
-                            text = "\n".join(
-                                b.get("text", "") for b in text
-                                if isinstance(b, dict) and b.get("text")
-                            )
-                        lines.append(f"[{role}] {text}")
-                    lines.append("")
-                content = "\n".join(lines)
-                ext = "txt"
-            else:
-                parts = []
-                for msg in messages:
-                    role = msg.get("role", "unknown").capitalize()
-                    steps = msg.get("steps", [])
-                    if steps:
-                        parts.append(f"### {role}")
-                        for step in steps:
-                            stype = step.get("type", "")
-                            if stype == "thinking":
-                                parts.append(f"> *Thinking:* {step.get('content', '')}")
-                            elif stype == "tool_call":
-                                name = step.get("name", "?")
-                                args = step.get("arguments") or {}
-                                result = step.get("result", "")
-                                parts.append(
-                                    f"**Tool: {name}**\n"
-                                    f"```json\n{_json.dumps(args, indent=2, ensure_ascii=False)}\n```"
-                                )
-                                if result:
-                                    result_str = str(result)
-                                    if len(result_str) > 500:
-                                        result_str = result_str[:497] + "..."
-                                    parts.append(f"**Result:**\n```\n{result_str}\n```")
-                            elif stype == "response":
-                                parts.append(step.get("content", ""))
-                    else:
-                        text = msg.get("content", "")
-                        if isinstance(text, list):
-                            text = "\n".join(
-                                b.get("text", "") for b in text
-                                if isinstance(b, dict) and b.get("text")
-                            )
-                        parts.append(f"### {role}\n\n{text}")
-                    parts.append("---")
-                content = "\n\n".join(parts)
-                ext = "md"
+            # fmt is validated above, so this lookup cannot KeyError.
+            serializers = {
+                "json": (export_messages_json, "json"),
+                "txt": (export_messages_txt, "txt"),
+                "markdown": (export_messages_md, "md"),
+            }
+            serialize, ext = serializers[fmt]
+            content = serialize(messages)
 
             # Build filename
             chat_name = update.effective_chat.title or "export"

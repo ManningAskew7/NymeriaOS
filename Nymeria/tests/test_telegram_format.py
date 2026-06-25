@@ -1,20 +1,31 @@
-"""Unit tests for the extracted Telegram HTML formatters.
+"""Unit tests for the pure ``telegram_format`` helpers.
 
-These functions moved out of ``telegram_bot`` into ``telegram_format`` (slice 21
-F10). They are pure and were previously only exercised indirectly, so these
-tests lock their behavior and confirm the re-export seam from ``telegram_bot``.
+The HTML formatters moved out of ``telegram_bot`` (slice 21 F10) and the
+``/export`` serializers (slice 21 F9). They are pure and were previously only
+exercised indirectly, so these tests lock their behavior and confirm the
+re-export seam from ``telegram_bot``.
 """
 
 from __future__ import annotations
 
+import json
+
 from nymeria.triggers import telegram_bot, telegram_format
 from nymeria.triggers.telegram_format import (
     escape_html,
+    export_messages_json,
+    export_messages_md,
+    export_messages_txt,
     format_compaction_notice_html,
     format_tool_call_html,
     format_tool_result_html,
     markdown_to_html,
 )
+from nymeria.triggers.telegram_format import _message_plain_text
+
+# Arrow glyph emitted by the txt serializer, kept as a \u escape so this
+# test file stays ASCII (the serializer source uses the same escape).
+_ARROW = "\u2192"
 
 
 def test_telegram_bot_reexports_the_moved_formatters() -> None:
@@ -26,6 +37,9 @@ def test_telegram_bot_reexports_the_moved_formatters() -> None:
         "format_tool_result_html",
         "format_tool_search_html",
         "format_compaction_notice_html",
+        "export_messages_json",
+        "export_messages_txt",
+        "export_messages_md",
     ):
         assert getattr(telegram_bot, name) is getattr(telegram_format, name)
 
@@ -78,3 +92,155 @@ def test_format_compaction_notice_html_includes_summary_and_count() -> None:
     assert "<b>Context compacted</b>" in out
     assert "<i>3 messages summarized.</i>" in out
     assert "<blockquote>did stuff</blockquote>" in out
+
+
+# --- /export serializers (slice 21 F9) --------------------------------------
+
+# Fixture exercising both message shapes: a no-steps message and a steps
+# message with thinking / tool_call / response.
+_EXPORT_FIXTURE = [
+    {"role": "user", "content": "hi"},
+    {
+        "role": "assistant",
+        "steps": [
+            {"type": "thinking", "content": "ponder"},
+            {
+                "type": "tool_call",
+                "name": "search",
+                "arguments": {"q": "cats"},
+                "result": "res",
+            },
+            {"type": "response", "content": "done"},
+        ],
+    },
+]
+
+
+def test_export_messages_json_is_pretty_and_round_trips() -> None:
+    out = export_messages_json(_EXPORT_FIXTURE)
+    assert json.loads(out) == _EXPORT_FIXTURE
+    # indent=2 pretty printing
+    assert "\n  " in out
+    # ensure_ascii=False keeps non-ASCII literal (no \\u escapes for unicode).
+    assert export_messages_json([{"content": "caf\u00e9"}]) == (
+        '[\n  {\n    "content": "caf\u00e9"\n  }\n]'
+    )
+
+
+def test_export_messages_txt_exact_output() -> None:
+    expected = "\n".join(
+        [
+            "[User] hi",
+            "",
+            "[Assistant]",
+            "  [Thinking] ponder",
+            '  [Tool: search] {"q": "cats"}',
+            f"    {_ARROW} res",
+            "done",
+            "",
+        ]
+    )
+    assert export_messages_txt(_EXPORT_FIXTURE) == expected
+
+
+def test_export_messages_txt_truncates_result_at_200_without_ellipsis() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "steps": [
+                {"type": "tool_call", "name": "t", "arguments": {}, "result": "R" * 250},
+            ],
+        }
+    ]
+    out = export_messages_txt(messages)
+    # Empty args render an empty args string; result is sliced to 200, no "...".
+    assert "  [Tool: t] \n" in out
+    assert f"    {_ARROW} {'R' * 200}\n" in out
+    assert "R" * 201 not in out
+
+
+def test_export_messages_txt_keeps_result_at_exactly_200() -> None:
+    # The slice is unconditional (no length guard), so a 200-char result is
+    # emitted verbatim with no ellipsis.
+    messages = [
+        {
+            "role": "assistant",
+            "steps": [
+                {"type": "tool_call", "name": "t", "arguments": {}, "result": "R" * 200},
+            ],
+        }
+    ]
+    assert f"    {_ARROW} {'R' * 200}\n" in export_messages_txt(messages)
+
+
+def test_export_messages_md_exact_output() -> None:
+    expected = "\n\n".join(
+        [
+            "### User\n\nhi",
+            "---",
+            "### Assistant",
+            "> *Thinking:* ponder",
+            '**Tool: search**\n```json\n{\n  "q": "cats"\n}\n```',
+            "**Result:**\n```\nres\n```",
+            "done",
+            "---",
+        ]
+    )
+    assert export_messages_md(_EXPORT_FIXTURE) == expected
+
+
+def test_export_messages_md_truncates_result_over_500() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "steps": [
+                {"type": "tool_call", "name": "t", "arguments": {"k": 1}, "result": "R" * 600},
+            ],
+        }
+    ]
+    out = export_messages_md(messages)
+    assert f"**Result:**\n```\n{'R' * 497}...\n```" in out
+    assert "R" * 498 not in out
+
+
+def test_export_messages_md_keeps_result_at_exactly_500() -> None:
+    # Truncation is guarded by ``len > 500``, so exactly 500 chars is verbatim.
+    messages = [
+        {
+            "role": "assistant",
+            "steps": [
+                {"type": "tool_call", "name": "t", "arguments": {"k": 1}, "result": "R" * 500},
+            ],
+        }
+    ]
+    out = export_messages_md(messages)
+    assert f"**Result:**\n```\n{'R' * 500}\n```" in out
+    assert "..." not in out
+
+
+def test_export_serializers_default_role_when_missing() -> None:
+    messages = [{"content": "orphan"}]
+    assert export_messages_txt(messages) == "[Unknown] orphan\n"
+    assert export_messages_md(messages) == "### Unknown\n\norphan\n\n---"
+
+
+def test_export_serializers_flatten_list_content() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "block one"},
+                {"text": "block two"},
+                {"text": ""},  # falsy -> dropped
+                "not-a-dict",  # non-dict -> dropped
+            ],
+        }
+    ]
+    assert export_messages_txt(messages) == "[User] block one\nblock two\n"
+    assert export_messages_md(messages) == "### User\n\nblock one\nblock two\n\n---"
+
+
+def test_message_plain_text_passes_through_non_list_content() -> None:
+    assert _message_plain_text({"content": "plain"}) == "plain"
+    assert _message_plain_text({}) == ""
+    assert _message_plain_text({"content": ["x", {"text": "y"}]}) == "y"
