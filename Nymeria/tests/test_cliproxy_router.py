@@ -9,6 +9,7 @@ which key slot gets the cpx- gatekeeper), and the admin gate.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -23,7 +24,11 @@ from nymeria.cliproxy.management_client import (
     CLIProxyUnreachable,
     CLIProxyUnsupported,
 )
-from nymeria.core.thread_config import ThreadConfig
+from nymeria.core.thread_config import (
+    ActiveLLMFallback,
+    ThreadConfig,
+    ThreadLLMConfig,
+)
 
 
 class FakeManagementClient:
@@ -424,6 +429,7 @@ def test_apply_route_thread_writes_thread_llm_config():
     )
     assert response.status_code == 200
     saved = agent.thread_config_manager.saved["t-1"]
+    assert saved.llm_config is not None
     assert saved.llm_config.provider == "openai"
     assert saved.llm_config.base_url == "http://proxy.test:8317/v1"
     assert saved.llm_config.api_key == "cpx-gate"
@@ -536,3 +542,153 @@ def test_patch_config_rejects_masked_gatekeeper_round_trip():
         "/cliproxy/config", json={"knobs": {"api-keys": ["***"]}}
     )
     assert response.status_code == 400
+
+
+# --- Direct unit tests for the extracted apply-route branch helpers (F11) ---
+# The end-to-end `/cliproxy/apply-route` tests above are the characterization
+# net; these pin branch-internal paths the route tests do not fully exercise.
+
+
+def _spec(provider: str):
+    return cliproxy_router_module._require_spec(provider)
+
+
+def test_apply_route_thread_helper_skips_gate_when_no_access_fn():
+    agent = FakeAgent()
+    resp = cliproxy_router_module._apply_route_thread(
+        agent=agent,
+        admin=SimpleNamespace(user_id="admin"),
+        spec=_spec("grok"),
+        thread_id="t-9",
+        model="grok-4.3",
+        base_url="http://proxy.test:8317/v1",
+        gatekeeper="cpx-gate",
+        require_thread_access_fn=None,
+    )
+    saved = agent.thread_config_manager.saved["t-9"]
+    assert saved.llm_config is not None
+    assert saved.llm_config.provider == "openai"
+    assert saved.llm_config.api_key == "cpx-gate"
+    assert saved.llm_config.openai_api_mode == "chat_completions"
+    assert resp.scope == "thread"
+    assert resp.thread_id == "t-9"
+    # No access fn -> no gate raised; the cache eviction still fires.
+    assert agent.invalidated == ["t-9"]
+
+
+def test_apply_route_thread_helper_merges_existing_config_and_clears_fallback():
+    agent = FakeAgent()
+    existing = ThreadConfig(thread_id="t-keep")
+    existing.active_llm_fallback = ActiveLLMFallback(
+        provider="anthropic",
+        model="claude-opus-4-7",
+        source_provider="openai",
+        source_model="gpt-5.5",
+        expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+    )
+    existing.llm_config = ThreadLLMConfig(temperature=0.4)
+    agent.thread_config_manager.saved["t-keep"] = existing
+
+    cliproxy_router_module._apply_route_thread(
+        agent=agent,
+        admin=None,
+        spec=_spec("grok"),
+        thread_id="t-keep",
+        model="grok-4.3",
+        base_url="http://proxy.test:8317/v1",
+        gatekeeper="cpx-new",
+        require_thread_access_fn=None,
+    )
+    saved = agent.thread_config_manager.saved["t-keep"]
+    # Merged onto the SAME llm_config object (unrelated fields preserved), the
+    # route fields overwritten, and the stale fallback cleared.
+    assert saved.llm_config is not None
+    assert saved.llm_config is existing.llm_config
+    assert saved.llm_config.temperature == 0.4
+    assert saved.llm_config.api_key == "cpx-new"
+    assert saved.active_llm_fallback is None
+
+
+def test_apply_route_thread_helper_claude_writes_none_api_mode():
+    agent = FakeAgent()
+    claude = _spec("claude")
+    # Catalog invariant: the anthropic route carries no openai api mode, so the
+    # `spec.api_mode or None` branch must write None (not "").
+    assert not claude.api_mode
+    cliproxy_router_module._apply_route_thread(
+        agent=agent,
+        admin=None,
+        spec=claude,
+        thread_id="t-c",
+        model="claude-opus-4-7",
+        base_url="http://proxy.test:8317",
+        gatekeeper="cpx-gate",
+        require_thread_access_fn=None,
+    )
+    saved = agent.thread_config_manager.saved["t-c"]
+    assert saved.llm_config is not None
+    assert saved.llm_config.provider == "anthropic"
+    assert saved.llm_config.openai_api_mode is None
+
+
+def test_apply_route_thread_helper_missing_thread_id_raises_400():
+    with pytest.raises(HTTPException) as exc:
+        cliproxy_router_module._apply_route_thread(
+            agent=FakeAgent(),
+            admin=None,
+            spec=_spec("claude"),
+            thread_id=None,
+            model="claude-opus-4-7",
+            base_url="http://proxy.test:8317",
+            gatekeeper="cpx-gate",
+            require_thread_access_fn=None,
+        )
+    assert exc.value.status_code == 400
+
+
+def test_apply_route_thread_helper_tolerates_agent_without_evictor():
+    # An agent lacking `invalidate_thread_config_cache` must not crash (the
+    # callable() guard skips eviction).
+    agent = SimpleNamespace(thread_config_manager=FakeThreadConfigManager())
+    resp = cliproxy_router_module._apply_route_thread(
+        agent=agent,
+        admin=None,
+        spec=_spec("grok"),
+        thread_id="t-x",
+        model="grok-4.3",
+        base_url="http://proxy.test:8317/v1",
+        gatekeeper="cpx-gate",
+        require_thread_access_fn=None,
+    )
+    assert resp.thread_id == "t-x"
+    assert agent.thread_config_manager.saved["t-x"].llm_config.api_key == "cpx-gate"
+
+
+def test_apply_route_global_helper_propagates_restart_required():
+    import unittest.mock as mock
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    captured: dict[str, Any] = {}
+
+    def fake_apply(updates, *, settings, agent, get_settings_fn):
+        captured["updates"] = updates
+        return {"restart_required": True}
+
+    settings = SimpleNamespace()
+    with mock.patch.object(
+        settings_router_module, "apply_server_settings_update", fake_apply
+    ):
+        resp = cliproxy_router_module._apply_route_global(
+            agent=FakeAgent(),
+            settings=settings,
+            spec=_spec("codex"),
+            model="gpt-5.5",
+            base_url="http://proxy.test:8317/v1",
+            gatekeeper="cpx-gate",
+            get_settings_fn=lambda: settings,
+        )
+    assert resp.scope == "global"
+    assert resp.restart_required is True
+    assert captured["updates"].openai_api_key == "cpx-gate"
+    assert captured["updates"].openai_api_mode == "responses"
