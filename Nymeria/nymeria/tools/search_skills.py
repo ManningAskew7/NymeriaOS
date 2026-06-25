@@ -14,15 +14,15 @@ from __future__ import annotations
 
 import logging
 import json
-from datetime import timedelta
 from typing import Annotated, Any, List, Literal, Optional, Union, cast
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
+from ..core.capability_usage import collect_stale_names, compute_prune_window
 from ..core.thread_config import ThreadConfig
-from ..core.time_utils import ensure_aware_utc, parse_usage_timestamp, utc_now
+from ..core.time_utils import utc_now
 from ..core.tool_reload import command_or_text, tool_reload_command
 from .utils import current_agent, get_thread_id, get_user_id, json_result
 
@@ -103,11 +103,13 @@ def _prune_thread_skills(
             message="thread has no skill config",
         )
 
-    stale_days = max(1, int(stale_after_days or 30))
-    min_age_days = max(0, int(min_enabled_age_days or 0))
     now = utc_now()
-    stale_cutoff = now - timedelta(days=stale_days)
-    config_old_enough = ensure_aware_utc(tc.updated_at) <= now - timedelta(days=min_age_days)
+    stale_days, min_age_days, stale_cutoff, config_old_enough = compute_prune_window(
+        stale_after_days=stale_after_days,
+        min_enabled_age_days=min_enabled_age_days,
+        config_updated_at=tc.updated_at,
+        now=now,
+    )
 
     visible = {
         skill.name: skill
@@ -149,20 +151,18 @@ def _prune_thread_skills(
         )
     ]
 
-    enabled_stale: list[str] = []
-    if config_old_enough:
-        for name in enabled:
-            if (
-                name in PROTECTED_SKILL_NAMES
-                or name in enabled_missing
-                or name in enabled_redundant_global
-                or name in disabled
-            ):
-                continue
-            usage = usage_store.get_skill(user_id=user_id, thread_id=thread_id, name=name)
-            last_used = parse_usage_timestamp(usage.last_used_at)
-            if last_used is not None and last_used <= stale_cutoff:
-                enabled_stale.append(name)
+    enabled_stale = collect_stale_names(
+        enabled,
+        skip=set(PROTECTED_SKILL_NAMES)
+        | set(enabled_missing)
+        | set(enabled_redundant_global)
+        | set(disabled),
+        get_last_used_at=lambda name: usage_store.get_skill(
+            user_id=user_id, thread_id=thread_id, name=name
+        ).last_used_at,
+        stale_cutoff=stale_cutoff,
+        config_old_enough=config_old_enough,
+    )
 
     remove_enabled = set(enabled_missing) | set(enabled_redundant_global) | set(enabled_stale)
     remove_disabled = set(disabled_missing) | set(disabled_redundant_noop)
