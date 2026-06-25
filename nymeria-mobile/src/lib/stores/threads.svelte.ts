@@ -2,7 +2,7 @@ import type { Thread, ThreadPlatform, ThreadFolder, SortMode } from '$lib/types'
 import { api } from '$lib/services/api.svelte';
 import { scopedKey, registerIdentityReloadHook } from './config.svelte';
 import { generateId } from '$lib/utils/ids';
-import { platformFromThreadId } from '$lib/utils/threadPlatform';
+import { platformFromThreadId, isPlatformNativeThreadId } from '$lib/utils/threadPlatform';
 
 // localStorage keys are namespaced by the currently-connected user's id.
 // See config.svelte.ts::scopedKey for details.
@@ -163,24 +163,7 @@ function createThreadsStore() {
         // Use metadata platform if available, fall back to ID-prefix detection
         const thread = threads.find(t => t.id === id);
         const platform = thread?.platform || platformFromThreadId(id);
-        const platformNativeId =
-          id.startsWith('discord_') ||
-          id.startsWith('telegram_') ||
-          id.startsWith('slack_') ||
-          id.startsWith('matrix_') ||
-          id.startsWith('whatsapp_') ||
-          id.startsWith('messenger_') ||
-          id.startsWith('instagram_') ||
-          id.startsWith('webex_') ||
-          id.startsWith('mattermost_') ||
-          id.startsWith('zulip_') ||
-          id.startsWith('rocketchat_') ||
-          id.startsWith('teams_') ||
-          id.startsWith('googlechat_') ||
-          id.startsWith('line_') ||
-          id.startsWith('signal_') ||
-          id.startsWith('twitch_') ||
-          id.startsWith('trigger-');
+        const platformNativeId = isPlatformNativeThreadId(id);
         // Only skip native platform threads. A desktop-created UUID can still
         // render as Telegram after a chat-app binding and should restore.
         if (platform !== 'desktop' && platform !== 'callable' && platformNativeId) {

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   platformFromThreadId,
   isNativeDisplayPlatform,
+  isPlatformNativeThreadId,
   platformAfterCallableChange,
 } from './threadPlatform';
 
@@ -55,6 +56,50 @@ describe('isNativeDisplayPlatform', () => {
     expect(isNativeDisplayPlatform('desktop')).toBe(false);
     expect(isNativeDisplayPlatform('callable')).toBe(false);
     expect(isNativeDisplayPlatform(undefined)).toBe(false);
+  });
+});
+
+describe('isPlatformNativeThreadId', () => {
+  it('is true for every native chat-platform id and a trigger- id', () => {
+    const nativeIds = [
+      'discord_1',
+      'telegram_1',
+      'slack_1',
+      'matrix_1',
+      'whatsapp_1',
+      'messenger_1',
+      'instagram_1',
+      'webex_1',
+      'mattermost_1',
+      'zulip_1',
+      'rocketchat_1',
+      'teams_1',
+      'googlechat_1',
+      'line_1',
+      'signal_1',
+      'twitch_1',
+      'trigger-1',
+    ];
+    for (const id of nativeIds) {
+      expect(isPlatformNativeThreadId(id)).toBe(true);
+    }
+  });
+
+  it('is false for callable agent-/spawned- ids and plain desktop ids', () => {
+    expect(isPlatformNativeThreadId('agent-1')).toBe(false);
+    expect(isPlatformNativeThreadId('spawned-1')).toBe(false);
+    expect(isPlatformNativeThreadId('a1b2c3-uuid-like')).toBe(false);
+    expect(isPlatformNativeThreadId('')).toBe(false);
+  });
+
+  it('keys off the id prefix, not resolved metadata (the persistence-guard contract)', () => {
+    // A native chat-app thread id is recognized and its current selection is not
+    // persisted across reloads.
+    expect(isPlatformNativeThreadId('telegram_42')).toBe(true);
+    // A desktop-created UUID bound to a native platform has no native id prefix,
+    // so it is NOT treated as native here and remains restorable. The OR-chain
+    // this replaced behaved identically; the resolved-platform predicate would not.
+    expect(isPlatformNativeThreadId('a1b2c3-uuid-like')).toBe(false);
   });
 });
 

@@ -1,49 +1,67 @@
 import type { ThreadPlatform } from '$lib/types';
 
-export type NativeDisplayPlatform = 'discord' | 'telegram' | 'slack' | 'matrix' | 'whatsapp' | 'messenger' | 'instagram' | 'webex' | 'mattermost' | 'zulip' | 'rocketchat' | 'teams' | 'googlechat' | 'line' | 'signal' | 'twitch' | 'trigger';
+// Single source of truth: each chat-platform thread-id prefix paired with its
+// platform name. Every prefix uses a trailing underscore and the platform name
+// is the prefix without it (discord_ -> discord). Adding a chat platform = one
+// row here. The `satisfies` guard makes a name that is not a valid ThreadPlatform
+// fail the build. Mirrors the desktop utils/platform.ts source and the backend
+// core/thread_classification.py prefix list.
+const CHAT_PLATFORMS = [
+  ['discord_', 'discord'],
+  ['telegram_', 'telegram'],
+  ['slack_', 'slack'],
+  ['matrix_', 'matrix'],
+  ['whatsapp_', 'whatsapp'],
+  ['messenger_', 'messenger'],
+  ['instagram_', 'instagram'],
+  ['webex_', 'webex'],
+  ['mattermost_', 'mattermost'],
+  ['zulip_', 'zulip'],
+  ['rocketchat_', 'rocketchat'],
+  ['teams_', 'teams'],
+  ['googlechat_', 'googlechat'],
+  ['line_', 'line'],
+  ['signal_', 'signal'],
+  ['twitch_', 'twitch'],
+] as const satisfies ReadonlyArray<readonly [string, ThreadPlatform]>;
+
+// Derived from the table above (no second hand-maintained list): the chat
+// platform names plus the trigger pseudo-platform. Used as the narrowed return
+// type of the isNativeDisplayPlatform predicate.
+export type NativeDisplayPlatform = (typeof CHAT_PLATFORMS)[number][1] | 'trigger';
+
+const CHAT_PLATFORM_PREFIXES = CHAT_PLATFORMS.map(([prefix]) => prefix);
+
+// Native chat platforms plus the trigger pseudo-platform (excludes the callable
+// agent-/spawned- threads). Used to decide whether a thread id is a native one.
+const NATIVE_THREAD_PREFIXES = [...CHAT_PLATFORM_PREFIXES, 'trigger-'];
+
+// Platform NAMES (not ids) that render as a native/display platform: the chat
+// platforms plus trigger.
+const NATIVE_DISPLAY_PLATFORMS: ReadonlySet<ThreadPlatform> = new Set<ThreadPlatform>([
+  ...CHAT_PLATFORMS.map(([, platform]) => platform),
+  'trigger',
+]);
 
 export function platformFromThreadId(threadId: string): ThreadPlatform {
-  if (threadId.startsWith('discord_')) return 'discord';
-  if (threadId.startsWith('telegram_')) return 'telegram';
-  if (threadId.startsWith('slack_')) return 'slack';
-  if (threadId.startsWith('matrix_')) return 'matrix';
-  if (threadId.startsWith('whatsapp_')) return 'whatsapp';
-  if (threadId.startsWith('messenger_')) return 'messenger';
-  if (threadId.startsWith('instagram_')) return 'instagram';
-  if (threadId.startsWith('webex_')) return 'webex';
-  if (threadId.startsWith('mattermost_')) return 'mattermost';
-  if (threadId.startsWith('zulip_')) return 'zulip';
-  if (threadId.startsWith('rocketchat_')) return 'rocketchat';
-  if (threadId.startsWith('teams_')) return 'teams';
-  if (threadId.startsWith('googlechat_')) return 'googlechat';
-  if (threadId.startsWith('line_')) return 'line';
-  if (threadId.startsWith('signal_')) return 'signal';
-  if (threadId.startsWith('twitch_')) return 'twitch';
+  for (const [prefix, platform] of CHAT_PLATFORMS) {
+    if (threadId.startsWith(prefix)) return platform;
+  }
   if (threadId.startsWith('trigger-')) return 'trigger';
   if (threadId.startsWith('agent-') || threadId.startsWith('spawned-')) return 'callable';
   return 'desktop';
 }
 
 export function isNativeDisplayPlatform(platform?: ThreadPlatform): platform is NativeDisplayPlatform {
-  return (
-    platform === 'discord' ||
-    platform === 'telegram' ||
-    platform === 'slack' ||
-    platform === 'matrix' ||
-    platform === 'whatsapp' ||
-    platform === 'messenger' ||
-    platform === 'instagram' ||
-    platform === 'webex' ||
-    platform === 'mattermost' ||
-    platform === 'zulip' ||
-    platform === 'rocketchat' ||
-    platform === 'teams' ||
-    platform === 'googlechat' ||
-    platform === 'line' ||
-    platform === 'signal' ||
-    platform === 'twitch' ||
-    platform === 'trigger'
-  );
+  return platform !== undefined && NATIVE_DISPLAY_PLATFORMS.has(platform);
+}
+
+// True when the thread id belongs to a native platform (chat platform or
+// trigger), excluding callable agent/spawned threads. Keys off the id prefix
+// only (not resolved thread.platform metadata), matching the saveCurrentThreadId
+// persistence guard.
+export function isPlatformNativeThreadId(id: string): boolean {
+  return NATIVE_THREAD_PREFIXES.some((prefix) => id.startsWith(prefix));
 }
 
 export function platformAfterCallableChange(
