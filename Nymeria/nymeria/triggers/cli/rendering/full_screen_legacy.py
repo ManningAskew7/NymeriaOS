@@ -39,7 +39,7 @@ from ..command_routing import (
 )
 from ..commands import CommandContext, CommandResult, ListCommandOutputSink
 from ..commands.fast import fast_prompt_payload
-from ..commands.system import call_client_method, mapping_get
+from ..temporary_model import apply_temporary_model, restore_temporary_model
 from ..lifecycle import (
     ExitSignalHandlers,
     LifecycleStopResult,
@@ -353,37 +353,7 @@ class LegacyFullScreenPromptToolkitShell:
             thread_id=self.config.thread_id,
             user_id=self.config.user_id,
         )
-        config = await call_client_method(
-            context,
-            "get_thread_config",
-            self.config.thread_id,
-            user_id=self.config.user_id,
-        )
-        settings = await call_client_method(
-            context,
-            "get_settings",
-            user_id=self.config.user_id,
-        )
-        llm_config = mapping_get(config, "llm_config", None)
-        llm_config_present = isinstance(llm_config, Mapping)
-        model_present = llm_config_present and "model" in llm_config
-        previous_model = llm_config.get("model") if model_present else None
-        default_model = str(mapping_get(settings, "llm_model", "") or "")
-        effective_model = str(previous_model or default_model)
-
-        await call_client_method(
-            context,
-            "update_thread_config",
-            self.config.thread_id,
-            user_id=self.config.user_id,
-            llm_config={"model": model},
-        )
-        return {
-            "llm_config_present": llm_config_present,
-            "model_present": model_present,
-            "previous_model": previous_model,
-            "effective_model": effective_model,
-        }
+        return await apply_temporary_model(context, model)
 
     async def _restore_temporary_thread_model(self, restore: Mapping[str, Any]) -> None:
         context = CommandContext(
@@ -391,24 +361,7 @@ class LegacyFullScreenPromptToolkitShell:
             thread_id=self.config.thread_id,
             user_id=self.config.user_id,
         )
-        if not bool(restore.get("llm_config_present", False)):
-            await call_client_method(
-                context,
-                "update_thread_config",
-                self.config.thread_id,
-                user_id=self.config.user_id,
-                clear_llm_config=True,
-            )
-            return
-
-        model_value = restore.get("previous_model") if restore.get("model_present") else None
-        await call_client_method(
-            context,
-            "update_thread_config",
-            self.config.thread_id,
-            user_id=self.config.user_id,
-            llm_config={"model": model_value},
-        )
+        await restore_temporary_model(context, restore)
 
     async def _publish_stream_events(
         self,

@@ -48,6 +48,7 @@ from .rendering.welcome import render_welcome
 from .rendering.plain import PlainRenderer, strip_ansi
 from .rendering.rich_repl import RichReplRenderer
 from .state import CLIState, create_initial_state
+from .temporary_model import apply_temporary_model, restore_temporary_model
 from .theme import CLITheme, DEFAULT_CLI_THEME, load_cli_theme, ptk_style
 from .transport.base import AgentClient, Attachment
 from .transport.disconnected import DISCONNECTED_MESSAGE, is_disconnected_client
@@ -2920,8 +2921,6 @@ class CLIApp:
             await self._refresh_and_render_pending_header_async(runtime)
 
     async def _set_temporary_thread_model(self, model: str) -> dict[str, Any]:
-        from .commands.system import call_client_method, mapping_get
-
         if self._client is None:
             raise RuntimeError("CLI agent client has not been selected")
         context = CommandContext(
@@ -2930,41 +2929,9 @@ class CLIApp:
             user_id=self.state.user_id,
             registry=self.registry,
         )
-        config = await call_client_method(
-            context,
-            "get_thread_config",
-            self.state.thread_id,
-            user_id=self.state.user_id,
-        )
-        settings = await call_client_method(
-            context,
-            "get_settings",
-            user_id=self.state.user_id,
-        )
-        llm_config = mapping_get(config, "llm_config", None)
-        llm_config_present = isinstance(llm_config, Mapping)
-        model_present = llm_config_present and "model" in llm_config
-        previous_model = llm_config.get("model") if model_present else None
-        default_model = str(mapping_get(settings, "llm_model", "") or "")
-        effective_model = str(previous_model or default_model)
-
-        await call_client_method(
-            context,
-            "update_thread_config",
-            self.state.thread_id,
-            user_id=self.state.user_id,
-            llm_config={"model": model},
-        )
-        return {
-            "llm_config_present": llm_config_present,
-            "model_present": model_present,
-            "previous_model": previous_model,
-            "effective_model": effective_model,
-        }
+        return await apply_temporary_model(context, model)
 
     async def _restore_temporary_thread_model(self, restore: Mapping[str, Any]) -> None:
-        from .commands.system import call_client_method
-
         if self._client is None:
             return
         context = CommandContext(
@@ -2973,24 +2940,7 @@ class CLIApp:
             user_id=self.state.user_id,
             registry=self.registry,
         )
-        if not bool(restore.get("llm_config_present", False)):
-            await call_client_method(
-                context,
-                "update_thread_config",
-                self.state.thread_id,
-                user_id=self.state.user_id,
-                clear_llm_config=True,
-            )
-            return
-
-        model_value = restore.get("previous_model") if restore.get("model_present") else None
-        await call_client_method(
-            context,
-            "update_thread_config",
-            self.state.thread_id,
-            user_id=self.state.user_id,
-            llm_config={"model": model_value},
-        )
+        await restore_temporary_model(context, restore)
 
     def _send_message(
         self,
