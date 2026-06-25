@@ -21,10 +21,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 from langgraph.types import Command
 
+from ..core.capability_usage import collect_stale_names, compute_prune_window
 from ..core.time_utils import (
     ensure_aware_utc,
     parse_tool_ttl,
-    parse_usage_timestamp,
     utc_now,
 )
 from ..core.tool_reload import should_emit_reload_command, tool_reload_command
@@ -1033,11 +1033,13 @@ def _prune_tools(
             indent=2,
         )
 
-    stale_days = max(1, int(stale_after_days or 30))
-    min_age_days = max(0, int(min_enabled_age_days or 0))
     now = utc_now()
-    stale_cutoff = now - timedelta(days=stale_days)
-    config_old_enough = ensure_aware_utc(tc.updated_at) <= now - timedelta(days=min_age_days)
+    stale_days, min_age_days, stale_cutoff, config_old_enough = compute_prune_window(
+        stale_after_days=stale_after_days,
+        min_enabled_age_days=min_enabled_age_days,
+        config_updated_at=tc.updated_at,
+        now=now,
+    )
 
     catalog = _build_catalog()
     default_bound = _default_bound_tools(agent, user_id)
@@ -1078,21 +1080,19 @@ def _prune_tools(
         )
     ]
 
-    stale_enabled: list[str] = []
-    if config_old_enough:
-        for name in enabled:
-            if (
-                name in PROTECTED_MANAGEMENT_TOOL_NAMES
-                or name in default_bound
-                or name in disabled
-                or name in unavailable_enabled
-                or name in redundant_enabled
-            ):
-                continue
-            usage = usage_store.get_tool(user_id=user_id, thread_id=thread_id, name=name)
-            last_used = parse_usage_timestamp(usage.last_used_at)
-            if last_used is not None and last_used <= stale_cutoff:
-                stale_enabled.append(name)
+    stale_enabled = collect_stale_names(
+        enabled,
+        skip=set(PROTECTED_MANAGEMENT_TOOL_NAMES)
+        | set(default_bound)
+        | set(disabled)
+        | set(unavailable_enabled)
+        | set(redundant_enabled),
+        get_last_used_at=lambda name: usage_store.get_tool(
+            user_id=user_id, thread_id=thread_id, name=name
+        ).last_used_at,
+        stale_cutoff=stale_cutoff,
+        config_old_enough=config_old_enough,
+    )
 
     remove_enabled = set(unavailable_enabled) | set(redundant_enabled) | set(stale_enabled)
     remove_disabled = set(unavailable_disabled)
