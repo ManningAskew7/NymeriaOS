@@ -1,6 +1,7 @@
 """Tests for the shared service-integration foundation helpers."""
 
 import base64
+import json
 
 import pytest
 
@@ -110,6 +111,39 @@ def test_json_array_or_object_rejects_non_dict_records():
         base.json_array_or_object("[1, 2]", field_name="f")
     with pytest.raises(ValueError):
         base.json_array_or_object("{bad", field_name="f")
+
+
+# --- parse_json --------------------------------------------------------------
+
+
+def test_parse_json_parses_dict_and_list_payloads():
+    assert base.parse_json('{"a": 1}', expected=dict, label="body") == {"a": 1}
+    assert base.parse_json('[{"a": 1}, {"b": 2}]', expected=list, label="items") == [
+        {"a": 1},
+        {"b": 2},
+    ]
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_parse_json_empty_returns_empty_instance_of_expected(blank):
+    # Whitespace-only input yields the empty instance of the expected type;
+    # the two helper copy-groups (``{} if expected is dict`` vs
+    # ``[] if expected is list``) are identical for the only two used types.
+    assert base.parse_json(blank, expected=dict, label="f") == {}
+    assert base.parse_json(blank, expected=list, label="f") == []
+
+
+def test_parse_json_invalid_json_raises_with_label_and_cause():
+    with pytest.raises(ValueError, match="payload must be valid JSON") as exc:
+        base.parse_json("{not json", expected=dict, label="payload")
+    assert isinstance(exc.value.__cause__, json.JSONDecodeError)
+
+
+def test_parse_json_wrong_type_raises_with_expected_type_name():
+    with pytest.raises(ValueError, match=r"rows must be a JSON list\."):
+        base.parse_json('{"a": 1}', expected=list, label="rows")
+    with pytest.raises(ValueError, match=r"obj must be a JSON dict\."):
+        base.parse_json("[1, 2]", expected=dict, label="obj")
 
 
 # --- basic_auth --------------------------------------------------------------

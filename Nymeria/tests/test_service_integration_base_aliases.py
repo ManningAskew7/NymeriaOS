@@ -157,6 +157,29 @@ LOCAL_DIVERGENT = {
 }
 
 
+# Modules whose byte-identical generalized ``_parse_json(value, *, expected, label)``
+# helper was consolidated onto ``service_integration_base.parse_json`` (slice 15 F9).
+# This corpus spans slices 13/14/15 (the helper was copied across all three), unlike
+# the slice-15-only ALIASED map above; the 3 Google modules are intentionally excluded
+# (left to their owning slice). A regression that re-localises ``_parse_json`` fails here.
+PARSE_JSON_ALIASED = [
+    "chat_platform_service_integrations",
+    "collaboration_data_service_integrations",
+    "commerce_billing_service_integrations",
+    "community_publishing_service_integrations",
+    "content_management_service_integrations",
+    "customer_engagement_service_integrations",
+    "data_table_service_integrations",
+    "enrichment_security_service_integrations",
+    "messaging_delivery_service_integrations",
+    "microsoft_graph_service_integrations",
+    "notification_service_integrations",
+    "operations_monitoring_service_integrations",
+    "sales_crm_service_integrations",
+    "support_service_integrations",
+]
+
+
 def _load(module_name: str):
     return importlib.import_module("nymeria.tools." + module_name)
 
@@ -190,3 +213,11 @@ def test_divergent_helpers_stay_local(module_name):
         assert getattr(mod, local_name) is not getattr(base, base_attr), (
             f"{module_name}.{local_name} diverges from base.{base_attr} and must stay local"
         )
+
+
+@pytest.mark.parametrize("module_name", sorted(PARSE_JSON_ALIASED))
+def test_parse_json_alias_resolves_to_base(module_name):
+    mod = _load(module_name)
+    assert mod._parse_json is base.parse_json, (
+        f"{module_name}._parse_json should be service_integration_base.parse_json"
+    )

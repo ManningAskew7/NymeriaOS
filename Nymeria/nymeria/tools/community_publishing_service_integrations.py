@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import json
 import logging
 import time
 from typing import Annotated, Any, Optional
@@ -19,6 +18,7 @@ from .service_integration_base import (
     credential_value as _credential_value,
     dump_json,
     filtered as _filtered,
+    parse_json as _parse_json,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
 )
@@ -55,18 +55,6 @@ def _csv_to_list(value: str, *, max_items: int | None = None) -> list[str]:
 
 def _csv(value: str) -> str:
     return ",".join(_csv_to_list(value))
-
-
-def _parse_json(value: str, *, expected: type, label: str) -> Any:
-    if not value.strip():
-        return {} if expected is dict else []
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"{label} must be valid JSON: {e}") from e
-    if not isinstance(parsed, expected):
-        raise ValueError(f"{label} must be a JSON {expected.__name__}.")
-    return parsed
 
 
 def _request_json(
