@@ -38,11 +38,9 @@
       const destinationNames = destinations
         .map((d) => d.name)
         .filter((n) => selected[n]);
-      if (isEditing) {
-        await onSubmit({ name, destinationNames });
-      } else {
-        await onSubmit({ name, destinationNames });
-      }
+      // Create and update payloads are identical; the parent (NotificationsPanel
+      // handleProfileSubmit) routes to create vs update by editingProfileId.
+      await onSubmit({ name, destinationNames });
     } catch (e) {
       submitError = humanizeErrorText(e, { action: 'save', resource: 'the profile' });
     } finally {
