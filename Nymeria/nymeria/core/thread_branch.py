@@ -11,7 +11,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import uuid
-from contextlib import closing
+from collections.abc import Generator
+from contextlib import AbstractContextManager, closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,26 @@ CHECKPOINT_BRANCH_TABLES = (
     "checkpoint_writes",
     "checkpoint_blobs",
 )
+
+# Walks the checkpoint parent chain from a target checkpoint back to the root. The
+# SQLite and Postgres dialects render this with their own parameter placeholder
+# (``?`` / ``%s``); the text is otherwise identical, so it lives once. The three
+# placeholders bind, in order: source_thread_id, source_checkpoint_id, source_thread_id.
+_SELECTED_CHECKPOINT_IDS_CTE = """
+        WITH RECURSIVE selected(checkpoint_ns, checkpoint_id, parent_checkpoint_id) AS (
+            SELECT checkpoint_ns, checkpoint_id, parent_checkpoint_id
+            FROM checkpoints
+            WHERE thread_id = {ph} AND checkpoint_ns = '' AND checkpoint_id = {ph}
+            UNION ALL
+            SELECT c.checkpoint_ns, c.checkpoint_id, c.parent_checkpoint_id
+            FROM checkpoints c
+            JOIN selected s
+              ON c.thread_id = {ph}
+             AND c.checkpoint_ns = s.checkpoint_ns
+             AND c.checkpoint_id = s.parent_checkpoint_id
+        )
+        SELECT checkpoint_id FROM selected
+        """
 
 
 class ThreadBranchError(RuntimeError):
@@ -121,254 +142,301 @@ def clone_thread_checkpoints(
 ) -> dict[str, int]:
     """Copy checkpoint rows for one thread ID to another."""
 
+    dialect = _resolve_branch_dialect(settings)
+    if dialect is None:
+        if source_checkpoint_id is not None:
+            raise ThreadBranchError(
+                "Branching from a message index requires a persistent checkpoint backend"
+            )
+        return {f"{table}_copied": 0 for table in CHECKPOINT_BRANCH_TABLES}
+    return _clone_with_dialect(
+        dialect,
+        source_thread_id,
+        target_thread_id,
+        source_checkpoint_id,
+    )
+
+
+def _resolve_branch_dialect(settings: Any) -> _BranchDialect | None:
+    """Pick the checkpoint dialect for the configured backend.
+
+    Returns ``None`` for any backend that does not persist checkpoints; callers treat
+    that as a zero-copy no-op (clone) or a skip (delete).
+    """
+
     backend = getattr(settings, "database_backend", "sqlite")
     if backend == "sqlite":
-        return _clone_sqlite_checkpoints(
-            Path(settings.db_path),
-            source_thread_id,
-            target_thread_id,
-            source_checkpoint_id=source_checkpoint_id,
-        )
+        return _SqliteBranchDialect(Path(settings.db_path))
     if backend == "postgres":
         postgres_uri = getattr(settings, "postgres_uri", None)
         if not postgres_uri:
             raise ThreadBranchError("Postgres checkpoint backend selected without POSTGRES_URI")
-        return _clone_postgres_checkpoints(
-            postgres_uri,
-            source_thread_id,
-            target_thread_id,
-            source_checkpoint_id=source_checkpoint_id,
-        )
-    if source_checkpoint_id is not None:
-        raise ThreadBranchError(
-            "Branching from a message index requires a persistent checkpoint backend"
-        )
-    return {f"{table}_copied": 0 for table in CHECKPOINT_BRANCH_TABLES}
+        return _PostgresBranchDialect(postgres_uri)
+    return None
 
 
-def _clone_sqlite_checkpoints(
-    db_path: Path,
+def _clone_with_dialect(
+    dialect: _BranchDialect,
     source_thread_id: str,
     target_thread_id: str,
-    *,
     source_checkpoint_id: str | None,
 ) -> dict[str, int]:
     counts = {f"{table}_copied": 0 for table in CHECKPOINT_BRANCH_TABLES}
-    with closing(sqlite3.connect(str(db_path))) as conn:
-        selected_ids = _sqlite_selected_checkpoint_ids(
-            conn,
+    with dialect.transaction() as handle:
+        selected_ids = dialect.select_checkpoint_ids(
+            handle,
             source_thread_id,
             source_checkpoint_id,
         )
-        _sqlite_raise_if_target_exists(conn, target_thread_id)
+        _raise_if_target_exists(dialect, handle, target_thread_id)
         for table in CHECKPOINT_BRANCH_TABLES:
-            if not sqlite_table_exists(conn, table):
+            columns = dialect.table_columns(handle, table)
+            if "thread_id" not in columns:
                 continue
-            counts[f"{table}_copied"] = _sqlite_copy_table_rows(
-                conn,
+            counts[f"{table}_copied"] = dialect.copy_table_rows(
+                handle,
                 table,
+                columns,
                 source_thread_id,
                 target_thread_id,
                 selected_ids,
             )
-        conn.commit()
     return counts
 
 
-def _sqlite_selected_checkpoint_ids(
-    conn: sqlite3.Connection,
-    source_thread_id: str,
-    source_checkpoint_id: str | None,
-) -> set[str] | None:
-    if source_checkpoint_id is None:
-        return None
-    if not sqlite_table_exists(conn, "checkpoints"):
-        return set()
-    columns = _sqlite_columns(conn, "checkpoints")
-    required = {"thread_id", "checkpoint_ns", "checkpoint_id", "parent_checkpoint_id"}
-    if not required.issubset(columns):
-        raise ThreadBranchError("Checkpoint table does not support message-index branching")
-    rows = conn.execute(
-        """
-        WITH RECURSIVE selected(checkpoint_ns, checkpoint_id, parent_checkpoint_id) AS (
-            SELECT checkpoint_ns, checkpoint_id, parent_checkpoint_id
-            FROM checkpoints
-            WHERE thread_id = ? AND checkpoint_ns = '' AND checkpoint_id = ?
-            UNION ALL
-            SELECT c.checkpoint_ns, c.checkpoint_id, c.parent_checkpoint_id
-            FROM checkpoints c
-            JOIN selected s
-              ON c.thread_id = ?
-             AND c.checkpoint_ns = s.checkpoint_ns
-             AND c.checkpoint_id = s.parent_checkpoint_id
-        )
-        SELECT checkpoint_id FROM selected
-        """,
-        (source_thread_id, source_checkpoint_id, source_thread_id),
-    ).fetchall()
-    return {str(row[0]) for row in rows if row[0]}
-
-
-def _sqlite_raise_if_target_exists(
-    conn: sqlite3.Connection,
+def _raise_if_target_exists(
+    dialect: _BranchDialect,
+    handle: Any,
     target_thread_id: str,
 ) -> None:
     for table in CHECKPOINT_BRANCH_TABLES:
-        if not sqlite_table_exists(conn, table):
-            continue
-        columns = _sqlite_columns(conn, table)
+        columns = dialect.table_columns(handle, table)
         if "thread_id" not in columns:
             continue
-        row = conn.execute(
-            f"SELECT 1 FROM {_quote_sqlite_identifier(table)} "
-            "WHERE thread_id = ? LIMIT 1",
-            (target_thread_id,),
-        ).fetchone()
-        if row is not None:
+        if dialect.thread_has_rows(handle, table, target_thread_id):
             raise ThreadBranchError(f"Target thread already has checkpoint rows: {target_thread_id}")
 
 
-def _sqlite_copy_table_rows(
-    conn: sqlite3.Connection,
-    table: str,
-    source_thread_id: str,
-    target_thread_id: str,
-    selected_checkpoint_ids: set[str] | None,
-) -> int:
-    columns = _sqlite_columns(conn, table)
-    if "thread_id" not in columns:
-        return 0
+class _BranchDialect:
+    """Backend-specific checkpoint-branch SQL.
 
-    quoted_table = _quote_sqlite_identifier(table)
-    quoted_columns = [_quote_sqlite_identifier(column) for column in columns]
-    select_columns = [
-        "? AS thread_id" if column == "thread_id" else _quote_sqlite_identifier(column)
-        for column in columns
-    ]
-    where = ["thread_id = ?"]
-    params: list[Any] = [target_thread_id, source_thread_id]
-    if selected_checkpoint_ids is not None and "checkpoint_id" in columns:
-        if not selected_checkpoint_ids:
-            return 0
-        placeholders = ", ".join("?" for _ in selected_checkpoint_ids)
-        where.append(f"checkpoint_id IN ({placeholders})")
-        params.extend(sorted(selected_checkpoint_ids))
+    The shared logic lives here and in the module-level orchestration: the
+    ``select_checkpoint_ids`` scaffold (the required-columns guard and the single
+    recursive-CTE template), plus the table loop and the raise/copy/delete control
+    flow, are written and changed once. Subclasses own only the genuinely
+    dialect-divergent pieces: the connection lifecycle, column introspection, the
+    parameter placeholder (``?`` vs ``%s``), identifier quoting, ``IN (...)`` vs
+    ``= ANY(...)``, the CTE execute/fetch shape, and the missing-``checkpoints``-table
+    policy (SQLite short-circuits to an empty selection via
+    ``_checkpoint_columns_for_selection`` returning ``None``; Postgres returns the
+    empty column list so the guard raises).
+    """
 
-    cursor = conn.execute(
-        f"INSERT INTO {quoted_table} ({', '.join(quoted_columns)}) "
-        f"SELECT {', '.join(select_columns)} FROM {quoted_table} "
-        f"WHERE {' AND '.join(where)}",
-        tuple(params),
-    )
-    return _rowcount(cursor.rowcount)
+    def transaction(self) -> AbstractContextManager[Any]:
+        raise NotImplementedError
 
+    def table_columns(self, handle: Any, table: str) -> list[str]:
+        raise NotImplementedError
 
-def _clone_postgres_checkpoints(
-    postgres_uri: str,
-    source_thread_id: str,
-    target_thread_id: str,
-    *,
-    source_checkpoint_id: str | None,
-) -> dict[str, int]:
-    import psycopg  # type: ignore[import-untyped]
-    from psycopg import sql  # type: ignore[import-untyped]
-
-    counts = {f"{table}_copied": 0 for table in CHECKPOINT_BRANCH_TABLES}
-    with psycopg.connect(postgres_uri) as conn:
-        with conn.cursor() as cur:
-            selected_ids = _postgres_selected_checkpoint_ids(
-                cur,
-                source_thread_id,
-                source_checkpoint_id,
-            )
-            _postgres_raise_if_target_exists(cur, target_thread_id)
-            for table in CHECKPOINT_BRANCH_TABLES:
-                columns = _postgres_columns(cur, table)
-                if not columns or "thread_id" not in columns:
-                    continue
-                counts[f"{table}_copied"] = _postgres_copy_table_rows(
-                    cur,
-                    sql,
-                    table,
-                    columns,
-                    source_thread_id,
-                    target_thread_id,
-                    selected_ids,
-                )
-        conn.commit()
-    return counts
-
-
-def _postgres_selected_checkpoint_ids(
-    cur: Any,
-    source_thread_id: str,
-    source_checkpoint_id: str | None,
-) -> set[str] | None:
-    if source_checkpoint_id is None:
-        return None
-    columns = set(_postgres_columns(cur, "checkpoints"))
-    required = {"thread_id", "checkpoint_ns", "checkpoint_id", "parent_checkpoint_id"}
-    if not required.issubset(columns):
-        raise ThreadBranchError("Checkpoint table does not support message-index branching")
-    cur.execute(
-        """
-        WITH RECURSIVE selected(checkpoint_ns, checkpoint_id, parent_checkpoint_id) AS (
-            SELECT checkpoint_ns, checkpoint_id, parent_checkpoint_id
-            FROM checkpoints
-            WHERE thread_id = %s AND checkpoint_ns = '' AND checkpoint_id = %s
-            UNION ALL
-            SELECT c.checkpoint_ns, c.checkpoint_id, c.parent_checkpoint_id
-            FROM checkpoints c
-            JOIN selected s
-              ON c.thread_id = %s
-             AND c.checkpoint_ns = s.checkpoint_ns
-             AND c.checkpoint_id = s.parent_checkpoint_id
+    def select_checkpoint_ids(
+        self,
+        handle: Any,
+        source_thread_id: str,
+        source_checkpoint_id: str | None,
+    ) -> set[str] | None:
+        if source_checkpoint_id is None:
+            return None
+        columns = self._checkpoint_columns_for_selection(handle)
+        if columns is None:
+            return set()
+        required = {"thread_id", "checkpoint_ns", "checkpoint_id", "parent_checkpoint_id"}
+        if not required.issubset(columns):
+            raise ThreadBranchError("Checkpoint table does not support message-index branching")
+        return self._run_selected_checkpoint_ids_cte(
+            handle,
+            (source_thread_id, source_checkpoint_id, source_thread_id),
         )
-        SELECT checkpoint_id FROM selected
-        """,
-        (source_thread_id, source_checkpoint_id, source_thread_id),
-    )
-    return {str(row[0]) for row in cur.fetchall() if row[0]}
+
+    def _checkpoint_columns_for_selection(self, handle: Any) -> list[str] | None:
+        """Columns of the ``checkpoints`` table, or ``None`` to short-circuit to an
+        empty selection (the SQLite missing-table behaviour)."""
+        raise NotImplementedError
+
+    def _run_selected_checkpoint_ids_cte(self, handle: Any, params: tuple[str, ...]) -> set[str]:
+        raise NotImplementedError
+
+    def thread_has_rows(self, handle: Any, table: str, thread_id: str) -> bool:
+        raise NotImplementedError
+
+    def copy_table_rows(
+        self,
+        handle: Any,
+        table: str,
+        columns: list[str],
+        source_thread_id: str,
+        target_thread_id: str,
+        selected_ids: set[str] | None,
+    ) -> int:
+        raise NotImplementedError
+
+    def delete_table_rows(self, handle: Any, table: str, thread_id: str) -> None:
+        raise NotImplementedError
 
 
-def _postgres_raise_if_target_exists(cur: Any, target_thread_id: str) -> None:
-    for table in CHECKPOINT_BRANCH_TABLES:
-        columns = _postgres_columns(cur, table)
-        if "thread_id" not in columns:
-            continue
-        cur.execute(f"SELECT 1 FROM {table} WHERE thread_id = %s LIMIT 1", (target_thread_id,))
-        if cur.fetchone() is not None:
-            raise ThreadBranchError(f"Target thread already has checkpoint rows: {target_thread_id}")
+class _SqliteBranchDialect(_BranchDialect):
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+
+    @contextmanager
+    def transaction(self) -> Generator[Any, None, None]:
+        with closing(sqlite3.connect(str(self.db_path))) as conn:
+            yield conn
+            conn.commit()
+
+    def table_columns(self, handle: Any, table: str) -> list[str]:
+        # PRAGMA table_info returns an empty result for an absent table, so the loops
+        # that gate on "thread_id" in columns skip missing tables without a separate
+        # existence probe.
+        return [
+            str(row[1])
+            for row in handle.execute(f"PRAGMA table_info({_quote_sqlite_identifier(table)})")
+        ]
+
+    def _checkpoint_columns_for_selection(self, handle: Any) -> list[str] | None:
+        if not sqlite_table_exists(handle, "checkpoints"):
+            return None
+        return self.table_columns(handle, "checkpoints")
+
+    def _run_selected_checkpoint_ids_cte(self, handle: Any, params: tuple[str, ...]) -> set[str]:
+        rows = handle.execute(_SELECTED_CHECKPOINT_IDS_CTE.format(ph="?"), params).fetchall()
+        return {str(row[0]) for row in rows if row[0]}
+
+    def thread_has_rows(self, handle: Any, table: str, thread_id: str) -> bool:
+        row = handle.execute(
+            f"SELECT 1 FROM {_quote_sqlite_identifier(table)} WHERE thread_id = ? LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        return row is not None
+
+    def copy_table_rows(
+        self,
+        handle: Any,
+        table: str,
+        columns: list[str],
+        source_thread_id: str,
+        target_thread_id: str,
+        selected_ids: set[str] | None,
+    ) -> int:
+        quoted_table = _quote_sqlite_identifier(table)
+        quoted_columns = [_quote_sqlite_identifier(column) for column in columns]
+        select_columns = [
+            "? AS thread_id" if column == "thread_id" else _quote_sqlite_identifier(column)
+            for column in columns
+        ]
+        where = ["thread_id = ?"]
+        params: list[Any] = [target_thread_id, source_thread_id]
+        if selected_ids is not None and "checkpoint_id" in columns:
+            if not selected_ids:
+                return 0
+            placeholders = ", ".join("?" for _ in selected_ids)
+            where.append(f"checkpoint_id IN ({placeholders})")
+            params.extend(sorted(selected_ids))
+
+        cursor = handle.execute(
+            f"INSERT INTO {quoted_table} ({', '.join(quoted_columns)}) "
+            f"SELECT {', '.join(select_columns)} FROM {quoted_table} "
+            f"WHERE {' AND '.join(where)}",
+            tuple(params),
+        )
+        return _rowcount(cursor.rowcount)
+
+    def delete_table_rows(self, handle: Any, table: str, thread_id: str) -> None:
+        handle.execute(
+            f"DELETE FROM {_quote_sqlite_identifier(table)} WHERE thread_id = ?",
+            (thread_id,),
+        )
 
 
-def _postgres_copy_table_rows(
-    cur: Any,
-    sql: Any,
-    table: str,
-    columns: list[str],
-    source_thread_id: str,
-    target_thread_id: str,
-    selected_checkpoint_ids: set[str] | None,
-) -> int:
-    select_columns = [
-        sql.SQL("%s AS thread_id") if column == "thread_id" else sql.Identifier(column)
-        for column in columns
-    ]
-    params: list[Any] = [target_thread_id, source_thread_id]
-    where = [sql.SQL("thread_id = %s")]
-    if selected_checkpoint_ids is not None and "checkpoint_id" in columns:
-        if not selected_checkpoint_ids:
-            return 0
-        where.append(sql.SQL("checkpoint_id = ANY(%s)"))
-        params.append(sorted(selected_checkpoint_ids))
-    query = sql.SQL("INSERT INTO {table} ({columns}) SELECT {select_columns} FROM {table} WHERE {where}").format(
-        table=sql.Identifier(table),
-        columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
-        select_columns=sql.SQL(", ").join(select_columns),
-        where=sql.SQL(" AND ").join(where),
-    )
-    cur.execute(query, tuple(params))
-    return _rowcount(cur.rowcount)
+class _PostgresBranchDialect(_BranchDialect):
+    def __init__(self, postgres_uri: str) -> None:
+        self.postgres_uri = postgres_uri
+
+    @contextmanager
+    def transaction(self) -> Generator[Any, None, None]:
+        import psycopg  # type: ignore[import-untyped]
+
+        with psycopg.connect(self.postgres_uri) as conn:
+            with conn.cursor() as cur:
+                yield cur
+            conn.commit()
+
+    def table_columns(self, handle: Any, table: str) -> list[str]:
+        if not postgres_table_exists(handle, table):
+            return []
+        handle.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (table,),
+        )
+        return [str(row[0]) for row in handle.fetchall()]
+
+    def _checkpoint_columns_for_selection(self, handle: Any) -> list[str] | None:
+        # An absent table yields [], so the required-columns guard raises (Postgres has
+        # no SQLite-style empty-selection short-circuit).
+        return self.table_columns(handle, "checkpoints")
+
+    def _run_selected_checkpoint_ids_cte(self, handle: Any, params: tuple[str, ...]) -> set[str]:
+        handle.execute(_SELECTED_CHECKPOINT_IDS_CTE.format(ph="%s"), params)
+        return {str(row[0]) for row in handle.fetchall() if row[0]}
+
+    def thread_has_rows(self, handle: Any, table: str, thread_id: str) -> bool:
+        handle.execute(f"SELECT 1 FROM {table} WHERE thread_id = %s LIMIT 1", (thread_id,))
+        return handle.fetchone() is not None
+
+    def copy_table_rows(
+        self,
+        handle: Any,
+        table: str,
+        columns: list[str],
+        source_thread_id: str,
+        target_thread_id: str,
+        selected_ids: set[str] | None,
+    ) -> int:
+        from psycopg import sql  # type: ignore[import-untyped]
+
+        select_columns = [
+            sql.SQL("%s AS thread_id") if column == "thread_id" else sql.Identifier(column)
+            for column in columns
+        ]
+        params: list[Any] = [target_thread_id, source_thread_id]
+        where = [sql.SQL("thread_id = %s")]
+        if selected_ids is not None and "checkpoint_id" in columns:
+            if not selected_ids:
+                return 0
+            where.append(sql.SQL("checkpoint_id = ANY(%s)"))
+            params.append(sorted(selected_ids))
+        query = sql.SQL(
+            "INSERT INTO {table} ({columns}) SELECT {select_columns} FROM {table} WHERE {where}"
+        ).format(
+            table=sql.Identifier(table),
+            columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+            select_columns=sql.SQL(", ").join(select_columns),
+            where=sql.SQL(" AND ").join(where),
+        )
+        handle.execute(query, tuple(params))
+        return _rowcount(handle.rowcount)
+
+    def delete_table_rows(self, handle: Any, table: str, thread_id: str) -> None:
+        from psycopg import sql  # type: ignore[import-untyped]
+
+        handle.execute(
+            sql.SQL("DELETE FROM {table} WHERE thread_id = %s").format(table=sql.Identifier(table)),
+            (thread_id,),
+        )
 
 
 def _checkpoint_id_for_message_index(
@@ -575,59 +643,19 @@ def _invalidate_thread_config(agent: Any, thread_id: str) -> None:
 
 
 def _delete_branch_checkpoint_rows(settings: Any, thread_id: str) -> None:
-    backend = getattr(settings, "database_backend", "sqlite")
-    if backend == "sqlite":
-        with closing(sqlite3.connect(str(settings.db_path))) as conn:
-            for table in CHECKPOINT_BRANCH_TABLES:
-                if not sqlite_table_exists(conn, table):
-                    continue
-                if "thread_id" not in _sqlite_columns(conn, table):
-                    continue
-                conn.execute(
-                    f"DELETE FROM {_quote_sqlite_identifier(table)} WHERE thread_id = ?",
-                    (thread_id,),
-                )
-            conn.commit()
+    dialect = _resolve_branch_dialect(settings)
+    if dialect is None:
         return
-    if backend == "postgres":
-        import psycopg  # type: ignore[import-untyped]
-        from psycopg import sql  # type: ignore[import-untyped]
-
-        with psycopg.connect(settings.postgres_uri) as conn:
-            with conn.cursor() as cur:
-                for table in CHECKPOINT_BRANCH_TABLES:
-                    if "thread_id" not in _postgres_columns(cur, table):
-                        continue
-                    cur.execute(
-                        sql.SQL("DELETE FROM {table} WHERE thread_id = %s").format(
-                            table=sql.Identifier(table),
-                        ),
-                        (thread_id,),
-                    )
-            conn.commit()
-
-
-def _sqlite_columns(conn: sqlite3.Connection, table: str) -> list[str]:
-    return [str(row[1]) for row in conn.execute(f"PRAGMA table_info({_quote_sqlite_identifier(table)})")]
+    with dialect.transaction() as handle:
+        for table in CHECKPOINT_BRANCH_TABLES:
+            columns = dialect.table_columns(handle, table)
+            if "thread_id" not in columns:
+                continue
+            dialect.delete_table_rows(handle, table, thread_id)
 
 
 def _quote_sqlite_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
-
-
-def _postgres_columns(cur: Any, table: str) -> list[str]:
-    if not postgres_table_exists(cur, table):
-        return []
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name = %s
-        ORDER BY ordinal_position
-        """,
-        (table,),
-    )
-    return [str(row[0]) for row in cur.fetchall()]
 
 
 def _rowcount(value: int | None) -> int:
