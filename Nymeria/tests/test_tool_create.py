@@ -222,7 +222,10 @@ def test_python_tool_publish_can_validate_with_sample_params(tmp_path, monkeypat
         ttl="2h",
         tool_call_id="call-1",
         sample_params={"value": "nymeria"},
-        validation_timeout_seconds=10,
+        # Subprocess validation runs the drafted tool in a fresh interpreter,
+        # which takes several seconds even idle; keep a generous budget so the
+        # test stays green under CPU contention (e.g. parallel `pytest -n` runs).
+        validation_timeout_seconds=60,
     )
 
     assert isinstance(result, str)

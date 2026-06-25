@@ -136,7 +136,7 @@ jobs:
           python -m pip install -r Nymeria/requirements.txt -r Nymeria/requirements-docker.txt -r Nymeria/requirements-dev.txt
 
       - name: Run pytest with coverage
-        run: python -m pytest Nymeria/tests --cov=nymeria --cov=run --cov-report=term --cov-report=xml:Nymeria/coverage.xml --cov-fail-under=38
+        run: python -m pytest Nymeria/tests -n auto --cov=nymeria --cov=run --cov-report=term --cov-report=xml:Nymeria/coverage.xml --cov-fail-under=38
 
       - name: Upload coverage report
         if: always()
