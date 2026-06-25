@@ -8,6 +8,7 @@
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import type {
     MCPInstallConfigField,
+    MCPInstallPlan,
     MCPInstallPreviewResponse,
     MCPInstallResponse,
   } from '$lib/types';
@@ -121,15 +122,19 @@
     }
   }
 
-  function seedConfigValues(nextPreview: MCPInstallPreviewResponse) {
+  function seedConfigForPlan(plan: MCPInstallPlan): Record<string, string> {
     const seeded: Record<string, string> = {};
-    const plan = nextPreview.candidates.find((candidate) => candidate.id === selectedCandidateId)?.plan ?? nextPreview.plan;
     for (const field of plan.required_config || []) {
       if (field.default !== undefined && field.default !== null) {
         seeded[field.name] = String(field.default);
       }
     }
-    configValues = seeded;
+    return seeded;
+  }
+
+  function seedConfigValues(nextPreview: MCPInstallPreviewResponse) {
+    const plan = nextPreview.candidates.find((candidate) => candidate.id === selectedCandidateId)?.plan ?? nextPreview.plan;
+    configValues = seedConfigForPlan(plan);
   }
 
   async function handlePreview() {
@@ -244,14 +249,8 @@
   function handleCandidateChange(candidateId: string) {
     selectedCandidateId = candidateId;
     if (!preview) return;
-    const seeded: Record<string, string> = {};
     const plan = preview.candidates.find((candidate) => candidate.id === candidateId)?.plan ?? preview.plan;
-    for (const field of plan.required_config || []) {
-      if (field.default !== undefined && field.default !== null) {
-        seeded[field.name] = String(field.default);
-      }
-    }
-    configValues = seeded;
+    configValues = seedConfigForPlan(plan);
     confirmed = false;
   }
 
