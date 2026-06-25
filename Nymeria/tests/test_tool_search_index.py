@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 
 from nymeria.core.accounts import AccountsRepo
@@ -299,3 +300,87 @@ def test_transient_warm_failure_recovers_on_next_pass():
     state["fail"] = False
     index.warm_embeddings()  # heartbeat-style retry
     assert index._fully_embedded is True
+
+
+# Slice 07 F12: the agent-reach catalog helpers warn loudly on a surface break
+# instead of silently degrading search behind a bare ``except Exception``.
+
+_TS_LOGGER = "nymeria.core.tool_search_index"
+
+
+class _RaisingConfigManager:
+    def get_config(self, thread_id):
+        raise RuntimeError("thread-config surface break")
+
+
+class _RaisingProfileManager:
+    def get_profile(self, user_id):
+        raise RuntimeError("profile surface break")
+
+
+class _BrokenConfigAgent:
+    """Agent whose ``thread_config_manager.get_config`` raises, the first call
+    inside both ``_callable_thread_docs`` and ``_thread_status``."""
+
+    def __init__(self):
+        self.thread_config_manager = _RaisingConfigManager()
+
+
+class _BrokenProfileAgent:
+    def __init__(self):
+        self.profile_manager = _RaisingProfileManager()
+
+
+def test_callable_thread_docs_warns_on_agent_surface_break(caplog):
+    index = ToolSearchIndex(openai_api_key=None)
+    with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
+        out = index._callable_thread_docs(_BrokenConfigAgent(), "u1", "t1", set())
+    assert out == {}
+    assert "callable catalog failed" in caplog.text
+    assert "RuntimeError" in caplog.text  # exc_info=True rendered the traceback
+
+
+def test_custom_tool_tags_warns_on_loader_break(monkeypatch, caplog):
+    import nymeria.core.custom_tools as custom_tools
+
+    def _boom():
+        raise RuntimeError("loader surface break")
+
+    monkeypatch.setattr(custom_tools, "get_custom_tool_loader", _boom)
+    index = ToolSearchIndex(openai_api_key=None)
+    with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
+        out = index._custom_tool_tags()
+    assert out == {}
+    assert "custom-tool tags lookup failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+def test_default_tool_set_warns_and_falls_back_to_seed(caplog):
+    from nymeria.tools import resolve_default_tool_names
+
+    index = ToolSearchIndex(openai_api_key=None)
+    with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
+        out = index._default_tool_set(_BrokenProfileAgent(), "u1")
+    # Behavior preserved: falls back to the seed default tool set on failure.
+    assert out == set(resolve_default_tool_names(None))
+    assert "default-tool-set lookup failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+def test_thread_status_warns_on_agent_surface_break(caplog):
+    index = ToolSearchIndex(openai_api_key=None)
+    with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
+        out = index._thread_status(_BrokenConfigAgent(), "t1")
+    assert out == (set(), {}, set())
+    assert "thread-status lookup failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+def test_thread_status_no_warning_on_empty_short_circuit(caplog):
+    """The ``agent is None``/empty-thread guard returns before the try, so it
+    must not emit the new failure warning."""
+    index = ToolSearchIndex(openai_api_key=None)
+    with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
+        assert index._thread_status(None, "t1") == (set(), {}, set())
+        assert index._thread_status(_BrokenConfigAgent(), "") == (set(), {}, set())
+    assert "thread-status lookup failed" not in caplog.text

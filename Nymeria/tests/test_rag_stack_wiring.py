@@ -319,3 +319,28 @@ def test_rag_env_emits_retrieval_mode_only_when_vector():
     hybrid = WizardState()
     hybrid.embedder = "local-granite"  # default hybrid
     assert "RAG_RETRIEVAL_MODE" not in rag_env_for_state(hybrid)
+
+
+def test_llm_for_uses_public_agent_accessor(monkeypatch):
+    """Slice 07 F10: ``_llm_for`` must build the LLMConfig via the agent's
+    public ``get_llm_config_for_thread`` accessor, not the private facade."""
+    from types import SimpleNamespace
+
+    import nymeria.vendor.react_agent.providers as providers
+
+    monkeypatch.setattr(providers, "create_llm", lambda cfg: ("LLM", cfg))
+    captured = {}
+    cfg = SimpleNamespace(model="m")
+
+    class FakeAgent:
+        def get_llm_config_for_thread(self, thread_id):
+            captured["thread_id"] = thread_id
+            return cfg
+
+        def _get_llm_config_for_thread(self, thread_id):
+            raise AssertionError("must use the public accessor, not the facade")
+
+    out = rag_quality._llm_for(FakeAgent(), "t-42")
+
+    assert out == ("LLM", cfg)
+    assert captured["thread_id"] == "t-42"

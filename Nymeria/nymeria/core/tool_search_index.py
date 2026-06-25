@@ -439,7 +439,12 @@ class ToolSearchIndex:
                     owned_thread_ids=owned,
                 )
         except Exception as exc:
-            logger.debug("tool search callable catalog failed: %s", exc)
+            # Agent-reach helper: a failure here means an agent-surface break
+            # (not flaky embed/cache), so warn loudly rather than silently
+            # degrade search to an empty callable catalog. See slice 07 F12.
+            logger.warning(
+                "tool search callable catalog failed: %s", exc, exc_info=True
+            )
             return out
 
         for tc in callable_threads:
@@ -479,6 +484,9 @@ class ToolSearchIndex:
                 for definition in get_custom_tool_loader().get_all_definitions()
             }
         except Exception:
+            # Agent-reach helper: surface a custom-tool loader break instead of
+            # silently dropping all custom-tool tags from search. See slice 07 F12.
+            logger.warning("tool search custom-tool tags lookup failed", exc_info=True)
             return {}
 
     def _static_catalog_docs(self) -> list[ToolSearchDocument]:
@@ -801,6 +809,13 @@ class ToolSearchIndex:
             profile = agent.profile_manager.get_profile(user_id) if agent else None
             default_tools = profile.tool_preferences.default_thread_tools if profile else None
         except Exception:
+            # Agent-reach helper: warn on a profile-surface break rather than
+            # silently falling back to the seed default tool set. See slice 07 F12.
+            logger.warning(
+                "tool search default-tool-set lookup failed for user %s",
+                user_id,
+                exc_info=True,
+            )
             default_tools = None
         return set(resolve_default_tool_names(default_tools))
 
@@ -814,6 +829,13 @@ class ToolSearchIndex:
         try:
             tc = agent.thread_config_manager.get_config(thread_id)
         except Exception:
+            # Agent-reach helper: warn on a thread-config-surface break rather
+            # than silently reporting empty per-thread tool status. See slice 07 F12.
+            logger.warning(
+                "tool search thread-status lookup failed for thread %s",
+                thread_id,
+                exc_info=True,
+            )
             return set(), {}, set()
         if tc is None:
             return set(), {}, set()

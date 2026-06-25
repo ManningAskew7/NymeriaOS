@@ -32,7 +32,9 @@ _RERANK_SYS = (
 def _llm_for(agent, thread_id):
     """Build a chat model from the thread's resolved LLM config."""
     from ..vendor.react_agent.providers import create_llm
-    llm_config = agent._get_llm_config_for_thread(thread_id)
+    # Use the agent's public accessor rather than the private
+    # ``_get_llm_config_for_thread`` facade (slice 07 F10).
+    llm_config = agent.get_llm_config_for_thread(thread_id)
     return create_llm(llm_config)
 
 
