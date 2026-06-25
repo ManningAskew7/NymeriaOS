@@ -6,6 +6,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
+from ._shared import (
+    mapping_sequence as _mapping_sequence,
+    string_list as _string_list,
+)
 from .system import (
     CommandClientMethodUnavailable,
     call_client_method,
@@ -395,18 +399,6 @@ def _tool_count(server: Mapping[str, Any]) -> int:
         return int(tools)
     except (TypeError, ValueError):
         return 0
-
-
-def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [item for item in value if isinstance(item, Mapping)]
-
-
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [str(item) for item in value if str(item)]
 
 
 def _discovered_tool_names(value: Any) -> list[str]:

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
+from ._shared import mapping_sequence as _mapping_sequence
 from .system import (
     CommandClientMethodUnavailable,
     call_client_method,
@@ -245,12 +246,6 @@ def _format_identity(identity: Mapping[str, Any], *, selected_user_id: str) -> s
     for label, value in rows:
         lines.append(f"  {label:<{width}}  {value}")
     return "\n".join(lines)
-
-
-def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [item for item in value if isinstance(item, Mapping)]
 
 
 def register(registry: CommandRegistry) -> None:

@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
+from ._shared import mapping_sequence as _mapping_sequence
 from .system import (
     CommandClientMethodUnavailable,
     call_client_method,
@@ -519,12 +520,6 @@ def _format_todos(
             f"{scheduled:<15}  {recurrence}"
         )
     return lines
-
-
-def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [item for item in value if isinstance(item, Mapping)]
 
 
 def _todo_id(todo: Mapping[str, Any] | Any) -> str:
