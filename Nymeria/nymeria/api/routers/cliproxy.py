@@ -86,6 +86,96 @@ def _require_spec(provider: str) -> CLIProxyProviderSpec:
     return spec
 
 
+def _apply_route_thread(
+    *,
+    agent: Any,
+    admin: Any,
+    spec: CLIProxyProviderSpec,
+    thread_id: Optional[str],
+    model: str,
+    base_url: str,
+    gatekeeper: str,
+    require_thread_access_fn: Optional[Callable[[Any, str], Any]],
+) -> CLIProxyApplyRouteResponse:
+    """Apply a resolved route to one thread's saved LLM config (scope thread)."""
+    if not thread_id:
+        raise HTTPException(
+            status_code=400,
+            detail="thread_id is required when scope is 'thread'",
+        )
+    if require_thread_access_fn is not None:
+        # Same gate as PATCH /threads/{id}/config: guards shared-channel
+        # ids and claims a fresh personal thread for the caller so it
+        # cannot be TOFU-claimed by a later user.
+        require_thread_access_fn(admin, thread_id)
+    manager = agent.thread_config_manager
+    config = manager.get_config(thread_id) or ThreadConfig(thread_id=thread_id)
+    config.active_llm_fallback = None
+    if config.llm_config is None:
+        config.llm_config = ThreadLLMConfig()
+    llm = config.llm_config
+    llm.provider = spec.nymeria_provider
+    llm.model = model
+    llm.base_url = base_url
+    llm.api_key = gatekeeper
+    llm.openai_api_mode = spec.api_mode or None
+    manager.save_config(config)
+    # Evict the cached per-thread graph so the route applies to the
+    # next turn (mirrors PATCH /threads/{id}/config).
+    invalidate = getattr(agent, "invalidate_thread_config_cache", None)
+    if callable(invalidate):
+        invalidate(thread_id)
+    return CLIProxyApplyRouteResponse(
+        scope="thread",
+        provider=spec.nymeria_provider,
+        model=model,
+        base_url=base_url,
+        api_mode=spec.api_mode,
+        thread_id=thread_id,
+    )
+
+
+def _apply_route_global(
+    *,
+    agent: Any,
+    settings: Any,
+    spec: CLIProxyProviderSpec,
+    model: str,
+    base_url: str,
+    gatekeeper: str,
+    get_settings_fn: Callable[[], Any],
+) -> CLIProxyApplyRouteResponse:
+    """Apply a resolved route to the global server LLM settings (scope global)."""
+    # Function-local to avoid a settings <-> cliproxy import cycle AND to keep
+    # the call-time attribute-resolution seam the global apply-route tests patch
+    # (`mock.patch.object(settings_router_module, "apply_server_settings_update")`).
+    from .settings import apply_server_settings_update
+
+    updates = ServerSettingsUpdate(
+        llm_provider=spec.nymeria_provider,
+        llm_model=model,
+        llm_base_url=base_url,
+    )
+    # key_setting is a ServerSettingsUpdate field name by catalog invariant.
+    setattr(updates, spec.key_setting, gatekeeper)
+    if spec.api_mode:
+        updates.openai_api_mode = spec.api_mode
+    result = apply_server_settings_update(
+        updates,
+        settings=settings,
+        agent=agent,
+        get_settings_fn=get_settings_fn,
+    )
+    return CLIProxyApplyRouteResponse(
+        scope="global",
+        provider=spec.nymeria_provider,
+        model=model,
+        base_url=base_url,
+        api_mode=spec.api_mode,
+        restart_required=bool(result.get("restart_required")),
+    )
+
+
 def create_cliproxy_router(
     require_admin_user: Callable,
     get_agent_fn: Callable[[], Any],
@@ -437,68 +527,24 @@ def create_cliproxy_router(
 
         agent = get_agent_fn()
         if request.scope == "thread":
-            if not request.thread_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="thread_id is required when scope is 'thread'",
-                )
-            if require_thread_access_fn is not None:
-                # Same gate as PATCH /threads/{id}/config: guards shared-channel
-                # ids and claims a fresh personal thread for the caller so it
-                # cannot be TOFU-claimed by a later user.
-                require_thread_access_fn(admin, request.thread_id)
-            manager = agent.thread_config_manager
-            config = manager.get_config(request.thread_id) or ThreadConfig(
-                thread_id=request.thread_id
-            )
-            config.active_llm_fallback = None
-            if config.llm_config is None:
-                config.llm_config = ThreadLLMConfig()
-            llm = config.llm_config
-            llm.provider = spec.nymeria_provider
-            llm.model = model
-            llm.base_url = base_url
-            llm.api_key = gatekeeper
-            llm.openai_api_mode = spec.api_mode or None
-            manager.save_config(config)
-            # Evict the cached per-thread graph so the route applies to the
-            # next turn (mirrors PATCH /threads/{id}/config).
-            invalidate = getattr(agent, "invalidate_thread_config_cache", None)
-            if callable(invalidate):
-                invalidate(request.thread_id)
-            return CLIProxyApplyRouteResponse(
-                scope="thread",
-                provider=spec.nymeria_provider,
+            return _apply_route_thread(
+                agent=agent,
+                admin=admin,
+                spec=spec,
+                thread_id=request.thread_id,
                 model=model,
                 base_url=base_url,
-                api_mode=spec.api_mode,
-                thread_id=request.thread_id,
+                gatekeeper=gatekeeper,
+                require_thread_access_fn=require_thread_access_fn,
             )
-
-        from .settings import apply_server_settings_update
-
-        updates = ServerSettingsUpdate(
-            llm_provider=spec.nymeria_provider,
-            llm_model=model,
-            llm_base_url=base_url,
-        )
-        # key_setting is a ServerSettingsUpdate field name by catalog invariant.
-        setattr(updates, spec.key_setting, gatekeeper)
-        if spec.api_mode:
-            updates.openai_api_mode = spec.api_mode
-        result = apply_server_settings_update(
-            updates,
-            settings=settings,
+        return _apply_route_global(
             agent=agent,
-            get_settings_fn=get_settings_fn,
-        )
-        return CLIProxyApplyRouteResponse(
-            scope="global",
-            provider=spec.nymeria_provider,
+            settings=settings,
+            spec=spec,
             model=model,
             base_url=base_url,
-            api_mode=spec.api_mode,
-            restart_required=bool(result.get("restart_required")),
+            gatekeeper=gatekeeper,
+            get_settings_fn=get_settings_fn,
         )
 
     return router
