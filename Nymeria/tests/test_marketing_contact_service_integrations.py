@@ -1,5 +1,9 @@
+import ast
 import base64
+import inspect
 import json
+
+import pytest
 
 
 from _service_integration_helpers import (  # type: ignore[import-not-found]
@@ -727,3 +731,109 @@ def test_marketing_contact_tool_schemas_hide_runtime_config():
     assert "config" not in segment_track.args
     assert "config" not in sendy_add_subscriber.args
     assert "config" not in vero_track_event.args
+
+
+# F3 (slice 13): error-envelope consistency.
+# The 43 formerly-unwrapped tools (customerio/iterable/posthog/segment/
+# activecampaign/convertkit/getresponse/mailerlite) now wrap their request body
+# in the same fail-soft `[Error]: <Service ...> failed: {e}` envelope the file's
+# other 69 tools use, so a raised RuntimeError/ValueError reaches the model as a
+# curated error string instead of a raw exception.
+
+_FAILSOFT_CASES = [
+    # (env, tool_name, kwargs, expected_label)
+    ({"CUSTOMERIO_APP_API_KEY": "app-key"}, "customerio_list_campaigns", {}, "Customer.io campaign listing"),
+    ({"ITERABLE_API_KEY": "iter-key"}, "iterable_list_lists", {}, "Iterable list listing"),
+    (
+        {"POSTHOG_API_KEY": "ph-key", "POSTHOG_BASE_URL": "https://posthog.example"},
+        "posthog_capture_event",
+        {"event_name": "signed_up", "distinct_id": "user-1"},
+        "PostHog event capture",
+    ),
+    (
+        {"SEGMENT_WRITE_KEY": "seg-write"},
+        "segment_track",
+        {"event": "clicked", "user_id": "user-1"},
+        "Segment track",
+    ),
+    (
+        {"ACTIVECAMPAIGN_API_KEY": "active-key", "ACTIVECAMPAIGN_BASE_URL": "https://acme.api-us1.com"},
+        "activecampaign_list_contacts",
+        {},
+        "ActiveCampaign contact listing",
+    ),
+    ({"CONVERTKIT_API_SECRET": "kit-secret"}, "convertkit_list_forms", {}, "ConvertKit form listing"),
+    ({"GETRESPONSE_API_KEY": "gr-key"}, "getresponse_list_campaigns", {}, "GetResponse campaign listing"),
+    ({"MAILERLITE_API_KEY": "lite-key"}, "mailerlite_list_subscribers", {}, "MailerLite subscriber listing"),
+]
+
+
+@pytest.mark.parametrize("env, tool_name, kwargs, label", _FAILSOFT_CASES)
+def test_marketing_unwrapped_tools_failsoft_to_error_envelope(monkeypatch, env, tool_name, kwargs, label):
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("request exploded")
+
+    monkeypatch.setattr(tools, "_request_json", boom)
+
+    result = getattr(tools, tool_name).func(**kwargs)
+
+    assert result == f"[Error]: {label} failed: request exploded"
+
+
+def test_marketing_unwrapped_tool_failsoft_on_bad_json_argument(monkeypatch):
+    # A ValueError from _json_object (malformed JSON arg) is also caught by the
+    # envelope now, instead of propagating as a raw exception.
+    from nymeria.tools import marketing_contact_service_integrations as tools
+
+    monkeypatch.setenv("CUSTOMERIO_TRACKING_SITE_ID", "site-1")
+    monkeypatch.setenv("CUSTOMERIO_TRACKING_API_KEY", "track-key")
+
+    result = getattr(tools, "customerio_track_event").func(
+        customer_id="cust-1",
+        event_name="signed_up",
+        data_json="{not valid json",
+    )
+
+    assert result.startswith("[Error]: Customer.io event tracking failed:")
+
+
+def test_all_marketing_contact_tools_have_error_envelope():
+    # Structural guard (AST, not source-substring): every @tool in this module
+    # must wrap its body in a try/except that returns an `[Error]: ...` string,
+    # so a future tool cannot land unwrapped and leak raw exceptions to the model.
+    from nymeria.tools import marketing_contact_service_integrations as module
+
+    tree = ast.parse(inspect.getsource(module))
+    offenders = []
+    tool_count = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if not any(isinstance(d, ast.Name) and d.id == "tool" for d in node.decorator_list):
+            continue
+        tool_count += 1
+        tries = [s for s in node.body if isinstance(s, ast.Try)]
+        ok = False
+        for t in tries:
+            for handler in t.handlers:
+                returns_error = any(
+                    isinstance(s, ast.Return)
+                    and isinstance(s.value, ast.JoinedStr)
+                    and any(
+                        isinstance(v, ast.Constant) and isinstance(v.value, str) and "[Error]" in v.value
+                        for v in s.value.values
+                    )
+                    for s in ast.walk(handler)
+                )
+                if returns_error:
+                    ok = True
+        if not ok:
+            offenders.append(node.name)
+
+    assert tool_count == 112
+    assert offenders == [], f"@tool functions missing the [Error] envelope: {offenders}"

@@ -782,10 +782,14 @@ def customerio_list_campaigns(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List Customer.io campaigns."""
-    cfg, _missing = _customerio_config("customerio_list_campaigns", config)
-    if not cfg["has_app"]:
-        return _customerio_auth_error("customerio_list_campaigns", app=True)
-    return _dump_json(_request_json("GET", f"{cfg['app_base']}/campaigns", headers=cfg["app_headers"]))
+    try:
+        cfg, _missing = _customerio_config("customerio_list_campaigns", config)
+        if not cfg["has_app"]:
+            return _customerio_auth_error("customerio_list_campaigns", app=True)
+        return _dump_json(_request_json("GET", f"{cfg['app_base']}/campaigns", headers=cfg["app_headers"]))
+    except Exception as e:
+        logger.error("customerio_list_campaigns failed", exc_info=True)
+        return f"[Error]: Customer.io campaign listing failed: {e}"
 
 
 @tool
@@ -794,12 +798,16 @@ def customerio_get_campaign(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Get a Customer.io campaign by ID."""
-    cfg, _missing = _customerio_config("customerio_get_campaign", config)
-    if not cfg["has_app"]:
-        return _customerio_auth_error("customerio_get_campaign", app=True)
-    return _dump_json(
-        _request_json("GET", f"{cfg['app_base']}/campaigns/{quote(campaign_id, safe='')}", headers=cfg["app_headers"])
-    )
+    try:
+        cfg, _missing = _customerio_config("customerio_get_campaign", config)
+        if not cfg["has_app"]:
+            return _customerio_auth_error("customerio_get_campaign", app=True)
+        return _dump_json(
+            _request_json("GET", f"{cfg['app_base']}/campaigns/{quote(campaign_id, safe='')}", headers=cfg["app_headers"])
+        )
+    except Exception as e:
+        logger.error("customerio_get_campaign failed", exc_info=True)
+        return f"[Error]: Customer.io campaign lookup failed: {e}"
 
 
 @tool
@@ -813,22 +821,26 @@ def customerio_upsert_customer(
     """Create or update a Customer.io customer profile."""
     if not customer_id.strip():
         return "[Error]: customer_id is required."
-    cfg, _missing = _customerio_config("customerio_upsert_customer", config)
-    if not cfg["has_tracking"]:
-        return _customerio_auth_error("customerio_upsert_customer", app=False)
-    body = _json_object(fields_json, field_name="fields_json")
-    if email:
-        body["email"] = email
-    if created_at:
-        body["created_at"] = int(created_at)
-    return _dump_json(
-        _request_json(
-            "PUT",
-            f"{cfg['tracking_base']}/customers/{quote(customer_id.strip(), safe='')}",
-            json_body=body,
-            headers=cfg["tracking_headers"],
+    try:
+        cfg, _missing = _customerio_config("customerio_upsert_customer", config)
+        if not cfg["has_tracking"]:
+            return _customerio_auth_error("customerio_upsert_customer", app=False)
+        body = _json_object(fields_json, field_name="fields_json")
+        if email:
+            body["email"] = email
+        if created_at:
+            body["created_at"] = int(created_at)
+        return _dump_json(
+            _request_json(
+                "PUT",
+                f"{cfg['tracking_base']}/customers/{quote(customer_id.strip(), safe='')}",
+                json_body=body,
+                headers=cfg["tracking_headers"],
+            )
         )
-    )
+    except Exception as e:
+        logger.error("customerio_upsert_customer failed", exc_info=True)
+        return f"[Error]: Customer.io customer upsert failed: {e}"
 
 
 @tool
@@ -842,20 +854,24 @@ def customerio_track_event(
     """Track a Customer.io event for a known customer."""
     if not customer_id.strip() or not event_name.strip():
         return "[Error]: customer_id and event_name are required."
-    cfg, _missing = _customerio_config("customerio_track_event", config)
-    if not cfg["has_tracking"]:
-        return _customerio_auth_error("customerio_track_event", app=False)
-    body: dict[str, Any] = {"name": event_name.strip(), "data": _json_object(data_json, field_name="data_json")}
-    if event_type:
-        body["data"]["type"] = event_type
-    return _dump_json(
-        _request_json(
-            "POST",
-            f"{cfg['tracking_base']}/customers/{quote(customer_id.strip(), safe='')}/events",
-            json_body=body,
-            headers=cfg["tracking_headers"],
+    try:
+        cfg, _missing = _customerio_config("customerio_track_event", config)
+        if not cfg["has_tracking"]:
+            return _customerio_auth_error("customerio_track_event", app=False)
+        body: dict[str, Any] = {"name": event_name.strip(), "data": _json_object(data_json, field_name="data_json")}
+        if event_type:
+            body["data"]["type"] = event_type
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{cfg['tracking_base']}/customers/{quote(customer_id.strip(), safe='')}/events",
+                json_body=body,
+                headers=cfg["tracking_headers"],
+            )
         )
-    )
+    except Exception as e:
+        logger.error("customerio_track_event failed", exc_info=True)
+        return f"[Error]: Customer.io event tracking failed: {e}"
 
 
 @tool
@@ -867,11 +883,15 @@ def customerio_track_anonymous_event(
     """Track a Customer.io event without a known customer ID."""
     if not event_name.strip():
         return "[Error]: event_name is required."
-    cfg, _missing = _customerio_config("customerio_track_anonymous_event", config)
-    if not cfg["has_tracking"]:
-        return _customerio_auth_error("customerio_track_anonymous_event", app=False)
-    body = {"name": event_name.strip(), "data": _json_object(data_json, field_name="data_json")}
-    return _dump_json(_request_json("POST", f"{cfg['tracking_base']}/events", json_body=body, headers=cfg["tracking_headers"]))
+    try:
+        cfg, _missing = _customerio_config("customerio_track_anonymous_event", config)
+        if not cfg["has_tracking"]:
+            return _customerio_auth_error("customerio_track_anonymous_event", app=False)
+        body = {"name": event_name.strip(), "data": _json_object(data_json, field_name="data_json")}
+        return _dump_json(_request_json("POST", f"{cfg['tracking_base']}/events", json_body=body, headers=cfg["tracking_headers"]))
+    except Exception as e:
+        logger.error("customerio_track_anonymous_event failed", exc_info=True)
+        return f"[Error]: Customer.io anonymous event tracking failed: {e}"
 
 
 @tool
@@ -888,19 +908,23 @@ def customerio_update_segment(
     action_key = action.strip().lower()
     if action_key not in {"add", "remove"}:
         return "[Error]: action must be add or remove."
-    cfg, _missing = _customerio_config("customerio_update_segment", config)
-    if not cfg["has_tracking"]:
-        return _customerio_auth_error("customerio_update_segment", app=False)
-    endpoint = "add_customers" if action_key == "add" else "remove_customers"
-    body = {"id": segment_id.strip(), "ids": ids}
-    return _dump_json(
-        _request_json(
-            "POST",
-            f"{cfg['tracking_base']}/segments/{quote(segment_id.strip(), safe='')}/{endpoint}",
-            json_body=body,
-            headers=cfg["tracking_headers"],
+    try:
+        cfg, _missing = _customerio_config("customerio_update_segment", config)
+        if not cfg["has_tracking"]:
+            return _customerio_auth_error("customerio_update_segment", app=False)
+        endpoint = "add_customers" if action_key == "add" else "remove_customers"
+        body = {"id": segment_id.strip(), "ids": ids}
+        return _dump_json(
+            _request_json(
+                "POST",
+                f"{cfg['tracking_base']}/segments/{quote(segment_id.strip(), safe='')}/{endpoint}",
+                json_body=body,
+                headers=cfg["tracking_headers"],
+            )
         )
-    )
+    except Exception as e:
+        logger.error("customerio_update_segment failed", exc_info=True)
+        return f"[Error]: Customer.io segment update failed: {e}"
 
 
 @tool
@@ -912,12 +936,16 @@ def iterable_get_user(
     """Get an Iterable user by email or user ID."""
     if not value.strip():
         return "[Error]: value is required."
-    base, auth = _iterable_config("iterable_get_user", config)
-    if isinstance(auth, str):
-        return auth
-    if identifier.strip().lower() == "user_id":
-        return _dump_json(_request_json("GET", f"{base}/users/byUserId/{quote(value.strip(), safe='')}", headers=auth))
-    return _dump_json(_request_json("GET", f"{base}/users/getByEmail", params={"email": value.strip()}, headers=auth))
+    try:
+        base, auth = _iterable_config("iterable_get_user", config)
+        if isinstance(auth, str):
+            return auth
+        if identifier.strip().lower() == "user_id":
+            return _dump_json(_request_json("GET", f"{base}/users/byUserId/{quote(value.strip(), safe='')}", headers=auth))
+        return _dump_json(_request_json("GET", f"{base}/users/getByEmail", params={"email": value.strip()}, headers=auth))
+    except Exception as e:
+        logger.error("iterable_get_user failed", exc_info=True)
+        return f"[Error]: Iterable user lookup failed: {e}"
 
 
 @tool
@@ -932,20 +960,24 @@ def iterable_upsert_user(
     """Create or update an Iterable user."""
     if not value.strip():
         return "[Error]: value is required."
-    base, auth = _iterable_config("iterable_upsert_user", config)
-    if isinstance(auth, str):
-        return auth
-    data_fields = _json_object(data_fields_json, field_name="data_fields_json")
-    body: dict[str, Any] = {
-        "dataFields": data_fields,
-        "mergeNestedObjects": bool(merge_nested_objects),
-    }
-    if identifier.strip().lower() == "user_id":
-        body["userId"] = value.strip()
-        body["preferUserId"] = bool(prefer_user_id)
-    else:
-        body["email"] = value.strip()
-    return _dump_json(_request_json("POST", f"{base}/users/update", json_body=body, headers=auth))
+    try:
+        base, auth = _iterable_config("iterable_upsert_user", config)
+        if isinstance(auth, str):
+            return auth
+        data_fields = _json_object(data_fields_json, field_name="data_fields_json")
+        body: dict[str, Any] = {
+            "dataFields": data_fields,
+            "mergeNestedObjects": bool(merge_nested_objects),
+        }
+        if identifier.strip().lower() == "user_id":
+            body["userId"] = value.strip()
+            body["preferUserId"] = bool(prefer_user_id)
+        else:
+            body["email"] = value.strip()
+        return _dump_json(_request_json("POST", f"{base}/users/update", json_body=body, headers=auth))
+    except Exception as e:
+        logger.error("iterable_upsert_user failed", exc_info=True)
+        return f"[Error]: Iterable user upsert failed: {e}"
 
 
 @tool
@@ -962,24 +994,28 @@ def iterable_track_event(
     """Track an Iterable event."""
     if not event_name.strip() or not (email.strip() or user_id.strip()):
         return "[Error]: event_name and either email or user_id are required."
-    base, auth = _iterable_config("iterable_track_event", config)
-    if isinstance(auth, str):
-        return auth
-    body: dict[str, Any] = {
-        "eventName": event_name.strip(),
-        "dataFields": _json_object(data_fields_json, field_name="data_fields_json"),
-    }
-    if email.strip():
-        body["email"] = email.strip()
-    else:
-        body["userId"] = user_id.strip()
-    if created_at.strip():
-        body["createdAt"] = created_at.strip()
-    if campaign_id:
-        body["campaignId"] = int(campaign_id)
-    if template_id:
-        body["templateId"] = int(template_id)
-    return _dump_json(_request_json("POST", f"{base}/events/trackBulk", json_body={"events": [body]}, headers=auth))
+    try:
+        base, auth = _iterable_config("iterable_track_event", config)
+        if isinstance(auth, str):
+            return auth
+        body: dict[str, Any] = {
+            "eventName": event_name.strip(),
+            "dataFields": _json_object(data_fields_json, field_name="data_fields_json"),
+        }
+        if email.strip():
+            body["email"] = email.strip()
+        else:
+            body["userId"] = user_id.strip()
+        if created_at.strip():
+            body["createdAt"] = created_at.strip()
+        if campaign_id:
+            body["campaignId"] = int(campaign_id)
+        if template_id:
+            body["templateId"] = int(template_id)
+        return _dump_json(_request_json("POST", f"{base}/events/trackBulk", json_body={"events": [body]}, headers=auth))
+    except Exception as e:
+        logger.error("iterable_track_event failed", exc_info=True)
+        return f"[Error]: Iterable event tracking failed: {e}"
 
 
 @tool
@@ -987,10 +1023,14 @@ def iterable_list_lists(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List Iterable static lists."""
-    base, auth = _iterable_config("iterable_list_lists", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(_request_json("GET", f"{base}/lists", headers=auth))
+    try:
+        base, auth = _iterable_config("iterable_list_lists", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/lists", headers=auth))
+    except Exception as e:
+        logger.error("iterable_list_lists failed", exc_info=True)
+        return f"[Error]: Iterable list listing failed: {e}"
 
 
 @tool
@@ -1010,17 +1050,21 @@ def iterable_update_list_subscribers(
     action_key = action.strip().lower()
     if action_key not in {"add", "remove"}:
         return "[Error]: action must be add or remove."
-    base, auth = _iterable_config("iterable_update_list_subscribers", config)
-    if isinstance(auth, str):
-        return auth
-    key = "userId" if identifier.strip().lower() == "user_id" else "email"
-    body = {"listId": int(list_id), "subscribers": [{key: value} for value in subscribers]}
-    endpoint = "subscribe" if action_key == "add" else "unsubscribe"
-    if action_key == "remove":
-        if campaign_id:
-            body["campaignId"] = int(campaign_id)
-        body["channelUnsubscribe"] = bool(channel_unsubscribe)
-    return _dump_json(_request_json("POST", f"{base}/lists/{endpoint}", json_body=body, headers=auth))
+    try:
+        base, auth = _iterable_config("iterable_update_list_subscribers", config)
+        if isinstance(auth, str):
+            return auth
+        key = "userId" if identifier.strip().lower() == "user_id" else "email"
+        body = {"listId": int(list_id), "subscribers": [{key: value} for value in subscribers]}
+        endpoint = "subscribe" if action_key == "add" else "unsubscribe"
+        if action_key == "remove":
+            if campaign_id:
+                body["campaignId"] = int(campaign_id)
+            body["channelUnsubscribe"] = bool(channel_unsubscribe)
+        return _dump_json(_request_json("POST", f"{base}/lists/{endpoint}", json_body=body, headers=auth))
+    except Exception as e:
+        logger.error("iterable_update_list_subscribers failed", exc_info=True)
+        return f"[Error]: Iterable list subscriber update failed: {e}"
 
 
 @tool
@@ -1034,15 +1078,19 @@ def posthog_capture_event(
     """Capture one PostHog event."""
     if not event_name.strip() or not distinct_id.strip():
         return "[Error]: event_name and distinct_id are required."
-    base, api_key = _posthog_config("posthog_capture_event", config)
-    if api_key is None or api_key.startswith("[Error]:"):
-        return api_key or ""
-    properties = _json_object(properties_json, field_name="properties_json")
-    properties["distinct_id"] = distinct_id.strip()
-    body = {"api_key": api_key, "event": event_name.strip(), "properties": properties}
-    if timestamp.strip():
-        body["timestamp"] = timestamp.strip()
-    return _dump_json(_request_json("POST", f"{base}/capture", json_body=body, headers={"User-Agent": "Nymeria"}))
+    try:
+        base, api_key = _posthog_config("posthog_capture_event", config)
+        if api_key is None or api_key.startswith("[Error]:"):
+            return api_key or ""
+        properties = _json_object(properties_json, field_name="properties_json")
+        properties["distinct_id"] = distinct_id.strip()
+        body = {"api_key": api_key, "event": event_name.strip(), "properties": properties}
+        if timestamp.strip():
+            body["timestamp"] = timestamp.strip()
+        return _dump_json(_request_json("POST", f"{base}/capture", json_body=body, headers={"User-Agent": "Nymeria"}))
+    except Exception as e:
+        logger.error("posthog_capture_event failed", exc_info=True)
+        return f"[Error]: PostHog event capture failed: {e}"
 
 
 @tool
@@ -1056,20 +1104,24 @@ def posthog_identify(
     """Identify a PostHog user and set properties."""
     if not distinct_id.strip():
         return "[Error]: distinct_id is required."
-    base, api_key = _posthog_config("posthog_identify", config)
-    if api_key is None or api_key.startswith("[Error]:"):
-        return api_key or ""
-    body = {
-        "api_key": api_key,
-        "event": "$identify",
-        "distinct_id": distinct_id.strip(),
-        "properties": _json_object(properties_json, field_name="properties_json"),
-    }
-    if context_json.strip():
-        body["context"] = _json_object(context_json, field_name="context_json")
-    if timestamp.strip():
-        body["timestamp"] = timestamp.strip()
-    return _dump_json(_request_json("POST", f"{base}/batch", json_body=body, headers={"User-Agent": "Nymeria"}))
+    try:
+        base, api_key = _posthog_config("posthog_identify", config)
+        if api_key is None or api_key.startswith("[Error]:"):
+            return api_key or ""
+        body = {
+            "api_key": api_key,
+            "event": "$identify",
+            "distinct_id": distinct_id.strip(),
+            "properties": _json_object(properties_json, field_name="properties_json"),
+        }
+        if context_json.strip():
+            body["context"] = _json_object(context_json, field_name="context_json")
+        if timestamp.strip():
+            body["timestamp"] = timestamp.strip()
+        return _dump_json(_request_json("POST", f"{base}/batch", json_body=body, headers={"User-Agent": "Nymeria"}))
+    except Exception as e:
+        logger.error("posthog_identify failed", exc_info=True)
+        return f"[Error]: PostHog identify failed: {e}"
 
 
 @tool
@@ -1083,19 +1135,23 @@ def posthog_create_alias(
     """Create a PostHog alias for a distinct ID."""
     if not distinct_id.strip() or not alias.strip():
         return "[Error]: distinct_id and alias are required."
-    base, api_key = _posthog_config("posthog_create_alias", config)
-    if api_key is None or api_key.startswith("[Error]:"):
-        return api_key or ""
-    body = {
-        "api_key": api_key,
-        "event": "$create_alias",
-        "properties": {"distinct_id": distinct_id.strip(), "alias": alias.strip()},
-    }
-    if context_json.strip():
-        body["context"] = _json_object(context_json, field_name="context_json")
-    if timestamp.strip():
-        body["timestamp"] = timestamp.strip()
-    return _dump_json(_request_json("POST", f"{base}/batch", json_body=body, headers={"User-Agent": "Nymeria"}))
+    try:
+        base, api_key = _posthog_config("posthog_create_alias", config)
+        if api_key is None or api_key.startswith("[Error]:"):
+            return api_key or ""
+        body = {
+            "api_key": api_key,
+            "event": "$create_alias",
+            "properties": {"distinct_id": distinct_id.strip(), "alias": alias.strip()},
+        }
+        if context_json.strip():
+            body["context"] = _json_object(context_json, field_name="context_json")
+        if timestamp.strip():
+            body["timestamp"] = timestamp.strip()
+        return _dump_json(_request_json("POST", f"{base}/batch", json_body=body, headers={"User-Agent": "Nymeria"}))
+    except Exception as e:
+        logger.error("posthog_create_alias failed", exc_info=True)
+        return f"[Error]: PostHog alias creation failed: {e}"
 
 
 @tool
@@ -1114,22 +1170,26 @@ def posthog_track_page_or_screen(
         return "[Error]: kind must be page or screen."
     if not distinct_id.strip() or not name.strip():
         return "[Error]: distinct_id and name are required."
-    base, api_key = _posthog_config("posthog_track_page_or_screen", config)
-    if api_key is None or api_key.startswith("[Error]:"):
-        return api_key or ""
-    properties = _json_object(properties_json, field_name="properties_json")
-    properties["distinct_id"] = distinct_id.strip()
-    properties["name"] = name.strip()
-    body: dict[str, Any] = {
-        "api_key": api_key,
-        "event": "$page" if kind_key == "page" else "$screen",
-        "properties": properties,
-    }
-    if context_json.strip():
-        body["context"] = _json_object(context_json, field_name="context_json")
-    if timestamp.strip():
-        body["timestamp"] = timestamp.strip()
-    return _dump_json(_request_json("POST", f"{base}/batch", json_body=body, headers={"User-Agent": "Nymeria"}))
+    try:
+        base, api_key = _posthog_config("posthog_track_page_or_screen", config)
+        if api_key is None or api_key.startswith("[Error]:"):
+            return api_key or ""
+        properties = _json_object(properties_json, field_name="properties_json")
+        properties["distinct_id"] = distinct_id.strip()
+        properties["name"] = name.strip()
+        body: dict[str, Any] = {
+            "api_key": api_key,
+            "event": "$page" if kind_key == "page" else "$screen",
+            "properties": properties,
+        }
+        if context_json.strip():
+            body["context"] = _json_object(context_json, field_name="context_json")
+        if timestamp.strip():
+            body["timestamp"] = timestamp.strip()
+        return _dump_json(_request_json("POST", f"{base}/batch", json_body=body, headers={"User-Agent": "Nymeria"}))
+    except Exception as e:
+        logger.error("posthog_track_page_or_screen failed", exc_info=True)
+        return f"[Error]: PostHog page or screen tracking failed: {e}"
 
 
 @tool
@@ -1144,19 +1204,23 @@ def segment_identify(
     """Send a Segment identify call."""
     if not (user_id.strip() or anonymous_id.strip()):
         return "[Error]: user_id or anonymous_id is required."
-    base, auth = _segment_config("segment_identify", config)
-    if isinstance(auth, str):
-        return auth
-    body: dict[str, Any] = {
-        "traits": _json_object(traits_json, field_name="traits_json"),
-        "context": _json_object(context_json, field_name="context_json"),
-        "integrations": _json_object(integrations_json, field_name="integrations_json"),
-    }
-    if user_id.strip():
-        body["userId"] = user_id.strip()
-    else:
-        body["anonymousId"] = anonymous_id.strip()
-    return _dump_json(_request_json("POST", f"{base}/identify", json_body=_filtered(body), headers=auth))
+    try:
+        base, auth = _segment_config("segment_identify", config)
+        if isinstance(auth, str):
+            return auth
+        body: dict[str, Any] = {
+            "traits": _json_object(traits_json, field_name="traits_json"),
+            "context": _json_object(context_json, field_name="context_json"),
+            "integrations": _json_object(integrations_json, field_name="integrations_json"),
+        }
+        if user_id.strip():
+            body["userId"] = user_id.strip()
+        else:
+            body["anonymousId"] = anonymous_id.strip()
+        return _dump_json(_request_json("POST", f"{base}/identify", json_body=_filtered(body), headers=auth))
+    except Exception as e:
+        logger.error("segment_identify failed", exc_info=True)
+        return f"[Error]: Segment identify failed: {e}"
 
 
 @tool
@@ -1172,20 +1236,24 @@ def segment_track(
     """Send a Segment track event."""
     if not event.strip() or not (user_id.strip() or anonymous_id.strip()):
         return "[Error]: event and user_id or anonymous_id are required."
-    base, auth = _segment_config("segment_track", config)
-    if isinstance(auth, str):
-        return auth
-    body = {
-        "event": event.strip(),
-        "properties": _json_object(properties_json, field_name="properties_json"),
-        "context": _json_object(context_json, field_name="context_json"),
-        "integrations": _json_object(integrations_json, field_name="integrations_json"),
-    }
-    if user_id.strip():
-        body["userId"] = user_id.strip()
-    else:
-        body["anonymousId"] = anonymous_id.strip()
-    return _dump_json(_request_json("POST", f"{base}/track", json_body=_filtered(body), headers=auth))
+    try:
+        base, auth = _segment_config("segment_track", config)
+        if isinstance(auth, str):
+            return auth
+        body = {
+            "event": event.strip(),
+            "properties": _json_object(properties_json, field_name="properties_json"),
+            "context": _json_object(context_json, field_name="context_json"),
+            "integrations": _json_object(integrations_json, field_name="integrations_json"),
+        }
+        if user_id.strip():
+            body["userId"] = user_id.strip()
+        else:
+            body["anonymousId"] = anonymous_id.strip()
+        return _dump_json(_request_json("POST", f"{base}/track", json_body=_filtered(body), headers=auth))
+    except Exception as e:
+        logger.error("segment_track failed", exc_info=True)
+        return f"[Error]: Segment track failed: {e}"
 
 
 @tool
@@ -1201,20 +1269,24 @@ def segment_group(
     """Send a Segment group call."""
     if not group_id.strip() or not (user_id.strip() or anonymous_id.strip()):
         return "[Error]: group_id and user_id or anonymous_id are required."
-    base, auth = _segment_config("segment_group", config)
-    if isinstance(auth, str):
-        return auth
-    body = {
-        "groupId": group_id.strip(),
-        "traits": _json_object(traits_json, field_name="traits_json"),
-        "context": _json_object(context_json, field_name="context_json"),
-        "integrations": _json_object(integrations_json, field_name="integrations_json"),
-    }
-    if user_id.strip():
-        body["userId"] = user_id.strip()
-    else:
-        body["anonymousId"] = anonymous_id.strip()
-    return _dump_json(_request_json("POST", f"{base}/group", json_body=_filtered(body), headers=auth))
+    try:
+        base, auth = _segment_config("segment_group", config)
+        if isinstance(auth, str):
+            return auth
+        body = {
+            "groupId": group_id.strip(),
+            "traits": _json_object(traits_json, field_name="traits_json"),
+            "context": _json_object(context_json, field_name="context_json"),
+            "integrations": _json_object(integrations_json, field_name="integrations_json"),
+        }
+        if user_id.strip():
+            body["userId"] = user_id.strip()
+        else:
+            body["anonymousId"] = anonymous_id.strip()
+        return _dump_json(_request_json("POST", f"{base}/group", json_body=_filtered(body), headers=auth))
+    except Exception as e:
+        logger.error("segment_group failed", exc_info=True)
+        return f"[Error]: Segment group failed: {e}"
 
 
 def _activecampaign_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
@@ -1376,17 +1448,21 @@ def activecampaign_list_contacts(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List ActiveCampaign contacts with optional search, email, list, or tag filters."""
-    base, auth = _activecampaign_config("activecampaign_list_contacts", config)
-    if isinstance(auth, str):
-        return auth
-    params = {
-        "search": search,
-        "email": email,
-        "listid": list_id,
-        "tagid": tag_id,
-        "limit": _limit(limit, max_value=100),
-    }
-    return _dump_json(_request_json("GET", f"{base}/api/3/contacts", params=params, headers=auth))
+    try:
+        base, auth = _activecampaign_config("activecampaign_list_contacts", config)
+        if isinstance(auth, str):
+            return auth
+        params = {
+            "search": search,
+            "email": email,
+            "listid": list_id,
+            "tagid": tag_id,
+            "limit": _limit(limit, max_value=100),
+        }
+        return _dump_json(_request_json("GET", f"{base}/api/3/contacts", params=params, headers=auth))
+    except Exception as e:
+        logger.error("activecampaign_list_contacts failed", exc_info=True)
+        return f"[Error]: ActiveCampaign contact listing failed: {e}"
 
 
 @tool
@@ -1395,10 +1471,14 @@ def activecampaign_get_contact(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Get one ActiveCampaign contact by ID."""
-    base, auth = _activecampaign_config("activecampaign_get_contact", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(_request_json("GET", f"{base}/api/3/contacts/{quote(contact_id, safe='')}", headers=auth))
+    try:
+        base, auth = _activecampaign_config("activecampaign_get_contact", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/api/3/contacts/{quote(contact_id, safe='')}", headers=auth))
+    except Exception as e:
+        logger.error("activecampaign_get_contact failed", exc_info=True)
+        return f"[Error]: ActiveCampaign contact lookup failed: {e}"
 
 
 @tool
@@ -1411,13 +1491,17 @@ def activecampaign_sync_contact(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Create or update an ActiveCampaign contact using contact sync."""
-    base, auth = _activecampaign_config("activecampaign_sync_contact", config)
-    if isinstance(auth, str):
-        return auth
-    contact = {"email": email, "firstName": first_name, "lastName": last_name, "phone": phone}
-    contact.update(_json_object(fields_json, field_name="fields_json"))
-    body = {"contact": _filtered(contact)}
-    return _dump_json(_request_json("POST", f"{base}/api/3/contact/sync", json_body=body, headers=auth))
+    try:
+        base, auth = _activecampaign_config("activecampaign_sync_contact", config)
+        if isinstance(auth, str):
+            return auth
+        contact = {"email": email, "firstName": first_name, "lastName": last_name, "phone": phone}
+        contact.update(_json_object(fields_json, field_name="fields_json"))
+        body = {"contact": _filtered(contact)}
+        return _dump_json(_request_json("POST", f"{base}/api/3/contact/sync", json_body=body, headers=auth))
+    except Exception as e:
+        logger.error("activecampaign_sync_contact failed", exc_info=True)
+        return f"[Error]: ActiveCampaign contact sync failed: {e}"
 
 
 @tool
@@ -1427,13 +1511,17 @@ def activecampaign_update_contact(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Update an ActiveCampaign contact by ID with a JSON object of contact fields."""
-    base, auth = _activecampaign_config("activecampaign_update_contact", config)
-    if isinstance(auth, str):
-        return auth
-    body = {"contact": _json_object(fields_json, field_name="fields_json")}
-    return _dump_json(
-        _request_json("PUT", f"{base}/api/3/contacts/{quote(contact_id, safe='')}", json_body=body, headers=auth)
-    )
+    try:
+        base, auth = _activecampaign_config("activecampaign_update_contact", config)
+        if isinstance(auth, str):
+            return auth
+        body = {"contact": _json_object(fields_json, field_name="fields_json")}
+        return _dump_json(
+            _request_json("PUT", f"{base}/api/3/contacts/{quote(contact_id, safe='')}", json_body=body, headers=auth)
+        )
+    except Exception as e:
+        logger.error("activecampaign_update_contact failed", exc_info=True)
+        return f"[Error]: ActiveCampaign contact update failed: {e}"
 
 
 @tool
@@ -1442,12 +1530,16 @@ def activecampaign_list_lists(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List ActiveCampaign contact lists."""
-    base, auth = _activecampaign_config("activecampaign_list_lists", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(
-        _request_json("GET", f"{base}/api/3/lists", params={"limit": _limit(limit, default=50, max_value=100)}, headers=auth)
-    )
+    try:
+        base, auth = _activecampaign_config("activecampaign_list_lists", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(
+            _request_json("GET", f"{base}/api/3/lists", params={"limit": _limit(limit, default=50, max_value=100)}, headers=auth)
+        )
+    except Exception as e:
+        logger.error("activecampaign_list_lists failed", exc_info=True)
+        return f"[Error]: ActiveCampaign list listing failed: {e}"
 
 
 @tool
@@ -1457,17 +1549,21 @@ def activecampaign_list_tags(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List ActiveCampaign tags."""
-    base, auth = _activecampaign_config("activecampaign_list_tags", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(
-        _request_json(
-            "GET",
-            f"{base}/api/3/tags",
-            params={"search": search, "limit": _limit(limit, default=50, max_value=100)},
-            headers=auth,
+    try:
+        base, auth = _activecampaign_config("activecampaign_list_tags", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(
+            _request_json(
+                "GET",
+                f"{base}/api/3/tags",
+                params={"search": search, "limit": _limit(limit, default=50, max_value=100)},
+                headers=auth,
+            )
         )
-    )
+    except Exception as e:
+        logger.error("activecampaign_list_tags failed", exc_info=True)
+        return f"[Error]: ActiveCampaign tag listing failed: {e}"
 
 
 @tool
@@ -1478,11 +1574,15 @@ def activecampaign_add_contact_to_list(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Subscribe or unsubscribe an ActiveCampaign contact to a list. Use status 1 to subscribe, 2 to unsubscribe."""
-    base, auth = _activecampaign_config("activecampaign_add_contact_to_list", config)
-    if isinstance(auth, str):
-        return auth
-    body = {"contactList": {"list": list_id, "contact": contact_id, "status": status}}
-    return _dump_json(_request_json("POST", f"{base}/api/3/contactLists", json_body=body, headers=auth))
+    try:
+        base, auth = _activecampaign_config("activecampaign_add_contact_to_list", config)
+        if isinstance(auth, str):
+            return auth
+        body = {"contactList": {"list": list_id, "contact": contact_id, "status": status}}
+        return _dump_json(_request_json("POST", f"{base}/api/3/contactLists", json_body=body, headers=auth))
+    except Exception as e:
+        logger.error("activecampaign_add_contact_to_list failed", exc_info=True)
+        return f"[Error]: ActiveCampaign list membership update failed: {e}"
 
 
 @tool
@@ -1492,38 +1592,54 @@ def activecampaign_add_contact_tag(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Add an ActiveCampaign tag to a contact."""
-    base, auth = _activecampaign_config("activecampaign_add_contact_tag", config)
-    if isinstance(auth, str):
-        return auth
-    body = {"contactTag": {"contact": contact_id, "tag": tag_id}}
-    return _dump_json(_request_json("POST", f"{base}/api/3/contactTags", json_body=body, headers=auth))
+    try:
+        base, auth = _activecampaign_config("activecampaign_add_contact_tag", config)
+        if isinstance(auth, str):
+            return auth
+        body = {"contactTag": {"contact": contact_id, "tag": tag_id}}
+        return _dump_json(_request_json("POST", f"{base}/api/3/contactTags", json_body=body, headers=auth))
+    except Exception as e:
+        logger.error("activecampaign_add_contact_tag failed", exc_info=True)
+        return f"[Error]: ActiveCampaign contact tag add failed: {e}"
 
 
 @tool
 def convertkit_get_account(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
     """Get ConvertKit account details."""
-    base, secret = _convertkit_config("convertkit_get_account", config)
-    if secret.startswith("[Error]:"):
-        return secret
-    return _dump_json(_request_json("GET", f"{base}/account", params={"api_secret": secret}))
+    try:
+        base, secret = _convertkit_config("convertkit_get_account", config)
+        if secret.startswith("[Error]:"):
+            return secret
+        return _dump_json(_request_json("GET", f"{base}/account", params={"api_secret": secret}))
+    except Exception as e:
+        logger.error("convertkit_get_account failed", exc_info=True)
+        return f"[Error]: ConvertKit account lookup failed: {e}"
 
 
 @tool
 def convertkit_list_forms(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
     """List ConvertKit forms."""
-    base, secret = _convertkit_config("convertkit_list_forms", config)
-    if secret.startswith("[Error]:"):
-        return secret
-    return _dump_json(_request_json("GET", f"{base}/forms", params={"api_secret": secret}))
+    try:
+        base, secret = _convertkit_config("convertkit_list_forms", config)
+        if secret.startswith("[Error]:"):
+            return secret
+        return _dump_json(_request_json("GET", f"{base}/forms", params={"api_secret": secret}))
+    except Exception as e:
+        logger.error("convertkit_list_forms failed", exc_info=True)
+        return f"[Error]: ConvertKit form listing failed: {e}"
 
 
 @tool
 def convertkit_list_tags(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
     """List ConvertKit tags."""
-    base, secret = _convertkit_config("convertkit_list_tags", config)
-    if secret.startswith("[Error]:"):
-        return secret
-    return _dump_json(_request_json("GET", f"{base}/tags", params={"api_secret": secret}))
+    try:
+        base, secret = _convertkit_config("convertkit_list_tags", config)
+        if secret.startswith("[Error]:"):
+            return secret
+        return _dump_json(_request_json("GET", f"{base}/tags", params={"api_secret": secret}))
+    except Exception as e:
+        logger.error("convertkit_list_tags failed", exc_info=True)
+        return f"[Error]: ConvertKit tag listing failed: {e}"
 
 
 @tool
@@ -1534,11 +1650,15 @@ def convertkit_list_subscribers(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List ConvertKit subscribers, optionally filtered by email."""
-    base, secret = _convertkit_config("convertkit_list_subscribers", config)
-    if secret.startswith("[Error]:"):
-        return secret
-    params = {"api_secret": secret, "email_address": email, "per_page": _limit(limit, default=50, max_value=100), "page": page}
-    return _dump_json(_request_json("GET", f"{base}/subscribers", params=params))
+    try:
+        base, secret = _convertkit_config("convertkit_list_subscribers", config)
+        if secret.startswith("[Error]:"):
+            return secret
+        params = {"api_secret": secret, "email_address": email, "per_page": _limit(limit, default=50, max_value=100), "page": page}
+        return _dump_json(_request_json("GET", f"{base}/subscribers", params=params))
+    except Exception as e:
+        logger.error("convertkit_list_subscribers failed", exc_info=True)
+        return f"[Error]: ConvertKit subscriber listing failed: {e}"
 
 
 @tool
@@ -1550,13 +1670,17 @@ def convertkit_add_subscriber_to_form(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Subscribe an email address to a ConvertKit form."""
-    base, secret = _convertkit_config("convertkit_add_subscriber_to_form", config)
-    if secret.startswith("[Error]:"):
-        return secret
-    body = {"api_secret": secret, "email": email, "first_name": first_name, "fields": _json_object(fields_json, field_name="fields_json")}
-    return _dump_json(
-        _request_json("POST", f"{base}/forms/{quote(form_id, safe='')}/subscribe", json_body=_filtered(body))
-    )
+    try:
+        base, secret = _convertkit_config("convertkit_add_subscriber_to_form", config)
+        if secret.startswith("[Error]:"):
+            return secret
+        body = {"api_secret": secret, "email": email, "first_name": first_name, "fields": _json_object(fields_json, field_name="fields_json")}
+        return _dump_json(
+            _request_json("POST", f"{base}/forms/{quote(form_id, safe='')}/subscribe", json_body=_filtered(body))
+        )
+    except Exception as e:
+        logger.error("convertkit_add_subscriber_to_form failed", exc_info=True)
+        return f"[Error]: ConvertKit form subscription failed: {e}"
 
 
 @tool
@@ -1568,20 +1692,28 @@ def convertkit_add_subscriber_to_tag(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Subscribe an email address to a ConvertKit tag."""
-    base, secret = _convertkit_config("convertkit_add_subscriber_to_tag", config)
-    if secret.startswith("[Error]:"):
-        return secret
-    body = {"api_secret": secret, "email": email, "first_name": first_name, "fields": _json_object(fields_json, field_name="fields_json")}
-    return _dump_json(_request_json("POST", f"{base}/tags/{quote(tag_id, safe='')}/subscribe", json_body=_filtered(body)))
+    try:
+        base, secret = _convertkit_config("convertkit_add_subscriber_to_tag", config)
+        if secret.startswith("[Error]:"):
+            return secret
+        body = {"api_secret": secret, "email": email, "first_name": first_name, "fields": _json_object(fields_json, field_name="fields_json")}
+        return _dump_json(_request_json("POST", f"{base}/tags/{quote(tag_id, safe='')}/subscribe", json_body=_filtered(body)))
+    except Exception as e:
+        logger.error("convertkit_add_subscriber_to_tag failed", exc_info=True)
+        return f"[Error]: ConvertKit tag subscription failed: {e}"
 
 
 @tool
 def getresponse_list_campaigns(config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None) -> str:
     """List GetResponse campaigns."""
-    base, auth = _getresponse_config("getresponse_list_campaigns", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(_request_json("GET", f"{base}/campaigns", headers=auth))
+    try:
+        base, auth = _getresponse_config("getresponse_list_campaigns", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/campaigns", headers=auth))
+    except Exception as e:
+        logger.error("getresponse_list_campaigns failed", exc_info=True)
+        return f"[Error]: GetResponse campaign listing failed: {e}"
 
 
 @tool
@@ -1592,15 +1724,19 @@ def getresponse_list_contacts(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List GetResponse contacts with optional email and campaign filters."""
-    base, auth = _getresponse_config("getresponse_list_contacts", config)
-    if isinstance(auth, str):
-        return auth
-    params: dict[str, Any] = {"perPage": _limit(limit, max_value=100)}
-    if email:
-        params["query[email]"] = email
-    if campaign_id:
-        params["query[campaignId]"] = campaign_id
-    return _dump_json(_request_json("GET", f"{base}/contacts", params=params, headers=auth))
+    try:
+        base, auth = _getresponse_config("getresponse_list_contacts", config)
+        if isinstance(auth, str):
+            return auth
+        params: dict[str, Any] = {"perPage": _limit(limit, max_value=100)}
+        if email:
+            params["query[email]"] = email
+        if campaign_id:
+            params["query[campaignId]"] = campaign_id
+        return _dump_json(_request_json("GET", f"{base}/contacts", params=params, headers=auth))
+    except Exception as e:
+        logger.error("getresponse_list_contacts failed", exc_info=True)
+        return f"[Error]: GetResponse contact listing failed: {e}"
 
 
 @tool
@@ -1609,10 +1745,14 @@ def getresponse_get_contact(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Get a GetResponse contact by ID."""
-    base, auth = _getresponse_config("getresponse_get_contact", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(_request_json("GET", f"{base}/contacts/{quote(contact_id, safe='')}", headers=auth))
+    try:
+        base, auth = _getresponse_config("getresponse_get_contact", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/contacts/{quote(contact_id, safe='')}", headers=auth))
+    except Exception as e:
+        logger.error("getresponse_get_contact failed", exc_info=True)
+        return f"[Error]: GetResponse contact lookup failed: {e}"
 
 
 @tool
@@ -1625,17 +1765,21 @@ def getresponse_create_contact(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Create a GetResponse contact."""
-    base, auth = _getresponse_config("getresponse_create_contact", config)
-    if isinstance(auth, str):
-        return auth
-    body = {
-        "email": email,
-        "name": name,
-        "campaign": {"campaignId": campaign_id},
-        "dayOfCycle": day_of_cycle,
-        "customFieldValues": _json_object(custom_fields_json, field_name="custom_fields_json").get("customFieldValues"),
-    }
-    return _dump_json(_request_json("POST", f"{base}/contacts", json_body=_filtered(body), headers=auth))
+    try:
+        base, auth = _getresponse_config("getresponse_create_contact", config)
+        if isinstance(auth, str):
+            return auth
+        body = {
+            "email": email,
+            "name": name,
+            "campaign": {"campaignId": campaign_id},
+            "dayOfCycle": day_of_cycle,
+            "customFieldValues": _json_object(custom_fields_json, field_name="custom_fields_json").get("customFieldValues"),
+        }
+        return _dump_json(_request_json("POST", f"{base}/contacts", json_body=_filtered(body), headers=auth))
+    except Exception as e:
+        logger.error("getresponse_create_contact failed", exc_info=True)
+        return f"[Error]: GetResponse contact creation failed: {e}"
 
 
 @tool
@@ -1647,17 +1791,21 @@ def getresponse_update_contact(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Update a GetResponse contact."""
-    base, auth = _getresponse_config("getresponse_update_contact", config)
-    if isinstance(auth, str):
-        return auth
-    body = {
-        "name": name,
-        "campaign": {"campaignId": campaign_id} if campaign_id else None,
-        "customFieldValues": _json_object(custom_fields_json, field_name="custom_fields_json").get("customFieldValues"),
-    }
-    return _dump_json(
-        _request_json("POST", f"{base}/contacts/{quote(contact_id, safe='')}", json_body=_filtered(body), headers=auth)
-    )
+    try:
+        base, auth = _getresponse_config("getresponse_update_contact", config)
+        if isinstance(auth, str):
+            return auth
+        body = {
+            "name": name,
+            "campaign": {"campaignId": campaign_id} if campaign_id else None,
+            "customFieldValues": _json_object(custom_fields_json, field_name="custom_fields_json").get("customFieldValues"),
+        }
+        return _dump_json(
+            _request_json("POST", f"{base}/contacts/{quote(contact_id, safe='')}", json_body=_filtered(body), headers=auth)
+        )
+    except Exception as e:
+        logger.error("getresponse_update_contact failed", exc_info=True)
+        return f"[Error]: GetResponse contact update failed: {e}"
 
 
 @tool
@@ -1666,10 +1814,14 @@ def getresponse_delete_contact(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Delete a GetResponse contact."""
-    base, auth = _getresponse_config("getresponse_delete_contact", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(_request_json("DELETE", f"{base}/contacts/{quote(contact_id, safe='')}", headers=auth))
+    try:
+        base, auth = _getresponse_config("getresponse_delete_contact", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("DELETE", f"{base}/contacts/{quote(contact_id, safe='')}", headers=auth))
+    except Exception as e:
+        logger.error("getresponse_delete_contact failed", exc_info=True)
+        return f"[Error]: GetResponse contact deletion failed: {e}"
 
 
 @tool
@@ -1679,11 +1831,15 @@ def mailerlite_list_subscribers(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List MailerLite subscribers."""
-    base, auth = _mailerlite_config("mailerlite_list_subscribers", config)
-    if isinstance(auth, str):
-        return auth
-    params = {"limit": _limit(limit, max_value=100), "filter[status]": status}
-    return _dump_json(_request_json("GET", f"{base}/subscribers", params=params, headers=auth))
+    try:
+        base, auth = _mailerlite_config("mailerlite_list_subscribers", config)
+        if isinstance(auth, str):
+            return auth
+        params = {"limit": _limit(limit, max_value=100), "filter[status]": status}
+        return _dump_json(_request_json("GET", f"{base}/subscribers", params=params, headers=auth))
+    except Exception as e:
+        logger.error("mailerlite_list_subscribers failed", exc_info=True)
+        return f"[Error]: MailerLite subscriber listing failed: {e}"
 
 
 @tool
@@ -1692,10 +1848,14 @@ def mailerlite_get_subscriber(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Get one MailerLite subscriber by ID or email."""
-    base, auth = _mailerlite_config("mailerlite_get_subscriber", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(_request_json("GET", f"{base}/subscribers/{quote(subscriber_id, safe='')}", headers=auth))
+    try:
+        base, auth = _mailerlite_config("mailerlite_get_subscriber", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/subscribers/{quote(subscriber_id, safe='')}", headers=auth))
+    except Exception as e:
+        logger.error("mailerlite_get_subscriber failed", exc_info=True)
+        return f"[Error]: MailerLite subscriber lookup failed: {e}"
 
 
 @tool
@@ -1707,14 +1867,18 @@ def mailerlite_create_subscriber(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Create a MailerLite subscriber."""
-    base, auth = _mailerlite_config("mailerlite_create_subscriber", config)
-    if isinstance(auth, str):
-        return auth
-    body: dict[str, Any] = {"email": email, "name": name, "fields": _json_object(fields_json, field_name="fields_json")}
-    group_list = _csv_to_list(groups)
-    if group_list:
-        body["groups"] = group_list
-    return _dump_json(_request_json("POST", f"{base}/subscribers", json_body=_filtered(body), headers=auth))
+    try:
+        base, auth = _mailerlite_config("mailerlite_create_subscriber", config)
+        if isinstance(auth, str):
+            return auth
+        body: dict[str, Any] = {"email": email, "name": name, "fields": _json_object(fields_json, field_name="fields_json")}
+        group_list = _csv_to_list(groups)
+        if group_list:
+            body["groups"] = group_list
+        return _dump_json(_request_json("POST", f"{base}/subscribers", json_body=_filtered(body), headers=auth))
+    except Exception as e:
+        logger.error("mailerlite_create_subscriber failed", exc_info=True)
+        return f"[Error]: MailerLite subscriber creation failed: {e}"
 
 
 @tool
@@ -1725,15 +1889,19 @@ def mailerlite_update_subscriber(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """Update a MailerLite subscriber with a JSON object of fields."""
-    base, auth = _mailerlite_config("mailerlite_update_subscriber", config)
-    if isinstance(auth, str):
-        return auth
-    body = _json_object(fields_json, field_name="fields_json")
-    if status:
-        body["status"] = status
-    return _dump_json(
-        _request_json("PUT", f"{base}/subscribers/{quote(subscriber_id, safe='')}", json_body=body, headers=auth)
-    )
+    try:
+        base, auth = _mailerlite_config("mailerlite_update_subscriber", config)
+        if isinstance(auth, str):
+            return auth
+        body = _json_object(fields_json, field_name="fields_json")
+        if status:
+            body["status"] = status
+        return _dump_json(
+            _request_json("PUT", f"{base}/subscribers/{quote(subscriber_id, safe='')}", json_body=body, headers=auth)
+        )
+    except Exception as e:
+        logger.error("mailerlite_update_subscriber failed", exc_info=True)
+        return f"[Error]: MailerLite subscriber update failed: {e}"
 
 
 @tool
@@ -1742,10 +1910,14 @@ def mailerlite_list_groups(
     config: Annotated[Optional[RunnableConfig], InjectedToolArg] = None,
 ) -> str:
     """List MailerLite groups."""
-    base, auth = _mailerlite_config("mailerlite_list_groups", config)
-    if isinstance(auth, str):
-        return auth
-    return _dump_json(_request_json("GET", f"{base}/groups", params={"limit": _limit(limit, max_value=100)}, headers=auth))
+    try:
+        base, auth = _mailerlite_config("mailerlite_list_groups", config)
+        if isinstance(auth, str):
+            return auth
+        return _dump_json(_request_json("GET", f"{base}/groups", params={"limit": _limit(limit, max_value=100)}, headers=auth))
+    except Exception as e:
+        logger.error("mailerlite_list_groups failed", exc_info=True)
+        return f"[Error]: MailerLite group listing failed: {e}"
 
 
 @tool
