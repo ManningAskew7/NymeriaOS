@@ -954,58 +954,15 @@ def _append_tool_call_steps(
                 if tc_id:
                     tc_args_by_id[tc_id] = tc.get("args", {})
         for block in msg.content:
-            if not isinstance(block, dict):
-                if isinstance(block, str) and block:
-                    text = strip_inline_thinking_text(block)
-                    if text:
-                        current_turn["steps"].append({
-                            "type": "response",
-                            "content": text,
-                        })
-                continue
-            block_type = block.get("type")
-            if block_type == "thinking":
-                thinking_text = block.get("thinking", "")
-                if thinking_text:
-                    current_turn["steps"].append({
-                        "type": "thinking",
-                        "content": thinking_text,
-                    })
-            elif block_type == "reasoning":
-                current_turn["steps"].extend(
-                    thinking_steps(extract_reasoning_text_from_block(block))
+            current_turn["steps"].extend(
+                _content_block_to_steps(
+                    block,
+                    tc_args_by_id,
+                    tool_results=tool_results,
+                    clean_tool_result=clean_tool_result,
+                    extract_workspace_artifacts=extract_workspace_artifacts,
                 )
-            elif block_type in ("text", "output_text"):
-                text = strip_inline_thinking_text(block.get("text", ""))
-                if text:
-                    current_turn["steps"].append({
-                        "type": "response",
-                        "content": text,
-                    })
-            elif block_type in ("tool_use", "function_call", "custom_tool_call"):
-                tool_call_id = block.get("id", "")
-                if block_type != "tool_use":
-                    tool_call_id = block.get("call_id", tool_call_id)
-                block_input = block.get("input", {})
-                if not block_input:
-                    block_input = block.get("arguments", {})
-                if isinstance(block_input, str):
-                    try:
-                        block_input = json.loads(block_input)
-                    except json.JSONDecodeError:
-                        block_input = {"arguments": block_input}
-                if not block_input and tool_call_id in tc_args_by_id:
-                    block_input = tc_args_by_id[tool_call_id]
-                current_turn["steps"].append(
-                    _tool_call_step(
-                        tool_call_id=tool_call_id,
-                        name=block.get("name", ""),
-                        arguments=block_input,
-                        tool_results=tool_results,
-                        clean_tool_result=clean_tool_result,
-                        extract_workspace_artifacts=extract_workspace_artifacts,
-                    )
-                )
+            )
     else:
         if text_content:
             current_turn["steps"].append({
@@ -1024,6 +981,91 @@ def _append_tool_call_steps(
                     extract_workspace_artifacts=extract_workspace_artifacts,
                 )
             )
+
+
+def _content_block_to_steps(
+    block: Any,
+    tc_args_by_id: Dict[str, Any],
+    *,
+    tool_results: Dict[str, Any],
+    clean_tool_result: ToolResultCleaner,
+    extract_workspace_artifacts: WorkspaceArtifactExtractor,
+) -> List[Dict[str, Any]]:
+    """Project a single AIMessage content block into history step dicts.
+
+    Returns zero, one, or (for ``reasoning`` blocks) several step dicts. Non-dict
+    string blocks render as response text; unknown block types yield no steps.
+    """
+    if not isinstance(block, dict):
+        if isinstance(block, str) and block:
+            text = strip_inline_thinking_text(block)
+            if text:
+                return [{"type": "response", "content": text}]
+        return []
+
+    block_type = block.get("type")
+    if block_type == "thinking":
+        thinking_text = block.get("thinking", "")
+        if thinking_text:
+            return [{"type": "thinking", "content": thinking_text}]
+        return []
+    if block_type == "reasoning":
+        return thinking_steps(extract_reasoning_text_from_block(block))
+    if block_type in ("text", "output_text"):
+        text = strip_inline_thinking_text(block.get("text", ""))
+        if text:
+            return [{"type": "response", "content": text}]
+        return []
+    if block_type in ("tool_use", "function_call", "custom_tool_call"):
+        return [
+            _tool_call_block_to_step(
+                block,
+                tc_args_by_id,
+                tool_results=tool_results,
+                clean_tool_result=clean_tool_result,
+                extract_workspace_artifacts=extract_workspace_artifacts,
+            )
+        ]
+    return []
+
+
+def _tool_call_block_to_step(
+    block: Dict[str, Any],
+    tc_args_by_id: Dict[str, Any],
+    *,
+    tool_results: Dict[str, Any],
+    clean_tool_result: ToolResultCleaner,
+    extract_workspace_artifacts: WorkspaceArtifactExtractor,
+) -> Dict[str, Any]:
+    """Build a tool_call step from a tool_use/function_call/custom_tool_call block.
+
+    Precondition: ``block`` is one of those three content-block types. Resolves
+    the call id (``id``, or ``call_id`` for the non-``tool_use`` shapes) and the
+    arguments (trying ``input``, then ``arguments``, then a JSON-decoded string,
+    then the matching ``tool_calls`` entry), then delegates to ``_tool_call_step``.
+    """
+    block_type = block.get("type")
+    tool_call_id = block.get("id", "")
+    if block_type != "tool_use":
+        tool_call_id = block.get("call_id", tool_call_id)
+    block_input = block.get("input", {})
+    if not block_input:
+        block_input = block.get("arguments", {})
+    if isinstance(block_input, str):
+        try:
+            block_input = json.loads(block_input)
+        except json.JSONDecodeError:
+            block_input = {"arguments": block_input}
+    if not block_input and tool_call_id in tc_args_by_id:
+        block_input = tc_args_by_id[tool_call_id]
+    return _tool_call_step(
+        tool_call_id=tool_call_id,
+        name=block.get("name", ""),
+        arguments=block_input,
+        tool_results=tool_results,
+        clean_tool_result=clean_tool_result,
+        extract_workspace_artifacts=extract_workspace_artifacts,
+    )
 
 
 def _tool_call_step(
