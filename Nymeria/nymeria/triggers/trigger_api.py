@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from ..config import get_settings
+from ..config import Settings, get_settings
 from ..core.accounts import AuthenticatedUser
 from ..core.time_utils import ensure_aware_utc, utc_now
 from ..core.trigger_manager import (
@@ -100,6 +100,156 @@ class TriggerResponse(BaseModel):
             last_error=t.last_error,
             health_status=t.health_status,
         )
+
+
+# ---------------------------------------------------------------------------
+# Webhook fire helpers (module level so the dispatch body is unit-testable)
+# ---------------------------------------------------------------------------
+
+def _resolve_webhook_trigger(
+    manager: TriggerManager, trigger_id: str, secret: Optional[str]
+) -> tuple[str, TriggerDefinition]:
+    """Resolve ``(owner_id, trigger)`` for a public webhook fire by shared secret.
+
+    Used by the unauthenticated ``/fire/{trigger_id}`` path (external services
+    that present the per-trigger shared secret rather than a bearer token).
+
+    Raises:
+        HTTPException: 500 if the webhook source is unavailable, 404 if no
+            webhook trigger has that id, 403 if the secret matches none of the
+            candidates, 409 if the id is ambiguous across owners.
+    """
+    from .sources import get_source
+
+    source = get_source("webhook")
+    if not source or not hasattr(source, "validate_secret"):
+        raise HTTPException(status_code=500, detail="Webhook source unavailable")
+
+    candidates = [
+        (owner_id, candidate)
+        for owner_id, candidate in manager.find_triggers_by_id(trigger_id)
+        if candidate.source_type == "webhook"
+    ]
+    if not candidates:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+
+    matches = [
+        (owner_id, candidate)
+        for owner_id, candidate in candidates
+        if source.validate_secret(candidate.source_config, secret)
+    ]
+    if not matches:
+        raise HTTPException(status_code=403, detail="Invalid or missing webhook secret")
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Ambiguous webhook trigger ID; authenticate to fire this trigger",
+        )
+    return matches[0]
+
+
+def _dispatch_trigger_fire(
+    *,
+    settings: Settings,
+    manager: TriggerManager,
+    user_id: str,
+    thread_id: str,
+    prompt: str,
+    trigger_id: str,
+    trigger_name: str,
+    action_type: str,
+    event_summary: str,
+) -> None:
+    """Fire a trigger by posting back into this process over HTTP.
+
+    Runs on a fire-and-forget daemon thread launched by ``fire_trigger``.
+    Routes through ``POST /chat`` with ``is_self_invoke=True`` so the
+    autonomous event publishing uses the same proven path as the
+    watchdog/ticker, peeks the SSE stream for a ``prompt_queued`` event to
+    record ``status="queued"`` when the target thread was busy, and always logs
+    a ``TriggerExecution``.
+
+    A fresh ``httpx.Client`` is used deliberately: it hard-codes
+    ``http://localhost:{api_port}`` and the admin service token, so it cannot
+    ride ``NymeriaAPIClient``'s token-refresh logic. This mirrors the
+    watchdog/ticker autonomous path and is intentional, not an oversight.
+    """
+    import time as _time
+
+    import httpx
+
+    start = _time.monotonic()
+    execution = TriggerExecution(
+        trigger_id=trigger_id,
+        trigger_name=trigger_name,
+        event_count=1,
+        events_summary=event_summary,
+        action_type=action_type,
+    )
+    service_token = settings.nymeria_service_token
+    if not service_token:
+        logger.error(
+            "Trigger %s (%s) cannot fire: NYMERIA_SERVICE_TOKEN is not "
+            "set. Trigger fires authenticate as the admin service "
+            "account and act-as the trigger's user; configure the "
+            "token in .env / .env.docker.",
+            trigger_id, trigger_name,
+        )
+        return
+
+    was_queued = False
+    try:
+        with httpx.Client(timeout=300) as client:
+            with client.stream(
+                "POST",
+                f"http://localhost:{settings.api_port}/chat",
+                headers={
+                    "Authorization": f"Bearer {service_token}",
+                    "X-Nymeria-Act-As": user_id,
+                },
+                json={
+                    "message": prompt,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "is_self_invoke": True,
+                    "trigger_override": "trigger",
+                    "trigger_id": trigger_id,
+                    "trigger_name": trigger_name,
+                    # Source attribution so the sub-turn pending-prompt
+                    # queue tags this fire as a trigger (not a user
+                    # prompt) when the target thread is busy. Required
+                    # for queued-prompt header rendering and execution
+                    # log status=queued reporting.
+                    "source": "trigger",
+                    "source_id": trigger_id,
+                    "source_label": trigger_name,
+                },
+            ) as resp:
+                resp.raise_for_status()
+                # Peek the SSE stream for a ``prompt_queued`` event so
+                # we can record execution.status="queued" when the
+                # target thread was busy. Body content is otherwise
+                # discarded.
+                for line in resp.iter_lines():
+                    if was_queued:
+                        continue
+                    evt = parse_sse_data_line(line)
+                    if isinstance(evt, dict) and evt.get("type") == "prompt_queued":
+                        was_queued = True
+        elapsed = _time.monotonic() - start
+        execution.status = "queued" if was_queued else "success"
+        logger.info(
+            f"[TRIGGER] Fired via /chat: trigger={trigger_name} ({trigger_id}), "
+            f"thread={thread_id}, elapsed={elapsed:.1f}s, "
+            f"status={execution.status}"
+        )
+    except Exception as e:
+        execution.status = "error"
+        execution.error_message = str(e)[:200]
+        logger.error(f"Trigger fire failed for {trigger_id}: {e}", exc_info=True)
+    finally:
+        execution.duration_seconds = round(_time.monotonic() - start, 2)
+        manager.log_execution(user_id, execution)
 
 
 # ---------------------------------------------------------------------------
@@ -460,32 +610,7 @@ def create_trigger_router(
             if trigger is None:
                 raise HTTPException(status_code=404, detail="Trigger not found")
         else:
-            from .sources import get_source
-            source = get_source("webhook")
-            if not source or not hasattr(source, "validate_secret"):
-                raise HTTPException(status_code=500, detail="Webhook source unavailable")
-
-            candidates = [
-                (owner_id, candidate)
-                for owner_id, candidate in manager.find_triggers_by_id(trigger_id)
-                if candidate.source_type == "webhook"
-            ]
-            if not candidates:
-                raise HTTPException(status_code=404, detail="Trigger not found")
-
-            matches = [
-                (owner_id, candidate)
-                for owner_id, candidate in candidates
-                if source.validate_secret(candidate.source_config, secret)
-            ]
-            if not matches:
-                raise HTTPException(status_code=403, detail="Invalid or missing webhook secret")
-            if len(matches) > 1:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Ambiguous webhook trigger ID; authenticate to fire this trigger",
-                )
-            user_id, trigger = matches[0]
+            user_id, trigger = _resolve_webhook_trigger(manager, trigger_id, secret)
 
         if not trigger.enabled:
             raise HTTPException(status_code=409, detail="Trigger is disabled")
@@ -536,7 +661,6 @@ def create_trigger_router(
         # watchdog/ticker.  This ensures the frontend receives streaming
         # events through the exact same code that TODO streaming uses.
         import threading
-        import time as _time
         settings = get_settings()
 
         template = (
@@ -551,83 +675,22 @@ def create_trigger_router(
         }
         prompt = _safe_format(template, template_vars)
 
-        def _fire():
-            import httpx
-
-            start = _time.monotonic()
-            execution = TriggerExecution(
+        threading.Thread(
+            target=_dispatch_trigger_fire,
+            kwargs=dict(
+                settings=settings,
+                manager=manager,
+                user_id=user_id,
+                thread_id=thread_id,
+                prompt=prompt,
                 trigger_id=trigger_id,
                 trigger_name=trigger_name,
-                event_count=1,
-                events_summary=str(event)[:200],
                 action_type=action_type,
-            )
-            service_token = settings.nymeria_service_token
-            if not service_token:
-                logger.error(
-                    "Trigger %s (%s) cannot fire: NYMERIA_SERVICE_TOKEN is not "
-                    "set. Trigger fires authenticate as the admin service "
-                    "account and act-as the trigger's user; configure the "
-                    "token in .env / .env.docker.",
-                    trigger_id, trigger_name,
-                )
-                return
-
-            was_queued = False
-            try:
-                with httpx.Client(timeout=300) as client:
-                    with client.stream(
-                        "POST",
-                        f"http://localhost:{settings.api_port}/chat",
-                        headers={
-                            "Authorization": f"Bearer {service_token}",
-                            "X-Nymeria-Act-As": user_id,
-                        },
-                        json={
-                            "message": prompt,
-                            "thread_id": thread_id,
-                            "user_id": user_id,
-                            "is_self_invoke": True,
-                            "trigger_override": "trigger",
-                            "trigger_id": trigger_id,
-                            "trigger_name": trigger_name,
-                            # Source attribution so the sub-turn pending-prompt
-                            # queue tags this fire as a trigger (not a user
-                            # prompt) when the target thread is busy. Required
-                            # for queued-prompt header rendering and execution
-                            # log status=queued reporting.
-                            "source": "trigger",
-                            "source_id": trigger_id,
-                            "source_label": trigger_name,
-                        },
-                    ) as resp:
-                        resp.raise_for_status()
-                        # Peek the SSE stream for a ``prompt_queued`` event so
-                        # we can record execution.status="queued" when the
-                        # target thread was busy. Body content is otherwise
-                        # discarded.
-                        for line in resp.iter_lines():
-                            if was_queued:
-                                continue
-                            evt = parse_sse_data_line(line)
-                            if isinstance(evt, dict) and evt.get("type") == "prompt_queued":
-                                was_queued = True
-                elapsed = _time.monotonic() - start
-                execution.status = "queued" if was_queued else "success"
-                logger.info(
-                    f"[TRIGGER] Fired via /chat: trigger={trigger_name} ({trigger_id}), "
-                    f"thread={thread_id}, elapsed={elapsed:.1f}s, "
-                    f"status={execution.status}"
-                )
-            except Exception as e:
-                execution.status = "error"
-                execution.error_message = str(e)[:200]
-                logger.error(f"Trigger fire failed for {trigger_id}: {e}", exc_info=True)
-            finally:
-                execution.duration_seconds = round(_time.monotonic() - start, 2)
-                manager.log_execution(user_id, execution)
-
-        threading.Thread(target=_fire, name=f"trigger-fire-{trigger_id}", daemon=True).start()
+                event_summary=str(event)[:200],
+            ),
+            name=f"trigger-fire-{trigger_id}",
+            daemon=True,
+        ).start()
 
         return {
             "status": "fired",
