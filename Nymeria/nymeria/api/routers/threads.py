@@ -19,6 +19,7 @@ from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.thread_classification import (
     classify_platform as _classify_thread_platform_from_id,
     is_shared_channel as _is_shared_channel_thread,
+    parse_thread_metadata,
 )
 from ...core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
 from ..schemas.threads import (
@@ -32,89 +33,22 @@ from ..schemas.threads import (
     ThreadOverviewResponse,
     ThreadStatusResponse,
 )
-from ..thread_overview import build_thread_overview
+from ..thread_overview import (
+    build_thread_overview,
+    is_thread_processing,
+    resolve_display_platform,
+)
 
 logger = logging.getLogger(__name__)
 
-NATIVE_THREAD_PLATFORMS = {
-    "discord",
-    "telegram",
-    "slack",
-    "matrix",
-    "whatsapp",
-    "messenger",
-    "instagram",
-    "webex",
-    "mattermost",
-    "zulip",
-    "rocketchat",
-    "teams",
-    "googlechat",
-    "line",
-    "signal",
-    "trigger",
-    "twitch",
-}
-CHATAPP_BINDING_PLATFORMS = (
-    "telegram",
-    "slack",
-    "matrix",
-    "whatsapp",
-    "messenger",
-    "instagram",
-    "webex",
-    "mattermost",
-    "zulip",
-    "rocketchat",
-    "teams",
-    "googlechat",
-    "line",
-    "signal",
-)
-
-
-def _bound_chatapp_platform(agent: Any, thread_id: str) -> str | None:
-    """Return the sidebar platform implied by an explicit chat-app binding."""
-    try:
-        for provider in CHATAPP_BINDING_PLATFORMS:
-            if agent.chat_bindings_repo.lookup_thread_binding_by_thread(
-                provider, thread_id
-            ):
-                return provider
-    except Exception as e:
-        logger.warning(
-            "Failed to inspect chat-app binding platform for %s: %s",
-            thread_id,
-            e,
-        )
-    return None
-
 
 def _thread_list_platform(agent: Any, thread_id: str, meta: Any = None) -> str:
-    """Resolve the platform value the frontend should render for a thread."""
-    platform = meta.platform if meta else _classify_thread_platform_from_id(thread_id)
-    bound_platform = _bound_chatapp_platform(agent, thread_id)
-    if bound_platform:
-        return bound_platform
+    """Resolve the platform value the frontend should render for a thread.
 
-    native_platform = _classify_thread_platform_from_id(thread_id)
-    if native_platform in NATIVE_THREAD_PLATFORMS:
-        return native_platform
-    if platform in NATIVE_THREAD_PLATFORMS:
-        return platform
-
-    thread_config_manager = getattr(agent, "thread_config_manager", None)
-    tc = (
-        thread_config_manager.get_config(thread_id)
-        if thread_config_manager is not None
-        else None
-    )
-    if tc and tc.callable:
-        platform = "callable"
-    elif platform == "callable":
-        platform = "desktop"
-
-    return platform
+    Thin delegator over the shared resolver in ``thread_overview`` (kept as a
+    stable name imported by the chat-app and webhook bot routers).
+    """
+    return resolve_display_platform(agent, thread_id, meta=meta)
 
 
 def _add_thread_source(
@@ -275,17 +209,6 @@ def _thread_list_payload(
     return payload
 
 
-def _is_thread_processing(agent: Any, thread_id: str) -> bool:
-    thread_locks = getattr(agent, "_thread_locks", None)
-    if thread_locks is None:
-        return False
-    try:
-        return thread_locks.get_lock_info(thread_id) is not None
-    except Exception as e:
-        logger.warning("Failed to inspect processing state for %s: %s", thread_id, e)
-        return False
-
-
 def create_threads_router(
     verify_api_key: Callable[..., Any],
     authed_user_id: Callable[..., Any],
@@ -360,7 +283,7 @@ def create_threads_router(
         return ThreadStatusResponse(
             thread_id=thread_id,
             revision=revision,
-            processing=_is_thread_processing(agent, thread_id),
+            processing=is_thread_processing(agent, thread_id),
         )
 
     @router.get(
@@ -430,7 +353,7 @@ def create_threads_router(
         agent = get_agent_fn()
         stats = await run_in_threadpool(agent.get_context_stats, thread_id)
         if isinstance(stats, dict):
-            stats["processing"] = _is_thread_processing(agent, thread_id)
+            stats["processing"] = is_thread_processing(agent, thread_id)
         return stats
 
     @router.get("/threads/{thread_id}/checkpoint")
@@ -463,153 +386,7 @@ def create_threads_router(
         teams, googlechat, line, signal) and returns relevant metadata.
         """
         require_thread_access_fn(user, thread_id, claim=False)
-        if thread_id.startswith("discord_dm_"):
-            return {
-                "platform": "discord",
-                "type": "dm",
-                "channel_id": thread_id[len("discord_dm_"):],
-            }
-        if thread_id.startswith("discord_"):
-            parts = thread_id.split("_")
-            return {
-                "platform": "discord",
-                "type": "guild",
-                "guild_id": parts[1] if len(parts) >= 2 else None,
-                "channel_id": parts[2] if len(parts) >= 3 else None,
-            }
-        if thread_id.startswith("telegram_"):
-            return {
-                "platform": "telegram",
-                "channel_id": thread_id[len("telegram_"):],
-            }
-        if thread_id.startswith("slack_"):
-            return {
-                "platform": "slack",
-                "channel_id": thread_id[len("slack_"):],
-            }
-        if thread_id.startswith("matrix_"):
-            return {
-                "platform": "matrix",
-                "channel_id": thread_id[len("matrix_"):],
-            }
-        if thread_id.startswith("whatsapp_"):
-            return {
-                "platform": "whatsapp",
-                "channel_id": thread_id[len("whatsapp_"):],
-            }
-        if thread_id.startswith("messenger_"):
-            return {
-                "platform": "messenger",
-                "channel_id": thread_id[len("messenger_"):],
-            }
-        if thread_id.startswith("instagram_"):
-            return {
-                "platform": "instagram",
-                "channel_id": thread_id[len("instagram_"):],
-            }
-        if thread_id.startswith("webex_dm_"):
-            return {
-                "platform": "webex",
-                "type": "dm",
-                "channel_id": thread_id[len("webex_dm_"):],
-            }
-        if thread_id.startswith("webex_"):
-            return {
-                "platform": "webex",
-                "type": "room",
-                "channel_id": thread_id[len("webex_"):],
-            }
-        if thread_id.startswith("mattermost_dm_"):
-            return {
-                "platform": "mattermost",
-                "type": "dm",
-                "channel_id": thread_id[len("mattermost_dm_"):],
-            }
-        if thread_id.startswith("mattermost_"):
-            return {
-                "platform": "mattermost",
-                "type": "channel",
-                "channel_id": thread_id[len("mattermost_"):],
-            }
-        if thread_id.startswith("zulip_dm_"):
-            return {
-                "platform": "zulip",
-                "type": "dm",
-                "channel_id": thread_id[len("zulip_dm_"):],
-            }
-        if thread_id.startswith("zulip_"):
-            return {
-                "platform": "zulip",
-                "type": "stream",
-                "channel_id": thread_id[len("zulip_"):],
-            }
-        if thread_id.startswith("rocketchat_dm_"):
-            return {
-                "platform": "rocketchat",
-                "type": "dm",
-                "channel_id": thread_id[len("rocketchat_dm_"):],
-            }
-        if thread_id.startswith("rocketchat_"):
-            return {
-                "platform": "rocketchat",
-                "type": "room",
-                "channel_id": thread_id[len("rocketchat_"):],
-            }
-        if thread_id.startswith("teams_dm_"):
-            return {
-                "platform": "teams",
-                "type": "dm",
-                "channel_id": thread_id[len("teams_dm_"):],
-            }
-        if thread_id.startswith("teams_"):
-            return {
-                "platform": "teams",
-                "type": "conversation",
-                "channel_id": thread_id[len("teams_"):],
-            }
-        if thread_id.startswith("googlechat_dm_"):
-            return {
-                "platform": "googlechat",
-                "type": "dm",
-                "channel_id": thread_id[len("googlechat_dm_"):],
-            }
-        if thread_id.startswith("googlechat_"):
-            return {
-                "platform": "googlechat",
-                "type": "space",
-                "channel_id": thread_id[len("googlechat_"):],
-            }
-        if thread_id.startswith("line_dm_"):
-            return {
-                "platform": "line",
-                "type": "dm",
-                "channel_id": thread_id[len("line_dm_"):],
-            }
-        if thread_id.startswith("line_group_"):
-            return {
-                "platform": "line",
-                "type": "group",
-                "channel_id": thread_id[len("line_group_"):],
-            }
-        if thread_id.startswith("line_room_"):
-            return {
-                "platform": "line",
-                "type": "room",
-                "channel_id": thread_id[len("line_room_"):],
-            }
-        if thread_id.startswith("signal_dm_"):
-            return {
-                "platform": "signal",
-                "type": "dm",
-                "channel_id": thread_id[len("signal_dm_"):],
-            }
-        if thread_id.startswith("signal_group_"):
-            return {
-                "platform": "signal",
-                "type": "group",
-                "channel_id": thread_id[len("signal_group_"):],
-            }
-        return {"platform": "desktop"}
+        return parse_thread_metadata(thread_id)
 
     @router.get("/threads")
     async def list_threads(
@@ -772,7 +549,7 @@ def create_threads_router(
         agent = get_agent_fn()
         settings = get_settings_fn()
 
-        if _is_thread_processing(agent, thread_id):
+        if is_thread_processing(agent, thread_id):
             raise HTTPException(
                 status_code=409,
                 detail="Cannot branch while the source thread is processing",
@@ -839,7 +616,7 @@ def create_threads_router(
         agent = get_agent_fn()
         req = request or ThreadDreamRequest()
 
-        if _is_thread_processing(agent, thread_id):
+        if is_thread_processing(agent, thread_id):
             raise HTTPException(
                 status_code=409,
                 detail="Cannot dream while the thread is processing a turn",
