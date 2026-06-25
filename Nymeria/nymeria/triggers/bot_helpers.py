@@ -183,12 +183,13 @@ class SeenEventCache:
         return False
 
     def _prune(self, now: float) -> None:
-        if len(self._items) <= self._max_items:
-            stale = [key for key, expiry in self._items.items() if expiry <= now]
-        else:
+        # Evict every expired key; when over the cap, also evict the oldest
+        # insertion-ordered keys down to half capacity. Collect into a set (which
+        # holds both the expired and the oldest-over-cap keys) so a key that is
+        # both is listed, and popped, only once instead of twice.
+        to_evict = {key for key, expiry in self._items.items() if expiry <= now}
+        if len(self._items) > self._max_items:
             stale_count = len(self._items) - (self._max_items // 2)
-            stale = [
-                key for key, expiry in self._items.items() if expiry <= now
-            ] + list(self._items)[:stale_count]
-        for key in stale:
+            to_evict.update(list(self._items)[:stale_count])
+        for key in to_evict:
             self._items.pop(key, None)

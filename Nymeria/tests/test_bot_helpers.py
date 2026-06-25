@@ -149,6 +149,35 @@ def test_seen_event_cache_prunes_expired_keys_on_insert() -> None:
     assert "fresh" in cache._items
 
 
+def test_seen_event_cache_over_capacity_with_expired_overlap_evicts_correctly() -> None:
+    # Exercises the over-capacity prune branch when some of the oldest keys are
+    # ALSO expired, so they fall into both eviction sets (the expired keys and
+    # the oldest-down-to-half keys). The eviction set must be their union, with
+    # each key dropped exactly once; the surviving keys must be the newest ones.
+    clock = [0.0]
+    cache = SeenEventCache(ttl_seconds=10, max_items=4, clock=lambda: clock[0])
+
+    # Insert four keys one second apart, all fresh and within the cap.
+    for i in range(4):
+        clock[0] = float(i)
+        assert cache.mark_seen(f"evt-{i}") is False
+    assert set(cache._items) == {"evt-0", "evt-1", "evt-2", "evt-3"}
+
+    # Advance so evt-0 (expires at 10) and evt-1 (expires at 11) are stale, then
+    # insert a fifth key. The cache is now over the cap of 4, so prune runs the
+    # over-capacity branch: stale_count = 5 - (4 // 2) = 3, so the three oldest
+    # (evt-0, evt-1, evt-2) unioned with the expired set (evt-0, evt-1) are
+    # evicted, leaving the two newest keys.
+    clock[0] = 11.0
+    assert cache.mark_seen("evt-4") is False
+
+    assert set(cache._items) == {"evt-3", "evt-4"}
+    # The evicted keys (two expired-and-oldest, one merely oldest) read as novel.
+    assert cache.mark_seen("evt-0") is False
+    assert cache.mark_seen("evt-1") is False
+    assert cache.mark_seen("evt-2") is False
+
+
 def test_safe_id_sanitizes_charset_and_trims_hyphens() -> None:
     # A-Z, a-z, 0-9, underscore, dot, and hyphen pass through untouched. Each
     # run of out-of-charset characters collapses to a single hyphen, and
