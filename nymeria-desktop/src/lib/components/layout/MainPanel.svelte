@@ -20,6 +20,7 @@
   import { api } from '$lib/services/api.svelte';
   import { debugLog } from '$lib/utils/debug';
   import { isTodoTool } from '$lib/utils/todoTools';
+  import { isNonDesktopThreadId } from '$lib/utils/platform';
   import { refreshThreadSyncBaseline } from '$lib/stores/syncPoll.svelte';
   import {
     isSkillMutationReloadSource,
@@ -278,27 +279,7 @@
    * syncThreadIdFromEvent.
    */
   function isNonDesktopThread(id: string): boolean {
-    return (
-      id.startsWith('trigger-') ||
-      id.startsWith('discord_') ||
-      id.startsWith('telegram_') ||
-      id.startsWith('slack_') ||
-      id.startsWith('matrix_') ||
-      id.startsWith('whatsapp_') ||
-      id.startsWith('messenger_') ||
-      id.startsWith('instagram_') ||
-      id.startsWith('webex_') ||
-      id.startsWith('mattermost_') ||
-      id.startsWith('zulip_') ||
-      id.startsWith('rocketchat_') ||
-      id.startsWith('teams_') ||
-      id.startsWith('googlechat_') ||
-      id.startsWith('line_') ||
-      id.startsWith('signal_') ||
-      id.startsWith('twitch_') ||
-      id.startsWith('agent-') ||
-      id.startsWith('spawned-')
-    );
+    return isNonDesktopThreadId(id);
   }
 
   /**
