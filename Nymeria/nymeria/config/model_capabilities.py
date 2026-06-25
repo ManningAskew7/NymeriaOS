@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import time
-from typing import Any, Dict, List, Optional, Set, TypedDict
+from typing import Any, Callable, Dict, List, Optional, Set, TypedDict
 
 import httpx
 
@@ -974,185 +974,170 @@ def _check_modality(model_id: str, modality: str) -> Optional[bool]:
 # Fallback static lists (used when API is unavailable)
 # ============================================================================
 
-ANTHROPIC_VISION_CAPABLE_MODELS = {
-    "anthropic/claude-3-opus",
-    "anthropic/claude-3-sonnet",
-    "anthropic/claude-3-haiku",
-    "anthropic/claude-3.5-sonnet",
-    "anthropic/claude-3.5-haiku",
-    "anthropic/claude-3.7-sonnet",
-    "anthropic/claude-haiku-4.5",
-    "anthropic/claude-sonnet-4",
-    "anthropic/claude-sonnet-4.5",
-    "anthropic/claude-sonnet-4.6",
-    "anthropic/claude-opus-4",
-    "anthropic/claude-opus-4.1",
-    "anthropic/claude-opus-4.5",
-    "anthropic/claude-opus-4.6",
-    "anthropic/claude-opus-4.6-fast",
-    "anthropic/claude-opus-4.7",
-    "anthropic/claude-opus-4.8",
-    "claude-3-opus",
-    "claude-3-sonnet",
-    "claude-3-haiku",
-    "claude-3-5-sonnet",
-    "claude-3-5-haiku",
-    "claude-3-7-sonnet",
-    "claude-haiku-4-5",
-    "claude-sonnet-4",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "claude-opus-4",
-    "claude-opus-4-1",
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
+# Capability flags. ``document`` is a subset of ``vision`` for every model in the
+# tables below (a document-capable model is always vision-capable), so each model
+# is either vision-only or vision+document.
+_VISION = frozenset({"vision"})
+_VISION_DOCUMENT = frozenset({"vision", "document"})
+
+# Canonical per-provider capability tables: each model is listed ONCE by its
+# provider-bare, dotted id (e.g. "claude-opus-4.6", "gpt-5.5", "gemini-2.5-pro")
+# mapped to its capability flags. The runtime id-form sets below are regenerated
+# from these tables by the expanders, which mirror what the separator-sensitive
+# fallback matcher needs (_capability_id_candidates / _is_safe_capability_match
+# do NOT normalize dot vs hyphen): Anthropic ids are stored as both the
+# "anthropic/<dotted>" and the hyphenated bare form; OpenAI/Gemini ids only as
+# the "<provider>/<dotted>" form (the matcher re-derives bare and openai-prefixed
+# variants). Adding a model is now a single table row, not up to four set edits.
+
+_ANTHROPIC_CAPABILITY_MODELS: Dict[str, frozenset[str]] = {
+    "claude-3-opus": _VISION_DOCUMENT,
+    "claude-3-sonnet": _VISION_DOCUMENT,
+    "claude-3-haiku": _VISION_DOCUMENT,
+    "claude-3.5-sonnet": _VISION_DOCUMENT,
+    "claude-3.5-haiku": _VISION_DOCUMENT,
+    "claude-3.7-sonnet": _VISION_DOCUMENT,
+    "claude-haiku-4.5": _VISION_DOCUMENT,
+    "claude-sonnet-4": _VISION_DOCUMENT,
+    "claude-sonnet-4.5": _VISION_DOCUMENT,
+    "claude-sonnet-4.6": _VISION_DOCUMENT,
+    "claude-opus-4": _VISION_DOCUMENT,
+    "claude-opus-4.1": _VISION_DOCUMENT,
+    "claude-opus-4.5": _VISION_DOCUMENT,
+    "claude-opus-4.6": _VISION_DOCUMENT,
+    "claude-opus-4.7": _VISION_DOCUMENT,
+    "claude-opus-4.8": _VISION_DOCUMENT,
+    # Vision-only AND provider-form-only (see _ANTHROPIC_PROVIDER_FORM_ONLY): this
+    # entry historically appears only as "anthropic/claude-opus-4.6-fast" and only
+    # in the vision set. Both asymmetries are likely unintentional drift (flagged
+    # in docs/private/plans/optimizations/24-config.md F7); preserved verbatim
+    # pending a capability-data decision, not "fixed" by this refactor.
+    "claude-opus-4.6-fast": _VISION,
 }
 
-ANTHROPIC_DOCUMENT_CAPABLE_MODELS = {
-    "anthropic/claude-3-opus",
-    "anthropic/claude-3-sonnet",
-    "anthropic/claude-3-haiku",
-    "anthropic/claude-3.5-sonnet",
-    "anthropic/claude-3.5-haiku",
-    "anthropic/claude-3.7-sonnet",
-    "anthropic/claude-haiku-4.5",
-    "anthropic/claude-sonnet-4",
-    "anthropic/claude-sonnet-4.5",
-    "anthropic/claude-sonnet-4.6",
-    "anthropic/claude-opus-4",
-    "anthropic/claude-opus-4.1",
-    "anthropic/claude-opus-4.5",
-    "anthropic/claude-opus-4.6",
-    "anthropic/claude-opus-4.7",
-    "anthropic/claude-opus-4.8",
-    "claude-3-opus",
-    "claude-3-sonnet",
-    "claude-3-haiku",
-    "claude-3-5-sonnet",
-    "claude-3-5-haiku",
-    "claude-3-7-sonnet",
-    "claude-haiku-4-5",
-    "claude-sonnet-4",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "claude-opus-4",
-    "claude-opus-4-1",
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
+# Anthropic ids stored ONLY as the "anthropic/<dotted>" provider form (no
+# hyphenated bare form), overriding the default both-forms expansion.
+_ANTHROPIC_PROVIDER_FORM_ONLY = frozenset({"claude-opus-4.6-fast"})
+
+_OPENAI_CAPABILITY_MODELS: Dict[str, frozenset[str]] = {
+    "gpt-4o": _VISION_DOCUMENT,
+    "gpt-4o-mini": _VISION_DOCUMENT,
+    "gpt-4-turbo": _VISION,
+    "gpt-4.1": _VISION_DOCUMENT,
+    "gpt-4.1-mini": _VISION_DOCUMENT,
+    "gpt-4.1-nano": _VISION_DOCUMENT,
+    "gpt-5": _VISION_DOCUMENT,
+    "gpt-5-chat": _VISION_DOCUMENT,
+    "gpt-5-chat-latest": _VISION_DOCUMENT,
+    "gpt-5-mini": _VISION_DOCUMENT,
+    "gpt-5-nano": _VISION_DOCUMENT,
+    "gpt-5-pro": _VISION_DOCUMENT,
+    "gpt-5-codex": _VISION,
+    "gpt-5-codex-mini": _VISION,
+    "gpt-5.1": _VISION_DOCUMENT,
+    "gpt-5.1-chat": _VISION_DOCUMENT,
+    "gpt-5.1-codex": _VISION,
+    "gpt-5.1-codex-max": _VISION,
+    "gpt-5.1-codex-mini": _VISION,
+    "gpt-5.2": _VISION_DOCUMENT,
+    "gpt-5.2-chat": _VISION_DOCUMENT,
+    "gpt-5.2-codex": _VISION,
+    "gpt-5.2-pro": _VISION_DOCUMENT,
+    "gpt-5.3-chat": _VISION_DOCUMENT,
+    "gpt-5.3-codex": _VISION_DOCUMENT,
+    "gpt-5.4": _VISION_DOCUMENT,
+    "gpt-5.4-mini": _VISION_DOCUMENT,
+    "gpt-5.4-nano": _VISION_DOCUMENT,
+    "gpt-5.4-pro": _VISION_DOCUMENT,
+    "gpt-5.5": _VISION_DOCUMENT,
+    "gpt-5.5-pro": _VISION_DOCUMENT,
 }
 
-OPENAI_VISION_CAPABLE_MODELS = {
-    "openai/gpt-4o",
-    "openai/gpt-4o-mini",
-    "openai/gpt-4-turbo",
-    "openai/gpt-4.1",
-    "openai/gpt-4.1-mini",
-    "openai/gpt-4.1-nano",
-    "openai/gpt-5",
-    "openai/gpt-5-chat",
-    "openai/gpt-5-chat-latest",
-    "openai/gpt-5-mini",
-    "openai/gpt-5-nano",
-    "openai/gpt-5-pro",
-    "openai/gpt-5-codex",
-    "openai/gpt-5-codex-mini",
-    "openai/gpt-5.1",
-    "openai/gpt-5.1-chat",
-    "openai/gpt-5.1-codex",
-    "openai/gpt-5.1-codex-max",
-    "openai/gpt-5.1-codex-mini",
-    "openai/gpt-5.2",
-    "openai/gpt-5.2-chat",
-    "openai/gpt-5.2-codex",
-    "openai/gpt-5.2-pro",
-    "openai/gpt-5.3-chat",
-    "openai/gpt-5.3-codex",
-    "openai/gpt-5.4",
-    "openai/gpt-5.4-mini",
-    "openai/gpt-5.4-nano",
-    "openai/gpt-5.4-pro",
-    "openai/gpt-5.5",
-    "openai/gpt-5.5-pro",
+_GEMINI_CAPABILITY_MODELS: Dict[str, frozenset[str]] = {
+    "gemini-1.5-pro": _VISION_DOCUMENT,
+    "gemini-1.5-flash": _VISION_DOCUMENT,
+    "gemini-2.0-flash": _VISION_DOCUMENT,
+    "gemini-2.5-pro": _VISION_DOCUMENT,
+    "gemini-2.5-pro-preview": _VISION_DOCUMENT,
+    "gemini-2.5-pro-preview-05-06": _VISION_DOCUMENT,
+    "gemini-2.5-flash": _VISION_DOCUMENT,
+    "gemini-2.5-flash-preview": _VISION_DOCUMENT,
+    "gemini-2.5-flash-lite": _VISION_DOCUMENT,
+    "gemini-2.5-flash-lite-preview-09-2025": _VISION_DOCUMENT,
+    "gemini-2.5-flash-image": _VISION,
+    "gemini-3-pro-preview": _VISION_DOCUMENT,
+    "gemini-3-pro-image-preview": _VISION,
+    "gemini-3-flash-preview": _VISION_DOCUMENT,
+    "gemini-3.1-pro-preview": _VISION_DOCUMENT,
+    "gemini-3.1-pro-preview-customtools": _VISION_DOCUMENT,
+    "gemini-3.1-flash-lite-preview": _VISION_DOCUMENT,
+    "gemini-3.1-flash-image-preview": _VISION,
 }
 
-OPENAI_DOCUMENT_CAPABLE_MODELS = {
-    "openai/gpt-4o",
-    "openai/gpt-4o-mini",
-    "openai/gpt-4.1",
-    "openai/gpt-4.1-mini",
-    "openai/gpt-4.1-nano",
-    "openai/gpt-5",
-    "openai/gpt-5-chat",
-    "openai/gpt-5-chat-latest",
-    "openai/gpt-5-mini",
-    "openai/gpt-5-nano",
-    "openai/gpt-5-pro",
-    "openai/gpt-5.1",
-    "openai/gpt-5.1-chat",
-    "openai/gpt-5.2",
-    "openai/gpt-5.2-chat",
-    "openai/gpt-5.2-pro",
-    "openai/gpt-5.3-chat",
-    "openai/gpt-5.3-codex",
-    "openai/gpt-5.4",
-    "openai/gpt-5.4-mini",
-    "openai/gpt-5.4-nano",
-    "openai/gpt-5.4-pro",
-    "openai/gpt-5.5",
-    "openai/gpt-5.5-pro",
-}
+# Vision-capable models that live only in the VISION_CAPABLE_MODELS union (no
+# document support, no per-provider table): the OpenRouter-hosted Llama vision
+# models, stored in their provider-qualified form only.
+_EXTRA_VISION_MODELS = frozenset({
+    "meta-llama/llama-3.2-11b-vision-instruct",
+    "meta-llama/llama-3.2-90b-vision-instruct",
+})
 
-GEMINI_VISION_CAPABLE_MODELS = {
-    "google/gemini-1.5-pro",
-    "google/gemini-1.5-flash",
-    "google/gemini-2.0-flash",
-    "google/gemini-2.5-pro",
-    "google/gemini-2.5-pro-preview",
-    "google/gemini-2.5-pro-preview-05-06",
-    "google/gemini-2.5-flash",
-    "google/gemini-2.5-flash-preview",
-    "google/gemini-2.5-flash-lite",
-    "google/gemini-2.5-flash-lite-preview-09-2025",
-    "google/gemini-2.5-flash-image",
-    "google/gemini-3-pro-preview",
-    "google/gemini-3-pro-image-preview",
-    "google/gemini-3-flash-preview",
-    "google/gemini-3.1-pro-preview",
-    "google/gemini-3.1-pro-preview-customtools",
-    "google/gemini-3.1-flash-lite-preview",
-    "google/gemini-3.1-flash-image-preview",
-}
 
-GEMINI_DOCUMENT_CAPABLE_MODELS = {
-    "google/gemini-1.5-pro",
-    "google/gemini-1.5-flash",
-    "google/gemini-2.0-flash",
-    "google/gemini-2.5-pro",
-    "google/gemini-2.5-pro-preview",
-    "google/gemini-2.5-pro-preview-05-06",
-    "google/gemini-2.5-flash",
-    "google/gemini-2.5-flash-preview",
-    "google/gemini-2.5-flash-lite",
-    "google/gemini-2.5-flash-lite-preview-09-2025",
-    "google/gemini-3-pro-preview",
-    "google/gemini-3-flash-preview",
-    "google/gemini-3.1-pro-preview",
-    "google/gemini-3.1-pro-preview-customtools",
-    "google/gemini-3.1-flash-lite-preview",
-}
+def _anthropic_id_forms(canonical: str) -> Set[str]:
+    """Runtime id-forms for an Anthropic canonical id.
+
+    Both the ``anthropic/<dotted>`` form and the hyphenated bare form, because
+    the fallback matcher is dot/hyphen separator-sensitive, except the
+    provider-form-only legacy ids which carry no bare form.
+    """
+    forms = {f"anthropic/{canonical}"}
+    if canonical not in _ANTHROPIC_PROVIDER_FORM_ONLY:
+        forms.add(canonical.replace(".", "-"))
+    return forms
+
+
+def _prefixed_id_forms(prefix: str, canonical: str) -> Set[str]:
+    """Runtime id-forms for an OpenAI/Gemini canonical id (provider form only)."""
+    return {f"{prefix}/{canonical}"}
+
+
+def _capability_models_for(
+    models: Dict[str, frozenset[str]],
+    modality: str,
+    id_forms: Callable[[str], Set[str]],
+) -> Set[str]:
+    """Expand a canonical capability table into the runtime set for one modality."""
+    out: Set[str] = set()
+    for canonical, flags in models.items():
+        if modality in flags:
+            out |= id_forms(canonical)
+    return out
+
+
+ANTHROPIC_VISION_CAPABLE_MODELS = _capability_models_for(
+    _ANTHROPIC_CAPABILITY_MODELS, "vision", _anthropic_id_forms
+)
+ANTHROPIC_DOCUMENT_CAPABLE_MODELS = _capability_models_for(
+    _ANTHROPIC_CAPABILITY_MODELS, "document", _anthropic_id_forms
+)
+OPENAI_VISION_CAPABLE_MODELS = _capability_models_for(
+    _OPENAI_CAPABILITY_MODELS, "vision", lambda c: _prefixed_id_forms("openai", c)
+)
+OPENAI_DOCUMENT_CAPABLE_MODELS = _capability_models_for(
+    _OPENAI_CAPABILITY_MODELS, "document", lambda c: _prefixed_id_forms("openai", c)
+)
+GEMINI_VISION_CAPABLE_MODELS = _capability_models_for(
+    _GEMINI_CAPABILITY_MODELS, "vision", lambda c: _prefixed_id_forms("google", c)
+)
+GEMINI_DOCUMENT_CAPABLE_MODELS = _capability_models_for(
+    _GEMINI_CAPABILITY_MODELS, "document", lambda c: _prefixed_id_forms("google", c)
+)
 
 VISION_CAPABLE_MODELS = (
     ANTHROPIC_VISION_CAPABLE_MODELS
     | OPENAI_VISION_CAPABLE_MODELS
     | GEMINI_VISION_CAPABLE_MODELS
-    | {
-        "meta-llama/llama-3.2-11b-vision-instruct",
-        "meta-llama/llama-3.2-90b-vision-instruct",
-    }
+    | set(_EXTRA_VISION_MODELS)
 )
 
 DOCUMENT_CAPABLE_MODELS = (
