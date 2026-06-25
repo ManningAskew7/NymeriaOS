@@ -11,12 +11,15 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from nymeria.core import agent_history as agent_history_module
 from nymeria.core.agent_history import (
     TIMESTAMP_SCAN_LIMIT,
+    _content_block_to_steps,
+    _tool_call_block_to_step,
     build_message_timestamp_map,
     extract_reasoning_parts,
     extract_reasoning_text_from_block,
     extract_reasoning_text_from_details,
     extract_timestamp,
     format_conversation_history,
+    thinking_steps,
 )
 
 
@@ -470,3 +473,303 @@ def test_build_message_timestamp_map_skips_unreadable_state(caplog):
         result = build_message_timestamp_map(graph, "thread-x")
     assert result == {}
     assert any("Skipped a state" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Tool-call step projection (_append_tool_call_steps) characterization (F6)
+#
+# These lock the per-content-block walk of an AIMessage-with-tool-calls so the
+# decomposition into helpers stays byte-identical. _append_tool_call_steps runs
+# only when msg.tool_calls is truthy, so every message below carries tool_calls.
+# ---------------------------------------------------------------------------
+
+
+def _assistant_turn_steps(messages):
+    history = format_conversation_history(
+        messages,
+        thread_id="t",
+        timestamp_map={},
+        clean_tool_result=lambda value: value,
+        extract_workspace_artifacts=lambda _value: [],
+    )
+    return history[1]["steps"]
+
+
+def test_history_renders_anthropic_tool_use_block_with_thinking_and_text():
+    steps = _assistant_turn_steps([
+        HumanMessage(content="Hi", id="u1"),
+        AIMessage(
+            content=[
+                {"type": "thinking", "thinking": "pondering"},
+                {"type": "text", "text": "Let me search."},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "search",
+                    "input": {"q": "nymeria"},
+                },
+            ],
+            tool_calls=[{"id": "toolu_1", "name": "search", "args": {"q": "nymeria"}}],
+            id="a1",
+        ),
+        ToolMessage(content="found it", tool_call_id="toolu_1"),
+        AIMessage(content="Done", id="a2"),
+    ])
+
+    assert steps == [
+        {"type": "thinking", "content": "pondering"},
+        {"type": "response", "content": "Let me search."},
+        {
+            "type": "tool_call",
+            "id": "toolu_1",
+            "name": "search",
+            "arguments": {"q": "nymeria"},
+            "status": "success",
+            "result": "found it",
+        },
+        {"type": "response", "content": "Done"},
+    ]
+
+
+def test_history_function_call_invalid_json_arguments_falls_back_to_wrapper():
+    steps = _assistant_turn_steps([
+        HumanMessage(content="Hi", id="u1"),
+        AIMessage(
+            content=[
+                {
+                    "type": "function_call",
+                    "name": "run",
+                    "call_id": "c1",
+                    "arguments": "oops{",
+                },
+            ],
+            tool_calls=[{"id": "c1", "name": "run", "args": {}}],
+            id="a1",
+        ),
+    ])
+
+    assert steps == [
+        {
+            "type": "tool_call",
+            "id": "c1",
+            "name": "run",
+            "arguments": {"arguments": "oops{"},
+            "status": "success",
+        }
+    ]
+
+
+def test_history_tool_use_empty_input_falls_back_to_tool_call_args():
+    steps = _assistant_turn_steps([
+        HumanMessage(content="Hi", id="u1"),
+        AIMessage(
+            content=[
+                {"type": "tool_use", "id": "t1", "name": "search"},
+            ],
+            tool_calls=[{"id": "t1", "name": "search", "args": {"q": "x"}}],
+            id="a1",
+        ),
+    ])
+
+    assert steps == [
+        {
+            "type": "tool_call",
+            "id": "t1",
+            "name": "search",
+            "arguments": {"q": "x"},
+            "status": "success",
+        }
+    ]
+
+
+def test_history_custom_tool_call_block_uses_call_id_and_input():
+    steps = _assistant_turn_steps([
+        HumanMessage(content="Hi", id="u1"),
+        AIMessage(
+            content=[
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "cc1",
+                    "name": "calc",
+                    "input": {"a": 1},
+                },
+            ],
+            tool_calls=[{"id": "cc1", "name": "calc", "args": {"a": 1}}],
+            id="a1",
+        ),
+    ])
+
+    assert steps == [
+        {
+            "type": "tool_call",
+            "id": "cc1",
+            "name": "calc",
+            "arguments": {"a": 1},
+            "status": "success",
+        }
+    ]
+
+
+def test_history_simple_string_content_branch_renders_response_then_tool_call():
+    steps = _assistant_turn_steps([
+        HumanMessage(content="Hi", id="u1"),
+        AIMessage(
+            content="Plain text answer",
+            tool_calls=[{"id": "s1", "name": "do", "args": {"k": 1}}],
+            id="a1",
+        ),
+        ToolMessage(content="ok", tool_call_id="s1"),
+    ])
+
+    assert steps == [
+        {"type": "response", "content": "Plain text answer"},
+        {
+            "type": "tool_call",
+            "id": "s1",
+            "name": "do",
+            "arguments": {"k": 1},
+            "status": "success",
+            "result": "ok",
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Direct unit tests for the extracted helpers (_content_block_to_steps,
+# _tool_call_block_to_step). _tool_call_block_to_step's documented precondition
+# is that it only receives tool_use/function_call/custom_tool_call blocks.
+# ---------------------------------------------------------------------------
+
+
+def _block_kwargs(tool_results=None):
+    return {
+        "tool_results": tool_results or {},
+        "clean_tool_result": lambda value: value,
+        "extract_workspace_artifacts": lambda _value: [],
+    }
+
+
+def test_tool_call_block_to_step_tool_use_id_and_input():
+    step = _tool_call_block_to_step(
+        {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"q": "x"}},
+        {},
+        **_block_kwargs({"toolu_1": "result text"}),
+    )
+    assert step == {
+        "type": "tool_call",
+        "id": "toolu_1",
+        "name": "search",
+        "arguments": {"q": "x"},
+        "status": "success",
+        "result": "result text",
+    }
+
+
+def test_tool_call_block_to_step_function_call_parses_json_string_arguments():
+    step = _tool_call_block_to_step(
+        {
+            "type": "function_call",
+            "call_id": "c1",
+            "name": "run",
+            "arguments": '{"a": 1}',
+        },
+        {},
+        **_block_kwargs(),
+    )
+    assert step["id"] == "c1"
+    assert step["arguments"] == {"a": 1}
+    assert "result" not in step
+
+
+def test_tool_call_block_to_step_invalid_json_string_wraps_in_arguments():
+    step = _tool_call_block_to_step(
+        {"type": "custom_tool_call", "call_id": "c2", "name": "x", "arguments": "oops{"},
+        {},
+        **_block_kwargs(),
+    )
+    assert step["id"] == "c2"
+    assert step["arguments"] == {"arguments": "oops{"}
+
+
+def test_tool_call_block_to_step_empty_input_falls_back_to_tc_args():
+    step = _tool_call_block_to_step(
+        {"type": "tool_use", "id": "t1", "name": "search"},
+        {"t1": {"q": "fallback"}},
+        **_block_kwargs(),
+    )
+    assert step["arguments"] == {"q": "fallback"}
+
+
+def test_tool_call_block_to_step_call_id_drives_tc_args_fallback():
+    # For non-tool_use shapes the tc_args_by_id fallback keys off the resolved
+    # call_id, not the (absent) id.
+    step = _tool_call_block_to_step(
+        {"type": "function_call", "call_id": "c9", "name": "run"},
+        {"c9": {"q": "viacallid"}},
+        **_block_kwargs(),
+    )
+    assert step["id"] == "c9"
+    assert step["arguments"] == {"q": "viacallid"}
+
+
+def test_tool_call_block_to_step_missing_everywhere_yields_empty_arguments():
+    step = _tool_call_block_to_step(
+        {"type": "tool_use", "id": "t1", "name": "search"},
+        {},
+        **_block_kwargs(),
+    )
+    assert step["arguments"] == {}
+
+
+def test_content_block_to_steps_reasoning_delegates_to_thinking_steps():
+    block = {
+        "type": "reasoning",
+        "reasoning": "think-",
+        "content": "more",
+        "summary": ["s1", "s2"],
+    }
+    result = _content_block_to_steps(block, {}, **_block_kwargs())
+    # The reasoning branch returns the list from thinking_steps verbatim, not a
+    # hand-built single-element list.
+    assert result == thinking_steps(extract_reasoning_text_from_block(block))
+    assert result == [{"type": "thinking", "content": "think-more\n\ns1\n\ns2"}]
+
+
+def test_content_block_to_steps_empty_reasoning_yields_no_steps():
+    assert _content_block_to_steps(
+        {"type": "reasoning", "reasoning": [{"type": "reasoning.encrypted", "text": "x"}]},
+        {},
+        **_block_kwargs(),
+    ) == []
+
+
+def test_content_block_to_steps_thinking_block():
+    assert _content_block_to_steps(
+        {"type": "thinking", "thinking": "pondering"}, {}, **_block_kwargs()
+    ) == [{"type": "thinking", "content": "pondering"}]
+    assert _content_block_to_steps(
+        {"type": "thinking", "thinking": ""}, {}, **_block_kwargs()
+    ) == []
+
+
+def test_content_block_to_steps_text_and_output_text_blocks():
+    assert _content_block_to_steps(
+        {"type": "text", "text": "hi"}, {}, **_block_kwargs()
+    ) == [{"type": "response", "content": "hi"}]
+    assert _content_block_to_steps(
+        {"type": "output_text", "text": "yo"}, {}, **_block_kwargs()
+    ) == [{"type": "response", "content": "yo"}]
+    assert _content_block_to_steps(
+        {"type": "text", "text": ""}, {}, **_block_kwargs()
+    ) == []
+
+
+def test_content_block_to_steps_non_dict_and_unknown_blocks():
+    assert _content_block_to_steps("plain string", {}, **_block_kwargs()) == [
+        {"type": "response", "content": "plain string"}
+    ]
+    assert _content_block_to_steps("", {}, **_block_kwargs()) == []
+    assert _content_block_to_steps(123, {}, **_block_kwargs()) == []
+    assert _content_block_to_steps(
+        {"type": "image_url", "image_url": {"url": "x"}}, {}, **_block_kwargs()
+    ) == []
