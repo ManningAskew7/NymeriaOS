@@ -797,15 +797,7 @@ class NymeriaDiscordBot(_BotBase):
             elif err:
                 errors.append(err)
 
-        if len(attachments) > attachment_helpers.MAX_FILES_PER_MESSAGE:
-            extra = len(attachments) - attachment_helpers.MAX_FILES_PER_MESSAGE
-            attachments = attachments[: attachment_helpers.MAX_FILES_PER_MESSAGE]
-            errors.append(
-                f"Skipped {extra} extra file(s). Max is "
-                f"{attachment_helpers.MAX_FILES_PER_MESSAGE} per message."
-            )
-
-        return attachments, errors
+        return attachment_helpers.finalize_attachments(attachments, errors)
 
     async def _api_sse_listener(self) -> None:
         """
