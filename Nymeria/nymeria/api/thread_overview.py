@@ -15,7 +15,11 @@ from ..core.checkpoint_status import (
     get_latest_checkpoint_revision,
     has_direct_checkpoint_revision_backend,
 )
-from ..core.thread_classification import classify_platform
+from ..core.thread_classification import (
+    CHATAPP_BINDING_PLATFORMS,
+    NATIVE_THREAD_PLATFORMS,
+    classify_platform,
+)
 from ..core.thread_config import ThreadConfig
 from ..core.time_utils import ensure_aware_utc, utc_now
 from ..tools import SEED_TOOLS, CATALOG_TOOLS
@@ -24,41 +28,6 @@ from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
 logger = logging.getLogger(__name__)
 
 _HIGH_TOOL_COUNT_WARNING_THRESHOLD = 100
-NATIVE_THREAD_PLATFORMS = {
-    "discord",
-    "telegram",
-    "slack",
-    "matrix",
-    "whatsapp",
-    "messenger",
-    "instagram",
-    "webex",
-    "mattermost",
-    "zulip",
-    "rocketchat",
-    "teams",
-    "googlechat",
-    "line",
-    "signal",
-    "trigger",
-    "twitch",
-}
-CHATAPP_BINDING_PLATFORMS = (
-    "telegram",
-    "slack",
-    "matrix",
-    "whatsapp",
-    "messenger",
-    "instagram",
-    "webex",
-    "mattermost",
-    "zulip",
-    "rocketchat",
-    "teams",
-    "googlechat",
-    "line",
-    "signal",
-)
 
 
 def build_thread_overview(
@@ -228,11 +197,11 @@ def _status_section(agent: Any, settings: Any, thread_id: str) -> dict[str, Any]
     return {
         "thread_id": thread_id,
         "revision": revision,
-        "processing": _is_thread_processing(agent, thread_id),
+        "processing": is_thread_processing(agent, thread_id),
     }
 
 
-def _is_thread_processing(agent: Any, thread_id: str) -> bool:
+def is_thread_processing(agent: Any, thread_id: str) -> bool:
     thread_locks = getattr(agent, "_thread_locks", None)
     if thread_locks is None:
         return False
@@ -308,7 +277,7 @@ def _thread_section(
 
     payload["id"] = payload.get("id") or payload.get("thread_id") or thread_id
     payload["thread_id"] = thread_id
-    payload["platform"] = _thread_platform(agent, thread_id, meta, tc_saved)
+    payload["platform"] = resolve_display_platform(agent, thread_id, meta=meta)
     is_callable = bool(tc_saved and tc.callable)
     payload["callable"] = is_callable
     if is_callable and tc.callable_name:
@@ -324,13 +293,16 @@ def _thread_section(
     return payload
 
 
-def _thread_platform(
-    agent: Any,
-    thread_id: str,
-    meta: Any,
-    tc_saved: ThreadConfig | None,
-) -> str:
-    platform = getattr(meta, "platform", None) or classify_platform(thread_id)
+def resolve_display_platform(agent: Any, thread_id: str, *, meta: Any = None) -> str:
+    """Resolve the sidebar platform the frontend should render for a thread.
+
+    The single resolver shared by the thread-list payload
+    (``api/routers/threads.py``) and this single-thread overview read model.
+    Resolution order: an explicit chat-app binding, then a native platform
+    implied by the thread-id prefix or stored metadata, then a callable thread,
+    else desktop.
+    """
+    platform = meta.platform if meta else classify_platform(thread_id)
     repo = getattr(agent, "chat_bindings_repo", None)
     if repo is not None:
         try:
@@ -338,13 +310,17 @@ def _thread_platform(
                 if repo.lookup_thread_binding_by_thread(provider, thread_id):
                     return provider
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to inspect chat-app binding for %s: %s", thread_id, exc)
+            logger.warning(
+                "Failed to inspect chat-app binding for %s: %s", thread_id, exc
+            )
     native = classify_platform(thread_id)
     if native in NATIVE_THREAD_PLATFORMS:
         return native
     if platform in NATIVE_THREAD_PLATFORMS:
         return platform
-    if tc_saved and tc_saved.callable:
+    manager = getattr(agent, "thread_config_manager", None)
+    tc = manager.get_config(thread_id) if manager is not None else None
+    if tc and tc.callable:
         return "callable"
     if platform == "callable":
         return "desktop"
