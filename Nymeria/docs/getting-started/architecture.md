@@ -97,6 +97,7 @@ The `nymeria/core/` directory contains modular components extracted for maintain
 |--------|---------|
 | `agent.py` | Main NymeriaAgent class (orchestrator) |
 | `agent_history.py` | Conversation-history projection for API/frontend clients, including checkpoint timestamp recovery, internal-message filtering, reasoning/tool-step rendering, and attachment metadata |
+| `agent_text_extract.py` | Leaf module of pure text/reasoning extraction primitives shared by `agent_history.py` and `agent_streaming.py`: the inline-thinking sanitizer (`InlineThinkingTextStripper`, `strip_inline_thinking_text`), reasoning-text extractors, content-part extraction, and the data-URL MIME helper |
 | `agent_streaming.py` | `GraphStreamProcessor` for converting LangGraph stream events into Nymeria SSE chunks, plus helpers for classifying streamed model chunks and deduplicating reasoning deltas |
 | `command_service.py` | Central slash-command registry, path metadata catalog, alias resolver, direct backend adapter, and markdown dispatcher used by REST, desktop/mobile command input, bots, and the `slash_command` agent tool |
 | `thread_config.py` | Per-thread config (custom instructions, disabled/enabled tools, LLM overrides, callable thread settings) |

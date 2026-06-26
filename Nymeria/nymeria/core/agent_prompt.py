@@ -449,7 +449,7 @@ def extract_turn_tool_activity(messages) -> List[dict]:
             if isinstance(m.content, str):
                 content = m.content
             else:
-                from .agent_history import extract_content_parts
+                from .agent_text_extract import extract_content_parts
                 content, _ = extract_content_parts(m.content)
             results_by_id[getattr(m, "tool_call_id", None)] = content
 
