@@ -26,7 +26,8 @@ LEGACY_TOOL_RENAMES: Dict[str, Union[str, List[str]]] = {
     "todo_delete": "nym_todo_delete",
     "todo_list": "nym_todo_list",
     # 2026-04-30: profile_* + notepad_* collapsed into memory_add/edit/read.
-    # Deletion (profile_forget, notepad_clear) is now memory_add(content="").
+    # Deletion and clearing now live in memory_edit (memory_add is additive only);
+    # these renames just map old tool-list entries onto the surviving memory tools.
     "profile_save": "memory_add",
     "profile_forget": "memory_add",
     "profile_list": "memory_read",

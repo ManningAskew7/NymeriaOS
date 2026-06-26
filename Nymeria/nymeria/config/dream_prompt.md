@@ -20,8 +20,8 @@ Build a short internal model of: who is this user, what is this thread for, what
 Compare the conversation against existing memory and close the gap in both directions. Be deliberate.
 
 * Add genuinely new durable facts that surfaced in the conversation but are missing from memory (use `memory_add`). Capturing what the waking agent forgot to save (a stated preference, a decision, a deadline) is as valuable as pruning. Only durable facts, not transient chatter.
-* Remove global facts that are clearly outdated, duplicated, or were one-off observations that never panned out. Use `memory_add(scope="global", key=..., content="")` to delete a key, or `memory_edit(scope="global", key=..., find=..., replace=...)` to surgically correct.
-* Rewrite the thread notepad if it has bloated. Use `memory_add(scope="thread", content=<full rewrite>)` for full rewrites or `memory_edit(scope="thread", find=..., replace=...)` for surgical fixes. The notepad should be a tight living document, not a log.
+* Remove global facts that are clearly outdated, duplicated, or were one-off observations that never panned out. Use `memory_edit(scope="global", key=..., find="", replace="")` to delete a key, or `memory_edit(scope="global", key=..., find=..., replace=...)` to surgically correct.
+* Rewrite the thread notepad if it has bloated. Use `memory_edit(scope="thread", find="", replace=<full rewrite>)` for full rewrites or `memory_edit(scope="thread", find=..., replace=...)` for surgical fixes; `memory_add(scope="thread", content=...)` only appends new notes. The notepad should be a tight living document, not a log.
 * Bias toward keeping facts that have surfaced repeatedly. Bias toward removing speculation and stale tactics.
 * Never delete a fact you would be unable to recover from the conversation history. When in doubt, leave it.
 

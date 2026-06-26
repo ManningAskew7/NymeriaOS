@@ -21,8 +21,8 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 | 4g | `web_search_ddgs` | Web Search | SAFE | Opt-in | Keyless in-process metasearch via the ddgs library (no key, no instance); opt-in `WEB_SEARCH_INTEGRATION_TOOLS` group |
 | 4h | `fetch_url_nymeria` | Web Search | SAFE | Opt-in | Free, SSRF-gated page fetch + readable extraction (markdown/PDF), optional `extraction_prompt` LLM step; opt-in `WEB_FETCH_TOOLS` group |
 | 5 | `consult` | Core | SAFE | Opt-in | Ask Gemini for a second opinion (OpenRouter); enable per-thread (was a seed default, now optional) |
-| 6 | `memory_add` | Profile | SAFE | On | Save a memory. `scope="global"` (keyed user-profile fact) or `scope="thread"` (per-thread notepad). Empty content deletes. |
-| 7 | `memory_edit` | Profile | SAFE | On | Surgical find/replace within an existing memory. Empty `replace` deletes the matched text. |
+| 6 | `memory_add` | Profile | SAFE | On | Add a memory (additive only). `scope="global"` sets one keyed user-profile fact; `scope="thread"` appends to the per-thread notepad. Empty content is a no-op; clear or remove via `memory_edit`. |
+| 7 | `memory_edit` | Profile | SAFE | On | Find/replace within an existing memory; owns clearing/removing. Empty `replace` deletes the matched text; empty `find` rewrites/clears the whole notepad or deletes the named global key. |
 | 8 | `memory_read` | Profile | SAFE | On | Get one keyed memory, list all, or substring-filter via `query`. |
 | 9 | `personality_set` | Profile | SAFE | Opt-in | Set communication preferences; enable per-thread (was a seed default, now optional) |
 | 10 | `rag_search` | Profile | SAFE | On | Hybrid memory search (RRF over vector + BM25, optional date-anchor bias) with time + thread provenance |
@@ -585,7 +585,7 @@ Three unified primitives  -  `memory_add`, `memory_edit`, `memory_read`  -  cove
 - `scope="global"`  -  keyed entries in the user's profile, **automatically injected** into Nymeria's system prompt across every future thread as explicitly untrusted JSONL data records. Storage: `data/users/{user_id}/profile.json`.
 - `scope="thread"`  -  free-form markdown notepad for the active thread, re-injected after context compaction. Storage: `data/thread_notes/{thread_id}.md`.
 
-Empty `content` (in `memory_add`) or empty `replace` whose result empties the entry (in `memory_edit`) deletes cleanly: profile rows are popped, notepad files are unlinked. There is no separate `memory_forget` because the storage layer treats blank-as-delete, so edit-to-blank leaves no zombie entries.
+`memory_add` is additive only: empty `content` is a no-op. All deletion and clearing lives in `memory_edit` - an empty `replace` whose result empties the entry deletes cleanly (profile rows are popped, notepad files are unlinked), and an empty `find` operates on the whole target (rewrite or clear the notepad, or delete just the named global key). There is no separate `memory_forget` because edit-to-blank leaves no zombie entries. Global edits always require a `key`, so neither tool can wipe the whole profile in one call; that stays the explicit `memory_clear_all`.
 
 Global profile memories and per-thread notepads have an aggregate character budget. The global default is `MEMORY_CHAR_LIMIT=8000`; a thread can override the notepad limit from thread settings. Writes that would grow past the effective budget fail with a memory-full error telling the agent to consolidate or remove older memories. Deletes and shrinking edits are still allowed when existing data is already over the limit.
 
@@ -593,7 +593,7 @@ Global profile memories and per-thread notepads have an aggregate character budg
 
 ### memory_add
 
-Save a memory. Creates a new entry or overwrites an existing one.
+Add a memory. Appends to the thread notepad, or creates/sets one global key. Additive only - it never deletes or overwrites existing notes (use `memory_edit` to revise, clear, or remove).
 
 ```python
 memory_add(scope: str, content: str, key: Optional[str] = None)
@@ -601,7 +601,7 @@ memory_add(scope: str, content: str, key: Optional[str] = None)
 
 **Parameters:**
 - `scope` (`"global"` | `"thread"`): which store to write to.
-- `content` (`str`): the memory text. Empty string deletes.
+- `content` (`str`): the memory text. Empty string is a no-op.
 - `key` (`str`, required for `scope="global"`): identifier for the profile entry. Ignored for `scope="thread"`.
 
 **Examples:**
@@ -609,13 +609,13 @@ memory_add(scope: str, content: str, key: Optional[str] = None)
 memory_add(scope="global", key="prefers_typescript", content="Yes")
 memory_add(scope="global", key="timezone", content="America/New_York")
 memory_add(scope="thread", content="Working on auth refactor; deadline Friday.")
-memory_add(scope="global", key="prefers_typescript", content="")   # deletes the entry
-memory_add(scope="thread", content="")                             # deletes the notepad
+memory_add(scope="thread", content="Update: deadline moved to Monday.")   # appends a second note
 ```
 
 **Behavior:**
-- `scope="global"` upserts into `UserProfile.memories` and re-indexes in the RAG store if RAG is enabled.
-- `scope="thread"` overwrites the notepad (replace semantics; for append-style writes, read-then-add).
+- `scope="global"` upserts a single key into `UserProfile.memories` (the value is always supplied) and re-indexes in the RAG store if RAG is enabled.
+- `scope="thread"` appends to the notepad (a blank line separates notes). It never overwrites; use `memory_edit` to revise or clear.
+- Empty `content` is a no-op in both scopes (returns an `[Info]` pointing at `memory_edit`); nothing is deleted.
 - Memory max size: `MEMORY_CHAR_LIMIT` characters by default, with optional per-thread notepad overrides. Profile max entries: 100. Profile values are truncated to 1000 chars.
 - Prompt injection guard: profile values are rendered as data, not Markdown instructions; embedded commands, role changes, and tool requests must not be followed by the model.
 
@@ -623,7 +623,7 @@ memory_add(scope="thread", content="")                             # deletes the
 
 ### memory_edit
 
-Surgical find/replace within an existing memory.
+Find/replace within an existing memory; owns all clearing and removing.
 
 ```python
 memory_edit(scope: str, find: str, replace: str = "", key: Optional[str] = None)
@@ -631,8 +631,8 @@ memory_edit(scope: str, find: str, replace: str = "", key: Optional[str] = None)
 
 **Parameters:**
 - `scope` (`"global"` | `"thread"`).
-- `find` (`str`): exact substring to locate (first occurrence).
-- `replace` (`str`, default `""`): replacement text. Empty string deletes the matched substring.
+- `find` (`str`): exact substring to locate (first occurrence). Empty `find` = the whole target (the whole notepad, or the whole value of `key`).
+- `replace` (`str`, default `""`): replacement text. Empty string deletes the matched substring (or the whole target when `find` is empty).
 - `key` (`str`, required for `scope="global"`): which profile entry to edit.
 
 **Examples:**
@@ -640,11 +640,15 @@ memory_edit(scope: str, find: str, replace: str = "", key: Optional[str] = None)
 memory_edit(scope="global", key="job_title", find="Engineer", replace="Senior Engineer")
 memory_edit(scope="thread", find="deadline Friday", replace="deadline Monday")
 memory_edit(scope="thread", find="obsolete bullet point\n", replace="")   # delete the line
+memory_edit(scope="thread", find="", replace="<consolidated notepad>")    # full notepad rewrite
+memory_edit(scope="thread", find="", replace="")                          # clear the notepad
+memory_edit(scope="global", key="old_fact", find="", replace="")          # delete just this key
 ```
 
 **Behavior:**
-- If the resulting value is empty, the entry/notepad is removed.
-- For long profile values use `memory_add` to overwrite  -  `memory_edit` shines for thread-notepad surgical edits.
+- If a find/replace empties the value, the entry/notepad is removed.
+- Empty `find` operates on the whole target: rewrite or clear the thread notepad, or set/delete the named global key. Global edits always require a `key`, so there is no single-call way to wipe the whole profile (use `memory_clear_all` for that).
+- `memory_edit` owns replacing and clearing; `memory_add` only appends.
 
 ---
 
