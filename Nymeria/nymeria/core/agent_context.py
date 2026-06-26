@@ -21,9 +21,9 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, Tool
 from .agent_history import (
     CONTEXT_PREFIX_PATTERN,
     build_message_timestamp_map,
-    extract_content_parts,
     format_conversation_history,
 )
+from .agent_text_extract import extract_content_parts
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent  # noqa: F401

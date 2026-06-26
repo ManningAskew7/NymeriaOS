@@ -24,7 +24,7 @@ from ..vendor.react_agent.nodes import (
     llm_retry_payload_for_active_candidate,
 )
 from .agent_compaction import COMPACTING_MESSAGE
-from .agent_history import (
+from .agent_text_extract import (
     InlineThinkingTextStripper,
     extract_reasoning_text_from_block,
     strip_inline_thinking_text,

@@ -24,7 +24,7 @@ from ..config import Settings, get_settings
 from .user_profile import UserProfileManager
 from .token_tracker import TokenTracker
 from .token_usage import extract_last_from_messages
-from .agent_history import (
+from .agent_text_extract import (
     extract_content_parts as _extract_content_parts,
 )
 from .agent_streaming import GraphStreamProcessor, compact_with_progress
