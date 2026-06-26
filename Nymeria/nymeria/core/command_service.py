@@ -814,60 +814,14 @@ class CommandBackendClient:
         return _default_thread_config_response(thread_id)
 
     async def get_settings(self, user_id: Optional[str] = None) -> dict:
-        from ..api.routers.settings import _fallback_model_list
+        from ..api.routers.settings import serialize_server_settings
 
-        settings = self._settings()
-        return {
-            "llm_provider": settings.llm_provider,
-            "llm_model": settings.llm_model,
-            "llm_fast_model": settings.llm_fast_model,
-            "llm_fallback_models": _fallback_model_list(settings.llm_fallback_models),
-            "llm_temperature": settings.llm_temperature,
-            "llm_max_tokens": settings.llm_max_tokens,
-            "llm_top_p": settings.llm_top_p,
-            "llm_top_k": settings.llm_top_k,
-            "llm_frequency_penalty": settings.llm_frequency_penalty,
-            "llm_presence_penalty": settings.llm_presence_penalty,
-            "llm_reasoning_effort": settings.llm_reasoning_effort,
-            "llm_extended_thinking": settings.llm_extended_thinking,
-            "llm_use_model_defaults": settings.llm_use_model_defaults,
-            "llm_base_url": settings.llm_base_url,
-            "llm_context_length": settings.llm_context_length,
-            "llm_ollama_num_ctx": settings.llm_ollama_num_ctx,
-            "llm_provider_route": getattr(settings, "llm_provider_route", None),
-            "openai_api_mode": settings.openai_api_mode,
-            "llm_stream_max_retries": settings.llm_stream_max_retries,
-            "llm_stream_retry_initial_delay": settings.llm_stream_retry_initial_delay,
-            "llm_stream_retry_max_delay": settings.llm_stream_retry_max_delay,
-            "context_management": settings.context_management,
-            "compact_threshold": settings.compact_threshold,
-            "compact_threshold_mode": settings.compact_threshold_mode,
-            "compact_threshold_tokens": settings.compact_threshold_tokens,
-            "compact_keep_messages": settings.compact_keep_messages,
-            "compact_model": settings.compact_model,
-            "sliding_window_cycles": settings.sliding_window_cycles,
-            "tool_output_max_chars": settings.tool_output_max_chars,
-            "memory_char_limit": settings.memory_char_limit,
-            "memory_max_entries": settings.memory_max_entries,
-            "memory_value_max_chars": settings.memory_value_max_chars,
-            "agent_max_iterations": settings.agent_max_iterations,
-            "log_level": settings.log_level,
-            "watchdog_enabled": settings.watchdog_enabled,
-            "watchdog_interval_minutes": settings.watchdog_interval_minutes,
-            "todo_staleness_minutes": settings.todo_staleness_minutes,
-            "activity_retention_hours": settings.activity_retention_hours,
-            "tts_provider": settings.tts_provider,
-            "tts_base_url": settings.tts_base_url,
-            "tts_model": settings.tts_model,
-            "tts_voice": settings.tts_voice,
-            "tts_output_format": settings.tts_output_format,
-            "tts_speed": settings.tts_speed,
-            "stt_provider": settings.stt_provider,
-            "stt_base_url": settings.stt_base_url,
-            "stt_model": settings.stt_model,
-            "stt_language": settings.stt_language,
-            "voice_default_thread_id": settings.voice_default_thread_id,
-        }
+        # One canonical serializer shared with GET /settings, so the in-process
+        # slash-command settings view cannot drift from the route the way this
+        # hand-built dict had (it had silently fallen ~20 fields behind). The
+        # mode="json" dump matches the JSON the HTTP command backends parse back
+        # from that same route, keeping the two TurnExecutor shapes identical.
+        return serialize_server_settings(self._settings()).model_dump(mode="json")
 
     async def get_default_tools(self, user_id: str = "default") -> dict:
         from ..tools import (

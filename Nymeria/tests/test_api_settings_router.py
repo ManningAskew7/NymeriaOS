@@ -1405,6 +1405,85 @@ def test_command_backend_update_settings_reports_restart_and_rebuilds_graph(
     assert agent.graph_rebuilds == ["sync", "async"]
 
 
+def test_command_backend_get_settings_matches_route_payload(
+    tmp_path: Path, monkeypatch
+):
+    # The two TurnExecutor shapes must agree: the in-process slash-command path
+    # (CommandBackendClient.get_settings) and GET /settings now share one
+    # serializer, so their payloads are identical. This is the durable guard that
+    # the dict can never silently drift behind the route again (the F4 bug, where
+    # it had fallen ~20 fields behind). Set non-default values on several of the
+    # previously-missing fields so this proves value parity, not just shape.
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        llm_smart_model="anthropic:claude-smart",
+        llm_background_model="openai:gpt-bg",
+        llm_background_base_url="http://bg.example",
+        dynamic_tool_binding=True,
+        llm_fallback_hold_seconds=99,
+        dream_default_min_interval_hours=3,
+        dream_default_model="anthropic:claude-dream",
+        embedding_provider="cohere",
+        embedding_model="embed-v3",
+        embedding_dimensions=512,
+        rag_retrieval_mode="vector",
+        rag_rerank_enabled=True,
+        rag_rerank_provider="cohere",
+        rag_rerank_model="rerank-v3",
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path, settings=settings)
+    backend, _backend_agent = _backend_client(tmp_path, settings=settings)
+
+    route_json = client.get("/settings", headers=_auth(token)).json()
+    backend_dict = asyncio.run(backend.get_settings())
+
+    assert backend_dict == route_json
+
+
+def test_command_backend_get_settings_key_set_matches_response_model(
+    tmp_path: Path,
+):
+    # Tripwire independent of the route plumbing: the in-process dict must carry
+    # exactly the ServerSettingsResponse field set. A future hand-built dict that
+    # drops a field fails here even if no route test is wired for it.
+    from nymeria.api.schemas.settings import ServerSettingsResponse
+
+    backend, _agent = _backend_client(tmp_path)
+
+    backend_dict = asyncio.run(backend.get_settings())
+
+    assert set(backend_dict.keys()) == set(ServerSettingsResponse.model_fields)
+
+
+def test_command_backend_get_settings_carries_previously_missing_fields(
+    tmp_path: Path,
+):
+    # Direct proof the drift is closed: the fields the old 49-key dict omitted now
+    # round-trip their real values through the in-process path (they used to
+    # resolve to None for /model, /doctor, etc. in the slim shape).
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        llm_smart_model="anthropic:claude-smart",
+        llm_background_model="openai:gpt-bg",
+        dynamic_tool_binding=True,
+        embedding_provider="cohere",
+        rag_rerank_model="rerank-v3",
+        dream_default_model="anthropic:claude-dream",
+    )
+    backend, _agent = _backend_client(tmp_path, settings=settings)
+
+    backend_dict = asyncio.run(backend.get_settings())
+
+    assert backend_dict["llm_smart_model"] == "anthropic:claude-smart"
+    assert backend_dict["llm_background_model"] == "openai:gpt-bg"
+    assert backend_dict["dynamic_tool_binding"] is True
+    assert backend_dict["embedding_provider"] == "cohere"
+    assert backend_dict["rag_rerank_model"] == "rerank-v3"
+    assert backend_dict["dream_default_model"] == "anthropic:claude-dream"
+
+
 def test_get_cached_models_includes_reasoning_effort_ladder(
     tmp_path: Path, monkeypatch
 ):
