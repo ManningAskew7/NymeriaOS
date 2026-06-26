@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,33 @@ from langchain_core.tools import tool
 logger = logging.getLogger(__name__)
 
 
+# VS Code installs the Claude Code extension into versioned directories named
+# "anthropic.claude-code-<version>-win32-x64". The version moves on every update,
+# so match it with a glob and pick the newest rather than pinning a literal.
+_CLAUDE_CODE_EXTENSION_RE = re.compile(r"^anthropic\.claude-code-(.+)-win32-x64$")
+_CLAUDE_CODE_EXTENSION_GLOB = (
+    "anthropic.claude-code-*-win32-x64/resources/native-binary/claude.exe"
+)
+
+
+def _extension_version_key(extension_dir_name: str) -> tuple[int, ...]:
+    """Return a numeric sort key for a claude-code extension directory name.
+
+    Parses the version out of names like ``anthropic.claude-code-2.1.113-win32-x64``
+    into a tuple of ints (``(2, 1, 113)``) so versions order numerically rather
+    than lexicographically (``2.1.113`` must rank above ``2.1.29``). Unparseable
+    names return an empty tuple, which sorts lowest.
+    """
+    match = _CLAUDE_CODE_EXTENSION_RE.match(extension_dir_name)
+    if not match:
+        return ()
+    parts: list[int] = []
+    for segment in match.group(1).split("."):
+        leading_digits = re.match(r"\d+", segment)
+        parts.append(int(leading_digits.group()) if leading_digits else 0)
+    return tuple(parts)
+
+
 def _find_claude_code_executable() -> Optional[str]:
     """Find the Claude Code executable for the current platform."""
     # First, try to find 'claude' in PATH (works for npm global install on Linux/Docker)
@@ -20,16 +48,19 @@ def _find_claude_code_executable() -> Optional[str]:
     if claude_path:
         return claude_path
 
-    # On Windows, check common installation locations
+    # On Windows, check the VS Code extension install location.
     if sys.platform == "win32":
-        # VS Code extension path (adjust version as needed)
-        windows_paths = [
-            Path.home() / ".vscode/extensions" / "anthropic.claude-code-2.1.29-win32-x64/resources/native-binary/claude.exe",
-            # Add more potential Windows paths here
-        ]
-        for path in windows_paths:
-            if path.exists():
-                return str(path)
+        extensions_dir = Path.home() / ".vscode" / "extensions"
+        # glob only yields claude.exe paths that exist; pick the highest version.
+        candidates = list(extensions_dir.glob(_CLAUDE_CODE_EXTENSION_GLOB))
+        if candidates:
+            # exe is <ext-dir>/resources/native-binary/claude.exe, so
+            # parents[2] is the versioned extension dir (matches the glob tail).
+            newest = max(
+                candidates,
+                key=lambda exe: _extension_version_key(exe.parents[2].name),
+            )
+            return str(newest)
 
         # Also check for claude.exe in PATH on Windows
         claude_exe = shutil.which("claude.exe")
