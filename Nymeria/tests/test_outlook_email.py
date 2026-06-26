@@ -2,8 +2,12 @@
 
 Covers the small extractions from optimization slice 16: the KQL suffix
 builder (F5), the hoisted recipient parser (F7), the shared inline-image skip
-predicate (F9), and the symmetric body-truncation marker (F14).
+predicate (F9), the symmetric body-truncation marker (F14), and the shared
+account-selection helper plus no-op deletion (F13 steps 1+3).
 """
+
+import time
+from types import SimpleNamespace
 
 from nymeria.tools import outlook_email as oe
 
@@ -267,3 +271,149 @@ def test_render_message_list_spacing_contract(monkeypatch):
         oe._render_message_list("HEAD:\n", [{"id": "x"}, {"id": "y"}])
         == "HEAD:\n\nS:x\n\nS:y\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# Account selection (slice 16 F13 steps 1+3)
+#
+# _select_account is the single "explicit > configured-default > first" helper
+# shared by get_account and get_access_token. These lock the priority order and
+# the (account_id, account) pair contract, the get_account/get_access_token
+# wiring that routes through it, and the no-op .replace deletion (step 3).
+# ---------------------------------------------------------------------------
+
+
+def _patch_default(monkeypatch, default_id):
+    """Pin outlook_default_account_id for the configured-default branch."""
+    monkeypatch.setattr(
+        "nymeria.config.get_settings",
+        lambda: SimpleNamespace(outlook_default_account_id=default_id),
+    )
+
+
+def test_select_account_explicit_present_returns_pair():
+    accounts = {"A": {"id": "A"}, "B": {"id": "B"}}
+    assert oe._select_account(accounts, "B") == ("B", {"id": "B"})
+
+
+def test_select_account_explicit_absent_returns_id_with_none():
+    # An explicit id never falls back to default/first; the account is None.
+    accounts = {"A": {"id": "A"}}
+    assert oe._select_account(accounts, "Z") == ("Z", None)
+
+
+def test_select_account_uses_configured_default(monkeypatch):
+    _patch_default(monkeypatch, "B")
+    accounts = {"A": {"id": "A"}, "B": {"id": "B"}}
+    assert oe._select_account(accounts) == ("B", {"id": "B"})
+
+
+def test_select_account_default_missing_falls_to_first(monkeypatch):
+    _patch_default(monkeypatch, "Z")  # configured but not in the cache
+    accounts = {"A": {"id": "A"}, "B": {"id": "B"}}
+    assert oe._select_account(accounts) == ("A", {"id": "A"})
+
+
+def test_select_account_no_default_returns_first(monkeypatch):
+    _patch_default(monkeypatch, None)
+    accounts = {"A": {"id": "A"}, "B": {"id": "B"}}
+    assert oe._select_account(accounts) == ("A", {"id": "A"})
+
+
+def test_select_account_settings_error_falls_to_first(monkeypatch):
+    def _boom():
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr("nymeria.config.get_settings", _boom)
+    accounts = {"A": {"id": "A"}, "B": {"id": "B"}}
+    assert oe._select_account(accounts) == ("A", {"id": "A"})
+
+
+def _bind_cache(monkeypatch, accounts):
+    source = SimpleNamespace(cache={"accounts": dict(accounts)}, persist=lambda c: None)
+    monkeypatch.setattr(oe.auth_utils, "resolve_oauth_cache", lambda *a, **k: source)
+    return source
+
+
+def test_get_account_routes_through_select_account(monkeypatch):
+    _patch_default(monkeypatch, None)
+    _bind_cache(monkeypatch, {"A": {"id": "A"}, "B": {"id": "B"}})
+    assert oe.get_account("u1") == {"id": "A"}  # first
+    assert oe.get_account("u1", "B") == {"id": "B"}  # explicit
+    assert oe.get_account("u1", "Z") is None  # explicit-missing
+
+
+def test_get_account_empty_cache_returns_none(monkeypatch):
+    _bind_cache(monkeypatch, {})
+    assert oe.get_account("u1") is None
+
+
+def test_get_access_token_selects_account_for_valid_token(monkeypatch):
+    # A non-expired token short-circuits before any refresh; this confirms the
+    # selection (default vs explicit) feeds the token read without touching the
+    # security-sensitive refresh path.
+    _patch_default(monkeypatch, "B")
+    future = time.time() + 3600
+    accounts = {
+        "A": {"id": "A", "access_token": "tokA", "expires_at": future},
+        "B": {"id": "B", "access_token": "tokB", "expires_at": future},
+    }
+    _bind_cache(monkeypatch, accounts)
+    assert oe.get_access_token("u1") == "tokB"  # configured default
+    assert oe.get_access_token("u1", "A") == "tokA"  # explicit override
+
+
+def test_get_access_token_refreshes_and_persists_under_selected_key(monkeypatch):
+    # An expired token drives the refresh branch; this locks that the resolved
+    # account KEY (aid), not just the account value, threads into the write-back
+    # cache["accounts"][aid] = account and the persist callback.
+    _patch_default(monkeypatch, "B")
+    past = time.time() - 10
+    accounts = {
+        "A": {"id": "A", "access_token": "oldA", "refresh_token": "rA", "expires_at": past},
+        "B": {"id": "B", "access_token": "oldB", "refresh_token": "rB", "expires_at": past},
+    }
+    source = _bind_cache(monkeypatch, accounts)
+    persisted = []
+    source.persist = lambda cache: persisted.append(cache)
+
+    monkeypatch.setattr(
+        oe.httpx,
+        "post",
+        lambda url, **kw: SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "access_token": "newB",
+                "refresh_token": "rB2",
+                "expires_in": 3600,
+            },
+        ),
+    )
+
+    assert oe.get_access_token("u1") == "newB"
+    # The configured-default account "B" was refreshed and written back under
+    # its own key; the unselected account "A" is untouched.
+    assert persisted and persisted[-1]["accounts"]["B"]["access_token"] == "newB"
+    assert persisted[-1]["accounts"]["A"]["access_token"] == "oldA"
+
+
+def test_try_complete_pending_auth_posts_to_bare_token_url(monkeypatch):
+    # Step 3 removed a no-op TOKEN_URL.replace("/token", "/token"); lock that the
+    # device-code exchange still posts to the bare TOKEN_URL.
+    monkeypatch.setattr(
+        oe.auth_utils,
+        "load_token_cache",
+        lambda *a, **k: {
+            "pending_auth": {"device_code": "dc-1", "expires_at": time.time() + 100}
+        },
+    )
+    posted = {}
+
+    def _fake_post(url, **kwargs):
+        posted["url"] = url
+        return SimpleNamespace(status_code=400)  # non-200 short-circuits to False
+
+    monkeypatch.setattr(oe.httpx, "post", _fake_post)
+
+    assert oe.try_complete_pending_auth("u1") is False
+    assert posted["url"] == oe.TOKEN_URL
