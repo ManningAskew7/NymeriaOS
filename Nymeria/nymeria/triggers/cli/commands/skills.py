@@ -9,6 +9,7 @@ from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandR
 from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
+    call_client_user_scoped,
     compact_id,
     mapping_get,
     mapping_sequence as _mapping_sequence,
@@ -134,18 +135,10 @@ async def _handle_skills_install(
     name = args[0]
 
     try:
-        skill = await call_client_method(
+        skill = await call_client_user_scoped(
             context,
             "install_skill",
             {"name": name, "source": source, "scope": scope},
-            user_id=context.user_id,
-        )
-    except TypeError:
-        skill = await call_client_method(
-            context,
-            "install_skill",
-            {"name": name, "source": source, "scope": scope},
-            context.user_id,
         )
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/skills install", method_name=exc.method_name)
@@ -199,18 +192,10 @@ async def _set_skill_state(
         else:
             selected.discard(name)
         try:
-            saved = await call_client_method(
+            saved = await call_client_user_scoped(
                 context,
                 "set_global_skills",
                 sorted(selected),
-                user_id=context.user_id,
-            )
-        except TypeError:
-            saved = await call_client_method(
-                context,
-                "set_global_skills",
-                sorted(selected),
-                context.user_id,
             )
         except CommandClientMethodUnavailable as exc:
             return unsupported_transport_result(
@@ -277,14 +262,7 @@ async def _handle_skills_inspect(
         )
     name = args[0]
     try:
-        skill = await call_client_method(
-            context,
-            "get_skill",
-            name,
-            user_id=context.user_id,
-        )
-    except TypeError:
-        skill = await call_client_method(context, "get_skill", name, context.user_id)
+        skill = await call_client_user_scoped(context, "get_skill", name)
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/skills inspect", method_name=exc.method_name)
 
@@ -298,13 +276,7 @@ async def _handle_skills_inspect(
 
 async def _global_skills_or_empty(context: CommandContext) -> list[str]:
     try:
-        data = await call_client_method(
-            context,
-            "get_global_skills",
-            user_id=context.user_id,
-        )
-    except TypeError:
-        data = await call_client_method(context, "get_global_skills", context.user_id)
+        data = await call_client_user_scoped(context, "get_global_skills")
     except CommandClientMethodUnavailable:
         return []
     return _string_list(data)

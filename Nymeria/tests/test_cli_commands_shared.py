@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import asyncio
 from types import ModuleType
+from typing import Any
 
 import pytest
 
 from nymeria.triggers.cli.commands import (
     _shared,
     account,
+    artifacts,
+    doctor,
     mcp,
     skills,
     system,
@@ -269,6 +272,81 @@ class TestTransportShim:
         assert exc.value.method_name == "nope"
 
 
+class _UserScopedClient:
+    """Accepts user_id as a keyword; records the call args/kwargs."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def echo(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append((args, kwargs))
+        return {"args": args, "kwargs": kwargs}
+
+
+class _PositionalOnlyClient:
+    """Rejects user_id as a keyword (forces the positional retry)."""
+
+    def fetch(self, value: Any, uid: Any) -> dict[str, Any]:
+        return {"value": value, "uid": uid}
+
+
+class _AsyncUserScopedClient:
+    """Mirrors production: the real converted client methods are async."""
+
+    async def fetch(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"args": args, "kwargs": kwargs}
+
+
+class _KeywordRejectingThenUnavailableClient:
+    """Raises TypeError on the keyword call and CMU on the positional retry.
+
+    Pins the helper's contract: it catches ONLY TypeError, so a
+    CommandClientMethodUnavailable from the positional retry must propagate.
+    """
+
+    def act(self, *args: Any, **kwargs: Any) -> Any:
+        if "user_id" in kwargs:
+            raise TypeError("user_id keyword not accepted")
+        raise _shared.CommandClientMethodUnavailable("act")
+
+
+class TestCallClientUserScoped:
+    def test_keyword_form_succeeds_and_passes_user_id(self) -> None:
+        client = _UserScopedClient()
+        ctx = CommandContext(client=client, user_id="u1")
+        result = asyncio.run(_shared.call_client_user_scoped(ctx, "echo", "a", "b"))
+        assert result == {"args": ("a", "b"), "kwargs": {"user_id": "u1"}}
+        # Only the keyword form ran; no positional retry.
+        assert client.calls == [(("a", "b"), {"user_id": "u1"})]
+
+    def test_positional_retry_on_type_error(self) -> None:
+        ctx = CommandContext(client=_PositionalOnlyClient(), user_id="u2")
+        result = asyncio.run(_shared.call_client_user_scoped(ctx, "fetch", "x"))
+        # Keyword form raised TypeError; retried with user_id appended positionally.
+        assert result == {"value": "x", "uid": "u2"}
+
+    def test_awaits_async_method(self) -> None:
+        # The real converted client methods are async; confirm the helper awaits.
+        ctx = CommandContext(client=_AsyncUserScopedClient(), user_id="u3")
+        result = asyncio.run(_shared.call_client_user_scoped(ctx, "fetch", "z"))
+        assert result == {"args": ("z",), "kwargs": {"user_id": "u3"}}
+
+    def test_unavailable_method_propagates(self) -> None:
+        # Method missing entirely: the keyword call raises CMU; the helper must
+        # not swallow it and must not attempt a positional retry.
+        ctx = CommandContext(client=_FakeClient())
+        with pytest.raises(_shared.CommandClientMethodUnavailable) as exc:
+            asyncio.run(_shared.call_client_user_scoped(ctx, "nope"))
+        assert exc.value.method_name == "nope"
+
+    def test_cmu_from_positional_retry_propagates(self) -> None:
+        # Contract: the helper catches ONLY TypeError. A CMU raised by the
+        # positional retry must propagate (not be swallowed or retried).
+        ctx = CommandContext(client=_KeywordRejectingThenUnavailableClient())
+        with pytest.raises(_shared.CommandClientMethodUnavailable):
+            asyncio.run(_shared.call_client_user_scoped(ctx, "act"))
+
+
 # F2/F10 wiring: importers resolve the shared toolkit copy.
 
 _TOOLKIT_WIRING = [
@@ -282,6 +360,13 @@ _TOOLKIT_WIRING = [
     (tools, "parse_scalar"),
     (system, "parse_scalar"),
     (system, "call_client_method"),
+    # F9: the 6 importers of the call-shim helper resolve the shared copy.
+    (tools, "call_client_user_scoped"),
+    (skills, "call_client_user_scoped"),
+    (doctor, "call_client_user_scoped"),
+    (account, "call_client_user_scoped"),
+    (artifacts, "call_client_user_scoped"),
+    (triggers, "call_client_user_scoped"),
 ]
 
 

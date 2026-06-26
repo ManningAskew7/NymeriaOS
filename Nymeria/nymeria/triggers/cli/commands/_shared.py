@@ -91,6 +91,28 @@ async def call_client_method(
     return result
 
 
+async def call_client_user_scoped(
+    context: CommandContext,
+    method_name: str,
+    *args: Any,
+) -> Any:
+    """Call a user-scoped client method, retrying ``user_id`` positionally.
+
+    Passes ``user_id`` as a keyword argument; on ``TypeError`` (an older or
+    alternate transport signature that takes ``user_id`` positionally) retries
+    with ``user_id`` appended as the trailing positional argument. Only
+    ``TypeError`` is handled here: ``CommandClientMethodUnavailable`` and every
+    other exception propagate, so each caller keeps its own handling (the command
+    label differs per call site, and some callers fall back to a legacy method
+    instead of returning an unsupported-transport result).
+    """
+
+    try:
+        return await call_client_method(context, method_name, *args, user_id=context.user_id)
+    except TypeError:
+        return await call_client_method(context, method_name, *args, context.user_id)
+
+
 def unsupported_transport_result(
     command: str,
     *,
