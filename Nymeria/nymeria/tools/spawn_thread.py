@@ -430,6 +430,260 @@ def _resolve_semantic_tools(
     return set(best.keys()), records
 
 
+def _reconcile_lifetime(
+    ttl_hours: Optional[int],
+    lifetime: Optional[str],
+    idle_timeout_hours: Optional[int],
+) -> Tuple[Optional[int], List[str], Optional[str]]:
+    """Resolve the ttl_hours / legacy lifetime+idle_timeout_hours knobs.
+
+    Returns ``(ttl_hours_resolved, warnings, error)``. ``ttl_hours_resolved`` is
+    None for a permanent thread. On a validation failure ``error`` is the
+    agent-facing ``"[Error]: ..."`` string and the caller returns it immediately
+    (the other fields are then unused).
+    """
+    pre_warnings: List[str] = []
+    if lifetime is not None:
+        lifetime_norm = (lifetime or "permanent").strip().lower()
+        if lifetime_norm not in VALID_LIFETIMES:
+            return None, pre_warnings, (
+                f"[Error]: Unknown lifetime '{lifetime}'. Use "
+                f"{' or '.join(repr(value) for value in VALID_LIFETIMES)}."
+            )
+        if ttl_hours is not None:
+            pre_warnings.append(
+                "legacy lifetime/idle_timeout_hours ignored because ttl_hours is set"
+            )
+        elif lifetime_norm == "temporary":
+            ttl_hours = (
+                DEFAULT_IDLE_TIMEOUT_HOURS
+                if idle_timeout_hours is None
+                else idle_timeout_hours
+            )
+        elif idle_timeout_hours is not None:
+            pre_warnings.append(
+                "idle_timeout_hours ignored when lifetime='permanent'; use ttl_hours for temporary cleanup"
+            )
+    elif idle_timeout_hours is not None and ttl_hours is None:
+        pre_warnings.append(
+            "idle_timeout_hours ignored without lifetime='temporary'; use ttl_hours for temporary cleanup"
+        )
+
+    if ttl_hours is None:
+        return None, pre_warnings, None
+    try:
+        ttl_hours_int = int(ttl_hours)
+    except (TypeError, ValueError):
+        return None, pre_warnings, (
+            f"[Error]: ttl_hours must be an integer; got {ttl_hours!r}."
+        )
+    if ttl_hours_int < 1:
+        return None, pre_warnings, (
+            "[Error]: ttl_hours must be >= 1 (or None for a permanent thread)."
+        )
+    return ttl_hours_int, pre_warnings, None
+
+
+def _resolve_spawn_tools(
+    agent,
+    *,
+    user_id: str,
+    parent_thread_id: Optional[str],
+    tool_queries: Optional[List[str]],
+    tool_query_top_k: int,
+    tool_categories: Optional[List[str]],
+    optional_tools: Optional[List[str]],
+    disabled_tools: Optional[List[str]],
+    include_core_tools: bool,
+    pre_warnings: List[str],
+) -> Tuple[Set[str], List[str], List[dict], List[str], Optional[str]]:
+    """Resolve the child's enabled/disabled tool sets from the spawn knobs.
+
+    Runs the three resolution passes (tool_queries -> tool_categories ->
+    optional_tools), the admin/developer-only gate, the disabled_tools pass, and
+    the ``include_core_tools=False`` funnel, threading ``warnings`` from
+    ``pre_warnings``. Returns ``(enabled_set, disabled_list,
+    tool_resolution_records, warnings, error)``. On the admin/developer gate
+    ``error`` is the agent-facing ``"[Error]: ..."`` string and the caller
+    returns it immediately (no thread is created; the other fields are unused).
+    """
+    from . import (
+        CATALOG_TOOLS,
+        SEED_TOOLS,
+        filter_admin_only_tools,
+        filter_developer_only_tools,
+    )
+    from .metadata import get_all_categories, get_category_tools_summary
+
+    warnings: List[str] = list(pre_warnings)
+    enabled_set: Set[str] = set()
+    tool_resolution_records: List[dict] = []
+
+    user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
+    user_role = user.role if user else "user"
+
+    if tool_queries:
+        resolved_names, tool_resolution_records = _resolve_semantic_tools(
+            tool_queries,
+            tool_query_top_k,
+            agent=agent,
+            user_id=user_id,
+            user_role=user_role,
+            parent_thread_id=parent_thread_id,
+        )
+        enabled_set |= resolved_names
+        unmatched_queries = [
+            q.strip()
+            for q in tool_queries
+            if q
+            and q.strip()
+            and not any(r["query"] == q.strip() for r in tool_resolution_records)
+        ]
+        if unmatched_queries:
+            warnings.append(
+                f"tool_queries with no matches: {', '.join(unmatched_queries)}"
+            )
+
+    if tool_categories:
+        cat_summary = get_category_tools_summary()
+        valid_cats = set(get_all_categories())
+        unknown_cats: List[str] = []
+        for cat in tool_categories:
+            cat_norm = cat.lower().strip().replace("-", "_")
+            if cat_norm not in valid_cats:
+                unknown_cats.append(cat)
+                continue
+            for name in cat_summary.get(cat_norm, []):
+                if name in CATALOG_TOOLS:
+                    enabled_set.add(name)
+        if unknown_cats:
+            warnings.append(f"unknown categor(ies): {', '.join(unknown_cats)}")
+
+    if optional_tools:
+        all_known = {t.name for t in SEED_TOOLS} | set(CATALOG_TOOLS.keys())
+        unknown_tools: List[str] = []
+        for name in optional_tools:
+            if name in CATALOG_TOOLS:
+                enabled_set.add(name)
+            elif name in all_known or (
+                agent.tool_registry and agent.tool_registry.get_tool(name)
+            ):
+                enabled_set.add(name)
+            else:
+                unknown_tools.append(name)
+        if unknown_tools:
+            warnings.append(f"unknown tool(s): {', '.join(unknown_tools)}")
+
+    # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config and
+    # the tool_search gate; without this, a non-admin could spawn a child
+    # thread seeded with reload_all/claude_code/self_modify and escalate via
+    # the child. Block category-expansion AND named optional_tools.
+    _, blocked = filter_admin_only_tools(enabled_set, user_role)
+    if blocked:
+        return enabled_set, [], tool_resolution_records, warnings, (
+            f"[Error]: Admin-only tools cannot be enabled on a spawned thread "
+            f"by this user: {sorted(blocked)}. Drop them from optional_tools / "
+            f"tool_categories or ask an administrator to spawn the thread."
+        )
+    _, blocked = filter_developer_only_tools(enabled_set, user_role)
+    if blocked:
+        return enabled_set, [], tool_resolution_records, warnings, (
+            f"[Error]: Developer-only diagnostic tools cannot be enabled on a "
+            f"spawned thread by this user: {sorted(blocked)}. Drop them from "
+            f"optional_tools / tool_categories or ask an administrator to "
+            f"spawn the thread."
+        )
+
+    disabled_list: List[str] = []
+    if disabled_tools:
+        # disabled_tools is authoritative subtraction at graph-build and can
+        # target ANY bound tool, seed or catalog (optional) or dynamic, not just
+        # seed tools. Mirror the optional_tools validation above: accept any
+        # known tool name and warn only for genuinely unknown ones (the old code
+        # checked SEED_TOOLS alone, mislabeling valid optional names as
+        # "unknown core tool(s)").
+        all_known = {t.name for t in SEED_TOOLS} | set(CATALOG_TOOLS.keys())
+        unknown_disabled: List[str] = []
+        for name in disabled_tools:
+            if name in all_known or (
+                agent.tool_registry and agent.tool_registry.get_tool(name)
+            ):
+                disabled_list.append(name)
+            else:
+                unknown_disabled.append(name)
+        if unknown_disabled:
+            warnings.append(
+                f"unknown tool(s) to disable: {', '.join(unknown_disabled)}"
+            )
+
+    if not include_core_tools:
+        # Funnel every core tool name into disabled_list so the graph builder
+        # filters them out. Dedupe in case the caller also named some explicitly.
+        disabled_list = sorted({*(disabled_list), *(t.name for t in SEED_TOOLS)})
+
+    return enabled_set, disabled_list, tool_resolution_records, warnings, None
+
+
+def _build_spawn_preamble(
+    *,
+    new_thread_id: str,
+    mode_norm: str,
+    parent_thread_id: Optional[str],
+    ttl_hours_resolved: Optional[int],
+    make_callable: bool,
+    callable_name: Optional[str],
+    tool_resolution_records: List[dict],
+    include_core_tools: bool,
+    enabled_tools: List[str],
+    disabled_tools: List[str],
+    warnings: List[str],
+) -> str:
+    """Render the ``[Spawned]`` preamble (everything before the optional child
+    response). Byte-for-byte identical to the former inline block."""
+    preamble_lines = [f"[Spawned]: thread_id={new_thread_id}"]
+    if mode_norm == "branched":
+        preamble_lines.append(
+            f"Mode: branched from {parent_thread_id} (inherits checkpoint history)."
+        )
+    if ttl_hours_resolved is not None:
+        preamble_lines.append(
+            f"Lifetime: temporary (auto-deletes after "
+            f"{ttl_hours_resolved}h of inactivity)."
+        )
+    if make_callable and callable_name:
+        preamble_lines.append(
+            f'Callable as: {callable_name}(task="..."). Any thread can invoke this.'
+        )
+    if tool_resolution_records:
+        head = tool_resolution_records[:6]
+        rendered = ", ".join(
+            f'{r["name"]} ({r["score"]:.2f} <- "{r["query"]}")' for r in head
+        )
+        if len(tool_resolution_records) > len(head):
+            rendered += f", +{len(tool_resolution_records) - len(head)} more"
+        preamble_lines.append(f"[Resolved tools]: {rendered}")
+    if not include_core_tools:
+        preamble_lines.append(
+            "Core tools: disabled (include_core_tools=False; child gets only "
+            "the explicitly resolved/selected tools)."
+        )
+    if enabled_tools:
+        preamble_lines.append(
+            f"Enabled optional tools: {', '.join(enabled_tools)}"
+        )
+    if disabled_tools and include_core_tools:
+        preamble_lines.append(
+            f"Disabled core tools: {', '.join(disabled_tools)}"
+        )
+    if warnings:
+        preamble_lines.append(f"[Warning]: {'; '.join(warnings)}")
+    preamble_lines.append(
+        f'To delete later: spawn_thread(action="delete", '
+        f'delete_thread_id="{new_thread_id}")'
+    )
+    return "\n".join(preamble_lines)
+
+
 @tool
 def spawn_thread(
     title: Optional[str] = None,
@@ -556,12 +810,10 @@ def spawn_thread(
         - instructions max 5000 chars; title truncated to 80 chars.
         - ttl_hours must be >= 1 when set.
     """
-    from . import SEED_TOOLS, CATALOG_TOOLS
     from ..config.model_tiers import is_thread_tier_alias, resolve_tier
     from ..core.agent import get_current_agent
     from ..core.event_bus import publish_sync_event
     from ..core.thread_config import ThreadConfig, ThreadLLMConfig
-    from .metadata import get_all_categories, get_category_tools_summary
 
     agent = get_current_agent()
     if agent is None:
@@ -595,44 +847,11 @@ def spawn_thread(
     if mode_norm not in VALID_MODES:
         return f"[Error]: Unknown mode '{mode}'. Use {' or '.join(repr(m) for m in VALID_MODES)}."
 
-    pre_warnings: List[str] = []
-    if lifetime is not None:
-        lifetime_norm = (lifetime or "permanent").strip().lower()
-        if lifetime_norm not in VALID_LIFETIMES:
-            return (
-                f"[Error]: Unknown lifetime '{lifetime}'. Use "
-                f"{' or '.join(repr(value) for value in VALID_LIFETIMES)}."
-            )
-        if ttl_hours is not None:
-            pre_warnings.append(
-                "legacy lifetime/idle_timeout_hours ignored because ttl_hours is set"
-            )
-        elif lifetime_norm == "temporary":
-            ttl_hours = (
-                DEFAULT_IDLE_TIMEOUT_HOURS
-                if idle_timeout_hours is None
-                else idle_timeout_hours
-            )
-        elif idle_timeout_hours is not None:
-            pre_warnings.append(
-                "idle_timeout_hours ignored when lifetime='permanent'; use ttl_hours for temporary cleanup"
-            )
-    elif idle_timeout_hours is not None and ttl_hours is None:
-        pre_warnings.append(
-            "idle_timeout_hours ignored without lifetime='temporary'; use ttl_hours for temporary cleanup"
-        )
-
-    ttl_hours_resolved: Optional[int]
-    if ttl_hours is None:
-        ttl_hours_resolved = None
-    else:
-        try:
-            ttl_hours_int = int(ttl_hours)
-        except (TypeError, ValueError):
-            return f"[Error]: ttl_hours must be an integer; got {ttl_hours!r}."
-        if ttl_hours_int < 1:
-            return "[Error]: ttl_hours must be >= 1 (or None for a permanent thread)."
-        ttl_hours_resolved = ttl_hours_int
+    ttl_hours_resolved, pre_warnings, ttl_error = _reconcile_lifetime(
+        ttl_hours, lifetime, idle_timeout_hours
+    )
+    if ttl_error:
+        return ttl_error
 
     if mode_norm == "branched" and not parent_thread_id:
         return "[Error]: mode='branched' requires a parent thread; call this from inside a thread."
@@ -654,112 +873,22 @@ def spawn_thread(
         if err:
             return err
 
-    warnings: List[str] = list(pre_warnings)
-    enabled_set: set = set()
-    tool_resolution_records: List[dict] = []
-
-    user = agent.accounts_repo.get_user_by_id(user_id) if user_id else None
-    user_role = user.role if user else "user"
-
-    if tool_queries:
-        resolved_names, tool_resolution_records = _resolve_semantic_tools(
-            tool_queries,
-            tool_query_top_k,
-            agent=agent,
+    enabled_set, disabled_list, tool_resolution_records, warnings, tool_error = (
+        _resolve_spawn_tools(
+            agent,
             user_id=user_id,
-            user_role=user_role,
             parent_thread_id=parent_thread_id,
+            tool_queries=tool_queries,
+            tool_query_top_k=tool_query_top_k,
+            tool_categories=tool_categories,
+            optional_tools=optional_tools,
+            disabled_tools=disabled_tools,
+            include_core_tools=include_core_tools,
+            pre_warnings=pre_warnings,
         )
-        enabled_set |= resolved_names
-        unmatched_queries = [
-            q.strip()
-            for q in tool_queries
-            if q
-            and q.strip()
-            and not any(r["query"] == q.strip() for r in tool_resolution_records)
-        ]
-        if unmatched_queries:
-            warnings.append(
-                f"tool_queries with no matches: {', '.join(unmatched_queries)}"
-            )
-
-    if tool_categories:
-        cat_summary = get_category_tools_summary()
-        valid_cats = set(get_all_categories())
-        unknown_cats: List[str] = []
-        for cat in tool_categories:
-            cat_norm = cat.lower().strip().replace("-", "_")
-            if cat_norm not in valid_cats:
-                unknown_cats.append(cat)
-                continue
-            for name in cat_summary.get(cat_norm, []):
-                if name in CATALOG_TOOLS:
-                    enabled_set.add(name)
-        if unknown_cats:
-            warnings.append(f"unknown categor(ies): {', '.join(unknown_cats)}")
-
-    if optional_tools:
-        all_known = {t.name for t in SEED_TOOLS} | set(CATALOG_TOOLS.keys())
-        unknown_tools: List[str] = []
-        for name in optional_tools:
-            if name in CATALOG_TOOLS:
-                enabled_set.add(name)
-            elif name in all_known or (
-                agent.tool_registry and agent.tool_registry.get_tool(name)
-            ):
-                enabled_set.add(name)
-            else:
-                unknown_tools.append(name)
-        if unknown_tools:
-            warnings.append(f"unknown tool(s): {', '.join(unknown_tools)}")
-
-    # Admin-only gate. Mirror the REST gate at PATCH /threads/{id}/config and
-    # the tool_search gate; without this, a non-admin could spawn a child
-    # thread seeded with reload_all/claude_code/self_modify and escalate via
-    # the child. Block category-expansion AND named optional_tools.
-    from . import filter_admin_only_tools, filter_developer_only_tools
-    _, blocked = filter_admin_only_tools(enabled_set, user_role)
-    if blocked:
-        return (
-            f"[Error]: Admin-only tools cannot be enabled on a spawned thread "
-            f"by this user: {sorted(blocked)}. Drop them from optional_tools / "
-            f"tool_categories or ask an administrator to spawn the thread."
-        )
-    _, blocked = filter_developer_only_tools(enabled_set, user_role)
-    if blocked:
-        return (
-            f"[Error]: Developer-only diagnostic tools cannot be enabled on a "
-            f"spawned thread by this user: {sorted(blocked)}. Drop them from "
-            f"optional_tools / tool_categories or ask an administrator to "
-            f"spawn the thread."
-        )
-
-    disabled_list: List[str] = []
-    if disabled_tools:
-        # disabled_tools is authoritative subtraction at graph-build and can
-        # target ANY bound tool, seed or catalog (optional) or dynamic, not just
-        # seed tools. Mirror the optional_tools validation above: accept any
-        # known tool name and warn only for genuinely unknown ones (the old code
-        # checked SEED_TOOLS alone, mislabeling valid optional names as
-        # "unknown core tool(s)").
-        all_known = {t.name for t in SEED_TOOLS} | set(CATALOG_TOOLS.keys())
-        unknown_disabled: List[str] = []
-        for name in disabled_tools:
-            if name in all_known or (
-                agent.tool_registry and agent.tool_registry.get_tool(name)
-            ):
-                disabled_list.append(name)
-            else:
-                unknown_disabled.append(name)
-        if unknown_disabled:
-            warnings.append(
-                f"unknown tool(s) to disable: {', '.join(unknown_disabled)}"
-            )
-
-    if not include_core_tools:
-        # Funnel every core tool name into disabled_list so the graph builder
-        # filters them out. Dedupe in case the caller also named some explicitly.
-        disabled_list = sorted({*(disabled_list), *(t.name for t in SEED_TOOLS)})
+    )
+    if tool_error:
+        return tool_error
 
     # Expand a thread tier alias ("fast"/"smart"/"default") into a concrete
     # provider+model so the child thread carries real IDs. A tier may target a
@@ -939,48 +1068,19 @@ def spawn_thread(
     except Exception as e:
         logger.warning(f"spawn_thread: thread_created publish failed: {e}")
 
-    preamble_lines = [f"[Spawned]: thread_id={new_thread_id}"]
-    if mode_norm == "branched":
-        preamble_lines.append(
-            f"Mode: branched from {parent_thread_id} (inherits checkpoint history)."
-        )
-    if ttl_hours_resolved is not None:
-        preamble_lines.append(
-            f"Lifetime: temporary (auto-deletes after "
-            f"{ttl_hours_resolved}h of inactivity)."
-        )
-    if make_callable and callable_name:
-        preamble_lines.append(
-            f'Callable as: {callable_name}(task="..."). Any thread can invoke this.'
-        )
-    if tool_resolution_records:
-        head = tool_resolution_records[:6]
-        rendered = ", ".join(
-            f'{r["name"]} ({r["score"]:.2f} <- "{r["query"]}")' for r in head
-        )
-        if len(tool_resolution_records) > len(head):
-            rendered += f", +{len(tool_resolution_records) - len(head)} more"
-        preamble_lines.append(f"[Resolved tools]: {rendered}")
-    if not include_core_tools:
-        preamble_lines.append(
-            "Core tools: disabled (include_core_tools=False; child gets only "
-            "the explicitly resolved/selected tools)."
-        )
-    if tc.enabled_tools:
-        preamble_lines.append(
-            f"Enabled optional tools: {', '.join(tc.enabled_tools)}"
-        )
-    if tc.disabled_tools and include_core_tools:
-        preamble_lines.append(
-            f"Disabled core tools: {', '.join(tc.disabled_tools)}"
-        )
-    if warnings:
-        preamble_lines.append(f"[Warning]: {'; '.join(warnings)}")
-    preamble_lines.append(
-        f'To delete later: spawn_thread(action="delete", '
-        f'delete_thread_id="{new_thread_id}")'
+    preamble = _build_spawn_preamble(
+        new_thread_id=new_thread_id,
+        mode_norm=mode_norm,
+        parent_thread_id=parent_thread_id,
+        ttl_hours_resolved=ttl_hours_resolved,
+        make_callable=make_callable,
+        callable_name=callable_name,
+        tool_resolution_records=tool_resolution_records,
+        include_core_tools=include_core_tools,
+        enabled_tools=tc.enabled_tools,
+        disabled_tools=tc.disabled_tools,
+        warnings=warnings,
     )
-    preamble = "\n".join(preamble_lines)
 
     if not prompt or not prompt.strip():
         return preamble
