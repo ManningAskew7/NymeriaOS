@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json as _json
 import logging
 import re
 import secrets
@@ -47,6 +46,7 @@ from .telegram_format import (
 from .message_splitter import split_telegram_message as split_message
 from .voice_helpers import is_voice_message_mime, strip_markdown_for_speech
 from .sse_consumer import (
+    consume_autonomous_firehose,
     consume_sse_stream,
     dispatch_event,
     format_auth_prompt_message,
@@ -2687,73 +2687,33 @@ class NymeriaTelegramBot:
     # Autonomous SSE Listener
     # =========================================================================
 
+    async def _handle_firehose_event(self, event: dict) -> None:
+        # Multi-bot dispatch: an event for a thread bound via a user-owned bot
+        # must be delivered through *that* bot's Application (so the message
+        # lands in @YourBot, not @NymeriaaaaaBot). The shared bot's
+        # _handle_sse_event handles the legacy `telegram_<chat_id>` default and
+        # its own bindings; subordinate bots handle theirs. Returning early
+        # (target is None) skips the event, the same as the old loop's continue.
+        target = self._dispatch_bot_for_thread(event.get("thread_id", ""))
+        if target is None:
+            return
+        await target._handle_sse_event(event)
+
     async def _api_sse_listener(self) -> None:
         """Background task listening for autonomous task completion events."""
         # Firehose subscription: the service token is admin-role, so we pass
         # `X-Nymeria-Act-As: *` to receive every user's events. The handler
         # filters by thread_id prefix (`telegram_<chat_id>`) to decide which
-        # chat to post to.
-        url = f"{self.api.base_url}/autonomous/stream"
-        headers = {
-            "Authorization": f"Bearer {self.api.api_key}",
-            "X-Nymeria-Act-As": "*",
-        }
-        logger.info(f"Telegram SSE listener connecting to {self.api.base_url}/autonomous/stream")
-
-        reconnect_delay = 3
-        max_delay = 30
-
-        while True:
-            try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("GET", url, headers=headers) as resp:
-                        if resp.status_code != 200:
-                            logger.error(f"SSE connection failed: {resp.status_code}")
-                            await asyncio.sleep(reconnect_delay)
-                            reconnect_delay = min(reconnect_delay * 2, max_delay)
-                            continue
-
-                        logger.info("Telegram SSE connected, listening for events")
-                        reconnect_delay = 3
-
-                        async for line in resp.aiter_lines():
-                            if not line or not line.startswith("data: "):
-                                continue
-                            raw = line[6:]
-                            if raw.startswith(":"):
-                                continue
-                            try:
-                                event = _json.loads(raw)
-                            except _json.JSONDecodeError:
-                                continue
-
-                            # Multi-bot dispatch: an event for a thread bound
-                            # via a user-owned bot must be delivered through
-                            # *that* bot's Application (so the message lands
-                            # in @YourBot, not @NymeriaaaaaBot). The shared
-                            # bot's _handle_sse_event handles the legacy
-                            # `telegram_<chat_id>` default and its own
-                            # bindings; subordinate bots handle theirs.
-                            target = self._dispatch_bot_for_thread(
-                                event.get("thread_id", "")
-                            )
-                            if target is None:
-                                continue
-                            await target._handle_sse_event(event)
-
-            except httpx.ReadTimeout:
-                logger.debug("SSE read timeout, reconnecting...")
-            except httpx.ConnectError:
-                logger.warning(
-                    f"Cannot reach API at {self.api.base_url}, retrying in {reconnect_delay}s"
-                )
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.error(f"SSE listener error: {e}", exc_info=True)
-
-            await asyncio.sleep(reconnect_delay)
-            reconnect_delay = min(reconnect_delay * 2, max_delay)
+        # chat to post to. The reconnect/parse loop is shared with the other
+        # bots via consume_autonomous_firehose; omitting should_stop preserves
+        # this listener's `while True` / cancellation-only exit.
+        await consume_autonomous_firehose(
+            base_url=self.api.base_url,
+            api_key=self.api.api_key,
+            on_event=self._handle_firehose_event,
+            log_label="Telegram",
+            logger=logger,
+        )
 
     def _dispatch_bot_for_thread(
         self, thread_id: str

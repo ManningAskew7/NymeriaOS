@@ -16,10 +16,24 @@ Usage — autonomous single-event dispatch::
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
+import logging
 import re
-from typing import Any, AsyncIterable, Dict, List, Optional, Protocol, runtime_checkable
+from typing import (
+    Any,
+    AsyncIterable,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    runtime_checkable,
+)
+
+import httpx
 
 from ..core.agent_compaction import COMPACTING_MESSAGE
 
@@ -41,9 +55,9 @@ def parse_sse_data_line(line: str) -> Optional[Any]:
     This is the shared parser for the SSE line grammar that the in-slice
     streaming consumers (``api_client.chat_stream``/``autonomous_stream`` and
     the ``trigger_api`` fire peek) previously hand-rolled with an inline
-    ``[6:]`` slice. The ``discord_bot``/``telegram_bot`` stream loops still
-    carry their own copies of this grammar (a tracked follow-up). Because real
-    events are always JSON objects, a bare ``data: null`` line decodes to
+    ``[6:]`` slice. The ``discord_bot``/``telegram_bot`` firehose loops also
+    route through this parser via :func:`consume_autonomous_firehose`. Because
+    real events are always JSON objects, a bare ``data: null`` line decodes to
     ``None`` and is therefore skipped like any other no-op line; that edge
     never occurs on the wire.
     """
@@ -370,3 +384,87 @@ async def consume_sse_stream(
     async for event in events:
         tool_call_count = await dispatch_event(event, handler, tool_call_count)
     await handler.on_stream_end(tool_call_count)
+
+
+async def consume_autonomous_firehose(
+    *,
+    base_url: str,
+    api_key: str,
+    on_event: Callable[[Any], Awaitable[None]],
+    log_label: str,
+    logger: logging.Logger,
+    should_stop: Optional[Callable[[], bool]] = None,
+    initial_delay: float = 3,
+    max_delay: float = 30,
+) -> None:
+    """Stream the autonomous-event firehose, dispatching each event to ``on_event``.
+
+    Connects to ``GET {base_url}/autonomous/stream`` with the admin service token
+    and ``X-Nymeria-Act-As: *`` (the wildcard firehose), parses each ``data:`` line
+    via :func:`parse_sse_data_line`, and reconnects with a ``initial_delay`` ->
+    ``max_delay`` exponential backoff. This is the shared body of the per-bot
+    ``_api_sse_listener`` loops.
+
+    Injected per caller:
+
+    - ``on_event``: an async callback receiving each decoded event. Bots put their
+      own routing here (e.g. multi-bot dispatch); returning early skips the event,
+      equivalent to ``continue`` in the read loop.
+    - ``should_stop``: an optional zero-arg predicate. While it returns ``True`` the
+      listener exits (checked at the loop top, mid-stream before each event, and
+      before each reconnect sleep). ``None`` means never stop, i.e. ``while True``
+      relying on task cancellation, which is the Telegram listener's behavior.
+    - ``log_label``: prefixes the connect/connected/stopped log lines (e.g. "API").
+    - ``logger``: the caller's module logger, passed in so log records keep each
+      bot's provenance rather than this module's name.
+    """
+    url = f"{base_url}/autonomous/stream"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-Nymeria-Act-As": "*",
+    }
+
+    def stopped() -> bool:
+        return should_stop is not None and should_stop()
+
+    logger.info(f"{log_label} SSE listener connecting to {url}")
+
+    reconnect_delay = initial_delay
+
+    while not stopped():
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url, headers=headers) as resp:
+                    if resp.status_code != 200:
+                        logger.error(f"SSE connection failed: {resp.status_code}")
+                        await asyncio.sleep(reconnect_delay)
+                        reconnect_delay = min(reconnect_delay * 2, max_delay)
+                        continue
+
+                    logger.info(f"{log_label} SSE connected, listening for events")
+                    reconnect_delay = initial_delay
+
+                    async for line in resp.aiter_lines():
+                        if stopped():
+                            return
+                        event = parse_sse_data_line(line)
+                        if event is None:
+                            continue
+                        await on_event(event)
+
+        except httpx.ReadTimeout:
+            logger.debug("SSE read timeout, reconnecting...")
+        except httpx.ConnectError:
+            logger.warning(
+                f"Cannot reach API at {base_url}, retrying in {reconnect_delay}s"
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"SSE listener error: {e}", exc_info=True)
+
+        if not stopped():
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, max_delay)
+
+    logger.info(f"{log_label} SSE listener stopped")
