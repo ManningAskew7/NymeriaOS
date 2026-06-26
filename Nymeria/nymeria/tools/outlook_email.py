@@ -115,6 +115,31 @@ def _truncate_body(text: str) -> str:
 TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 
 
+def _select_account(
+    accounts: dict, account_id: Optional[str] = None
+) -> tuple[Optional[str], Optional[dict]]:
+    """Resolve which Microsoft account to use from a non-empty account cache.
+
+    Priority: explicit account_id > OUTLOOK_DEFAULT_ACCOUNT_ID setting > first
+    account. Returns the ``(account_id, account)`` pair; ``account`` is ``None``
+    only when an explicit ``account_id`` is not present in ``accounts``.
+    """
+    if account_id:
+        return account_id, accounts.get(account_id)
+
+    # Check for configured default account
+    try:
+        from ..config import get_settings
+        default_id = get_settings().outlook_default_account_id
+        if default_id and default_id in accounts:
+            return default_id, accounts[default_id]
+    except Exception:
+        logger.debug("Failed to resolve default Outlook account from settings")
+
+    # Fallback to first account
+    return next(iter(accounts.items()), (None, None))
+
+
 def get_account(user_id: str, account_id: Optional[str] = None) -> Optional[dict]:
     """Get account info from cache.
 
@@ -131,20 +156,7 @@ def get_account(user_id: str, account_id: Optional[str] = None) -> Optional[dict
     if not accounts:
         return None
 
-    if account_id:
-        return accounts.get(account_id)
-
-    # Check for configured default account
-    try:
-        from ..config import get_settings
-        default_id = get_settings().outlook_default_account_id
-        if default_id and default_id in accounts:
-            return accounts[default_id]
-    except Exception:
-        logger.debug("Failed to resolve default Outlook account from settings")
-
-    # Fallback to first account
-    return next(iter(accounts.values()), None)
+    return _select_account(accounts, account_id)[1]
 
 
 def try_complete_pending_auth(user_id: str) -> bool:
@@ -179,7 +191,7 @@ def try_complete_pending_auth(user_id: str) -> bool:
 
     try:
         response = httpx.post(
-            TOKEN_URL.replace("/token", "/token"),  # Same endpoint
+            TOKEN_URL,
             data={
                 "client_id": client_id,
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
@@ -266,20 +278,7 @@ def get_access_token(user_id: str, account_id: Optional[str] = None) -> Optional
             return None
 
     # Find the account: explicit > configured default > first
-    if account_id:
-        account = accounts.get(account_id)
-        aid = account_id
-    else:
-        aid, account = None, None
-        try:
-            from ..config import get_settings
-            default_id = get_settings().outlook_default_account_id
-            if default_id and default_id in accounts:
-                aid, account = default_id, accounts[default_id]
-        except Exception:
-            logger.debug("Failed to resolve default Outlook account from settings")
-        if not account:
-            aid, account = next(iter(accounts.items()), (None, None))
+    aid, account = _select_account(accounts, account_id)
 
     if not account:
         return None
