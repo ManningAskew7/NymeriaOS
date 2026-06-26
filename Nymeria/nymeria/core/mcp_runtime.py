@@ -24,7 +24,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from ..config import get_settings
@@ -1078,6 +1078,154 @@ def _strip_auth_prefix(value: str) -> Tuple[str, str]:
     return "", value
 
 
+@dataclass(frozen=True)
+class _ApplyConfigContext:
+    """Shared inputs/accumulators for the ``apply_config_values`` loop helpers.
+
+    The fields are references to the mutable maps/lists owned by
+    ``apply_config_values``; the helpers mutate them in place, so the behavior is
+    identical to the previous single-function form. ``supplied_value`` and
+    ``supplied_binding`` are the closures over the normalized input dicts.
+    """
+
+    defn: MCPServerDefinition
+    supplied_value: Callable[..., Optional[str]]
+    supplied_binding: Callable[..., Any]
+    env_vars: Dict[str, str]
+    headers: Dict[str, str]
+    values: Dict[str, str]
+    missing: List[Dict[str, Any]]
+    redacted_literals: List[str]
+    user_id: Optional[str]
+
+
+def _apply_required_field(required_field: Dict[str, Any], ctx: _ApplyConfigContext) -> None:
+    """Resolve one ``plan.required_config`` entry into env/header config.
+
+    Writes a plaintext value, a credential reference, or (for a non-sensitive
+    required field with no value) appends to ``ctx.missing``.
+    """
+    name = str(required_field.get("name") or "")
+    source = str(required_field.get("source") or "env")
+    env_name = str(required_field.get("env_name") or name)
+    header_name = str(required_field.get("header_name") or name)
+    target_name = header_name if source == "header" else env_name
+    auth_prefix = str(required_field.get("auth_prefix") or required_field.get("prefix") or "")
+    value = ctx.supplied_value(name, target_name, f"{source}:{target_name}")
+    if (value is None or value == "") and required_field.get("default") is not None:
+        value = str(required_field["default"])
+    if source == "header" and auth_prefix and isinstance(value, str):
+        if value.lower().startswith(auth_prefix.lower()):
+            value = value[len(auth_prefix):].strip()
+    if value == "":
+        value = None
+    if value is None and required_field.get("required", True):
+        if required_field.get("sensitive"):
+            ref = _credential_ref_for_secret(
+                defn=ctx.defn,
+                source=source,
+                field=target_name,
+                value=None,
+                user_id=ctx.user_id,
+                actor_user_id=ctx.user_id,
+                missing=ctx.missing,
+                field_def=required_field,
+            )
+            if source == "header":
+                ctx.headers[target_name] = f"{auth_prefix}{ref}"
+            else:
+                ctx.env_vars[target_name] = ref
+        else:
+            ctx.missing.append(required_field)
+        return
+    if value is None:
+        return
+    if required_field.get("sensitive"):
+        ref = _binding_ref(
+            ctx.supplied_binding(name, target_name, f"{source}:{target_name}"),
+            defn=ctx.defn,
+            source=source,
+            field=target_name,
+            user_id=ctx.user_id,
+        )
+        if ref is None:
+            ref = _credential_ref_for_secret(
+                defn=ctx.defn,
+                source=source,
+                field=target_name,
+                value=value,
+                user_id=ctx.user_id,
+                actor_user_id=ctx.user_id,
+                missing=ctx.missing,
+                field_def=required_field,
+            )
+            if value:
+                ctx.redacted_literals.append(value)
+        ctx.values[name] = ref
+        if source == "header":
+            ctx.headers[target_name] = f"{auth_prefix}{ref}"
+        else:
+            ctx.env_vars[target_name] = ref
+    else:
+        if source == "header":
+            ctx.headers[target_name] = value
+        else:
+            ctx.env_vars[target_name] = value
+
+
+def _sweep_sensitive_mapping(source: str, mapping: Dict[str, str], ctx: _ApplyConfigContext) -> None:
+    """Convert any remaining secret-looking plaintext in ``mapping`` to refs.
+
+    Runs after the ``required_config`` pass, so it also catches the non-sensitive
+    plaintext values that pass wrote which turn out to be secret-looking. Existing
+    credential references are left untouched.
+    """
+    for key, raw_value in list(mapping.items()):
+        value = str(raw_value or "")
+        if _credential_ref(value):
+            continue
+        sensitive = _is_secret_name(key) or _is_secret_value(value)
+        if not sensitive:
+            continue
+        ref = _binding_ref(
+            ctx.supplied_binding(key, f"{source}:{key}"),
+            defn=ctx.defn,
+            source=source,
+            field=key,
+            user_id=ctx.user_id,
+        )
+        if ref is None:
+            secret_value: Optional[str] = value
+            prefix = ""
+            if value.startswith("${env:") and value.endswith("}"):
+                secret_value = ctx.supplied_value(key, f"{source}:{key}")
+                if not secret_value:
+                    secret_value = None
+            elif source == "header":
+                prefix, secret_value = _strip_auth_prefix(value)
+            if secret_value:
+                ctx.redacted_literals.append(secret_value)
+            ref = _credential_ref_for_secret(
+                defn=ctx.defn,
+                source=source,
+                field=key,
+                value=secret_value,
+                user_id=ctx.user_id,
+                actor_user_id=ctx.user_id,
+                missing=ctx.missing,
+                field_def={
+                    "name": key,
+                    "label": key,
+                    "source": source,
+                    "required": True,
+                    "sensitive": True,
+                },
+            )
+            if source == "header" and prefix:
+                ref = f"{prefix}{ref}"
+        mapping[key] = ref
+
+
 def apply_config_values(
     defn: MCPServerDefinition,
     plan: MCPInstallPlan,
@@ -1109,119 +1257,26 @@ def apply_config_values(
                 return bindings[key]
         return None
 
+    ctx = _ApplyConfigContext(
+        defn=defn,
+        supplied_value=supplied_value,
+        supplied_binding=supplied_binding,
+        env_vars=env_vars,
+        headers=headers,
+        values=values,
+        missing=missing,
+        redacted_literals=redacted_literals,
+        user_id=user_id,
+    )
+
+    # The required-config pass must run to completion before the sweep: it can
+    # write plaintext non-sensitive values that the sweep then re-scans and
+    # converts to credential references.
     for required_field in plan.required_config:
-        name = str(required_field.get("name") or "")
-        source = str(required_field.get("source") or "env")
-        env_name = str(required_field.get("env_name") or name)
-        header_name = str(required_field.get("header_name") or name)
-        target_name = header_name if source == "header" else env_name
-        auth_prefix = str(required_field.get("auth_prefix") or required_field.get("prefix") or "")
-        value = supplied_value(name, target_name, f"{source}:{target_name}")
-        if (value is None or value == "") and required_field.get("default") is not None:
-            value = str(required_field["default"])
-        if source == "header" and auth_prefix and isinstance(value, str):
-            if value.lower().startswith(auth_prefix.lower()):
-                value = value[len(auth_prefix):].strip()
-        if value == "":
-            value = None
-        if value is None and required_field.get("required", True):
-            if required_field.get("sensitive"):
-                ref = _credential_ref_for_secret(
-                    defn=defn,
-                    source=source,
-                    field=target_name,
-                    value=None,
-                    user_id=user_id,
-                    actor_user_id=user_id,
-                    missing=missing,
-                    field_def=required_field,
-                )
-                if source == "header":
-                    headers[target_name] = f"{auth_prefix}{ref}"
-                else:
-                    env_vars[target_name] = ref
-            else:
-                missing.append(required_field)
-            continue
-        if value is None:
-            continue
-        if required_field.get("sensitive"):
-            ref = _binding_ref(
-                supplied_binding(name, target_name, f"{source}:{target_name}"),
-                defn=defn,
-                source=source,
-                field=target_name,
-                user_id=user_id,
-            )
-            if ref is None:
-                ref = _credential_ref_for_secret(
-                    defn=defn,
-                    source=source,
-                    field=target_name,
-                    value=value,
-                    user_id=user_id,
-                    actor_user_id=user_id,
-                    missing=missing,
-                    field_def=required_field,
-                )
-                if value:
-                    redacted_literals.append(value)
-            values[name] = ref
-            if source == "header":
-                headers[target_name] = f"{auth_prefix}{ref}"
-            else:
-                env_vars[target_name] = ref
-        else:
-            if source == "header":
-                headers[target_name] = value
-            else:
-                env_vars[target_name] = value
+        _apply_required_field(required_field, ctx)
 
     for source, mapping in (("env", env_vars), ("header", headers)):
-        for key, raw_value in list(mapping.items()):
-            value = str(raw_value or "")
-            if _credential_ref(value):
-                continue
-            sensitive = _is_secret_name(key) or _is_secret_value(value)
-            if not sensitive:
-                continue
-            ref = _binding_ref(
-                supplied_binding(key, f"{source}:{key}"),
-                defn=defn,
-                source=source,
-                field=key,
-                user_id=user_id,
-            )
-            if ref is None:
-                secret_value: Optional[str] = value
-                prefix = ""
-                if value.startswith("${env:") and value.endswith("}"):
-                    secret_value = supplied_value(key, f"{source}:{key}")
-                    if not secret_value:
-                        secret_value = None
-                elif source == "header":
-                    prefix, secret_value = _strip_auth_prefix(value)
-                if secret_value:
-                    redacted_literals.append(secret_value)
-                ref = _credential_ref_for_secret(
-                    defn=defn,
-                    source=source,
-                    field=key,
-                    value=secret_value,
-                    user_id=user_id,
-                    actor_user_id=user_id,
-                    missing=missing,
-                    field_def={
-                        "name": key,
-                        "label": key,
-                        "source": source,
-                        "required": True,
-                        "sensitive": True,
-                    },
-                )
-                if source == "header" and prefix:
-                    ref = f"{prefix}{ref}"
-            mapping[key] = ref
+        _sweep_sensitive_mapping(source, mapping, ctx)
 
     defn.env_vars = env_vars
     defn.headers = headers
