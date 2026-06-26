@@ -701,9 +701,9 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `medium_create_publication_post` | `nymeria/tools/community_publishing_service_integrations.py` | Create a Medium post under a publication. |
 | `medium_get_me` | `nymeria/tools/community_publishing_service_integrations.py` | Get the authenticated Medium user profile. |
 | `medium_list_publications` | `nymeria/tools/community_publishing_service_integrations.py` | List Medium publications associated with a user. |
-| `memory_add` | `nymeria/tools/memory.py` | Save a memory. Creates a new entry or overwrites an existing one. |
+| `memory_add` | `nymeria/tools/memory.py` | Add to memory: append to the thread notepad, or create/set one global key. |
 | `memory_clear_all` | `nymeria/tools/memory.py` | Clear ALL global memories for this user. |
-| `memory_edit` | `nymeria/tools/memory.py` | Surgical edit of an existing memory. Find a substring and replace it. |
+| `memory_edit` | `nymeria/tools/memory.py` | Edit existing memory: find/replace a substring; owns clearing and removing. |
 | `memory_read` | `nymeria/tools/memory.py` | Read memory. Get a specific entry, list everything, or substring-filter. |
 | `messagebird_get_balance` | `nymeria/tools/messaging_delivery_service_integrations.py` | Get MessageBird account balance. |
 | `messagebird_send_sms` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS with MessageBird. |

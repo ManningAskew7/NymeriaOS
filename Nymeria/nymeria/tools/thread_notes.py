@@ -143,10 +143,46 @@ def edit_notepad(
 ) -> str:
     """Find/replace within a thread's notepad. Empty new_text deletes the matched text.
 
-    If the notepad becomes empty as a result, the underlying file is deleted.
+    Empty old_text operates on the whole notepad: a non-empty new_text rewrites
+    it end-to-end, a blank new_text clears it. If the notepad becomes empty as a
+    result, the underlying file is deleted.
     """
     with _notepad_locks.get(thread_id):
         path = _notepad_path(thread_id)
+
+        # Empty old_text = operate on the WHOLE notepad: a one-call rewrite
+        # (non-empty new_text) or clear (blank new_text). This is the deliberate,
+        # explicit way to replace or clear the notepad now that memory_add only
+        # appends; it avoids having to echo the entire notepad back as `find`.
+        if old_text == "":
+            existing = path.read_text(encoding="utf-8") if path.exists() else ""
+            new_body = new_text
+            while "\n\n\n" in new_body:
+                new_body = new_body.replace("\n\n\n", "\n\n")
+            new_body = new_body.strip()
+            if not new_body:
+                # Empty replace = clear the whole notepad.
+                if delete_notepad(thread_id):
+                    logger.info(f"Notepad cleared via memory_edit for thread {thread_id}")
+                    return "[Saved]: Notepad cleared. Notepad is now empty."
+                return "[Info]: Notepad is already empty."
+            # Non-empty replace = set the whole notepad, creating it if absent so a
+            # rewrite always lands (the dream loop uses this for consolidation).
+            new_body = new_body + "\n"
+            limit = char_limit or get_effective_thread_memory_char_limit(thread_id)
+            limit_error = validate_text_memory_write(
+                label="Thread memory",
+                current_text=existing,
+                proposed_text=new_body,
+                limit=limit,
+            )
+            if limit_error:
+                return limit_error
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(new_body, encoding="utf-8")
+            size = len(new_body)
+            logger.info(f"Notepad rewritten via memory_edit for thread {thread_id}: {size} chars")
+            return f"[Saved]: Notepad rewritten ({size} chars)."
 
         if not path.exists():
             return "[Error]: Notepad is empty; nothing to edit."

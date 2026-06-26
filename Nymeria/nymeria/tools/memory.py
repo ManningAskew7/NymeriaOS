@@ -10,9 +10,13 @@ The agent sees three primitives that dispatch on ``scope``:
 into every future conversation). ``scope="thread"`` operates on the active thread's
 notepad (markdown file that survives context compaction).
 
-Empty content / replace-to-empty triggers deletion at the storage layer:
-the profile entry is popped (no zombie blanks in ``memory_read`` output),
-and the notepad file is unlinked.
+``memory_add`` is purely additive: it appends to the thread notepad and
+creates/sets a single global key, but never deletes. Removing and clearing
+live in ``memory_edit`` -- an empty ``replace`` drops the matched text, and an
+empty ``find`` operates on the whole target (rewrite or clear the thread
+notepad, or delete just the named global key). Deletes pop the profile entry
+(no zombie blanks in ``memory_read`` output) and unlink the notepad file at the
+storage layer.
 
 Bulk wipe (``memory_clear_all``) and personality preferences
 (``personality_set``) stay separate as lexically distinct tools. Semantic search
@@ -173,30 +177,35 @@ def memory_add(
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Save a memory. Creates a new entry or overwrites an existing one.
+    Add to memory: append to the thread notepad, or create/set one global key.
+    Purely additive: it never deletes or clobbers existing notes. Use
+    memory_edit to revise, clear, or remove memory.
 
     scope="global": persistent fact about the user. Requires `key` (e.g.
         "occupation", "favorite_language"). Auto-injected into every future
-        conversation. Examples:
+        conversation. Setting an existing key replaces only that key's value.
+        Examples:
           memory_add(scope="global", key="prefers_typescript", content="Yes")
           memory_add(scope="global", key="timezone", content="Australia/Sydney")
 
-    scope="thread": per-thread notepad text that survives compaction. No `key`
-        — there is one notepad per thread. Overwrites the entire notepad.
+    scope="thread": append to the per-thread notepad (markdown that survives
+        compaction). No `key` — there is one notepad per thread. Does NOT
+        overwrite existing notes; use memory_edit to revise or clear them.
         Example:
           memory_add(scope="thread", content="Working on auth refactor; deadline Friday.")
 
-    Empty `content` deletes the entry (global) or the notepad (thread).
+    Empty `content` is a no-op (nothing is deleted); use memory_edit to remove
+    a global key or clear the thread notepad.
 
     Args:
         scope: "global" (user profile) or "thread" (per-thread notepad).
-        content: The memory text. Empty string deletes.
+        content: The memory text. Empty string is a no-op.
         key: Required when scope="global". Ignored when scope="thread".
 
     Returns:
-        Global: "[Saved]: I'll remember '<key>'..." or "[Deleted]: Forgot
-        '<key>'..." (when content is empty). Thread: "[Saved]: Notepad
-        updated (N chars)...". Errors: "[Error]: <reason>".
+        Global: "[Saved]: I'll remember '<key>'...". Thread: "[Saved]: Notepad
+        updated (N chars)...". Empty content: "[Info]: ..." pointing at
+        memory_edit. Errors: "[Error]: <reason>".
     """
     err = _validate_scope(scope)
     if err:
@@ -210,12 +219,11 @@ def memory_add(
         manager = _get_profile_manager()
 
         if content == "":
-            with manager.atomic_update(user_id) as profile:
-                if profile.remove_memory(key):
-                    logger.info(f"Memory deleted via memory_add(empty content) for user {user_id}: {key}")
-                    _rag_remove_global(user_id, key)
-                    return f"[Deleted]: Forgot '{key}'. This will no longer appear in future conversations."
-                return f"[Info]: No memory with key '{key}' to delete."
+            return (
+                f"[Info]: No content provided; '{key}' is unchanged. memory_add only "
+                f"adds. To delete it, use memory_edit(scope='global', key='{key}', "
+                f"find='', replace='')."
+            )
 
         with manager.atomic_update(user_id) as profile:
             max_entries = get_memory_max_entries()
@@ -240,9 +248,14 @@ def memory_add(
             _rag_index_global(user_id, key, stored_content)
             return f"[Saved]: I'll remember '{key}'. This will be available in all future conversations."
 
-    # scope == "thread"
+    # scope == "thread" — additive only; never clobbers existing notes.
     thread_id = get_effective_thread_id(config)
-    return thread_notes.write_notepad(thread_id, content, mode="replace")
+    if not content:
+        return (
+            "[Info]: No content to add; the notepad is unchanged. To revise or "
+            "clear it, use memory_edit(scope='thread', ...)."
+        )
+    return thread_notes.write_notepad(thread_id, content, mode="append")
 
 
 @tool
@@ -255,29 +268,38 @@ def memory_edit(
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Surgical edit of an existing memory. Find a substring and replace it.
+    Edit existing memory: find/replace a substring; owns clearing and removing.
 
     scope="global": find/replace within a single profile memory's value.
-        Requires `key`. If the resulting value is empty, the entry is removed.
-        Example:
+        Requires `key`. Empty `find` operates on the whole value: a non-empty
+        `replace` sets it, an empty `replace` deletes just that key. If a
+        find/replace empties the value, the key is removed.
+        Examples:
           memory_edit(scope="global", key="job_title", find="Engineer", replace="Senior Engineer")
+          memory_edit(scope="global", key="old_fact", find="", replace="")   # delete this key
 
-    scope="thread": find/replace within the thread notepad's markdown.
-        No `key`. Empty `replace` deletes the matched text. If the notepad
+    scope="thread": find/replace within the thread notepad's markdown. No
+        `key`. Empty `find` operates on the whole notepad: a non-empty `replace`
+        rewrites it end-to-end, an empty `replace` clears it. Empty `replace`
+        with a non-empty `find` deletes just the matched text; if the notepad
         becomes empty, the file is deleted.
-        Example:
+        Examples:
           memory_edit(scope="thread", find="deadline Friday", replace="deadline Monday")
+          memory_edit(scope="thread", find="", replace="<consolidated notepad>")  # full rewrite
+          memory_edit(scope="thread", find="", replace="")                        # clear notepad
 
     Args:
         scope: "global" or "thread".
-        find: Exact substring to locate (first occurrence).
-        replace: Replacement text. Empty string deletes the matched substring.
+        find: Exact substring to locate (first occurrence). Empty = whole target.
+        replace: Replacement text. Empty string deletes the matched substring
+            (or the whole target when `find` is empty).
         key: Required when scope="global". Ignored when scope="thread".
 
     Returns:
-        Global: "[Saved]: Updated '<key>'" or "[Deleted]: Edit emptied
-        '<key>'". Thread: "[Saved]: Text replaced...". Errors: "[Error]:
-        <reason>" (key not found, substring not matched).
+        Global: "[Saved]: Updated '<key>'" or "[Deleted]: Removed '<key>'".
+        Thread: "[Saved]: Text replaced...", "[Saved]: Notepad rewritten (N
+        chars).", or "[Saved]: Notepad cleared...". Errors: "[Error]: <reason>"
+        (key not found, substring not matched).
     """
     err = _validate_scope(scope)
     if err:
@@ -286,8 +308,6 @@ def memory_edit(
     if scope == "global":
         if not key:
             return "[Error]: scope='global' requires a key."
-        if not find:
-            return "[Error]: 'find' must be non-empty."
 
         user_id = get_user_id(config)
         manager = _get_profile_manager()
@@ -297,16 +317,20 @@ def memory_edit(
             if not mem:
                 return f"[Error]: No memory with key '{key}'."
 
-            if find not in mem.value:
-                return f"[Error]: Could not find '{find}' in memory '{key}'."
-
-            updated_value = mem.value.replace(find, replace, 1)
+            if not find:
+                # Empty find = operate on the whole value of this key: a blank
+                # replace deletes just this key, otherwise set its value.
+                updated_value = replace
+            else:
+                if find not in mem.value:
+                    return f"[Error]: Could not find '{find}' in memory '{key}'."
+                updated_value = mem.value.replace(find, replace, 1)
 
             if updated_value == "":
                 profile.remove_memory(key)
                 logger.info(f"Memory '{key}' edited to empty -> removed for user {user_id}")
                 _rag_remove_global(user_id, key)
-                return f"[Deleted]: Edit emptied '{key}'; entry removed."
+                return f"[Deleted]: Removed '{key}'."
 
             value_cap = get_memory_value_max_chars()
             stored_value = updated_value[:value_cap]
