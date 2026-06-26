@@ -112,7 +112,7 @@ def _check_busy(agent, mode, if_busy, *, name, thread_id) -> Optional[str]:
     does not apply.
     """
     if mode == "ask" and if_busy == "error" and agent:
-        if agent._thread_locks.is_thread_busy(thread_id):
+        if agent.is_thread_busy(thread_id):
             return (
                 f"[Busy]: {name} is busy on thread '{thread_id}'. "
                 "Ask again later or retry with if_busy='queue'."
