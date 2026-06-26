@@ -13,11 +13,11 @@ from ...config import Settings
 from ...core.accounts import AuthenticatedUser, UserNotFound
 from ...core.chat_bindings import BindCodeInvalid, BindingAlreadyExists
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
+from ...triggers.bot_helpers import SeenEventCache
 from ...triggers.webex_bot import (
     BotAPIError,
     NymeriaWebexBot,
     WebexMessagingClient,
-    _SeenMessageCache,
     verify_webex_signature,
 )
 from ...triggers.webhook_security import require_configured_secret
@@ -25,7 +25,7 @@ from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
 
-_WEBEX_SEEN_CACHE = _SeenMessageCache()
+_WEBEX_SEEN_CACHE = SeenEventCache()
 
 
 class InProcessWebexAPI:

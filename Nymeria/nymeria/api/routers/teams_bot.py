@@ -13,18 +13,18 @@ from ...config import Settings
 from ...core.accounts import AuthenticatedUser, UserNotFound
 from ...core.chat_bindings import BindCodeInvalid, BindingAlreadyExists
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
+from ...triggers.bot_helpers import SeenEventCache
 from ...triggers.teams_bot import (
     BotAPIError,
     NymeriaTeamsBot,
     TeamsBotFrameworkClient,
-    _SeenActivityCache,
     validate_bot_framework_authorization,
 )
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
 
-_TEAMS_SEEN_CACHE = _SeenActivityCache()
+_TEAMS_SEEN_CACHE = SeenEventCache()
 
 
 class InProcessTeamsAPI:

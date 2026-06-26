@@ -11,7 +11,6 @@ import asyncio
 import json as _json
 import logging
 import re
-import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Mapping, Optional, Protocol
 from urllib.parse import urlsplit, urlunsplit
@@ -21,6 +20,7 @@ import websockets
 
 from .api_client import NymeriaAPIClient
 from .bot_helpers import (
+    SeenEventCache,
     UserResolver,
     http_error_detail,
     join_api_base,
@@ -35,8 +35,6 @@ logger = logging.getLogger(__name__)
 
 ROCKETCHAT_TEXT_LIMIT = 4000
 BINDING_REFRESH_INTERVAL_SECONDS = 60
-SEEN_EVENT_TTL_SECONDS = 10 * 60
-SEEN_EVENT_MAX = 5000
 ACTIVE_THREAD_MAX = 5000
 
 
@@ -231,45 +229,6 @@ def message_from_stream_event(event: Mapping[str, Any]) -> Optional[RocketChatMe
     )
 
 
-class _SeenMessageCache:
-    """TTL cache for Rocket.Chat message dedupe."""
-
-    def __init__(
-        self,
-        *,
-        ttl_seconds: int = SEEN_EVENT_TTL_SECONDS,
-        max_items: int = SEEN_EVENT_MAX,
-        clock=time.monotonic,
-    ) -> None:
-        self._ttl_seconds = ttl_seconds
-        self._max_items = max_items
-        self._clock = clock
-        self._items: dict[str, float] = {}
-
-    def mark_seen(self, key: str) -> bool:
-        """Return True when *key* was already seen and still fresh."""
-        now = self._clock()
-        expires_at = self._items.get(key)
-        if expires_at and expires_at > now:
-            return True
-        self._items[key] = now + self._ttl_seconds
-        self._prune(now)
-        return False
-
-    def _prune(self, now: float) -> None:
-        if len(self._items) <= self._max_items:
-            stale = [key for key, expiry in self._items.items() if expiry <= now]
-        else:
-            stale_count = len(self._items) - (self._max_items // 2)
-            stale = [
-                key
-                for key, expiry in self._items.items()
-                if expiry <= now
-            ] + list(self._items)[:stale_count]
-        for key in stale:
-            self._items.pop(key, None)
-
-
 class RocketChatHTTPClient:
     """Minimal async Rocket.Chat REST + realtime wrapper."""
 
@@ -462,7 +421,7 @@ class NymeriaRocketChatBot:
         self.bot_name: Optional[str] = None
         self._running = False
         self._rooms: dict[str, RocketChatRoom] = {}
-        self._seen = _SeenMessageCache()
+        self._seen = SeenEventCache()
         self._active_threads: set[str] = set()
         self._bindings: Dict[str, str] = {}
         self._binding_users: Dict[str, str] = {}

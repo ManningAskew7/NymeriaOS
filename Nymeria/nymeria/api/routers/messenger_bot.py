@@ -17,11 +17,11 @@ from ...core.chat_bindings import (
     BindingAlreadyExists,
 )
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
+from ...triggers.bot_helpers import SeenEventCache
 from ...triggers.messenger_bot import (
     BotAPIError,
     MessengerGraphClient,
     NymeriaMessengerBot,
-    _SeenMessageCache,
     extract_inbound_messages,
 )
 from ...triggers.webhook_security import (
@@ -33,7 +33,7 @@ from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
 
-_MESSENGER_SEEN_CACHE = _SeenMessageCache()
+_MESSENGER_SEEN_CACHE = SeenEventCache()
 
 
 class InProcessMessengerAPI:

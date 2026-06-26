@@ -154,10 +154,9 @@ class UserResolver:
 class SeenEventCache:
     """TTL cache for deduping platform events by id, shared by bot clients.
 
-    Used by the chat-platform thin clients (Slack, Signal, Google Chat, LINE)
-    and the API-hosted webhook routers to drop redelivered events. Keys expire
-    after ``ttl_seconds`` and the cache evicts down to half ``max_items`` once
-    it exceeds the cap.
+    Used by the chat-platform bot thin clients and the API-hosted webhook
+    routers to drop redelivered events. Keys expire after ``ttl_seconds`` and
+    the cache evicts down to half ``max_items`` once it exceeds the cap.
     """
 
     def __init__(
