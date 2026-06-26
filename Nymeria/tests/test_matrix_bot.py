@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from nymeria.triggers.bot_helpers import SEEN_EVENT_TTL_SECONDS, SeenEventCache
 from nymeria.triggers.matrix_bot import (
     MatrixCommand,
     MatrixReplyTarget,
@@ -329,6 +330,21 @@ def test_sync_response_updates_dm_summary_and_handles_events():
     assert "!dm:example.org" in bot._dm_like_rooms
     assert api.chat_stream_calls[0]["thread_id"] == "matrix_dm-example.org"
     assert matrix.sent[0]["content"]["body"] == "matrix reply"
+
+
+def test_matrix_mark_seen_uses_shared_ttl_cache():
+    # Slice 22 F2 follow-up: matrix's former unbounded set[str] dedupe now rides
+    # the shared SeenEventCache, gaining a TTL. The (already-str) event id dedupes
+    # within the TTL window and is forgotten (treated as new) once it expires.
+    bot, _api, _matrix = make_bot()
+    clock = {"now": 1000.0}
+    bot._seen = SeenEventCache(clock=lambda: clock["now"])
+
+    assert bot._mark_seen("$evt-1") is False  # first sight: new
+    assert bot._mark_seen("$evt-1") is True  # redelivery within TTL: deduped
+
+    clock["now"] += SEEN_EVENT_TTL_SECONDS + 1  # let the entry expire
+    assert bot._mark_seen("$evt-1") is False  # forgotten after TTL: new again
 
 
 def test_send_text_adds_matrix_reply_relation():
