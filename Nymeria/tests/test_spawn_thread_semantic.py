@@ -20,11 +20,15 @@ from nymeria.core.thread_config import ThreadConfigManager
 from nymeria.core.thread_metadata import ThreadMetadataManager
 from nymeria.tools import SEED_TOOLS
 from nymeria.tools.spawn_thread import (
+    DEFAULT_IDLE_TIMEOUT_HOURS,
     PLATFORM_META_IDLE_TIMEOUT,
     PLATFORM_META_LAST_ACTIVE,
     PLATFORM_META_LIFETIME,
+    _build_spawn_preamble,
     _invoke_spawned,
+    _reconcile_lifetime,
     _resolve_semantic_tools,
+    _resolve_spawn_tools,
     spawn_thread,
 )
 
@@ -597,3 +601,285 @@ class TestInvokeSpawnedInternals:
         # the completed event carries the same iteration-limit-adjusted text
         assert events[-1][0] == "task_completed"
         assert events[-1][4]["content"] == result
+
+
+# ---------------------------------------------------------------------------
+# F6 decomposition: direct unit tests for the extracted helpers
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileLifetime:
+    """_reconcile_lifetime(ttl_hours, lifetime, idle_timeout_hours)."""
+
+    def test_permanent_when_all_none(self):
+        assert _reconcile_lifetime(None, None, None) == (None, [], None)
+
+    def test_positive_int_passes_through(self):
+        assert _reconcile_lifetime(6, None, None) == (6, [], None)
+
+    def test_string_int_is_coerced(self):
+        # The @tool coerces args to int, but the helper's int() is defensive.
+        weird: Any = "8"
+        assert _reconcile_lifetime(weird, None, None) == (8, [], None)
+
+    def test_zero_rejected(self):
+        ttl, warnings, error = _reconcile_lifetime(0, None, None)
+        assert ttl is None
+        assert error == "[Error]: ttl_hours must be >= 1 (or None for a permanent thread)."
+
+    def test_negative_rejected(self):
+        ttl, _w, error = _reconcile_lifetime(-1, None, None)
+        assert ttl is None
+        assert error is not None and error.startswith("[Error]: ttl_hours must be >= 1")
+
+    def test_non_integer_rejected(self):
+        weird: Any = "abc"
+        ttl, _w, error = _reconcile_lifetime(weird, None, None)
+        assert ttl is None
+        assert error == "[Error]: ttl_hours must be an integer; got 'abc'."
+
+    def test_unknown_lifetime_rejected(self):
+        ttl, _w, error = _reconcile_lifetime(None, "ephemeral", None)
+        assert ttl is None
+        assert error is not None and error.startswith("[Error]: Unknown lifetime 'ephemeral'")
+
+    def test_legacy_temporary_without_idle_uses_default(self):
+        assert _reconcile_lifetime(None, "temporary", None) == (
+            DEFAULT_IDLE_TIMEOUT_HOURS,
+            [],
+            None,
+        )
+
+    def test_legacy_temporary_with_idle_uses_idle(self):
+        assert _reconcile_lifetime(None, "temporary", 3) == (3, [], None)
+
+    def test_ttl_wins_over_legacy_lifetime_with_warning(self):
+        ttl, warnings, error = _reconcile_lifetime(5, "temporary", 9)
+        assert (ttl, error) == (5, None)
+        assert warnings == [
+            "legacy lifetime/idle_timeout_hours ignored because ttl_hours is set"
+        ]
+
+    def test_permanent_lifetime_with_idle_warns(self):
+        ttl, warnings, error = _reconcile_lifetime(None, "permanent", 4)
+        assert (ttl, error) == (None, None)
+        assert warnings == [
+            "idle_timeout_hours ignored when lifetime='permanent'; use ttl_hours for temporary cleanup"
+        ]
+
+    def test_idle_without_lifetime_warns(self):
+        ttl, warnings, error = _reconcile_lifetime(None, None, 4)
+        assert (ttl, error) == (None, None)
+        assert warnings == [
+            "idle_timeout_hours ignored without lifetime='temporary'; use ttl_hours for temporary cleanup"
+        ]
+
+
+class TestResolveSpawnToolsUnit:
+    """_resolve_spawn_tools(agent, ...) -> (enabled, disabled, records, warnings, error)."""
+
+    def _call(self, agent, **overrides):
+        kwargs = dict(
+            user_id="u1",
+            parent_thread_id=None,
+            tool_queries=None,
+            tool_query_top_k=8,
+            tool_categories=None,
+            optional_tools=None,
+            disabled_tools=None,
+            include_core_tools=True,
+            pre_warnings=[],
+        )
+        kwargs.update(overrides)
+        return _resolve_spawn_tools(agent, **kwargs)
+
+    def test_admin_only_tool_blocked_for_user(self, stub_agent):
+        enabled, disabled, _records, _warnings, error = self._call(
+            stub_agent, optional_tools=["claude_code"]
+        )
+        assert error is not None
+        assert error.startswith(
+            "[Error]: Admin-only tools cannot be enabled on a spawned thread"
+        )
+        assert "claude_code" in error
+
+    def test_developer_only_tool_blocked_for_user(self, stub_agent):
+        _enabled, _disabled, _records, _warnings, error = self._call(
+            stub_agent, optional_tools=["hello_test"]
+        )
+        assert error is not None
+        assert error.startswith(
+            "[Error]: Developer-only diagnostic tools cannot be enabled on a "
+            "spawned thread"
+        )
+
+    def test_unknown_optional_tool_warns(self, stub_agent):
+        enabled, _disabled, _records, warnings, error = self._call(
+            stub_agent, optional_tools=["zzz_not_a_tool"]
+        )
+        assert error is None
+        assert "zzz_not_a_tool" not in enabled
+        assert any("unknown tool(s): zzz_not_a_tool" in w for w in warnings)
+
+    def test_unknown_disabled_tool_warns(self, stub_agent):
+        _enabled, disabled, _records, warnings, error = self._call(
+            stub_agent, disabled_tools=["zzz_not_a_tool"]
+        )
+        assert error is None
+        assert "zzz_not_a_tool" not in disabled
+        assert any("unknown tool(s) to disable: zzz_not_a_tool" in w for w in warnings)
+
+    def test_include_core_tools_false_funnels_seed_into_disabled(self, stub_agent):
+        _enabled, disabled, _records, _warnings, error = self._call(
+            stub_agent, include_core_tools=False
+        )
+        assert error is None
+        seed_names = {t.name for t in SEED_TOOLS}
+        assert seed_names.issubset(set(disabled))
+
+    def test_unknown_category_warns(self, stub_agent):
+        _enabled, _disabled, _records, warnings, error = self._call(
+            stub_agent, tool_categories=["definitely-not-a-category"]
+        )
+        assert error is None
+        assert any(
+            "unknown categor(ies): definitely-not-a-category" in w for w in warnings
+        )
+
+    def test_valid_category_expands_into_enabled(self, stub_agent):
+        from nymeria.tools import (
+            ADMIN_ONLY_TOOL_NAMES,
+            CATALOG_TOOLS,
+            DEVELOPER_ONLY_TOOL_NAMES,
+        )
+        from nymeria.tools.metadata import (
+            get_all_categories,
+            get_category_tools_summary,
+        )
+
+        summary = get_category_tools_summary()
+        restricted = set(ADMIN_ONLY_TOOL_NAMES) | set(DEVELOPER_ONLY_TOOL_NAMES)
+        # Pick a category whose CATALOG (bindable) tools are all enable-able by
+        # a normal user, so the admin/developer gate does not fire.
+        target = None
+        expected: set[str] = set()
+        for cat in get_all_categories():
+            cands = {n for n in summary.get(cat, []) if n in CATALOG_TOOLS}
+            if cands and not (cands & restricted):
+                target = cat
+                expected = cands
+                break
+        assert target is not None, "no unrestricted category with catalog tools"
+        enabled, _disabled, _records, _warnings, error = self._call(
+            stub_agent, tool_categories=[target]
+        )
+        assert error is None
+        assert expected.issubset(enabled)
+
+    def test_pre_warnings_are_threaded_through(self, stub_agent):
+        _enabled, _disabled, _records, warnings, error = self._call(
+            stub_agent, pre_warnings=["carried-over"]
+        )
+        assert error is None
+        assert warnings[0] == "carried-over"
+
+
+class TestBuildSpawnPreamble:
+    """_build_spawn_preamble(...) line order and content."""
+
+    def test_minimal_preamble(self):
+        out = _build_spawn_preamble(
+            new_thread_id="spawned-x",
+            mode_norm="fresh",
+            parent_thread_id=None,
+            ttl_hours_resolved=None,
+            make_callable=False,
+            callable_name=None,
+            tool_resolution_records=[],
+            include_core_tools=True,
+            enabled_tools=[],
+            disabled_tools=[],
+            warnings=[],
+        )
+        assert out == (
+            "[Spawned]: thread_id=spawned-x\n"
+            'To delete later: spawn_thread(action="delete", '
+            'delete_thread_id="spawned-x")'
+        )
+
+    def test_full_preamble_line_order(self):
+        records = [{"name": "browser_navigate", "score": 0.88, "query": "research"}]
+        out = _build_spawn_preamble(
+            new_thread_id="spawned-y",
+            mode_norm="branched",
+            parent_thread_id="parent-1",
+            ttl_hours_resolved=6,
+            make_callable=True,
+            callable_name="spawned_y",
+            tool_resolution_records=records,
+            include_core_tools=True,
+            enabled_tools=["browser_navigate"],
+            disabled_tools=["bash_execute"],
+            warnings=["heads up"],
+        )
+        lines = out.split("\n")
+        assert lines[0] == "[Spawned]: thread_id=spawned-y"
+        assert lines[1] == "Mode: branched from parent-1 (inherits checkpoint history)."
+        assert lines[2] == "Lifetime: temporary (auto-deletes after 6h of inactivity)."
+        assert lines[3] == 'Callable as: spawned_y(task="..."). Any thread can invoke this.'
+        assert lines[4] == '[Resolved tools]: browser_navigate (0.88 <- "research")'
+        assert lines[5] == "Enabled optional tools: browser_navigate"
+        assert lines[6] == "Disabled core tools: bash_execute"
+        assert lines[7] == "[Warning]: heads up"
+        assert lines[8] == (
+            'To delete later: spawn_thread(action="delete", '
+            'delete_thread_id="spawned-y")'
+        )
+        # The "Core tools: disabled" line is mutually exclusive with the
+        # "Disabled core tools" line (it only renders when include_core_tools
+        # is False), so it must NOT appear here.
+        assert "Core tools: disabled" not in out
+
+    def test_core_tools_disabled_line_when_opted_out(self):
+        out = _build_spawn_preamble(
+            new_thread_id="spawned-z",
+            mode_norm="fresh",
+            parent_thread_id=None,
+            ttl_hours_resolved=None,
+            make_callable=False,
+            callable_name=None,
+            tool_resolution_records=[],
+            include_core_tools=False,
+            enabled_tools=["browser_navigate"],
+            disabled_tools=["bash_execute"],
+            warnings=[],
+        )
+        assert "Core tools: disabled (include_core_tools=False" in out
+        # When include_core_tools is False the "Disabled core tools" line is
+        # suppressed (the funnel already lists every core tool as disabled).
+        assert "Disabled core tools:" not in out
+
+    def test_resolved_tools_truncates_after_six(self):
+        records = [
+            {"name": f"tool_{i}", "score": 0.5, "query": "q"} for i in range(8)
+        ]
+        out = _build_spawn_preamble(
+            new_thread_id="spawned-w",
+            mode_norm="fresh",
+            parent_thread_id=None,
+            ttl_hours_resolved=None,
+            make_callable=False,
+            callable_name=None,
+            tool_resolution_records=records,
+            include_core_tools=True,
+            enabled_tools=[],
+            disabled_tools=[],
+            warnings=[],
+        )
+        resolved_line = next(
+            line for line in out.split("\n") if line.startswith("[Resolved tools]:")
+        )
+        assert "tool_0" in resolved_line
+        assert "tool_5" in resolved_line
+        assert "tool_6" not in resolved_line
+        assert "+2 more" in resolved_line
