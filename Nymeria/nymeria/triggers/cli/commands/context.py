@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from .system import (
+from ._shared import (
     call_client_method,
     confirmation_granted,
     confirmation_required_result,

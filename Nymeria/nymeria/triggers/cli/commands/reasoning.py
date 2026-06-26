@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from .system import (
+from ._shared import (
     call_client_method,
     mapping_get,
     unsupported_transport_result,

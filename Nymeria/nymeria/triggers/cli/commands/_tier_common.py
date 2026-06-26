@@ -15,7 +15,7 @@ from typing import Any
 
 from ....config.model_tiers import is_tier_alias, plan_tier_switch, resolve_tier
 from . import CommandContext, CommandMessage, CommandResult
-from .system import (
+from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
     has_client_method,

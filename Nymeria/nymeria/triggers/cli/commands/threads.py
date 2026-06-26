@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from .system import (
+from ._shared import (
     call_client_method,
     compact_id,
     confirmation_granted,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from ..state.model import AssistantMessage, CLIUIState, UserMessage
-from .system import (
+from ._shared import (
     call_client_method,
     confirmation_granted,
     strip_confirmation_flags,

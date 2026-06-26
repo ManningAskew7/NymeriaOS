@@ -7,15 +7,13 @@ from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from ._shared import (
-    mapping_sequence as _mapping_sequence,
-    string_list as _string_list,
-)
-from .system import (
     CommandClientMethodUnavailable,
     call_client_method,
     compact_id,
     mapping_get,
+    mapping_sequence as _mapping_sequence,
     one_line,
+    string_list as _string_list,
     unsupported_transport_result,
 )
 
