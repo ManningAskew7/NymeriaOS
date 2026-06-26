@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import logging
 import re
-import time
 from collections.abc import AsyncIterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
@@ -14,15 +13,13 @@ from urllib.parse import quote
 
 import httpx
 
-from .bot_helpers import safe_id as _safe_id
+from .bot_helpers import SeenEventCache, safe_id as _safe_id
 from .message_splitter import split_webex_message as split_message
 from .sse_consumer import consume_sse_stream
 
 logger = logging.getLogger(__name__)
 
 WEBEX_TEXT_LIMIT = 3500
-SEEN_MESSAGE_TTL_SECONDS = 10 * 60
-SEEN_MESSAGE_MAX = 5000
 
 
 class BotAPIError(Exception):
@@ -189,44 +186,6 @@ class WebexMessage:
 class WebexReplyTarget:
     room_id: str
     parent_id: Optional[str] = None
-
-
-class _SeenMessageCache:
-    """TTL cache for webhook message dedupe by Webex message ID."""
-
-    def __init__(
-        self,
-        *,
-        ttl_seconds: int = SEEN_MESSAGE_TTL_SECONDS,
-        max_items: int = SEEN_MESSAGE_MAX,
-        clock=time.monotonic,
-    ) -> None:
-        self._ttl_seconds = ttl_seconds
-        self._max_items = max_items
-        self._clock = clock
-        self._items: dict[str, float] = {}
-
-    def mark_seen(self, key: str) -> bool:
-        now = self._clock()
-        expires_at = self._items.get(key)
-        if expires_at and expires_at > now:
-            return True
-        self._items[key] = now + self._ttl_seconds
-        self._prune(now)
-        return False
-
-    def _prune(self, now: float) -> None:
-        if len(self._items) <= self._max_items:
-            stale = [key for key, expiry in self._items.items() if expiry <= now]
-        else:
-            stale_count = len(self._items) - (self._max_items // 2)
-            stale = [
-                key
-                for key, expiry in self._items.items()
-                if expiry <= now
-            ] + list(self._items)[:stale_count]
-        for key in stale:
-            self._items.pop(key, None)
 
 
 class WebexCommand:
@@ -401,14 +360,14 @@ class NymeriaWebexBot:
         bot_person_id: Optional[str] = None,
         bot_email: Optional[str] = None,
         show_tool_events: bool = False,
-        seen_cache: Optional[_SeenMessageCache] = None,
+        seen_cache: Optional[SeenEventCache] = None,
     ) -> None:
         self.api = api
         self.webex = webex
         self.bot_person_id = (bot_person_id or "").strip() or None
         self.bot_email = (bot_email or "").strip() or None
         self.show_tool_events = show_tool_events
-        self._seen = seen_cache or _SeenMessageCache()
+        self._seen = seen_cache or SeenEventCache()
         self._bindings: dict[str, str] = {}
         self._binding_users: dict[str, str] = {}
 

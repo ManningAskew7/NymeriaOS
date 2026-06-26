@@ -171,3 +171,13 @@ def test_instagram_webhook_rejects_stale_message_timestamp(
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Stale webhook event"
+
+
+def test_instagram_router_seen_cache_is_shared_event_cache() -> None:
+    # Slice 22 F2: the module-level webhook dedupe singleton is the shared
+    # bot_helpers.SeenEventCache (was a per-bot _SeenMessageCache copy), so the
+    # webhook routers share one TTL-cache implementation instead of per-bot copies.
+    from nymeria.api.routers.instagram_bot import _INSTAGRAM_SEEN_CACHE
+    from nymeria.triggers.bot_helpers import SeenEventCache
+
+    assert isinstance(_INSTAGRAM_SEEN_CACHE, SeenEventCache)

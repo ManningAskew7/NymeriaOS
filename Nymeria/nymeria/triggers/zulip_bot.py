@@ -19,6 +19,7 @@ import httpx
 
 from .api_client import NymeriaAPIClient
 from .bot_helpers import (
+    SeenEventCache,
     UserResolver,
     http_error_detail,
     join_api_base,
@@ -33,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 ZULIP_TEXT_LIMIT = 4000
 BINDING_REFRESH_INTERVAL_SECONDS = 60
-SEEN_EVENT_MAX = 5000
 
 
 class ZulipQueueExpired(RuntimeError):
@@ -346,7 +346,7 @@ class NymeriaZulipBot:
         self._running = False
         self._queue_id: Optional[str] = None
         self._last_event_id = -1
-        self._seen_event_ids: set[int] = set()
+        self._seen = SeenEventCache()
         self._bindings: Dict[str, str] = {}
         self._binding_users: Dict[str, str] = {}
         self._user_resolver = UserResolver(self.api, "zulip", logger=logger)
@@ -522,13 +522,8 @@ class NymeriaZulipBot:
         )
 
     def _mark_seen(self, event_id: int) -> bool:
-        if event_id in self._seen_event_ids:
-            return True
-        self._seen_event_ids.add(event_id)
-        if len(self._seen_event_ids) > SEEN_EVENT_MAX:
-            for old_id in list(self._seen_event_ids)[: SEEN_EVENT_MAX // 2]:
-                self._seen_event_ids.discard(old_id)
-        return False
+        """Dedupe by event id via the shared TTL cache (keyed by str)."""
+        return self._seen.mark_seen(str(event_id))
 
     async def _handle_command(
         self,

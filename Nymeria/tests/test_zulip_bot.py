@@ -6,6 +6,7 @@ from typing import Any, Mapping
 import httpx
 import pytest
 
+from nymeria.triggers.bot_helpers import SEEN_EVENT_TTL_SECONDS, SeenEventCache
 from nymeria.triggers.zulip_bot import (
     NymeriaZulipBot,
     ZulipCommand,
@@ -431,3 +432,20 @@ def test_unbind_non_http_error_propagates():
 
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(bot.handle_zulip_event(event(event_id=22, message_id=32, content="unbind")))
+
+
+def test_zulip_mark_seen_uses_shared_ttl_cache_keyed_by_str():
+    # Slice 22 F2: zulip's former unbounded set[int] dedupe now rides the shared
+    # SeenEventCache, gaining a TTL. The int event id is keyed by str, dedupes
+    # within the TTL window, and is forgotten (treated as new) once it expires.
+    bot, _api, _client = make_bot()
+    clock = {"now": 1000.0}
+    bot._seen = SeenEventCache(clock=lambda: clock["now"])
+
+    assert bot._mark_seen(7) is False  # first sight: new
+    # The int id is keyed by str: re-marking the string form reports it as seen.
+    assert bot._seen.mark_seen("7") is True
+    assert bot._mark_seen(7) is True  # redelivery within TTL: deduped
+
+    clock["now"] += SEEN_EVENT_TTL_SECONDS + 1  # let the entry expire
+    assert bot._mark_seen(7) is False  # forgotten after TTL: new again

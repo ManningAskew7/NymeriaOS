@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from nymeria.triggers.bot_helpers import SeenEventCache
 from nymeria.triggers.instagram_bot import (
     InstagramCommand,
     InstagramGraphClient,
@@ -292,6 +293,43 @@ def test_webhook_dedupes_messages_and_streams_to_bound_thread() -> None:
         assert second == {"processed": 0, "skipped": 1}
         assert api.chat_stream_calls == [("hello", "desktop-thread", "owner")]
         assert graph.sent == [("ig_user-1", "Hello from Nymeria", "ig-1")]
+
+    asyncio.run(run())
+
+
+def test_webhook_dedupes_across_fresh_bot_instances_via_shared_cache() -> None:
+    # Slice 22 F2: each webhook delivery builds a FRESH bot but injects the
+    # module-level SeenEventCache singleton, so a redelivered event is deduped
+    # across deliveries even though the second bot instance never saw it itself.
+    async def run() -> None:
+        shared_cache = SeenEventCache()
+        payload = _payload(_message_event(mid="mid.1"))
+
+        def make_delivery() -> tuple[NymeriaInstagramBot, FakeNymeriaAPI]:
+            api = FakeNymeriaAPI()
+            api.resolved[("instagram", "ig_user-1")] = "owner"
+            api.bindings = [
+                {
+                    "provider": "instagram",
+                    "platform_chat_id": "instagram:ig-1:ig_user-1",
+                    "thread_id": "desktop-thread",
+                    "user_id": "owner",
+                }
+            ]
+            graph = FakeInstagramGraph()
+            bot = NymeriaInstagramBot(api, graph, seen_cache=shared_cache)  # type: ignore[arg-type]
+            return bot, api
+
+        bot1, _api1 = make_delivery()
+        first = await bot1.handle_webhook(payload)
+
+        bot2, api2 = make_delivery()  # fresh instance, same shared singleton
+        second = await bot2.handle_webhook(payload)
+
+        assert first == {"processed": 1, "skipped": 0}
+        assert second == {"processed": 0, "skipped": 1}
+        # The fresh second bot streamed nothing: the shared cache deduped it.
+        assert api2.chat_stream_calls == []
 
     asyncio.run(run())
 

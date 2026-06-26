@@ -16,15 +16,13 @@ import httpx
 import jwt
 from jwt import InvalidTokenError, PyJWKClient
 
-from .bot_helpers import safe_id as _safe_id
+from .bot_helpers import SeenEventCache, safe_id as _safe_id
 from .message_splitter import split_teams_message as split_message
 from .sse_consumer import consume_sse_stream
 
 logger = logging.getLogger(__name__)
 
 TEAMS_TEXT_LIMIT = 4000
-SEEN_ACTIVITY_TTL_SECONDS = 10 * 60
-SEEN_ACTIVITY_MAX = 5000
 ACTIVE_CHAT_MAX = 5000
 BOT_FRAMEWORK_TOKEN_URL = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token"
 BOT_FRAMEWORK_SCOPE = "https://api.botframework.com/.default"
@@ -383,44 +381,6 @@ def _extract_text_from_html_attachments(attachments: list[Mapping[str, Any]]) ->
     return ""
 
 
-class _SeenActivityCache:
-    """TTL cache for Teams webhook activity dedupe."""
-
-    def __init__(
-        self,
-        *,
-        ttl_seconds: int = SEEN_ACTIVITY_TTL_SECONDS,
-        max_items: int = SEEN_ACTIVITY_MAX,
-        clock=time.monotonic,
-    ) -> None:
-        self._ttl_seconds = ttl_seconds
-        self._max_items = max_items
-        self._clock = clock
-        self._items: dict[str, float] = {}
-
-    def mark_seen(self, key: str) -> bool:
-        now = self._clock()
-        expires_at = self._items.get(key)
-        if expires_at and expires_at > now:
-            return True
-        self._items[key] = now + self._ttl_seconds
-        self._prune(now)
-        return False
-
-    def _prune(self, now: float) -> None:
-        if len(self._items) <= self._max_items:
-            stale = [key for key, expiry in self._items.items() if expiry <= now]
-        else:
-            stale_count = len(self._items) - (self._max_items // 2)
-            stale = [
-                key
-                for key, expiry in self._items.items()
-                if expiry <= now
-            ] + list(self._items)[:stale_count]
-        for key in stale:
-            self._items.pop(key, None)
-
-
 class TeamsBotFrameworkClient:
     """Minimal Bot Connector REST client for Teams replies."""
 
@@ -536,13 +496,13 @@ class NymeriaTeamsBot:
         teams_client: TeamsClientProtocol,
         respond_mode: str = "mention",
         show_tool_events: bool = False,
-        seen_cache: Optional[_SeenActivityCache] = None,
+        seen_cache: Optional[SeenEventCache] = None,
     ) -> None:
         self.api = api
         self.teams = teams_client
         self.respond_mode = respond_mode
         self.show_tool_events = show_tool_events
-        self._seen = seen_cache or _SeenActivityCache()
+        self._seen = seen_cache or SeenEventCache()
         self._bindings: dict[str, str] = {}
         self._binding_users: dict[str, str] = {}
         self._active_chats: set[str] = set()
