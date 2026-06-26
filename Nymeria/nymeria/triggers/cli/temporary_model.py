@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .commands import CommandContext
-from .commands.system import call_client_method, mapping_get
+from .commands._shared import call_client_method, mapping_get
 
 
 async def apply_temporary_model(

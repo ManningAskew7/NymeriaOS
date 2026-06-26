@@ -7,14 +7,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from ._shared import mapping_sequence as _mapping_sequence
-from .system import (
+from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
     compact_id,
     confirmation_granted,
     confirmation_required_result,
     mapping_get,
+    mapping_sequence as _mapping_sequence,
     one_line,
     parse_scalar,
     strip_confirmation_flags,

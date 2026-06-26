@@ -6,7 +6,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from .system import (
+from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
     format_bool,

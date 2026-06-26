@@ -7,7 +7,7 @@ from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from ..rendering.form_panel import FormField, FormOption, FormResult, FormSpec, FormTab
-from .system import (
+from ._shared import (
     call_client_method,
     compact_id,
     mapping_get,

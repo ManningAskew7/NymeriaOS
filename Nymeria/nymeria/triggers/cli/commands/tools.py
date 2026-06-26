@@ -9,15 +9,14 @@ from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from ._shared import (
-    mapping_sequence as _mapping_sequence,
-    string_list as _string_list,
-)
-from .system import (
     CommandClientMethodUnavailable,
     call_client_method,
     compact_id,
     mapping_get,
+    mapping_sequence as _mapping_sequence,
     one_line,
+    parse_scalar,
+    string_list as _string_list,
     unsupported_transport_result,
 )
 
@@ -737,28 +736,8 @@ def _parse_params(args: Sequence[str]) -> tuple[dict[str, Any], str]:
         key = key.strip()
         if not key:
             return {}, "Parameter keys cannot be blank."
-        params[key] = _parse_scalar(value)
+        params[key] = parse_scalar(value)
     return params, ""
-
-
-def _parse_scalar(value: str) -> Any:
-    raw = value.strip()
-    lowered = raw.casefold()
-    if lowered in {"true", "yes", "on"}:
-        return True
-    if lowered in {"false", "no", "off"}:
-        return False
-    if lowered in {"none", "null"}:
-        return None
-    try:
-        if "." not in raw and "e" not in lowered:
-            return int(raw)
-    except ValueError:
-        pass  # Not an integer; try float parsing below.
-    try:
-        return float(raw)
-    except ValueError:
-        return raw
 
 
 def register(registry: CommandRegistry) -> None:

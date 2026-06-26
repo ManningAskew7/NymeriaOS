@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from .system import (
+from ._shared import (
     call_client_method,
     normalize_thread_id,
     thread_title,

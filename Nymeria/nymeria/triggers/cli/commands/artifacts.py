@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from .system import (
+from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
     one_line,

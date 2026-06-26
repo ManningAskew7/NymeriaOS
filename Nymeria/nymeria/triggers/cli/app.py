@@ -2082,7 +2082,7 @@ class CLIApp:
         ``None``. On success returns the coerced list of Mapping threads (possibly
         empty); each caller applies its own selection.
         """
-        from .commands.system import CommandClientMethodUnavailable, call_client_method
+        from .commands._shared import CommandClientMethodUnavailable, call_client_method
 
         context = CommandContext(
             client=self._client,
@@ -2115,7 +2115,7 @@ class CLIApp:
             _format_thread_resolution_ambiguity,
             resolve_thread_reference,
         )
-        from .commands.system import normalize_thread_id, thread_title
+        from .commands._shared import normalize_thread_id, thread_title
 
         threads = await self._load_threads_for_startup(f"Cannot open thread '{ref}'")
         if threads is None:
@@ -2133,7 +2133,7 @@ class CLIApp:
 
     async def _resolve_most_recent_thread(self) -> dict[str, str] | None:
         """Find the most recently updated thread for ``--continue``."""
-        from .commands.system import normalize_thread_id, thread_title
+        from .commands._shared import normalize_thread_id, thread_title
 
         threads = await self._load_threads_for_startup("Cannot continue")
         if threads is None:
