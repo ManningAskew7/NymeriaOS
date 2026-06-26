@@ -1019,6 +1019,33 @@ class NymeriaAgent:
         """
         return self._get_llm_config_for_thread(thread_id)
 
+    def is_thread_busy(self, thread_id: str) -> bool:
+        """Public accessor: is the given thread's turn-lock currently held?
+
+        Stable read-only surface for helper modules outside the ``agent_*``
+        family (e.g. ``agents/tool_factory.py``) so a best-effort busy check
+        need not reach into the private ``_thread_locks`` manager. Delegates to
+        ``ThreadLockManager.is_thread_busy``. The richer lock-lifecycle surface
+        (``get_lock``/``get_lock_info``/...) intentionally stays on the shared
+        ``agent._thread_locks`` accessor (see ``thread_lock_manager.py``). See
+        slice 27 F10.
+        """
+        return self._thread_locks.is_thread_busy(thread_id)
+
+    def stop_ticker(self) -> bool:
+        """Stop the scheduled-TODO ticker if one is running.
+
+        Public lifecycle method so callers outside the ``agent_*`` family (e.g.
+        the gateway server's shutdown path) need not reach into the private
+        ``_ticker`` attribute. Returns ``True`` if a ticker was present and its
+        ``stop()`` was invoked, ``False`` if no ticker is running; a failing
+        ``stop()`` propagates to the caller. See slice 27 F10.
+        """
+        if self._ticker is None:
+            return False
+        self._ticker.stop()
+        return True
+
     def _clear_expired_llm_fallback_if_idle(self, thread_id: str) -> bool:
         from .agent_llm_config import clear_expired_llm_fallback_if_idle
         return clear_expired_llm_fallback_if_idle(self, thread_id)

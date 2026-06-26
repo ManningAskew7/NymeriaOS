@@ -94,12 +94,11 @@ class GatewayServer:
         if self._agent is not None:
             logger.info("Stopping agent background threads...")
 
-            if hasattr(self._agent, '_ticker') and self._agent._ticker is not None:
-                try:
-                    self._agent._ticker.stop()
+            try:
+                if self._agent.stop_ticker():
                     logger.info("Ticker stopped")
-                except Exception as e:
-                    logger.error(f"Error stopping ticker: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Error stopping ticker: {e}", exc_info=True)
 
         self._running = False
         self._stop_event.set()

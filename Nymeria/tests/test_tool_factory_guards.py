@@ -215,7 +215,9 @@ def test_circular_no_agent_skips():
 # _check_busy
 # --------------------------------------------------------------------------- #
 def _busy_agent(is_busy):
-    return SimpleNamespace(_thread_locks=SimpleNamespace(is_thread_busy=lambda t: is_busy))
+    # _check_busy uses the public agent.is_thread_busy() accessor (slice 27 F10),
+    # not a reach-in into the private _thread_locks manager.
+    return SimpleNamespace(is_thread_busy=lambda t: is_busy)
 
 
 def test_busy_blocks_when_busy():
@@ -230,7 +232,7 @@ def test_busy_allows_when_free():
 
 
 def test_busy_skips_when_if_busy_queue():
-    # if_busy != "error" -> no best-effort busy check (must not touch _thread_locks).
+    # if_busy != "error" -> no best-effort busy check (must not call is_thread_busy).
     agent = SimpleNamespace()
     assert _check_busy(agent, "ask", "queue", name="Helper", thread_id="t") is None
 
