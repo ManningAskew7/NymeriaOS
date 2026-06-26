@@ -28,7 +28,12 @@ from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver
 from .message_splitter import split_discord_message as split_message
-from .sse_consumer import consume_sse_stream, dispatch_event, parse_attach_paths
+from .sse_consumer import (
+    consume_autonomous_firehose,
+    consume_sse_stream,
+    dispatch_event,
+    parse_attach_paths,
+)
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
 try:  # pragma: no cover - discord.py ships in the optional nymeriaos[discord] extra.
@@ -808,65 +813,17 @@ class NymeriaDiscordBot(_BotBase):
         # this listener and we route them to Discord channels by decoding
         # the event's thread_id prefix (`discord_<guild>_<channel>`). Works
         # because the service token is admin-role; non-admin tokens can't
-        # request the wildcard and get HTTP 403.
-        url = f"{self.api.base_url}/autonomous/stream"
-        headers = {
-            "Authorization": f"Bearer {self.api.api_key}",
-            "X-Nymeria-Act-As": "*",
-        }
-
-        logger.info(f"API SSE listener connecting to {self.api.base_url}/autonomous/stream")
-
-        reconnect_delay = 3
-        max_delay = 30
-
-        while not self.is_closed():
-            try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("GET", url, headers=headers) as resp:
-                        if resp.status_code != 200:
-                            logger.error(f"SSE connection failed: {resp.status_code}")
-                            await asyncio.sleep(reconnect_delay)
-                            reconnect_delay = min(reconnect_delay * 2, max_delay)
-                            continue
-
-                        logger.info("API SSE connected, listening for events")
-                        reconnect_delay = 3
-
-                        async for line in resp.aiter_lines():
-                            if self.is_closed():
-                                return
-
-                            if not line or not line.startswith("data: "):
-                                continue
-
-                            raw = line[6:]
-                            if raw.startswith(":"):
-                                continue
-
-                            try:
-                                event = _json.loads(raw)
-                            except _json.JSONDecodeError:
-                                continue
-
-                            await self._handle_sse_event(event)
-
-            except httpx.ReadTimeout:
-                logger.debug("SSE read timeout, reconnecting...")
-            except httpx.ConnectError:
-                logger.warning(
-                    f"Cannot reach API at {self.api.base_url}, retrying in {reconnect_delay}s"
-                )
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.error(f"SSE listener error: {e}", exc_info=True)
-
-            if not self.is_closed():
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, max_delay)
-
-        logger.info("API SSE listener stopped")
+        # request the wildcard and get HTTP 403. The reconnect/parse loop is
+        # shared with the other bots via consume_autonomous_firehose; passing
+        # self.is_closed preserves the close-aware exit and trailing-sleep guard.
+        await consume_autonomous_firehose(
+            base_url=self.api.base_url,
+            api_key=self.api.api_key,
+            on_event=self._handle_sse_event,
+            log_label="API",
+            logger=logger,
+            should_stop=self.is_closed,
+        )
 
     # =========================================================================
     # SSE handler for autonomous stream (implements SSEEventHandler protocol)

@@ -56,6 +56,24 @@ def test_handle_sse_event_uses_dispatch_event():
     assert "dispatch_event" in src, "_handle_sse_event should call dispatch_event()"
 
 
+def test_api_sse_listener_uses_shared_firehose():
+    """_api_sse_listener must delegate to consume_autonomous_firehose (slice 21 F7)."""
+    src = inspect.getsource(NymeriaTelegramBot._api_sse_listener)
+    assert "consume_autonomous_firehose" in src, (
+        "_api_sse_listener should call consume_autonomous_firehose()"
+    )
+    # The inline reconnect/parse loop must be gone; the multi-bot routing tail
+    # now lives in _handle_firehose_event.
+    for token in ("httpx.AsyncClient", "aiter_lines", "reconnect_delay"):
+        assert token not in src, (
+            f"_api_sse_listener should not inline the firehose loop ({token})"
+        )
+    routing = inspect.getsource(NymeriaTelegramBot._handle_firehose_event)
+    assert "_dispatch_bot_for_thread" in routing, (
+        "_handle_firehose_event should keep the multi-bot routing"
+    )
+
+
 def test_handle_sse_event_has_no_inline_standard_dispatch():
     """Standard SSE types must no longer be string-matched inline.
 

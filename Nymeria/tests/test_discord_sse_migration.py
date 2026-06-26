@@ -96,6 +96,19 @@ def test_handle_sse_event_uses_dispatch_event():
     )
 
 
+def test_api_sse_listener_uses_shared_firehose():
+    """_api_sse_listener must delegate to consume_autonomous_firehose (slice 21 F7)."""
+    src = inspect.getsource(NymeriaDiscordBot._api_sse_listener)
+    assert "consume_autonomous_firehose" in src, (
+        "_api_sse_listener should call consume_autonomous_firehose()"
+    )
+    # The inline reconnect/parse loop must be gone.
+    for token in ("httpx.AsyncClient", "aiter_lines", "reconnect_delay"):
+        assert token not in src, (
+            f"_api_sse_listener should not inline the firehose loop ({token})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # No inline event type dispatch in handlers
 # ---------------------------------------------------------------------------
