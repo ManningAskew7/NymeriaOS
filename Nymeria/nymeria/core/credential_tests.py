@@ -166,79 +166,134 @@ async def _get_json_probe(
     )
 
 
-async def _test_github(
-    provider: str,
-    kind: str,
-    metadata: dict[str, Any],
-    secret_fields: dict[str, str],
-    settings: Any,
-) -> CredentialTestResult:
-    _ = provider, kind, settings
-    token = _first_secret(secret_fields, "token", "api_key", "value")
-    base_url = _base_url(metadata, "base_url", "api_base_url") or "https://api.github.com"
-    return await _get_json_probe(
-        f"{base_url}/user",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-        secrets=(token, base_url),
-    )
+def _make_get_tester(
+    *,
+    name: str,
+    secret_names: tuple[str, ...],
+    header_builder: Callable[[Optional[str]], dict[str, str]],
+    fixed_url: Optional[str] = None,
+    path: Optional[str] = None,
+    default_base_url: Optional[str] = None,
+    settings_base_attr: Optional[str] = None,
+) -> CredentialTester:
+    """Build a GET-probe credential tester from a small table.
+
+    The GitHub/Todoist/Anthropic/Tavily/Brave testers all extract one secret via
+    ``_first_secret``, build headers from it, and hit a GET endpoint through the
+    shared egress-screened ``_get_json_probe``. They differ only in the secret
+    field-name order, the URL, and the header shape, so they are generated here
+    rather than hand-written. The genuinely different POST/SearXNG/LLM testers
+    stay explicit below.
+
+    Two URL modes:
+
+    - ``fixed_url`` set: a hard-coded host (no user-supplied base URL); the only
+      redaction secret is the resolved value (matches ``_test_tavily`` /
+      ``_test_brave``).
+    - ``path`` + ``default_base_url`` set: resolve the base URL from metadata
+      (then an optional ``settings`` attribute, then the default), append
+      ``path``, and redact both the value and the base URL (matches
+      ``_test_github`` / ``_test_todoist`` / ``_test_anthropic``). ``path`` must
+      include its own leading ``/``.
+
+    Exactly one of ``fixed_url`` or ``path`` must be set; path mode also needs a
+    ``default_base_url``. These are validated at import (construction) time so a
+    malformed table entry fails loudly rather than shipping a broken probe.
+    """
+    if (fixed_url is None) == (path is None):
+        raise ValueError("_make_get_tester needs exactly one of fixed_url or path")
+    if path is not None and default_base_url is None:
+        raise ValueError("_make_get_tester path mode requires default_base_url")
+
+    async def _tester(
+        provider: str,
+        kind: str,
+        metadata: dict[str, Any],
+        secret_fields: dict[str, str],
+        settings: Any,
+    ) -> CredentialTestResult:
+        _ = provider, kind
+        value = _first_secret(secret_fields, *secret_names)
+        if fixed_url is not None:
+            return await _get_json_probe(
+                fixed_url,
+                headers=header_builder(value),
+                secrets=(value,),
+            )
+        configured = (
+            getattr(settings, settings_base_attr, None)
+            if settings_base_attr and settings is not None
+            else None
+        )
+        base_url = _base_url(metadata, "base_url", "api_base_url") or configured or default_base_url
+        return await _get_json_probe(
+            f"{str(base_url).rstrip('/')}{path}",
+            headers=header_builder(value),
+            secrets=(value, str(base_url)),
+        )
+
+    _tester.__name__ = name
+    _tester.__qualname__ = name
+    return _tester
 
 
-async def _test_todoist(
-    provider: str,
-    kind: str,
-    metadata: dict[str, Any],
-    secret_fields: dict[str, str],
-    settings: Any,
-) -> CredentialTestResult:
-    _ = provider, kind
-    token = _first_secret(secret_fields, "api_key", "token", "value")
-    configured = getattr(settings, "todoist_base_url", None) if settings is not None else None
-    base_url = _base_url(metadata, "base_url", "api_base_url") or configured or "https://api.todoist.com/api/v1"
-    return await _get_json_probe(
-        f"{str(base_url).rstrip('/')}/projects",
-        headers={"Authorization": f"Bearer {token}"},
-        secrets=(token, str(base_url)),
-    )
+_test_github = _make_get_tester(
+    name="_test_github",
+    secret_names=("token", "api_key", "value"),
+    path="/user",
+    default_base_url="https://api.github.com",
+    header_builder=lambda value: {
+        "Authorization": f"Bearer {value}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    },
+)
 
 
-async def _test_anthropic(
-    provider: str,
-    kind: str,
-    metadata: dict[str, Any],
-    secret_fields: dict[str, str],
-    settings: Any,
-) -> CredentialTestResult:
-    _ = provider, kind, settings
-    api_key = _first_secret(secret_fields, "api_key", "key", "value")
-    base_url = _base_url(metadata, "base_url", "api_base_url") or "https://api.anthropic.com/v1"
-    return await _get_json_probe(
-        f"{base_url}/models",
-        headers={
-            "x-api-key": api_key or "",
-            "anthropic-version": "2023-06-01",
-        },
-        secrets=(api_key, base_url),
-    )
+_test_todoist = _make_get_tester(
+    name="_test_todoist",
+    secret_names=("api_key", "token", "value"),
+    path="/projects",
+    default_base_url="https://api.todoist.com/api/v1",
+    settings_base_attr="todoist_base_url",
+    header_builder=lambda value: {"Authorization": f"Bearer {value}"},
+)
 
 
-async def _test_tavily(
-    provider: str,
-    kind: str,
-    metadata: dict[str, Any],
-    secret_fields: dict[str, str],
-    settings: Any,
-) -> CredentialTestResult:
-    _ = provider, kind, metadata, settings
-    api_key = _first_secret(secret_fields, "api_key", "token", "value")
-    return await _get_json_probe(
-        "https://api.tavily.com/usage",
-        headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-        secrets=(api_key,),
-    )
+_test_anthropic = _make_get_tester(
+    name="_test_anthropic",
+    secret_names=("api_key", "key", "value"),
+    path="/models",
+    default_base_url="https://api.anthropic.com/v1",
+    header_builder=lambda value: {
+        "x-api-key": value or "",
+        "anthropic-version": "2023-06-01",
+    },
+)
+
+
+_test_tavily = _make_get_tester(
+    name="_test_tavily",
+    secret_names=("api_key", "token", "value"),
+    fixed_url="https://api.tavily.com/usage",
+    header_builder=lambda value: {"Authorization": f"Bearer {value}"} if value else {},
+)
+
+
+# Brave's Web Search endpoint is a GET, so validate the key with a minimal query
+# (count=1) against the fixed api.search.brave.com host. The token rides in the
+# X-Subscription-Token header (not a Bearer). 401 means a bad key; a status below
+# 400 means the key works.
+_test_brave = _make_get_tester(
+    name="_test_brave",
+    secret_names=("api_key", "token", "value"),
+    fixed_url="https://api.search.brave.com/res/v1/web/search?q=ping&count=1",
+    header_builder=lambda value: {
+        "X-Subscription-Token": value or "",
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+    },
+)
 
 
 async def _test_exa(
@@ -333,30 +388,6 @@ async def _test_firecrawl(
         code="http_error",
         verified=True,
         metadata={"status_code": response.status_code},
-    )
-
-
-async def _test_brave(
-    provider: str,
-    kind: str,
-    metadata: dict[str, Any],
-    secret_fields: dict[str, str],
-    settings: Any,
-) -> CredentialTestResult:
-    # Brave's Web Search endpoint is a GET, so validate the key with a minimal
-    # query (count=1) against the fixed api.search.brave.com host. The token rides
-    # in the X-Subscription-Token header (not a Bearer). 401 means a bad key; a
-    # status below 400 means the key works.
-    _ = provider, kind, metadata, settings
-    api_key = _first_secret(secret_fields, "api_key", "token", "value")
-    return await _get_json_probe(
-        "https://api.search.brave.com/res/v1/web/search?q=ping&count=1",
-        headers={
-            "X-Subscription-Token": api_key or "",
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip",
-        },
-        secrets=(api_key,),
     )
 
 
