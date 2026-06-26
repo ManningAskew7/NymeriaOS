@@ -10,6 +10,7 @@ from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandR
 from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
+    call_client_user_scoped,
     one_line,
     unsupported_transport_result,
 )
@@ -83,18 +84,10 @@ async def _handle_artifacts_download(
         return artifact
 
     try:
-        downloaded = await call_client_method(
+        downloaded = await call_client_user_scoped(
             context,
             "download_workspace_artifact",
             artifact.path,
-            user_id=context.user_id,
-        )
-    except TypeError:
-        downloaded = await call_client_method(
-            context,
-            "download_workspace_artifact",
-            artifact.path,
-            context.user_id,
         )
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result(

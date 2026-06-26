@@ -11,6 +11,7 @@ from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandR
 from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
+    call_client_user_scoped,
     compact_id,
     mapping_get,
     mapping_sequence as _mapping_sequence,
@@ -56,13 +57,7 @@ async def _handle_tools_optional_context(
     _args: list[str],
 ) -> CommandResult:
     try:
-        tools = await call_client_method(
-            context,
-            "get_optional_tools",
-            user_id=context.user_id,
-        )
-    except TypeError:
-        tools = await call_client_method(context, "get_optional_tools", context.user_id)
+        tools = await call_client_user_scoped(context, "get_optional_tools")
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/tools optional", method_name=exc.method_name)
 
@@ -288,17 +283,7 @@ async def _handle_tools_defaults_context(
 
     if action == "reset":
         try:
-            result = await call_client_method(
-                context,
-                "reset_default_tools",
-                user_id=context.user_id,
-            )
-        except TypeError:
-            result = await call_client_method(
-                context,
-                "reset_default_tools",
-                context.user_id,
-            )
+            result = await call_client_user_scoped(context, "reset_default_tools")
         except CommandClientMethodUnavailable as exc:
             return unsupported_transport_result(
                 "/tools defaults reset",
@@ -324,13 +309,7 @@ async def _show_default_tools(
     command: str,
 ) -> CommandResult:
     try:
-        data = await call_client_method(
-            context,
-            "get_default_tools",
-            user_id=context.user_id,
-        )
-    except TypeError:
-        data = await call_client_method(context, "get_default_tools", context.user_id)
+        data = await call_client_user_scoped(context, "get_default_tools")
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result(command, method_name=exc.method_name)
 
@@ -373,19 +352,7 @@ async def _set_default_tools(
     tool_names: Sequence[str],
 ) -> CommandResult:
     try:
-        result = await call_client_method(
-            context,
-            "set_default_tools",
-            list(tool_names),
-            user_id=context.user_id,
-        )
-    except TypeError:
-        result = await call_client_method(
-            context,
-            "set_default_tools",
-            list(tool_names),
-            context.user_id,
-        )
+        result = await call_client_user_scoped(context, "set_default_tools", list(tool_names))
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result(
             "/tools defaults",

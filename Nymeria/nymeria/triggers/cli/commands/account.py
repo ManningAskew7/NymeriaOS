@@ -9,6 +9,7 @@ from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandR
 from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
+    call_client_user_scoped,
     compact_id,
     confirmation_granted,
     confirmation_required_result,
@@ -94,13 +95,7 @@ async def _handle_tokens_list(
     _args: list[str],
 ) -> CommandResult:
     try:
-        tokens = await call_client_method(
-            context,
-            "list_my_tokens",
-            user_id=context.user_id,
-        )
-    except TypeError:
-        tokens = await call_client_method(context, "list_my_tokens", context.user_id)
+        tokens = await call_client_user_scoped(context, "list_my_tokens")
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/account tokens", method_name=exc.method_name)
 
@@ -169,14 +164,7 @@ async def _handle_tokens_revoke(
         return confirmation_required_result("/account tokens revoke")
 
     try:
-        result = await call_client_method(
-            context,
-            "revoke_my_token",
-            prefix,
-            user_id=context.user_id,
-        )
-    except TypeError:
-        result = await call_client_method(context, "revoke_my_token", prefix, context.user_id)
+        result = await call_client_user_scoped(context, "revoke_my_token", prefix)
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/account tokens revoke", method_name=exc.method_name)
 

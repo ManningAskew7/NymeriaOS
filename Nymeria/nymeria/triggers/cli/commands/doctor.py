@@ -9,6 +9,7 @@ from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandR
 from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
+    call_client_user_scoped,
     format_bool,
     mapping_get,
     one_line,
@@ -114,17 +115,7 @@ async def _handle_doctor_model(
     _args: list[str],
 ) -> CommandResult:
     try:
-        diagnostics = await call_client_method(
-            context,
-            "get_llm_runtime_diagnostics",
-            user_id=context.user_id,
-        )
-    except TypeError:
-        diagnostics = await call_client_method(
-            context,
-            "get_llm_runtime_diagnostics",
-            context.user_id,
-        )
+        diagnostics = await call_client_user_scoped(context, "get_llm_runtime_diagnostics")
     except CommandClientMethodUnavailable:
         try:
             settings = await call_client_method(context, "get_settings", user_id=context.user_id)

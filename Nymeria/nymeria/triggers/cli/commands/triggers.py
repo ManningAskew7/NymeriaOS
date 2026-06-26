@@ -10,6 +10,7 @@ from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandR
 from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
+    call_client_user_scoped,
     compact_id,
     confirmation_granted,
     confirmation_required_result,
@@ -70,14 +71,7 @@ async def _handle_triggers_create(
         return parsed
 
     try:
-        created = await call_client_method(
-            context,
-            "create_trigger",
-            parsed,
-            user_id=context.user_id,
-        )
-    except TypeError:
-        created = await call_client_method(context, "create_trigger", parsed, context.user_id)
+        created = await call_client_user_scoped(context, "create_trigger", parsed)
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/triggers create", method_name=exc.method_name)
 
@@ -107,21 +101,7 @@ async def _handle_triggers_edit(
         return CommandResult.failed(error, error_code="usage_error")
 
     try:
-        updated = await call_client_method(
-            context,
-            "update_trigger",
-            trigger_id,
-            patch,
-            user_id=context.user_id,
-        )
-    except TypeError:
-        updated = await call_client_method(
-            context,
-            "update_trigger",
-            trigger_id,
-            patch,
-            context.user_id,
-        )
+        updated = await call_client_user_scoped(context, "update_trigger", trigger_id, patch)
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/triggers edit", method_name=exc.method_name)
 
@@ -160,20 +140,11 @@ async def _set_trigger_enabled(
         return CommandResult.failed(f"Usage: /triggers {verb} <id>", error_code="usage_error")
     trigger_id = args[0]
     try:
-        updated = await call_client_method(
+        updated = await call_client_user_scoped(
             context,
             "update_trigger",
             trigger_id,
             {"enabled": enabled},
-            user_id=context.user_id,
-        )
-    except TypeError:
-        updated = await call_client_method(
-            context,
-            "update_trigger",
-            trigger_id,
-            {"enabled": enabled},
-            context.user_id,
         )
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/triggers enable", method_name=exc.method_name)
