@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet
 
 from nymeria.core.mcp_runtime import (
     MCPInstallError,
+    MCPInstallPlan,
     analyze_text_source,
     apply_config_values,
     plan_bundle_file,
@@ -312,3 +313,275 @@ def test_plan_bundle_upload_reads_manifest_user_config(tmp_path):
     assert plan.confirmation_required is True
     assert plan.required_config[0]["name"] == "token"
     assert plan.required_config[0]["sensitive"] is True
+
+
+# ---------------------------------------------------------------------------
+# apply_config_values characterization tests.
+#
+# These lock the per-branch behavior of apply_config_values before the F7
+# decomposition (slice 05) and serve as the regression guard afterward. The
+# function had only one direct test (the sensitive-env-with-value path); these
+# cover the header/auth-prefix path, the credential-binding path, the
+# non-sensitive required/missing/default branches, the env/header sweep
+# branches, and the cross-loop interaction where loop 1 writes a plaintext
+# non-sensitive value that the loop 2 sweep then converts to a vault reference.
+# ---------------------------------------------------------------------------
+
+_SECRET = "sk-test-secret-value-1234567890"
+
+
+def _make_vault(tmp_path, monkeypatch, *, user_id="alice", with_secrets_key=True):
+    """Wire a real CredentialVaultRepo and point mcp_runtime's lookups at it."""
+    from nymeria.core import credential_vault
+    from nymeria.core.accounts import AccountsRepo
+    from nymeria.core.credential_vault import CredentialVaultRepo
+
+    db_path = tmp_path / "credentials.db"
+    AccountsRepo(db_path).create_user(user_id, f"{user_id}@example.com", user_id.title())
+    repo = CredentialVaultRepo(db_path)
+    monkeypatch.setattr(credential_vault, "get_credential_vault_repo", lambda: repo)
+    if with_secrets_key:
+        monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    else:
+        monkeypatch.delenv("NYMERIA_SECRETS_KEY", raising=False)
+    return repo
+
+
+def _stdio_plan(required_config):
+    return MCPInstallPlan(
+        source_type="stdio",
+        runtime_type="direct",
+        risk_level="low",
+        confirmation_required=False,
+        parsed_summary="characterization test",
+        required_config=list(required_config),
+    )
+
+
+def _stdio_defn(**kwargs):
+    return MCPServerDefinition(
+        id="srv-characterization-1",
+        name="Characterization Server",
+        transport="stdio",
+        server_command="echo",
+        **kwargs,
+    )
+
+
+def _stored_secret(repo, ref, defn):
+    from nymeria.core.credential_vault import CREDENTIAL_REF_PATTERN
+
+    assert "${credential:" in ref
+    inner = ref.split("${credential:", 1)[1].rstrip("}")
+    credential_id = inner.split(".", 1)[0]
+    assert CREDENTIAL_REF_PATTERN.fullmatch(f"${{credential:{credential_id}.value}}")
+    return repo.get_secret_field(
+        credential_id,
+        "value",
+        target_type="mcp_server",
+        target_id=defn.id,
+    )
+
+
+def test_apply_config_values_header_auth_prefix_strips_and_reprefixes(tmp_path, monkeypatch):
+    repo = _make_vault(tmp_path, monkeypatch)
+    plan = _stdio_plan([
+        {
+            "name": "API_KEY",
+            "source": "header",
+            "header_name": "Authorization",
+            "auth_prefix": "Bearer ",
+            "required": True,
+            "sensitive": True,
+        }
+    ])
+    defn = _stdio_defn()
+
+    defn, missing = apply_config_values(
+        defn,
+        plan,
+        credential_values={"API_KEY": f"Bearer {_SECRET}"},
+        user_id="alice",
+    )
+
+    assert missing == []
+    header = defn.headers["Authorization"]
+    assert header.startswith("Bearer ${credential:")
+    # The auth prefix is stripped before storage and re-applied to the ref.
+    assert _stored_secret(repo, header, defn) == _SECRET
+    assert _SECRET not in defn.model_dump_json()
+
+
+def test_apply_config_values_uses_supplied_binding_without_minting(tmp_path, monkeypatch):
+    repo = _make_vault(tmp_path, monkeypatch)
+    repo.upsert_credential(
+        credential_id="cred_existing_key",
+        owner_type="user",
+        owner_user_id="alice",
+        name="Existing Key",
+        provider="manual",
+        kind="secret",
+        secret_fields={"value": _SECRET},
+        allowed_targets=["mcp_server:srv-characterization-1"],
+        status="active",
+        actor_user_id="alice",
+    )
+    plan = _stdio_plan([
+        {"name": "API_KEY", "source": "env", "env_name": "API_KEY", "required": True, "sensitive": True}
+    ])
+    defn = _stdio_defn()
+
+    defn, missing = apply_config_values(
+        defn,
+        plan,
+        credential_values={"API_KEY": _SECRET},
+        credential_bindings={"API_KEY": {"credential_id": "cred_existing_key", "field": "value"}},
+        user_id="alice",
+    )
+
+    assert missing == []
+    # The binding short-circuits minting: the existing credential ref is reused
+    # and no new cred_mcp_* credential is created.
+    assert defn.env_vars["API_KEY"] == "${credential:cred_existing_key.value}"
+    assert repo.get_credential("cred_existing_key") is not None
+
+
+def test_apply_config_values_non_sensitive_required_missing_is_reported():
+    plan = _stdio_plan([
+        {"name": "PORT", "source": "env", "env_name": "PORT", "required": True, "sensitive": False}
+    ])
+    defn = _stdio_defn()
+
+    defn, missing = apply_config_values(defn, plan)
+
+    assert missing == [plan.required_config[0]]
+    assert "PORT" not in defn.env_vars
+
+
+def test_apply_config_values_non_sensitive_value_written_plain():
+    # config_values-only path (the tools/search_mcp.py _mcp_configure_credentials caller).
+    plan = _stdio_plan([
+        {"name": "REGION", "source": "env", "env_name": "REGION", "required": True, "sensitive": False}
+    ])
+    defn = _stdio_defn()
+
+    defn, missing = apply_config_values(defn, plan, config_values={"REGION": "us-east-1"})
+
+    assert missing == []
+    assert defn.env_vars["REGION"] == "us-east-1"
+    assert defn.encrypted_env_vars == {}
+
+
+def test_apply_config_values_applies_default_when_value_absent():
+    plan = _stdio_plan([
+        {
+            "name": "TIMEOUT",
+            "source": "env",
+            "env_name": "TIMEOUT",
+            "required": True,
+            "sensitive": False,
+            "default": "30",
+        }
+    ])
+    defn = _stdio_defn()
+
+    defn, missing = apply_config_values(defn, plan)
+
+    assert missing == []
+    assert defn.env_vars["TIMEOUT"] == "30"
+
+
+def test_apply_config_values_sweep_resolves_env_placeholder(tmp_path, monkeypatch):
+    repo = _make_vault(tmp_path, monkeypatch)
+    plan = _stdio_plan([])
+    defn = _stdio_defn(env_vars={"SOME_TOKEN": "${env:SOME_TOKEN}"})
+
+    defn, missing = apply_config_values(
+        defn,
+        plan,
+        credential_values={"SOME_TOKEN": _SECRET},
+        user_id="alice",
+    )
+
+    ref = defn.env_vars["SOME_TOKEN"]
+    assert ref.startswith("${credential:")
+    assert _stored_secret(repo, ref, defn) == _SECRET
+
+
+def test_apply_config_values_sweep_strips_header_auth_prefix(tmp_path, monkeypatch):
+    repo = _make_vault(tmp_path, monkeypatch)
+    plan = _stdio_plan([])
+    defn = _stdio_defn(headers={"Authorization": f"Bearer {_SECRET}"})
+
+    defn, missing = apply_config_values(defn, plan, user_id="alice")
+
+    header = defn.headers["Authorization"]
+    assert header.startswith("Bearer ${credential:")
+    assert _stored_secret(repo, header, defn) == _SECRET
+    assert _SECRET not in defn.model_dump_json()
+
+
+def test_apply_config_values_cross_loop_converts_secretlike_nonsensitive_value(tmp_path, monkeypatch):
+    # Loop 1 writes a non-sensitive plaintext value; loop 2's sweep detects it is
+    # secret-looking by VALUE (the key name is not secret-looking) and converts it.
+    repo = _make_vault(tmp_path, monkeypatch)
+    secretlike = "abcd1234abcd1234abcd1234abcd1234"  # 32 chars -> matches SECRET_VALUE_RE
+    plan = _stdio_plan([
+        {"name": "EXAMPLE_SETTING", "source": "env", "env_name": "EXAMPLE_SETTING", "required": True, "sensitive": False}
+    ])
+    defn = _stdio_defn()
+
+    defn, missing = apply_config_values(
+        defn,
+        plan,
+        config_values={"EXAMPLE_SETTING": secretlike},
+        user_id="alice",
+    )
+
+    ref = defn.env_vars["EXAMPLE_SETTING"]
+    assert ref.startswith("${credential:")
+    assert _stored_secret(repo, ref, defn) == secretlike
+    assert secretlike not in defn.model_dump_json()
+
+
+def test_apply_config_values_credential_values_take_precedence_over_config(tmp_path, monkeypatch):
+    # Pins the supplied_value lookup order: credential_values (secret_values) is
+    # consulted before config_values for the same key.
+    repo = _make_vault(tmp_path, monkeypatch)
+    plan = _stdio_plan([
+        {"name": "API_KEY", "source": "env", "env_name": "API_KEY", "required": True, "sensitive": True}
+    ])
+    defn = _stdio_defn()
+
+    defn, missing = apply_config_values(
+        defn,
+        plan,
+        config_values={"API_KEY": "config-value-should-not-win"},
+        credential_values={"API_KEY": _SECRET},
+        user_id="alice",
+    )
+
+    assert missing == []
+    assert _stored_secret(repo, defn.env_vars["API_KEY"], defn) == _SECRET
+
+
+def test_apply_config_values_missing_secrets_key_marks_pending(tmp_path, monkeypatch):
+    # Characterizes the UNTOUCHED _credential_ref_for_secret no-key branch reached
+    # via the sensitive path: with no NYMERIA_SECRETS_KEY the secret cannot be
+    # stored, so it is reported in missing with the key-required error.
+    _make_vault(tmp_path, monkeypatch, with_secrets_key=False)
+    plan = _stdio_plan([
+        {"name": "API_KEY", "source": "env", "env_name": "API_KEY", "required": True, "sensitive": True}
+    ])
+    defn = _stdio_defn()
+
+    defn, missing = apply_config_values(
+        defn,
+        plan,
+        credential_values={"API_KEY": _SECRET},
+        user_id="alice",
+    )
+
+    assert len(missing) == 1
+    assert "NYMERIA_SECRETS_KEY" in str(missing[0].get("error", ""))
+    assert defn.env_vars["API_KEY"].startswith("${credential:")
