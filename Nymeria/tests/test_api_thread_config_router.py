@@ -476,3 +476,64 @@ def test_thread_config_image_window_size_round_trip(
     cleared = agent.thread_config_manager.get_config(thread_id)
     assert cleared is not None
     assert cleared.image_window_size is None
+
+
+def test_thread_config_claude_code_overrides_round_trip(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "cc-override-thread"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    # Default (unset) is None for both fields.
+    default = client.get(f"/threads/{thread_id}/config", headers=headers)
+    assert default.status_code == 200
+    assert default.json()["claude_code_model"] is None
+    assert default.json()["claude_code_mode"] is None
+
+    set_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"claude_code_model": "claude-opus-4-8", "claude_code_mode": "plan"},
+    )
+    assert set_resp.status_code == 200
+    body = set_resp.json()
+    assert body["claude_code_model"] == "claude-opus-4-8"
+    assert body["claude_code_mode"] == "plan"
+    assert body["has_customizations"] is True
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved is not None
+    assert saved.claude_code_model == "claude-opus-4-8"
+    assert saved.claude_code_mode == "plan"
+
+    clear_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"clear_claude_code_model": True, "clear_claude_code_mode": True},
+    )
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["claude_code_model"] is None
+    assert clear_resp.json()["claude_code_mode"] is None
+    cleared = agent.thread_config_manager.get_config(thread_id)
+    assert cleared is not None
+    assert cleared.claude_code_model is None
+    assert cleared.claude_code_mode is None
+
+
+def test_thread_config_claude_code_mode_rejects_invalid(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "cc-mode-invalid-thread"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    rejected = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"claude_code_mode": "explode-everything"},
+    )
+    assert rejected.status_code == 422

@@ -1618,6 +1618,10 @@ class Settings(BaseSettings):
         le=64,
         description="Max concurrent Claude Code runs the host runner executes at once. Bounds host memory under bursts of parallel runs.",
     )
+    nymeria_claude_code_allowed_models: Optional[str] = Field(
+        default=None,
+        description="Allowlist of models a per-thread override may request on the runner (os.pathsep or comma separated). None = accept any requested model (budget caps still apply).",
+    )
 
     memory_char_limit: int = Field(
         default=8000,

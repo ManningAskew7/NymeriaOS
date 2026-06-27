@@ -919,6 +919,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `NYMERIA_CLAUDE_CODE_MAX_TURNS` | - | Cap on Claude Code ReAct turns per run. Empty = no explicit cap. |
 | `NYMERIA_CLAUDE_CODE_MAX_BUDGET_USD` | - | Per-run USD budget cap. Empty = none (subscription/OAuth auth bills $0). |
 | `NYMERIA_CLAUDE_CODE_MAX_CONCURRENCY` | `2` | Max concurrent runs the host runner executes at once. Bounds host memory under bursts. |
+| `NYMERIA_CLAUDE_CODE_ALLOWED_MODELS` | - | Allowlist of models a per-thread override may request on the runner (comma/os.pathsep). Empty = accept any (budget caps still apply). |
 | `NYMERIA_CLAUDE_CODE_DISALLOWED_TOOLS` | built-in | Override the hard deny list (comma/os.pathsep). Empty = defaults (`rm`, `git push`, `sudo`, ...). |
 | `NYMERIA_CLAUDE_CODE_DEFAULT_MODE` | `dontAsk` | Default permission mode when the agent passes none (`default`/`plan`/`acceptEdits`/`dontAsk`/`auto`/`bypass`). |
 | `NYMERIA_CLAUDE_CODE_BARE` | `false` | Run with `--bare` (skips hooks/CLAUDE.md; forces `ANTHROPIC_API_KEY` auth instead of OAuth/keychain). |

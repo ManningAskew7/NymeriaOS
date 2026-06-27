@@ -21,6 +21,20 @@ def _save(mgr: ThreadConfigManager, thread_id: str, *, callable_=False, name=Non
     )
 
 
+# --- has_customizations registration ---------------------------------------
+
+
+def test_has_customizations_tracks_claude_code_overrides():
+    assert ThreadConfig(thread_id="t").has_customizations() is False
+    assert (
+        ThreadConfig(thread_id="t", claude_code_model="claude-opus-4-8").has_customizations()
+        is True
+    )
+    assert (
+        ThreadConfig(thread_id="t", claude_code_mode="plan").has_customizations() is True
+    )
+
+
 # --- result-set correctness ------------------------------------------------
 
 
