@@ -409,3 +409,97 @@ def test_get_binding_is_indexed_single_row_lookup(tmp_path, monkeypatch):
     assert "FROM CREDENTIAL_BINDINGS" in statements[0]
     assert "WHERE ID =" in statements[0]
     assert "ORDER BY" not in statements[0]
+
+
+def _count_connect_calls(repo: CredentialVaultRepo, monkeypatch) -> dict[str, int]:
+    """Count ``repo._connect()`` invocations during a traced call.
+
+    A write method that re-reads its fresh record via ``get_credential`` after
+    the lock releases opens a *second* connection; reading via the lock-free
+    ``_record_locked`` on the still-open connection opens only one. The counter
+    is the regression guard for that optimization (F11).
+    """
+    counts = {"connects": 0}
+    real_connect = repo._connect
+
+    def traced_connect():
+        counts["connects"] += 1
+        return real_connect()
+
+    monkeypatch.setattr(repo, "_connect", traced_connect)
+    return counts
+
+
+def test_create_credential_returns_in_transaction_record_without_reopening(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    counts = _count_connect_calls(repo, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Alice API",
+        provider="example",
+        kind="api_key",
+        allowed_targets=["custom_tool:example_search"],
+        secret_fields={"value": "sk-secret", "extra": "x"},
+        created_by_user_id="alice",
+    )
+    # One connection for the write block; no second open for a post-block re-read.
+    assert counts["connects"] == 1
+    # Behavior-preservation: the in-transaction record equals what the unchanged
+    # get_credential() returns from a fresh connection (public_dict includes the
+    # sorted secret-field names).
+    fresh = repo.get_credential(record.id)
+    assert fresh is not None
+    assert record.public_dict() == fresh.public_dict()
+    assert record.secret_fields == ["extra", "value"]  # sorted, decrypted names only
+
+
+def test_upsert_credential_insert_path_returns_record_without_reopening(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    counts = _count_connect_calls(repo, monkeypatch)
+    record = repo.upsert_credential(
+        credential_id="cred_fixed_1",
+        owner_type="user",
+        owner_user_id="alice",
+        name="Alice Upsert",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "sk-1"},
+        actor_user_id="alice",
+    )
+    assert counts["connects"] == 1
+    assert record.id == "cred_fixed_1"
+    fresh = repo.get_credential("cred_fixed_1")
+    assert fresh is not None
+    assert record.public_dict() == fresh.public_dict()
+
+
+def test_upsert_credential_update_path_returns_fresh_record_without_reopening(tmp_path, monkeypatch):
+    repo = _repo(tmp_path, monkeypatch)
+    repo.upsert_credential(
+        credential_id="cred_fixed_2",
+        owner_type="user",
+        owner_user_id="alice",
+        name="Original",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "sk-old"},
+        actor_user_id="alice",
+    )
+    counts = _count_connect_calls(repo, monkeypatch)
+    updated = repo.upsert_credential(
+        credential_id="cred_fixed_2",
+        owner_type="user",
+        owner_user_id="alice",
+        name="Renamed",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "sk-new"},
+        actor_user_id="alice",
+    )
+    assert counts["connects"] == 1
+    # The returned record reflects the update, identical to a fresh read.
+    assert updated.name == "Renamed"
+    fresh = repo.get_credential("cred_fixed_2")
+    assert fresh is not None
+    assert updated.public_dict() == fresh.public_dict()
