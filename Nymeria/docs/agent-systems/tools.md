@@ -2321,7 +2321,7 @@ Used internally by BrowserAgent. Defined in `tools/browser.py`.
 | `browser_close` | `()` | Close the browser and reset the thread. |
 | `browser_status` | `()` | Check Playwright availability and browser state. |
 
-**Architecture:** All browser operations run on a dedicated `BrowserThread` to satisfy Playwright's single-thread requirement. Operations are queued and results retrieved via thread-safe queues. The browser persists between calls until explicitly closed.
+**Architecture:** All browser operations run on a single dedicated `BrowserThread` to satisfy Playwright's single-thread requirement. Commands are queued and each call carries its own reply queue, so concurrent callers can never receive each other's results. This is a single shared browser session: there is one page for all callers (no per-user/per-thread isolation yet), and the browser persists between calls until explicitly closed.
 
 **Network policy:** Browser navigation, Playwright HTTP(S) subrequests, and fallback requests all use Nymeria's HTTP egress policy. Loopback, private, link-local, metadata, and blocked-domain targets are rejected unless explicitly allowed by the operator.
 
