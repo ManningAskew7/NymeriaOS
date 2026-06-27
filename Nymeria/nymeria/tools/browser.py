@@ -206,14 +206,33 @@ def _check_playwright_available() -> Tuple[bool, str]:
 
 
 class BrowserThread:
-    """Dedicated thread for Playwright operations."""
+    """Dedicated thread for Playwright operations.
+
+    Single shared browser session: there is one process-wide instance with one
+    ``self._page``, so all callers (across threads/users in the multi-user Docker
+    runtime) share the same tab. Per-user/per-thread page isolation is not yet
+    implemented.
+
+    Concurrency is guarded on two fronts so the single shared worker is safe:
+
+    * ``start()`` creates the worker thread under ``self._start_lock`` so two
+      concurrent first-callers cannot spawn duplicate workers (which would then
+      run overlapping Playwright operations on the shared page).
+    * Each ``execute()`` call carries its own reply :class:`queue.Queue`, so the
+      single worker replies to the specific caller. Results can never be
+      mis-delivered to a different concurrent caller, and a timed-out call's late
+      result lands on its own abandoned queue instead of leaking to the next
+      caller.
+    """
 
     def __init__(self):
+        # Items are ``(command, args, reply)`` where ``reply`` is a per-call
+        # ``queue.Queue`` (or ``None`` for the ``"STOP"`` sentinel).
         self._command_queue: queue.Queue = queue.Queue()
-        self._result_queue: queue.Queue = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._ready = threading.Event()
+        self._start_lock = threading.Lock()
         self._error: Optional[str] = None
         self._playwright = None
         self._browser = None
@@ -222,54 +241,63 @@ class BrowserThread:
 
     def start(self) -> Tuple[bool, str]:
         """Start the browser thread. Returns (success, message)."""
-        if self._thread is not None and self._thread.is_alive():
-            if self._ready.is_set():
-                return True, "Browser thread already running"
-            # Wait for it to become ready
+        # Serialize worker creation so two concurrent first-callers cannot each
+        # pass the "no thread yet" check and spawn duplicate workers (which would
+        # then run overlapping Playwright ops on the shared page).
+        with self._start_lock:
+            if self._thread is not None and self._thread.is_alive():
+                if self._ready.is_set():
+                    return True, "Browser thread already running"
+                # Wait for it to become ready
+                if self._ready.wait(timeout=BROWSER_LAUNCH_TIMEOUT):
+                    if self._error:
+                        return False, self._error
+                    return True, "Browser thread ready"
+                return False, "Browser thread startup timed out"
+
+            # Check Playwright availability before starting
+            available, msg = _check_playwright_available()
+            if not available:
+                return False, msg
+
+            self._running = True
+            self._ready.clear()
+            self._error = None
+            self._thread = threading.Thread(target=self._run, daemon=True, name="BrowserThread")
+            self._thread.start()
+
+            # Wait for thread to signal ready or error
             if self._ready.wait(timeout=BROWSER_LAUNCH_TIMEOUT):
                 if self._error:
                     return False, self._error
-                return True, "Browser thread ready"
+                return True, "Browser thread started"
+
             return False, "Browser thread startup timed out"
-
-        # Check Playwright availability before starting
-        available, msg = _check_playwright_available()
-        if not available:
-            return False, msg
-
-        self._running = True
-        self._ready.clear()
-        self._error = None
-        self._thread = threading.Thread(target=self._run, daemon=True, name="BrowserThread")
-        self._thread.start()
-        
-        # Wait for thread to signal ready or error
-        if self._ready.wait(timeout=BROWSER_LAUNCH_TIMEOUT):
-            if self._error:
-                return False, self._error
-            return True, "Browser thread started"
-        
-        return False, "Browser thread startup timed out"
 
     def stop(self):
         """Stop the browser thread."""
         self._running = False
-        self._command_queue.put(("STOP", None))
+        self._command_queue.put(("STOP", None, None))
         if self._thread:
             self._thread.join(timeout=10)
         self._ready.clear()
 
-    def execute(self, command: str, args: dict, timeout: int = QUEUE_TIMEOUT) -> Tuple[bool, Any]:
+    def execute(self, command: str, args: dict, timeout: float = QUEUE_TIMEOUT) -> Tuple[bool, Any]:
         """Execute a command on the browser thread."""
         # Ensure thread is running
         success, msg = self.start()
         if not success:
             return False, msg
 
-        self._command_queue.put((command, args))
+        # Per-call reply queue: the worker replies only to this caller, so
+        # concurrent callers can never receive each other's results, and a late
+        # result from a timed-out call lands here (abandoned) instead of leaking
+        # to the next caller.
+        reply: "queue.Queue[Tuple[bool, Any]]" = queue.Queue(maxsize=1)
+        self._command_queue.put((command, args, reply))
 
         try:
-            success, result = self._result_queue.get(timeout=timeout)
+            success, result = reply.get(timeout=timeout)
             return success, result
         except queue.Empty:
             return False, f"Browser operation timed out after {timeout}s. The browser may be unresponsive."
@@ -291,18 +319,20 @@ class BrowserThread:
 
             while self._running:
                 try:
-                    command, args = self._command_queue.get(timeout=1)
+                    command, args, reply = self._command_queue.get(timeout=1)
 
                     if command == "STOP":
                         break
 
                     try:
                         result = self._execute_command(command, args)
-                        self._result_queue.put((True, result))
+                        if reply is not None:
+                            reply.put((True, result))
                     except Exception as e:
                         error_msg = str(e)
                         logger.error(f"Browser command '{command}' failed: {error_msg}")
-                        self._result_queue.put((False, error_msg))
+                        if reply is not None:
+                            reply.put((False, error_msg))
 
                 except queue.Empty:
                     continue
