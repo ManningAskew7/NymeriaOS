@@ -369,7 +369,6 @@ class NymeriaWebexBot:
         self.show_tool_events = show_tool_events
         self._seen = seen_cache or SeenEventCache()
         self._bindings: dict[str, str] = {}
-        self._binding_users: dict[str, str] = {}
 
     async def refresh_bindings(self) -> None:
         try:
@@ -378,17 +377,12 @@ class NymeriaWebexBot:
             logger.exception("Failed to refresh Webex chat-app bindings")
             return
         bindings: dict[str, str] = {}
-        users: dict[str, str] = {}
         for entry in entries:
             chat_id = str(entry.get("platform_chat_id") or "")
             thread_id = str(entry.get("thread_id") or "")
-            user_id = str(entry.get("user_id") or "")
             if chat_id and thread_id:
                 bindings[chat_id] = thread_id
-                if user_id:
-                    users[chat_id] = user_id
         self._bindings = bindings
-        self._binding_users = users
 
     async def resolve_bot_identity(self) -> None:
         if self.bot_person_id and self.bot_email:
@@ -563,11 +557,8 @@ class NymeriaWebexBot:
             await self._send_text(target, f"Couldn't bind: {exc.detail}")
             return
         thread_id = str(result.get("thread_id") or "")
-        user_id = str(result.get("user_id") or "")
         if thread_id:
             self._bindings[chat_id] = thread_id
-        if user_id:
-            self._binding_users[chat_id] = user_id
         await self._send_text(target, f"Bound this Webex chat to `{thread_id}`.")
 
     async def _cmd_unbind(self, message: WebexMessage, target: WebexReplyTarget) -> None:
@@ -590,7 +581,6 @@ class NymeriaWebexBot:
             await self._send_text(target, "This Webex chat is not bound.")
             return
         self._bindings.pop(chat_id, None)
-        self._binding_users.pop(chat_id, None)
         await self._send_text(target, "Unbound. Future messages will use the default Webex thread.")
 
     async def _cmd_stop(self, message: WebexMessage, target: WebexReplyTarget) -> None:

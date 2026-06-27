@@ -348,7 +348,6 @@ class NymeriaZulipBot:
         self._last_event_id = -1
         self._seen = SeenEventCache()
         self._bindings: Dict[str, str] = {}
-        self._binding_users: Dict[str, str] = {}
         self._user_resolver = UserResolver(self.api, "zulip", logger=logger)
         self._health_task: Optional[asyncio.Task] = None
         self._bindings_task: Optional[asyncio.Task] = None
@@ -588,11 +587,8 @@ class NymeriaZulipBot:
                 await self._send_text(target, f"Couldn't bind: {detail}")
             return
         thread_id = str(result.get("thread_id") or "")
-        user_id = str(result.get("user_id") or "")
         if thread_id:
             self._bindings[chat_id] = thread_id
-        if user_id:
-            self._binding_users[chat_id] = user_id
         await self._send_text(target, f"Bound this Zulip conversation to `{thread_id}`.")
 
     async def _cmd_unbind(self, message: ZulipMessage, target: ZulipReplyTarget) -> None:
@@ -618,7 +614,6 @@ class NymeriaZulipBot:
             await self._send_text(target, "This Zulip conversation is not bound.")
             return
         self._bindings.pop(chat_id, None)
-        self._binding_users.pop(chat_id, None)
         await self._send_text(target, "Unbound. Future messages will use the default Zulip thread.")
 
     async def _cmd_stop(self, message: ZulipMessage, target: ZulipReplyTarget) -> None:
@@ -710,17 +705,12 @@ class NymeriaZulipBot:
             logger.exception("Failed to refresh Zulip chat-app bindings; keeping current cache")
             return
         bindings: Dict[str, str] = {}
-        users: Dict[str, str] = {}
         for entry in entries:
             chat_id = str(entry.get("platform_chat_id") or "")
             thread_id = str(entry.get("thread_id") or "")
-            user_id = str(entry.get("user_id") or "")
             if chat_id and thread_id:
                 bindings[chat_id] = thread_id
-                if user_id:
-                    users[chat_id] = user_id
         self._bindings = bindings
-        self._binding_users = users
         logger.debug("Zulip chat-app bindings refreshed: %d entries", len(bindings))
 
     async def _bindings_refresh_loop(self) -> None:

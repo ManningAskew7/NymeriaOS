@@ -381,7 +381,6 @@ class NymeriaLineBot:
         self.show_tool_events = show_tool_events
         self._seen = seen_cache or SeenEventCache()
         self._bindings: dict[str, str] = {}
-        self._binding_users: dict[str, str] = {}
         self._active_chats: set[str] = set()
 
     async def close(self) -> None:
@@ -470,17 +469,12 @@ class NymeriaLineBot:
             logger.exception("Failed to refresh LINE bindings; keeping current cache")
             return
         bindings: dict[str, str] = {}
-        binding_users: dict[str, str] = {}
         for entry in entries:
             chat_id = str(entry.get("platform_chat_id") or "")
             thread_id = str(entry.get("thread_id") or "")
-            user_id = str(entry.get("user_id") or "")
             if chat_id and thread_id:
                 bindings[chat_id] = thread_id
-                if user_id:
-                    binding_users[chat_id] = user_id
         self._bindings = bindings
-        self._binding_users = binding_users
 
     def _resolve_thread_id(self, event: LineEvent) -> str:
         chat_id = self._chat_id_for_event(event)
@@ -541,11 +535,8 @@ class NymeriaLineBot:
             await self._send_text(target, f"Couldn't bind: {exc.detail}")
             return
         thread_id = str(result.get("thread_id") or "")
-        user_id = str(result.get("user_id") or "")
         if thread_id:
             self._bindings[chat_id] = thread_id
-        if user_id:
-            self._binding_users[chat_id] = user_id
         await self._send_text(target, f"Bound this LINE chat to `{thread_id}`.")
 
     async def _cmd_unbind(self, event: LineEvent, target: LineReplyTarget) -> None:
@@ -567,7 +558,6 @@ class NymeriaLineBot:
             await self._send_text(target, "This LINE chat is not bound.")
             return
         self._bindings.pop(chat_id, None)
-        self._binding_users.pop(chat_id, None)
         await self._send_text(
             target,
             "Unbound. Future messages will use the default LINE thread.",
