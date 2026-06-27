@@ -424,7 +424,6 @@ class NymeriaRocketChatBot:
         self._seen = SeenEventCache()
         self._active_threads: set[str] = set()
         self._bindings: Dict[str, str] = {}
-        self._binding_users: Dict[str, str] = {}
         self._user_resolver = UserResolver(self.api, "rocketchat", logger=logger)
         self._health_task: Optional[asyncio.Task] = None
         self._bindings_task: Optional[asyncio.Task] = None
@@ -659,11 +658,8 @@ class NymeriaRocketChatBot:
                 await self._send_text(target, f"Couldn't bind: {detail}")
             return
         bound_thread_id = str(result.get("thread_id") or "")
-        bound_user_id = str(result.get("user_id") or "")
         if bound_thread_id:
             self._bindings[chat_id] = bound_thread_id
-        if bound_user_id:
-            self._binding_users[chat_id] = bound_user_id
         await self._send_text(target, f"Bound this Rocket.Chat conversation to `{bound_thread_id}`.")
 
     async def _cmd_unbind(
@@ -691,7 +687,6 @@ class NymeriaRocketChatBot:
             await self._send_text(target, "This Rocket.Chat conversation is not bound.")
             return
         self._bindings.pop(chat_id, None)
-        self._binding_users.pop(chat_id, None)
         await self._send_text(target, "Unbound. Future messages will use the default Rocket.Chat thread.")
 
     async def _cmd_stop(self, message: RocketChatMessage, target: RocketChatReplyTarget, *, is_dm: bool) -> None:
@@ -780,17 +775,12 @@ class NymeriaRocketChatBot:
             logger.exception("Failed to refresh Rocket.Chat chat-app bindings; keeping current cache")
             return
         bindings: Dict[str, str] = {}
-        users: Dict[str, str] = {}
         for entry in entries:
             chat_id = str(entry.get("platform_chat_id") or "")
             thread_id = str(entry.get("thread_id") or "")
-            user_id = str(entry.get("user_id") or "")
             if chat_id and thread_id:
                 bindings[chat_id] = thread_id
-                if user_id:
-                    users[chat_id] = user_id
         self._bindings = bindings
-        self._binding_users = users
         logger.debug("Rocket.Chat chat-app bindings refreshed: %d entries", len(bindings))
 
     async def _bindings_refresh_loop(self) -> None:

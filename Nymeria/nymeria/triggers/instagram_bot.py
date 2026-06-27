@@ -321,7 +321,6 @@ class NymeriaInstagramBot:
         self.show_tool_events = show_tool_events
         self._seen = seen_cache or SeenEventCache()
         self._bindings: dict[str, str] = {}
-        self._binding_users: dict[str, str] = {}
 
     async def refresh_bindings(self) -> None:
         try:
@@ -330,17 +329,12 @@ class NymeriaInstagramBot:
             logger.exception("Failed to refresh Instagram chat-app bindings")
             return
         bindings: dict[str, str] = {}
-        users: dict[str, str] = {}
         for entry in entries:
             chat_id = str(entry.get("platform_chat_id") or "")
             thread_id = str(entry.get("thread_id") or "")
-            user_id = str(entry.get("user_id") or "")
             if chat_id and thread_id:
                 bindings[chat_id] = thread_id
-                if user_id:
-                    users[chat_id] = user_id
         self._bindings = bindings
-        self._binding_users = users
 
     async def handle_webhook(self, payload: Mapping[str, Any]) -> dict[str, int]:
         messages = extract_inbound_messages(payload)
@@ -445,11 +439,8 @@ class NymeriaInstagramBot:
             await self._send_text(target, f"Couldn't bind: {exc.detail}")
             return
         thread_id = str(result.get("thread_id") or "")
-        user_id = str(result.get("user_id") or "")
         if thread_id:
             self._bindings[chat_id] = thread_id
-        if user_id:
-            self._binding_users[chat_id] = user_id
         await self._send_text(target, f"Bound this Instagram chat to `{thread_id}`.")
 
     async def _cmd_unbind(
@@ -477,7 +468,6 @@ class NymeriaInstagramBot:
             await self._send_text(target, "This Instagram chat is not bound.")
             return
         self._bindings.pop(chat_id, None)
-        self._binding_users.pop(chat_id, None)
         await self._send_text(
             target,
             "Unbound. Future messages will use the default Instagram thread.",
