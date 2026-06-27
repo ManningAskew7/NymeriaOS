@@ -1557,6 +1557,62 @@ class Settings(BaseSettings):
         le=2000000,
         description="Maximum characters stored for a single tool result; oversized results keep head and tail with a truncation marker"
     )
+
+    # Claude Code bridge (the claude_code tool). When NYMERIA_CLAUDE_CODE_URL is
+    # set the tool relays runs to a host-side runner service (where the repo and
+    # real Claude Code auth live); unset, it runs Claude Code locally in-process
+    # (slim / desktop). The runner is the policy boundary: it re-resolves the
+    # working-directory allowlist and run config from its own host environment.
+    nymeria_claude_code_url: Optional[str] = Field(
+        default=None,
+        description="Base URL of the host Claude Code runner. Unset = run Claude Code locally in-process.",
+    )
+    nymeria_claude_code_token: Optional[str] = Field(
+        default=None,
+        description="Bearer token shared between the claude_code tool and the runner service.",
+    )
+    nymeria_claude_code_roots: Optional[str] = Field(
+        default=None,
+        description="Allowed working-directory roots for claude_code (os.pathsep or comma separated). Empty = project root only.",
+    )
+    nymeria_claude_code_model: Optional[str] = Field(
+        default=None,
+        description="Model alias/id Claude Code runs with (e.g. opus). None = Claude Code's own default.",
+    )
+    nymeria_claude_code_fallback_model: Optional[str] = Field(
+        default=None,
+        description="Fallback model for Claude Code when the primary is unavailable.",
+    )
+    nymeria_claude_code_max_turns: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=1000,
+        description="Cap on Claude Code ReAct turns per run. None = no explicit cap (budget/timeout still apply).",
+    )
+    nymeria_claude_code_max_budget_usd: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Per-run USD budget cap for Claude Code. None = no cap (subscription auth bills $0).",
+    )
+    nymeria_claude_code_disallowed_tools: Optional[str] = Field(
+        default=None,
+        description="Override the hard Claude Code deny list (os.pathsep or comma separated rule specs). None = built-in defaults (rm, git push, sudo, ...).",
+    )
+    nymeria_claude_code_bare: bool = Field(
+        default=False,
+        description="Run Claude Code with --bare (skips hooks/CLAUDE.md; forces ANTHROPIC_API_KEY auth instead of OAuth/keychain).",
+    )
+    nymeria_claude_code_default_mode: str = Field(
+        default="dontAsk",
+        description="Default Claude Code permission mode when the agent does not pass one (default/plan/acceptEdits/dontAsk/auto/bypass).",
+    )
+    nymeria_claude_code_block_seconds: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=900,
+        description="Max seconds the claude_code tool blocks inline before detaching a long run to the background. None = derive from tool_timeout.",
+    )
+
     memory_char_limit: int = Field(
         default=8000,
         ge=1,

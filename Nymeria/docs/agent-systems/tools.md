@@ -555,26 +555,49 @@ consult(question: str, context: Optional[str] = None, model: Optional[str] = Non
 
 ### claude_code (Optional, admin-only)
 
-Invoke Claude Code in headless mode to create, modify, or analyze code. **Not loaded by default**  -  lives in `CATALOG_TOOLS` and is gated by `ADMIN_ONLY_TOOL_NAMES` (only admins may enable it).
+Drive Claude Code (the CLI coding agent) to do real work in a project, then relay
+its final message and a run summary back to the user. **Not loaded by default**:
+lives in `CATALOG_TOOLS`, gated by `ADMIN_ONLY_TOOL_NAMES` (admins only), and rated
+`SENSITIVE` (it has file and shell access on the host). Full architecture:
+[claude-code-bridge.md](./claude-code-bridge.md).
 
 ```python
-claude_code(prompt: str, working_dir: Optional[str] = None, model: str = "sonnet",
-            allow_edit: bool = True, allow_bash: bool = True, timeout: int = 300)
+claude_code(prompt: str, working_dir: Optional[str] = None,
+            mode: Optional[str] = None, resume: bool = True, detach: bool = False)
 ```
 
 **Parameters:**
-- `prompt` (`str`): The coding task or question
-- `working_dir` (`Optional[str]`, default `None`): Directory to run in. Defaults to the backend process working directory.
-- `model` (`str`, default `"sonnet"`): Model  -  `"sonnet"`, `"opus"`, or `"haiku"`
-- `allow_edit` (`bool`, default `True`): Allow Claude Code to edit files
-- `allow_bash` (`bool`, default `True`): Allow Claude Code to run commands.
-- `timeout` (`int`, default `300`): Timeout in seconds
+- `prompt` (`str`): The task or question for Claude Code.
+- `working_dir` (`Optional[str]`, default `None`): Project directory to run in.
+  Must be within the operator's allowed roots (`NYMERIA_CLAUDE_CODE_ROOTS`).
+  Omit to use the default project root.
+- `mode` (`Optional[str]`, default `None`): Permission mode, mapped to Claude
+  Code's `--permission-mode`: `dont_ask` (safe default, never prompts), `plan`
+  (write a plan and STOP for Nymeria to confirm), `accept_edits`, `auto`
+  (autonomy classifier), or `bypass` (oneshot). Hard deny rules (rm, git push,
+  sudo, ...) are enforced in every mode. Defaults to `NYMERIA_CLAUDE_CODE_DEFAULT_MODE`.
+- `resume` (`bool`, default `True`): Continue this thread's previous Claude Code
+  session in the same directory so context carries over. False starts fresh.
+- `detach` (`bool`, default `False`): Return immediately with a job id and deliver
+  the result as a follow-up message when Claude Code finishes, so the agent can
+  keep talking to the user while it works.
 
-**Returns:** Claude Code's response or error message. Output truncated at 50,000 characters.
+**Returns:** Claude Code's final message plus a run summary (files changed,
+commits, cost, duration, turns, session id). Long runs that exceed the inline
+wait budget (derived from `tool_timeout`) auto-detach and arrive as a follow-up
+autonomous message.
 
-**Requires:** `claude` CLI binary in PATH (install with `npm install -g @anthropic-ai/claude-code`).
+**Transport:** When `NYMERIA_CLAUDE_CODE_URL` is set, the tool relays runs to a
+host runner service (`python run.py claude-code-runner`) where the repo and real
+auth live (the production Docker path). Unset, it runs Claude Code locally
+in-process (slim / desktop). Model, budgets, the working-directory allowlist, and
+the hard deny rules are operator config, not agent-controlled; the runner
+re-enforces them host-side.
 
-**Tools passed to Claude Code:** Always includes `Read`. Adds `Edit` if `allow_edit=True`, `Bash` if `allow_bash=True` and the environment escape hatch is enabled.
+**Requires:** `claude` CLI binary in PATH (install with `npm install -g
+@anthropic-ai/claude-code`) on whichever side runs it. Auth defaults to Claude
+Code's own OAuth / keychain (zero added cost); set `NYMERIA_CLAUDE_CODE_BARE=true`
+plus `ANTHROPIC_API_KEY` for an isolated API-key run.
 
 ---
 

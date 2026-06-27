@@ -177,7 +177,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `circleci_get_pipeline` | `nymeria/tools/build_ci_service_integrations.py` | Get one CircleCI pipeline by project and pipeline number. |
 | `circleci_list_pipelines` | `nymeria/tools/build_ci_service_integrations.py` | List CircleCI pipelines for a GitHub or Bitbucket project. |
 | `circleci_trigger_pipeline` | `nymeria/tools/build_ci_service_integrations.py` | Trigger a CircleCI pipeline. |
-| `claude_code` | `nymeria/tools/claude_code.py` | Invoke Claude Code in headless mode to create, modify, or analyze code in a specific directory. |
+| `claude_code` | `nymeria/tools/claude_code.py` | Drive Claude Code (the CLI coding agent) to do real work in a project. |
 | `clearbit_autocomplete_company` | `nymeria/tools/lead_enrichment_service_integrations.py` | Autocomplete company names and return likely domains/logos. |
 | `clearbit_enrich_company` | `nymeria/tools/lead_enrichment_service_integrations.py` | Enrich company data from a domain and optional social/company hints. |
 | `clearbit_enrich_person` | `nymeria/tools/lead_enrichment_service_integrations.py` | Enrich person and company data from an email address and optional hints. |

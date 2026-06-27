@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import sys
 from types import SimpleNamespace
 
 
@@ -31,26 +30,75 @@ def test_self_file_write_is_disabled_without_escape_hatch(monkeypatch):
     assert "Self-modification writes are disabled" in result
 
 
-def test_claude_code_allows_outside_workdir_and_bash_by_default(tmp_path, monkeypatch):
+def _fake_claude_settings(tmp_path, **overrides):
+    """A SimpleNamespace standing in for Settings for the claude_code tool."""
+    root = (tmp_path / "proj").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    base = dict(
+        project_root=root,
+        data_dir=tmp_path / "data",
+        tool_timeout=300,
+        nymeria_claude_code_url=None,
+        nymeria_claude_code_token=None,
+        nymeria_claude_code_roots=None,
+        nymeria_claude_code_model=None,
+        nymeria_claude_code_fallback_model=None,
+        nymeria_claude_code_max_turns=None,
+        nymeria_claude_code_max_budget_usd=None,
+        nymeria_claude_code_disallowed_tools=None,
+        nymeria_claude_code_bare=False,
+        nymeria_claude_code_default_mode="dontAsk",
+        nymeria_claude_code_block_seconds=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_claude_code_rejects_workdir_outside_allowlist(tmp_path, monkeypatch):
+    """claude_code is now sandboxed: a working_dir outside the allowed roots is
+    rejected before Claude Code is ever invoked."""
     claude_module = importlib.import_module("nymeria.tools.claude_code")
-    outside = tmp_path / "outside"
+    settings = _fake_claude_settings(tmp_path)
+    monkeypatch.setattr(claude_module, "get_settings", lambda: settings)
+
+    outside = (tmp_path / "outside").resolve()
     outside.mkdir()
-    monkeypatch.setattr(claude_module, "CLAUDE_CODE_EXE", sys.executable)
-    captured = {}
 
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["cwd"] = kwargs.get("cwd")
-        return SimpleNamespace(stdout="ok", stderr="", returncode=0)
+    def explode(*a, **k):
+        raise AssertionError("Claude Code must not run for an out-of-allowlist dir")
 
-    monkeypatch.setattr(claude_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_module, "run_local_blocking", explode)
 
     result = claude_module.claude_code.func("inspect", working_dir=str(outside))
+    assert "[Error]" in result
+    assert "outside the allowed roots" in result
 
-    assert result == "ok"
-    assert captured["cwd"] == str(outside)
-    tools_index = captured["cmd"].index("--tools") + 1
-    assert "Bash" in captured["cmd"][tools_index].split(",")
+
+def test_claude_code_runs_within_allowlist(tmp_path, monkeypatch):
+    """A working_dir inside an allowed root reaches the runner with that cwd."""
+    claude_module = importlib.import_module("nymeria.tools.claude_code")
+    bridge = importlib.import_module("nymeria.tools.claude_code_bridge")
+    settings = _fake_claude_settings(tmp_path)
+    monkeypatch.setattr(claude_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        claude_module, "resolve_claude_executable", lambda: "/usr/bin/claude"
+    )
+
+    captured = {}
+
+    def fake_run_local(request, config, timeout, env=None):
+        captured["cwd"] = request.cwd
+        captured["mode"] = request.permission_mode
+        return bridge.ClaudeCodeResult(ok=True, result_text="done")
+
+    monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
+
+    subdir = settings.project_root / "pkg"
+    subdir.mkdir()
+    result = claude_module.claude_code.func("inspect", working_dir="pkg")
+    assert "done" in result
+    assert captured["cwd"] == str(subdir)
+    assert captured["mode"] == "dontAsk"
 
 
 # --- self_agent path-containment (F6 refactor) --------------------------------

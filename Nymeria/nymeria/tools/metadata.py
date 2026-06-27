@@ -191,7 +191,6 @@ _GENERAL_MODERATE_TOOL_NAMES = frozenset(
         "bash_execute",
         "file_write",
         "file_edit",
-        "claude_code",
         "notify",
         "slash_command",
         "http_request",
@@ -969,6 +968,10 @@ def _infer_security_level(
     if category in {ToolCategory.PROFILE, ToolCategory.TODO}:
         return SecurityLevel.SAFE
     if category == ToolCategory.GENERAL:
+        # claude_code drives a full coding agent (file + shell access) on the
+        # host, so it is the most sensitive General tool, on par with self-modify.
+        if tool_name == "claude_code":
+            return SecurityLevel.SENSITIVE
         if tool_name in _GENERAL_MODERATE_TOOL_NAMES:
             return SecurityLevel.MODERATE
         return SecurityLevel.SAFE

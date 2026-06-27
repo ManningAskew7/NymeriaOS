@@ -541,7 +541,12 @@ _LLM_CREDENTIAL_FIELDS = frozenset(
         "openrouter_api_key",
     }
 )
-_GRAPH_REBUILD_FIELDS = _LLM_FIELDS | {"tool_output_max_chars"} | _LLM_CREDENTIAL_FIELDS
+# tool_timeout is captured into SafeToolNode at graph build, so a hot PATCH must
+# rebuild the graph (otherwise the cached kill-timeout drifts from settings; the
+# claude_code tool's inline-vs-detach budget depends on the two staying in sync).
+_GRAPH_REBUILD_FIELDS = (
+    _LLM_FIELDS | {"tool_output_max_chars", "tool_timeout"} | _LLM_CREDENTIAL_FIELDS
+)
 
 
 def apply_server_settings_update(
