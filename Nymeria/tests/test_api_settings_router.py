@@ -669,6 +669,150 @@ def test_available_models_returns_empty_on_provider_http_error(
         FakeAsyncClient.response_body = None
 
 
+def test_available_models_normalizes_openai_cliproxy_base_url_without_v1(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # Slice 10 F14 regression: a CLIProxy openai base URL configured WITHOUT a
+    # trailing /v1 must still list models (the live path used to fetch /models
+    # and 404, even though the provider-test path normalized it to /v1).
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/models/available?provider=openai&base_url=http://localhost:8317",
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    assert FakeAsyncClient.calls[0]["url"] == "http://localhost:8317/v1/models"
+
+
+def test_available_models_cliproxy_base_url_with_v1_is_idempotent(
+    tmp_path: Path,
+    monkeypatch,
+):
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/models/available?provider=openai&base_url=http://localhost:8317/v1",
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    assert FakeAsyncClient.calls[0]["url"] == "http://localhost:8317/v1/models"
+
+
+def test_available_models_anthropic_custom_base_sends_cloak_header(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # Slice 10 F14: listing models through a custom (CLIProxy) anthropic base
+    # must send the cloak-skip User-Agent the rest of the stack uses, matching
+    # the provider-test path.
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/models/available?provider=anthropic&base_url=http://localhost:8318",
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    assert FakeAsyncClient.calls[0]["url"] == "http://localhost:8318/v1/models"
+    assert FakeAsyncClient.calls[0]["headers"]["User-Agent"] == "claude-cli/2.1.113"
+
+
+def test_available_models_anthropic_public_base_omits_cloak_header(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # Negative guard: the public api.anthropic.com endpoint (no custom base) must
+    # NOT carry the cloak User-Agent.
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/models/available?provider=anthropic",
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    # The default FakeSettings.anthropic_api_key seeds the key, so the request
+    # actually fires (otherwise the assertion below would be vacuous).
+    assert FakeAsyncClient.calls, "expected the model fetch to issue an HTTP call"
+    assert FakeAsyncClient.calls[0]["url"] == "https://api.anthropic.com/v1/models"
+    assert "User-Agent" not in FakeAsyncClient.calls[0]["headers"]
+
+
+def test_available_models_openrouter_includes_attribution_headers(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # Slice 10 F14: the live openai-compatible path now sends OpenRouter
+    # attribution headers, matching the provider-test path.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/models/available?provider=openrouter",
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200
+    assert FakeAsyncClient.calls, "expected the model fetch to issue an HTTP call"
+    assert FakeAsyncClient.calls[0]["url"] == "https://openrouter.ai/api/v1/models"
+    headers = FakeAsyncClient.calls[0]["headers"]
+    assert headers["HTTP-Referer"] == "https://github.com/ManningAskew7/NymeriaOS"
+    assert headers["X-Title"] == "Nymeria"
+
+
+def test_llm_provider_test_openrouter_includes_attribution_headers(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # Guards the provider-test path's OpenRouter attribution headers (no prior
+    # test covered them; the F14 refactor routes them through the shared helper).
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"ok": True}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/settings/llm/test",
+        headers=_auth(token),
+        json={
+            "llm_provider": "openrouter",
+            "llm_model": "some/model",
+            "api_key": "or-secret-key",
+        },
+    )
+
+    assert response.status_code == 200
+    headers = FakeAsyncClient.calls[0]["headers"]
+    assert headers["Authorization"] == "Bearer or-secret-key"
+    assert headers["HTTP-Referer"] == "https://github.com/ManningAskew7/NymeriaOS"
+    assert headers["X-Title"] == "Nymeria"
+
+
 def test_runtime_diagnostics_uses_configured_project_root_for_env_sources(
     tmp_path: Path,
     monkeypatch,
