@@ -38,11 +38,12 @@ from ...core.llm_provider_test_suite import (
 )
 from ...core.llm_provider_utils import (
     base_url_allows_no_api_key,
+    cliproxy_base_url_with_v1,
     extract_model_metadata,
     http_error_detail,
+    provider_probe_headers,
     redact_secrets,
 )
-from ...vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
     server_settings_env_mapping,
@@ -634,10 +635,10 @@ def _normalize_openai_test_base_url(
             return "https://openrouter.ai/api/v1"
         return "https://api.openai.com/v1"
 
-    clean = base_url.strip().rstrip("/")
-    if provider == "openai" and looks_like_cliproxy_url(clean) and not clean.endswith("/v1"):
-        return f"{clean}/v1"
-    return clean
+    clean = base_url.strip()
+    if provider == "openai":
+        return cliproxy_base_url_with_v1(clean)
+    return clean.rstrip("/")
 
 
 
@@ -710,12 +711,9 @@ async def _test_llm_provider_config(
     if provider == "anthropic":
         clean_base = base_url or "https://api.anthropic.com"
         url = f"{clean_base}/v1/messages"
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        }
-        if base_url:
-            headers["User-Agent"] = "claude-cli/2.1.113"
+        headers = provider_probe_headers(
+            provider, api_key, has_custom_base_url=bool(base_url)
+        )
         payload = {
             "model": model,
             "max_tokens": 1,
@@ -745,12 +743,9 @@ async def _test_llm_provider_config(
             base_url,
             provider_route=provider_route,
         )
-        headers = {"Authorization": f"Bearer {api_key}"}
-        if provider == "openrouter":
-            headers.update({
-                "HTTP-Referer": "https://github.com/ManningAskew7/NymeriaOS",
-                "X-Title": "Nymeria",
-            })
+        headers = provider_probe_headers(
+            provider, api_key, has_custom_base_url=bool(base_url)
+        )
 
         effective_api_mode = (
             openai_api_mode
@@ -1309,6 +1304,11 @@ def create_settings_router(
         if not effective_base_url and credential and credential.base_url:
             effective_base_url = credential.base_url
 
+        # Whether a non-default base URL was configured (query/settings/credential)
+        # before provider defaults are applied. Drives the anthropic cloak header
+        # below, matching the provider-test path.
+        had_custom_base = bool(effective_base_url)
+
         if effective_provider == "anthropic":
             api_key = api_key or (
                 settings.anthropic_direct_api_key or settings.anthropic_api_key
@@ -1331,7 +1331,12 @@ def create_settings_router(
             )
             if not effective_base_url:
                 return []
-            models_url = f"{effective_base_url.rstrip('/')}/models"
+            models_base = effective_base_url.rstrip("/")
+            if effective_provider == "openai":
+                # CLIProxy serves its OpenAI surface under /v1; mirror the
+                # provider-test path so a proxy root without /v1 still lists models.
+                models_base = cliproxy_base_url_with_v1(models_base)
+            models_url = f"{models_base}/models"
         else:
             return []
 
@@ -1344,15 +1349,9 @@ def create_settings_router(
         if not api_key:
             api_key = "not-needed"
 
-        if effective_provider == "anthropic":
-            headers = {
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            }
-        else:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-            }
+        headers = provider_probe_headers(
+            effective_provider, api_key, has_custom_base_url=had_custom_base
+        )
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:

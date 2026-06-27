@@ -29,10 +29,12 @@ from ..config.local_llm import (
     query_local_context_length,
 )
 from ..config.model_capabilities import register_model_metadata
-from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from .llm_credentials import get_llm_provider_credential
 from .llm_provider_utils import (
+    ANTHROPIC_API_VERSION,
+    OPENROUTER_ATTRIBUTION_HEADERS,
     base_url_allows_no_api_key,
+    cliproxy_base_url_with_v1,
     extract_model_metadata,
     first_float,
     http_error_detail,
@@ -43,10 +45,9 @@ logger = logging.getLogger(__name__)
 
 StepStatus = Literal["passed", "failed", "warning", "skipped"]
 ApiMode = Literal["chat_completions", "responses"]
-_OPENROUTER_HEADERS = {
-    "HTTP-Referer": "https://github.com/ManningAskew7/NymeriaOS",
-    "X-Title": "Nymeria",
-}
+# Canonical copy lives in llm_provider_utils; aliased here so the _headers use
+# site stays unchanged.
+_OPENROUTER_HEADERS = OPENROUTER_ATTRIBUTION_HEADERS
 
 
 @dataclass(frozen=True)
@@ -135,10 +136,10 @@ class ProviderTestSuiteReport:
 def _normalize_openai_base_url(provider: str, base_url: str | None) -> str | None:
     if not base_url:
         return None
-    clean = base_url.strip().rstrip("/")
-    if provider == "openai" and looks_like_cliproxy_url(clean) and not clean.endswith("/v1"):
-        return f"{clean}/v1"
-    return clean
+    clean = base_url.strip()
+    if provider == "openai":
+        return cliproxy_base_url_with_v1(clean)
+    return clean.rstrip("/")
 
 
 def _append_endpoint(base_url: str, endpoint: str) -> str:
@@ -228,7 +229,7 @@ def _headers(provider: str, api_key: str, *, api_format: str) -> dict[str, str]:
     if api_format == "anthropic_messages":
         return {
             "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
+            "anthropic-version": ANTHROPIC_API_VERSION,
             "Content-Type": "application/json",
         }
     headers = {
