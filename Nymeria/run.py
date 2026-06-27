@@ -1449,6 +1449,25 @@ def run_mcp(args: argparse.Namespace) -> None:
         run_stdio(api_url=api_url)
 
 
+def run_claude_code_runner(args: argparse.Namespace) -> None:
+    """Run the host-side Claude Code runner for the claude_code bridge.
+
+    A standalone HTTP service that executes Claude Code on the host where the
+    repo and real auth live. It needs no Nymeria DB or service token; it reads
+    only the NYMERIA_CLAUDE_CODE_* env. Bind it to a private interface only.
+    """
+    from nymeria.gateway.claude_code_runner import serve
+
+    host = args.host or "127.0.0.1"
+    port = args.port or 8200
+    print(
+        f"Starting Nymeria Claude Code runner on {host}:{port} "
+        f"(insecure={bool(args.insecure)})..."
+    )
+    _install_exit_handlers("\nShutdown signal received, stopping Claude Code runner...")
+    serve(host=host, port=port, allow_insecure=bool(args.insecure))
+
+
 def run_completion(args: argparse.Namespace) -> None:
     """Generate and print a shell completion script."""
     from nymeria.triggers.cli.completion import generate
@@ -1922,6 +1941,29 @@ Examples:
         help="URL of the running Nymeria API (default: NYMERIA_API_URL, Docker nymeria-api, or localhost:8000)",
     )
 
+    # Claude Code runner subcommand (host-side bridge service)
+    cc_runner_parser = subparsers.add_parser(
+        "claude-code-runner",
+        help="Run the host-side Claude Code runner for the claude_code bridge",
+        description=(
+            "Execute Claude Code on the host for the Nymeria claude_code tool. "
+            "Reads NYMERIA_CLAUDE_CODE_* env (token, allowlist, model, budgets). "
+            "Bind to a PRIVATE interface only (loopback or the Docker bridge); "
+            "never expose it publicly."
+        ),
+    )
+    cc_runner_parser.add_argument(
+        "--host", "-H", default=None,
+        help="Host/interface to bind (default: 127.0.0.1). Use the docker-bridge IP to serve containers.",
+    )
+    cc_runner_parser.add_argument(
+        "--port", "-p", type=int, default=None, help="Port to bind (default: 8200)",
+    )
+    cc_runner_parser.add_argument(
+        "--insecure", action="store_true",
+        help="Allow running without a bearer token (loopback-only development).",
+    )
+
     # Service subcommand: background-service manager + foreground gateway
     service_parser = subparsers.add_parser(
         "service",
@@ -2020,6 +2062,7 @@ COMMANDS: dict[str, _Command] = {
     "signal-bot": _Command(run_signal_bot, full_validation=True),
     "watchdog": _Command(run_watchdog, full_validation=True),
     "mcp": _Command(run_mcp, full_validation=True),
+    "claude-code-runner": _Command(run_claude_code_runner),
     "service": _Command(run_service),
     "users": _Command(run_users, exits=True),
     "completion": _Command(run_completion),
