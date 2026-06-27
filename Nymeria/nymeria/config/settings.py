@@ -1612,6 +1612,12 @@ class Settings(BaseSettings):
         le=900,
         description="Max seconds the claude_code tool blocks inline before detaching a long run to the background. None = derive from tool_timeout.",
     )
+    nymeria_claude_code_max_concurrency: int = Field(
+        default=2,
+        ge=1,
+        le=64,
+        description="Max concurrent Claude Code runs the host runner executes at once. Bounds host memory under bursts of parallel runs.",
+    )
 
     memory_char_limit: int = Field(
         default=8000,

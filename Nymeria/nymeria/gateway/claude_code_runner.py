@@ -27,7 +27,11 @@ user, never root. Start it with ``python3 run.py claude-code-runner``.
 Endpoints:
 - ``POST /run``   -> ``{job_id, status}`` (kicks off the run; poll for the result)
 - ``GET  /job/{id}`` -> ``{status, result?}``
+- ``POST /cancel/{id}`` -> ``{status}`` (group-kills the job's Claude Code process)
 - ``GET  /health`` -> ``{status, claude}`` (no auth)
+
+Concurrent runs are capped (``NYMERIA_CLAUDE_CODE_MAX_CONCURRENCY``, default 2) so
+a burst of parallel runs cannot exhaust host memory.
 """
 
 from __future__ import annotations
@@ -80,6 +84,7 @@ class _RunnerJob:
     status: str = "running"  # "running" | "completed"
     result: Optional[ClaudeCodeResult] = None
     created_at: float = field(default_factory=time.time)
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 class _JobRegistry:
@@ -114,6 +119,15 @@ class _JobRegistry:
             for stale in completed[: max(0, overflow)]:
                 self._jobs.pop(stale, None)
 
+    def request_cancel(self, job_id: str) -> bool:
+        """Signal a running job to cancel. Returns whether the job exists."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return False
+            job.cancel_event.set()
+            return True
+
 
 def _resolve_runner_config(settings) -> ClaudeCodeRunConfig:
     """Build the run config from the runner's own host environment."""
@@ -143,15 +157,36 @@ def _resolve_runner_config(settings) -> ClaudeCodeRunConfig:
 
 
 def _execute(job: _RunnerJob, request: ClaudeCodeRequest, config: ClaudeCodeRunConfig,
-             registry: _JobRegistry) -> None:
-    """Run Claude Code to completion in a worker thread and record the result."""
+             registry: _JobRegistry,
+             semaphore: "Optional[threading.BoundedSemaphore]" = None) -> None:
+    """Run Claude Code to completion in a worker thread and record the result.
+
+    ``semaphore`` (when set) caps how many host Claude Code processes run at
+    once, so a burst of parallel runs cannot exhaust host memory. ``cancel_check``
+    is wired to the job's cancel event so POST /cancel group-kills the run.
+    """
     try:
-        result = run_local_blocking(
-            request,
-            config,
-            timeout=RUNNER_HARD_TIMEOUT,
-            env=build_subprocess_env(config.bare),
-        )
+        if semaphore is not None:
+            semaphore.acquire()
+        try:
+            if job.cancel_event.is_set():
+                result = ClaudeCodeResult(
+                    ok=False,
+                    is_error=True,
+                    error="Claude Code run cancelled before it started",
+                    subtype="cancelled",
+                )
+            else:
+                result = run_local_blocking(
+                    request,
+                    config,
+                    timeout=RUNNER_HARD_TIMEOUT,
+                    env=build_subprocess_env(config.bare),
+                    cancel_check=job.cancel_event.is_set,
+                )
+        finally:
+            if semaphore is not None:
+                semaphore.release()
     except Exception as exc:  # noqa: BLE001 - never leave a job stuck "running".
         logger.exception("Runner job %s failed", job.id)
         result = ClaudeCodeResult(ok=False, is_error=True, error=f"runner error: {exc}"[:2000])
@@ -176,6 +211,10 @@ def create_app(*, allow_insecure: bool = False):
         )
 
     registry = _JobRegistry()
+    max_concurrency = max(
+        1, int(getattr(settings, "nymeria_claude_code_max_concurrency", 2) or 2)
+    )
+    run_semaphore = threading.BoundedSemaphore(max_concurrency)
     app = FastAPI(title="Nymeria Claude Code Runner", docs_url=None, redoc_url=None)
 
     def _auth(authorization: Optional[str] = Header(default=None)) -> None:
@@ -213,7 +252,7 @@ def create_app(*, allow_insecure: bool = False):
         job = registry.create()
         thread = threading.Thread(
             target=_execute,
-            args=(job, request, config, registry),
+            args=(job, request, config, registry, run_semaphore),
             name=f"ClaudeCodeRunner-{job.id}",
             daemon=True,
         )
@@ -229,6 +268,14 @@ def create_app(*, allow_insecure: bool = False):
         if job.status == "completed" and job.result is not None:
             return {"status": "completed", "result": job.result.to_payload()}
         return {"status": job.status}
+
+    @app.post("/cancel/{job_id}")
+    def cancel(job_id: str, _: None = Depends(_auth)) -> dict:
+        # Signals the job's cancel event; _execute group-kills the Claude Code
+        # process within one poll interval. Idempotent for an already-finished job.
+        if not registry.request_cancel(job_id):
+            raise HTTPException(status_code=404, detail="job not found")
+        return {"status": "cancelling", "job_id": job_id}
 
     return app
 

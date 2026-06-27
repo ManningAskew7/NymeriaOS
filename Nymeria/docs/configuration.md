@@ -902,6 +902,28 @@ raised `oom_score_adj` so the kernel evicts the offending tool first and the API
 survives the turn. That protection is hardware-agnostic and independent of these
 caps. See `nymeria/oom.py`.
 
+### Claude Code Bridge (`claude_code` tool)
+
+The admin-only `claude_code` tool drives Claude Code where the repo and real auth
+live. In Docker it relays runs to a host runner; with `NYMERIA_CLAUDE_CODE_URL`
+unset it runs Claude Code locally in-process. Full runbook:
+`docs/agent-systems/claude-code-bridge.md`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NYMERIA_CLAUDE_CODE_URL` | - | Host runner base URL (e.g. `http://host.docker.internal:8200`). Unset = local in-process mode. |
+| `NYMERIA_CLAUDE_CODE_TOKEN` | - | Bearer token shared by the tool and the runner. Always set it for a networked runner. |
+| `NYMERIA_CLAUDE_CODE_ROOTS` | project root | Allowed working-directory roots (os.pathsep or comma separated). The directory sandbox. |
+| `NYMERIA_CLAUDE_CODE_MODEL` | - | Model alias/id Claude Code runs with (e.g. `opus`). Empty = Claude Code's own default. |
+| `NYMERIA_CLAUDE_CODE_FALLBACK_MODEL` | - | Fallback model when the primary is unavailable. |
+| `NYMERIA_CLAUDE_CODE_MAX_TURNS` | - | Cap on Claude Code ReAct turns per run. Empty = no explicit cap. |
+| `NYMERIA_CLAUDE_CODE_MAX_BUDGET_USD` | - | Per-run USD budget cap. Empty = none (subscription/OAuth auth bills $0). |
+| `NYMERIA_CLAUDE_CODE_MAX_CONCURRENCY` | `2` | Max concurrent runs the host runner executes at once. Bounds host memory under bursts. |
+| `NYMERIA_CLAUDE_CODE_DISALLOWED_TOOLS` | built-in | Override the hard deny list (comma/os.pathsep). Empty = defaults (`rm`, `git push`, `sudo`, ...). |
+| `NYMERIA_CLAUDE_CODE_DEFAULT_MODE` | `dontAsk` | Default permission mode when the agent passes none (`default`/`plan`/`acceptEdits`/`dontAsk`/`auto`/`bypass`). |
+| `NYMERIA_CLAUDE_CODE_BARE` | `false` | Run with `--bare` (skips hooks/CLAUDE.md; forces `ANTHROPIC_API_KEY` auth instead of OAuth/keychain). |
+| `NYMERIA_CLAUDE_CODE_BLOCK_SECONDS` | - | Max seconds the tool blocks inline before detaching a long run. Empty = derive from `tool_timeout`. |
+
 ### Messaging Platforms
 
 | Variable | Default | Description |

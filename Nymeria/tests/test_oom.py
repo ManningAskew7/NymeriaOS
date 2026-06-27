@@ -103,31 +103,38 @@ def test_background_bash_kwargs_are_oom_tagged():
 
 def test_run_local_blocking_passes_oom_preexec(monkeypatch, tmp_path):
     """The claude_code local spawn (the OOM incident's trigger) wires the OOM
-    preexec into its subprocess.run call."""
+    preexec into its Popen call, and starts the child in its own process group
+    so Claude Code's whole node/ripgrep tree is group-killable on cancel."""
     from types import SimpleNamespace
 
     from nymeria.tools import claude_code_bridge as b
 
     captured: dict = {}
 
-    class _Completed:
-        stdout = '{"result": "ok", "subtype": "success"}'
-        stderr = ""
+    class _FakeProc:
         returncode = 0
 
-    def _fake_run(args, **kwargs):
-        captured.update(kwargs)
-        return _Completed()
+        def __init__(self, args, **kwargs):
+            captured.update(kwargs)
 
-    monkeypatch.setattr(b.subprocess, "run", _fake_run)
+        def communicate(self, input=None, timeout=None):
+            return ('{"result": "ok", "subtype": "success"}', "")
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(b.subprocess, "Popen", _FakeProc)
     monkeypatch.setattr(b, "git_snapshot", lambda cwd: SimpleNamespace(head=None, dirty=set()))
     monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: ([], []))
 
     cfg = b.ClaudeCodeRunConfig(executable="claude")
     req = b.ClaudeCodeRequest(prompt="hi", cwd=str(tmp_path), permission_mode="dontAsk")
-    b.run_local_blocking(req, cfg, timeout=5)
+    result = b.run_local_blocking(req, cfg, timeout=5)
 
+    assert result.result_text == "ok"
     # preexec_fn is always passed (None off Linux, the OOM callable on Linux).
     assert "preexec_fn" in captured
+    if sys.platform != "win32":
+        assert captured.get("start_new_session") is True
     if sys.platform == "linux":
         assert callable(captured["preexec_fn"])

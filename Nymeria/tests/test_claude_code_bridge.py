@@ -6,6 +6,8 @@ assembly, JSON result parsing, and the session store.
 """
 
 import json
+import sys
+import time
 
 import pytest
 
@@ -258,3 +260,127 @@ def test_git_diff_summary_reports_commits(tmp_path):
     files, commits = b.git_diff_summary(before, cwd)
     assert "f.txt" in files
     assert any("cc commit" in c for c in commits)
+
+
+# --- cancellation ------------------------------------------------------------
+
+
+class _FakeProc:
+    """A Popen stand-in whose communicate keeps timing out until killed."""
+
+    def __init__(self, *, finish_after_timeouts=None, returncode=0,
+                 stdout='{"result": "ok", "subtype": "success"}'):
+        self.pid = 4242
+        self.returncode = returncode
+        self._stdout = stdout
+        self._timeouts = 0
+        self._finish_after = finish_after_timeouts  # None = never finish alone
+        self._killed = False
+
+    def communicate(self, input=None, timeout=None):
+        if self._killed:
+            return (self._stdout, "")
+        self._timeouts += 1
+        if self._finish_after is not None and self._timeouts >= self._finish_after:
+            return (self._stdout, "")
+        if timeout:
+            time.sleep(min(timeout, 0.02))
+        raise b.subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+
+    def poll(self):
+        return None if not self._killed else self.returncode
+
+
+def _kill_spy(killed):
+    def _spy(proc, grace=b.GROUP_KILL_GRACE_SECONDS):
+        killed.append(proc)
+        proc._killed = True
+
+    return _spy
+
+
+def test_run_local_blocking_cancels_via_cancel_check(monkeypatch, tmp_path):
+    proc = _FakeProc()  # never finishes on its own
+    killed: list = []
+    monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
+    monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: ([], []))
+    monkeypatch.setattr(b, "terminate_process_group", _kill_spy(killed))
+
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(prompt="hi", cwd=str(tmp_path), permission_mode="dontAsk")
+    res = b.run_local_blocking(
+        req, cfg, timeout=30, cancel_check=lambda: True, poll_interval=0.01
+    )
+
+    assert res.subtype == "cancelled"
+    assert res.is_error is True
+    assert killed and killed[0] is proc  # the process group was killed
+
+
+def test_run_local_blocking_group_kills_on_timeout(monkeypatch, tmp_path):
+    proc = _FakeProc()
+    killed: list = []
+    monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
+    monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: ([], []))
+    monkeypatch.setattr(b, "terminate_process_group", _kill_spy(killed))
+
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(prompt="hi", cwd=str(tmp_path), permission_mode="dontAsk")
+    res = b.run_local_blocking(req, cfg, timeout=0.05, poll_interval=0.01)
+
+    assert res.subtype == "timeout"
+    assert killed and killed[0] is proc
+
+
+def test_run_local_blocking_success_path_uses_popen(monkeypatch, tmp_path):
+    proc = _FakeProc(finish_after_timeouts=1)  # completes on the first communicate
+    monkeypatch.setattr(b.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(b, "git_snapshot", lambda cwd: b.GitSnapshot(head=None, dirty=set()))
+    monkeypatch.setattr(b, "git_diff_summary", lambda before, cwd: (["x.py"], ["abc done"]))
+
+    cfg = b.ClaudeCodeRunConfig(executable="claude")
+    req = b.ClaudeCodeRequest(prompt="hi", cwd=str(tmp_path), permission_mode="dontAsk")
+    res = b.run_local_blocking(req, cfg, timeout=5)
+
+    assert res.ok is True
+    assert res.result_text == "ok"
+    assert res.files_changed == ["x.py"]
+    assert res.commits == ["abc done"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group kill")
+def test_terminate_process_group_sigterm_then_sigkill(monkeypatch):
+    sigs: list = []
+
+    class _P:
+        pid = 999
+
+        def poll(self):
+            return None  # still alive
+
+        def wait(self, timeout=None):
+            raise b.subprocess.TimeoutExpired("claude", timeout)  # force SIGKILL
+
+    monkeypatch.setattr(b.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(b.os, "killpg", lambda pgid, sig: sigs.append(sig))
+
+    b.terminate_process_group(_P(), grace=0.01)
+
+    assert b.signal.SIGTERM in sigs
+    assert b.signal.SIGKILL in sigs
+
+
+def test_terminate_process_group_noop_when_already_exited(monkeypatch):
+    calls: list = []
+
+    class _P:
+        pid = 1
+
+        def poll(self):
+            return 0  # already exited
+
+    monkeypatch.setattr(b.os, "killpg", lambda pgid, sig: calls.append(sig))
+    b.terminate_process_group(_P())
+    assert calls == []  # nothing signalled

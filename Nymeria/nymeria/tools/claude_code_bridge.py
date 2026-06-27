@@ -38,12 +38,14 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from ..oom import oom_score_preexec
 
@@ -556,47 +558,128 @@ def build_subprocess_env(bare: bool) -> dict[str, str]:
     return env
 
 
+GROUP_KILL_GRACE_SECONDS = 5.0
+
+
+def terminate_process_group(
+    proc: "subprocess.Popen", grace: float = GROUP_KILL_GRACE_SECONDS
+) -> None:
+    """SIGTERM the child's process group, then SIGKILL after a grace period.
+
+    Claude Code spawns a node + ripgrep tree, so the whole group must be
+    signalled (the child is started with ``start_new_session=True`` on POSIX /
+    ``CREATE_NEW_PROCESS_GROUP`` on Windows). Mirrors the kill in
+    ``core/mcp_manager.py``. Best-effort; never raises.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except Exception:  # noqa: BLE001 - process already gone.
+            pass
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        try:
+            if sys.platform != "win32":
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
+                proc.kill()
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def run_local_blocking(
     request: ClaudeCodeRequest,
     config: ClaudeCodeRunConfig,
     timeout: float,
     env: Optional[dict[str, str]] = None,
+    *,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    poll_interval: float = 0.25,
 ) -> ClaudeCodeResult:
     """Run Claude Code as a local subprocess and parse the result.
 
-    ``timeout`` bounds the wait. On timeout the subprocess is killed and a
-    timeout result is returned (callers that need detach should run the job in a
-    watcher thread instead of relying on this).
+    ``timeout`` bounds the wait. When ``cancel_check`` is given it is polled
+    every ``poll_interval`` seconds; once it returns True the process group is
+    killed and a ``cancelled`` result is returned (this is how a thread abort
+    stops an in-flight run). On timeout the process group is likewise killed and
+    a ``timeout`` result is returned. The child runs in its own process group so
+    Claude Code's node/ripgrep tree dies with it. Callers that need detach run
+    this in a watcher thread.
     """
     args = build_cli_args(request, config)
     before = git_snapshot(request.cwd)
+
+    popen_kwargs: dict[str, Any] = dict(
+        cwd=request.cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        # Make Claude Code (and its node/ripgrep children) the kernel's OOM
+        # target under memory pressure, not the parent agent runtime.
+        preexec_fn=oom_score_preexec(),
+    )
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
     try:
-        proc = subprocess.run(
-            args,
-            cwd=request.cwd,
-            input=request.prompt,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            # Make Claude Code (and its node/ripgrep children) the kernel's OOM
-            # target under memory pressure, not the parent agent runtime.
-            preexec_fn=oom_score_preexec(),
-        )
-    except subprocess.TimeoutExpired:
-        return ClaudeCodeResult(
-            ok=False,
-            is_error=True,
-            error=f"Claude Code timed out after {timeout:.0f}s",
-            subtype="timeout",
-        )
+        proc = subprocess.Popen(args, **popen_kwargs)
     except FileNotFoundError:
         return ClaudeCodeResult(
             ok=False,
             is_error=True,
             error=f"Claude Code executable not found: {config.executable}",
         )
-    result = parse_cli_result(proc.stdout, proc.stderr, proc.returncode)
+
+    def _kill_and_drain() -> None:
+        terminate_process_group(proc)
+        try:  # close pipes / reap so nothing is left dangling.
+            proc.communicate(timeout=GROUP_KILL_GRACE_SECONDS)
+        except Exception:  # noqa: BLE001 - process/pipes already gone.
+            pass
+
+    deadline = time.monotonic() + timeout
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    pending_input: Optional[str] = request.prompt
+    while True:
+        try:
+            stdout, stderr = proc.communicate(input=pending_input, timeout=poll_interval)
+            break
+        except subprocess.TimeoutExpired:
+            pending_input = None  # prompt already buffered; never resend it.
+            if cancel_check is not None and cancel_check():
+                _kill_and_drain()
+                return ClaudeCodeResult(
+                    ok=False,
+                    is_error=True,
+                    error="Claude Code run cancelled (thread aborted)",
+                    subtype="cancelled",
+                )
+            if time.monotonic() >= deadline:
+                _kill_and_drain()
+                return ClaudeCodeResult(
+                    ok=False,
+                    is_error=True,
+                    error=f"Claude Code timed out after {timeout:.0f}s",
+                    subtype="timeout",
+                )
+
+    result = parse_cli_result(stdout, stderr, proc.returncode)
     files, commits = git_diff_summary(before, request.cwd)
     result.files_changed = files
     result.commits = commits
@@ -720,3 +803,27 @@ class RemoteRunnerClient:
                 f"runner returned {resp.status_code}: {resp.text[:500]}"
             )
         return resp.json()
+
+    def cancel(self, job_id: str, timeout: float = 10.0) -> bool:
+        """POST /cancel/{job_id}. Returns False if the runner has no such job.
+
+        Best-effort: the runner group-kills the job's Claude Code process within
+        one poll interval. Raises ``RemoteRunnerError`` on transport/HTTP errors.
+        """
+        import httpx
+
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/cancel/{job_id}",
+                headers=self._headers(),
+                timeout=timeout,
+            )
+        except httpx.HTTPError as exc:
+            raise RemoteRunnerError(f"runner cancel failed: {exc}") from exc
+        if resp.status_code == 404:
+            return False
+        if resp.status_code >= 400:
+            raise RemoteRunnerError(
+                f"runner returned {resp.status_code}: {resp.text[:500]}"
+            )
+        return True

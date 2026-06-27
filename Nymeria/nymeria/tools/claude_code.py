@@ -186,6 +186,20 @@ def claude_code(
     thread_id = get_thread_id_or_none(config)
     user_id = get_user_id(config)
 
+    # Capture the thread's abort event so POST /threads/{id}/stop cascades into
+    # the in-flight Claude Code run (local subprocess group-kill, or remote
+    # /cancel). None when there is no thread context (direct CLI / tests).
+    abort_event = None
+    if thread_id is not None:
+        try:
+            from ..core.agent import get_current_agent
+
+            _agent = get_current_agent()
+            if _agent is not None:
+                abort_event = _agent._thread_locks.get_abort_event(thread_id)
+        except Exception:  # noqa: BLE001 - cancellation is best-effort.
+            abort_event = None
+
     # Session key: a stable per-(thread, project) handle. Local mode keys by the
     # resolved cwd; remote mode keys by the requested dir string (the runner owns
     # the real path), defaulting to "<default>" when omitted.
@@ -218,6 +232,7 @@ def claude_code(
             working_dir=working_dir,
             cli_mode=cli_mode,
             resume_session_id=resume_session_id,
+            abort_event=abort_event,
         )
         run_cwd = working_dir or "<default>"
     else:
@@ -232,9 +247,21 @@ def claude_code(
             resume_session_id=resume_session_id,
         )
         run_env = build_subprocess_env(run_config.bare)
-        producer = lambda: run_local_blocking(  # noqa: E731 - small closure.
-            request, run_config, timeout=LOCAL_HARD_TIMEOUT, env=run_env
-        )
+        # Pass cancel_check only when a thread exists, so the no-thread sync path
+        # (direct CLI / tests) keeps the original run_local_blocking call shape.
+        if abort_event is not None:
+            _cancel_check = abort_event.is_set
+            producer = lambda: run_local_blocking(  # noqa: E731 - small closure.
+                request,
+                run_config,
+                timeout=LOCAL_HARD_TIMEOUT,
+                env=run_env,
+                cancel_check=_cancel_check,
+            )
+        else:
+            producer = lambda: run_local_blocking(  # noqa: E731 - small closure.
+                request, run_config, timeout=LOCAL_HARD_TIMEOUT, env=run_env
+            )
         run_cwd = project_key
 
     # No real thread context (direct CLI / tests): run synchronously, no detach.
@@ -270,6 +297,7 @@ def _make_remote_producer(
     working_dir: Optional[str],
     cli_mode: str,
     resume_session_id: Optional[str],
+    abort_event=None,
 ):
     """Return a producer that drives the host runner to completion via polling."""
     client = RemoteRunnerClient(remote_url, settings.nymeria_claude_code_token)
@@ -280,6 +308,18 @@ def _make_remote_producer(
         "resume_session_id": resume_session_id,
         "fork_session": False,
     }
+
+    def _cancel_and_report(job_id: str) -> ClaudeCodeResult:
+        try:
+            client.cancel(job_id)
+        except RemoteRunnerError:
+            pass  # best-effort; the runner's own hard timeout still bounds it.
+        return ClaudeCodeResult(
+            ok=False,
+            is_error=True,
+            error="Claude Code run cancelled (thread aborted)",
+            subtype="cancelled",
+        )
 
     def producer() -> ClaudeCodeResult:
         try:
@@ -293,10 +333,14 @@ def _make_remote_producer(
             return ClaudeCodeResult(
                 ok=False, is_error=True, error="runner did not return a job id"
             )
+        if abort_event is not None and abort_event.is_set():
+            return _cancel_and_report(job_id)
         deadline = time.time() + REMOTE_HARD_TIMEOUT
         consecutive_errors = 0
         last_error = ""
         while time.time() < deadline:
+            if abort_event is not None and abort_event.is_set():
+                return _cancel_and_report(job_id)
             time.sleep(REMOTE_POLL_INTERVAL)
             try:
                 status = client.poll(job_id)
