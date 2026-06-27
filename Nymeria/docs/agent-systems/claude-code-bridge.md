@@ -121,35 +121,99 @@ read).
 
 ## Running the host runner (production / Docker)
 
-On the host (where the repo and `claude` live), as a normal user (never root):
+Run the runner on the host (where the repo, the `claude` binary, and real auth
+live), as an **unprivileged** user (never root). The `api` service in
+`docker-compose.yml` already ships the wiring (`extra_hosts:
+host.docker.internal:host-gateway` and the `NYMERIA_CLAUDE_CODE_*` env keys), so
+production deployment is: set three values in `.env.docker`, open the port to the
+Docker bridge, and run the runner as a service.
+
+### 1. Set three env vars in `.env.docker`
 
 ```bash
-export NYMERIA_CLAUDE_CODE_TOKEN=$(openssl rand -hex 32)
-# Bind to the docker bridge so containers can reach it (or 127.0.0.1 for local).
-python3 run.py claude-code-runner --host 0.0.0.0 --port 8200
+NYMERIA_CLAUDE_CODE_URL=http://host.docker.internal:8200
+NYMERIA_CLAUDE_CODE_TOKEN=<openssl rand -hex 32>
+NYMERIA_CLAUDE_CODE_ROOTS=/opt/NymeriaOS
 ```
 
-Then point Nymeria at it (in `.env.docker`) and give the container a route to the
-host:
+Recreate the api container so it picks them up: `docker compose --env-file
+.env.docker up -d api` (recreate, **not** `restart`).
 
-```yaml
-# docker-compose.yml, api service
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-environment:
-  NYMERIA_CLAUDE_CODE_URL: "http://host.docker.internal:8200"
-  NYMERIA_CLAUDE_CODE_TOKEN: "<same token as the runner>"
-  NYMERIA_CLAUDE_CODE_ROOTS: "/opt/NymeriaOS"
+### 2. Open port 8200 to the Docker bridge ONLY (required)
+
+The container reaches the host at `host.docker.internal`, which Docker's
+`host-gateway` resolves to the docker0 gateway `172.17.0.1`. With a default-deny
+firewall (`ufw` `DEFAULT_INPUT_POLICY="DROP"`), traffic from the Docker bridges to
+a host port is dropped, so the container **cannot reach the runner** until you
+allow Docker's private range to that port:
+
+```bash
+sudo ufw allow from 172.16.0.0/12 to any port 8200 proto tcp \
+  comment 'nymeria claude-code runner (docker bridge only)'
 ```
 
-Security:
+This allows only Docker's private range (`172.16.0.0/12`), never the public
+internet (UFW still denies 8200 from anywhere else). The bearer token is the auth
+boundary regardless.
 
-- The runner is an RCE-capable endpoint. Bind it to a **private** interface only
-  (loopback or the Docker bridge), never a public one. On the reference host UFW
-  opens only 22/8000/8001, so port 8200 is not publicly reachable.
-- Always set `NYMERIA_CLAUDE_CODE_TOKEN`. `--insecure` (tokenless) is for
-  loopback-only development.
+### 3. Run the runner as a systemd user service (durable)
+
+`nymeria service` only manages the slim backend, so install a small unit by hand at
+`~/.config/systemd/user/nymeria-claude-code-runner.service` (replace `<user>`):
+
+```ini
+[Unit]
+Description=Nymeria Claude Code runner (claude_code tool host bridge)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/NymeriaOS/Nymeria
+Environment=HOME=/home/<user>
+Environment=PATH=/home/<user>/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NYMERIA_CLAUDE_CODE_TOKEN=<same token as .env.docker>
+Environment=NYMERIA_CLAUDE_CODE_ROOTS=/opt/NymeriaOS
+ExecStart=/usr/bin/python3 run.py claude-code-runner --host 172.17.0.1 --port 8200
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+chmod 600 ~/.config/systemd/user/nymeria-claude-code-runner.service
+systemctl --user daemon-reload
+systemctl --user enable --now nymeria-claude-code-runner.service
+loginctl enable-linger "$USER"   # survive logout / reboot
+```
+
+`PATH` must include the dir holding `claude` (so the runner can spawn it) and
+`git` (for the change summary). Bind `172.17.0.1` (the private docker0 gateway),
+not `0.0.0.0`. The runner needs no Nymeria DB or service token.
+
+### Verify
+
+```bash
+curl -s http://172.17.0.1:8200/health                          # host
+docker exec nymeria-api curl -s http://host.docker.internal:8200/health  # container
+# both -> {"status":"ok","claude":true}
+```
+
+A `claude:true` health plus a real run (a "reply PONG" prompt) confirms the host
+`claude` is authenticated (the runner sets no `ANTHROPIC_API_KEY`, so non-bare runs
+fall through to the host's OAuth / keychain auth).
+
+### Security
+
+- The runner is an RCE-capable endpoint. Keep it private: bind `172.17.0.1` and
+  scope the UFW rule to the Docker range as above; never expose 8200 publicly. Run
+  as an unprivileged user, never root.
+- Always set `NYMERIA_CLAUDE_CODE_TOKEN`; `--insecure` (tokenless) is loopback dev
+  only.
 - Keep `NYMERIA_CLAUDE_CODE_ROOTS` tight; it is the directory sandbox.
+- A future option for zero network exposure is a Unix-domain-socket transport (no
+  open port); the firewalled-TCP + token setup above is the current shape.
 
 ## Usage examples
 
