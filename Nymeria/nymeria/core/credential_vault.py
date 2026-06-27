@@ -424,7 +424,14 @@ class CredentialVaultRepo:
                 details={"provider": provider, "kind": kind, "secret_fields": sorted(secret_fields)},
             )
             conn.commit()
-        return self.get_credential(cid)  # type: ignore[return-value]
+            # Read back the fresh record on the same (post-commit) connection
+            # rather than re-acquiring the lock + opening a second connection via
+            # get_credential(); _record_locked is the in-transaction reader the
+            # other write methods already use and does not re-acquire self._lock.
+            # The row is committed above, so this is byte-identical to the prior
+            # post-block re-read.
+            record = self._record_locked(conn, cid)
+        return record  # type: ignore[return-value]
 
     def upsert_credential(
         self,
@@ -541,7 +548,10 @@ class CredentialVaultRepo:
                 details={"provider": provider, "kind": kind, "secret_fields": sorted(secret_fields)},
             )
             conn.commit()
-        return self.get_credential(credential_id)  # type: ignore[return-value]
+            # See create_credential: read back via _record_locked on the same
+            # committed connection instead of a second get_credential().
+            record = self._record_locked(conn, credential_id)
+        return record  # type: ignore[return-value]
 
     def get_credential(self, credential_id: str) -> Optional[CredentialRecord]:
         with self._lock, self._connect() as conn:
