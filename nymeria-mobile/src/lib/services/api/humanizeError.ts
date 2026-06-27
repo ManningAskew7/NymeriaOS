@@ -132,11 +132,50 @@ function ensureSentence(s: string): string {
 }
 
 /**
+ * A fetch() that never reached the server: backend down or restarting, DNS, a
+ * dropped/reset connection, or an HTTP/3 (QUIC) transport failure. Browsers
+ * surface these as a TypeError whose message varies by engine ("Failed to
+ * fetch", "NetworkError when attempting to fetch resource", "Load failed",
+ * "network error"). Detecting them lets the UI say the backend is unreachable
+ * instead of leaking a raw "network error" string.
+ */
+export function isConnectivityError(e: unknown): boolean {
+  const raw = (e instanceof Error ? e.message : typeof e === 'string' ? e : '').toLowerCase();
+  if (!raw) return e instanceof TypeError;
+  return (
+    raw.includes('failed to fetch') ||
+    raw.includes('networkerror') ||
+    raw.includes('network error') ||
+    raw.includes('load failed') ||
+    raw.includes('err_quic') ||
+    raw.includes('err_network') ||
+    raw.includes('err_connection') ||
+    raw.includes('err_internet') ||
+    raw.includes('connection refused') ||
+    raw.includes('connection reset')
+  );
+}
+
+/**
+ * Shared copy for a lost backend connection. Action-neutral so it reads
+ * correctly on any surface; streaming surfaces (chat) add their own
+ * "reconnecting" note at the call site.
+ */
+const CONNECTIVITY_ERROR: HumanError = {
+  title: 'Connection lost',
+  body:
+    "Couldn't reach the backend. It may be restarting, or your connection " +
+    'dropped. Try again in a moment.',
+};
+
+/**
  * Build a titled error from a caught value and the action/resource context.
  * The body is self-contained, so inline UIs can render it directly while the
  * toast layer can split out `.title`.
  */
 export function humanizeError(e: unknown, ctx: HumanErrorContext): HumanError {
+  if (isConnectivityError(e)) return CONNECTIVITY_ERROR;
+
   const title = `Couldn't ${ACTION_VERB[ctx.action]} ${ctx.resource}`;
   const hint = ACTION_HINT[ctx.action] ?? DEFAULT_HINT;
 

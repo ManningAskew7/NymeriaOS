@@ -188,6 +188,20 @@ services:
 
   api:
     <<: [*security-hardening, *agent-fs, *limits-full, *nymeria-full-image]
+    # Override *limits-full for the api only. The agent runtime is the largest
+    # RSS in this cgroup, so under memory pressure the kernel OOM-killer would
+    # otherwise evict the API process itself rather than the tool subprocess
+    # that spiked. Give it real headroom plus swap: with memswap_limit >
+    # mem_limit a spike slows (swaps) instead of triggering an immediate OOM
+    # kill. The worker keeps the no-swap *limits-full cap. (Tool subprocesses
+    # are also OOM-deprioritized in code; see nymeria/oom.py.)
+    #
+    # Env-overridable for per-host tuning (defaults suit a 4 GB+ host; raise on
+    # bigger boxes, e.g. 2560m/3584m on 8 GB). See docs/configuration.md.
+    # The memory caps are NOT auto-sized from host RAM yet (a cgroup-aware
+    # sizing step is a planned `nymeria init` follow-up).
+    mem_limit: ${NYMERIA_API_MEM_LIMIT:-2g}
+    memswap_limit: ${NYMERIA_API_MEMSWAP_LIMIT:-3g}
     container_name: nymeria-api
     restart: unless-stopped
     # PID 1 reaper so MCP subprocess grandchildren (node, etc.) don't zombify.
@@ -251,6 +265,15 @@ services:
       # Data directory
       NYMERIA_DATA_DIR: /data
       NYMERIA_WORKSPACE_DIR: /workspace
+      # Claude Code bridge: the claude_code tool relays runs to a host runner
+      # (python run.py claude-code-runner) reachable via host.docker.internal.
+      # Inert unless NYMERIA_CLAUDE_CODE_URL is set. See
+      # docs/agent-systems/claude-code-bridge.md.
+      NYMERIA_CLAUDE_CODE_URL: ${NYMERIA_CLAUDE_CODE_URL:-}
+      NYMERIA_CLAUDE_CODE_TOKEN: ${NYMERIA_CLAUDE_CODE_TOKEN:-}
+      NYMERIA_CLAUDE_CODE_ROOTS: ${NYMERIA_CLAUDE_CODE_ROOTS:-}
+      NYMERIA_CLAUDE_CODE_MODEL: ${NYMERIA_CLAUDE_CODE_MODEL:-}
+      NYMERIA_CLAUDE_CODE_DEFAULT_MODE: ${NYMERIA_CLAUDE_CODE_DEFAULT_MODE:-dontAsk}
       # First-boot pick carriers from `nymeria init` (`:`-joined name lists,
       # contract in nymeria/config/init_seed_env.py). Read once when the
       # bootstrap admin profile is first created; inert when unset.

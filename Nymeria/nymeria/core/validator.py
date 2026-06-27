@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Tuple, List, Optional
 
+from ..oom import oom_score_preexec
+
 logger = logging.getLogger(__name__)
 
 
@@ -153,6 +155,7 @@ class CodeValidator:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                preexec_fn=oom_score_preexec(),
             )
 
             if result.returncode == 0:

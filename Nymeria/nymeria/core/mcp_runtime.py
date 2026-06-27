@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from ..config import get_settings
+from ..oom import oom_score_preexec
 from ..tools.definitions.mcp_schema import MCPServerDefinition
 from . import secrets as nymeria_secrets
 from .mcp_installer import parse_mcp_source
@@ -1492,6 +1493,9 @@ def _run(cmd: List[str], logs: List[str], *, cwd: Optional[Path] = None, timeout
         stderr=subprocess.STDOUT,
         text=True,
         timeout=timeout,
+        # An install command (npm/pip, ...) can spike memory; make it the OOM
+        # victim rather than the API server (see nymeria/oom.py).
+        preexec_fn=oom_score_preexec(),
     )
     output = (proc.stdout or "").strip()
     if output:

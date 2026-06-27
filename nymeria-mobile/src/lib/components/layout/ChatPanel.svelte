@@ -14,6 +14,7 @@
   import { skillsStore } from '$lib/stores/skills.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText, isConnectivityError } from '$lib/services/api/humanizeError';
   import { isTodoTool } from '$lib/utils/todoTools';
   import { untrack } from 'svelte';
   import type { DispatchInfo, FileAttachment, SSEEvent } from '$lib/types';
@@ -237,7 +238,9 @@
         // User cancelled
       } else {
         chatStore.setLastMessageError(
-          error instanceof Error ? error.message : 'Connection lost'
+          isConnectivityError(error)
+            ? 'Lost connection to the backend. It may be restarting; reconnecting now. Your message may still be processing.'
+            : humanizeErrorText(error, { action: 'send', resource: 'your message' })
         );
       }
     } finally {
