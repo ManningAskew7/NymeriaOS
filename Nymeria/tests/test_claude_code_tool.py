@@ -7,6 +7,7 @@ can assert routing, session persistence, and mode handling without threads.
 
 import importlib
 import json
+import threading
 from types import SimpleNamespace
 
 
@@ -225,3 +226,44 @@ def test_missing_executable_local_errors(tmp_path, monkeypatch):
     out = claude_module.claude_code.func("x")
     assert "[Error]" in out
     assert "executable not found" in out
+
+
+def test_remote_producer_cancels_on_abort(tmp_path, monkeypatch):
+    """When the thread's abort event is set, the remote producer calls the
+    runner's /cancel and returns a cancelled result instead of polling forever."""
+    settings = _settings(tmp_path, nymeria_claude_code_url="http://host:9000")
+    monkeypatch.setattr(claude_module, "REMOTE_POLL_INTERVAL", 0.01)
+
+    cancelled = {}
+
+    class FakeClient:
+        def __init__(self, base_url, token):
+            pass
+
+        def run(self, payload, timeout):
+            return {"status": "running", "job_id": "jc"}
+
+        def poll(self, job_id, timeout=30.0):  # pragma: no cover - aborted first
+            return {"status": "running"}
+
+        def cancel(self, job_id, timeout=10.0):
+            cancelled["job_id"] = job_id
+            return True
+
+    monkeypatch.setattr(claude_module, "RemoteRunnerClient", FakeClient)
+
+    abort = threading.Event()
+    abort.set()  # thread already aborted before the producer runs
+    producer = claude_module._make_remote_producer(
+        settings,
+        "http://host:9000",
+        prompt="x",
+        working_dir=None,
+        cli_mode="dontAsk",
+        resume_session_id=None,
+        abort_event=abort,
+    )
+    result = producer()
+    assert result.subtype == "cancelled"
+    assert result.is_error is True
+    assert cancelled.get("job_id") == "jc"  # the runner job was cancelled

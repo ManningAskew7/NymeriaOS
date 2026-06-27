@@ -6,9 +6,18 @@ twice and never silently dropped.
 
 import threading
 import time
+from types import SimpleNamespace
 
+from nymeria.core.thread_lock_manager import ThreadLockManager
 from nymeria.tools import claude_code_background as bg
 from nymeria.tools.claude_code_bridge import ClaudeCodeResult
+
+
+def _agent(owner="u1", locks=None):
+    return SimpleNamespace(
+        _thread_locks=locks or ThreadLockManager(),
+        accounts_repo=SimpleNamespace(get_thread_owner=lambda tid: owner),
+    )
 
 
 def _make_job(job_id="j1"):
@@ -98,3 +107,35 @@ def test_build_completion_prompt_includes_output():
     assert "here is the plan" in prompt
     assert job.id in prompt
     assert "Relay the outcome" in prompt
+
+
+# --- completion-delivery guards ----------------------------------------------
+
+
+def test_cancelled_result_is_dropped():
+    """A run cancelled by a thread abort stays silent (no autonomous turn)."""
+    job = _make_job("cancelled-job")
+    job.result = ClaudeCodeResult(
+        ok=False, is_error=True, subtype="cancelled", error="aborted"
+    )
+    assert bg._should_drop_for_thread_state(job, _agent(owner="u1")) is True
+
+
+def test_owner_mismatch_drops_completion():
+    job = _make_job()  # user_id="u1"
+    job.result = ClaudeCodeResult(ok=True, result_text="ok")
+    assert bg._should_drop_for_thread_state(job, _agent(owner="someone-else")) is True
+
+
+def test_owner_match_does_not_drop():
+    job = _make_job()  # user_id="u1", thread_id="t1", no abort set
+    job.result = ClaudeCodeResult(ok=True, result_text="ok")
+    assert bg._should_drop_for_thread_state(job, _agent(owner="u1")) is False
+
+
+def test_aborted_thread_drops_completion():
+    job = _make_job()
+    job.result = ClaudeCodeResult(ok=True, result_text="ok")
+    agent = _agent(owner="u1")
+    agent._thread_locks.signal_abort(job.thread_id)  # thread was stopped
+    assert bg._should_drop_for_thread_state(job, agent) is True

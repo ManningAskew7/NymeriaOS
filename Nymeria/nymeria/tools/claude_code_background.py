@@ -329,6 +329,14 @@ def _log_activity(
 
 
 def _should_drop_for_thread_state(job: ClaudeCodeJob, agent) -> bool:
+    # A cancelled run was stopped by a thread abort; stay silent (no "I
+    # cancelled" autonomous turn), matching the abort-suppresses-notification UX.
+    result = job.result
+    if result is not None and result.subtype == "cancelled":
+        logger.info(
+            "Claude Code job %s was cancelled; dropping completion", job.id
+        )
+        return True
     try:
         abort_event = agent._thread_locks.get_abort_event(job.thread_id)
         if abort_event.is_set():
