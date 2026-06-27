@@ -585,3 +585,290 @@ def test_apply_config_values_missing_secrets_key_marks_pending(tmp_path, monkeyp
     assert len(missing) == 1
     assert "NYMERIA_SECRETS_KEY" in str(missing[0].get("error", ""))
     assert defn.env_vars["API_KEY"].startswith("${credential:")
+
+
+# ---------------------------------------------------------------------------
+# prepare_runtime dispatch branches (slice 05 F11 characterization)
+#
+# These lock the per-source/runtime dispatch behavior of prepare_runtime so the
+# decomposition into per-runtime handlers + an ordered (predicate, handler)
+# table stays behavior-preserving. They are green against both the pre-refactor
+# if-ladder and the post-refactor dispatch table.
+# ---------------------------------------------------------------------------
+
+
+def _prep_runtime_env(monkeypatch, tmp_path):
+    """Allow unsandboxed installs and pin _runtime_dir to a created tmp dir.
+
+    Both are required: prepare_runtime resolves _runtime_dir(defn.id) ->
+    get_settings().data_dir before dispatch, so a settings stub lacking data_dir
+    would crash every positive path.
+    """
+    from nymeria.core import mcp_runtime
+
+    monkeypatch.setattr(
+        mcp_runtime,
+        "get_settings",
+        lambda: SimpleNamespace(nymeria_allow_unsandboxed_mcp_install=True),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp_runtime, "_runtime_dir", lambda _server_id: runtime_dir)
+    return runtime_dir
+
+
+def _runtime_plan(source_type: str, runtime_type: str) -> MCPInstallPlan:
+    # Empty required_config -> apply_config_values returns missing=[] (no raise).
+    return MCPInstallPlan(
+        source_type=source_type,
+        runtime_type=runtime_type,
+        risk_level="low",
+        confirmation_required=False,
+        parsed_summary="summary",
+    )
+
+
+def _runtime_defn() -> MCPServerDefinition:
+    # server_command satisfies the stdio "ready" validator (see _stdio_defn).
+    return MCPServerDefinition(id="s", name="s", server_command="echo")
+
+
+def test_prepare_runtime_http_branch_no_local_setup(monkeypatch, tmp_path):
+    from nymeria.core import mcp_runtime
+
+    _prep_runtime_env(monkeypatch, tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(mcp_runtime, "_download", lambda *a, **k: calls.append("download"))
+    monkeypatch.setattr(mcp_runtime, "_run", lambda *a, **k: calls.append("run"))
+
+    defn = _runtime_defn()
+    out_defn, logs = prepare_runtime(defn, _runtime_plan("http", "http"))
+
+    assert out_defn is defn
+    assert "HTTP MCP server; no local setup required." in logs
+    assert calls == []  # http handler does no download/clone
+
+
+def test_prepare_runtime_uvx_branch_sets_uv_cache(monkeypatch, tmp_path):
+    runtime_dir = _prep_runtime_env(monkeypatch, tmp_path)
+
+    defn = _runtime_defn()
+    out_defn, logs = prepare_runtime(defn, _runtime_plan("pypi", "uvx"))
+
+    expected_cache = runtime_dir / "cache" / "uv"
+    assert out_defn.env_vars["UV_CACHE_DIR"] == str(expected_cache)
+    assert expected_cache.exists()
+    assert any("Prepared uvx cache at" in line for line in logs)
+
+
+def test_prepare_runtime_npx_branch_sets_npm_cache(monkeypatch, tmp_path):
+    runtime_dir = _prep_runtime_env(monkeypatch, tmp_path)
+
+    defn = _runtime_defn()
+    out_defn, logs = prepare_runtime(defn, _runtime_plan("npm", "npx"))
+
+    expected_cache = runtime_dir / "cache" / "npm"
+    assert out_defn.env_vars["NPM_CONFIG_CACHE"] == str(expected_cache)
+    assert expected_cache.exists()
+    assert any("Prepared npx cache at" in line for line in logs)
+
+
+@pytest.mark.parametrize("runtime_type", ["python", "node", "direct"])
+def test_prepare_runtime_direct_stdio_branch(monkeypatch, tmp_path, runtime_type):
+    _prep_runtime_env(monkeypatch, tmp_path)
+
+    defn = _runtime_defn()
+    out_defn, logs = prepare_runtime(defn, _runtime_plan("stdio", runtime_type))
+
+    assert out_defn is defn
+    assert "Using direct stdio command; no managed setup required." in logs
+
+
+def test_prepare_runtime_bundle_upload_branch(monkeypatch, tmp_path):
+    from nymeria.core import mcp_runtime
+
+    runtime_dir = _prep_runtime_env(monkeypatch, tmp_path)
+    captured: dict = {}
+
+    def fake_bundle(defn, plan, rdir, cfg, logs):
+        captured["args"] = (defn, plan, rdir, cfg, logs)
+        logs.append("bundle prepared")
+        return defn, logs
+
+    monkeypatch.setattr(mcp_runtime, "_prepare_bundle", fake_bundle)
+
+    def fail_download(*a, **k):
+        raise AssertionError("bundle_upload must not download")
+
+    monkeypatch.setattr(mcp_runtime, "_download", fail_download)
+
+    defn = _runtime_defn()
+    out_defn, logs = prepare_runtime(
+        defn, _runtime_plan("bundle_upload", "bundle"), config_values={"k": "v"}
+    )
+
+    assert out_defn is defn
+    assert captured["args"][0] is defn
+    assert captured["args"][2] == runtime_dir
+    assert captured["args"][3] == {"k": "v"}  # config_values forwarded
+    assert "bundle prepared" in logs
+
+
+def test_prepare_runtime_bundle_upload_normalizes_none_config(monkeypatch, tmp_path):
+    from nymeria.core import mcp_runtime
+
+    _prep_runtime_env(monkeypatch, tmp_path)
+    captured: dict = {}
+
+    def fake_bundle(defn, plan, rdir, cfg, logs):
+        captured["cfg"] = cfg
+        return defn, logs
+
+    monkeypatch.setattr(mcp_runtime, "_prepare_bundle", fake_bundle)
+
+    defn = _runtime_defn()
+    # config_values omitted (None) must normalize to {} for the bundle handler.
+    prepare_runtime(defn, _runtime_plan("bundle_upload", "bundle"))
+
+    assert captured["cfg"] == {}
+
+
+def test_prepare_runtime_bundle_url_branch_downloads_then_prepares(monkeypatch, tmp_path):
+    from nymeria.core import mcp_runtime
+
+    runtime_dir = _prep_runtime_env(monkeypatch, tmp_path)
+    downloads: list = []
+    monkeypatch.setattr(
+        mcp_runtime, "_download", lambda url, dest: downloads.append((url, dest))
+    )
+
+    def fake_bundle(defn, plan, rdir, cfg, logs):
+        logs.append("bundle prepared")
+        return defn, logs
+
+    monkeypatch.setattr(mcp_runtime, "_prepare_bundle", fake_bundle)
+
+    defn = _runtime_defn()
+    plan = _runtime_plan("bundle_url", "bundle")
+    plan.source_url = "https://example.com/x.mcpb"
+    out_defn, logs = prepare_runtime(defn, plan)
+
+    bundle_path = runtime_dir / "bundle.mcpb"
+    assert downloads == [("https://example.com/x.mcpb", bundle_path)]
+    assert plan.bundle_path == str(bundle_path)
+    assert "Downloaded bundle from https://example.com/x.mcpb" in logs
+    assert "bundle prepared" in logs
+
+
+def test_prepare_runtime_git_branch_clones_then_builds_tree(monkeypatch, tmp_path):
+    from nymeria.core import mcp_runtime
+
+    runtime_dir = _prep_runtime_env(monkeypatch, tmp_path)
+    runs: list = []
+    monkeypatch.setattr(
+        mcp_runtime, "_run", lambda cmd, logs, **k: runs.append((cmd, k))
+    )
+    trees: list = []
+
+    def fake_tree(defn, source_dir, logs):
+        trees.append(source_dir)
+        logs.append("tree prepared")
+        return defn, logs
+
+    monkeypatch.setattr(mcp_runtime, "_prepare_source_tree", fake_tree)
+
+    defn = _runtime_defn()
+    plan = _runtime_plan("git", "git")
+    plan.source_url = "https://github.com/example/x"
+    out_defn, logs = prepare_runtime(defn, plan)
+
+    source_dir = runtime_dir / "source"
+    assert runs[0][0] == [
+        "git", "clone", "--depth", "1", "https://github.com/example/x", str(source_dir)
+    ]
+    assert runs[0][1].get("timeout") == 180
+    assert trees == [source_dir]
+    assert "Cloned https://github.com/example/x" in logs
+    assert "tree prepared" in logs
+
+
+def test_prepare_runtime_git_branch_clears_stale_source_dir(monkeypatch, tmp_path):
+    # A pre-existing source/ from an earlier clone is removed before re-cloning.
+    from nymeria.core import mcp_runtime
+
+    runtime_dir = _prep_runtime_env(monkeypatch, tmp_path)
+    stale = runtime_dir / "source"
+    stale.mkdir(parents=True)
+    (stale / "old.txt").write_text("stale", encoding="utf-8")
+
+    removed: list = []
+
+    def fake_run(cmd, logs, **k):
+        # The stale dir must already be gone by the time the clone runs.
+        removed.append(stale.exists())
+
+    monkeypatch.setattr(mcp_runtime, "_run", fake_run)
+    monkeypatch.setattr(
+        mcp_runtime, "_prepare_source_tree", lambda defn, sd, logs: (defn, logs)
+    )
+
+    defn = _runtime_defn()
+    plan = _runtime_plan("git", "git")
+    plan.source_url = "https://github.com/example/x"
+    prepare_runtime(defn, plan)
+
+    assert removed == [False]  # rmtree ran before the clone
+
+
+def test_prepare_runtime_unknown_runtime_falls_through(monkeypatch, tmp_path):
+    _prep_runtime_env(monkeypatch, tmp_path)
+
+    defn = _runtime_defn()
+    out_defn, logs = prepare_runtime(defn, _runtime_plan("stdio", "wasm"))
+
+    assert out_defn is defn
+    assert "No setup handler for runtime type wasm; using parsed command." in logs
+
+
+def test_prepare_runtime_source_type_precedes_runtime_type(monkeypatch, tmp_path):
+    # Precedence guard: a plan whose source_type (git) AND runtime_type (uvx)
+    # both match a rule must take the git arm, exactly as the if-ladder does.
+    # A composite (source_type, runtime_type) dict would break this.
+    from nymeria.core import mcp_runtime
+
+    _prep_runtime_env(monkeypatch, tmp_path)
+    runs: list = []
+    monkeypatch.setattr(mcp_runtime, "_run", lambda cmd, logs, **k: runs.append(cmd))
+
+    def fake_tree(defn, source_dir, logs):
+        logs.append("tree prepared")
+        return defn, logs
+
+    monkeypatch.setattr(mcp_runtime, "_prepare_source_tree", fake_tree)
+
+    defn = _runtime_defn()
+    plan = _runtime_plan("git", "uvx")
+    plan.source_url = "https://github.com/example/x"
+    out_defn, logs = prepare_runtime(defn, plan)
+
+    assert runs  # git clone ran
+    assert "tree prepared" in logs
+    assert "UV_CACHE_DIR" not in out_defn.env_vars  # uvx arm did NOT run
+
+
+def test_prepare_runtime_http_runtime_precedes_source_type(monkeypatch, tmp_path):
+    # http runtime_type wins over any source_type (it is the first rule).
+    from nymeria.core import mcp_runtime
+
+    _prep_runtime_env(monkeypatch, tmp_path)
+
+    def fail(*a, **k):
+        raise AssertionError("http must short-circuit before source handlers")
+
+    monkeypatch.setattr(mcp_runtime, "_run", fail)
+    monkeypatch.setattr(mcp_runtime, "_download", fail)
+
+    defn = _runtime_defn()
+    out_defn, logs = prepare_runtime(defn, _runtime_plan("git", "http"))
+
+    assert "HTTP MCP server; no local setup required." in logs

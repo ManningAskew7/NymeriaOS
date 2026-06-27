@@ -1333,51 +1333,128 @@ def prepare_runtime(
     runtime_dir = _runtime_dir(defn.id)
     (runtime_dir / "cache").mkdir(exist_ok=True)
 
-    if plan.runtime_type == "http":
-        logs.append("HTTP MCP server; no local setup required.")
-        return defn, logs
-
-    if plan.source_type == "bundle_url":
-        bundle_path = runtime_dir / "bundle.mcpb"
-        _download(plan.source_url, bundle_path)
-        plan.bundle_path = str(bundle_path)
-        logs.append(f"Downloaded bundle from {plan.source_url}")
-        defn, logs = _prepare_bundle(defn, plan, runtime_dir, config_values or {}, logs)
-        return defn, logs
-
-    if plan.source_type == "bundle_upload":
-        defn, logs = _prepare_bundle(defn, plan, runtime_dir, config_values or {}, logs)
-        return defn, logs
-
-    if plan.source_type == "git":
-        source_dir = runtime_dir / "source"
-        if source_dir.exists():
-            shutil.rmtree(source_dir)
-        _run(["git", "clone", "--depth", "1", plan.source_url, str(source_dir)], logs, timeout=180)
-        logs.append(f"Cloned {plan.source_url}")
-        defn, logs = _prepare_source_tree(defn, source_dir, logs)
-        return defn, logs
-
-    if plan.runtime_type == "uvx":
-        cache = runtime_dir / "cache" / "uv"
-        cache.mkdir(parents=True, exist_ok=True)
-        defn.env_vars = {**defn.env_vars, "UV_CACHE_DIR": str(cache)}
-        logs.append(f"Prepared uvx cache at {cache}")
-        return defn, logs
-
-    if plan.runtime_type == "npx":
-        cache = runtime_dir / "cache" / "npm"
-        cache.mkdir(parents=True, exist_ok=True)
-        defn.env_vars = {**defn.env_vars, "NPM_CONFIG_CACHE": str(cache)}
-        logs.append(f"Prepared npx cache at {cache}")
-        return defn, logs
-
-    if plan.runtime_type in {"python", "node", "direct"}:
-        logs.append("Using direct stdio command; no managed setup required.")
-        return defn, logs
+    # First matching rule in the ordered `_RUNTIME_PREPARERS` table runs,
+    # reproducing the former if-ladder exactly. The order is load-bearing (see
+    # the table's comment for why): a dict keyed by (source_type, runtime_type)
+    # would mis-route a plan whose two keys each match a different rule.
+    prepared_config = config_values or {}
+    for matches, handler in _RUNTIME_PREPARERS:
+        if matches(plan):
+            return handler(defn, plan, runtime_dir, prepared_config, logs)
 
     logs.append(f"No setup handler for runtime type {plan.runtime_type}; using parsed command.")
     return defn, logs
+
+
+def _prepare_http(
+    defn: MCPServerDefinition,
+    plan: MCPInstallPlan,
+    runtime_dir: Path,
+    config_values: Dict[str, str],
+    logs: List[str],
+) -> Tuple[MCPServerDefinition, List[str]]:
+    logs.append("HTTP MCP server; no local setup required.")
+    return defn, logs
+
+
+def _prepare_bundle_url(
+    defn: MCPServerDefinition,
+    plan: MCPInstallPlan,
+    runtime_dir: Path,
+    config_values: Dict[str, str],
+    logs: List[str],
+) -> Tuple[MCPServerDefinition, List[str]]:
+    bundle_path = runtime_dir / "bundle.mcpb"
+    _download(plan.source_url, bundle_path)
+    plan.bundle_path = str(bundle_path)
+    logs.append(f"Downloaded bundle from {plan.source_url}")
+    return _prepare_bundle(defn, plan, runtime_dir, config_values, logs)
+
+
+def _prepare_bundle_upload(
+    defn: MCPServerDefinition,
+    plan: MCPInstallPlan,
+    runtime_dir: Path,
+    config_values: Dict[str, str],
+    logs: List[str],
+) -> Tuple[MCPServerDefinition, List[str]]:
+    return _prepare_bundle(defn, plan, runtime_dir, config_values, logs)
+
+
+def _prepare_git(
+    defn: MCPServerDefinition,
+    plan: MCPInstallPlan,
+    runtime_dir: Path,
+    config_values: Dict[str, str],
+    logs: List[str],
+) -> Tuple[MCPServerDefinition, List[str]]:
+    source_dir = runtime_dir / "source"
+    if source_dir.exists():
+        shutil.rmtree(source_dir)
+    _run(["git", "clone", "--depth", "1", plan.source_url, str(source_dir)], logs, timeout=180)
+    logs.append(f"Cloned {plan.source_url}")
+    return _prepare_source_tree(defn, source_dir, logs)
+
+
+def _prepare_uvx_cache(
+    defn: MCPServerDefinition,
+    plan: MCPInstallPlan,
+    runtime_dir: Path,
+    config_values: Dict[str, str],
+    logs: List[str],
+) -> Tuple[MCPServerDefinition, List[str]]:
+    cache = runtime_dir / "cache" / "uv"
+    cache.mkdir(parents=True, exist_ok=True)
+    defn.env_vars = {**defn.env_vars, "UV_CACHE_DIR": str(cache)}
+    logs.append(f"Prepared uvx cache at {cache}")
+    return defn, logs
+
+
+def _prepare_npx_cache(
+    defn: MCPServerDefinition,
+    plan: MCPInstallPlan,
+    runtime_dir: Path,
+    config_values: Dict[str, str],
+    logs: List[str],
+) -> Tuple[MCPServerDefinition, List[str]]:
+    cache = runtime_dir / "cache" / "npm"
+    cache.mkdir(parents=True, exist_ok=True)
+    defn.env_vars = {**defn.env_vars, "NPM_CONFIG_CACHE": str(cache)}
+    logs.append(f"Prepared npx cache at {cache}")
+    return defn, logs
+
+
+def _prepare_direct(
+    defn: MCPServerDefinition,
+    plan: MCPInstallPlan,
+    runtime_dir: Path,
+    config_values: Dict[str, str],
+    logs: List[str],
+) -> Tuple[MCPServerDefinition, List[str]]:
+    logs.append("Using direct stdio command; no managed setup required.")
+    return defn, logs
+
+
+# A runtime preparer takes the (defn, plan, runtime_dir, config_values, logs)
+# bundle and returns the (possibly mutated) defn plus the threaded logs list.
+_RuntimePreparer = Callable[
+    [MCPServerDefinition, MCPInstallPlan, Path, Dict[str, str], List[str]],
+    Tuple[MCPServerDefinition, List[str]],
+]
+
+# Ordered (predicate, handler) rule table consumed by `prepare_runtime`. Order is
+# load-bearing: source_type bundle/git arms intentionally precede the uvx/npx
+# runtime arms, and `http` precedes everything. Keep this aligned with the
+# `_install_steps_for_plan` precedence.
+_RUNTIME_PREPARERS: Tuple[Tuple[Callable[[MCPInstallPlan], bool], _RuntimePreparer], ...] = (
+    (lambda plan: plan.runtime_type == "http", _prepare_http),
+    (lambda plan: plan.source_type == "bundle_url", _prepare_bundle_url),
+    (lambda plan: plan.source_type == "bundle_upload", _prepare_bundle_upload),
+    (lambda plan: plan.source_type == "git", _prepare_git),
+    (lambda plan: plan.runtime_type == "uvx", _prepare_uvx_cache),
+    (lambda plan: plan.runtime_type == "npx", _prepare_npx_cache),
+    (lambda plan: plan.runtime_type in {"python", "node", "direct"}, _prepare_direct),
+)
 
 
 def _download(url: str, dest: Path) -> None:
