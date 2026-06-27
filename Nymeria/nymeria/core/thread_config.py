@@ -243,6 +243,12 @@ class ThreadConfig(BaseModel):
     # None inherits the model's max_images_per_request; an explicit value is
     # clamped to that ceiling at resolve time.
     image_window_size: Optional[int] = Field(default=None, ge=1, le=3000)
+    # Per-thread claude_code overrides. None inherits the global
+    # NYMERIA_CLAUDE_CODE_MODEL / NYMERIA_CLAUDE_CODE_DEFAULT_MODE. The host
+    # runner stays the policy authority for the model (allowlist/budget) in
+    # remote mode; the mode is validated against the bridge's mode aliases.
+    claude_code_model: Optional[str] = Field(default=None, max_length=200)
+    claude_code_mode: Optional[str] = Field(default=None, max_length=40)
     # Per-thread dreaming (self-reflection) settings. None means "feature off
     # for this thread"; a populated DreamingConfig with enabled=False is the
     # same in practice but lets the UI render previously-chosen gate values.
@@ -323,6 +329,8 @@ class ThreadConfig(BaseModel):
         if self.memory_char_limit is not None:
             return True
         if self.image_window_size is not None:
+            return True
+        if self.claude_code_model is not None or self.claude_code_mode is not None:
             return True
         if self.dreaming is not None and (
             self.dreaming.enabled

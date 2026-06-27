@@ -36,6 +36,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..config import get_settings
+from ..core.claude_code_overrides import (
+    get_effective_claude_code_mode,
+    get_effective_claude_code_model,
+)
 from .claude_code_background import ClaudeCodeJob, start_job
 from .claude_code_bridge import (
     ClaudeCodeError,
@@ -177,14 +181,23 @@ def claude_code(
         detach,
     )
 
-    try:
-        cli_mode = map_mode(mode if mode is not None else settings.nymeria_claude_code_default_mode)
-    except ClaudeCodeError as exc:
-        return f"[Error]: {exc}"
-
     remote_url = (settings.nymeria_claude_code_url or "").strip()
     thread_id = get_thread_id_or_none(config)
     user_id = get_user_id(config)
+
+    # Per-thread overrides (an explicit per-call `mode` still beats the thread
+    # default; the model override falls through to the runner's allowlist in
+    # remote mode). Both inherit the global default when unset.
+    effective_default_mode = get_effective_claude_code_mode(
+        thread_id, settings.nymeria_claude_code_default_mode
+    )
+    try:
+        cli_mode = map_mode(mode if mode is not None else effective_default_mode)
+    except ClaudeCodeError as exc:
+        return f"[Error]: {exc}"
+    effective_model = get_effective_claude_code_model(
+        thread_id, settings.nymeria_claude_code_model
+    )
 
     # Capture the thread's abort event so POST /threads/{id}/stop cascades into
     # the in-flight Claude Code run (local subprocess group-kill, or remote
@@ -233,6 +246,7 @@ def claude_code(
             cli_mode=cli_mode,
             resume_session_id=resume_session_id,
             abort_event=abort_event,
+            model=effective_model,
         )
         run_cwd = working_dir or "<default>"
     else:
@@ -240,6 +254,7 @@ def claude_code(
             run_config = _build_local_config(settings)
         except ClaudeCodeError as exc:
             return f"[Error]: {exc}"
+        run_config.model = effective_model  # per-thread override (None = default)
         request = ClaudeCodeRequest(
             prompt=prompt,
             cwd=project_key,
@@ -298,6 +313,7 @@ def _make_remote_producer(
     cli_mode: str,
     resume_session_id: Optional[str],
     abort_event=None,
+    model: Optional[str] = None,
 ):
     """Return a producer that drives the host runner to completion via polling."""
     client = RemoteRunnerClient(remote_url, settings.nymeria_claude_code_token)
@@ -307,6 +323,7 @@ def _make_remote_producer(
         "mode": cli_mode,
         "resume_session_id": resume_session_id,
         "fork_session": False,
+        "model": model,
     }
 
     def _cancel_and_report(job_id: str) -> ClaudeCodeResult:

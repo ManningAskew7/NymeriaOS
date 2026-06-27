@@ -114,10 +114,24 @@ read).
 | `NYMERIA_CLAUDE_CODE_FALLBACK_MODEL` | Fallback model. |
 | `NYMERIA_CLAUDE_CODE_MAX_TURNS` | Cap on Claude Code turns per run. |
 | `NYMERIA_CLAUDE_CODE_MAX_BUDGET_USD` | Per-run USD budget cap. |
+| `NYMERIA_CLAUDE_CODE_MAX_CONCURRENCY` | Max concurrent runs the host runner executes at once (default `2`). Bounds host memory under bursts. |
+| `NYMERIA_CLAUDE_CODE_ALLOWED_MODELS` | Allowlist of models a per-thread override may request on the runner (comma/os.pathsep). Empty = accept any. |
 | `NYMERIA_CLAUDE_CODE_DISALLOWED_TOOLS` | Override the hard deny list. |
 | `NYMERIA_CLAUDE_CODE_BARE` | Run with `--bare` (API-key auth). |
 | `NYMERIA_CLAUDE_CODE_DEFAULT_MODE` | Default permission mode (default `dontAsk`). |
 | `NYMERIA_CLAUDE_CODE_BLOCK_SECONDS` | Max inline wait before detaching. None = derive from `tool_timeout`. |
+
+### Per-thread overrides
+
+A thread can override the model and the default permission mode for `claude_code`
+without touching global env, via `ThreadConfig.claude_code_model` and
+`ThreadConfig.claude_code_mode` (PATCH `/threads/{id}/config`). Precedence for the
+mode is **per-call `mode` argument > per-thread `claude_code_mode` > global
+`NYMERIA_CLAUDE_CODE_DEFAULT_MODE`**; the model override falls back to
+`NYMERIA_CLAUDE_CODE_MODEL` when unset. In remote mode the requested model travels
+in the `POST /run` body and the runner honors it only if it passes
+`NYMERIA_CLAUDE_CODE_ALLOWED_MODELS` (unset = accept any); the runner stays the
+policy authority, and budget caps plus the cwd allowlist remain the real boundary.
 
 ## Running the host runner (production / Docker)
 

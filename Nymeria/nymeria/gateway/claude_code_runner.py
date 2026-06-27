@@ -76,6 +76,10 @@ class RunRequest(BaseModel):
     mode: Optional[str] = None
     resume_session_id: Optional[str] = None
     fork_session: bool = False
+    # Per-thread model override requested by the tool. Honored only if it passes
+    # the runner's own allowlist (NYMERIA_CLAUDE_CODE_ALLOWED_MODELS); else the
+    # runner's configured model is used. The runner stays the policy authority.
+    model: Optional[str] = None
 
 
 @dataclass
@@ -129,7 +133,32 @@ class _JobRegistry:
             return True
 
 
-def _resolve_runner_config(settings) -> ClaudeCodeRunConfig:
+def _select_runner_model(settings, requested_model: Optional[str]) -> Optional[str]:
+    """Pick the model: a tool-requested override only if it passes the allowlist.
+
+    The model is a cost/quality choice, not a containment boundary (budget caps
+    and the cwd allowlist remain the real boundary), so an unset allowlist
+    accepts any requested model; a set allowlist restricts overrides to it.
+    """
+    default_model = settings.nymeria_claude_code_model
+    requested = (requested_model or "").strip()
+    if not requested:
+        return default_model
+    raw_allow = getattr(settings, "nymeria_claude_code_allowed_models", None)
+    if raw_allow and str(raw_allow).strip():
+        import os
+
+        allowed = {
+            p.strip()
+            for p in str(raw_allow).replace(os.pathsep, ",").split(",")
+            if p.strip()
+        }
+        if requested not in allowed:
+            return default_model
+    return requested
+
+
+def _resolve_runner_config(settings, requested_model: Optional[str] = None) -> ClaudeCodeRunConfig:
     """Build the run config from the runner's own host environment."""
     executable = resolve_claude_executable()
     if not executable:
@@ -147,7 +176,7 @@ def _resolve_runner_config(settings) -> ClaudeCodeRunConfig:
         disallowed = DEFAULT_DISALLOWED_TOOLS
     return ClaudeCodeRunConfig(
         executable=executable,
-        model=settings.nymeria_claude_code_model,
+        model=_select_runner_model(settings, requested_model),
         fallback_model=settings.nymeria_claude_code_fallback_model,
         max_turns=settings.nymeria_claude_code_max_turns,
         max_budget_usd=settings.nymeria_claude_code_max_budget_usd,
@@ -238,7 +267,7 @@ def create_app(*, allow_insecure: bool = False):
                 parse_roots(live.nymeria_claude_code_roots, live.project_root),
                 live.project_root,
             )
-            config = _resolve_runner_config(live)
+            config = _resolve_runner_config(live, requested_model=body.model)
         except ClaudeCodeError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 

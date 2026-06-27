@@ -335,6 +335,14 @@ def create_thread_config_router(
             tc.image_window_size = None
         elif request.image_window_size is not None:
             tc.image_window_size = request.image_window_size
+        if request.clear_claude_code_model:
+            tc.claude_code_model = None
+        elif request.claude_code_model is not None:
+            tc.claude_code_model = request.claude_code_model or None
+        if request.clear_claude_code_mode:
+            tc.claude_code_mode = None
+        elif request.claude_code_mode is not None:
+            tc.claude_code_mode = request.claude_code_mode or None
         if request.clear_dreaming:
             tc.dreaming = None
         elif request.dreaming is not None:

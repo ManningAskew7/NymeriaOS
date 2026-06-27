@@ -33,6 +33,7 @@ def _settings(tmp_path, **overrides):
         nymeria_claude_code_bare=False,
         nymeria_claude_code_default_mode="dontAsk",
         nymeria_claude_code_block_seconds=None,
+        nymeria_claude_code_allowed_models=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -226,6 +227,113 @@ def test_missing_executable_local_errors(tmp_path, monkeypatch):
     out = claude_module.claude_code.func("x")
     assert "[Error]" in out
     assert "executable not found" in out
+
+
+def test_local_applies_thread_model_override(tmp_path, monkeypatch):
+    """A per-thread claude_code_model override is applied to the local run config."""
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(claude_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        claude_module, "resolve_claude_executable", lambda: "/usr/bin/claude"
+    )
+    # No thread context in the sync path, so resolve the override directly via an
+    # injected effective-model resolver (mirrors how the agent injects a manager).
+    monkeypatch.setattr(
+        claude_module,
+        "get_effective_claude_code_model",
+        lambda thread_id, default: "claude-opus-4-8",
+    )
+
+    captured = {}
+
+    def fake_run_local(request, config, timeout, env=None):
+        captured["model"] = config.model
+        return bridge.ClaudeCodeResult(ok=True, result_text="ok")
+
+    monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
+    claude_module.claude_code.func("do X")
+    assert captured["model"] == "claude-opus-4-8"
+
+
+def test_per_call_mode_beats_thread_default_mode(tmp_path, monkeypatch):
+    """An explicit per-call mode overrides the per-thread default mode."""
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(claude_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        claude_module, "resolve_claude_executable", lambda: "/usr/bin/claude"
+    )
+    # Thread default would be "plan", but the per-call mode is "bypass".
+    monkeypatch.setattr(
+        claude_module,
+        "get_effective_claude_code_mode",
+        lambda thread_id, default: "plan",
+    )
+
+    captured = {}
+
+    def fake_run_local(request, config, timeout, env=None):
+        captured["mode"] = request.permission_mode
+        return bridge.ClaudeCodeResult(ok=True, result_text="ok")
+
+    monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
+    claude_module.claude_code.func("do X", mode="bypass")
+    assert captured["mode"] == "bypassPermissions"
+
+
+def test_thread_default_mode_used_when_no_per_call_mode(tmp_path, monkeypatch):
+    """With no per-call mode, the per-thread default mode is used."""
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(claude_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        claude_module, "resolve_claude_executable", lambda: "/usr/bin/claude"
+    )
+    monkeypatch.setattr(
+        claude_module,
+        "get_effective_claude_code_mode",
+        lambda thread_id, default: "plan",
+    )
+
+    captured = {}
+
+    def fake_run_local(request, config, timeout, env=None):
+        captured["mode"] = request.permission_mode
+        return bridge.ClaudeCodeResult(ok=True, result_text="ok")
+
+    monkeypatch.setattr(claude_module, "run_local_blocking", fake_run_local)
+    claude_module.claude_code.func("do X")
+    assert captured["mode"] == "plan"
+
+
+def test_remote_payload_includes_model_override(tmp_path, monkeypatch):
+    """The per-thread model override travels in the remote /run payload."""
+    settings = _settings(tmp_path, nymeria_claude_code_url="http://host:9000")
+    monkeypatch.setattr(claude_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        claude_module,
+        "get_effective_claude_code_model",
+        lambda thread_id, default: "claude-opus-4-8",
+    )
+
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, base_url, token):
+            pass
+
+        def run(self, payload, timeout):
+            captured["payload"] = payload
+            return {
+                "status": "completed",
+                "job_id": "j1",
+                "result": bridge.ClaudeCodeResult(ok=True, result_text="done").to_payload(),
+            }
+
+        def poll(self, job_id, timeout=30.0):  # pragma: no cover - completed inline
+            raise AssertionError("should not poll")
+
+    monkeypatch.setattr(claude_module, "RemoteRunnerClient", FakeClient)
+    claude_module.claude_code.func("remote work")
+    assert captured["payload"]["model"] == "claude-opus-4-8"
 
 
 def test_remote_producer_cancels_on_abort(tmp_path, monkeypatch):

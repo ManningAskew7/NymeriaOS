@@ -81,6 +81,10 @@ class ThreadConfigUpdateRequest(BaseModel):
     notification_profile: str | None = Field(default=None, max_length=120)
     memory_char_limit: int | None = Field(default=None, ge=1, le=2_000_000)
     image_window_size: int | None = Field(default=None, ge=1, le=3000)
+    claude_code_model: str | None = Field(default=None, max_length=200)
+    # Friendly permission-mode token for the claude_code tool (plan, dont_ask,
+    # accept_edits, bypass, ...). Validated against the bridge's alias set.
+    claude_code_mode: str | None = Field(default=None, max_length=40)
     dreaming: DreamingConfigRequest | None = None
     clear_instructions: bool = False
     clear_disabled_tools: bool = False
@@ -92,7 +96,23 @@ class ThreadConfigUpdateRequest(BaseModel):
     clear_notification_profile: bool = False
     clear_memory_char_limit: bool = False
     clear_image_window_size: bool = False
+    clear_claude_code_model: bool = False
+    clear_claude_code_mode: bool = False
     clear_dreaming: bool = False
+
+    @field_validator("claude_code_mode")
+    @classmethod
+    def _validate_claude_code_mode(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return value
+        # Reuse the bridge's single source of truth for valid mode tokens.
+        from ...tools.claude_code_bridge import ClaudeCodeError, map_mode
+
+        try:
+            map_mode(value)
+        except ClaudeCodeError as exc:
+            raise ValueError(str(exc)) from exc
+        return value.strip()
 
 
 class NotepadUpdateRequest(BaseModel):

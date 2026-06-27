@@ -37,6 +37,7 @@ def _settings(tmp_path, **overrides):
         nymeria_claude_code_bare=False,
         nymeria_claude_code_default_mode="dontAsk",
         nymeria_claude_code_max_concurrency=2,
+        nymeria_claude_code_allowed_models=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -196,6 +197,58 @@ def test_max_concurrency_caps_parallel_runs(tmp_path, monkeypatch):
     release.set()
     _wait_completed(client, j1)
     _wait_completed(client, j2)
+
+
+def test_select_runner_model_no_request_uses_default(tmp_path):
+    settings = _settings(tmp_path, nymeria_claude_code_model="default-m")
+    assert runner_mod._select_runner_model(settings, None) == "default-m"
+    assert runner_mod._select_runner_model(settings, "  ") == "default-m"
+
+
+def test_select_runner_model_open_allowlist_accepts_any(tmp_path):
+    settings = _settings(tmp_path, nymeria_claude_code_model="default-m")
+    # Unset allowlist = accept any requested model (budget caps remain the bound).
+    assert runner_mod._select_runner_model(settings, "claude-opus-4-8") == "claude-opus-4-8"
+
+
+def test_select_runner_model_allowlist_permits_listed(tmp_path):
+    settings = _settings(
+        tmp_path,
+        nymeria_claude_code_model="default-m",
+        nymeria_claude_code_allowed_models="claude-opus-4-8, claude-sonnet-4-6",
+    )
+    assert runner_mod._select_runner_model(settings, "claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+
+def test_select_runner_model_allowlist_rejects_unlisted(tmp_path):
+    settings = _settings(
+        tmp_path,
+        nymeria_claude_code_model="default-m",
+        nymeria_claude_code_allowed_models="claude-opus-4-8",
+    )
+    # A requested model outside the allowlist falls back to the runner default.
+    assert runner_mod._select_runner_model(settings, "some-other-model") == "default-m"
+
+
+def test_run_passes_requested_model_through_allowlist(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_local(request, config, timeout, env=None, *, cancel_check=None):
+        captured["model"] = config.model
+        return bridge.ClaudeCodeResult(ok=True, result_text="ok", subtype="success")
+
+    monkeypatch.setattr(runner_mod, "run_local_blocking", fake_run_local)
+    client, _ = _client(
+        tmp_path, monkeypatch, nymeria_claude_code_allowed_models="claude-opus-4-8"
+    )
+
+    job_id = client.post(
+        "/run",
+        json={"prompt": "x", "model": "claude-opus-4-8"},
+        headers=_AUTH,
+    ).json()["job_id"]
+    _wait_completed(client, job_id)
+    assert captured["model"] == "claude-opus-4-8"
 
 
 def test_create_app_requires_token_unless_insecure(tmp_path, monkeypatch):
