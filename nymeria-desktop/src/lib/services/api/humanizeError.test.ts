@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { humanizeError, humanizeErrorText } from './humanizeError';
+import { humanizeError, humanizeErrorText, isConnectivityError } from './humanizeError';
 
 describe('humanizeError', () => {
   it('builds a "Couldn\'t <verb> <resource>" headline', () => {
@@ -93,5 +93,31 @@ describe('humanizeError', () => {
     const ctx = { action: 'reset' as const, resource: 'the system prompt' };
     const e = new Error('nope');
     expect(humanizeErrorText(e, ctx)).toBe(humanizeError(e, ctx).body);
+  });
+
+  it('detects browser fetch-failure messages as connectivity errors', () => {
+    expect(isConnectivityError(new TypeError('Failed to fetch'))).toBe(true);
+    expect(isConnectivityError(new TypeError('NetworkError when attempting to fetch resource'))).toBe(true);
+    expect(isConnectivityError(new TypeError('Load failed'))).toBe(true);
+    expect(isConnectivityError(new Error('network error'))).toBe(true);
+    expect(isConnectivityError(new TypeError(''))).toBe(true);
+  });
+
+  it('does not flag ordinary HTTP or validation errors as connectivity', () => {
+    expect(isConnectivityError(new Error('Failed to load history (500)'))).toBe(false);
+    expect(isConnectivityError(new Error('Source URL is unreachable'))).toBe(false);
+    expect(isConnectivityError({ weird: true })).toBe(false);
+  });
+
+  it('humanizes a lost-backend connection with action-neutral copy', () => {
+    const body = humanizeErrorText(new TypeError('Failed to fetch'), {
+      action: 'send',
+      resource: 'your message',
+    });
+    expect(body).toBe(
+      "Couldn't reach the backend. It may be restarting, or your connection dropped. Try again in a moment.",
+    );
+    const { title } = humanizeError(new Error('network error'), { action: 'load', resource: 'the history' });
+    expect(title).toBe('Connection lost');
   });
 });

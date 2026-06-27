@@ -877,6 +877,31 @@ reachable from the backend process.
 | `REDIS_PASSWORD` | required in Docker | Redis password used by the Compose Redis service and the generated `REDIS_URL`. Use a URL-safe value such as `openssl rand -hex 32`. |
 | `REDIS_URL` | - | Redis connection URL. Docker Compose generates `redis://:<REDIS_PASSWORD>@redis:6379/0`; local non-Docker development can use `redis://localhost:6379` if Redis auth is disabled. Startup logs redact credentials from this URL. |
 
+### Container Resource Limits (Docker Only)
+
+The Compose stack caps each container's memory, CPU, and PID count as a safety
+boundary (blast-radius containment for a compromised tool call) and, for the
+API, to survive memory spikes from tool subprocesses. The API memory limits are
+env-overridable; the rest are literals in `docker-compose.yml`. The caps are NOT
+auto-sized from host RAM yet (a cgroup-aware `nymeria init` sizing step is a
+planned follow-up), so tune them to your host.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NYMERIA_API_MEM_LIMIT` | `2g` | API container memory cap. The API runs the agent (the largest process); raise on bigger hosts (e.g. `2560m` on 8 GB, `4g` on 16 GB). |
+| `NYMERIA_API_MEMSWAP_LIMIT` | `3g` | API container memory+swap total. Must be `>= NYMERIA_API_MEM_LIMIT`; the excess is swap headroom so a spike slows (swaps) instead of an instant OOM kill. Only effective if the host has swap; set equal to `NYMERIA_API_MEM_LIMIT` for no swap. |
+
+**Minimum host:** the full Compose stack (API + Postgres + Redis + agent) is
+sized for a host with roughly 4 GB+ RAM. On smaller hosts, lower
+`NYMERIA_API_MEM_LIMIT` (or use the single-container slim shape instead).
+
+**Why the API is protected:** under memory pressure the kernel OOM-killer evicts
+the largest process, which is the API itself. Tool subprocesses (bash,
+`claude_code`, custom python tools, MCP servers) are therefore spawned with a
+raised `oom_score_adj` so the kernel evicts the offending tool first and the API
+survives the turn. That protection is hardware-agnostic and independent of these
+caps. See `nymeria/oom.py`.
+
 ### Messaging Platforms
 
 | Variable | Default | Description |

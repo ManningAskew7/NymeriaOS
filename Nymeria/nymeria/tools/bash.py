@@ -19,6 +19,7 @@ from .bash_background import (
 )
 from .execution_environment import resolve_tool_working_directory
 from .utils import get_thread_id_or_none
+from ..oom import oom_score_preexec, with_tool_oom_score
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,9 @@ def bash_execute(
                 "will be sent."
             )
 
-        # Normal (blocking) execution
+        # Normal (blocking) execution. Tag the child's OOM score so a heavy
+        # command is the kernel's eviction target under memory pressure, not
+        # the API server (see nymeria/oom.py).
         result = subprocess.run(
             command,
             shell=True,
@@ -141,6 +144,7 @@ def bash_execute(
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
+            preexec_fn=oom_score_preexec(),
         )
 
         output_parts = []
@@ -201,6 +205,9 @@ def _background_popen_kwargs(
         )
     else:
         kwargs["start_new_session"] = True
+    # A long-running background command can grow; make it the OOM victim
+    # rather than the API server it was launched from.
+    with_tool_oom_score(kwargs)
     return kwargs
 
 

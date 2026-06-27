@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
 
 from ..config import get_settings
+from ..oom import oom_score_preexec
 from ..tools.definitions.custom_tool_schema import PythonToolConfig, ToolParameter
 from .http_policy import SECRET_PATTERNS
 
@@ -183,6 +184,9 @@ def run_python_tool_subprocess(
             capture_output=True,
             text=True,
             timeout=timeout,
+            # User tool code can allocate heavily; make it the OOM victim, not
+            # the API server that runs it (see nymeria/oom.py).
+            preexec_fn=oom_score_preexec(),
         )
     except subprocess.TimeoutExpired:
         return PythonToolRunResult(

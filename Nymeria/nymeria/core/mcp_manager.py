@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..oom import with_tool_oom_score
 from ..tools.definitions.mcp_schema import MCPToolConfig
 from .http_policy import (
     HTTPPolicyRedirectLimit,
@@ -276,6 +277,9 @@ class MCPServerManager:
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             popen_kwargs["start_new_session"] = True
+        # An MCP server tree should be the kernel's OOM target under memory
+        # pressure, not the API server that supervises it.
+        with_tool_oom_score(popen_kwargs)
 
         try:
             process = subprocess.Popen(cmd, **popen_kwargs)
