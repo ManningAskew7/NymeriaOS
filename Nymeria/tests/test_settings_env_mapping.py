@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pydantic import AliasChoices
 
+from nymeria._env_overrides import FIELD_ENV_OVERRIDES
 from nymeria.api.schemas.settings import (
     ServerSettingsUpdate,
     _ENV_VAR_OVERRIDES,
@@ -75,3 +76,19 @@ def test_write_env_name_matches_model_read_name():
         if name in Settings.model_fields and env_var != _model_read_env_name(name)
     }
     assert not mismatches, f"write/read env name divergence: {mismatches}"
+
+
+def test_schema_overrides_are_the_shared_constant():
+    # The schema's override table is the one shared `FIELD_ENV_OVERRIDES` source, not a
+    # private copy, so the write surface cannot drift from the model's read aliases.
+    assert _ENV_VAR_OVERRIDES is FIELD_ENV_OVERRIDES
+
+
+def test_settings_aliases_built_from_shared_constant():
+    # The `Settings` model builds each diverging field's primary AliasChoices entry from
+    # the same shared table, so a single edit to `FIELD_ENV_OVERRIDES` moves both the
+    # model read name and the API write name together.
+    for field_name, env_var in FIELD_ENV_OVERRIDES.items():
+        alias = Settings.model_fields[field_name].validation_alias
+        assert isinstance(alias, AliasChoices), field_name
+        assert alias.choices[0] == env_var, (field_name, alias.choices)

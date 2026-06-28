@@ -10,6 +10,7 @@ from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
 
+from .._env_overrides import FIELD_ENV_OVERRIDES
 from .._runtime_paths import default_user_project_root
 from .llm_providers import (
     get_llm_provider_spec,
@@ -874,32 +875,34 @@ class Settings(BaseSettings):
     nextcloud_password: Optional[str] = Field(default=None, description="Nextcloud password or app password fallback")
     nextcloud_access_token: Optional[str] = Field(default=None, description="Nextcloud OAuth access token fallback")
     # The dotenv var written for these (by PATCH /settings and `nymeria init`) follows
-    # AWS SDK naming, so the field must read that same var. The legacy `S3_*` name stays
-    # accepted via AliasChoices so existing configs keep working. Kept in lockstep with
-    # `_ENV_VAR_OVERRIDES` by `tests/test_settings_env_mapping.py`.
+    # AWS SDK naming, so the field must read that same var. The canonical var comes from
+    # the shared `FIELD_ENV_OVERRIDES` table (the single source of truth, also used by
+    # `api/schemas/settings.py`); the legacy `S3_*` name stays accepted as the second
+    # AliasChoices entry so existing configs keep working. Drift between the alias and
+    # the table is caught by `tests/test_settings_env_mapping.py`.
     s3_access_key_id: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("AWS_ACCESS_KEY_ID", "S3_ACCESS_KEY_ID"),
+        validation_alias=AliasChoices(FIELD_ENV_OVERRIDES["s3_access_key_id"], "S3_ACCESS_KEY_ID"),
         description="AWS access key ID fallback",
     )
     s3_secret_access_key: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY"),
+        validation_alias=AliasChoices(FIELD_ENV_OVERRIDES["s3_secret_access_key"], "S3_SECRET_ACCESS_KEY"),
         description="AWS secret access key fallback",
     )
     s3_session_token: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("AWS_SESSION_TOKEN", "S3_SESSION_TOKEN"),
+        validation_alias=AliasChoices(FIELD_ENV_OVERRIDES["s3_session_token"], "S3_SESSION_TOKEN"),
         description="AWS session token fallback",
     )
     s3_region: str = Field(
         default="us-east-1",
-        validation_alias=AliasChoices("AWS_REGION", "S3_REGION"),
+        validation_alias=AliasChoices(FIELD_ENV_OVERRIDES["s3_region"], "S3_REGION"),
         description="AWS region fallback",
     )
     s3_endpoint_url: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("AWS_ENDPOINT_URL_S3", "S3_ENDPOINT_URL"),
+        validation_alias=AliasChoices(FIELD_ENV_OVERRIDES["s3_endpoint_url"], "S3_ENDPOINT_URL"),
         description="S3-compatible endpoint URL fallback",
     )
     s3_force_path_style: bool = Field(default=False, description="Use path-style S3 addressing")

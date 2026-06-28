@@ -1179,17 +1179,17 @@ def _read_env_files(project_root: Path | None = None) -> dict[str, str]:
 
 
 def _setting_value_for_env_var(settings: Any, env_var: str) -> str | None:
-    """Resolve known Settings attributes that use nontrivial field names."""
-    attr_map = {
-        "OPENAI_API_KEY": "openai_api_key",
-        "OPENROUTER_API_KEY": "openrouter_api_key",
-        "ANTHROPIC_API_KEY": "anthropic_api_key",
-        "ANTHROPIC_DIRECT_API_KEY": "anthropic_direct_api_key",
-        "GEMINI_API_KEY": "gemini_api_key",
-        "PERPLEXITY_API_KEY": "perplexity_api_key",
-        "GITHUB_TOKEN": "github_token",
-    }
-    attr = attr_map.get(env_var) or env_var.lower()
+    """Resolve a Settings attribute from its env-var name via the plain convention.
+
+    The attribute name is ``env_var.lower()``. This resolver is used only for LLM
+    provider key/base-url env vars, whose Settings field names follow that
+    convention exactly, so no per-name override table is needed. Fields whose env
+    var diverges from ``field.upper()`` (the S3 credentials, see
+    ``_env_overrides.FIELD_ENV_OVERRIDES``) are intentionally NOT resolved here:
+    they are not provider keys, and ``getattr(settings, env_var.lower())`` returns
+    ``None`` for them (e.g. there is no ``aws_access_key_id`` attribute).
+    """
+    attr = env_var.lower()
     value = getattr(settings, attr, None)
     if value is None:
         return None
