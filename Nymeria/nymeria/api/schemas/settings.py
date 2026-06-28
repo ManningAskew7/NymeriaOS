@@ -4,6 +4,10 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+# Top-level stdlib-only leaf: importing it does NOT pull `config.settings`, so this
+# schema module stays import-light (see the ReasoningEffort re-declaration below).
+from nymeria._env_overrides import FIELD_ENV_OVERRIDES
+
 
 LLMProviderName = str
 OpenAIApiMode = Literal["chat_completions", "responses"]
@@ -798,17 +802,13 @@ class ServerSettingsUpdate(BaseModel):
         return value
 
 
-# Settings fields whose dotenv var is not simply the uppercased field name. Only the
-# S3 tool credentials diverge (they follow the AWS SDK naming the boto/S3 client and
-# the matching `Settings` validation_aliases use). Every other field maps to
-# `field.upper()`. `tests/test_settings_env_mapping.py` asserts this stays exhaustive.
-_ENV_VAR_OVERRIDES = {
-    "s3_access_key_id": "AWS_ACCESS_KEY_ID",
-    "s3_secret_access_key": "AWS_SECRET_ACCESS_KEY",
-    "s3_session_token": "AWS_SESSION_TOKEN",
-    "s3_region": "AWS_REGION",
-    "s3_endpoint_url": "AWS_ENDPOINT_URL_S3",
-}
+# The settings-field -> dotenv-var override table (only the S3 credentials diverge from
+# `field.upper()`; see `FIELD_ENV_OVERRIDES`'s docstring for why). Aliased to the shared
+# constant that `Settings` also builds its aliases from, so the write surface here cannot
+# drift from the model's read names (guarded by `tests/test_settings_env_mapping.py`).
+# Imported from the top-level `_env_overrides` leaf, not `config.settings`, to keep this
+# schema module import-light.
+_ENV_VAR_OVERRIDES = FIELD_ENV_OVERRIDES
 
 
 def server_settings_env_mapping() -> dict[str, str]:
