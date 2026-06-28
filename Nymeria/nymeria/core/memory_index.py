@@ -273,6 +273,29 @@ class ChunkResult:
     context: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class _ScoringConfig:
+    """Post-fusion scoring inputs for `MemoryIndex._fuse_scores` (internal).
+
+    A read-only bundle of the `search()` scoring params so the fusion helper
+    takes one argument instead of fourteen. Not part of any public surface.
+    """
+    fusion: str
+    vec_weight: float
+    bm25_weight: float
+    anchor_weight: float
+    rrf_k: int
+    anchor_lo: Optional[datetime]
+    anchor_hi: Optional[datetime]
+    anchor_sigma: float
+    anchor_floor: float
+    apply_recency: bool
+    half_lives: Dict[str, float]
+    now: datetime
+    apply_prose_priority: bool
+    prose_priority_weight: float
+
+
 class MemoryIndex:
     """Vector store for semantic memory retrieval using sqlite-vec."""
 
@@ -1398,6 +1421,225 @@ class MemoryIndex:
                 return None
         return None
 
+    def _vector_candidates(
+        self,
+        cursor: sqlite3.Cursor,
+        query_embedding: Optional[List[float]],
+        vector_limit: int,
+    ) -> List[str]:
+        """Vector branch: candidate ids ranked by ascending distance.
+
+        Filters are enforced at the fetch step in ``search``, so unfiltered
+        vector candidates that fall outside scope drop out there. A falsy
+        embedding (None, or the empty list an embedder may return) skips the
+        SELECT and yields no ids; ``search`` still reports ``vector_used`` from
+        the embedding's ``is not None``, which deliberately differs from this
+        truthy guard for the empty-list case.
+        """
+        vector_ids: List[str] = []
+        if query_embedding:
+            try:
+                cursor.execute("""
+                    SELECT chunk_id
+                    FROM vec_chunks
+                    WHERE embedding MATCH ?
+                    ORDER BY distance
+                    LIMIT ?
+                """, (self._serialize_embedding(query_embedding), vector_limit))
+                vector_ids = [row['chunk_id'] for row in cursor.fetchall()]
+            except sqlite3.OperationalError as e:
+                if "no such table: vec_chunks" not in str(e):
+                    logger.warning(f"Vector search failed: {e}")
+        return vector_ids
+
+    def _bm25_candidates(
+        self,
+        cursor: sqlite3.Cursor,
+        fts_query: Optional[str],
+        filters: Callable[[str], tuple[str, List[Any]]],
+        pool: int,
+    ) -> List[str]:
+        """BM25 branch: candidate ids ranked by ascending bm25 score, with
+        filters applied in SQL. A falsy ``fts_query`` (vector-only mode, or a
+        query with no usable terms) skips this branch entirely; vector search
+        still runs.
+        """
+        bm25_ids: List[str] = []
+        if fts_query:
+            where_sql, where_params = filters("c")
+            try:
+                cursor.execute(f"""
+                    SELECT c.id
+                    FROM chunks_fts fts
+                    JOIN chunks c ON c.rowid = fts.rowid
+                    WHERE chunks_fts MATCH ?
+                    AND {where_sql}
+                    ORDER BY bm25(chunks_fts)
+                    LIMIT ?
+                """, (fts_query, *where_params, pool))
+                bm25_ids = [row['id'] for row in cursor.fetchall()]
+            except Exception as e:
+                logger.warning(f"BM25 search failed: {e}")
+        return bm25_ids
+
+    def _anchor_candidates(
+        self,
+        cursor: sqlite3.Cursor,
+        filters: Callable[[str], tuple[str, List[Any]]],
+        anchor_lo: Optional[datetime],
+        anchor_hi: Optional[datetime],
+    ) -> List[str]:
+        """Anchor recall branch: the chunks nearest in time to the anchor
+        interval, fused as a third signal so a content-weak on-date chunk still
+        enters the pool. Two index-backed scans (before / at-or-after the
+        interval start) reuse the scope filter but apply NO time WHERE bound; the
+        split is a ranking device, not a filter. event_time is non-NULL
+        everywhere (lazy backfill), so we read it directly to use
+        idx_chunks_user_event_time. Returns [] when no anchor interval is set.
+        """
+        anchor_ids: List[str] = []
+        if anchor_lo is not None and anchor_hi is not None:
+            lo, hi = anchor_lo, anchor_hi
+            where_sql, where_params = filters("c")
+            start_iso = lo.isoformat()
+            rows: List[Dict[str, Any]] = []
+            try:
+                cursor.execute(f"""
+                    SELECT c.id, c.event_time AS et
+                    FROM chunks c
+                    WHERE {where_sql} AND c.event_time < ?
+                    ORDER BY c.event_time DESC
+                    LIMIT ?
+                """, (*where_params, start_iso, ANCHOR_FETCH_N))
+                rows.extend(dict(r) for r in cursor.fetchall())
+                cursor.execute(f"""
+                    SELECT c.id, c.event_time AS et
+                    FROM chunks c
+                    WHERE {where_sql} AND c.event_time >= ?
+                    ORDER BY c.event_time ASC
+                    LIMIT ?
+                """, (*where_params, start_iso, ANCHOR_FETCH_N))
+                rows.extend(dict(r) for r in cursor.fetchall())
+            except Exception as e:
+                logger.warning(f"Anchor search failed: {e}")
+            # Order by distance to the interval (0 inside the plateau).
+            def _interval_distance(et_raw) -> float:
+                ev = self._parse_ts(et_raw)
+                if ev is None:
+                    return float("inf")
+                if ev < lo:
+                    return (lo - ev).total_seconds()
+                if ev > hi:
+                    return (ev - hi).total_seconds()
+                return 0.0
+            rows.sort(key=lambda r: _interval_distance(r.get('et')))
+            anchor_ids = list(dict.fromkeys(r['id'] for r in rows))
+        return anchor_ids
+
+    def _fuse_scores(
+        self,
+        rows_by_id: Dict[str, Dict[str, Any]],
+        vector_ids: List[str],
+        bm25_ids: List[str],
+        anchor_ids: List[str],
+        scoring: _ScoringConfig,
+    ) -> Dict[str, float]:
+        """Fuse the three branch rankings into a per-candidate score.
+
+        Rank maps are restricted to surviving (filtered) candidates, in each
+        branch's original order. RRF (or the legacy weighted blend) gives the
+        base; then either the anchor plateau/Gaussian multiplier (when an anchor
+        interval is set) or the per-chunk_type recency multiplier refines it, and
+        a final prose-priority multiplier gently demotes tool-text-heavy chunks.
+        """
+        vec_rank = {cid: i for i, cid in enumerate(
+            [c for c in vector_ids if c in rows_by_id])}
+        bm_rank = {cid: i for i, cid in enumerate(
+            [c for c in bm25_ids if c in rows_by_id])}
+        anchor_rank = {cid: i for i, cid in enumerate(
+            [c for c in anchor_ids if c in rows_by_id])}
+
+        final_scores: Dict[str, float] = {}
+        for cid, row in rows_by_id.items():
+            if scoring.fusion == "weighted":
+                base = 0.0
+                if cid in vec_rank:
+                    base += 0.7 / (1 + vec_rank[cid])
+                if cid in bm_rank:
+                    base += 0.3 / (1 + bm_rank[cid])
+            else:  # rrf
+                base = 0.0
+                if cid in vec_rank:
+                    base += scoring.vec_weight / (scoring.rrf_k + vec_rank[cid] + 1)
+                if cid in bm_rank:
+                    base += scoring.bm25_weight / (scoring.rrf_k + bm_rank[cid] + 1)
+            # Anchor recall branch contributes a third RRF term, so an
+            # on-date chunk that vector and BM25 both miss gets a positive
+            # floor instead of base 0 (which no multiplier could rescue).
+            if cid in anchor_rank:
+                base += scoring.anchor_weight / (scoring.rrf_k + anchor_rank[cid] + 1)
+
+            ev = (self._parse_ts(row.get('event_time'))
+                  or self._parse_ts(row.get('created_at')) or scoring.now)
+            if scoring.anchor_lo is not None and scoring.anchor_hi is not None:
+                # Flat plateau across the interval (every in-window chunk
+                # scores the same on time), Gaussian falloff outside,
+                # floored so a strong far match is never excluded.
+                if scoring.anchor_lo <= ev <= scoring.anchor_hi:
+                    d_days = 0.0
+                elif ev < scoring.anchor_lo:
+                    d_days = (scoring.anchor_lo - ev).total_seconds() / 86400.0
+                else:
+                    d_days = (ev - scoring.anchor_hi).total_seconds() / 86400.0
+                gauss = (math.exp(-0.5 * (d_days / scoring.anchor_sigma) ** 2)
+                         if scoring.anchor_sigma > 0 else (1.0 if d_days == 0 else 0.0))
+                base *= scoring.anchor_floor + (1.0 - scoring.anchor_floor) * gauss
+            elif scoring.apply_recency:
+                age_days = max(0.0, (scoring.now - ev).total_seconds() / 86400.0)
+                hl = scoring.half_lives.get(row['chunk_type'], DEFAULT_RECENCY_HALF_LIFE)
+                base *= 0.5 ** (age_days / hl) if hl > 0 else 1.0
+
+            if scoring.apply_prose_priority and scoring.prose_priority_weight:
+                frac = self._tool_text_fraction(row.get('content'))
+                base *= 1.0 - scoring.prose_priority_weight * frac
+
+            final_scores[cid] = base
+        return final_scores
+
+    def _select_ranked_ids(
+        self,
+        final_scores: Dict[str, float],
+        rows_by_id: Dict[str, Dict[str, Any]],
+        limit: int,
+        dedup: bool,
+        dedup_threshold: float,
+    ) -> List[str]:
+        """Greedy near-duplicate-aware top-k. Walk the fully-scored candidates
+        best-first and keep a result only if it is not a near-duplicate of one
+        already kept, so overlapping-window chunks and live-vs-flush twins do not
+        occupy several slots.
+        """
+        ordered = sorted(
+            final_scores, key=lambda c: final_scores[c], reverse=True
+        )
+        if dedup:
+            ranked: List[str] = []
+            for cid in ordered:
+                content = rows_by_id[cid].get('content')
+                if any(
+                    self._is_near_duplicate(
+                        content, rows_by_id[kept].get('content'), dedup_threshold
+                    )
+                    for kept in ranked
+                ):
+                    continue
+                ranked.append(cid)
+                if len(ranked) >= limit:
+                    break
+        else:
+            ranked = ordered[:limit]
+        return ranked
+
     def search(
         self,
         query: str,
@@ -1526,96 +1768,28 @@ class MemoryIndex:
             conn = self._get_connection()
             cursor = conn.cursor()
 
-            # Vector branch: candidate ids ranked by ascending distance.
-            # Filters are enforced at the fetch step below, so unfiltered
-            # vector candidates that fall outside scope drop out there.
-            vector_ids: List[str] = []
+            # Three recall branches over the shared cursor. The vector branch
+            # cannot filter in SQL (filters are enforced at the fetch step
+            # below); BM25 and the anchor recall branch apply the scope filter
+            # themselves. `query_embedding`/`fts_query` are computed here so the
+            # diagnostics below can report which branches actually ran (the
+            # branch helpers each no-op on a falsy input).
             query_embedding = self.embed_text(query, input_type="query")
-            if query_embedding:
-                try:
-                    cursor.execute("""
-                        SELECT chunk_id
-                        FROM vec_chunks
-                        WHERE embedding MATCH ?
-                        ORDER BY distance
-                        LIMIT ?
-                    """, (self._serialize_embedding(query_embedding), vector_limit))
-                    vector_ids = [row['chunk_id'] for row in cursor.fetchall()]
-                except sqlite3.OperationalError as e:
-                    if "no such table: vec_chunks" not in str(e):
-                        logger.warning(f"Vector search failed: {e}")
+            vector_ids = self._vector_candidates(cursor, query_embedding, vector_limit)
 
-            # BM25 branch: candidate ids ranked by ascending bm25 score,
-            # with filters applied in SQL. The query is sanitized into a
-            # safe FTS5 MATCH expression first; a query with no usable terms
-            # skips this branch entirely (vector search still runs).
-            bm25_ids: List[str] = []
             # Vector-only mode skips the BM25 branch entirely; hybrid (default)
             # keeps it as a lexical signal and a failsafe when embeddings fail.
             fts_query = (
                 self._fts_match_query(query)
                 if retrieval_mode != "vector" else None
             )
-            if fts_query:
-                where_sql, where_params = _filters("c")
-                try:
-                    cursor.execute(f"""
-                        SELECT c.id
-                        FROM chunks_fts fts
-                        JOIN chunks c ON c.rowid = fts.rowid
-                        WHERE chunks_fts MATCH ?
-                        AND {where_sql}
-                        ORDER BY bm25(chunks_fts)
-                        LIMIT ?
-                    """, (fts_query, *where_params, candidate_pool))
-                    bm25_ids = [row['id'] for row in cursor.fetchall()]
-                except Exception as e:
-                    logger.warning(f"BM25 search failed: {e}")
+            bm25_ids = self._bm25_candidates(
+                cursor, fts_query, _filters, candidate_pool
+            )
 
-            # Anchor recall branch: the chunks nearest in time to the anchor
-            # interval, fused as a third signal so a content-weak on-date
-            # chunk still enters the pool. Two index-backed scans (before /
-            # at-or-after the interval start) reuse the scope filter but apply
-            # NO time WHERE bound; the split is a ranking device, not a
-            # filter. event_time is non-NULL everywhere (lazy backfill), so we
-            # read it directly to use idx_chunks_user_event_time.
-            anchor_ids: List[str] = []
-            if anchor_lo is not None and anchor_hi is not None:
-                lo, hi = anchor_lo, anchor_hi
-                where_sql, where_params = _filters("c")
-                start_iso = lo.isoformat()
-                rows: List[Dict[str, Any]] = []
-                try:
-                    cursor.execute(f"""
-                        SELECT c.id, c.event_time AS et
-                        FROM chunks c
-                        WHERE {where_sql} AND c.event_time < ?
-                        ORDER BY c.event_time DESC
-                        LIMIT ?
-                    """, (*where_params, start_iso, ANCHOR_FETCH_N))
-                    rows.extend(dict(r) for r in cursor.fetchall())
-                    cursor.execute(f"""
-                        SELECT c.id, c.event_time AS et
-                        FROM chunks c
-                        WHERE {where_sql} AND c.event_time >= ?
-                        ORDER BY c.event_time ASC
-                        LIMIT ?
-                    """, (*where_params, start_iso, ANCHOR_FETCH_N))
-                    rows.extend(dict(r) for r in cursor.fetchall())
-                except Exception as e:
-                    logger.warning(f"Anchor search failed: {e}")
-                # Order by distance to the interval (0 inside the plateau).
-                def _interval_distance(et_raw) -> float:
-                    ev = self._parse_ts(et_raw)
-                    if ev is None:
-                        return float("inf")
-                    if ev < lo:
-                        return (lo - ev).total_seconds()
-                    if ev > hi:
-                        return (ev - hi).total_seconds()
-                    return 0.0
-                rows.sort(key=lambda r: _interval_distance(r.get('et')))
-                anchor_ids = list(dict.fromkeys(r['id'] for r in rows))
+            anchor_ids = self._anchor_candidates(
+                cursor, _filters, anchor_lo, anchor_hi
+            )
 
             # Record which retrieval branches actually ran this search so
             # rag_search can confirm the live embedder/retrieval stack.
@@ -1651,83 +1825,31 @@ class MemoryIndex:
             if not rows_by_id:
                 return []
 
-            # Rank maps restricted to surviving (filtered) candidates.
-            vec_rank = {cid: i for i, cid in enumerate(
-                [c for c in vector_ids if c in rows_by_id])}
-            bm_rank = {cid: i for i, cid in enumerate(
-                [c for c in bm25_ids if c in rows_by_id])}
-            anchor_rank = {cid: i for i, cid in enumerate(
-                [c for c in anchor_ids if c in rows_by_id])}
-
-            final_scores: Dict[str, float] = {}
-            for cid, row in rows_by_id.items():
-                if fusion == "weighted":
-                    base = 0.0
-                    if cid in vec_rank:
-                        base += 0.7 / (1 + vec_rank[cid])
-                    if cid in bm_rank:
-                        base += 0.3 / (1 + bm_rank[cid])
-                else:  # rrf
-                    base = 0.0
-                    if cid in vec_rank:
-                        base += vec_weight / (rrf_k + vec_rank[cid] + 1)
-                    if cid in bm_rank:
-                        base += bm25_weight / (rrf_k + bm_rank[cid] + 1)
-                # Anchor recall branch contributes a third RRF term, so an
-                # on-date chunk that vector and BM25 both miss gets a positive
-                # floor instead of base 0 (which no multiplier could rescue).
-                if cid in anchor_rank:
-                    base += anchor_weight / (rrf_k + anchor_rank[cid] + 1)
-
-                ev = (self._parse_ts(row.get('event_time'))
-                      or self._parse_ts(row.get('created_at')) or now)
-                if anchor_lo is not None and anchor_hi is not None:
-                    # Flat plateau across the interval (every in-window chunk
-                    # scores the same on time), Gaussian falloff outside,
-                    # floored so a strong far match is never excluded.
-                    if anchor_lo <= ev <= anchor_hi:
-                        d_days = 0.0
-                    elif ev < anchor_lo:
-                        d_days = (anchor_lo - ev).total_seconds() / 86400.0
-                    else:
-                        d_days = (ev - anchor_hi).total_seconds() / 86400.0
-                    gauss = (math.exp(-0.5 * (d_days / anchor_sigma) ** 2)
-                             if anchor_sigma > 0 else (1.0 if d_days == 0 else 0.0))
-                    base *= anchor_floor + (1.0 - anchor_floor) * gauss
-                elif apply_recency:
-                    age_days = max(0.0, (now - ev).total_seconds() / 86400.0)
-                    hl = half_lives.get(row['chunk_type'], DEFAULT_RECENCY_HALF_LIFE)
-                    base *= 0.5 ** (age_days / hl) if hl > 0 else 1.0
-
-                if apply_prose_priority and prose_priority_weight:
-                    frac = self._tool_text_fraction(row.get('content'))
-                    base *= 1.0 - prose_priority_weight * frac
-
-                final_scores[cid] = base
-
-            # Greedy near-duplicate-aware top-k. Walk the fully-scored
-            # candidates best-first and keep a result only if it is not a
-            # near-duplicate of one already kept, so overlapping-window
-            # chunks and live-vs-flush twins do not occupy several slots.
-            ordered = sorted(
-                final_scores, key=lambda c: final_scores[c], reverse=True
+            # Fuse the three branch rankings, then select the near-duplicate-
+            # aware top-k. Both helpers are pure (no DB), operating on the
+            # already-fetched rows under the same lock acquisition.
+            scoring = _ScoringConfig(
+                fusion=fusion,
+                vec_weight=vec_weight,
+                bm25_weight=bm25_weight,
+                anchor_weight=anchor_weight,
+                rrf_k=rrf_k,
+                anchor_lo=anchor_lo,
+                anchor_hi=anchor_hi,
+                anchor_sigma=anchor_sigma,
+                anchor_floor=anchor_floor,
+                apply_recency=apply_recency,
+                half_lives=half_lives,
+                now=now,
+                apply_prose_priority=apply_prose_priority,
+                prose_priority_weight=prose_priority_weight,
             )
-            if dedup:
-                ranked: List[str] = []
-                for cid in ordered:
-                    content = rows_by_id[cid].get('content')
-                    if any(
-                        self._is_near_duplicate(
-                            content, rows_by_id[kept].get('content'), dedup_threshold
-                        )
-                        for kept in ranked
-                    ):
-                        continue
-                    ranked.append(cid)
-                    if len(ranked) >= limit:
-                        break
-            else:
-                ranked = ordered[:limit]
+            final_scores = self._fuse_scores(
+                rows_by_id, vector_ids, bm25_ids, anchor_ids, scoring
+            )
+            ranked = self._select_ranked_ids(
+                final_scores, rows_by_id, limit, dedup, dedup_threshold
+            )
 
             for cid in ranked:
                 row = rows_by_id[cid]
