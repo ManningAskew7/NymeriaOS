@@ -2,6 +2,7 @@
 
 import base64
 import json
+from typing import Any, cast
 
 import pytest
 
@@ -59,6 +60,43 @@ def test_filtered_drops_empty_values_but_keeps_falsy_scalars():
 
 def test_filtered_none_returns_empty_dict():
     assert base.filtered(None) == {}
+
+
+# --- clamp_limit -------------------------------------------------------------
+
+
+def test_clamp_limit_passes_value_within_range():
+    assert base.clamp_limit(5, max_value=100) == 5
+    assert base.clamp_limit(99, default=10, max_value=100) == 99
+
+
+def test_clamp_limit_floors_at_one():
+    assert base.clamp_limit(0, max_value=100) == 1
+    assert base.clamp_limit(-7, max_value=100) == 1
+
+
+def test_clamp_limit_ceils_at_max_value():
+    assert base.clamp_limit(9999, max_value=100) == 100
+
+
+def test_clamp_limit_coerces_int_like_input():
+    # value is typed int; cast lets these int-like non-int inputs exercise the
+    # runtime int() coercion the clamp performs.
+    assert base.clamp_limit(cast(Any, 3.9), max_value=100) == 3  # int(3.9) == 3
+    assert base.clamp_limit(cast(Any, "8"), max_value=100) == 8
+
+
+@pytest.mark.parametrize("bad", ["x", "", None, [1], object()])
+def test_clamp_limit_falls_back_to_default_on_non_int(bad):
+    # The clamp deliberately swallows any int() coercion error and returns default.
+    assert base.clamp_limit(cast(Any, bad), default=25, max_value=100) == 25
+
+
+def test_clamp_limit_base_defaults_are_50_and_200():
+    # The base default/max_value are ergonomic fallbacks only; every corpus wrapper
+    # passes both explicitly. Bare calls exercise them.
+    assert base.clamp_limit(10**9) == 200
+    assert base.clamp_limit(cast(Any, "nope")) == 50
 
 
 # --- base_url ----------------------------------------------------------------

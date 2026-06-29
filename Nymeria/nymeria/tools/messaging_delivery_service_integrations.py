@@ -13,6 +13,7 @@ from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
     base_url as _base_url,
+    clamp_limit,
     credential_value as _credential_value,
     dump_json,
     filtered as _filtered_params,
@@ -48,10 +49,7 @@ def _split_csv(value: str) -> list[str]:
 
 
 def _limit(value: int, *, default: int = 25, max_value: int = 1000) -> int:
-    try:
-        return max(1, min(max_value, int(value)))
-    except Exception:
-        return default
+    return clamp_limit(value, default=default, max_value=max_value)
 
 
 def _request_json(

@@ -180,6 +180,48 @@ PARSE_JSON_ALIASED = [
 ]
 
 
+# module name -> (default, max_value) its thin _limit wrapper must bind (slice 15 F3).
+# Like dump_json/_dump_json, clamp_limit carries a per-module parameter (the clamp
+# bounds), so each module keeps a LOCAL _limit wrapper that binds its own
+# default/max_value and delegates to base.clamp_limit, rather than aliasing it. This
+# corpus spans slices 13/14/15 (every module had a byte-identical clamp body); the 3
+# Google modules are intentionally excluded (left to their owning slice, matching the
+# F9 _parse_json scope). A regression that changes a module's default/max_value, or
+# that aliases _limit directly to clamp_limit (leaking the base 50/200 bounds), fails
+# here.
+LIMITS = {
+    "bookmark_link_service_integrations": (50, 100),
+    "build_ci_service_integrations": (25, 100),
+    "business_service_integrations": (20, 100),
+    "chat_platform_service_integrations": (50, 200),
+    "collaboration_data_service_integrations": (20, 100),
+    "commerce_billing_service_integrations": (25, 250),
+    "community_publishing_service_integrations": (25, 100),
+    "content_management_service_integrations": (25, 500),
+    "customer_engagement_service_integrations": (25, 100),
+    "data_table_service_integrations": (50, 500),
+    "developer_platform_integrations": (20, 100),
+    "enrichment_security_service_integrations": (25, 500),
+    "enterprise_business_service_integrations": (50, 250),
+    "event_meeting_service_integrations": (50, 250),
+    "file_storage_service_integrations": (50, 1000),
+    "marketing_contact_service_integrations": (20, 100),
+    "media_discovery_service_integrations": (10, 50),
+    "messaging_delivery_service_integrations": (25, 1000),
+    "microsoft_graph_service_integrations": (50, 200),
+    "notification_service_integrations": (25, 500),
+    "operations_monitoring_service_integrations": (25, 500),
+    "personal_device_service_integrations": (25, 100),
+    "productivity_service_integrations": (20, 100),
+    "project_management_service_integrations": (20, 100),
+    "relationship_crm_service_integrations": (50, 200),
+    "sales_crm_service_integrations": (50, 500),
+    "support_service_integrations": (25, 100),
+    "time_hr_service_integrations": (25, 100),
+    "work_tracking_service_integrations": (20, 100),
+}
+
+
 def _load(module_name: str):
     return importlib.import_module("nymeria.tools." + module_name)
 
@@ -221,3 +263,15 @@ def test_parse_json_alias_resolves_to_base(module_name):
     assert mod._parse_json is base.parse_json, (
         f"{module_name}._parse_json should be service_integration_base.parse_json"
     )
+
+
+@pytest.mark.parametrize("module_name", sorted(LIMITS))
+def test_limit_is_local_wrapper_honouring_module_bounds(module_name):
+    mod = _load(module_name)
+    # Must be a LOCAL wrapper, never the raw base object, so each module's own
+    # default/max_value bind and any future monkeypatch seam on _limit keeps working.
+    assert mod._limit is not base.clamp_limit
+    default, max_value = LIMITS[module_name]
+    assert mod._limit(3) == 3  # passthrough within range (all bounds admit 3)
+    assert mod._limit(10**9) == max_value  # clamped to THIS module's ceiling
+    assert mod._limit("bad") == default  # THIS module's fallback on non-int input

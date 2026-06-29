@@ -12,6 +12,7 @@ from langchain_core.tools import InjectedToolArg, tool
 from .service_integration_base import (
     BASE_URL_FIELDS,
     base_url as _base_url,
+    clamp_limit,
     credential_value as _credential_value,
     dump_json,
     settings_value as _settings_value,
@@ -47,10 +48,7 @@ def _filtered_params(params: Optional[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _limit(value: int, *, default: int = 20, max_value: int = 100) -> int:
-    try:
-        return max(1, min(max_value, int(value)))
-    except Exception:
-        return default
+    return clamp_limit(value, default=default, max_value=max_value)
 
 
 def _request_json(

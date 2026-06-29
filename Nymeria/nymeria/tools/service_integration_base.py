@@ -30,9 +30,12 @@ refactor):
   error-detail key precedence, non-JSON-200 fallback (raise vs return text), and
   form encoding (``commerce_billing`` flattens nested form fields). Folding them
   into one superset would change runtime error strings and fallback shapes.
-* ``_limit``: the per-module default/max clamps differ and several call sites
-  rely on the module-local defaults by omitting the keyword arguments.
 * ``_csv_to_list``: some copies are newline-tolerant and some are not.
+
+``dump_json`` and ``clamp_limit`` carry a per-module parameter (the
+``_MAX_JSON_CHARS`` budget, the ``default``/``max_value`` clamp bounds), so each
+module keeps a thin local ``_dump_json`` / ``_limit`` wrapper that binds its own
+value and delegates here, rather than aliasing the shared helper directly.
 
 A few modules also keep a LOCAL copy of an otherwise-shared helper because their
 copy has drifted in an agent-visible way (so the canonical helper here is not a
@@ -79,6 +82,23 @@ def filtered(values: Optional[dict[str, Any]]) -> dict[str, Any]:
         for key, value in (values or {}).items()
         if value is not None and value != "" and value != [] and value != {}
     }
+
+
+def clamp_limit(value: int, *, default: int = 50, max_value: int = 200) -> int:
+    """Clamp a user-supplied row/page limit into ``[1, max_value]``.
+
+    The shared clamp body for the ``*_service_integrations`` corpus (slices
+    13/14/15). Each module keeps a thin local ``_limit`` wrapper that binds its
+    own ``default``/``max_value`` and delegates here, the same pattern
+    ``_dump_json`` uses for its ``_MAX_JSON_CHARS`` budget. Non-int input falls
+    back to ``default`` (the clamp deliberately swallows coercion errors,
+    matching the prior per-module behavior). The base ``default``/``max_value``
+    are ergonomic fallbacks only; every corpus wrapper passes both explicitly.
+    """
+    try:
+        return max(1, min(max_value, int(value)))
+    except Exception:
+        return default
 
 
 def base_url(value: str) -> str:
