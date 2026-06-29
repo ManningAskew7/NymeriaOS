@@ -44,6 +44,8 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 
 > **Tool output guard:** After any tool executes, Nymeria truncates oversized `ToolMessage` content before it is stored in thread history. `TOOL_OUTPUT_MAX_CHARS` defaults to `100000`; larger outputs keep the first ~75k and last ~25k characters with a marker showing the original and omitted sizes.
 
+> **Same-turn execution order:** Multiple tool calls emitted in one assistant turn run concurrently (langgraph's `ToolNode` fans them out) and may complete in any order. There is no per-call ordering argument. The system prompt (`soul.md` section 9, "Tool Execution Order") instructs the agent to batch only independent calls and to sequence dependent ones, either by chaining shell steps in a single `bash` command with `&&`/`;` (each `bash_execute` is a fresh shell with no shared cwd/env) or by issuing the dependent call in a later turn (turns are already strictly ordered).
+
 > **CLIProxy OAuth note:** Installed server tools keep the safe dynamic namespace `mcp__<server>__<tool>`. Nymeria-owned helper tools must avoid the `mcp_<name>`, `mcp.<name>`, and `mcp/<name>` namespaces because Claude OAuth classifies those as third-party MCP apps. The consolidated facade is named `manage_mcp`; legacy helpers remain `search_mcp` and `install_mcp_server` for compatibility.
 
 ### Optional: Trigger Tools (2)
