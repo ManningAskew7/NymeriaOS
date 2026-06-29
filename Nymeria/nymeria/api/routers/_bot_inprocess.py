@@ -19,10 +19,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
-from ...core.accounts import AuthenticatedUser, UserNotFound
-from ...core.chat_bindings import BindCodeInvalid, BindingAlreadyExists
+from ...core.accounts import AuthenticatedUser, Provider
+from ...core.chat_bindings import (
+    BindClaimError,
+    BindCodeInvalid,
+    BindingAlreadyExists,
+    claim_platform_link,
+    claim_thread_bind,
+)
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
@@ -77,41 +83,24 @@ class InProcessBotAPI:
         provider: str,
         platform_user_id: str,
     ) -> dict[str, Any]:
-        repo = self.agent.accounts_repo
-        bindings = self.agent.chat_bindings_repo
         try:
-            claim = bindings.inspect_bind_code(
-                code, kind="platform_link", provider=provider
+            platform = claim_platform_link(
+                self.agent.accounts_repo,
+                self.agent.chat_bindings_repo,
+                code=code,
+                provider=cast(Provider, provider),
+                platform_user_id=platform_user_id,
             )
         except BindCodeInvalid as exc:
             raise self._error_cls(f"Invalid code: {exc}", status_code=400) from exc
-
-        existing = repo.resolve_platform(provider, platform_user_id)
-        if existing is not None and existing != claim.user_id:
-            raise self._error_cls(
-                f"Platform identity already linked to user '{existing}'",
-                status_code=409,
-            )
-        try:
-            repo.link_platform(provider, platform_user_id, claim.user_id)
-        except UserNotFound as exc:
-            raise self._error_cls("User not found", status_code=404) from exc
-        try:
-            bindings.claim_bind_code(code, kind="platform_link", provider=provider)
-        except BindCodeInvalid:
-            pass  # Link already succeeded; a concurrently consumed code is harmless.
-        for platform in repo.list_platforms_for_user(claim.user_id):
-            if (
-                platform.provider == provider
-                and platform.provider_user_id == platform_user_id
-            ):
-                return {
-                    "user_id": claim.user_id,
-                    "provider": provider,
-                    "provider_user_id": platform_user_id,
-                    "created_at": platform.created_at,
-                }
-        raise self._error_cls("Linked but not found", status_code=500)
+        except BindClaimError as exc:
+            raise self._error_cls(exc.reason, status_code=exc.http_status) from exc
+        return {
+            "user_id": platform.user_id,
+            "provider": provider,
+            "provider_user_id": platform_user_id,
+            "created_at": platform.created_at,
+        }
 
     async def claim_thread_bind_code(
         self,
@@ -121,38 +110,21 @@ class InProcessBotAPI:
         platform_chat_id: str,
         expected_provider_user_id: str,
     ) -> dict[str, Any]:
-        repo = self.agent.accounts_repo
-        bindings = self.agent.chat_bindings_repo
         try:
-            claim = bindings.inspect_bind_code(
-                code, kind="thread_bind", provider=provider
+            binding = claim_thread_bind(
+                self.agent.accounts_repo,
+                self.agent.chat_bindings_repo,
+                code=code,
+                provider=cast(Provider, provider),
+                platform_chat_id=platform_chat_id,
+                expected_provider_user_id=expected_provider_user_id,
             )
         except BindCodeInvalid as exc:
             raise self._error_cls(f"Invalid code: {exc}", status_code=400) from exc
-        if claim.thread_id is None:
-            raise self._error_cls("Code has no thread_id", status_code=500)
-
-        resolved_user = repo.resolve_platform(provider, expected_provider_user_id)
-        if resolved_user != claim.user_id:
-            raise self._error_cls(
-                "Code was issued by a different Nymeria account",
-                status_code=403,
-            )
-
-        try:
-            binding = bindings.create_thread_binding(
-                thread_id=claim.thread_id,
-                provider=provider,
-                platform_chat_id=platform_chat_id,
-                user_id=claim.user_id,
-            )
         except BindingAlreadyExists as exc:
             raise self._error_cls(str(exc), status_code=409) from exc
-
-        try:
-            bindings.claim_bind_code(code, kind="thread_bind", provider=provider)
-        except BindCodeInvalid:
-            pass  # Binding already succeeded; a concurrently consumed code is harmless.
+        except BindClaimError as exc:
+            raise self._error_cls(exc.reason, status_code=exc.http_status) from exc
         self._publish_platform_sync(binding.thread_id, binding.user_id)
         return {
             "binding_id": binding.id,

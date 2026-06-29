@@ -68,7 +68,9 @@ class _FakeAccountsRepo:
 
     def list_platforms_for_user(self, user_id: str):
         return [
-            SimpleNamespace(provider=p, provider_user_id=pid, created_at="t0")
+            SimpleNamespace(
+                provider=p, provider_user_id=pid, user_id=u, created_at="t0"
+            )
             for (p, pid), u in self.platforms.items()
             if u == user_id
         ]

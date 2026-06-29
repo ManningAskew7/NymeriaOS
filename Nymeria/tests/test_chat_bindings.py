@@ -8,10 +8,17 @@ import pytest
 
 from nymeria.core.accounts import AccountsRepo, UserNotFound
 from nymeria.core.chat_bindings import (
+    BindClaimError,
     BindCodeInvalid,
     BindingAlreadyExists,
     BotAlreadyRegistered,
     ChatBindingsRepo,
+    _consume_bind_code_quietly,
+    _find_linked_platform,
+    _guard_and_link_platform,
+    claim_platform_link,
+    claim_thread_bind,
+    link_platform_and_find,
 )
 
 
@@ -631,3 +638,203 @@ def test_full_successful_link_flow(repos):
     with pytest.raises(BindCodeInvalid, match="already used"):
         bindings.claim_bind_code(raw, kind="platform_link", provider="telegram")
     assert accounts.resolve_platform("telegram", "new_tg_user") == "alice"
+
+
+# -- shared bind/link claim helpers (slice 11 F3) -------------------------
+#
+# These exercise the extracted helpers that the API routers and the in-process
+# bot adapters now delegate to. The same scenarios as the endpoint-pattern
+# regressions above, but through the single shared implementation.
+
+
+def test_claim_platform_link_success_links_and_consumes(repos):
+    accounts, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="platform_link", provider="telegram", user_id="alice"
+    )
+    platform = claim_platform_link(
+        accounts, bindings, code=raw, provider="telegram", platform_user_id="tg_u1"
+    )
+    assert platform.user_id == "alice"
+    assert platform.provider == "telegram"
+    assert platform.provider_user_id == "tg_u1"
+    assert accounts.resolve_platform("telegram", "tg_u1") == "alice"
+    # Code was consumed by the helper.
+    with pytest.raises(BindCodeInvalid, match="already used"):
+        bindings.inspect_bind_code(raw, kind="platform_link", provider="telegram")
+
+
+def test_claim_platform_link_invalid_code_raises_bindcodeinvalid(repos):
+    accounts, bindings = repos
+    with pytest.raises(BindCodeInvalid, match="unknown"):
+        claim_platform_link(
+            accounts,
+            bindings,
+            code="ZZZZZZZZ",
+            provider="telegram",
+            platform_user_id="tg_u1",
+        )
+
+
+def test_claim_platform_link_cross_account_raises_409(repos):
+    accounts, bindings = repos
+    accounts.link_platform("telegram", "tg_u1", "bob")  # already owned by bob
+    raw = bindings.issue_bind_code(
+        kind="platform_link", provider="telegram", user_id="alice"
+    )
+    with pytest.raises(BindClaimError) as ei:
+        claim_platform_link(
+            accounts, bindings, code=raw, provider="telegram", platform_user_id="tg_u1"
+        )
+    assert ei.value.http_status == 409
+    assert ei.value.reason == "Platform identity already linked to user 'bob'"
+    # Hijack attempt must NOT consume the code.
+    claim = bindings.claim_bind_code(raw, kind="platform_link", provider="telegram")
+    assert claim.user_id == "alice"
+
+
+def test_claim_thread_bind_success_creates_and_consumes(repos):
+    accounts, bindings = repos
+    accounts.link_platform("telegram", "alice_tg", "alice")
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    binding = claim_thread_bind(
+        accounts,
+        bindings,
+        code=raw,
+        provider="telegram",
+        platform_chat_id="999",
+        expected_provider_user_id="alice_tg",
+    )
+    assert binding.thread_id == "t1"
+    assert binding.user_id == "alice"
+    assert binding.platform_chat_id == "999"
+    with pytest.raises(BindCodeInvalid, match="already used"):
+        bindings.inspect_bind_code(raw, kind="thread_bind", provider="telegram")
+
+
+def test_claim_thread_bind_wrong_account_raises_403(repos):
+    accounts, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    # "other_tg" resolves to no user (None) != alice -> wrong-account guard.
+    with pytest.raises(BindClaimError) as ei:
+        claim_thread_bind(
+            accounts,
+            bindings,
+            code=raw,
+            provider="telegram",
+            platform_chat_id="999",
+            expected_provider_user_id="other_tg",
+        )
+    assert ei.value.http_status == 403
+    assert ei.value.reason == "Code was issued by a different Nymeria account"
+    # Guard failure must not consume the code.
+    claim = bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim.user_id == "alice"
+
+
+def test_claim_thread_bind_already_bound_propagates(repos):
+    accounts, bindings = repos
+    accounts.link_platform("telegram", "alice_tg", "alice")
+    bindings.create_thread_binding(
+        thread_id="t1", provider="telegram", platform_chat_id="111", user_id="alice"
+    )
+    raw = bindings.issue_bind_code(
+        kind="thread_bind", provider="telegram", user_id="alice", thread_id="t1"
+    )
+    with pytest.raises(BindingAlreadyExists):
+        claim_thread_bind(
+            accounts,
+            bindings,
+            code=raw,
+            provider="telegram",
+            platform_chat_id="222",
+            expected_provider_user_id="alice_tg",
+        )
+    # The duplicate-binding failure must leave the code usable.
+    claim = bindings.claim_bind_code(raw, kind="thread_bind", provider="telegram")
+    assert claim.user_id == "alice"
+
+
+def test_claim_thread_bind_missing_thread_id_raises_500(repos, monkeypatch):
+    """Defensive guard: a thread_bind claim with no thread_id is a 500. Not
+    reachable via issue_bind_code (which requires thread_id), so the inspect
+    result is stubbed."""
+    accounts, bindings = repos
+    from nymeria.core.chat_bindings import BindCodeClaim
+
+    monkeypatch.setattr(
+        bindings,
+        "inspect_bind_code",
+        lambda *a, **k: BindCodeClaim(
+            kind="thread_bind", provider="telegram", user_id="alice", thread_id=None
+        ),
+    )
+    with pytest.raises(BindClaimError) as ei:
+        claim_thread_bind(
+            accounts,
+            bindings,
+            code="WHATEVER1",
+            provider="telegram",
+            platform_chat_id="999",
+            expected_provider_user_id="alice_tg",
+        )
+    assert ei.value.http_status == 500
+    assert ei.value.reason == "Code has no thread_id"
+
+
+def test_consume_bind_code_quietly_swallows_already_consumed(repos):
+    """The post-success consume swallows BindCodeInvalid (the race handling)."""
+    _, bindings = repos
+    raw = bindings.issue_bind_code(
+        kind="platform_link", provider="telegram", user_id="alice"
+    )
+    bindings.claim_bind_code(raw, kind="platform_link", provider="telegram")
+    # Already consumed; the quiet consume must not raise.
+    _consume_bind_code_quietly(
+        bindings, raw, kind="platform_link", provider="telegram"
+    )
+
+
+def test_guard_and_link_platform_unknown_user_raises_404(repos):
+    accounts, _ = repos
+    with pytest.raises(BindClaimError) as ei:
+        _guard_and_link_platform(
+            accounts, provider="telegram", provider_user_id="tg_u1", user_id="ghost"
+        )
+    assert ei.value.http_status == 404
+    assert ei.value.reason == "User not found"
+
+
+def test_find_linked_platform_missing_raises_500(repos):
+    accounts, _ = repos
+    with pytest.raises(BindClaimError) as ei:
+        _find_linked_platform(
+            accounts, provider="telegram", provider_user_id="tg_u1", user_id="alice"
+        )
+    assert ei.value.http_status == 500
+    assert ei.value.reason == "Linked but not found"
+
+
+def test_link_platform_and_find_success(repos):
+    accounts, _ = repos
+    platform = link_platform_and_find(
+        accounts, provider="telegram", provider_user_id="tg_u1", user_id="alice"
+    )
+    assert platform.user_id == "alice"
+    assert platform.provider_user_id == "tg_u1"
+    assert accounts.resolve_platform("telegram", "tg_u1") == "alice"
+
+
+def test_link_platform_and_find_cross_account_raises_409(repos):
+    accounts, _ = repos
+    accounts.link_platform("telegram", "tg_u1", "bob")
+    with pytest.raises(BindClaimError) as ei:
+        link_platform_and_find(
+            accounts, provider="telegram", provider_user_id="tg_u1", user_id="alice"
+        )
+    assert ei.value.http_status == 409
+    assert ei.value.reason == "Platform identity already linked to user 'bob'"

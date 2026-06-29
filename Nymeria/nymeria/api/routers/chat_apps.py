@@ -12,9 +12,13 @@ from ...config import Settings
 from ...core import secrets as nymeria_secrets
 from ...core.accounts import AuthenticatedUser, UserNotFound
 from ...core.chat_bindings import (
+    BindClaimError,
     BindCodeInvalid,
     BindingAlreadyExists,
     BotAlreadyRegistered,
+    _consume_bind_code_quietly,
+    claim_platform_link,
+    claim_thread_bind,
 )
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
 from ...core.thread_classification import is_native_platform_thread
@@ -220,42 +224,21 @@ def create_chat_apps_router(
     ):
         """Consume a thread-bind code and create the chat-app binding."""
         agent = get_agent_fn()
-        repo = agent.accounts_repo
-        bindings = agent.chat_bindings_repo
         try:
-            claim = bindings.inspect_bind_code(
-                body.code, kind="thread_bind", provider=body.provider
+            binding = claim_thread_bind(
+                agent.accounts_repo,
+                agent.chat_bindings_repo,
+                code=body.code,
+                provider=body.provider,
+                platform_chat_id=body.platform_chat_id,
+                expected_provider_user_id=body.expected_provider_user_id,
             )
         except BindCodeInvalid as exc:
             raise HTTPException(status_code=400, detail=f"Invalid code: {exc}") from exc
-        if claim.thread_id is None:
-            raise HTTPException(status_code=500, detail="Code has no thread_id")
-
-        resolved_user = repo.resolve_platform(
-            body.provider, body.expected_provider_user_id
-        )
-        if resolved_user != claim.user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Code was issued by a different Nymeria account",
-            )
-
-        try:
-            binding = bindings.create_thread_binding(
-                thread_id=claim.thread_id,
-                provider=body.provider,
-                platform_chat_id=body.platform_chat_id,
-                user_id=claim.user_id,
-            )
         except BindingAlreadyExists as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        try:
-            bindings.claim_bind_code(
-                body.code, kind="thread_bind", provider=body.provider
-            )
-        except BindCodeInvalid:
-            pass  # Code was already consumed/expired after binding succeeded.
+        except BindClaimError as exc:
+            raise HTTPException(status_code=exc.http_status, detail=exc.reason) from exc
         publish_platform_sync(binding.thread_id, binding.user_id)
         return AdminChatAppBindClaimResponse(
             binding_id=binding.id,
@@ -412,12 +395,13 @@ def create_chat_apps_router(
         except BindingAlreadyExists as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        try:
-            repo.claim_bind_code(
-                body.code, kind="thread_bind", provider=body.provider
-            )
-        except BindCodeInvalid:
-            pass  # Code was already consumed/expired after binding succeeded.
+        # This via-bot variant keeps its own bot-ownership guard, redacted-code
+        # logging, and ``user_telegram_bot_id`` passthrough above, so it does not
+        # fold into ``claim_thread_bind``; only the best-effort code consume is
+        # shared.
+        _consume_bind_code_quietly(
+            repo, body.code, kind="thread_bind", provider=body.provider
+        )
         publish_platform_sync(binding.thread_id, binding.user_id)
         return AdminChatAppBindClaimResponse(
             binding_id=binding.id,
@@ -489,44 +473,24 @@ def create_chat_apps_router(
     ):
         """Consume a platform-link code and link the platform user."""
         agent = get_agent_fn()
-        repo = agent.accounts_repo
-        bindings = agent.chat_bindings_repo
         try:
-            claim = bindings.inspect_bind_code(
-                body.code, kind="platform_link", provider=body.provider
+            platform = claim_platform_link(
+                agent.accounts_repo,
+                agent.chat_bindings_repo,
+                code=body.code,
+                provider=body.provider,
+                platform_user_id=body.platform_user_id,
             )
         except BindCodeInvalid as exc:
             raise HTTPException(status_code=400, detail=f"Invalid code: {exc}") from exc
-
-        existing = repo.resolve_platform(body.provider, body.platform_user_id)
-        if existing is not None and existing != claim.user_id:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Platform identity already linked to user '{existing}'",
-            )
-        try:
-            repo.link_platform(body.provider, body.platform_user_id, claim.user_id)
-        except UserNotFound as exc:
-            raise HTTPException(status_code=404, detail="User not found") from exc
-
-        try:
-            bindings.claim_bind_code(
-                body.code, kind="platform_link", provider=body.provider
-            )
-        except BindCodeInvalid:
-            pass  # Code was already consumed/expired after linking succeeded.
-        for platform in repo.list_platforms_for_user(claim.user_id):
-            if (
-                platform.provider == body.provider
-                and platform.provider_user_id == body.platform_user_id
-            ):
-                return AdminPlatformLinkClaimResponse(
-                    user_id=claim.user_id,
-                    provider=body.provider,
-                    provider_user_id=body.platform_user_id,
-                    created_at=platform.created_at,
-                )
-        raise HTTPException(status_code=500, detail="Linked but not found")
+        except BindClaimError as exc:
+            raise HTTPException(status_code=exc.http_status, detail=exc.reason) from exc
+        return AdminPlatformLinkClaimResponse(
+            user_id=platform.user_id,
+            provider=body.provider,
+            provider_user_id=body.platform_user_id,
+            created_at=platform.created_at,
+        )
 
     @router.get(
         "/me/platforms",
