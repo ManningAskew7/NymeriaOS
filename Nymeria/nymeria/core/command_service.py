@@ -824,80 +824,14 @@ class CommandBackendClient:
         return serialize_server_settings(self._settings()).model_dump(mode="json")
 
     async def get_default_tools(self, user_id: str = "default") -> dict:
-        from ..tools import (
-            SEED_TOOLS,
-            CATALOG_TOOLS,
-            filter_discoverable_catalog_tool_names,
-            resolve_default_tool_names,
-        )
-        from ..tools.metadata import (
-            MCP_SERVER_TOOL_METADATA,
-            get_tool_metadata,
-            integration_grouping_fields,
-        )
+        # Shared serializer with GET /tools/defaults so the two TurnExecutor
+        # shapes cannot drift (mirrors serialize_server_settings / _env_entries).
+        from ..api.routers.tools import serialize_default_tools
 
         target_user_id = self._checked_user_id(user_id)
-        profile = self.agent.profile_manager.get_profile(target_user_id)
-        prefs = profile.tool_preferences
-        default_set = set(resolve_default_tool_names(prefs.default_thread_tools))
-
-        tools_out = []
-        seen = set()
-        visible_optional = filter_discoverable_catalog_tool_names(
-            CATALOG_TOOLS.keys(),
-            self.user.role,
+        return serialize_default_tools(
+            self.agent, user_id=target_user_id, role=self.user.role
         )
-        for t in SEED_TOOLS:
-            meta = get_tool_metadata(t.name)
-            category = meta.category.value if meta else "general"
-            tools_out.append({
-                "name": t.name,
-                "description": t.description,
-                "category": category,
-                "security_level": meta.security_level.value if meta else "moderate",
-                "is_optional": False,
-                "is_default": t.name in default_set,
-                **integration_grouping_fields(t.name, category),
-            })
-            seen.add(t.name)
-        for name, tool in CATALOG_TOOLS.items():
-            if name in visible_optional and name not in seen:
-                meta = get_tool_metadata(name)
-                category = meta.category.value if meta else "unknown"
-                tools_out.append({
-                    "name": name,
-                    "description": tool.description,
-                    "category": category,
-                    "security_level": meta.security_level.value if meta else "moderate",
-                    "is_optional": True,
-                    "is_default": name in default_set,
-                    **integration_grouping_fields(name, category),
-                })
-                seen.add(name)
-        for name, meta in MCP_SERVER_TOOL_METADATA.items():
-            if name not in seen:
-                tools_out.append({
-                    "name": name,
-                    "description": meta.description,
-                    "category": "mcp_server",
-                    "security_level": "moderate",
-                    "is_optional": True,
-                    "is_default": name in default_set,
-                })
-                seen.add(name)
-
-        owned = set(self.agent.accounts_repo.list_threads_for_user(target_user_id))
-        callable_count = len(
-            self.agent.thread_config_manager.list_callable_threads(
-                owned_thread_ids=owned,
-            )
-        )
-        return {
-            "mode": "custom",
-            "default_tools": sorted(default_set),
-            "available_tools": tools_out,
-            "callable_thread_count": callable_count,
-        }
 
     async def get_tool_categories(self) -> dict:
         from ..tools import filter_discoverable_catalog_tool_names
@@ -1250,30 +1184,13 @@ class CommandBackendClient:
 
     async def get_env_vars(self, *, user_id: Optional[str] = None) -> dict:
         self._require_admin()
-        from ..api.routers.settings import _env_categories, _mask_value, _secret_keys
-        from ..api.schemas.settings import HIDDEN_CONFIG_SETTINGS
+        # Shared serializer with GET /settings/env so the two TurnExecutor shapes
+        # cannot drift: the prior hand-built body masked only the allowlist (not
+        # the suffix superset) and labeled with a naive key.upper(), so a
+        # suffix-style secret like groq_api_key leaked raw on the in-process path.
+        from ..api.routers.settings import serialize_env_entries
 
-        settings = self._settings()
-        entries = []
-        secret_keys = _secret_keys()
-        for category, keys in _env_categories().items():
-            for key in keys:
-                if key in HIDDEN_CONFIG_SETTINGS:
-                    continue
-                val = getattr(settings, key, None)
-                is_secret = key in secret_keys
-                display_val = None
-                if val is not None:
-                    display_val = _mask_value(str(val)) if is_secret else str(val)
-                entries.append({
-                    "name": key,
-                    "env_var": key.upper(),
-                    "value": display_val,
-                    "is_set": val is not None and str(val) != "",
-                    "is_secret": is_secret,
-                    "category": category,
-                })
-        return {"entries": entries}
+        return serialize_env_entries(self._settings())
 
     async def get_env_var(self, key: str, *, user_id: Optional[str] = None) -> dict:
         self._require_admin()

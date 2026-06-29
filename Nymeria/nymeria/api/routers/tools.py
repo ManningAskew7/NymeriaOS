@@ -9,6 +9,94 @@ from ...core.accounts import AuthenticatedUser
 from ..schemas.tools import DefaultToolsUpdateRequest
 
 
+def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
+    """Single source of truth for the default-tools read model.
+
+    Shared by ``GET /tools/defaults`` and ``CommandBackendClient.get_default_tools``
+    so the HTTP and in-process command shapes cannot drift (the TurnExecutor
+    two-shape invariant), mirroring ``serialize_server_settings`` /
+    ``serialize_env_entries``. The caller passes the resolved ``agent``,
+    ``user_id`` (already access-checked), and account ``role``.
+    """
+    from ...tools import (
+        SEED_TOOLS,
+        CATALOG_TOOLS,
+        filter_discoverable_catalog_tool_names,
+        resolve_default_tool_names,
+    )
+    from ...tools.metadata import (
+        MCP_SERVER_TOOL_METADATA,
+        get_tool_metadata,
+        integration_grouping_fields,
+    )
+
+    profile = agent.profile_manager.get_profile(user_id)
+    prefs = profile.tool_preferences
+    default_set = set(resolve_default_tool_names(prefs.default_thread_tools))
+
+    tools_out = []
+    seen = set()
+    visible_optional = filter_discoverable_catalog_tool_names(
+        CATALOG_TOOLS.keys(),
+        role,
+    )
+    for t in SEED_TOOLS:
+        meta = get_tool_metadata(t.name)
+        category = meta.category.value if meta else "general"
+        tools_out.append({
+            "name": t.name,
+            "description": t.description,
+            "category": category,
+            "security_level": meta.security_level.value if meta else "moderate",
+            "is_optional": False,
+            "is_default": t.name in default_set,
+            **integration_grouping_fields(t.name, category),
+        })
+        seen.add(t.name)
+    for name, t in CATALOG_TOOLS.items():
+        if name in visible_optional and name not in seen:
+            meta = get_tool_metadata(name)
+            category = meta.category.value if meta else "unknown"
+            tools_out.append({
+                "name": name,
+                "description": t.description,
+                "category": category,
+                "security_level": (
+                    meta.security_level.value if meta else "moderate"
+                ),
+                "is_optional": True,
+                "is_default": name in default_set,
+                **integration_grouping_fields(name, category),
+            })
+            seen.add(name)
+
+    for name, meta in MCP_SERVER_TOOL_METADATA.items():
+        if name not in seen:
+            tools_out.append({
+                "name": name,
+                "description": meta.description,
+                "category": "mcp_server",
+                "security_level": "moderate",
+                "is_optional": True,
+                "is_default": name in default_set,
+            })
+            seen.add(name)
+
+    owned = set(agent.accounts_repo.list_threads_for_user(user_id))
+    callable_count = len(
+        agent.thread_config_manager.list_callable_threads(
+            owned_thread_ids=owned,
+        )
+    )
+
+    return {
+        "mode": "custom",
+        "default_tools": sorted(default_set),
+        "available_tools": tools_out,
+        "callable_thread_count": callable_count,
+    }
+
+
 def create_tools_router(
     verify_api_key: Callable[..., Any],
     authed_user_id: Callable[..., Any],
@@ -166,85 +254,9 @@ def create_tools_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get the default tool set for new threads."""
-        from ...tools import (
-            SEED_TOOLS,
-            CATALOG_TOOLS,
-            filter_discoverable_catalog_tool_names,
-            resolve_default_tool_names,
+        return serialize_default_tools(
+            get_agent_fn(), user_id=user_id, role=user.role
         )
-        from ...tools.metadata import (
-            MCP_SERVER_TOOL_METADATA,
-            get_tool_metadata,
-            integration_grouping_fields,
-        )
-
-        agent = get_agent_fn()
-        profile = agent.profile_manager.get_profile(user_id)
-        prefs = profile.tool_preferences
-
-        default_set = set(resolve_default_tool_names(prefs.default_thread_tools))
-
-        tools_out = []
-        seen = set()
-        visible_optional = filter_discoverable_catalog_tool_names(
-            CATALOG_TOOLS.keys(),
-            user.role,
-        )
-        for t in SEED_TOOLS:
-            meta = get_tool_metadata(t.name)
-            category = meta.category.value if meta else "general"
-            tools_out.append({
-                "name": t.name,
-                "description": t.description,
-                "category": category,
-                "security_level": meta.security_level.value if meta else "moderate",
-                "is_optional": False,
-                "is_default": t.name in default_set,
-                **integration_grouping_fields(t.name, category),
-            })
-            seen.add(t.name)
-        for name, t in CATALOG_TOOLS.items():
-            if name in visible_optional and name not in seen:
-                meta = get_tool_metadata(name)
-                category = meta.category.value if meta else "unknown"
-                tools_out.append({
-                    "name": name,
-                    "description": t.description,
-                    "category": category,
-                    "security_level": (
-                        meta.security_level.value if meta else "moderate"
-                    ),
-                    "is_optional": True,
-                    "is_default": name in default_set,
-                    **integration_grouping_fields(name, category),
-                })
-                seen.add(name)
-
-        for name, meta in MCP_SERVER_TOOL_METADATA.items():
-            if name not in seen:
-                tools_out.append({
-                    "name": name,
-                    "description": meta.description,
-                    "category": "mcp_server",
-                    "security_level": "moderate",
-                    "is_optional": True,
-                    "is_default": name in default_set,
-                })
-                seen.add(name)
-
-        owned = set(agent.accounts_repo.list_threads_for_user(user_id))
-        callable_count = len(
-            agent.thread_config_manager.list_callable_threads(
-                owned_thread_ids=owned,
-            )
-        )
-
-        return {
-            "mode": "custom",
-            "default_tools": sorted(default_set),
-            "available_tools": tools_out,
-            "callable_thread_count": callable_count,
-        }
 
     @router.put("/tools/defaults")
     async def set_default_tools(

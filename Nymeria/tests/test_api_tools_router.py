@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+
+from fastapi.testclient import TestClient
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
@@ -52,7 +55,7 @@ class FakeAgent:
         ]
 
 
-def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent]:
+def _client(tmp_path: Path, api_client_builder) -> tuple[TestClient, FakeAgent]:
     settings = api_client_builder.settings(tmp_path)
     agent = FakeAgent(tmp_path)
     return api_client_builder.client(agent, settings), agent
@@ -278,6 +281,52 @@ def test_default_tools_accepts_split_auth_manager_legacy_name(
         "auth_cleanup",
         "auth_bindings",
     ]
+
+
+def test_command_backend_get_default_tools_matches_route_payload(
+    tmp_path: Path,
+    api_client_builder,
+):
+    # TurnExecutor two-shape parity: GET /tools/defaults (HTTP) and the
+    # in-process CommandBackendClient.get_default_tools now share one serializer
+    # (serialize_default_tools), so their payloads are byte-identical. Seed a
+    # custom default-tools set and an owned callable thread so the comparison
+    # exercises real default_tools + callable_thread_count, not the empty shape.
+    from nymeria.core.command_service import CommandBackendClient, _CommandBackendUser
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner", role="admin")
+    client.put(
+        "/tools/defaults",
+        headers=api_client_builder.auth(token),
+        json={"tool_names": [SEED_TOOLS[0].name, "todo"]},
+    )
+    _save_thread(
+        agent,
+        "owner",
+        ThreadConfig(
+            thread_id="owner-helper",
+            callable=True,
+            callable_name="Helper",
+            callable_description="Owner helper",
+        ),
+    )
+
+    backend = CommandBackendClient(
+        agent,
+        user=_CommandBackendUser(id="owner", role="admin"),
+        settings_fn=lambda: api_client_builder.settings(tmp_path),
+    )
+
+    route_json = client.get(
+        "/tools/defaults", headers=api_client_builder.auth(token)
+    ).json()
+    backend_dict = asyncio.run(backend.get_default_tools("owner"))
+
+    assert backend_dict == route_json
+    # Sanity: the compared payload is non-trivial.
+    assert backend_dict["callable_thread_count"] == 1
+    assert SEED_TOOLS[0].name in backend_dict["default_tools"]
 
 
 def test_user_tool_search_endpoint_returns_ranked_hints(
