@@ -46,6 +46,7 @@ class FakeSettings:
     llm_reasoning_effort: str | None = None
     llm_extended_thinking: bool = False
     dynamic_tool_binding: bool = False
+    sequential_tool_execution: bool = False
     llm_use_model_defaults: bool = False
     llm_base_url: str | None = None
     llm_context_length: int | None = None
@@ -221,6 +222,10 @@ class FakeSettingsProvider:
             value = os.environ.get(name)
             return default if value is None else (value or None)
 
+        def env_bool(name: str, default: bool) -> bool:
+            value = os.environ.get(name)
+            return default if value is None else value.strip().lower() in ("1", "true", "yes", "on")
+
         self.settings = replace(
             self.settings,
             llm_model=os.environ.get("LLM_MODEL", self.settings.llm_model),
@@ -288,6 +293,10 @@ class FakeSettingsProvider:
             memory_char_limit=env_int(
                 "MEMORY_CHAR_LIMIT",
                 self.settings.memory_char_limit,
+            ),
+            sequential_tool_execution=env_bool(
+                "SEQUENTIAL_TOOL_EXECUTION",
+                self.settings.sequential_tool_execution,
             ),
         )
 
@@ -965,6 +974,30 @@ def test_patch_settings_hot_reloads_memory_char_limit(
     assert os.environ["MEMORY_CHAR_LIMIT"] == "12000"
     assert provider.cache_clear_count == 1
     assert agent.settings.memory_char_limit == 12000
+    assert agent.graph_rebuilds == []
+
+
+def test_patch_settings_hot_reloads_sequential_tool_execution(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text("SEQUENTIAL_TOOL_EXECUTION=false\n", encoding="utf-8")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"sequential_tool_execution": True},
+    )
+
+    assert response.status_code == 200
+    assert "sequential_tool_execution" in response.json()["updated"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "SEQUENTIAL_TOOL_EXECUTION=true" in env_text
+    assert provider.cache_clear_count == 1
+    assert agent.settings.sequential_tool_execution is True
+    # Read at runtime from config per turn, NOT baked into the graph at build:
+    # a PATCH must not trigger a graph rebuild.
     assert agent.graph_rebuilds == []
 
 

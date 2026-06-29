@@ -112,6 +112,7 @@
   let llmReasoningEffort = $state<string | null>(null);
   let llmExtendedThinking = $state(false);
   let dynamicToolBinding = $state(false);
+  let sequentialToolExecution = $state(false);
   let llmUseModelDefaults = $state(false);
   let llmBaseUrl = $state('');
   let llmContextLength = $state<number | null | undefined>(null);
@@ -646,6 +647,7 @@
       llmReasoningEffort = serverSettings.llm_reasoning_effort;
       llmExtendedThinking = serverSettings.llm_extended_thinking;
       dynamicToolBinding = serverSettings.dynamic_tool_binding;
+      sequentialToolExecution = serverSettings.sequential_tool_execution;
       llmUseModelDefaults = serverSettings.llm_use_model_defaults;
       llmBaseUrl = serverSettings.llm_base_url || '';
       llmContextLength = serverSettings.llm_context_length;
@@ -888,6 +890,7 @@
         llm_reasoning_effort: llmReasoningEffort,
         llm_extended_thinking: llmExtendedThinking,
         dynamic_tool_binding: dynamicToolBinding,
+        sequential_tool_execution: sequentialToolExecution,
         llm_use_model_defaults: llmUseModelDefaults,
         llm_base_url: effectiveBaseUrl,
         llm_context_length: optionalNumberUpdate(llmContextLength, serverSettings?.llm_context_length),
@@ -2001,6 +2004,19 @@
                   before dispatch. Uncheck to force the legacy
                   <code>tool_reload_resume</code> rebuild path for the whole
                   installation.
+                </p>
+              </div>
+
+              <div class="field">
+                <label class="toggle-label" for="sequential-tool-execution">
+                  <input type="checkbox" id="sequential-tool-execution" bind:checked={sequentialToolExecution} />
+                  Sequential tool execution
+                </label>
+                <p class="hint">
+                  Run each turn's tool calls one at a time, in the order the model
+                  emitted them, instead of concurrently. Off by default. Slower for
+                  independent calls, but avoids parallel-execution races. Threads can
+                  override this in their Behavior settings.
                 </p>
               </div>
 

@@ -47,6 +47,7 @@ export class ThreadConfigApi extends MCPApi {
       } : null,
       memoryCharLimit: data.memory_char_limit ?? null,
       imageWindowSize: data.image_window_size ?? null,
+      sequentialToolExecution: data.sequential_tool_execution ?? null,
       systemPrompt: data.system_prompt ?? null,
       callable: data.callable ?? false,
       callableName: data.callable_name ?? null,

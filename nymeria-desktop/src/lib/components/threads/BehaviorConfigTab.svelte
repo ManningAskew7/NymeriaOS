@@ -13,6 +13,8 @@
     injectTodosInPrompt: boolean;
     showAutonomousPrompts: boolean;
     showPromptMetadata: boolean;
+    /** Tri-state: 'default' inherits the global setting, 'true'/'false' override it. */
+    sequentialToolExecution: 'default' | 'true' | 'false';
   }
 
   let {
@@ -21,6 +23,7 @@
     injectTodosInPrompt = $bindable(),
     showAutonomousPrompts = $bindable(),
     showPromptMetadata = $bindable(),
+    sequentialToolExecution = $bindable(),
   }: Props = $props();
 </script>
 
@@ -82,6 +85,21 @@
     <p class="field-hint indented last">
       Show the time context and trigger type prepended to each message. Useful
       for debugging prompt flow and callable thread routing.
+    </p>
+  </ThreadSettingsSection>
+
+  <ThreadSettingsSection title="Tool Execution">
+    <label class="select-label" for="thread-sequential-tools">Sequential tool execution</label>
+    <select id="thread-sequential-tools" class="select-input" bind:value={sequentialToolExecution}>
+      <option value="default">Default (inherit global)</option>
+      <option value="true">On (run one at a time)</option>
+      <option value="false">Off (run concurrently)</option>
+    </select>
+    <p class="field-hint last">
+      When on, this thread runs each turn's tool calls one at a time, in the order
+      the model emitted them, instead of concurrently. Slower for independent
+      calls, but avoids parallel-execution races. The run_tools_in_order tool can
+      still order a single batch even when this is off.
     </p>
   </ThreadSettingsSection>
 </div>
@@ -152,5 +170,30 @@
     font-size: var(--font-size-sm);
     line-height: 1.4;
     color: var(--text-primary);
+  }
+
+  .select-label {
+    display: block;
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    margin-bottom: 6px;
+  }
+  .select-input {
+    width: 100%;
+    max-width: 320px;
+    padding: var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+    color: var(--text-primary);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    outline: none;
+    margin-bottom: var(--spacing-sm);
+    transition: border-color var(--transition-fast);
+  }
+  .select-input:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-tint-bg);
   }
 </style>

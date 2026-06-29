@@ -677,6 +677,15 @@ class Settings(BaseSettings):
             "rejecting post-build tool calls."
         ),
     )
+    sequential_tool_execution: bool = Field(
+        default=False,
+        description=(
+            "Run a turn's tool calls one at a time in the order the model emitted "
+            "them, instead of concurrently. Off by default (concurrent). This is the "
+            "deterministic, no-model-reliance counterpart to the run_tools_in_order "
+            "control tool; overridable per-thread."
+        ),
+    )
     llm_use_model_defaults: bool = Field(
         default=False,
         description="Use model-specific defaults for temperature/top_p/frequency_penalty instead of global values"

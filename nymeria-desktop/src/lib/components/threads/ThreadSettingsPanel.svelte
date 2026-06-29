@@ -391,6 +391,12 @@
     return threadConfig?.imageWindowSize != null ? String(threadConfig.imageWindowSize) : '';
   }
 
+  function getInitialSequentialToolExecution(): 'default' | 'true' | 'false' {
+    const v = threadConfig?.sequentialToolExecution;
+    if (v === null || v === undefined) return 'default';
+    return v ? 'true' : 'false';
+  }
+
   function getInitialDreamEnabled(): boolean {
     return threadConfig?.dreaming?.enabled ?? false;
   }
@@ -427,6 +433,7 @@
   let notificationProfile = $state<string | null>(getInitialNotificationProfile());
   let memoryCharLimit = $state<string | number>(getInitialMemoryCharLimit());
   let imageWindowSize = $state<string | number>(getInitialImageWindowSize());
+  let sequentialToolExecution = $state<'default' | 'true' | 'false'>(getInitialSequentialToolExecution());
   let dreamEnabled = $state(getInitialDreamEnabled());
   let dreamMinIntervalHours = $state<string>(getInitialDreamMinIntervalHours());
   let dreamMinIdleMinutes = $state<string>(getInitialDreamMinIdleMinutes());
@@ -697,6 +704,8 @@
     const origImageWindowSize = threadConfig?.imageWindowSize != null ? String(threadConfig.imageWindowSize) : '';
     if (String(imageWindowSize ?? '').trim() !== origImageWindowSize) return true;
 
+    if (sequentialToolExecution !== getInitialSequentialToolExecution()) return true;
+
     const origDream = threadConfig?.dreaming ?? null;
     const origDreamEnabled = origDream?.enabled ?? false;
     const origDreamMinIntervalHours = origDream?.minIntervalHours != null ? String(origDream.minIntervalHours) : '';
@@ -853,6 +862,11 @@
       } else {
         updates.clear_image_window_size = true;
       }
+      if (sequentialToolExecution === 'default') {
+        updates.clear_sequential_tool_execution = true;
+      } else {
+        updates.sequential_tool_execution = sequentialToolExecution === 'true';
+      }
       if (dreamConfigNeedsSaving()) {
         updates.dreaming = {
           enabled: dreamEnabled,
@@ -943,6 +957,7 @@
     notificationProfile = null;
     memoryCharLimit = '';
     imageWindowSize = '';
+    sequentialToolExecution = 'default';
     dreamEnabled = false;
     dreamMinIntervalHours = '';
     dreamMinIdleMinutes = '';
@@ -984,6 +999,7 @@
         notificationProfile: null,
         memoryCharLimit: null,
         imageWindowSize: null,
+        sequentialToolExecution: null,
         createdAt: null,
         updatedAt: null,
         hasCustomizations: false,
@@ -1105,6 +1121,7 @@
                 bind:injectTodosInPrompt
                 bind:showAutonomousPrompts
                 bind:showPromptMetadata
+                bind:sequentialToolExecution
               />
             {:else if activeTab === 'memory'}
               <MemoryConfigTab

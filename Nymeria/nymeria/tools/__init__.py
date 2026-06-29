@@ -8,7 +8,7 @@ Callable thread tools are added per-graph in _build_graph_with_prompt(), not glo
 
 Tool classification (read this before reasoning about "core" vs "optional"):
 
-- ``SEED_TOOLS`` (~13) is the code-level set that SEEDS each user's editable
+- ``SEED_TOOLS`` (~14) is the code-level set that SEEDS each user's editable
   ``default_thread_tools`` on first run (``NymeriaAgent._migrate_tool_preferences``).
   It is NOT "all tools" and NOT a runtime guarantee: a user can demote a seed
   tool out of their defaults, and any thread can disable it.
@@ -159,6 +159,7 @@ except ImportError:
 from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
+from .tool_order import run_tools_in_order
 from .tool_search import tool_manage, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
@@ -1570,6 +1571,8 @@ SEED_TOOLS = [
     notify,
     # Core command-service bridge
     slash_command,
+    # Ordered same-turn tool execution (inert marker; see tool_order.py)
+    run_tools_in_order,
 ]
 
 
@@ -2843,6 +2846,7 @@ __all__ = [
     "_PRV_TOOLS_A",
     "TWITCH_TOOLS",
     "slash_command",
+    "run_tools_in_order",
     "SLASH_COMMAND_TOOLS",
     "tool_search",
     "tool_manage",

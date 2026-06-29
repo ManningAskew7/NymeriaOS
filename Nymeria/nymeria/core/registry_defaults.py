@@ -200,6 +200,17 @@ def register_default_commands(service: "CommandService") -> None:
         danger_level="normal",
     )
     service.register(
+        "sequential-tools",
+        description="Show or set sequential (ordered, one-at-a-time) tool execution",
+        category="Tools",
+        usage="/sequential-tools [on|off|inherit|global on|off]",
+        mutates_state=True,
+        danger_level="normal",
+        # Deterministic operator setting, not something the model should flip; the
+        # agent already has run_tools_in_order for per-batch ordering.
+        agent_allowed=False,
+    )
+    service.register(
         "skill",
         description="Use a markdown-only skill with an optional prompt",
         category="Skills",

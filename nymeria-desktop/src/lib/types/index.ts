@@ -283,6 +283,8 @@ export interface ThreadConfig {
   activeLlmFallback?: ActiveLLMFallback | null;
   memoryCharLimit?: number | null;
   imageWindowSize?: number | null;
+  /** Per-thread override for sequential (ordered) tool execution. `null` inherits the global setting. */
+  sequentialToolExecution?: boolean | null;
   systemPrompt?: string | null;
   callable: boolean;
   callableName?: string | null;
@@ -340,6 +342,7 @@ export interface ThreadConfigUpdateRequest {
   callable_team_name?: string | null;
   memory_char_limit?: number | null;
   image_window_size?: number | null;
+  sequential_tool_execution?: boolean | null;
   inject_todos_in_prompt?: boolean;
   show_autonomous_prompts?: boolean;
   show_prompt_metadata?: boolean;
@@ -357,6 +360,7 @@ export interface ThreadConfigUpdateRequest {
   clear_notification_profile?: boolean;
   clear_memory_char_limit?: boolean;
   clear_image_window_size?: boolean;
+  clear_sequential_tool_execution?: boolean;
   clear_dreaming?: boolean;
 }
 
@@ -1151,6 +1155,7 @@ export interface ServerSettings {
   llm_reasoning_effort: string | null;
   llm_extended_thinking: boolean;
   dynamic_tool_binding: boolean;
+  sequential_tool_execution: boolean;
   llm_use_model_defaults: boolean;
   llm_base_url: string | null;
   llm_context_length: number | null;
@@ -1283,6 +1288,7 @@ export interface ServerSettingsUpdate {
   llm_reasoning_effort?: string | null;
   llm_extended_thinking?: boolean;
   dynamic_tool_binding?: boolean;
+  sequential_tool_execution?: boolean;
   llm_use_model_defaults?: boolean;
   llm_base_url?: string | null;
   llm_context_length?: number | null;

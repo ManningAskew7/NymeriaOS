@@ -335,6 +335,10 @@ def create_thread_config_router(
             tc.image_window_size = None
         elif request.image_window_size is not None:
             tc.image_window_size = request.image_window_size
+        if request.clear_sequential_tool_execution:
+            tc.sequential_tool_execution = None
+        elif request.sequential_tool_execution is not None:
+            tc.sequential_tool_execution = request.sequential_tool_execution
         if request.clear_claude_code_model:
             tc.claude_code_model = None
         elif request.claude_code_model is not None:
