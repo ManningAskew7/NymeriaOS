@@ -87,6 +87,7 @@ class FakeSettings:
     stt_provider: str = "none"
     stt_base_url: str | None = None
     stt_api_key: str | None = None
+    groq_api_key: str | None = None
     stt_model: str = "gpt-4o-mini-transcribe"
     stt_language: str | None = None
     voice_default_thread_id: str | None = None
@@ -1626,6 +1627,52 @@ def test_command_backend_get_settings_carries_previously_missing_fields(
     assert backend_dict["embedding_provider"] == "cohere"
     assert backend_dict["rag_rerank_model"] == "rerank-v3"
     assert backend_dict["dream_default_model"] == "anthropic:claude-dream"
+
+
+def test_command_backend_get_env_vars_matches_route_payload(
+    tmp_path: Path, monkeypatch
+):
+    # The two TurnExecutor shapes must agree: GET /settings/env (HTTP) and the
+    # in-process CommandBackendClient.get_env_vars now share one serializer
+    # (serialize_env_entries), so their payloads are byte-identical. Seed both a
+    # suffix-only secret (groq_api_key) and a plain value so this proves masking +
+    # label parity, not just shape.
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        groq_api_key="gsk-secret-abcdef1234567890",
+        openai_api_key="sk-secret-abcdef1234567890",
+        llm_model="claude-test-x",
+    )
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path, settings=settings)
+    backend, _backend_agent = _backend_client(tmp_path, settings=settings)
+
+    route_json = client.get("/settings/env", headers=_auth(token)).json()
+    backend_dict = asyncio.run(backend.get_env_vars())
+
+    assert backend_dict == route_json
+
+
+def test_command_backend_get_env_vars_masks_suffix_secret(tmp_path: Path):
+    # Regression for the F4 leak: groq_api_key is a credential by *_api_key suffix
+    # but is NOT in the explicit _SECRET_KEYS allowlist, so the old in-process body
+    # (allowlist-only `key in _SECRET_KEYS`) printed it RAW while the HTTP route
+    # masked it via the suffix-aware _is_secret_setting_key. The shared serializer
+    # now masks it on both shapes.
+    raw = "gsk-secret-abcdef1234567890"
+    settings = FakeSettings(
+        project_root=tmp_path, data_dir=tmp_path, groq_api_key=raw
+    )
+    backend, _agent = _backend_client(tmp_path, settings=settings)
+
+    backend_dict = asyncio.run(backend.get_env_vars())
+    by_name = {e["name"]: e for e in backend_dict["entries"]}
+
+    groq = by_name["groq_api_key"]
+    assert groq["is_secret"] is True
+    assert groq["value"] != raw
+    assert "..." in groq["value"]
+    assert groq["env_var"] == "GROQ_API_KEY"
 
 
 def test_get_cached_models_includes_reasoning_effort_ladder(

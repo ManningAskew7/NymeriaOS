@@ -96,9 +96,9 @@ def _env_mapping() -> dict[str, str]:
 
 # Settings that persist immediately but require a process restart to apply.
 # Module-level constants (F9): built once at import rather than rebuilt on
-# every request. The accessor functions are retained because CommandService
-# imports `_env_categories`/`_secret_keys` by name. Treat the returned
-# structures as read-only; callers only iterate / membership-test them.
+# every request. The `_env_categories()` accessor is retained as the read path
+# for `serialize_env_entries`. Treat the returned structures as read-only;
+# callers only iterate / membership-test them.
 _RESTART_REQUIRED_KEYS: frozenset[str] = frozenset({
     "redis_url",
     "redis_enabled",
@@ -295,11 +295,6 @@ _SECRET_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _secret_keys() -> frozenset[str]:
-    """Settings that should be masked in GET /settings/env."""
-    return _SECRET_KEYS
-
-
 # Name suffixes that mark a settings key as credential-bearing. Used so any
 # *_api_key / *_token / *_secret / *_password / *_private_key style key is
 # masked even when it was never added to the explicit allowlist above. Suffix
@@ -477,6 +472,41 @@ def _mask_value(val: str) -> str:
     if len(s) <= 10:
         return s[:2] + "..." + s[-1:] if len(s) > 3 else "***"
     return s[:4] + "..." + s[-3:]
+
+
+def serialize_env_entries(settings: Any) -> dict:
+    """Single source of truth for the masked env-var read model.
+
+    Shared by ``GET /settings/env`` and ``CommandBackendClient.get_env_vars`` so
+    the HTTP and in-process command shapes cannot drift (the TurnExecutor
+    two-shape invariant), mirroring ``serialize_server_settings``. Secrecy is the
+    suffix-aware ``_is_secret_setting_key`` (NOT the allowlist-only
+    ``_SECRET_KEYS`` membership), so a suffix-style secret like ``groq_api_key``
+    is masked on both paths; labels come from the canonical
+    ``server_settings_env_mapping`` (not a naive ``key.upper()`` that mislabels
+    the divergent S3 fields).
+    """
+    env_name_map = server_settings_env_mapping()
+    entries = []
+    for category, keys in _env_categories().items():
+        for key in keys:
+            if key in HIDDEN_CONFIG_SETTINGS:
+                continue
+            val = getattr(settings, key, None)
+            env_var = env_name_map.get(key, key.upper())
+            is_secret = _is_secret_setting_key(key)
+            display_val = None
+            if val is not None:
+                display_val = _mask_value(str(val)) if is_secret else str(val)
+            entries.append({
+                "name": key,
+                "env_var": env_var,
+                "value": display_val,
+                "is_set": val is not None and str(val) != "",
+                "is_secret": is_secret,
+                "category": category,
+            })
+    return {"entries": entries}
 
 
 def _sync_process_env(new_lines: list[str], mapped_env_vars: set[str]) -> None:
@@ -1163,30 +1193,7 @@ def create_settings_router(
         settings: Settings = Depends(get_settings_fn),
     ):
         """Get settable environment variables with masked sensitive values."""
-        # Report the env var each field actually writes to (the canonical mapping),
-        # not a naive upper() that would mislabel the divergent S3 fields.
-        env_name_map = server_settings_env_mapping()
-        entries = []
-        for category, keys in _env_categories().items():
-            for key in keys:
-                if key in HIDDEN_CONFIG_SETTINGS:
-                    continue
-                val = getattr(settings, key, None)
-                env_var = env_name_map.get(key, key.upper())
-                is_secret = _is_secret_setting_key(key)
-                display_val = None
-                if val is not None:
-                    display_val = _mask_value(str(val)) if is_secret else str(val)
-                entries.append({
-                    "name": key,
-                    "env_var": env_var,
-                    "value": display_val,
-                    "is_set": val is not None and str(val) != "",
-                    "is_secret": is_secret,
-                    "category": category,
-                })
-
-        return {"entries": entries}
+        return serialize_env_entries(settings)
 
     @router.get("/settings/env/{key}")
     async def get_env_var(
