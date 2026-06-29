@@ -24,7 +24,10 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.tool_node import ToolRuntime
 from langgraph.types import Command
+from langgraph.errors import GraphBubbleUp
+from langchain_core.runnables.config import get_config_list
 from pydantic import BaseModel
 
 from .cliproxy import (
@@ -37,6 +40,13 @@ from .config import AgentConfig, LLMConfig, default_config
 from .providers import create_llm_with_tools
 
 logger = logging.getLogger(__name__)
+
+# Name of the inert ordered-execution marker tool (``nymeria/tools/tool_order.py``).
+# Its presence in a same-turn tool-call batch flips SafeToolNode from concurrent
+# dispatch to the ordered loop. Defined here (not imported from nymeria.tools) so
+# the vendored fork stays independent of the tool package; a test asserts the two
+# agree.
+SEQUENTIAL_ORDER_TOOL_NAME = "run_tools_in_order"
 
 TURN_SAFETY_REASON_MAX_ITERATIONS = "max_iterations"
 TURN_SAFETY_REASON_REPEATED_TOOL_RESULT = "repeated_tool_result"
@@ -861,6 +871,13 @@ def _completed_tool_exchanges(
                 if not tool_call_id:
                     continue
                 tool_name, signature = _tool_call_signature(tool_call)
+                # The ordered-execution marker is excluded from the repeated-result
+                # guard: a constant marker plus a repeated batch shape would collide
+                # at the limit, force-stopping legitimate repeated ordered batches.
+                # Its sibling tools are still tracked, so real runaway loops of the
+                # actual work still trip the guard.
+                if tool_name == SEQUENTIAL_ORDER_TOOL_NAME:
+                    continue
                 pending[str(tool_call_id)] = (signature, tool_name)
         elif isinstance(msg, ToolMessage):
             tool_call_id = getattr(msg, "tool_call_id", None)
@@ -929,6 +946,10 @@ def analyze_turn_safety(
 
     for tool_call in last_message.tool_calls:
         tool_name, signature = _tool_call_signature(tool_call)
+        # See _completed_tool_exchanges: the ordered-execution marker never trips
+        # the repeated-result guard on its own.
+        if tool_name == SEQUENTIAL_ORDER_TOOL_NAME:
+            continue
         repeat_count = 0
         repeated_result_hash: Optional[str] = None
 
@@ -1839,6 +1860,14 @@ class SafeToolNode(ToolNode):
         so the caller is not blocked by ThreadPoolExecutor cleanup.
         """
         self._record_capability_usage(input, config)
+        if self._should_run_sequentially(input, config):
+            # Ordered batches run one call after another, so their wall-clock is
+            # the SUM of the calls and would blow past the single whole-batch
+            # timeout below (which, on fire, marks every call timed out and
+            # discards completed results). Bypass it: each call is bounded by its
+            # own per-call timeout inside the ordered loop in _func.
+            result = super().invoke(input, config, **kwargs)
+            return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = executor.submit(super().invoke, input, config, **kwargs)
         try:
@@ -1861,6 +1890,11 @@ class SafeToolNode(ToolNode):
     async def ainvoke(self, input, config=None, **kwargs):
         """Async tool execution with timeout."""
         self._record_capability_usage(input, config)
+        if self._should_run_sequentially(input, config):
+            # See invoke(): bypass the whole-batch timeout for ordered batches and
+            # rely on the per-call timeouts inside the ordered loop in _afunc.
+            result = await super().ainvoke(input, config, **kwargs)
+            return _truncate_tool_messages_in_result(result, self._tool_output_max_chars)
         try:
             result = await asyncio.wait_for(
                 super().ainvoke(input, config, **kwargs),
@@ -1900,7 +1934,7 @@ class SafeToolNode(ToolNode):
                     content=(
                         f"[Error]: Tool '{tool_name}' timed out after {self._tool_timeout} seconds. "
                         f"The operation took too long and was stopped to prevent the agent from hanging. "
-                        f"Do NOT retry this tool — report the timeout to the user."
+                        f"Do NOT retry this tool. Report the timeout to the user."
                     ),
                     tool_call_id=tool_call_id,
                 ))
@@ -1911,6 +1945,427 @@ class SafeToolNode(ToolNode):
             )
 
         return {"messages": error_messages}
+
+    # ------------------------------------------------------------------
+    # Ordered (sequential) same-turn tool execution.
+    #
+    # By default a batch of tool calls in one assistant turn runs concurrently
+    # (parent ``_func``/``_afunc`` fan out via ``executor.map`` /
+    # ``asyncio.gather``). When the batch includes the inert
+    # ``run_tools_in_order`` marker, we instead run the calls one at a time, in
+    # the order the model listed them. This orders EXTERNAL side effects and the
+    # result-message order; it does NOT make an earlier call's in-graph state
+    # update visible to a later call in the same batch (state is snapshotted per
+    # call at node entry, like the concurrent path).
+    # ------------------------------------------------------------------
+
+    def _extract_raw_tool_calls(self, input) -> Optional[List[ToolCall]]:
+        """Raw tool calls for the predicate, mirroring ``_parse_input`` shapes.
+
+        Returns ``None`` (meaning: keep the concurrent hot path) for any shape
+        where same-turn batch ordering is meaningless or unsupported: Send-API
+        single-call dispatch (``tool_call_with_context`` dict or a trailing
+        ``tool_call`` list entry) and unknown shapes. No normalization is done,
+        so the concurrent path is never altered by this scan.
+        """
+        try:
+            if isinstance(input, list):
+                if input and isinstance(input[-1], dict) and input[-1].get("type") == "tool_call":
+                    return None  # Send / tool_calls shape: single call, ordering N/A
+                messages = input
+            elif isinstance(input, dict) and input.get("__type") == "tool_call_with_context":
+                return None  # Send API single-call payload
+            elif isinstance(input, dict):
+                messages = input.get(self._messages_key) or []
+            else:
+                messages = getattr(input, self._messages_key, []) or []
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage):
+                    return list(msg.tool_calls or [])
+            return None
+        except Exception:  # noqa: BLE001 - predicate must never crash dispatch.
+            logger.debug("Sequential predicate could not extract tool calls", exc_info=True)
+            return None
+
+    def _should_run_sequentially(self, input, config=None) -> bool:
+        """True when the current batch must run in emitted order.
+
+        Pure and stateless (the node is shared across concurrent invocations):
+        the decision is derived only from the batch contents plus the per-turn
+        ``config``. Precedence is ``control_tool OR (thread OR global) setting``:
+        sequential when the batch contains the ``run_tools_in_order`` marker
+        (Tier 1), OR when the deterministic ``sequential_tools`` flag was resolved
+        into ``config["configurable"]`` for this turn (Tier 2, #67). The flag is
+        resolved once per turn (thread override else global default) in
+        ``agent_safety.graph_run_config`` so both the outer timeout-bypass
+        (``invoke``/``ainvoke``) and the inner dispatch (``_func``/``_afunc``) read
+        the same value and cannot disagree.
+        """
+        calls = self._extract_raw_tool_calls(input)
+        if not calls:
+            return False
+        names = [str(c.get("name") or "") for c in calls]
+        if SEQUENTIAL_ORDER_TOOL_NAME in names:
+            return True
+        # Tier 2 (#67): the deterministic per-thread/global setting, pre-resolved
+        # into config by graph_run_config. Robust to config being None or an
+        # object (RunnableConfig is a dict in practice; guard both shapes).
+        if isinstance(config, dict):
+            configurable = config.get("configurable") or {}
+        else:
+            configurable = getattr(config, "configurable", {}) or {}
+        if configurable.get("sequential_tools"):
+            return True
+        return False
+
+    def _func(self, input, config, runtime):
+        # Keep ``(self, input, config, runtime)`` identical to the parent and to
+        # ``_afunc``: RunnableCallable derives its config/runtime injection map
+        # once from the sync ``_func`` signature and reuses it for both paths.
+        if not self._should_run_sequentially(input, config):
+            return super()._func(input, config, runtime)
+        return self._run_sequential(input, config, runtime)
+
+    async def _afunc(self, input, config, runtime):
+        if not self._should_run_sequentially(input, config):
+            return await super()._afunc(input, config, runtime)
+        return await self._arun_sequential(input, config, runtime)
+
+    def _build_tool_runtime(self, call, cfg, runtime, input):
+        """Construct the per-call ToolRuntime exactly as the parent does.
+
+        Mirrors the 9-field block in ``ToolNode._func``/``_afunc`` (verified
+        identical in langgraph-prebuilt 1.0.13 and the pinned 1.1.0; 1.1.0 only
+        added a method, no new field). The signature-parity guard test asserts
+        this field set against the installed langgraph so an upgrade fails loudly.
+        """
+        # _extract_state takes (input, config) on both pinned langgraph-prebuilt
+        # versions (1.0.13 and 1.1.0, verified); pyrefly mis-resolves the arity.
+        state = self._extract_state(input, cfg)  # pyrefly: ignore[bad-argument-count]
+        return ToolRuntime(
+            state=state,
+            tool_call_id=call["id"],
+            config=cfg,
+            context=runtime.context,
+            store=runtime.store,
+            stream_writer=runtime.stream_writer,
+            tools=list(self.tools_by_name.values()),
+            execution_info=runtime.execution_info,
+            server_info=runtime.server_info,
+        )
+
+    def _run_sequential(self, input, config, runtime):
+        # Sync ordered loop (parity with the async path; the API runtime drives
+        # the async path, this exists for sync callers and tests).
+        tool_calls, input_type = self._parse_input(input)
+        config_list = get_config_list(config, len(tool_calls))
+        abort_event = self._abort_event_for(config)
+        stop_on_error = self._stop_on_error_flag(tool_calls)
+        logger.info(
+            "Sequential tool execution: %d call(s) in emitted order (trigger=%s, stop_on_error=%s)",
+            len(tool_calls),
+            self._sequential_trigger(tool_calls),
+            stop_on_error,
+        )
+        outputs: list = []
+        stop_triggered = False
+        for call, cfg in zip(tool_calls, config_list, strict=False):
+            name = str(call.get("name") or "")
+            if name == SEQUENTIAL_ORDER_TOOL_NAME:
+                ack = self._marker_ack_message(call, tool_calls)
+                outputs.append(ack)
+                self._emit_marker_frames(call, ack, config)
+                continue
+            if abort_event is not None and abort_event.is_set():
+                outputs.append(self._cancelled_message(call))
+                continue
+            if stop_triggered:
+                outputs.append(self._skipped_message(call))
+                continue
+            tool_runtime = self._build_tool_runtime(call, cfg, runtime, input)
+            result = self._run_one_with_timeout(call, input_type, tool_runtime, config)
+            outputs.append(result)
+            if stop_on_error and self._is_error_output(result):
+                stop_triggered = True
+        return self._combine_tool_outputs(outputs, input_type)
+
+    async def _arun_sequential(self, input, config, runtime):
+        tool_calls, input_type = self._parse_input(input)
+        config_list = get_config_list(config, len(tool_calls))
+        abort_event = self._abort_event_for(config)
+        stop_on_error = self._stop_on_error_flag(tool_calls)
+        logger.info(
+            "Sequential tool execution: %d call(s) in emitted order (trigger=%s, stop_on_error=%s)",
+            len(tool_calls),
+            self._sequential_trigger(tool_calls),
+            stop_on_error,
+        )
+        outputs: list = []
+        stop_triggered = False
+        for call, cfg in zip(tool_calls, config_list, strict=False):
+            name = str(call.get("name") or "")
+            if name == SEQUENTIAL_ORDER_TOOL_NAME:
+                ack = self._marker_ack_message(call, tool_calls)
+                outputs.append(ack)
+                # The marker is never dispatched, so on_tool_start/on_tool_end
+                # never fire and the live stream would otherwise never see it
+                # (it shows only on reload). Emit synthetic frames so the card
+                # appears live too.
+                await self._aemit_marker_frames(call, ack, config)
+                continue
+            # Per-step abort: a sequential batch's wall-clock is the SUM of its
+            # calls, so check the cooperative abort event before each call and
+            # synthesize a cancelled result for the remainder (every tool_call
+            # still needs a matching ToolMessage).
+            if abort_event is not None and abort_event.is_set():
+                outputs.append(self._cancelled_message(call))
+                continue
+            if stop_triggered:
+                outputs.append(self._skipped_message(call))
+                continue
+            tool_runtime = self._build_tool_runtime(call, cfg, runtime, input)
+            result = await self._arun_one_with_timeout(call, input_type, tool_runtime, config)
+            outputs.append(result)
+            if stop_on_error and self._is_error_output(result):
+                stop_triggered = True
+        return self._combine_tool_outputs(outputs, input_type)
+
+    def _notify_single_call_timeout(self, call, config) -> None:
+        """Fire the timeout hook for a single timed-out call in an ordered batch.
+
+        The concurrent path calls ``_notify_timeout`` on a whole-batch timeout so
+        ``on_tool_timeout`` can cascade-abort any callable sub-thread that hung.
+        The sequential path times out per call, so only the one call that hung
+        should be aborted: passing the real input here would also abort sibling
+        callable threads (already-finished or not-yet-started) by name. Synthesize
+        a one-call input so exactly that call's callable thread is cascaded.
+        """
+        if not self._on_timeout:
+            return
+        try:
+            tc = {
+                "name": call.get("name"),
+                "args": call.get("args") if isinstance(call.get("args"), dict) else {},
+                "id": call.get("id"),
+                "type": "tool_call",
+            }
+            synthetic = {"messages": [AIMessage(content="", tool_calls=[tc])]}
+            self._notify_timeout(synthetic, config)
+        except Exception as e:  # a hook failure must never break the ordered loop
+            logger.warning(f"on_timeout callback failed: {e}")
+
+    async def _arun_one_with_timeout(self, call, input_type, tool_runtime, config):
+        """Run one call with its own timeout (the outer batch timeout is bypassed
+        in sequential mode). ``_arun_one`` already converts ordinary tool errors
+        to error ToolMessages and re-raises ``GraphBubbleUp``; we must not turn an
+        interrupt into an error message, so carve it out explicitly.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._arun_one(call, input_type, tool_runtime),
+                timeout=self._tool_timeout,
+            )
+        except GraphBubbleUp:
+            raise
+        except asyncio.TimeoutError:
+            self._notify_single_call_timeout(call, config)
+            return self._timeout_message(call)
+
+    def _run_one_with_timeout(self, call, input_type, tool_runtime, config):
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(self._run_one, call, input_type, tool_runtime)
+            try:
+                return future.result(timeout=self._tool_timeout)
+            except concurrent.futures.TimeoutError:
+                self._notify_single_call_timeout(call, config)
+                return self._timeout_message(call)
+            # GraphBubbleUp raised in the worker re-raises from future.result() and
+            # is intentionally not caught, so the interrupt propagates (the finally
+            # below still releases the pool first).
+        finally:
+            executor.shutdown(wait=False)
+
+    @staticmethod
+    def _stop_on_error_flag(tool_calls) -> bool:
+        for call in tool_calls:
+            if str(call.get("name") or "") == SEQUENTIAL_ORDER_TOOL_NAME:
+                args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                return bool(args.get("stop_on_error", False))
+        return False
+
+    @staticmethod
+    def _sequential_trigger(tool_calls) -> str:
+        """Why this batch ran ordered: the model's marker, or the operator setting.
+
+        Both reach the same loop; only the marker leaves a tool_call in the batch,
+        so its presence distinguishes the two for log/debug purposes.
+        """
+        for call in tool_calls:
+            if str(call.get("name") or "") == SEQUENTIAL_ORDER_TOOL_NAME:
+                return "control_tool"
+        return "setting"
+
+    def _marker_ack_message(self, call, tool_calls) -> ToolMessage:
+        """Synthesize the inert marker's result from the static batch.
+
+        The marker is never dispatched on this path; its result is computed from
+        the emitted ``tool_calls`` so its execution position is irrelevant.
+        """
+        others = sum(
+            1
+            for c in tool_calls
+            if str(c.get("name") or "") != SEQUENTIAL_ORDER_TOOL_NAME
+        )
+        if others == 0:
+            content = (
+                "No other tool calls were in this batch, so nothing was ordered. "
+                "Emit the calls you want run in order together with this one in a "
+                "single response."
+            )
+        else:
+            content = (
+                f"Ordered {others} tool call(s) in this batch to run one at a "
+                "time, in the order you listed them."
+            )
+        return ToolMessage(
+            content=content,
+            name=str(call.get("name") or SEQUENTIAL_ORDER_TOOL_NAME),
+            tool_call_id=call.get("id", "unknown"),
+        )
+
+    def _marker_frame_payloads(self, call, ack: ToolMessage) -> list[tuple[str, dict]]:
+        """Live SSE frames mirroring the marker's reload card.
+
+        Match the LIVE event shape emitted by GraphStreamProcessor for real
+        tools: ``tool_call`` carries ``args`` (no ``status``) and ``tool_result``
+        carries ``result``. The marker's own tool_call_id is the frame id (a
+        different id-space from the LangChain run_id used for dispatched tools,
+        so no collision).
+        """
+        call_id = call.get("id", "unknown")
+        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        return [
+            (
+                "tool_call",
+                {"id": call_id, "name": SEQUENTIAL_ORDER_TOOL_NAME, "args": args},
+            ),
+            (
+                "tool_result",
+                {"id": call_id, "name": SEQUENTIAL_ORDER_TOOL_NAME, "result": ack.content},
+            ),
+        ]
+
+    def _emit_marker_frames(self, call, ack: ToolMessage, config) -> None:
+        """Best-effort sync dispatch of the marker's live frames.
+
+        Mirrors ``_dispatch_provider_event``: swallow a missing callback manager
+        (RuntimeError) and any other dispatch failure at debug level so a
+        streaming hiccup never breaks tool execution.
+        """
+        for name, payload in self._marker_frame_payloads(call, ack):
+            try:
+                dispatch_custom_event(name, payload, config=config)
+            except RuntimeError:
+                logger.debug("No callback manager for marker %s event", name)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed to dispatch marker %s event: %s", name, exc)
+
+    async def _aemit_marker_frames(self, call, ack: ToolMessage, config) -> None:
+        """Best-effort async dispatch of the marker's live frames (see sync twin)."""
+        for name, payload in self._marker_frame_payloads(call, ack):
+            try:
+                await adispatch_custom_event(name, payload, config=config)
+            except RuntimeError:
+                logger.debug("No callback manager for marker %s event", name)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed to dispatch marker %s event: %s", name, exc)
+
+    def _timeout_message(self, call) -> ToolMessage:
+        name = call.get("name", "unknown")
+        logger.error(
+            "Tool '%s' timed out after %ss in a sequential batch.",
+            name,
+            self._tool_timeout,
+        )
+        return ToolMessage(
+            content=(
+                f"[Error]: Tool '{name}' timed out after {self._tool_timeout} seconds. "
+                "The operation took too long and was stopped to prevent the agent from hanging. "
+                "Do NOT retry this tool. Report the timeout to the user."
+            ),
+            name=name,
+            tool_call_id=call.get("id", "unknown"),
+            status="error",
+        )
+
+    def _cancelled_message(self, call) -> ToolMessage:
+        name = call.get("name", "unknown")
+        return ToolMessage(
+            content=(
+                "[Error]: Tool execution was cancelled before this call ran "
+                "(the turn was aborted)."
+            ),
+            name=name,
+            tool_call_id=call.get("id", "unknown"),
+            status="error",
+        )
+
+    def _skipped_message(self, call) -> ToolMessage:
+        name = call.get("name", "unknown")
+        return ToolMessage(
+            content=(
+                "[Error]: Skipped. An earlier call in this ordered batch failed "
+                "and stop_on_error was set, so this call was not run."
+            ),
+            name=name,
+            tool_call_id=call.get("id", "unknown"),
+            status="error",
+        )
+
+    @staticmethod
+    def _is_error_output(result) -> bool:
+        """A tool output counts as an error if it raised (status=="error") or
+        returned a result starting with the codebase's ``[Error]:`` convention
+        (most Nymeria tools catch their own failures and RETURN such a string
+        rather than raising, so status alone would miss them).
+        """
+        def _one(msg) -> bool:
+            if isinstance(msg, ToolMessage):
+                if getattr(msg, "status", None) == "error":
+                    return True
+                content = msg.content
+                return isinstance(content, str) and content.lstrip().startswith("[Error]")
+            return False
+
+        if isinstance(result, list):
+            return any(_one(m) for m in result)
+        return _one(result)
+
+    def _abort_event_for(self, config):
+        """Resolve this thread's cooperative abort event, or None.
+
+        The node has no local abort handle, so pull ``thread_id`` from config and
+        reach the event via ``get_current_agent()`` (the current-agent lookup, as
+        in ``get_effective_image_window_size``), not a local attribute.
+        """
+        try:
+            if isinstance(config, dict):
+                configurable = config.get("configurable") or {}
+            else:
+                configurable = getattr(config, "configurable", {}) or {}
+            thread_id = configurable.get("thread_id")
+            if not thread_id:
+                return None
+            from ...core.agent import get_current_agent
+
+            agent = get_current_agent()
+            if agent is None:
+                return None
+            return agent._thread_locks.get_abort_event(str(thread_id))
+        except Exception:  # noqa: BLE001 - abort resolution is best-effort.
+            logger.debug("Could not resolve abort event for sequential batch", exc_info=True)
+            return None
 
 
 def create_should_continue(

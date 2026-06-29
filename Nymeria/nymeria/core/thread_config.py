@@ -243,6 +243,12 @@ class ThreadConfig(BaseModel):
     # None inherits the model's max_images_per_request; an explicit value is
     # clamped to that ceiling at resolve time.
     image_window_size: Optional[int] = Field(default=None, ge=1, le=3000)
+    # Optional per-thread override for sequential (ordered, one-at-a-time) tool
+    # execution. None inherits the global SEQUENTIAL_TOOL_EXECUTION setting; True
+    # forces this thread sequential, False forces it concurrent regardless of the
+    # global default. (The run_tools_in_order control tool still forces a single
+    # batch sequential even when this is None/False.)
+    sequential_tool_execution: Optional[bool] = Field(default=None)
     # Per-thread claude_code overrides. None inherits the global
     # NYMERIA_CLAUDE_CODE_MODEL / NYMERIA_CLAUDE_CODE_DEFAULT_MODE. The host
     # runner stays the policy authority for the model (allowlist/budget) in
@@ -329,6 +335,8 @@ class ThreadConfig(BaseModel):
         if self.memory_char_limit is not None:
             return True
         if self.image_window_size is not None:
+            return True
+        if self.sequential_tool_execution is not None:
             return True
         if self.claude_code_model is not None or self.claude_code_mode is not None:
             return True

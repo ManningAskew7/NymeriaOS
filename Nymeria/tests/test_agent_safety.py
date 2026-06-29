@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 from nymeria.core.agent_safety import (
     check_iteration_limit_hit,
+    get_effective_sequential_tools,
     graph_run_config,
     main_iterations_cap,
     turn_safety_event,
@@ -97,15 +98,62 @@ def test_graph_run_config_uses_agent_facades():
 
     config = graph_run_config(cast(Any, agent), "thread-a", "user-b", callbacks)
 
+    # The facade agent has no settings/thread_config_manager, so the Tier 2 flag
+    # resolves to its default (False) and is always present in configurable.
     assert config == {
         "recursion_limit": 177,
-        "configurable": {"thread_id": "thread-a", "user_id": "user-b"},
+        "configurable": {
+            "thread_id": "thread-a",
+            "user_id": "user-b",
+            "sequential_tools": False,
+        },
         "callbacks": callbacks,
     }
     assert agent.calls == [
         ("max_iterations", "thread-a"),
         ("recursion_limit", 17),
     ]
+
+
+def test_graph_run_config_injects_resolved_sequential_flag():
+    agent = _GraphConfigFacadeAgent()
+    agent.settings = SimpleNamespace(sequential_tool_execution=True)  # type: ignore[attr-defined]
+    # No thread_config_manager -> the global default is used as-is.
+    config = graph_run_config(cast(Any, agent), "thread-a", "user-b")
+    assert config["configurable"]["sequential_tools"] is True
+
+
+class _SeqManager:
+    def __init__(self, override: Any) -> None:
+        self._override = override
+
+    def get_config(self, _thread_id: str) -> Any:
+        return SimpleNamespace(sequential_tool_execution=self._override)
+
+
+def test_sequential_resolver_thread_override_beats_global():
+    # Thread True beats global False, and thread False beats global True.
+    assert get_effective_sequential_tools(False, "t", thread_config_manager=_SeqManager(True)) is True
+    assert get_effective_sequential_tools(True, "t", thread_config_manager=_SeqManager(False)) is False
+
+
+def test_sequential_resolver_none_inherits_global():
+    assert get_effective_sequential_tools(True, "t", thread_config_manager=_SeqManager(None)) is True
+    assert get_effective_sequential_tools(False, "t", thread_config_manager=_SeqManager(None)) is False
+
+
+def test_sequential_resolver_no_thread_or_manager_uses_global():
+    assert get_effective_sequential_tools(True, None, thread_config_manager=_SeqManager(False)) is True
+    assert get_effective_sequential_tools(True, "t", thread_config_manager=None) is True
+
+
+def test_sequential_resolver_never_raises_on_lookup_failure():
+    class _Boom:
+        def get_config(self, _tid):
+            raise RuntimeError("disk gone")
+
+    assert get_effective_sequential_tools(True, "t", thread_config_manager=_Boom()) is True
+    assert get_effective_sequential_tools(False, "t", thread_config_manager=_Boom()) is False
 
 
 def test_turn_safety_event_uses_agent_content_facade():

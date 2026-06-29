@@ -1590,6 +1590,7 @@ closing DNS-rebinding gaps.
 | `AGENT_MAX_ITERATIONS` | `500` | Max agent loop iterations per turn (10-10,000); a safety backstop, not a tuning knob. Callable threads use their own per-thread cap |
 | `TOOL_TIMEOUT` | `300` | Max seconds a tool or callable-thread invocation may run |
 | `TOOL_OUTPUT_MAX_CHARS` | `100000` | Max characters stored for one tool result. Larger outputs keep the first ~75k and last ~25k characters with a truncation marker. |
+| `SEQUENTIAL_TOOL_EXECUTION` | `false` | Run a turn's tool calls one at a time in the order the model emitted them, instead of concurrently. Global default; overridable per-thread (a thread can force on or off, or inherit this). Slower for independent calls but avoids parallel-execution races. The `run_tools_in_order` tool still orders a single batch even when this is off. |
 
 ### Context Management
 

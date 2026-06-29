@@ -370,6 +370,160 @@ def test_memory_limit_command_shows_usage_and_updates_limits() -> None:
     assert api.thread_config["memory_char_limit"] is None
 
 
+def test_sequential_tools_command_shows_status_and_updates() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    shown = run(service.execute(ctx, "/sequential-tools", api=api))
+    thread_on = run(service.execute(ctx, "/sequential-tools on", api=api))
+    thread_off = run(service.execute(ctx, "/sequential-tools off", api=api))
+    thread_inherit = run(service.execute(ctx, "/sequential-tools inherit", api=api))
+    global_on = run(service.execute(ctx, "/sequential-tools global on", api=api))
+
+    # Status: global default off, thread inherits (no override set).
+    assert shown.success is True
+    assert "global: off" in shown.markdown
+    assert "inherits global" in shown.markdown
+
+    # Thread override on / off go to update_thread_config as a flat boolean.
+    assert thread_on.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "sequential_tool_execution": True},
+    ) in api.calls
+    assert thread_off.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "sequential_tool_execution": False},
+    ) in api.calls
+
+    # inherit clears the override.
+    assert thread_inherit.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "clear_sequential_tool_execution": True},
+    ) in api.calls
+
+    # global writes the server setting.
+    assert global_on.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "sequential_tool_execution": True},
+    ) in api.calls
+
+
+def test_sequential_tools_command_global_works_without_thread() -> None:
+    # The global subcommand must not require a thread; thread-scoped subcommands do.
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id=None,
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    global_off = run(service.execute(ctx, "/sequential-tools global off", api=api))
+    assert global_off.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "sequential_tool_execution": False},
+    ) in api.calls
+
+    needs_thread = run(service.execute(ctx, "/sequential-tools on", api=api))
+    assert needs_thread.success is False
+
+
+def test_sequential_tools_command_status_shows_override_and_default_alias() -> None:
+    # Covers the status (override) display branch and the `default` alias of `inherit`.
+    service = CommandService()
+    api = FakeCommandApi()
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+    # An explicit thread override renders distinctly from "inherits global".
+    run(service.execute(ctx, "/sequential-tools on", api=api))
+    status = run(service.execute(ctx, "/sequential-tools", api=api))
+    assert status.success is True
+    assert "thread: on (override)" in status.markdown
+
+    # `default` is an alias of `inherit` and clears the override.
+    cleared = run(service.execute(ctx, "/sequential-tools default", api=api))
+    assert cleared.success is True
+    assert (
+        "update_thread_config",
+        ("thread-1",),
+        {"user_id": "alice", "clear_sequential_tool_execution": True},
+    ) in api.calls
+
+
+def test_sequential_tools_in_process_whitelist_persists_tristate() -> None:
+    """Slash commands persist via ``CommandBackendClient.update_thread_config``,
+    NOT the HTTP PATCH route, so its separate kwarg whitelist must round-trip the
+    tri-state. Locks on->True, off->explicit False (not omitted), clear->None, and
+    the clear-flag-wins precedence the HTTP route also enforces.
+    """
+    from nymeria.core.thread_config import ThreadConfig
+
+    class _Manager:
+        def __init__(self) -> None:
+            self.configs: dict[str, ThreadConfig] = {}
+
+        def get_config(self, thread_id: str):
+            return self.configs.get(thread_id)
+
+        def save_config(self, tc: ThreadConfig) -> bool:
+            self.configs[tc.thread_id] = tc
+            return True
+
+    manager = _Manager()
+    agent = SimpleNamespace(
+        thread_config_manager=manager,
+        accounts_repo=SimpleNamespace(claim_thread=lambda tid, uid: uid),
+        invalidate_thread_config_cache=lambda tid: None,
+    )
+    user = _CommandBackendUser(id="alice", role="admin")
+    client = CommandBackendClient(agent, user=user)
+
+    run(client.update_thread_config("t1", user_id="alice", sequential_tool_execution=True))
+    assert manager.configs["t1"].sequential_tool_execution is True
+
+    run(client.update_thread_config("t1", user_id="alice", sequential_tool_execution=False))
+    assert manager.configs["t1"].sequential_tool_execution is False
+
+    run(client.update_thread_config("t1", user_id="alice", clear_sequential_tool_execution=True))
+    assert manager.configs["t1"].sequential_tool_execution is None
+
+    # The clear flag wins even when a boolean is also supplied (HTTP-route parity).
+    run(
+        client.update_thread_config(
+            "t1",
+            user_id="alice",
+            sequential_tool_execution=True,
+            clear_sequential_tool_execution=True,
+        )
+    )
+    assert manager.configs["t1"].sequential_tool_execution is None
+
+
 def test_fast_command_switches_thread_and_sets_global() -> None:
     service = CommandService()
     api = FakeCommandApi()
@@ -1252,8 +1406,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 89
-    assert sum(cmd.executable for cmd in service._commands.values()) == 75
+    assert len(service._commands) == 90
+    assert sum(cmd.executable for cmd in service._commands.values()) == 76
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"

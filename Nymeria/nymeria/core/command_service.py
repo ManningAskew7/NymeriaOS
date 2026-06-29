@@ -1176,6 +1176,13 @@ class CommandBackendClient:
             tc.memory_char_limit = None
         elif "memory_char_limit" in kwargs and kwargs["memory_char_limit"] is not None:
             tc.memory_char_limit = int(kwargs["memory_char_limit"])
+        if kwargs.get("clear_sequential_tool_execution"):
+            tc.sequential_tool_execution = None
+        elif (
+            "sequential_tool_execution" in kwargs
+            and kwargs["sequential_tool_execution"] is not None
+        ):
+            tc.sequential_tool_execution = bool(kwargs["sequential_tool_execution"])
 
         if not self.agent.thread_config_manager.save_config(tc):
             _raise_http_status(500, "Failed to save thread config")
@@ -4051,6 +4058,88 @@ class _CommandExecutor:
             return f"[Success]: This thread's memory character limit set to {limit}."
 
         return "[Error]: Usage: /memory limit [global <chars>|thread <chars>|thread inherit]"
+
+    async def _cmd_sequential_tools(self, args: list[str], rest: str) -> str:
+        """Show / set sequential (ordered, one-at-a-time) tool execution.
+
+        No args shows status; `on`/`off`/`inherit` set this thread's override;
+        `global on|off` sets the global default. Deterministic counterpart to the
+        run_tools_in_order control tool (precedence: control_tool OR thread OR
+        global).
+        """
+        agent = self._agent()
+        settings = getattr(agent, "settings", None) if agent is not None else None
+        if settings is None:
+            try:
+                settings = await self.api.get_settings(user_id=self.user_id)
+            except TypeError:
+                settings = await self.api.get_settings()
+            except Exception:  # noqa: BLE001
+                settings = get_settings()
+
+        def global_flag() -> bool:
+            if isinstance(settings, dict):
+                return bool(settings.get("sequential_tool_execution", False))
+            return bool(getattr(settings, "sequential_tool_execution", False))
+
+        def fmt(value: bool) -> str:
+            return "on" if value else "off"
+
+        if not args:
+            g = global_flag()
+            lines = ["Sequential tool execution", f"  global: {fmt(g)}"]
+            if self.thread_id:
+                try:
+                    thread_cfg = await self.api.get_thread_config(self.thread_id)
+                except Exception:  # noqa: BLE001
+                    thread_cfg = {}
+                override = (thread_cfg or {}).get("sequential_tool_execution")
+                if override is None:
+                    lines.append(f"  thread: {fmt(g)} (inherits global)")
+                else:
+                    lines.append(f"  thread: {fmt(bool(override))} (override)")
+            return "[Info]: " + "\n".join(lines)
+
+        sub = args[0].lower()
+
+        if sub == "global":
+            if len(args) != 2 or args[1].lower() not in ("on", "off"):
+                return "[Error]: Usage: /sequential-tools global <on|off>"
+            value = args[1].lower() == "on"
+            result = await self.api.update_settings(
+                user_id=self.user_id,
+                sequential_tool_execution=value,
+            )
+            msg = f"[Success]: Global sequential tool execution turned {fmt(value)}."
+            if isinstance(result, dict) and result.get("restart_required"):
+                msg += " (restart required to take effect)"
+            return msg
+
+        if sub in ("inherit", "default"):
+            thread_error = self._require_thread()
+            if thread_error:
+                return thread_error
+            await self.api.update_thread_config(
+                self.thread_id,
+                clear_sequential_tool_execution=True,
+                user_id=self.user_id,
+            )
+            return "[Success]: This thread now inherits the global sequential tool execution setting."
+
+        if sub in ("on", "off"):
+            thread_error = self._require_thread()
+            if thread_error:
+                return thread_error
+            value = sub == "on"
+            await self.api.update_thread_config(
+                self.thread_id,
+                sequential_tool_execution=value,
+                user_id=self.user_id,
+            )
+            mode = "sequential" if value else "concurrent"
+            return f"[Success]: This thread's tool execution set to {mode} (override {fmt(value)})."
+
+        return "[Error]: Usage: /sequential-tools [on|off|inherit|global on|off]"
 
     # ── TODOs ─────────────────────────────────────────────────────────────
 

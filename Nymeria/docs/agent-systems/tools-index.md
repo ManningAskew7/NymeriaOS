@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1252 tools found.**
+**1253 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -947,6 +947,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `rocketchat_list_channels` | `nymeria/tools/chat_platform_service_integrations.py` | List Rocket.Chat public channels. |
 | `rocketchat_post_message` | `nymeria/tools/chat_platform_service_integrations.py` | Post a Rocket.Chat message. |
 | `rss_feed_read` | `nymeria/tools/public_info_integrations.py` | Read an RSS or Atom feed URL. |
+| `run_tools_in_order` | `nymeria/tools/tool_order.py` | Run this whole batch of tool calls in the order listed, not concurrently. |
 | `rundeck_execute_job` | `nymeria/tools/operations_monitoring_service_integrations.py` | Execute a Rundeck job. |
 | `rundeck_get_job_metadata` | `nymeria/tools/operations_monitoring_service_integrations.py` | Get Rundeck job metadata by job ID. |
 | `s3_copy_object` | `nymeria/tools/file_storage_service_integrations.py` | Copy an S3 object. |

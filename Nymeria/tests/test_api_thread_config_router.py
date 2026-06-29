@@ -478,6 +478,51 @@ def test_thread_config_image_window_size_round_trip(
     assert cleared.image_window_size is None
 
 
+def test_thread_config_sequential_tool_execution_round_trip(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "seq-tools-thread"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    # Default (unset) is None -> inherits the global setting.
+    default = client.get(f"/threads/{thread_id}/config", headers=headers)
+    assert default.status_code == 200
+    assert default.json()["sequential_tool_execution"] is None
+
+    # Tri-state: explicit True (force sequential) and explicit False (force
+    # concurrent) are both distinct overrides from "inherit".
+    on_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"sequential_tool_execution": True},
+    )
+    assert on_resp.status_code == 200
+    assert on_resp.json()["sequential_tool_execution"] is True
+    assert on_resp.json()["has_customizations"] is True
+    assert agent.thread_config_manager.get_config(thread_id).sequential_tool_execution is True
+
+    off_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"sequential_tool_execution": False},
+    )
+    assert off_resp.status_code == 200
+    assert off_resp.json()["sequential_tool_execution"] is False
+    assert agent.thread_config_manager.get_config(thread_id).sequential_tool_execution is False
+
+    clear_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"clear_sequential_tool_execution": True},
+    )
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["sequential_tool_execution"] is None
+    assert agent.thread_config_manager.get_config(thread_id).sequential_tool_execution is None
+
+
 def test_thread_config_claude_code_overrides_round_trip(
     tmp_path: Path,
     api_client_builder,

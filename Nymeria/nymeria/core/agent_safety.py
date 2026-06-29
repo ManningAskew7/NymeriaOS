@@ -107,6 +107,31 @@ def max_iterations_for_thread(
     return main_iterations_cap(agent)
 
 
+def get_effective_sequential_tools(
+    global_default: bool,
+    thread_id: Optional[str],
+    *,
+    thread_config_manager: Any | None = None,
+) -> bool:
+    """Resolve sequential (ordered, one-at-a-time) tool execution for a thread.
+
+    Per-thread ``sequential_tool_execution`` override if set (True/False), else
+    the global default. Mirrors ``image_limits.get_effective_image_window_size``:
+    injectable manager, never raises (a config-lookup failure falls back to the
+    global default so it cannot break a turn).
+    """
+    if not thread_id or thread_config_manager is None:
+        return global_default
+    try:
+        tc = thread_config_manager.get_config(thread_id)
+    except Exception:  # noqa: BLE001 - never let config lookup break a turn
+        return global_default
+    override = getattr(tc, "sequential_tool_execution", None) if tc else None
+    if override is None:
+        return global_default
+    return bool(override)
+
+
 def graph_run_config(
     agent: "NymeriaAgent",
     thread_id: str,
@@ -114,9 +139,19 @@ def graph_run_config(
     callbacks: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     max_iterations = agent._max_iterations_for_thread(thread_id)
+    settings = getattr(agent, "settings", None)
+    sequential_tools = get_effective_sequential_tools(
+        bool(getattr(settings, "sequential_tool_execution", False)),
+        thread_id,
+        thread_config_manager=getattr(agent, "thread_config_manager", None),
+    )
     config: Dict[str, Any] = {
         "recursion_limit": agent._recursion_limit_for_iterations(max_iterations),
-        "configurable": {"thread_id": thread_id, "user_id": user_id},
+        "configurable": {
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "sequential_tools": sequential_tools,
+        },
     }
     if callbacks is not None:
         config["callbacks"] = callbacks
