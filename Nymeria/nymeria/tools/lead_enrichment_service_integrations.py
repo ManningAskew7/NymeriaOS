@@ -10,6 +10,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
+    API_KEY_ALIAS_FIELDS,
+    BASE_URL_ALIAS_FIELDS,
     base_url as _base_url,
     credential_value as _credential_value,
     dump_json,
@@ -192,7 +194,7 @@ def _uplead_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
     base = _configured_base(
         provider="uplead",
         provider_aliases=("uplead_api", "upleadApi"),
-        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        field_names=BASE_URL_ALIAS_FIELDS,
         settings_name="uplead_base_url",
         default_base=_UPLEAD_BASE_URL,
         tool_name=tool_name,
@@ -221,7 +223,7 @@ def _dropcontact_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
     base = _configured_base(
         provider="dropcontact",
         provider_aliases=("dropcontact_api", "dropcontactApi"),
-        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        field_names=BASE_URL_ALIAS_FIELDS,
         settings_name="dropcontact_base_url",
         default_base=_DROPCONTACT_BASE_URL,
         tool_name=tool_name,
@@ -250,7 +252,7 @@ def _humantic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     base = _configured_base(
         provider="humantic",
         provider_aliases=("humantic_ai", "humantic_ai_api", "humanticAiApi"),
-        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        field_names=BASE_URL_ALIAS_FIELDS,
         settings_name="humantic_base_url",
         default_base=_HUMANTIC_BASE_URL,
         tool_name=tool_name,
@@ -274,7 +276,7 @@ def _lonescale_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
     base = _configured_base(
         provider="lonescale",
         provider_aliases=("lone_scale", "lonescale_api", "loneScaleApi"),
-        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        field_names=BASE_URL_ALIAS_FIELDS,
         settings_name="lonescale_base_url",
         default_base=_LONESCALE_BASE_URL,
         tool_name=tool_name,
@@ -302,14 +304,14 @@ def _uproc_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
     api_key = _credential_value(
         provider="uproc",
         provider_aliases=("uproc_api", "uProcApi"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        field_names=API_KEY_ALIAS_FIELDS,
         tool_name=tool_name,
         config=config,
     ) or _settings_value("uproc_api_key")
     base = _configured_base(
         provider="uproc",
         provider_aliases=("uproc_api", "uProcApi"),
-        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        field_names=BASE_URL_ALIAS_FIELDS,
         settings_name="uproc_base_url",
         default_base=_UPROC_BASE_URL,
         tool_name=tool_name,

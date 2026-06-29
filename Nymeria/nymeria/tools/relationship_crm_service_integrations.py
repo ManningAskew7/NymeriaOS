@@ -13,6 +13,9 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
+    API_KEY_ALIAS_FIELDS,
+    API_KEY_FIELDS,
+    BASE_URL_ALIAS_FIELDS,
     base_url as _base_url,
     credential_value as _credential_value,
     dump_json,
@@ -233,7 +236,7 @@ def _copper_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         _credential_value(
             provider="copper",
             provider_aliases=("copper_api",),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -284,7 +287,7 @@ def _agile_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         _credential_value(
             provider="agilecrm",
             provider_aliases=("agile_crm", "agilecrm_api", "agile_crm_api"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -301,7 +304,7 @@ def _agile_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
     api_key = _credential_value(
         provider="agilecrm",
         provider_aliases=("agile_crm", "agilecrm_api", "agile_crm_api"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        field_names=API_KEY_ALIAS_FIELDS,
         tool_name=tool_name,
         config=config,
     ) or _settings_value("agilecrm_api_key")
@@ -364,7 +367,7 @@ def _affinity_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         _credential_value(
             provider="affinity",
             provider_aliases=("affinity_api",),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -374,14 +377,14 @@ def _affinity_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     api_key = _credential_value(
         provider="affinity",
         provider_aliases=("affinity_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        field_names=API_KEY_ALIAS_FIELDS,
         tool_name=tool_name,
         config=config,
     ) or _settings_value("affinity_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
             provider="affinity",
-            field_names=("api_key", "value"),
+            field_names=API_KEY_FIELDS,
             tool_name=tool_name,
             env_var="AFFINITY_API_KEY",
             display_name="Affinity",
@@ -399,7 +402,7 @@ def _keap_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         _credential_value(
             provider="keap",
             provider_aliases=("keap_oauth2", "keap_oauth2_api", "infusionsoft"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )

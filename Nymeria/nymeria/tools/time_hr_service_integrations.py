@@ -12,6 +12,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
+    API_KEY_FIELDS,
+    BASE_URL_ALIAS_FIELDS,
     base_url as _base_url,
     credential_value as _credential_value,
     dump_json,
@@ -169,7 +171,7 @@ def _beeminder_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         _credential_value(
             provider="beeminder",
             provider_aliases=("beeminder_api", "beeminder_oauth2"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -199,7 +201,7 @@ def _clockify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         _credential_value(
             provider="clockify",
             provider_aliases=("clockify_api",),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -216,7 +218,7 @@ def _clockify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     if not api_key:
         return _base_url(base), _setup_hint(
             provider="clockify",
-            field_names=("api_key", "value"),
+            field_names=API_KEY_FIELDS,
             tool_name=tool_name,
             env_var="CLOCKIFY_API_KEY",
             display_name="Clockify",
@@ -234,7 +236,7 @@ def _harvest_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         _credential_value(
             provider="harvest",
             provider_aliases=("harvest_api", "harvest_oauth2"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )

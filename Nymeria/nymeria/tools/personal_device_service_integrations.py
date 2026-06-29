@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
+    BASE_URL_ALIAS_FIELDS,
     base_url as _base_url,
     credential_value as _credential_value,
     dump_json,
@@ -118,7 +119,7 @@ def _bearer_config(
         _credential_value(
             provider=provider,
             provider_aliases=provider_aliases,
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -182,7 +183,7 @@ def _homeassistant_config(tool_name: str, config: Optional[RunnableConfig]) -> t
         _credential_value(
             provider="homeassistant",
             provider_aliases=("home_assistant", "homeassistant_api"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )

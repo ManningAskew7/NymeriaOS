@@ -11,6 +11,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
+    BASE_URL_ALIAS_FIELDS,
+    USERNAME_FIELDS,
     base_url as _base_url,
     credential_value as _credential_value,
     dump_json,
@@ -96,7 +98,7 @@ def _circleci_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         _credential_value(
             provider="circleci",
             provider_aliases=("circle_ci", "circleci_api", "circleCiApi"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -131,7 +133,7 @@ def _travisci_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         _credential_value(
             provider="travisci",
             provider_aliases=("travis_ci", "travisci_api", "travisCiApi"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -176,7 +178,7 @@ def _jenkins_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
     username = _credential_value(
         provider="jenkins",
         provider_aliases=("jenkins_api", "jenkinsApi"),
-        field_names=("username", "user", "login"),
+        field_names=USERNAME_FIELDS,
         tool_name=tool_name,
         config=config,
     ) or _settings_value("jenkins_username")
@@ -192,7 +194,7 @@ def _jenkins_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
     if not username:
         return _base_url(base), None, _setup_hint(
             provider="jenkins",
-            field_names=("username", "user", "login"),
+            field_names=USERNAME_FIELDS,
             tool_name=tool_name,
             env_var="JENKINS_USERNAME",
             display_name="Jenkins",

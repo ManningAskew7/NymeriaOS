@@ -18,6 +18,7 @@ from ..core.http_policy import (
 )
 
 from .service_integration_base import (
+    API_KEY_FIELDS,
     credential_value as _credential_value,
     dump_json,
     settings_value as _settings_value,
@@ -490,14 +491,14 @@ def nasa_apod(
     api_key = _credential_value(
         provider="nasa",
         provider_aliases=("nasa_api",),
-        field_names=("api_key", "value"),
+        field_names=API_KEY_FIELDS,
         tool_name="nasa_apod",
         config=config,
     ) or _settings_value("nasa_api_key")
     if not api_key:
         return _setup_hint(
             provider="nasa",
-            field_names=("api_key", "value"),
+            field_names=API_KEY_FIELDS,
             tool_name="nasa_apod",
             env_var="NASA_API_KEY",
             display_name="NASA",
@@ -561,7 +562,7 @@ def _openweather_request(
     if not api_key:
         return _setup_hint(
             provider="openweathermap",
-            field_names=("api_key", "value"),
+            field_names=API_KEY_FIELDS,
             tool_name=tool_name,
             env_var="OPENWEATHERMAP_API_KEY",
             display_name="OpenWeatherMap",

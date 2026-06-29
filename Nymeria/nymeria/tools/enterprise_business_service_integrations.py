@@ -12,6 +12,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
+    BASE_URL_FIELDS,
     base_url as _base_url,
     credential_value as _credential_value,
     dump_json,
@@ -356,7 +357,7 @@ def _invoiceninja_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
         _credential_value(
             provider="invoiceninja",
             provider_aliases=("invoice_ninja", "invoice_ninja_api", "invoiceninja_api"),
-            field_names=("base_url", "url"),
+            field_names=BASE_URL_FIELDS,
             tool_name=tool_name,
             config=config,
         )

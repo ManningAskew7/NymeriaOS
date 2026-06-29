@@ -10,6 +10,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
+    API_KEY_ALIAS_FIELDS,
+    BASE_URL_FIELDS,
     base_url as _base_url,
     credential_value as _credential_value,
     dump_json,
@@ -89,7 +91,7 @@ def _pushbullet_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         _credential_value(
             provider="pushbullet",
             provider_aliases=("pushbullet_oauth2", "pushbullet_oauth2_api"),
-            field_names=("base_url", "url"),
+            field_names=BASE_URL_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -124,7 +126,7 @@ def _pushcut_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         _credential_value(
             provider="pushcut",
             provider_aliases=("pushcut_api",),
-            field_names=("base_url", "url"),
+            field_names=BASE_URL_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -134,7 +136,7 @@ def _pushcut_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
     api_key = _credential_value(
         provider="pushcut",
         provider_aliases=("pushcut_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        field_names=API_KEY_ALIAS_FIELDS,
         tool_name=tool_name,
         config=config,
     ) or _settings_value("pushcut_api_key")
@@ -159,7 +161,7 @@ def _gotify_base(tool_name: str, config: Optional[RunnableConfig]) -> str | None
         _credential_value(
             provider="gotify",
             provider_aliases=("gotify_api",),
-            field_names=("base_url", "url"),
+            field_names=BASE_URL_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -221,7 +223,7 @@ def _pushover_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         _credential_value(
             provider="pushover",
             provider_aliases=("pushover_api",),
-            field_names=("base_url", "url"),
+            field_names=BASE_URL_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -279,7 +281,7 @@ def _signl4_webhook(tool_name: str, config: Optional[RunnableConfig]) -> str | t
         _credential_value(
             provider="signl4",
             provider_aliases=("signl4_api", "signl4_webhook"),
-            field_names=("base_url", "url"),
+            field_names=BASE_URL_FIELDS,
             tool_name=tool_name,
             config=config,
         )
