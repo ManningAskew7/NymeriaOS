@@ -146,6 +146,22 @@ def settings_value(name: str) -> Optional[str]:
     return getattr(get_settings(), name)
 
 
+# Common credential field-name lookup tuples, shared by the
+# ``*_service_integrations`` modules. ``credential_value()`` / ``setup_hint()``
+# forward these to ``native_credentials``, which tries them IN ORDER and takes the
+# first matching field (and renders them in order in the setup-hint text), so the
+# ORDER of each tuple is behaviorally significant. A constant may only stand in for
+# a call site whose literal tuple is byte-identical (same elements, same order).
+# ``*_FIELDS`` holds the common field name(s); the matching ``*_ALIAS_FIELDS`` adds the
+# camelCase / alternate spellings. Order-variants (e.g. a base-url tuple with ``"url"``
+# before ``"api_url"``) and provider-specific unions are deliberately kept inline.
+API_KEY_FIELDS = ("api_key", "value")
+API_KEY_ALIAS_FIELDS = ("api_key", "apiKey", "token", "value")
+BASE_URL_FIELDS = ("base_url", "url")
+BASE_URL_ALIAS_FIELDS = ("base_url", "baseUrl", "api_url", "apiUrl", "url")
+USERNAME_FIELDS = ("username", "user", "login")
+
+
 def credential_value(
     *,
     provider: str,

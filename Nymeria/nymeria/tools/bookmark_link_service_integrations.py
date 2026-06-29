@@ -11,6 +11,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from .service_integration_base import (
+    BASE_URL_ALIAS_FIELDS,
+    USERNAME_FIELDS,
     base_url as _base_url,
     credential_value as _credential_value,
     dump_json,
@@ -94,7 +96,7 @@ def _raindrop_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         _credential_value(
             provider="raindrop",
             provider_aliases=("raindrop_api", "raindrop_oauth2", "raindrop_oauth2_api"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            field_names=BASE_URL_ALIAS_FIELDS,
             tool_name=tool_name,
             config=config,
         )
@@ -145,7 +147,7 @@ def _yourls_endpoint(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     username = _credential_value(
         provider="yourls",
         provider_aliases=("yourls_api",),
-        field_names=("username", "user", "login"),
+        field_names=USERNAME_FIELDS,
         tool_name=tool_name,
         config=config,
     ) or _settings_value("yourls_username")
