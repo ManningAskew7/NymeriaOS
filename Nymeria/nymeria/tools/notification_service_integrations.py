@@ -13,6 +13,7 @@ from .service_integration_base import (
     API_KEY_ALIAS_FIELDS,
     BASE_URL_FIELDS,
     base_url as _base_url,
+    clamp_limit,
     credential_value as _credential_value,
     dump_json,
     filtered as _filtered,
@@ -36,10 +37,7 @@ def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
 
 
 def _limit(value: int, *, default: int = 25, max_value: int = 500) -> int:
-    try:
-        return max(1, min(max_value, int(value)))
-    except Exception:
-        return default
+    return clamp_limit(value, default=default, max_value=max_value)
 
 
 def _request_json(

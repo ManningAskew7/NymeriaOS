@@ -18,6 +18,7 @@ from ..core.http_policy import (
 )
 
 from .service_integration_base import (
+    clamp_limit,
     credential_value as _credential_value,
     dump_json,
     settings_value as _settings_value,
@@ -44,10 +45,7 @@ def _csv(value: str) -> str:
 
 
 def _limit(value: int, *, default: int = 20, max_value: int = 100) -> int:
-    try:
-        return max(1, min(max_value, int(value)))
-    except Exception:
-        return default
+    return clamp_limit(value, default=default, max_value=max_value)
 
 
 def _filtered_params(params: Optional[dict[str, Any]]) -> dict[str, Any]:

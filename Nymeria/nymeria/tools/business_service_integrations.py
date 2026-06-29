@@ -13,6 +13,7 @@ from langchain_core.tools import InjectedToolArg, tool
 from .service_integration_base import (
     base_url as _base_url,
     basic_auth as _basic_auth,
+    clamp_limit,
     credential_value as _credential_value,
     dump_json,
     settings_value as _settings_value,
@@ -83,10 +84,7 @@ def _json_array(value: str, *, field_name: str) -> list[Any]:
 
 
 def _limit(value: int, *, default: int = 20, max_value: int = 100) -> int:
-    try:
-        return max(1, min(max_value, int(value)))
-    except Exception:
-        return default
+    return clamp_limit(value, default=default, max_value=max_value)
 
 
 def _absolute_url(value: str, *, field_name: str = "url") -> str:
