@@ -19,9 +19,16 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, List, Literal, Optional, Tuple
 
 from .accounts import Provider, UserNotFound
+
+if TYPE_CHECKING:
+    # Used only in annotations. With ``from __future__ import annotations`` active
+    # (above), annotations are never evaluated at runtime, and the claim helpers
+    # below only call methods on the passed-in repo objects (never constructing
+    # these types), so there is no need to import them at runtime.
+    from .accounts import AccountsRepo, PlatformIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +128,24 @@ class BindCodeInvalid(LookupError):
 
 class BotAlreadyRegistered(ValueError):
     """Same bot username already registered (likely a re-registration of the same bot)."""
+
+
+class BindClaimError(Exception):
+    """A bind/link claim failed for a reason that maps to a specific HTTP status.
+
+    Carries the caller-facing reason string and the HTTP status so the API
+    routers (which raise ``HTTPException``) and the in-process bot adapters
+    (which raise their platform's ``BotAPIError``) translate it uniformly. It
+    covers exactly the claim-flow failures that have no dedicated domain
+    exception: the cross-account guard (409 for platform link, 403 for thread
+    bind), a thread-bind code with no ``thread_id`` (500), a target user that
+    does not exist (404), and the "linked but not found" terminal (500).
+    """
+
+    def __init__(self, reason: str, *, http_status: int) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.http_status = http_status
 
 
 # ---------------------------------------------------------------------------
@@ -767,4 +792,188 @@ def _row_to_user_telegram_bot(row: sqlite3.Row) -> UserTelegramBot:
         enabled=bool(int(row["enabled"])),
         created_at=row["created_at"],
         last_seen_at=row["last_seen_at"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bind/link claim flows (shared by the API routers and the in-process bot
+# adapters)
+# ---------------------------------------------------------------------------
+#
+# These are the security-sensitive "consume a bind code and link/bind" flows.
+# They were previously copy-pasted across ``api/routers/_bot_inprocess.py``
+# (raising ``BotAPIError``), ``api/routers/chat_apps.py`` (raising
+# ``HTTPException``), and ``api/routers/accounts.py`` (the direct admin link).
+# The pure logic lives here once; each caller is a thin layer that translates
+# the raised exceptions to its own error type and shapes the response. The
+# helpers raise the existing domain exceptions (``BindCodeInvalid`` from
+# ``inspect_bind_code``, ``BindingAlreadyExists`` from a thread bind) plus
+# ``BindClaimError`` for the synthetic, status-bearing cases.
+
+
+def _guard_and_link_platform(
+    accounts_repo: AccountsRepo,
+    *,
+    provider: Provider,
+    provider_user_id: str,
+    user_id: str,
+) -> None:
+    """Cross-account guard, then link the platform identity to ``user_id``.
+
+    Raises ``BindClaimError`` (409) if the identity is already owned by a
+    different Nymeria user, or (404) if the target user does not exist.
+    """
+    existing = accounts_repo.resolve_platform(provider, provider_user_id)
+    if existing is not None and existing != user_id:
+        raise BindClaimError(
+            f"Platform identity already linked to user '{existing}'",
+            http_status=409,
+        )
+    try:
+        accounts_repo.link_platform(provider, provider_user_id, user_id)
+    except UserNotFound as exc:
+        raise BindClaimError("User not found", http_status=404) from exc
+
+
+def _find_linked_platform(
+    accounts_repo: AccountsRepo,
+    *,
+    provider: Provider,
+    provider_user_id: str,
+    user_id: str,
+) -> PlatformIdentity:
+    """Re-read the just-linked identity, or raise ``BindClaimError`` (500).
+
+    The ``(provider, provider_user_id)`` pair is unique, so at most one row
+    matches; returning it lets each caller build its own response shape.
+    """
+    for platform in accounts_repo.list_platforms_for_user(user_id):
+        if (
+            platform.provider == provider
+            and platform.provider_user_id == provider_user_id
+        ):
+            return platform
+    raise BindClaimError("Linked but not found", http_status=500)
+
+
+def _consume_bind_code_quietly(
+    bindings_repo: ChatBindingsRepo,
+    code: str,
+    *,
+    kind: BindCodeKind,
+    provider: Provider,
+) -> None:
+    """Mark the bind code consumed, swallowing ``BindCodeInvalid``.
+
+    The link / binding has already succeeded by the time this runs, so a code
+    that a concurrent request consumed (or that expired) in the meantime is
+    harmless: the user-visible outcome already happened.
+    """
+    try:
+        bindings_repo.claim_bind_code(code, kind=kind, provider=provider)
+    except BindCodeInvalid:
+        pass  # Link/binding already succeeded; a concurrently consumed or expired code is harmless.
+
+
+def claim_platform_link(
+    accounts_repo: AccountsRepo,
+    bindings_repo: ChatBindingsRepo,
+    *,
+    code: str,
+    provider: Provider,
+    platform_user_id: str,
+) -> PlatformIdentity:
+    """Consume a ``platform_link`` code and link the platform identity.
+
+    Order (preserved from the original call sites): inspect the code, guard +
+    link, consume the code (best-effort), then re-find the identity. Propagates
+    ``BindCodeInvalid`` (unknown/expired/wrong-kind code) and ``BindClaimError``
+    (cross-account 409, missing user 404, linked-but-not-found 500).
+    """
+    claim = bindings_repo.inspect_bind_code(
+        code, kind="platform_link", provider=provider
+    )
+    _guard_and_link_platform(
+        accounts_repo,
+        provider=provider,
+        provider_user_id=platform_user_id,
+        user_id=claim.user_id,
+    )
+    _consume_bind_code_quietly(
+        bindings_repo, code, kind="platform_link", provider=provider
+    )
+    return _find_linked_platform(
+        accounts_repo,
+        provider=provider,
+        provider_user_id=platform_user_id,
+        user_id=claim.user_id,
+    )
+
+
+def claim_thread_bind(
+    accounts_repo: AccountsRepo,
+    bindings_repo: ChatBindingsRepo,
+    *,
+    code: str,
+    provider: Provider,
+    platform_chat_id: str,
+    expected_provider_user_id: str,
+) -> ThreadPlatformBinding:
+    """Consume a ``thread_bind`` code and create the thread binding.
+
+    Propagates ``BindCodeInvalid`` (inspect), ``BindingAlreadyExists`` (the
+    thread/chat is already bound), and ``BindClaimError`` (no thread_id 500,
+    wrong-account 403). The caller publishes the platform-sync event and shapes
+    the response. A ``UserNotFound`` from ``create_thread_binding`` is left to
+    propagate (it surfaces as a 500, matching the original behavior).
+    """
+    claim = bindings_repo.inspect_bind_code(
+        code, kind="thread_bind", provider=provider
+    )
+    if claim.thread_id is None:
+        raise BindClaimError("Code has no thread_id", http_status=500)
+    resolved_user = accounts_repo.resolve_platform(
+        provider, expected_provider_user_id
+    )
+    if resolved_user != claim.user_id:
+        raise BindClaimError(
+            "Code was issued by a different Nymeria account",
+            http_status=403,
+        )
+    binding = bindings_repo.create_thread_binding(
+        thread_id=claim.thread_id,
+        provider=provider,
+        platform_chat_id=platform_chat_id,
+        user_id=claim.user_id,
+    )
+    _consume_bind_code_quietly(
+        bindings_repo, code, kind="thread_bind", provider=provider
+    )
+    return binding
+
+
+def link_platform_and_find(
+    accounts_repo: AccountsRepo,
+    *,
+    provider: Provider,
+    provider_user_id: str,
+    user_id: str,
+) -> PlatformIdentity:
+    """Directly link a platform identity (no bind code) and re-find it.
+
+    Used by the admin "link a user's platform" endpoint. Raises
+    ``BindClaimError`` (cross-account 409, missing user 404, linked-but-not-found
+    500).
+    """
+    _guard_and_link_platform(
+        accounts_repo,
+        provider=provider,
+        provider_user_id=provider_user_id,
+        user_id=user_id,
+    )
+    return _find_linked_platform(
+        accounts_repo,
+        provider=provider,
+        provider_user_id=provider_user_id,
+        user_id=user_id,
     )

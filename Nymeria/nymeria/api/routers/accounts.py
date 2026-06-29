@@ -20,6 +20,7 @@ from ...core.accounts import (
     UserHasResources,
     UserNotFound,
 )
+from ...core.chat_bindings import BindClaimError, link_platform_and_find
 from ...core.todo_manager import TodoManager
 from ..schemas.accounts import (
     AdminUserCreateRequest,
@@ -458,24 +459,16 @@ def create_accounts_router(
         _admin: AuthenticatedUser = Depends(require_admin_user),
     ):
         repo = get_agent_fn().accounts_repo
-        existing_owner = repo.resolve_platform(body.provider, body.provider_user_id)
-        if existing_owner is not None and existing_owner != user_id:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Platform identity already linked to user '{existing_owner}'",
-            )
         try:
-            repo.link_platform(body.provider, body.provider_user_id, user_id)
-        except UserNotFound as exc:
-            raise HTTPException(status_code=404, detail="User not found") from exc
-
-        for platform in repo.list_platforms_for_user(user_id):
-            if (
-                platform.provider == body.provider
-                and platform.provider_user_id == body.provider_user_id
-            ):
-                return _platform_response(platform)
-        raise HTTPException(status_code=500, detail="Linked but not found")
+            platform = link_platform_and_find(
+                repo,
+                provider=body.provider,
+                provider_user_id=body.provider_user_id,
+                user_id=user_id,
+            )
+        except BindClaimError as exc:
+            raise HTTPException(status_code=exc.http_status, detail=exc.reason) from exc
+        return _platform_response(platform)
 
     @router.delete(
         "/admin/users/{user_id}/platforms/{provider}/{provider_user_id}",
