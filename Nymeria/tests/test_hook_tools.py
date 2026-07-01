@@ -102,6 +102,79 @@ def test_unknown_action(store):
     assert "[Error]" in out
 
 
+# --- hook_config: PRE guardrail actions -------------------------------------
+
+def test_create_block_if_matches(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "guard", "event": "pre_tool_use",
+         "hook_action": "block_if_matches", "matcher": "bash",
+         "params": {"conditions": [{"field": "command", "operator": "contains", "value": "rm -rf"}],
+                    "reason": "no"}},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    h = store.get_hooks("u1")[0]
+    assert h.logic.action == "block_if_matches"
+    assert h.matcher == "bash"
+    assert h.logic.reason == "no"
+
+
+def test_create_rewrite_arg(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "clamp", "event": "pre_tool_use",
+         "hook_action": "rewrite_arg", "params": {"updates": {"command": "echo hi"}}},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    assert store.get_hooks("u1")[0].logic.updates == {"command": "echo hi"}
+
+
+def test_create_block_requires_params(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "g", "event": "pre_tool_use",
+         "hook_action": "block_if_matches"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+    assert store.get_hooks("u1") == []
+
+
+def test_create_rejects_illegal_action_for_event(store):
+    # block_if_matches is not legal on done.
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "g", "event": "done",
+         "hook_action": "block_if_matches", "params": {}},
+        _cfg(),
+    )
+    assert "[Error]" in out
+
+
+def test_detail_renders_block_variant(store):
+    h = store.add_hook(
+        "u1", name="g", event="pre_tool_use", action="block_if_matches",
+        params={"conditions": [{"field": "command", "operator": "contains", "value": "rm"}],
+                "reason": "denied"},
+        matcher="bash",
+    )
+    out = _invoke(hook_tools.hook_info, {"action": "detail", "hook_id": h.id}, _cfg())
+    assert "block_if_matches" in out
+    assert "denied" in out
+
+
+def test_test_describes_block_variant(store):
+    h = store.add_hook(
+        "u1", name="g", event="pre_tool_use", action="block_if_matches",
+        params={"conditions": [{"field": "command", "operator": "contains", "value": "rm"}]},
+        matcher="bash",
+    )
+    out = _invoke(hook_tools.hook_info, {"action": "test", "hook_id": h.id}, _cfg())
+    assert "block_if_matches" in out or "denies" in out
+
+
 # --- hook_info --------------------------------------------------------------
 
 def test_list_empty(store):

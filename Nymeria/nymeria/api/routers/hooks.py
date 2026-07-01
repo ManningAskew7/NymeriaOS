@@ -8,26 +8,60 @@ surface (the trigger router's public fire path has no hook analogue).
 from __future__ import annotations
 
 import logging
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
 
 from ...config import get_settings
 from ...core.accounts import AuthenticatedUser
+from ...core.conditions import HookCondition
 from ...core.hook_manager import HookDefinition, HookManager
 from ...core.text_format import safe_format
 
 logger = logging.getLogger(__name__)
 
-HookEventName = Literal["prompt_submit", "post_tool_use", "done"]
+HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
+HookActionName = Literal["inject_context", "block_if_matches", "rewrite_arg"]
+
+
+def _params_from_fields(
+    action: str,
+    *,
+    text: Optional[str],
+    conditions: Optional[List[HookCondition]],
+    reason: Optional[str],
+    updates: Optional[Dict[str, str]],
+) -> Optional[dict]:
+    """Assemble the logic params dict for ``action`` from the flat request fields.
+
+    Returns None when no logic field was supplied (an update that touches only
+    name/enabled/etc.). The manager validates the assembled params.
+    """
+    if action == "inject_context":
+        return {"text": text or ""} if text is not None else None
+    params: dict = {}
+    if conditions is not None:
+        params["conditions"] = [c.model_dump() for c in conditions]
+    if action == "block_if_matches" and reason is not None:
+        params["reason"] = reason
+    if action == "rewrite_arg" and updates is not None:
+        params["updates"] = updates
+    return params or None
 
 
 class HookCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     event: HookEventName
-    text: str = Field(..., min_length=1, max_length=10_000)
-    matcher: Optional[str] = Field(default=None, description="Tool filter (post_tool_use only)")
+    action: HookActionName = Field(default="inject_context")
+    # Per-action params (flat; only the fields for `action` are read).
+    text: Optional[str] = Field(default=None, max_length=10_000, description="inject_context")
+    conditions: Optional[List[HookCondition]] = Field(
+        default=None, description="block_if_matches / rewrite_arg gate (matches tool args)"
+    )
+    reason: Optional[str] = Field(default=None, max_length=500, description="block_if_matches")
+    updates: Optional[Dict[str, str]] = Field(default=None, description="rewrite_arg")
+    matcher: Optional[str] = Field(default=None, description="Tool-name filter (tool events)")
     scope: Literal["global", "thread"] = Field(default="thread")
     thread_id: Optional[str] = Field(default=None)
     enabled: bool = Field(default=True)
@@ -36,9 +70,17 @@ class HookCreateRequest(BaseModel):
 class HookUpdateRequest(BaseModel):
     name: Optional[str] = None
     event: Optional[HookEventName] = None
+    action: Optional[HookActionName] = None
     text: Optional[str] = None
+    conditions: Optional[List[HookCondition]] = None
+    reason: Optional[str] = None
+    updates: Optional[Dict[str, str]] = None
     matcher: Optional[str] = None
     enabled: Optional[bool] = None
+    # Note: no `scope`/`thread_id` here. Re-scoping a hook to a thread needs a
+    # thread_id (and its access gate), which a partial PATCH cannot supply
+    # without silently binding to "" (an inert orphan); a re-scope is a
+    # delete + create.
 
 
 class HookResponse(BaseModel):
@@ -46,7 +88,10 @@ class HookResponse(BaseModel):
     name: str
     event: str
     action: str
-    text: str
+    # ``logic`` is the full action-specific config (discriminated on ``action``);
+    # ``text`` is kept for the text action / back-compat and is "" otherwise.
+    logic: dict
+    text: str = ""
     matcher: Optional[str] = None
     enabled: bool
     scope: str
@@ -57,12 +102,14 @@ class HookResponse(BaseModel):
 
     @classmethod
     def from_definition(cls, h: HookDefinition) -> "HookResponse":
+        logic = h.logic.model_dump()
         return cls(
             id=h.id,
             name=h.name,
             event=h.event,
             action=h.logic.action,
-            text=h.logic.text,
+            logic=logic,
+            text=logic.get("text", "") or "",
             matcher=h.matcher,
             enabled=h.enabled,
             scope=h.scope,
@@ -131,12 +178,17 @@ def create_hook_router(
         thread_id = body.thread_id if body.scope == "thread" else ""
         if body.scope == "thread" and require_thread_access_fn is not None:
             require_thread_access_fn(user, thread_id)
+        params = _params_from_fields(
+            body.action, text=body.text, conditions=body.conditions,
+            reason=body.reason, updates=body.updates,
+        )
         try:
             hook = _get_manager().add_hook(
                 user_id,
                 name=body.name,
                 event=body.event,
-                text=body.text,
+                action=body.action,
+                params=params,
                 matcher=body.matcher,
                 scope=body.scope,
                 thread_id=thread_id,
@@ -172,7 +224,37 @@ def create_hook_router(
         """Update a hook's configuration."""
         user_id = user.id
         manager = _get_manager()
-        updates = body.model_dump(exclude_none=True)
+        # Split the flat request into plain field updates and logic params.
+        updates = body.model_dump(
+            exclude_none=True, exclude={"action", "conditions", "reason", "updates"}
+        )
+        # Resolve the effective action for building params: an explicit action on
+        # the request, else the stored hook's current action.
+        existing = manager.get_hook(user_id, hook_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Hook not found")
+        effective_action = body.action or existing.logic.action
+        switching_action = body.action is not None and body.action != existing.logic.action
+        provided = _params_from_fields(
+            effective_action, text=None, conditions=body.conditions,
+            reason=body.reason, updates=body.updates,
+        )
+        # A partial PATCH must not wipe unspecified sibling sub-fields (e.g.
+        # sending only `conditions` on a block hook must keep its `reason`). When
+        # the action is unchanged, merge the provided fields onto the stored
+        # logic params; on an action switch, the provided fields stand alone.
+        if provided is not None:
+            if switching_action:
+                params = provided
+            else:
+                params = existing.logic.model_dump(exclude={"action"})
+                params.update(provided)
+        else:
+            params = None
+        if body.action is not None:
+            updates["action"] = body.action
+        if params is not None:
+            updates["params"] = params
         if not updates:
             raise HTTPException(status_code=400, detail="No updates provided")
         try:
@@ -203,19 +285,40 @@ def create_hook_router(
         user_id: str = Query(default="default"),
         user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
-        """Dry-run render of a hook's text against sample data (no fire)."""
+        """Dry-run preview of a hook against sample data (no fire).
+
+        For ``inject_context`` this renders the template; for the guardrail
+        actions it describes what the hook would do.
+        """
         user_id = user.id
         hook = _get_manager().get_hook(user_id, hook_id)
         if hook is None:
             raise HTTPException(status_code=404, detail="Hook not found")
-        sample = {
-            "event": hook.event, "thread_id": "thread-123", "user_id": "you",
-            "is_autonomous": "False", "holder_kind": "interactive",
-            "trigger_label": "User Message", "prompt": "the user's message",
-            "tool_name": "Edit", "tool_result": "the tool's output",
-            "tool_status": "success", "tool_args": '{"file": "a.py"}',
-            "final_text": "the assistant's final reply",
-        }
-        return {"hook_id": hook.id, "event": hook.event, "rendered": safe_format(hook.logic.text, sample)}
+        logic = hook.logic
+        result = {"hook_id": hook.id, "event": hook.event, "action": logic.action}
+        if logic.action == "inject_context":
+            sample = {
+                "event": hook.event, "thread_id": "thread-123", "user_id": "you",
+                "is_autonomous": "False", "holder_kind": "interactive",
+                "trigger_label": "User Message", "prompt": "the user's message",
+                "tool_name": "Edit", "tool_result": "the tool's output",
+                "tool_status": "success", "tool_args": '{"file": "a.py"}',
+                "final_text": "the assistant's final reply",
+            }
+            result["rendered"] = safe_format(logic.text, sample)
+        elif logic.action == "block_if_matches":
+            result["rendered"] = (
+                f"Denies {hook.matcher or 'any tool'} when "
+                + (
+                    " AND ".join(f"{c.field} {c.operator} {c.value!r}" for c in logic.conditions)
+                    if logic.conditions else "always"
+                )
+                + f" (reason: {logic.reason or 'blocked by a lifecycle hook'})"
+            )
+        elif logic.action == "rewrite_arg":
+            result["rendered"] = (
+                f"Rewrites {list(logic.updates.keys())} on {hook.matcher or 'any tool'}"
+            )
+        return result
 
     return router

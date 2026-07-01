@@ -1,16 +1,21 @@
 """Lifecycle-hook authoring tools for the agent.
 
-A hook injects a string into the model's context when an event fires. This pass
-ships one action, ``inject_context``, over three events:
+A hook runs a canned action when a lifecycle event fires. Actions and the events
+they attach to:
 
-- ``prompt_submit`` -- prepend/append context to every turn's model-facing tail.
-- ``post_tool_use`` -- append a note to a tool's result (use ``matcher`` to scope
-  to specific tools, e.g. "Edit|Write").
-- ``done`` -- when a turn finishes, re-drive once with the text (a "run checks on
-  finish" style follow-up).
+- ``inject_context`` -- inject a string into context. On ``prompt_submit`` it
+  appends to every turn's model-facing tail; on ``post_tool_use`` it appends a
+  note to a tool's result (use ``matcher`` to scope, e.g. "Edit|Write"); on
+  ``done`` it re-drives once with the text (a "run checks on finish" follow-up).
+- ``block_if_matches`` (``pre_tool_use``) -- deny a tool call when all
+  ``conditions`` match the call's args (a guardrail, e.g. block ``bash`` when
+  ``command`` contains "rm -rf").
+- ``rewrite_arg`` (``pre_tool_use``) -- rewrite named args on a tool call when
+  ``conditions`` match (``updates`` maps arg-name -> new value).
 
-Hooks auto-bind to the current thread by default (``scope="thread"``); use
-``scope="global"`` to apply across all of the user's threads.
+``matcher`` filters by tool NAME (pre/post tool events); ``conditions`` filter by
+the call's ARGS. Both are ANDed. Hooks auto-bind to the current thread by
+default (``scope="thread"``); use ``scope="global"`` for all the user's threads.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
-from ..core.hook_manager import HookDefinition, HookManager
+from ..core.hook_manager import EVENT_ACTIONS, HookDefinition, HookManager
 from ..core.text_format import safe_format
 from .utils import get_thread_id, get_user_id
 
@@ -29,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 _hook_manager: Optional[HookManager] = None
 
-_EVENTS = ("prompt_submit", "post_tool_use", "done")
+_EVENTS = tuple(EVENT_ACTIONS.keys())
 
 # Representative sample values for the ``test`` dry-run render, per event.
 _SAMPLE_VARS = {
@@ -62,19 +67,35 @@ def _get_hook_manager() -> HookManager:
     return _hook_manager
 
 
+def _logic_preview(logic) -> str:
+    """A short human summary of a hook's logic, per action variant."""
+    action = logic.action
+    if action == "inject_context":
+        t = logic.text
+        return f"inject {t if len(t) <= 60 else t[:57] + '...'!r}" if len(t) > 60 else f"inject {t!r}"
+    if action == "block_if_matches":
+        n = len(logic.conditions)
+        cond = "always" if n == 0 else f"{n} condition(s)"
+        return f"deny if {cond}" + (f" (reason: {logic.reason})" if logic.reason else "")
+    if action == "rewrite_arg":
+        return f"rewrite args {list(logic.updates.keys())}"
+    return action
+
+
 def _summary(h: HookDefinition) -> str:
     state = "ON" if h.enabled else "OFF"
     scope = "global" if h.scope == "global" else f"thread:{h.thread_id or '?'}"
     matcher = f" matcher={h.matcher}" if h.matcher else ""
-    preview = h.logic.text if len(h.logic.text) <= 60 else h.logic.text[:57] + "..."
-    return f"- {h.id} [{state}] {h.event}{matcher} ({scope}) :: {h.name} -> {preview!r}"
+    return f"- {h.id} [{state}] {h.event}{matcher} ({scope}) :: {h.name} -> {_logic_preview(h.logic)}"
 
 
 def _hook_create(
     *,
     name: str,
     event: str,
-    text: str,
+    action: str,
+    text: Optional[str],
+    params: Optional[dict],
     matcher: Optional[str],
     scope: Optional[str],
     config: RunnableConfig,
@@ -87,12 +108,18 @@ def _hook_create(
     # Bind to the actual current thread (including 'default', which is a real
     # thread in single-thread deployments) when thread-scoped.
     thread_id = get_thread_id(config) if scope_value == "thread" else ""
+    # ``text`` is a convenience alias for the text actions; explicit ``params``
+    # wins when both are given.
+    effective_params = dict(params) if params else None
+    if effective_params is None and text is not None:
+        effective_params = {"text": text}
     try:
         hook = manager.add_hook(
             user_id,
             name=name,
             event=event,
-            text=text,
+            action=action,
+            params=effective_params,
             matcher=matcher,
             scope=scope_value,
             thread_id=thread_id,
@@ -102,12 +129,11 @@ def _hook_create(
         return f"[Error]: {e}"
     if hook is None:
         return "[Error]: hook limit reached for this user."
-    where = _INJECTION_TARGET.get(hook.event, "injected")
     scope_desc = "all threads" if hook.scope == "global" else f"thread {hook.thread_id}"
     return (
-        f"[Success]: Created hook '{hook.name}' ({hook.id}). On {hook.event} for "
-        f"{scope_desc}, the rendered text is {where}. Use hook_info(action='test', "
-        f"hook_id='{hook.id}') to preview the render."
+        f"[Success]: Created hook '{hook.name}' ({hook.id}) on {hook.event} for "
+        f"{scope_desc}: {_logic_preview(hook.logic)}. Use hook_info(action='detail', "
+        f"hook_id='{hook.id}') to inspect it."
     )
 
 
@@ -116,7 +142,9 @@ def _hook_update(
     hook_id: str,
     name: Optional[str],
     event: Optional[str],
+    action: Optional[str],
     text: Optional[str],
+    params: Optional[dict],
     matcher: Optional[str],
     enabled: Optional[bool],
     scope: Optional[str],
@@ -129,6 +157,10 @@ def _hook_update(
         updates["name"] = name
     if event is not None:
         updates["event"] = event
+    if action is not None:
+        updates["action"] = action
+    if params is not None:
+        updates["params"] = params
     if text is not None:
         updates["text"] = text
     if matcher is not None:
@@ -175,27 +207,58 @@ def _hook_inspect(*, hook_id: str, action: str, config: RunnableConfig) -> str:
     hook = manager.get_hook(user_id, hook_id)
     if hook is None:
         return f"[Error]: no hook found with id '{hook_id}'."
+    logic = hook.logic
     if action == "detail":
-        return (
-            f"Hook {hook.id}: {hook.name}\n"
-            f"  event: {hook.event}\n"
-            f"  enabled: {hook.enabled}\n"
-            f"  matcher: {hook.matcher or '(any)'}\n"
+        lines = [
+            f"Hook {hook.id}: {hook.name}",
+            f"  event: {hook.event}",
+            f"  enabled: {hook.enabled}",
+            f"  matcher: {hook.matcher or '(any tool)'}",
             f"  scope: {hook.scope}"
-            + (f" (thread {hook.thread_id})" if hook.scope == 'thread' else "") + "\n"
-            f"  action: {hook.logic.action}\n"
-            f"  text: {hook.logic.text!r}\n"
-            f"  created_by: {hook.created_by}"
+            + (f" (thread {hook.thread_id})" if hook.scope == "thread" else ""),
+            f"  action: {logic.action}",
+        ]
+        if logic.action == "inject_context":
+            lines.append(f"  text: {logic.text!r}")
+        elif logic.action == "block_if_matches":
+            lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
+            lines.append(f"  reason: {logic.reason or '(default)'}")
+        elif logic.action == "rewrite_arg":
+            lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
+            lines.append(f"  updates: {logic.updates}")
+        lines.append(f"  created_by: {hook.created_by}")
+        return "\n".join(lines)
+
+    # action == "test": dry-run description
+    if logic.action == "inject_context":
+        sample = dict(_SAMPLE_VARS)
+        sample["event"] = hook.event
+        rendered = safe_format(logic.text, sample)
+        where = _INJECTION_TARGET.get(hook.event, "injected")
+        return (
+            f"[Info]: Test render of hook {hook.id} ({hook.event}). With sample data the "
+            f"text {where}:\n---\n{rendered}\n---"
         )
-    # action == "test": dry-run render
-    sample = dict(_SAMPLE_VARS)
-    sample["event"] = hook.event
-    rendered = safe_format(hook.logic.text, sample)
-    where = _INJECTION_TARGET.get(hook.event, "injected")
-    return (
-        f"[Info]: Test render of hook {hook.id} ({hook.event}). With sample data the "
-        f"text {where}:\n---\n{rendered}\n---"
-    )
+    if logic.action == "block_if_matches":
+        cond = "any tool call it matches" if not logic.conditions else (
+            "a tool call whose args satisfy: "
+            + " AND ".join(f"{c.field} {c.operator} {c.value!r}" for c in logic.conditions)
+        )
+        tool = hook.matcher or "any tool"
+        return (
+            f"[Info]: Hook {hook.id} (block_if_matches) denies {tool} on {cond}. "
+            f"The model sees: {safe_format(logic.reason or 'blocked by a lifecycle hook', _SAMPLE_VARS)!r}"
+        )
+    if logic.action == "rewrite_arg":
+        cond = "always" if not logic.conditions else (
+            " AND ".join(f"{c.field} {c.operator} {c.value!r}" for c in logic.conditions)
+        )
+        tool = hook.matcher or "any tool"
+        return (
+            f"[Info]: Hook {hook.id} (rewrite_arg) on {tool} (gate: {cond}) rewrites args: "
+            f"{logic.updates}."
+        )
+    return f"[Info]: Hook {hook.id} action {logic.action} has no test render."
 
 
 @tool
@@ -204,46 +267,63 @@ def hook_config(
     hook_id: Optional[str] = None,
     name: Optional[str] = None,
     event: Optional[str] = None,
+    hook_action: Optional[str] = None,
     text: Optional[str] = None,
+    params: Optional[dict] = None,
     matcher: Optional[str] = None,
     scope: Optional[str] = None,
     enabled: Optional[bool] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """Create, update, or delete a context-injection hook.
+    """Create, update, or delete a lifecycle hook.
 
-    A hook injects a string into your context when an event fires. Use
-    action="create" for a new hook, "update" to change one, "delete" to remove
-    one. Hooks auto-bind to the current thread unless scope="global".
+    A hook runs a canned action when an event fires. Use action="create" for a
+    new hook, "update" to change one, "delete" to remove one. Hooks auto-bind to
+    the current thread unless scope="global".
 
     Args:
-        action: "create", "update", or "delete".
+        action: "create", "update", or "delete" (the CRUD verb).
         hook_id: Required for update/delete.
         name: Hook display name (create; optional on update).
-        event: One of "prompt_submit", "post_tool_use", "done" (create; optional on update).
-        text: The text to inject. Supports {placeholder} interpolation, e.g.
-            {tool_name}, {tool_result}, {prompt}, {final_text}, {thread_id}. Static
-            text with no placeholders is injected verbatim.
-        matcher: Pipe-list tool filter for post_tool_use only, e.g. "Edit|Write"
-            (omit to match every tool). Ignored on other events.
+        event: The lifecycle event. "prompt_submit"/"post_tool_use"/"done" take
+            inject_context; "pre_tool_use" takes block_if_matches/rewrite_arg.
+        hook_action: The hook's action. One of "inject_context" (default),
+            "block_if_matches", "rewrite_arg".
+        text: For inject_context: the text to inject. Supports {placeholder}
+            interpolation ({tool_name}, {tool_result}, {prompt}, {final_text},
+            {thread_id}). Static text is injected verbatim.
+        params: For non-text actions, the action params. block_if_matches:
+            {"conditions": [{"field","operator","value","case_sensitive"}], "reason": "..."}.
+            rewrite_arg: {"conditions": [...], "updates": {"arg_name": "new value"}}.
+            Operators: equals, not_equals, contains, starts_with, matches_regex.
+            Conditions match the tool call's ARGS (field is an arg name).
+        matcher: Pipe-list tool-NAME filter for pre_tool_use/post_tool_use, e.g.
+            "Edit|Write" (omit to match every tool). Ignored on other events.
         scope: "thread" (default; only the current thread) or "global" (all your threads).
         enabled: Enable/disable an existing hook on update.
     """
     action_key = (action or "").strip().lower()
+    hook_action_key = (hook_action or "inject_context").strip().lower()
 
     if action_key == "create":
-        missing = [
-            f for f, v in (("name", name), ("event", event), ("text", text))
-            if v is None or v == ""
-        ]
-        if missing:
-            return f"[Error]: create requires: {', '.join(missing)}."
-        if event not in _EVENTS:
+        if not name:
+            return "[Error]: create requires name."
+        if not event or event not in _EVENTS:
             return f"[Error]: event must be one of: {', '.join(_EVENTS)}."
-        assert name is not None and event is not None and text is not None
+        legal = EVENT_ACTIONS.get(event, set())
+        if hook_action_key not in legal:
+            return (
+                f"[Error]: action '{hook_action_key}' is not valid for event '{event}'. "
+                f"Valid: {', '.join(sorted(legal))}."
+            )
+        if hook_action_key == "inject_context" and not text and not params:
+            return "[Error]: inject_context requires text."
+        if hook_action_key != "inject_context" and not params:
+            return f"[Error]: {hook_action_key} requires params."
         return _hook_create(
-            name=name, event=event, text=text, matcher=matcher, scope=scope, config=config
+            name=name, event=event, action=hook_action_key, text=text, params=params,
+            matcher=matcher, scope=scope, config=config,
         )
 
     if action_key == "update":
@@ -252,8 +332,10 @@ def hook_config(
         if event is not None and event not in _EVENTS:
             return f"[Error]: event must be one of: {', '.join(_EVENTS)}."
         return _hook_update(
-            hook_id=hook_id, name=name, event=event, text=text, matcher=matcher,
-            enabled=enabled, scope=scope, config=config,
+            hook_id=hook_id, name=name, event=event,
+            action=(hook_action_key if hook_action is not None else None),
+            text=text, params=params, matcher=matcher, enabled=enabled, scope=scope,
+            config=config,
         )
 
     if action_key == "delete":

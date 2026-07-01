@@ -75,8 +75,15 @@ def test_list_and_enabled_filter(client_env):
 
 def test_create_rejects_bad_event(client_env):
     client, _agent, headers, _b = client_env
-    resp = _create(client, headers, event="pre_tool_use")
+    resp = _create(client, headers, event="not_an_event")
     assert resp.status_code == 422  # schema Literal rejects it before the store
+
+
+def test_create_rejects_illegal_action_for_event(client_env):
+    # inject_context is not legal on pre_tool_use -> manager raises -> 400.
+    client, _agent, headers, _b = client_env
+    resp = _create(client, headers, event="pre_tool_use", action="inject_context", text="x")
+    assert resp.status_code == 400
 
 
 def test_create_thread_scoped_claims_thread(client_env):
@@ -145,6 +152,101 @@ def test_test_endpoint_renders(client_env):
     resp = client.post(f"/hooks/{hook['id']}/test", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["rendered"] == "ran Edit"  # sample tool_name
+
+
+def test_create_block_if_matches(client_env):
+    client, _agent, headers, _b = client_env
+    resp = _create(
+        client, headers, name="guard", event="pre_tool_use", action="block_if_matches",
+        text=None, matcher="bash",
+        conditions=[{"field": "command", "operator": "contains", "value": "rm -rf"}],
+        reason="no destructive commands",
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["action"] == "block_if_matches"
+    assert body["matcher"] == "bash"
+    assert body["logic"]["reason"] == "no destructive commands"
+    assert body["logic"]["conditions"][0]["field"] == "command"
+    assert body["text"] == ""  # non-text action
+
+
+def test_create_rewrite_arg(client_env):
+    client, _agent, headers, _b = client_env
+    resp = _create(
+        client, headers, name="clamp", event="pre_tool_use", action="rewrite_arg",
+        text=None, updates={"command": "echo blocked"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["logic"]["updates"] == {"command": "echo blocked"}
+
+
+def test_test_endpoint_describes_block(client_env):
+    client, _agent, headers, _b = client_env
+    hook = _create(
+        client, headers, name="guard", event="pre_tool_use", action="block_if_matches",
+        text=None, matcher="bash",
+        conditions=[{"field": "command", "operator": "contains", "value": "rm"}],
+    ).json()
+    resp = client.post(f"/hooks/{hook['id']}/test", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "block_if_matches"
+    assert "rm" in resp.json()["rendered"]
+
+
+def test_update_block_conditions(client_env):
+    client, _agent, headers, _b = client_env
+    hook = _create(
+        client, headers, name="guard", event="pre_tool_use", action="block_if_matches",
+        text=None, conditions=[{"field": "command", "operator": "contains", "value": "a"}],
+    ).json()
+    resp = client.patch(
+        f"/hooks/{hook['id']}", headers=headers,
+        json={"conditions": [], "reason": "always deny"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["logic"]["reason"] == "always deny"
+    assert resp.json()["logic"]["conditions"] == []
+
+
+def test_partial_patch_preserves_sibling_subfields(client_env):
+    # A partial PATCH to a multi-field action must not wipe the field it omits.
+    client, _agent, headers, _b = client_env
+    hook = _create(
+        client, headers, name="guard", event="pre_tool_use", action="block_if_matches",
+        text=None, reason="Dangerous!",
+        conditions=[{"field": "command", "operator": "contains", "value": "rm -rf"}],
+    ).json()
+    # Tighten only the condition; the reason must survive.
+    resp = client.patch(
+        f"/hooks/{hook['id']}", headers=headers,
+        json={"conditions": [{"field": "command", "operator": "contains", "value": "rm -rf /"}]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["logic"]["reason"] == "Dangerous!"  # preserved
+    assert resp.json()["logic"]["conditions"][0]["value"] == "rm -rf /"
+    # Change only the reason; the condition must survive.
+    resp2 = client.patch(f"/hooks/{hook['id']}", headers=headers, json={"reason": "Nope"})
+    assert resp2.status_code == 200
+    assert resp2.json()["logic"]["reason"] == "Nope"
+    assert resp2.json()["logic"]["conditions"][0]["value"] == "rm -rf /"  # preserved
+
+
+def test_patch_switch_action_uses_fresh_params(client_env):
+    # Switching action replaces the logic wholesale with the new action's params.
+    client, _agent, headers, _b = client_env
+    hook = _create(
+        client, headers, name="g", event="pre_tool_use", action="block_if_matches",
+        text=None, reason="x",
+        conditions=[{"field": "command", "operator": "contains", "value": "a"}],
+    ).json()
+    resp = client.patch(
+        f"/hooks/{hook['id']}", headers=headers,
+        json={"action": "rewrite_arg", "updates": {"command": "echo hi"}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "rewrite_arg"
+    assert resp.json()["logic"]["updates"] == {"command": "echo hi"}
 
 
 def test_cross_user_isolation(client_env):

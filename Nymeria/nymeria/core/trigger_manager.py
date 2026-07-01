@@ -10,7 +10,6 @@ in ``data_dir/triggers/``.
 
 import json
 import logging
-import re
 import threading
 import time as _time
 import uuid
@@ -21,6 +20,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from .conditions import HookCondition as TriggerCondition  # re-export (shared model)
+from .conditions import evaluate_conditions
 from .keyed_locks import KeyedRLockMap
 from .storage_paths import safe_path_segment
 from .time_utils import ensure_aware_utc, utc_now
@@ -56,17 +57,6 @@ class TriggerAction(BaseModel):
             "create_todo: {task_template, scheduled_for?}."
         ),
     )
-
-
-class TriggerCondition(BaseModel):
-    """A filter condition evaluated against each event before firing."""
-
-    field: str = Field(..., description="Event field name to check")
-    operator: Literal["equals", "contains", "starts_with", "matches_regex", "not_equals"] = Field(  # type: ignore[assignment]
-        default="contains"
-    )
-    value: str = Field(default="")
-    case_sensitive: bool = Field(default=False)
 
 
 class TriggerDefinition(BaseModel):
@@ -375,30 +365,12 @@ class TriggerManager:
 
     @staticmethod
     def _evaluate_conditions(event: dict, conditions: List[TriggerCondition]) -> bool:
-        """Return True if ALL conditions pass (AND logic)."""
-        for cond in conditions:
-            event_value = str(event.get(cond.field, ""))
-            compare_value = cond.value
-            if not cond.case_sensitive:
-                event_value = event_value.lower()
-                compare_value = compare_value.lower()
+        """Return True if ALL conditions pass (AND logic).
 
-            if cond.operator == "equals" and event_value != compare_value:
-                return False
-            elif cond.operator == "not_equals" and event_value == compare_value:
-                return False
-            elif cond.operator == "contains" and compare_value not in event_value:
-                return False
-            elif cond.operator == "starts_with" and not event_value.startswith(compare_value):
-                return False
-            elif cond.operator == "matches_regex":
-                try:
-                    flags = 0 if cond.case_sensitive else re.IGNORECASE
-                    if not re.search(cond.value, str(event.get(cond.field, "")), flags):
-                        return False
-                except re.error:
-                    return False
-        return True
+        Delegates to the shared ``core/conditions.evaluate_conditions`` so the
+        trigger and lifecycle-hooks stacks match conditions identically.
+        """
+        return evaluate_conditions(event, conditions)
 
     # -- execution log ----------------------------------------------------
 

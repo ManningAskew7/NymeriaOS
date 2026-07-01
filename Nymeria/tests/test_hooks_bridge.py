@@ -4,18 +4,32 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from nymeria.core.hook_manager import (
+    BlockIfMatchesLogic,
+    InjectContextLogic,
+    RewriteArgLogic,
+)
 from nymeria.core.hooks import HookContext, HookEvent
-from nymeria.core.hooks.base import PostToolOutcome, PromptOutcome
+from nymeria.core.hooks.base import PostToolOutcome, PreToolOutcome, PromptOutcome
 from nymeria.core.hooks.bridge import build_registry
 
 
-def _defn(id_, event, text, *, action="inject_context", matcher=None, name=None):
+def _logic(action, text):
+    """A real logic variant (or an unknown-action fake with model_dump)."""
+    if action == "inject_context":
+        return InjectContextLogic(text=text)
+    # Unknown action: expose ``action`` + ``model_dump`` like a real variant so
+    # the bridge's skip path (unknown action) is exercised, not a dump crash.
+    return SimpleNamespace(action=action, model_dump=lambda **kw: {"text": text})
+
+
+def _defn(id_, event, text, *, action="inject_context", matcher=None, name=None, logic=None):
     return SimpleNamespace(
         id=id_,
         name=name or id_,
         event=event,
         matcher=matcher,
-        logic=SimpleNamespace(action=action, text=text),
+        logic=logic if logic is not None else _logic(action, text),
     )
 
 
@@ -110,3 +124,42 @@ def test_post_outcome_from_registered_hook():
     out = reg_match.fn(_ctx(HookEvent.POST_TOOL_USE, tool_name="X"))
     assert isinstance(out, PostToolOutcome)
     assert out.additional_context == "appended"
+
+
+# --- Pass 3: PRE actions register on the mutate plane with full params -------
+
+def test_block_if_matches_registers_mutate_and_passes_params():
+    logic = BlockIfMatchesLogic(
+        conditions=[{"field": "command", "operator": "contains", "value": "rm -rf"}],
+        reason="denied",
+    )
+    reg = build_registry([_defn("g", "pre_tool_use", None, logic=logic, matcher="bash")])
+    assert reg.has_mutating(HookEvent.PRE_TOOL_USE)
+    ctx = _ctx(HookEvent.PRE_TOOL_USE, tool_name="bash", tool_args={"command": "rm -rf /"})
+    reg_match = reg.matching(HookEvent.PRE_TOOL_USE, ctx)[0]
+    out = reg_match.fn(ctx)
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "deny"
+    assert out.reason == "denied"
+
+
+def test_rewrite_arg_registers_mutate_and_passes_params():
+    logic = RewriteArgLogic(updates={"command": "echo safe"})
+    reg = build_registry([_defn("c", "pre_tool_use", None, logic=logic)])
+    assert reg.has_mutating(HookEvent.PRE_TOOL_USE)
+    ctx = _ctx(HookEvent.PRE_TOOL_USE, tool_name="bash", tool_args={"command": "whoami"})
+    reg_match = reg.matching(HookEvent.PRE_TOOL_USE, ctx)[0]
+    out = reg_match.fn(ctx)
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "modify"
+    assert out.updated_args == {"command": "echo safe"}
+
+
+def test_block_condition_not_met_allows():
+    logic = BlockIfMatchesLogic(
+        conditions=[{"field": "command", "operator": "contains", "value": "rm -rf"}]
+    )
+    reg = build_registry([_defn("g", "pre_tool_use", None, logic=logic)])
+    ctx = _ctx(HookEvent.PRE_TOOL_USE, tool_name="bash", tool_args={"command": "ls"})
+    out = reg.matching(HookEvent.PRE_TOOL_USE, ctx)[0].fn(ctx)
+    assert out is None  # conditions not met -> allow
