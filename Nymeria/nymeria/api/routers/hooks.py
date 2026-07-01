@@ -22,7 +22,12 @@ from ...core.text_format import safe_format
 logger = logging.getLogger(__name__)
 
 HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
-HookActionName = Literal["inject_context", "block_if_matches", "rewrite_arg"]
+HookActionName = Literal[
+    "inject_context", "block_if_matches", "rewrite_arg", "notify", "create_todo", "webhook"
+]
+
+# Actions whose sole config is a `text` field.
+_TEXT_ACTIONS = ("inject_context", "notify", "create_todo")
 
 
 def _params_from_fields(
@@ -32,15 +37,23 @@ def _params_from_fields(
     conditions: Optional[List[HookCondition]],
     reason: Optional[str],
     updates: Optional[Dict[str, str]],
+    url: Optional[str] = None,
 ) -> Optional[dict]:
     """Assemble the logic params dict for ``action`` from the flat request fields.
 
     Returns None when no logic field was supplied (an update that touches only
     name/enabled/etc.). The manager validates the assembled params.
     """
-    if action == "inject_context":
+    if action in _TEXT_ACTIONS:
         return {"text": text or ""} if text is not None else None
-    params: dict = {}
+    if action == "webhook":
+        params: dict = {}
+        if url is not None:
+            params["url"] = url
+        if text is not None:
+            params["text"] = text
+        return params or None
+    params = {}
     if conditions is not None:
         params["conditions"] = [c.model_dump() for c in conditions]
     if action == "block_if_matches" and reason is not None:
@@ -53,14 +66,17 @@ def _params_from_fields(
 class HookCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     event: HookEventName
-    action: HookActionName = Field(default="inject_context")
+    action: HookActionName = Field(default="inject_context")  # type: ignore[bad-assignment]
     # Per-action params (flat; only the fields for `action` are read).
-    text: Optional[str] = Field(default=None, max_length=10_000, description="inject_context")
+    text: Optional[str] = Field(
+        default=None, max_length=10_000, description="inject_context/notify/create_todo/webhook body"
+    )
     conditions: Optional[List[HookCondition]] = Field(
         default=None, description="block_if_matches / rewrite_arg gate (matches tool args)"
     )
     reason: Optional[str] = Field(default=None, max_length=500, description="block_if_matches")
     updates: Optional[Dict[str, str]] = Field(default=None, description="rewrite_arg")
+    url: Optional[str] = Field(default=None, max_length=2_000, description="webhook target URL")
     matcher: Optional[str] = Field(default=None, description="Tool-name filter (tool events)")
     scope: Literal["global", "thread"] = Field(default="thread")
     thread_id: Optional[str] = Field(default=None)
@@ -75,6 +91,7 @@ class HookUpdateRequest(BaseModel):
     conditions: Optional[List[HookCondition]] = None
     reason: Optional[str] = None
     updates: Optional[Dict[str, str]] = None
+    url: Optional[str] = None
     matcher: Optional[str] = None
     enabled: Optional[bool] = None
     # Note: no `scope`/`thread_id` here. Re-scoping a hook to a thread needs a
@@ -180,7 +197,7 @@ def create_hook_router(
             require_thread_access_fn(user, thread_id)
         params = _params_from_fields(
             body.action, text=body.text, conditions=body.conditions,
-            reason=body.reason, updates=body.updates,
+            reason=body.reason, updates=body.updates, url=body.url,
         )
         try:
             hook = _get_manager().add_hook(
@@ -224,9 +241,12 @@ def create_hook_router(
         """Update a hook's configuration."""
         user_id = user.id
         manager = _get_manager()
-        # Split the flat request into plain field updates and logic params.
+        # Split the flat request into plain field updates and logic params. All
+        # logic fields (text/conditions/reason/updates/url) route through
+        # `_params_from_fields` below, so exclude them from the plain updates.
         updates = body.model_dump(
-            exclude_none=True, exclude={"action", "conditions", "reason", "updates"}
+            exclude_none=True,
+            exclude={"action", "conditions", "reason", "updates", "text", "url"},
         )
         # Resolve the effective action for building params: an explicit action on
         # the request, else the stored hook's current action.
@@ -236,8 +256,8 @@ def create_hook_router(
         effective_action = body.action or existing.logic.action
         switching_action = body.action is not None and body.action != existing.logic.action
         provided = _params_from_fields(
-            effective_action, text=None, conditions=body.conditions,
-            reason=body.reason, updates=body.updates,
+            effective_action, text=body.text, conditions=body.conditions,
+            reason=body.reason, updates=body.updates, url=body.url,
         )
         # A partial PATCH must not wipe unspecified sibling sub-fields (e.g.
         # sending only `conditions` on a block hook must keep its `reason`). When
@@ -295,17 +315,22 @@ def create_hook_router(
         if hook is None:
             raise HTTPException(status_code=404, detail="Hook not found")
         logic = hook.logic
+        sample = {
+            "event": hook.event, "thread_id": "thread-123", "user_id": "you",
+            "is_autonomous": "False", "holder_kind": "interactive",
+            "trigger_label": "User Message", "prompt": "the user's message",
+            "tool_name": "Edit", "tool_result": "the tool's output",
+            "tool_status": "success", "tool_args": '{"file": "a.py"}',
+            "final_text": "the assistant's final reply",
+        }
         result = {"hook_id": hook.id, "event": hook.event, "action": logic.action}
-        if logic.action == "inject_context":
-            sample = {
-                "event": hook.event, "thread_id": "thread-123", "user_id": "you",
-                "is_autonomous": "False", "holder_kind": "interactive",
-                "trigger_label": "User Message", "prompt": "the user's message",
-                "tool_name": "Edit", "tool_result": "the tool's output",
-                "tool_status": "success", "tool_args": '{"file": "a.py"}',
-                "final_text": "the assistant's final reply",
-            }
-            result["rendered"] = safe_format(logic.text, sample)
+        if logic.action in ("inject_context", "notify", "create_todo"):
+            result["rendered"] = safe_format(getattr(logic, "text", ""), sample)
+        elif logic.action == "webhook":
+            result["rendered"] = (
+                f"POST {safe_format(logic.url, sample)} with body "
+                f"{safe_format(logic.text, sample)!r}"
+            )
         elif logic.action == "block_if_matches":
             result["rendered"] = (
                 f"Denies {hook.matcher or 'any tool'} when "

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,6 +23,7 @@ from nymeria.core.hooks import (
     HookEvent,
     default_registry,
     dispatch,
+    dispatch_observe,
 )
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 
@@ -180,6 +182,24 @@ def test_pre_rewrite_merges_args(env):
     )
     assert out.decision == "modify"
     assert out.updated_args == {"command": "echo replaced"}  # only the named arg
+
+
+# --- observe-plane actions via the real registry (Pass 3 slice B) -----------
+
+def test_notify_on_done_fires_via_observe_dispatch(env):
+    # A stored `notify` on `done` fires through the DONE observe path (the same
+    # path agent.py uses) once the bridge registers it observe=True.
+    agent, hm, _tcm = env
+    hm.add_hook("u1", name="ping", event="done", action="notify",
+                text="done: {final_text}", scope="global")
+    reg = agent._hook_registry_for_turn("t1", "u1")
+    assert reg.has_observe(HookEvent.DONE)
+    ctx = _ctx(HookEvent.DONE, final_text="all good")
+    with patch("nymeria.core.notifications.create_notification") as cn, \
+         patch("nymeria.config.get_settings") as gs:
+        gs.return_value = MagicMock(fcm_enabled=False)
+        dispatch_observe(HookEvent.DONE, ctx, registry=reg)
+    assert cn.call_args.kwargs["summary"] == "done: all good"
 
 
 # --- DONE continuation: the gotcha regression -------------------------------

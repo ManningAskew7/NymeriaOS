@@ -91,6 +91,22 @@ def test_registry_has_mutating(reg):
     assert reg.has_mutating(HookEvent.PRE_TOOL_USE)
 
 
+def test_registry_has_observe(reg):
+    assert not reg.has_observe(HookEvent.POST_TOOL_USE)
+    reg.register(HookEvent.POST_TOOL_USE, lambda c: None, observe=False)
+    assert not reg.has_observe(HookEvent.POST_TOOL_USE)  # mutate-only doesn't count
+    reg.register(HookEvent.POST_TOOL_USE, lambda c: None, observe=True)
+    assert reg.has_observe(HookEvent.POST_TOOL_USE)
+
+
+def test_tool_hooks_active_includes_observe(reg):
+    from nymeria.core.hooks import tool_hooks_active
+    assert not tool_hooks_active(reg)
+    # An observe-only POST tool hook must activate the seam (else it never fires).
+    reg.register(HookEvent.POST_TOOL_USE, lambda c: None, observe=True)
+    assert tool_hooks_active(reg)
+
+
 def test_registry_unregister(reg):
     h = reg.register(HookEvent.DONE, lambda c: None)
     assert reg.unregister(h) is True

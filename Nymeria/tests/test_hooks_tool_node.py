@@ -136,6 +136,41 @@ def test_post_sees_tool_result_name_status():
         dmod.reset()
 
 
+def test_post_observe_hook_fires_and_is_ignored():
+    # An observe-plane POST hook must run (proving the seam activates on observe
+    # hooks) but its return is ignored (the tool result is unchanged).
+    dmod.reset()
+    fired = {}
+    try:
+        def observe(c):
+            fired["name"] = c.tool_name
+            fired["result"] = c.tool_result_text
+            return PostToolOutcome(updated_result_text="SHOULD BE IGNORED")
+        dmod.register(HookEvent.POST_TOOL_USE, observe, observe=True)
+        node = SafeToolNode([echo])
+        out = node.invoke(_msg([_call("hi")]), _config())
+        assert fired == {"name": "echo", "result": "echo:hi"}
+        assert _first_msg(out).content == "echo:hi"  # observe return not applied
+    finally:
+        dmod.reset()
+
+
+def test_async_post_observe_hook_fires():
+    dmod.reset()
+    fired = {}
+    try:
+        def observe(c):
+            fired["result"] = c.tool_result_text
+            return None
+        dmod.register(HookEvent.POST_TOOL_USE, observe, observe=True)
+        node = SafeToolNode([echo])
+        out = asyncio.run(node.ainvoke(_msg([_call("data")]), _config()))
+        assert fired["result"] == "echo:data"
+        assert _first_msg(out).content == "echo:data"
+    finally:
+        dmod.reset()
+
+
 def test_async_pre_deny():
     dmod.reset()
     try:

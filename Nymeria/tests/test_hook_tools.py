@@ -175,6 +175,65 @@ def test_test_describes_block_variant(store):
     assert "block_if_matches" in out or "denies" in out
 
 
+# --- hook_config: observe-plane actions -------------------------------------
+
+def test_create_notify_via_text(store):
+    # notify is a text action -> a bare `text` arg (no params) is accepted.
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "ping", "event": "done",
+         "hook_action": "notify", "text": "finished: {final_text}"},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    h = store.get_hooks("u1")[0]
+    assert h.logic.action == "notify"
+    assert h.logic.text == "finished: {final_text}"
+
+
+def test_create_webhook_via_params(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "wh", "event": "done", "hook_action": "webhook",
+         "params": {"url": "https://x.test/h", "text": "body"}},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    h = store.get_hooks("u1")[0]
+    assert h.logic.action == "webhook"
+    assert h.logic.url == "https://x.test/h"
+
+
+def test_create_webhook_requires_params(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "wh", "event": "done", "hook_action": "webhook"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+    assert store.get_hooks("u1") == []
+
+
+def test_create_notify_illegal_on_prompt_submit(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "n", "event": "prompt_submit",
+         "hook_action": "notify", "text": "x"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+
+
+def test_detail_renders_webhook_variant(store):
+    h = store.add_hook(
+        "u1", name="wh", event="done", action="webhook",
+        params={"url": "https://x.test/h", "text": "body"},
+    )
+    out = _invoke(hook_tools.hook_info, {"action": "detail", "hook_id": h.id}, _cfg())
+    assert "webhook" in out
+    assert "https://x.test/h" in out
+
+
 # --- hook_info --------------------------------------------------------------
 
 def test_list_empty(store):

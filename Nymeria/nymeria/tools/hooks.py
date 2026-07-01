@@ -36,6 +36,11 @@ _hook_manager: Optional[HookManager] = None
 
 _EVENTS = tuple(EVENT_ACTIONS.keys())
 
+# Actions whose sole config is a single `text` field (a bare `text` arg is
+# accepted as a convenience alias for `params={"text": ...}`). The rest need a
+# structured `params` dict (conditions/updates/url).
+_TEXT_ACTIONS = ("inject_context", "notify", "create_todo")
+
 # Representative sample values for the ``test`` dry-run render, per event.
 _SAMPLE_VARS = {
     "event": "",
@@ -70,15 +75,18 @@ def _get_hook_manager() -> HookManager:
 def _logic_preview(logic) -> str:
     """A short human summary of a hook's logic, per action variant."""
     action = logic.action
-    if action == "inject_context":
+    if action in _TEXT_ACTIONS:
         t = logic.text
-        return f"inject {t if len(t) <= 60 else t[:57] + '...'!r}" if len(t) > 60 else f"inject {t!r}"
+        short = t if len(t) <= 60 else t[:57] + "..."
+        return f"{action} {short!r}"
     if action == "block_if_matches":
         n = len(logic.conditions)
         cond = "always" if n == 0 else f"{n} condition(s)"
         return f"deny if {cond}" + (f" (reason: {logic.reason})" if logic.reason else "")
     if action == "rewrite_arg":
         return f"rewrite args {list(logic.updates.keys())}"
+    if action == "webhook":
+        return f"POST webhook {logic.url}"
     return action
 
 
@@ -218,26 +226,37 @@ def _hook_inspect(*, hook_id: str, action: str, config: RunnableConfig) -> str:
             + (f" (thread {hook.thread_id})" if hook.scope == "thread" else ""),
             f"  action: {logic.action}",
         ]
-        if logic.action == "inject_context":
-            lines.append(f"  text: {logic.text!r}")
+        if logic.action in _TEXT_ACTIONS:
+            lines.append(f"  text: {getattr(logic, 'text', '')!r}")
         elif logic.action == "block_if_matches":
             lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
             lines.append(f"  reason: {logic.reason or '(default)'}")
         elif logic.action == "rewrite_arg":
             lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
             lines.append(f"  updates: {logic.updates}")
+        elif logic.action == "webhook":
+            lines.append(f"  url: {logic.url}")
+            lines.append(f"  text: {logic.text!r}")
         lines.append(f"  created_by: {hook.created_by}")
         return "\n".join(lines)
 
     # action == "test": dry-run description
-    if logic.action == "inject_context":
+    if logic.action in _TEXT_ACTIONS:
         sample = dict(_SAMPLE_VARS)
         sample["event"] = hook.event
-        rendered = safe_format(logic.text, sample)
-        where = _INJECTION_TARGET.get(hook.event, "injected")
+        rendered = safe_format(getattr(logic, "text", ""), sample)
+        target = {
+            "notify": "delivered as a notification",
+            "create_todo": "added as a TODO",
+        }.get(logic.action, _INJECTION_TARGET.get(hook.event, "injected"))
         return (
-            f"[Info]: Test render of hook {hook.id} ({hook.event}). With sample data the "
-            f"text {where}:\n---\n{rendered}\n---"
+            f"[Info]: Test render of hook {hook.id} ({hook.event}, {logic.action}). With "
+            f"sample data the text is {target}:\n---\n{rendered}\n---"
+        )
+    if logic.action == "webhook":
+        return (
+            f"[Info]: Hook {hook.id} (webhook) POSTs to {safe_format(logic.url, _SAMPLE_VARS)} "
+            f"on {hook.event} with body text {safe_format(logic.text, _SAMPLE_VARS)!r}."
         )
     if logic.action == "block_if_matches":
         cond = "any tool call it matches" if not logic.conditions else (
@@ -286,16 +305,20 @@ def hook_config(
         action: "create", "update", or "delete" (the CRUD verb).
         hook_id: Required for update/delete.
         name: Hook display name (create; optional on update).
-        event: The lifecycle event. "prompt_submit"/"post_tool_use"/"done" take
-            inject_context; "pre_tool_use" takes block_if_matches/rewrite_arg.
-        hook_action: The hook's action. One of "inject_context" (default),
-            "block_if_matches", "rewrite_arg".
-        text: For inject_context: the text to inject. Supports {placeholder}
-            interpolation ({tool_name}, {tool_result}, {prompt}, {final_text},
-            {thread_id}). Static text is injected verbatim.
-        params: For non-text actions, the action params. block_if_matches:
+        event: The lifecycle event. "pre_tool_use" takes block_if_matches/
+            rewrite_arg; "prompt_submit" takes inject_context; "post_tool_use"/
+            "done" take inject_context/notify/create_todo/webhook.
+        hook_action: The hook's action. "inject_context" (default) injects text;
+            "block_if_matches"/"rewrite_arg" guard a tool call; "notify" sends a
+            notification; "create_todo" adds a TODO; "webhook" POSTs to a URL.
+        text: For the text actions (inject_context/notify/create_todo, and the
+            webhook body): the text. Supports {placeholder} interpolation
+            ({tool_name}, {tool_result}, {prompt}, {final_text}, {thread_id}).
+            Static text is used verbatim.
+        params: For the structured actions, the action params. block_if_matches:
             {"conditions": [{"field","operator","value","case_sensitive"}], "reason": "..."}.
             rewrite_arg: {"conditions": [...], "updates": {"arg_name": "new value"}}.
+            webhook: {"url": "https://...", "text": "..."}.
             Operators: equals, not_equals, contains, starts_with, matches_regex.
             Conditions match the tool call's ARGS (field is an arg name).
         matcher: Pipe-list tool-NAME filter for pre_tool_use/post_tool_use, e.g.
@@ -317,9 +340,10 @@ def hook_config(
                 f"[Error]: action '{hook_action_key}' is not valid for event '{event}'. "
                 f"Valid: {', '.join(sorted(legal))}."
             )
-        if hook_action_key == "inject_context" and not text and not params:
-            return "[Error]: inject_context requires text."
-        if hook_action_key != "inject_context" and not params:
+        if hook_action_key in _TEXT_ACTIONS:
+            if not text and not params:
+                return f"[Error]: {hook_action_key} requires text."
+        elif not params:
             return f"[Error]: {hook_action_key} requires params."
         return _hook_create(
             name=name, event=event, action=hook_action_key, text=text, params=params,

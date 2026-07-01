@@ -3540,9 +3540,11 @@ webhook trigger without putting the shared secret in the URL.
 
 Lifecycle hooks that run a canned action when an event fires. Actions:
 `inject_context` (inject a string, on `prompt_submit`/`post_tool_use`/`done`),
-`block_if_matches` (deny a tool call, `pre_tool_use`), and `rewrite_arg` (modify
-a tool call's args, `pre_tool_use`). Hooks fire in-process only, so unlike
-triggers there is no public fire/webhook endpoint. See
+`block_if_matches` (deny a tool call, `pre_tool_use`), `rewrite_arg` (modify a
+tool call's args, `pre_tool_use`), and the observe-plane side effects `notify`
+(in-app + push notification), `create_todo` (add a TODO), and `webhook` (POST to
+a URL) on `post_tool_use`/`done`. Hooks fire in-process only, so unlike triggers
+there is no public fire/webhook endpoint. See
 `docs/agent-systems/hooks.md`. All routes require a Bearer token and
 operate on the authenticated user's own hooks.
 
@@ -3593,12 +3595,15 @@ A `pre_tool_use` guardrail instead sends `action` plus per-action fields:
 ```
 
 `event` is one of `prompt_submit`, `pre_tool_use`, `post_tool_use`, `done`;
-`action` is `inject_context` (default), `block_if_matches`, or `rewrite_arg`,
-and must be legal for the event. `matcher` (a pipe-list tool-NAME filter)
-applies to the tool events (`pre_tool_use`/`post_tool_use`) and is dropped on
-others. Per-action fields: `text` (inject_context, `{placeholder}` interpolated);
-`conditions` + `reason` (block_if_matches); `conditions` + `updates`
-(rewrite_arg). `conditions` match the tool call's args (operators `equals`,
+`action` is `inject_context` (default), `block_if_matches`, `rewrite_arg`,
+`notify`, `create_todo`, or `webhook`, and must be legal for the event
+(`notify`/`create_todo`/`webhook` are `post_tool_use`/`done` only). `matcher` (a
+pipe-list tool-NAME filter) applies to the tool events
+(`pre_tool_use`/`post_tool_use`) and is dropped on others. Per-action fields:
+`text` (inject_context / notify / create_todo, and the webhook body,
+`{placeholder}` interpolated); `conditions` + `reason` (block_if_matches);
+`conditions` + `updates` (rewrite_arg); `url` + `text` (webhook).
+`conditions` match the tool call's args (operators `equals`,
 `not_equals`, `contains`, `starts_with`, `matches_regex`; `field` supports dotted
 paths). `scope` is `thread` (bound to `thread_id`) or `global` (all the user's
 threads). Returns `201` with the created hook (whose `logic` object holds the

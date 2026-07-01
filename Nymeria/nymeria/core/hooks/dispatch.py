@@ -78,17 +78,22 @@ def reset() -> None:
 
 
 def tool_hooks_active(registry: Optional[HookRegistry] = None) -> bool:
-    """True if any mutate-plane PRE/POST tool hook is registered.
+    """True if any PRE/POST tool hook (mutate OR observe) is registered.
 
     Lets the tool-node seam keep the parent's fast path (and unchanged error
-    semantics) on every tool call when nothing is registered. Accepts an
-    optional per-turn registry (defaults to the module ``default_registry``) so
-    the fast-path decision is accurate for the thread being run.
+    semantics) on every tool call when nothing is registered. Observe-plane tool
+    hooks (e.g. a `notify`/`webhook` on `post_tool_use`) must also activate the
+    seam, or they would never fire. Accepts an optional per-turn registry
+    (defaults to the module ``default_registry``) so the fast-path decision is
+    accurate for the thread being run.
     """
     from .base import HookEvent
     registry = registry or default_registry
-    return registry.has_mutating(HookEvent.PRE_TOOL_USE) or registry.has_mutating(
-        HookEvent.POST_TOOL_USE
+    return (
+        registry.has_mutating(HookEvent.PRE_TOOL_USE)
+        or registry.has_mutating(HookEvent.POST_TOOL_USE)
+        or registry.has_observe(HookEvent.PRE_TOOL_USE)
+        or registry.has_observe(HookEvent.POST_TOOL_USE)
     )
 
 

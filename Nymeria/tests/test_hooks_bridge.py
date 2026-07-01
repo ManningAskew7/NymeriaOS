@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from nymeria.core.hook_manager import (
     BlockIfMatchesLogic,
     InjectContextLogic,
+    NotifyLogic,
     RewriteArgLogic,
+    WebhookLogic,
 )
 from nymeria.core.hooks import HookContext, HookEvent
 from nymeria.core.hooks.base import PostToolOutcome, PreToolOutcome, PromptOutcome
@@ -163,3 +165,24 @@ def test_block_condition_not_met_allows():
     ctx = _ctx(HookEvent.PRE_TOOL_USE, tool_name="bash", tool_args={"command": "ls"})
     out = reg.matching(HookEvent.PRE_TOOL_USE, ctx)[0].fn(ctx)
     assert out is None  # conditions not met -> allow
+
+
+# --- Pass 3 slice B: observe-plane actions register observe=True -------------
+
+def test_notify_registers_observe_plane():
+    reg = build_registry([_defn("n", "done", None, logic=NotifyLogic(text="hi"))])
+    assert reg.has_observe(HookEvent.DONE)
+    assert not reg.has_mutating(HookEvent.DONE)
+    # Only visible on the observe plane.
+    assert reg.matching(HookEvent.DONE, _ctx(HookEvent.DONE), observe=False) == []
+    assert len(reg.matching(HookEvent.DONE, _ctx(HookEvent.DONE), observe=True)) == 1
+
+
+def test_webhook_registers_observe_and_passes_params():
+    logic = WebhookLogic(url="https://x.test/h", text="body")
+    reg = build_registry([_defn("w", "post_tool_use", None, logic=logic, matcher="Edit")])
+    assert reg.has_observe(HookEvent.POST_TOOL_USE)
+    regs = reg.matching(
+        HookEvent.POST_TOOL_USE, _ctx(HookEvent.POST_TOOL_USE, tool_name="Edit"), observe=True
+    )
+    assert len(regs) == 1

@@ -122,6 +122,15 @@ class HookRegistry:
         with self._lock:
             return any(reg.event is event and not reg.observe for reg in self._regs)
 
+    def has_observe(self, event: HookEvent) -> bool:
+        """True if any observe-plane hook is registered for ``event``.
+
+        Lets the tool-node seam activate for observe-only tool hooks too (so a
+        `notify`/`webhook` on `post_tool_use` runs), not just mutate hooks.
+        """
+        with self._lock:
+            return any(reg.event is event and reg.observe for reg in self._regs)
+
     def clear(self) -> None:
         """Remove all registrations (test isolation)."""
         with self._lock:

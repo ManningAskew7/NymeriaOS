@@ -10,6 +10,10 @@ store, registry, or agent handle). Actions in this module:
   conditions match its args -> ``PreToolOutcome(decision="deny")``.
 - ``rewrite_arg`` (mutate, pre_tool_use): rewrite matched args ->
   ``PreToolOutcome(decision="modify", updated_args=...)``.
+- ``notify`` / ``create_todo`` / ``webhook`` (observe, post_tool_use / done):
+  fire-and-forget side effects (an in-app + push notification, a user TODO, a
+  POST to a webhook). They return ``None`` and never affect the turn; each wraps
+  its side effect so a failure is logged, not raised.
 
 Template substitution uses ``core/text_format.py`` so static text passes through
 unchanged and unknown ``{placeholders}`` are left intact rather than raising.
@@ -162,6 +166,96 @@ def rewrite_arg(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     return PreToolOutcome(decision="modify", updated_args=updates)
 
 
+# Webhook wall-clock budget. Kept under the dispatcher's per-hook timeout
+# (DEFAULT_HOOK_TIMEOUT = 5s) so a slow endpoint fails inside the action (logged)
+# rather than being cut by the dispatcher mid-request.
+_WEBHOOK_TIMEOUT = 4.5
+
+
+def notify(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
+    """Deliver an in-app + push notification (observe plane). Returns None.
+
+    Bypasses the autonomous-notification suppression gate (which only delivers on
+    `all_autonomous` threads): a user-authored hook `notify` should always
+    deliver. Wraps the side effect so a failure is logged, never raised.
+    """
+    text = safe_format(str((params or {}).get("text") or ""), _template_vars(ctx)).strip()
+    if not text:
+        return None
+    try:
+        from ...config import get_settings
+        from ..notifications import create_notification
+        settings = get_settings()
+        create_notification(
+            user_id=ctx.user_id or "",
+            summary=text[:200],
+            thread_id=ctx.thread_id or "",
+            task_id=None,
+        )
+        if getattr(settings, "fcm_enabled", False):
+            from ..fcm import send_to_all_devices
+            send_to_all_devices(
+                data_dir=str(settings.data_dir),
+                text=text,
+                thread_id=ctx.thread_id or "",
+                user_id=ctx.user_id or "",
+            )
+    except Exception:  # noqa: BLE001 - observe never raises into a turn
+        logger.warning("hook notify failed", exc_info=True)
+    return None
+
+
+def create_todo(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
+    """Create a user TODO from the rendered text (observe plane). Returns None."""
+    text = safe_format(str((params or {}).get("text") or ""), _template_vars(ctx)).strip()
+    if not text:
+        return None
+    try:
+        from ...tools.todo import _get_todo_manager
+        manager = _get_todo_manager()
+        with manager.atomic_update(ctx.user_id or "default") as todo_list:
+            item = todo_list.add_item(
+                task=text, created_by="hook", thread_id=ctx.thread_id or ""
+            )
+        if item is None:
+            logger.warning("hook create_todo: TODO not created (at limit?)")
+    except Exception:  # noqa: BLE001 - observe never raises into a turn
+        logger.warning("hook create_todo failed", exc_info=True)
+    return None
+
+
+def webhook(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
+    """POST a JSON payload to a user-supplied URL (observe plane). Returns None.
+
+    Uses the SSRF/egress-safe ``http_policy`` helper (never raw httpx): private,
+    loopback, and metadata endpoints are refused before any socket connect, and
+    DNS is pinned across the check. A blocked URL or a failed POST is logged, not
+    raised.
+    """
+    params = params or {}
+    vars_ = _template_vars(ctx)
+    url = safe_format(str(params.get("url") or ""), vars_).strip()
+    if not url:
+        return None
+    text = safe_format(str(params.get("text") or ""), vars_)
+    # Import outside the try so the exception name is bound for the except clause.
+    from ..http_policy import HTTPPolicyViolation, httpx_request_with_policy
+    try:
+        response, _redirects, _decision = httpx_request_with_policy(
+            "POST",
+            url,
+            json={"text": text, "thread_id": ctx.thread_id or "", "user_id": ctx.user_id or ""},
+            headers={"Content-Type": "application/json"},
+            timeout=_WEBHOOK_TIMEOUT,
+        )
+        response.raise_for_status()
+    except HTTPPolicyViolation as e:  # noqa: BLE001
+        logger.warning("hook webhook blocked by egress policy: %s", e)
+    except Exception:  # noqa: BLE001 - observe never raises into a turn
+        logger.warning("hook webhook POST failed", exc_info=True)
+    return None
+
+
 # The action table. The bridge looks actions up by name; adding an action is a
 # one-line addition here plus an ``EVENT_ACTIONS`` entry in ``hook_manager``.
 ActionFn = Callable[[HookContext, dict], Optional[HookOutcome]]
@@ -169,13 +263,20 @@ ACTIONS: Dict[str, ActionFn] = {
     "inject_context": inject_context,
     "block_if_matches": block_if_matches,
     "rewrite_arg": rewrite_arg,
+    "notify": notify,
+    "create_todo": create_todo,
+    "webhook": webhook,
 }
 
 # Each action's dispatch plane. Mutate-plane actions return an in-band outcome
-# the fire point applies; observe-plane actions (added in a later slice) run
-# fire-and-forget. The bridge reads this to register a hook on the right plane.
+# the fire point applies; observe-plane actions run fire-and-forget (the fire
+# point ignores their return). The bridge reads this to register a hook on the
+# right plane.
 ACTION_PLANES: Dict[str, str] = {
     "inject_context": "mutate",
     "block_if_matches": "mutate",
     "rewrite_arg": "mutate",
+    "notify": "observe",
+    "create_todo": "observe",
+    "webhook": "observe",
 }
