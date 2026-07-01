@@ -128,6 +128,60 @@ def test_post_tool_use_matcher_scoping(env):
     assert miss is None
 
 
+# --- PRE guardrail actions (block / rewrite) --------------------------------
+
+def _pre_ctx(**kw):
+    return _ctx(HookEvent.PRE_TOOL_USE, **kw)
+
+
+def test_pre_block_denies_when_tool_and_args_match(env):
+    agent, hm, _tcm = env
+    hm.add_hook(
+        "u1", name="guard", event="pre_tool_use", action="block_if_matches",
+        params={"conditions": [{"field": "command", "operator": "contains", "value": "rm -rf"}],
+                "reason": "no destructive commands"},
+        matcher="bash", scope="global",
+    )
+    reg = agent._hook_registry_for_turn("t1", "u1")
+    # Matcher (tool NAME) AND conditions (tool ARGS) must both pass to deny.
+    denied = dispatch(
+        HookEvent.PRE_TOOL_USE,
+        _pre_ctx(tool_name="bash", tool_args={"command": "rm -rf /"}),
+        registry=reg,
+    )
+    assert denied.decision == "deny"
+    assert denied.reason == "no destructive commands"
+    # Wrong tool name -> matcher excludes -> allow (no matching hook).
+    assert dispatch(
+        HookEvent.PRE_TOOL_USE,
+        _pre_ctx(tool_name="Edit", tool_args={"command": "rm -rf /"}),
+        registry=reg,
+    ) is None
+    # Right tool, args don't satisfy conditions -> hook returns None; as the sole
+    # matching hook it reduces to None (the seam treats None as allow).
+    assert dispatch(
+        HookEvent.PRE_TOOL_USE,
+        _pre_ctx(tool_name="bash", tool_args={"command": "ls"}),
+        registry=reg,
+    ) is None
+
+
+def test_pre_rewrite_merges_args(env):
+    agent, hm, _tcm = env
+    hm.add_hook(
+        "u1", name="clamp", event="pre_tool_use", action="rewrite_arg",
+        params={"updates": {"command": "echo replaced"}}, matcher="bash", scope="global",
+    )
+    reg = agent._hook_registry_for_turn("t1", "u1")
+    out = dispatch(
+        HookEvent.PRE_TOOL_USE,
+        _pre_ctx(tool_name="bash", tool_args={"command": "whoami", "timeout": "5"}),
+        registry=reg,
+    )
+    assert out.decision == "modify"
+    assert out.updated_args == {"command": "echo replaced"}  # only the named arg
+
+
 # --- DONE continuation: the gotcha regression -------------------------------
 
 def test_done_continuation_fires_off_per_turn_registry(env):

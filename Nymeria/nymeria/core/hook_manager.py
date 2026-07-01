@@ -8,9 +8,12 @@ import the hooks engine (``core/hooks/``) or the agent. The bridge
 (``core/hooks/bridge.py``) turns an enabled definition into an active dispatch
 hook; the enable resolver lives in ``core/agent_safety.py``.
 
-This pass ships one canned action, ``inject_context``, over three events
-(``prompt_submit``/``post_tool_use``/``done``). PreToolUse is intentionally not
-an injection target.
+``HookLogic`` is a discriminated union on ``action``: ``inject_context`` (inject
+a string on prompt_submit/post_tool_use/done), plus the ``pre_tool_use``
+guardrail actions ``block_if_matches`` (deny a tool call) and ``rewrite_arg``
+(modify its args). The ``EVENT_ACTIONS`` map gates which actions attach to which
+event; the ``ACTIONS``/``ACTION_PLANES`` tables in ``core/hooks/actions.py`` map
+each action to its runtime function and plane.
 """
 
 from __future__ import annotations
@@ -22,10 +25,11 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from .conditions import HookCondition
 from .keyed_locks import KeyedRLockMap
 from .storage_paths import safe_path_segment
 from .time_utils import ensure_aware_utc, utc_now
@@ -35,13 +39,15 @@ logger = logging.getLogger(__name__)
 # Thread-safe locks keyed by user_id.
 _hook_locks = KeyedRLockMap()
 
-# The events an ``inject_context`` (or any future) action may attach to, and the
-# actions legal for each. Mirrors ``core/hooks/base.py`` EVENT_OUTCOME_TYPES:
-# adding an action or event is a local edit here. PreToolUse is excluded (no
-# injection target).
-HookEventName = Literal["prompt_submit", "post_tool_use", "done"]
+# The events an action may attach to, and the actions legal for each. Mirrors
+# ``core/hooks/base.py`` EVENT_OUTCOME_TYPES: adding an action or event is a
+# local edit here. ``pre_tool_use`` carries the mutate-plane guardrail actions
+# (deny/rewrite); the observe-plane actions (notify/create_todo/webhook) land in
+# a later slice on the post_tool_use/done events.
+HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
 EVENT_ACTIONS: Dict[str, set] = {
     "prompt_submit": {"inject_context"},
+    "pre_tool_use": {"block_if_matches", "rewrite_arg"},
     "post_tool_use": {"inject_context"},
     "done": {"inject_context"},
 }
@@ -51,14 +57,8 @@ EVENT_ACTIONS: Dict[str, set] = {
 # Models
 # ---------------------------------------------------------------------------
 
-class HookLogic(BaseModel):
-    """The logic a hook runs. One canned action in this pass.
-
-    Flat (action + params) rather than a tagged union because there is exactly
-    one action today. When a second action lands, migrate this to a
-    discriminated union on ``action`` (or add optional per-action fields); the
-    ``EVENT_ACTIONS`` map above is the other extension point.
-    """
+class InjectContextLogic(BaseModel):
+    """Render a (static or templated) string and inject it into context."""
 
     action: Literal["inject_context"] = "inject_context"
     text: str = Field(
@@ -69,6 +69,69 @@ class HookLogic(BaseModel):
     )
 
 
+class BlockIfMatchesLogic(BaseModel):
+    """Deny a tool call (pre_tool_use) when all conditions match its args."""
+
+    action: Literal["block_if_matches"] = "block_if_matches"
+    conditions: List[HookCondition] = Field(
+        default_factory=list,
+        description="AND-ed filters against the tool args; empty = always deny",
+    )
+    reason: str = Field(
+        default="",
+        max_length=500,
+        description="Shown to the model on deny ({placeholder} templated)",
+    )
+
+
+class RewriteArgLogic(BaseModel):
+    """Rewrite one or more tool-call args (pre_tool_use) when conditions match."""
+
+    action: Literal["rewrite_arg"] = "rewrite_arg"
+    conditions: List[HookCondition] = Field(
+        default_factory=list,
+        description="AND-ed gate against the tool args; empty = always rewrite",
+    )
+    updates: Dict[str, str] = Field(
+        default_factory=dict,
+        description="arg-name -> {placeholder}-templated new value",
+    )
+
+
+# Discriminated union on ``action``. Store-compatible with legacy inject_context
+# records ({"action":"inject_context","text":...}). Adding an action is a new
+# variant here + an ``ACTIONS``/``ACTION_PLANES`` entry + an ``EVENT_ACTIONS``
+# row. The type-alias name stays ``HookLogic`` so importers do not churn.
+HookLogic = Annotated[
+    Union[InjectContextLogic, BlockIfMatchesLogic, RewriteArgLogic],
+    Field(discriminator="action"),
+]
+
+# Build a logic variant from an action name + a params dict (used by add_hook).
+HOOK_LOGIC_BY_ACTION: Dict[str, type[BaseModel]] = {
+    "inject_context": InjectContextLogic,
+    "block_if_matches": BlockIfMatchesLogic,
+    "rewrite_arg": RewriteArgLogic,
+}
+
+
+def build_logic(action: str, params: Optional[dict]) -> BaseModel:
+    """Construct the logic variant for ``action`` from ``params``.
+
+    Raises ``ValueError`` on an unknown action or invalid params (callers map
+    that to a human error string / HTTP 400).
+    """
+    model = HOOK_LOGIC_BY_ACTION.get(action)
+    if model is None:
+        raise ValueError(
+            f"Unknown hook action {action!r}. Valid: {', '.join(sorted(HOOK_LOGIC_BY_ACTION))}."
+        )
+    try:
+        return model(**(params or {}))
+    except ValidationError as e:
+        raise ValueError(str(e)) from e
+
+
 class HookDefinition(BaseModel):
     """A single lifecycle hook created by the user or agent."""
 
@@ -77,7 +140,7 @@ class HookDefinition(BaseModel):
     event: HookEventName = Field(..., description="Lifecycle event this hook attaches to")
     matcher: Optional[str] = Field(
         default=None,
-        description="Pipe-list tool-name filter (post_tool_use only), e.g. 'Edit|Write'",
+        description="Pipe-list tool-name filter (tool events only), e.g. 'Edit|Write'",
     )
     logic: HookLogic
     enabled: bool = Field(default=True, description="Per-hook global default (see enable model)")
@@ -105,12 +168,13 @@ class HookDefinition(BaseModel):
             )
         # Normalize an empty/whitespace matcher to None (match every tool). An
         # empty-string matcher would parse to [""] and silently match nothing,
-        # disabling a post_tool_use hook a caller meant to apply to all tools.
+        # disabling a tool hook a caller meant to apply to all tools.
         if self.matcher is not None and not self.matcher.strip():
             self.matcher = None
-        # A matcher only makes sense on a tool event; on any other event a set
-        # matcher would silently never match (no tool_name), disabling the hook.
-        if self.event != "post_tool_use" and self.matcher:
+        # A matcher (tool-name filter) only makes sense on a tool event; on any
+        # other event a set matcher would silently never match (no tool_name),
+        # disabling the hook.
+        if self.event not in ("pre_tool_use", "post_tool_use") and self.matcher:
             self.matcher = None
         return self
 
@@ -220,7 +284,9 @@ class HookManager:
         *,
         name: str,
         event: str,
-        text: str,
+        action: str = "inject_context",
+        params: Optional[dict] = None,
+        text: Optional[str] = None,
         matcher: Optional[str] = None,
         scope: str = "thread",
         thread_id: Optional[str] = None,
@@ -228,15 +294,23 @@ class HookManager:
         created_by: str = "agent",
     ) -> Optional[HookDefinition]:
         """Create a hook. Raises ``ValueError``/``ValidationError`` on an invalid
-        definition; returns ``None`` if the per-user cap is reached."""
+        definition; returns ``None`` if the per-user cap is reached.
+
+        ``action`` + ``params`` build the logic variant. ``text`` is a
+        convenience alias: when given (and ``params`` is not), it becomes
+        ``{"text": text}`` for the text actions.
+        """
+        if params is None and text is not None:
+            params = {"text": text}
+        logic = build_logic(action, params)  # ValueError on bad action/params
         # Construct first so validation (event/action legality, matcher
-        # normalization, non-empty text) runs before we touch the store.
+        # normalization) runs before we touch the store.
         hook = HookDefinition(
             id=uuid.uuid4().hex[:8],
             name=name,
             event=event,  # type: ignore[arg-type]
             matcher=matcher,
-            logic=HookLogic(text=text),
+            logic=logic,  # type: ignore[arg-type]
             enabled=enabled,
             scope=scope,  # type: ignore[arg-type]
             thread_id=thread_id or "",
@@ -253,18 +327,37 @@ class HookManager:
     def update_hook(self, user_id: str, hook_id: str, **kwargs) -> bool:
         """Update fields on an existing hook.
 
-        ``text`` rebuilds ``logic``; ``event``/``matcher``/``text`` changes
-        re-run model validation via ``model_validate`` so an illegal
-        combination is rejected rather than silently persisted.
+        Logic edits come via ``action`` (switch action), ``params`` (replace the
+        logic params), and/or ``text`` (convenience for the text actions).
+        ``event``/``matcher``/logic changes re-run model validation via
+        ``model_validate`` so an illegal combination is rejected rather than
+        silently persisted. Raises ``ValueError`` on an unknown action.
         """
         with self.atomic_update(user_id) as store:
             hook = store.get_hook(hook_id)
             if hook is None:
                 return False
             data = hook.model_dump()
-            if "text" in kwargs:
-                text = kwargs.pop("text")
-                data["logic"] = {"action": data["logic"]["action"], "text": text}
+            new_action = kwargs.pop("action", None)
+            new_params = kwargs.pop("params", None)
+            new_text = kwargs.pop("text", None)
+            if new_action is not None or new_params is not None or new_text is not None:
+                action = new_action or data["logic"]["action"]
+                if new_params is not None:
+                    params = dict(new_params)
+                elif new_action is not None:
+                    # Switching action with no params: start from an empty variant.
+                    params = {}
+                else:
+                    # Keep the existing params (minus the discriminator) so a
+                    # text-only edit overlays onto them.
+                    params = {k: v for k, v in data["logic"].items() if k != "action"}
+                if new_text is not None:
+                    params["text"] = new_text
+                # Validate the variant now (clear error) before re-validating the
+                # whole definition below.
+                build_logic(action, params)
+                data["logic"] = {"action": action, **params}
             for key, value in kwargs.items():
                 if key in data and key not in ("id", "created_at"):
                     data[key] = value

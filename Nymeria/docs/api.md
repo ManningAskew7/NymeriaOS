@@ -3538,10 +3538,11 @@ webhook trigger without putting the shared secret in the URL.
 
 ## Hooks API
 
-Lifecycle hooks that inject a string into the model's context when an event
-fires. One canned action ships today, `inject_context`, over three events
-(`prompt_submit`, `post_tool_use`, `done`). Hooks fire in-process only, so
-unlike triggers there is no public fire/webhook endpoint. See
+Lifecycle hooks that run a canned action when an event fires. Actions:
+`inject_context` (inject a string, on `prompt_submit`/`post_tool_use`/`done`),
+`block_if_matches` (deny a tool call, `pre_tool_use`), and `rewrite_arg` (modify
+a tool call's args, `pre_tool_use`). Hooks fire in-process only, so unlike
+triggers there is no public fire/webhook endpoint. See
 `docs/agent-systems/hooks.md`. All routes require a Bearer token and
 operate on the authenticated user's own hooks.
 
@@ -3568,6 +3569,7 @@ Content-Type: application/json
 {
   "name": "Remind on edit",
   "event": "post_tool_use",
+  "action": "inject_context",
   "text": "Re-run the tests after editing {tool_name}.",
   "matcher": "Edit|Write",
   "scope": "thread",
@@ -3576,13 +3578,33 @@ Content-Type: application/json
 }
 ```
 
-`event` is one of `prompt_submit`, `post_tool_use`, `done`. `matcher` (a
-pipe-list tool filter) applies to `post_tool_use` only and is dropped on other
-events. `scope` is `thread` (bound to `thread_id`) or `global` (all the user's
-threads). `text` supports `{placeholder}` interpolation; unknown placeholders
-pass through verbatim. Returns `201` with the created hook, `400` on invalid
-config or when the per-user cap (50) is reached. Creating a thread-scoped hook
-for a thread the caller cannot access is rejected.
+A `pre_tool_use` guardrail instead sends `action` plus per-action fields:
+
+```json
+{
+  "name": "Block rm -rf",
+  "event": "pre_tool_use",
+  "action": "block_if_matches",
+  "matcher": "bash",
+  "conditions": [{"field": "command", "operator": "contains", "value": "rm -rf"}],
+  "reason": "Destructive command blocked by a hook.",
+  "scope": "global"
+}
+```
+
+`event` is one of `prompt_submit`, `pre_tool_use`, `post_tool_use`, `done`;
+`action` is `inject_context` (default), `block_if_matches`, or `rewrite_arg`,
+and must be legal for the event. `matcher` (a pipe-list tool-NAME filter)
+applies to the tool events (`pre_tool_use`/`post_tool_use`) and is dropped on
+others. Per-action fields: `text` (inject_context, `{placeholder}` interpolated);
+`conditions` + `reason` (block_if_matches); `conditions` + `updates`
+(rewrite_arg). `conditions` match the tool call's args (operators `equals`,
+`not_equals`, `contains`, `starts_with`, `matches_regex`; `field` supports dotted
+paths). `scope` is `thread` (bound to `thread_id`) or `global` (all the user's
+threads). Returns `201` with the created hook (whose `logic` object holds the
+full action config), `400` on invalid config or when the per-user cap (50) is
+reached. Creating a thread-scoped hook for a thread the caller cannot access is
+rejected.
 
 ### Get / Update / Delete Hook
 
@@ -3593,9 +3615,10 @@ DELETE /hooks/{hook_id}
 Authorization: Bearer <token>
 ```
 
-`PATCH` accepts any subset of `name`, `event`, `text`, `matcher`, `enabled`
-(re-validated on save). `DELETE` returns `204`. All return `404` if the hook
-does not exist for the authenticated user.
+`PATCH` accepts any subset of `name`, `event`, `action`, `matcher`, `enabled`,
+`scope`, and the per-action logic fields (`text` / `conditions` / `reason` /
+`updates`); the logic is rebuilt and re-validated on save. `DELETE` returns
+`204`. All return `404` if the hook does not exist for the authenticated user.
 
 ### Test Hook (Dry Run)
 
@@ -3604,8 +3627,9 @@ POST /hooks/{hook_id}/test
 Authorization: Bearer <token>
 ```
 
-Renders the hook's text against sample event data without firing. Returns
-`{"hook_id", "event", "rendered"}`.
+Previews the hook against sample event data without firing: `inject_context`
+renders its template, the guardrail actions describe what they would do. Returns
+`{"hook_id", "event", "action", "rendered"}`.
 
 ### Enable model
 

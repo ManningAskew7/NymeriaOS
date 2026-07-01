@@ -2,35 +2,50 @@
 
 Nymeria has a Claude-Code-style lifecycle-hooks engine: small pieces of logic that
 run at defined moments in an agent turn and can observe or steer it. The engine spine
-shipped first (the machinery, wired to in-process fixtures); the first product surface
-then landed on top of it: a single canned action, **`inject_context`**, that a user or
-the agent can attach to an event so it injects a string into the model's context. This
-document covers both the engine and that first action. The wider action vocabulary and
-the `nym` workflow substrate land in later passes.
+shipped first (the machinery, wired to in-process fixtures); the product surface then
+landed on top of it as a set of **canned actions** a user or the agent can attach to an
+event. This document covers both the engine and those actions. The remaining
+observe-plane vocabulary (`notify`/`create_todo`/`webhook`), a frontend UI, and the
+`nym` workflow substrate land in later passes.
 
 Full design and rationale: `docs/private/plans/lifecycle-hooks.md`.
 
-## The `inject_context` action (product surface)
+## Actions (product surface)
 
-One action ships today. A hook created with it injects a string into the model's
-context when its event fires, over three of the four events:
+A hook's logic is a **canned action**, selected by name. `HookLogic` is a pydantic
+discriminated union on `action`, so each action carries its own typed params. The
+actions that ship today, and the events they attach to (`EVENT_ACTIONS` in
+`core/hook_manager.py` is the legality map):
 
-| Event | Where the text lands |
-| --- | --- |
-| `prompt_submit` | appended to the model-facing message tail at every turn start |
-| `post_tool_use` | appended to the matching tool's result (scope with `matcher`) |
-| `done` | re-driven as one follow-up prompt when the turn finishes |
+| Action | Events | Effect |
+| --- | --- | --- |
+| `inject_context` | `prompt_submit`, `post_tool_use`, `done` | inject a string into the model's context |
+| `block_if_matches` | `pre_tool_use` | **deny** a tool call when conditions match its args |
+| `rewrite_arg` | `pre_tool_use` | **modify** a tool call's args when conditions match |
 
-`PRE_TOOL_USE` is not an injection target. The text is **static or templated**:
-`{placeholder}` tokens interpolate from the event context (`{tool_name}`,
-`{tool_result}`, `{tool_status}`, `{tool_args}`, `{prompt}`, `{final_text}`,
-`{thread_id}`, `{user_id}`, `{event}`); unknown placeholders and brace-free text pass
-through verbatim (`core/text_format.py::safe_format`, shared with triggers).
+**`inject_context`** appends its text to the model-facing tail (`prompt_submit`), to the
+matching tool's result (`post_tool_use`, scope with `matcher`), or re-drives once as a
+follow-up (`done`). The text is **static or templated**: `{placeholder}` tokens
+interpolate from the event context (`{tool_name}`, `{tool_result}`, `{tool_status}`,
+`{tool_args}`, `{prompt}`, `{final_text}`, `{thread_id}`, `{user_id}`, `{event}`);
+unknown placeholders and brace-free text pass through verbatim
+(`core/text_format.py::safe_format`, shared with triggers).
 
-The action is store-agnostic: `core/hooks/actions.py::inject_context` maps the event to
-the matching outcome family, and `core/hooks/bridge.py::build_registry` turns a user's
+**`block_if_matches`** / **`rewrite_arg`** are the `pre_tool_use` guardrails. Two
+independent gates apply: `matcher` filters by tool NAME (exact pipe-list, e.g.
+`"Edit|Write"`), and `conditions` filter by the call's ARGS. Conditions are the shared
+`HookCondition` model (`core/conditions.py`, also used by triggers): a list of
+`field`/`operator`/`value` filters ANDed together, with operators `equals`,
+`not_equals`, `contains`, `starts_with`, `matches_regex` (field supports dotted paths
+for nested args, e.g. `input.command`). `block_if_matches` returns a deny with a
+templated `reason`; `rewrite_arg` returns the changed args only (`updates`, templated),
+which the seam shallow-merges over the call. Empty `conditions` = always fire.
+
+Actions are store-agnostic: `core/hooks/actions.py` maps each action to its outcome via
+`ACTIONS`/`ACTION_PLANES`, and `core/hooks/bridge.py::build_registry` turns a user's
 enabled `HookDefinition` records into a per-turn `HookRegistry`. The engine below never
-learns about the store.
+learns about the store. PRE guardrail actions are written **never-raise** so a malformed
+condition is a no-op (allow), not a fail-closed block of every tool call.
 
 ### Authoring
 
@@ -38,14 +53,18 @@ Two surfaces write the same per-user JSON store (`data_dir/hooks/<user>.json`, o
 per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
 
 - **Agent tools** (`tools/hooks.py`, opt-in `CATALOG_TOOLS`): `hook_config`
-  (create/update/delete) and `hook_info` (list/detail/test). A create auto-binds the
-  current thread for `scope="thread"` (including the real `default` thread); `test`
-  renders the text against sample data without firing. The `hook-management` bundled
-  skill front-loads these.
+  (create/update/delete) and `hook_info` (list/detail/test). The action is picked with
+  `hook_action` (default `inject_context`); text actions take `text`, the guardrail
+  actions take a `params` dict (`{"conditions": [...], "reason": ...}` /
+  `{"conditions": [...], "updates": {...}}`). A create auto-binds the current thread for
+  `scope="thread"` (including the real `default` thread); `test` renders/describes the
+  hook without firing. The `hook-management` bundled skill front-loads these.
 - **REST** (`api/routers/hooks.py`, mounted at `/hooks`): pure CRUD plus
-  `POST /hooks/{id}/test`. Every handler pins `user_id` to the authenticated caller;
-  scoped creates pass through the thread-access gate. There is no webhook/fire endpoint
-  (hooks fire in-process only).
+  `POST /hooks/{id}/test`. The request carries `action` plus the flat per-action fields
+  (`text` / `conditions` / `reason` / `updates`); the response exposes the full `logic`
+  object (discriminated on `action`). Every handler pins `user_id` to the authenticated
+  caller; scoped creates pass through the thread-access gate. There is no webhook/fire
+  endpoint (hooks fire in-process only).
 
 ### Enable model
 
@@ -166,9 +185,9 @@ rather than a parallel re-drive.
 
 ## What is deferred (not yet shipped)
 
-- The wider ready-made **action vocabulary** beyond `inject_context` (block_if_matches,
-  rewrite_arg, notify, webhook, run_command, ...) and presets. `PRE_TOOL_USE` therefore
-  still has no product action (the spine can veto/modify, but nothing authors it yet).
+- The **observe-plane action vocabulary** (`notify`, `create_todo`, `webhook`,
+  `run_command`) on `post_tool_use`/`done`, and presets. The mutate-plane actions
+  (`inject_context`, `block_if_matches`, `rewrite_arg`) all ship.
 - A **frontend UI** for authoring/toggling hooks (the tool + REST surfaces exist; no
   desktop/mobile panel yet).
 - The `nym` **workflow** logic substrate (sandboxed, out-of-process).
@@ -187,9 +206,13 @@ rather than a parallel re-drive.
 
 - `core/hooks/`: `base.py` (contract), `registry.py` (in-process registry),
   `scratch.py` (per-thread store), `dispatch.py` (planes + reduction + fault policy),
-  `actions.py` (`inject_context`), `bridge.py` (definitions → per-turn registry).
-- `core/hook_manager.py`: `HookDefinition`/`HookLogic`/`HookStore` records + the
-  per-user `HookManager` (store-only, no engine import).
+  `actions.py` (`inject_context`/`block_if_matches`/`rewrite_arg` + `ACTION_PLANES`),
+  `bridge.py` (definitions → per-turn registry).
+- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union
+  (`InjectContextLogic`/`BlockIfMatchesLogic`/`RewriteArgLogic`) + `HookStore` records +
+  the per-user `HookManager` (store-only, no engine import).
+- `core/conditions.py`: `HookCondition` + `evaluate_conditions` (shared with triggers,
+  which re-export `TriggerCondition`).
 - `core/text_format.py`: `safe_format` template substitution (shared with triggers).
 - Authoring: `tools/hooks.py` (`hook_config`/`hook_info`), `api/routers/hooks.py`
   (`/hooks` CRUD), `skills_bundled/hook-management/`.

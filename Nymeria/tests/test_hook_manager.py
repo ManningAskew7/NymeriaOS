@@ -7,7 +7,15 @@ import os
 import pytest
 from pydantic import ValidationError
 
-from nymeria.core.hook_manager import HookDefinition, HookLogic, HookManager, HookStore
+from nymeria.core.hook_manager import (
+    BlockIfMatchesLogic,
+    HookDefinition,
+    HookManager,
+    HookStore,
+    InjectContextLogic,
+    RewriteArgLogic,
+    build_logic,
+)
 
 
 @pytest.fixture
@@ -23,7 +31,7 @@ def test_valid_definition_roundtrips():
         name="n",
         event="post_tool_use",
         matcher="Edit",
-        logic=HookLogic(text="hi"),
+        logic=InjectContextLogic(text="hi"),
     )
     assert h.logic.action == "inject_context"
     assert h.matcher == "Edit"
@@ -31,20 +39,20 @@ def test_valid_definition_roundtrips():
 
 def test_empty_text_is_rejected():
     with pytest.raises(ValidationError):
-        HookLogic(text="")
+        InjectContextLogic(text="")
 
 
 def test_matcher_dropped_on_non_tool_event():
     # A matcher on prompt_submit would silently never match; normalized to None.
     h = HookDefinition(
-        id="a", name="n", event="prompt_submit", matcher="Edit", logic=HookLogic(text="x")
+        id="a", name="n", event="prompt_submit", matcher="Edit", logic=InjectContextLogic(text="x")
     )
     assert h.matcher is None
 
 
 def test_matcher_kept_on_post_tool_use():
     h = HookDefinition(
-        id="a", name="n", event="post_tool_use", matcher="Edit", logic=HookLogic(text="x")
+        id="a", name="n", event="post_tool_use", matcher="Edit", logic=InjectContextLogic(text="x")
     )
     assert h.matcher == "Edit"
 
@@ -54,19 +62,19 @@ def test_empty_matcher_normalized_to_none():
     # nothing; normalize to None (match every tool).
     for bad in ("", "   "):
         h = HookDefinition(
-            id="a", name="n", event="post_tool_use", matcher=bad, logic=HookLogic(text="x")
+            id="a", name="n", event="post_tool_use", matcher=bad, logic=InjectContextLogic(text="x")
         )
         assert h.matcher is None
 
 
 def test_text_over_cap_rejected():
     with pytest.raises(ValidationError):
-        HookLogic(text="x" * 10_001)
+        InjectContextLogic(text="x" * 10_001)
 
 
 def test_illegal_event_rejected():
     with pytest.raises(ValidationError):
-        HookDefinition(id="a", name="n", event="pre_tool_use", logic=HookLogic(text="x"))
+        HookDefinition(id="a", name="n", event="pre_tool_use", logic=InjectContextLogic(text="x"))
 
 
 # --- CRUD -------------------------------------------------------------------
@@ -174,3 +182,109 @@ def test_mtime_cache_refreshes_on_write(manager):
 def test_cached_read_matches_fresh_read(manager):
     manager.add_hook("u1", name="a", event="done", text="1")
     assert [h.id for h in manager.get_hooks_cached("u1")] == [h.id for h in manager.get_hooks("u1")]
+
+
+# --- discriminated union (Pass 3 actions) -----------------------------------
+
+def test_legacy_inject_context_json_still_loads():
+    # A record persisted before the union migration must load unchanged.
+    h = HookDefinition.model_validate(
+        {"id": "a", "name": "n", "event": "post_tool_use",
+         "matcher": "Edit", "logic": {"action": "inject_context", "text": "hi"}}
+    )
+    assert isinstance(h.logic, InjectContextLogic)
+    assert h.logic.text == "hi"
+
+
+def test_block_if_matches_roundtrips_and_keeps_matcher():
+    h = HookDefinition.model_validate(
+        {"id": "b", "name": "guard", "event": "pre_tool_use", "matcher": "bash",
+         "logic": {"action": "block_if_matches",
+                   "conditions": [{"field": "command", "operator": "contains", "value": "rm -rf"}],
+                   "reason": "no"}}
+    )
+    assert isinstance(h.logic, BlockIfMatchesLogic)
+    assert h.matcher == "bash"  # matcher kept on pre_tool_use (a tool event)
+    assert len(h.logic.conditions) == 1
+
+
+def test_rewrite_arg_roundtrips():
+    h = HookDefinition.model_validate(
+        {"id": "r", "name": "clamp", "event": "pre_tool_use",
+         "logic": {"action": "rewrite_arg", "updates": {"command": "echo hi"}}}
+    )
+    assert isinstance(h.logic, RewriteArgLogic)
+    assert h.logic.updates == {"command": "echo hi"}
+
+
+def test_event_action_legality_rejects_block_on_non_pre():
+    for event in ("prompt_submit", "post_tool_use", "done"):
+        with pytest.raises(ValidationError):
+            HookDefinition.model_validate(
+                {"id": "x", "name": "n", "event": event,
+                 "logic": {"action": "block_if_matches"}}
+            )
+
+
+def test_event_action_legality_rejects_inject_on_pre():
+    with pytest.raises(ValidationError):
+        HookDefinition.model_validate(
+            {"id": "x", "name": "n", "event": "pre_tool_use",
+             "logic": {"action": "inject_context", "text": "x"}}
+        )
+
+
+def test_build_logic_unknown_action_raises_valueerror():
+    with pytest.raises(ValueError):
+        build_logic("teleport", {})
+
+
+def test_build_logic_invalid_params_raises_valueerror():
+    # min_length=1 on inject_context text -> ValidationError mapped to ValueError.
+    with pytest.raises(ValueError):
+        build_logic("inject_context", {"text": ""})
+
+
+def test_add_hook_with_action_and_params(manager):
+    h = manager.add_hook(
+        "u1", name="guard", event="pre_tool_use", action="block_if_matches",
+        params={"conditions": [{"field": "command", "operator": "contains", "value": "rm"}],
+                "reason": "denied"},
+        matcher="bash",
+    )
+    assert h is not None
+    got = manager.get_hook("u1", h.id)
+    assert isinstance(got.logic, BlockIfMatchesLogic)
+    assert got.logic.reason == "denied"
+    assert got.matcher == "bash"
+
+
+def test_add_hook_rejects_illegal_action_for_event(manager):
+    with pytest.raises(ValueError):
+        manager.add_hook(
+            "u1", name="bad", event="prompt_submit", action="block_if_matches", params={}
+        )
+
+
+def test_update_hook_switches_action(manager):
+    h = manager.add_hook(
+        "u1", name="g", event="pre_tool_use", action="block_if_matches",
+        params={"conditions": [], "reason": "x"},
+    )
+    assert manager.update_hook(
+        "u1", h.id, action="rewrite_arg", params={"updates": {"command": "ls"}}
+    ) is True
+    got = manager.get_hook("u1", h.id)
+    assert isinstance(got.logic, RewriteArgLogic)
+    assert got.logic.updates == {"command": "ls"}
+
+
+def test_update_hook_replaces_params(manager):
+    h = manager.add_hook(
+        "u1", name="g", event="pre_tool_use", action="block_if_matches",
+        params={"conditions": [{"field": "command", "operator": "contains", "value": "a"}]},
+    )
+    manager.update_hook("u1", h.id, params={"conditions": [], "reason": "always"})
+    got = manager.get_hook("u1", h.id)
+    assert got.logic.conditions == []
+    assert got.logic.reason == "always"

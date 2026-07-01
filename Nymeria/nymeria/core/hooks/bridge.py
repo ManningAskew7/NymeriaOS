@@ -6,8 +6,9 @@ and the store-agnostic engine (``core/hooks``). It builds a fresh
 (scope + enabled). The dispatch engine never learns about the store; the caller
 threads the built registry to the fire points for that turn.
 
-Definitions are duck-typed: each needs ``event`` (str), ``matcher``,
-``logic.action``, ``logic.text``, ``name``, and ``id``.
+Definitions are duck-typed: each needs ``event`` (str), ``matcher``, a
+``logic`` pydantic model (with ``action`` + per-action params), ``name``, and
+``id``.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Iterable, Optional
 
-from .actions import ACTIONS
+from .actions import ACTION_PLANES, ACTIONS
 from .base import HookContext, HookEvent, HookOutcome
 from .registry import HookRegistry
 
@@ -26,12 +27,17 @@ def _make_action_fn(definition):
     """Build the per-definition hook callable.
 
     A dedicated function (not an inline loop closure) so each callable binds its
-    own ``definition``/``params`` rather than the loop variable.
+    own ``definition``/``params`` rather than the loop variable. The action's
+    params are the logic variant's fields minus the ``action`` discriminator, so
+    each action function receives exactly its own params.
     """
     action = ACTIONS.get(definition.logic.action)
     if action is None:
         return None
-    params = {"text": definition.logic.text}
+    try:
+        params = definition.logic.model_dump(exclude={"action"})
+    except Exception:  # noqa: BLE001 - a malformed logic must not crash the build
+        params = {}
 
     def _fn(ctx: HookContext) -> Optional[HookOutcome]:
         return action(ctx, params)
@@ -41,7 +47,11 @@ def _make_action_fn(definition):
 
 
 def build_registry(definitions: Iterable) -> HookRegistry:
-    """Build a fresh registry registering one mutate-plane hook per definition."""
+    """Build a fresh registry registering one hook per definition.
+
+    Each hook lands on its action's plane (``ACTION_PLANES``): mutate-plane
+    actions return an in-band outcome; observe-plane actions run fire-and-forget.
+    """
     registry = HookRegistry()
     for definition in definitions:
         try:
@@ -55,11 +65,12 @@ def build_registry(definitions: Iterable) -> HookRegistry:
                 "hook %r has unknown action %r; skipping", definition.id, definition.logic.action
             )
             continue
+        observe = ACTION_PLANES.get(definition.logic.action, "mutate") == "observe"
         registry.register(
             event,
             fn,
             matcher=definition.matcher,
             name=definition.name or definition.id,
-            observe=False,
+            observe=observe,
         )
     return registry

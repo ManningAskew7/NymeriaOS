@@ -7,11 +7,18 @@ None) comes back, and templating renders from the context.
 from __future__ import annotations
 
 from nymeria.core.hooks import HookContext, HookEvent
-from nymeria.core.hooks.actions import ACTIONS, inject_context
+from nymeria.core.hooks.actions import (
+    ACTION_PLANES,
+    ACTIONS,
+    block_if_matches,
+    inject_context,
+    rewrite_arg,
+)
 from nymeria.core.hooks.base import (
     DoneOutcome,
     HookProvenance,
     PostToolOutcome,
+    PreToolOutcome,
     PromptOutcome,
 )
 
@@ -119,3 +126,91 @@ def test_missing_field_renders_empty_not_placeholder():
     # final_text is unset on a PROMPT_SUBMIT context -> renders empty, not "{final_text}".
     out = inject_context(_ctx(HookEvent.PROMPT_SUBMIT), {"text": "final=[{final_text}]"})
     assert out.inject_context == "final=[]"
+
+
+# --- block_if_matches (PRE guardrail) ---------------------------------------
+
+def _pre(**kw):
+    return _ctx(HookEvent.PRE_TOOL_USE, **kw)
+
+
+def test_action_table_and_planes():
+    assert ACTIONS["block_if_matches"] is block_if_matches
+    assert ACTIONS["rewrite_arg"] is rewrite_arg
+    assert ACTION_PLANES["block_if_matches"] == "mutate"
+    assert ACTION_PLANES["rewrite_arg"] == "mutate"
+
+
+def test_block_denies_when_conditions_met():
+    out = block_if_matches(
+        _pre(tool_name="bash", tool_args={"command": "rm -rf /"}),
+        {"conditions": [{"field": "command", "operator": "contains", "value": "rm -rf"}],
+         "reason": "no {tool_name}"},
+    )
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "deny"
+    assert out.reason == "no bash"  # reason is templated
+
+
+def test_block_allows_when_conditions_not_met():
+    out = block_if_matches(
+        _pre(tool_name="bash", tool_args={"command": "ls"}),
+        {"conditions": [{"field": "command", "operator": "contains", "value": "rm -rf"}]},
+    )
+    assert out is None
+
+
+def test_block_empty_conditions_always_denies():
+    out = block_if_matches(_pre(tool_name="bash", tool_args={"command": "ls"}), {"conditions": []})
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "deny"
+    assert out.reason == "blocked by a lifecycle hook"  # default reason
+
+
+def test_block_never_raises_on_bad_params():
+    # A malformed condition must make the hook a no-op (allow), not raise (which
+    # the dispatcher would treat as a fail-closed deny of every call).
+    assert block_if_matches(_pre(tool_name="bash", tool_args={"command": "x"}),
+                            {"conditions": [{"operator": "??"}]}) is None
+    # A non-dict condition element (bad shape) also no-ops rather than raising.
+    assert block_if_matches(_pre(tool_name="bash", tool_args={"command": "x"}),
+                            {"conditions": ["not a dict"]}) is None
+    assert block_if_matches(_pre(tool_name="bash", tool_args={"command": "x"}),
+                            {"conditions": "not a list"}) is None
+    assert block_if_matches(_pre(tool_name="bash"), None) is not None  # None params -> always deny
+
+
+def test_rewrite_never_raises_on_bad_conditions():
+    assert rewrite_arg(_pre(tool_name="bash", tool_args={"command": "x"}),
+                       {"conditions": [42], "updates": {"command": "y"}}) is None
+
+
+# --- rewrite_arg (PRE modify) -----------------------------------------------
+
+def test_rewrite_modifies_when_conditions_met():
+    out = rewrite_arg(
+        _pre(tool_name="bash", tool_args={"command": "whoami"}),
+        {"conditions": [], "updates": {"command": "echo {tool_name}"}},
+    )
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "modify"
+    assert out.updated_args == {"command": "echo bash"}
+
+
+def test_rewrite_noop_when_conditions_unmet():
+    out = rewrite_arg(
+        _pre(tool_name="bash", tool_args={"command": "ls"}),
+        {"conditions": [{"field": "command", "operator": "contains", "value": "rm"}],
+         "updates": {"command": "echo safe"}},
+    )
+    assert out is None
+
+
+def test_rewrite_empty_updates_returns_none():
+    out = rewrite_arg(_pre(tool_name="bash", tool_args={"command": "ls"}), {"updates": {}})
+    assert out is None
+
+
+def test_rewrite_never_raises_on_bad_params():
+    assert rewrite_arg(_pre(tool_name="bash"), {"updates": "not a dict"}) is None
+    assert rewrite_arg(_pre(tool_name="bash"), None) is None
