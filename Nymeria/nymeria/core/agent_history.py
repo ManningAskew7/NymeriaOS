@@ -76,6 +76,34 @@ TIMESTAMP_EXTRACT_PATTERN = re.compile(
 )
 
 
+# Sentinel wrapping hook-injected PROMPT_SUBMIT context on the message tail.
+# Injected context persists in the checkpoint (like the time prefix) but is
+# stripped from display/RAG so it does not pollute history views or the index.
+HOOK_CONTEXT_OPEN = "<hook_context>"
+HOOK_CONTEXT_CLOSE = "</hook_context>"
+HOOK_CONTEXT_PATTERN = re.compile(
+    r"\n*<hook_context>\n.*?\n</hook_context>",
+    re.DOTALL,
+)
+
+
+def wrap_hook_context(text: str) -> str:
+    """Wrap hook-injected turn context in the strippable sentinel."""
+    return f"{HOOK_CONTEXT_OPEN}\n{text}\n{HOOK_CONTEXT_CLOSE}"
+
+
+def strip_prompt_context(content: str) -> str:
+    """Strip injected time/trigger metadata and hook context from a user message.
+
+    Both persist in the checkpoint (so they reach the model in-turn) but are
+    turn-local noise in history views and the RAG index, so display and pre-trim
+    flush strip them here.
+    """
+    content = CONTEXT_PREFIX_PATTERN.sub("", content)
+    content = HOOK_CONTEXT_PATTERN.sub("", content)
+    return content
+
+
 #: Hard cap on how many checkpoints we'll deserialize when computing
 #: message timestamps. Threads without compaction can accumulate
 #: thousands of checkpoints; walking all of them to find the creation
@@ -360,7 +388,7 @@ def _handle_human_history_message(
     if ctx.show_prompt_metadata:
         entry["content"] = raw_content
     else:
-        entry["content"] = CONTEXT_PREFIX_PATTERN.sub("", raw_content)
+        entry["content"] = strip_prompt_context(raw_content)
     if attachments:
         entry["attachments"] = attachments
     if timestamp_iso:

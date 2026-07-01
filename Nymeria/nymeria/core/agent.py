@@ -161,6 +161,11 @@ class NymeriaAgent:
     # so a pathological loop can't compact-and-resume forever.
     MAX_COMPACTIONS_PER_TURN = 3
 
+    # Hard cap on consecutive DONE-hook continuations per turn (the loop-guard
+    # backstop; Claude Code uses 8). A buggy continue hook that ignores the
+    # cooperative provenance flag still cannot loop a turn forever.
+    MAX_DONE_CONTINUATIONS = 8
+
     def __init__(
         self,
         settings: Optional[Settings] = None,
@@ -621,6 +626,127 @@ class NymeriaAgent:
         if guidance:
             return f"{time_context}\n\n{guidance}\n\n{message}"
         return f"{time_context}\n\n{message}"
+
+    def _prompt_submit_context(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        message: str,
+        is_autonomous: bool,
+        holder_kind: Optional[str],
+        trigger_label: Optional[str],
+    ):
+        """Build the PROMPT_SUBMIT hook context for a turn-entry seam."""
+        from .hooks import HookContext, HookEvent
+        return HookContext(
+            event=HookEvent.PROMPT_SUBMIT,
+            thread_id=thread_id,
+            user_id=user_id,
+            is_autonomous=is_autonomous,
+            holder_kind=holder_kind,
+            trigger_label=trigger_label,
+            prompt=message,
+        )
+
+    @staticmethod
+    def _wrap_prompt_injection(outcome) -> str:
+        """Render a reduced PROMPT_SUBMIT outcome as strippable tail context."""
+        text = getattr(outcome, "inject_context", None) if outcome else None
+        if not text:
+            return ""
+        from .agent_history import wrap_hook_context
+        return wrap_hook_context(text)
+
+    def _done_context(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        is_autonomous: bool,
+        holder_kind: Optional[str],
+        completed_normally: bool,
+        final_text: str,
+        provenance=None,
+    ):
+        """Build the DONE hook context for a turn-termination seam."""
+        from .hooks import HookContext, HookEvent, HookProvenance
+        return HookContext(
+            event=HookEvent.DONE,
+            thread_id=thread_id,
+            user_id=user_id,
+            is_autonomous=is_autonomous,
+            holder_kind=holder_kind,
+            provenance=provenance or HookProvenance(),
+            completed_normally=completed_normally,
+            final_text=final_text,
+        )
+
+    @staticmethod
+    def _resolve_done_continuation(outcome, continuation_depth: int, cap: int):
+        """Loop-guard resolver: the continuation prompt, or None.
+
+        Returns the steering prompt only when a DONE hook asked to continue, the
+        hard cap is not yet reached, and a non-empty reason was supplied. Pure and
+        deterministic so the guard math is unit-testable in isolation.
+        """
+        if continuation_depth >= cap:
+            return None
+        if not outcome or not getattr(outcome, "continue_", False):
+            return None
+        return getattr(outcome, "reason", None) or None
+
+    async def _maybe_done_continuation(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        is_autonomous: bool,
+        holder_kind: Optional[str],
+        final_text: str,
+        continuation_depth: int,
+    ):
+        """Dispatch DONE (mutate) and build a continuation prompt if a hook asks.
+
+        Returns a ``PendingPrompt`` to enqueue (absorbed by the existing drain +
+        re-drive path) when a hook continues within the loop guard, else None.
+        """
+        from .hooks import HookEvent, HookProvenance, adispatch, default_registry
+        if not default_registry.has_mutating(HookEvent.DONE):
+            return None
+        try:
+            outcome = await adispatch(
+                HookEvent.DONE,
+                self._done_context(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    is_autonomous=is_autonomous,
+                    holder_kind=holder_kind,
+                    completed_normally=True,
+                    final_text=final_text,
+                    provenance=HookProvenance(
+                        done_continuation_active=continuation_depth > 0,
+                        continuation_depth=continuation_depth,
+                    ),
+                ),
+            )
+        except Exception:
+            logger.debug("DONE continue dispatch failed", exc_info=True)
+            return None
+        reason = self._resolve_done_continuation(
+            outcome, continuation_depth, self.MAX_DONE_CONTINUATIONS
+        )
+        if not reason:
+            return None
+        from .pending_prompt_queue import make_pending_prompt
+        return make_pending_prompt(
+            message=reason,
+            source="hook_continuation",
+            source_id=None,
+            source_label="Hook Continuation",
+            user_id=user_id,
+            is_autonomous=True,
+        )
 
     def _get_memory_index(self, user_id: str) -> Optional[MemoryIndex]:
         from .agent_prompt import get_memory_index
@@ -1675,6 +1801,27 @@ class NymeriaAgent:
                 is_autonomous=is_autonomous_source,
             )
 
+            # PROMPT_SUBMIT lifecycle hooks (sync path). Never breaks a turn:
+            # dispatch isolates hook faults, and the seam swallows setup errors.
+            try:
+                from .hooks import HookEvent, dispatch as _hook_dispatch
+                _ps_out = _hook_dispatch(
+                    HookEvent.PROMPT_SUBMIT,
+                    self._prompt_submit_context(
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        message=message,
+                        is_autonomous=is_autonomous_source,
+                        holder_kind=source,
+                        trigger_label=_trigger_override,
+                    ),
+                )
+                _ps_injected = self._wrap_prompt_injection(_ps_out)
+                if _ps_injected:
+                    message_with_context = f"{message_with_context}\n\n{_ps_injected}"
+            except Exception:
+                logger.debug("PROMPT_SUBMIT hook dispatch failed (sync)", exc_info=True)
+
             # Pre-flight auto-compact (sync path)
             try:
                 self._check_and_compact_sync(thread_id, user_id)
@@ -1927,6 +2074,23 @@ class NymeriaAgent:
                         if isinstance(msg, AIMessage) and msg.content:
                             response, _ = _extract_content_parts(msg.content)
                             break
+
+                # DONE lifecycle hooks (observe plane, sync path).
+                try:
+                    from .hooks import HookEvent, dispatch_observe as _hook_observe
+                    _hook_observe(
+                        HookEvent.DONE,
+                        self._done_context(
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            is_autonomous=is_autonomous_source,
+                            holder_kind=source,
+                            completed_normally=True,
+                            final_text=response or "",
+                        ),
+                    )
+                except Exception:
+                    logger.debug("DONE observe hook dispatch failed (sync)", exc_info=True)
 
                 completed_normally = True
                 return response
@@ -2287,6 +2451,27 @@ class NymeriaAgent:
                 is_autonomous=is_autonomous_source,
             )
 
+            # PROMPT_SUBMIT lifecycle hooks (async path). Never breaks a turn:
+            # dispatch isolates hook faults, and the seam swallows setup errors.
+            try:
+                from .hooks import HookEvent, adispatch as _hook_adispatch
+                _ps_out = await _hook_adispatch(
+                    HookEvent.PROMPT_SUBMIT,
+                    self._prompt_submit_context(
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        message=message,
+                        is_autonomous=is_autonomous_source,
+                        holder_kind=source,
+                        trigger_label=_trigger_override,
+                    ),
+                )
+                _ps_injected = self._wrap_prompt_injection(_ps_out)
+                if _ps_injected:
+                    message_with_context = f"{message_with_context}\n\n{_ps_injected}"
+            except Exception:
+                logger.debug("PROMPT_SUBMIT hook dispatch failed (async)", exc_info=True)
+
             # Pre-flight auto-compact for streaming chat. Without this, a
             # bloated thread can fail on the first provider call before the
             # post-turn auto-compact hook gets a chance to run.
@@ -2496,9 +2681,35 @@ class NymeriaAgent:
                     # for this batch); just yield to the holder's
                     # consumer.
 
+                continuation_depth = 0
                 while not abort_event.is_set():
                     pending_batch = backend.drain(thread_id)
                     if not pending_batch:
+                        # Before closing the queue, give DONE-continue hooks a
+                        # chance to extend the turn. A continuation is enqueued
+                        # like a normal steering prompt so the existing drain +
+                        # re-drive path (below) absorbs it; the two-layer loop
+                        # guard (cooperative provenance flag + hard cap) bounds it.
+                        cont_prompt = await self._maybe_done_continuation(
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            is_autonomous=is_autonomous_source,
+                            holder_kind=source,
+                            final_text="".join(final_response_parts),
+                            continuation_depth=continuation_depth,
+                        )
+                        if cont_prompt is not None:
+                            continuation_depth += 1
+                            try:
+                                backend.enqueue(thread_id, cont_prompt)
+                            except PendingPromptQueueClosingError:
+                                # Benign race: the queue began closing between the
+                                # drain check and here. The continuation is simply
+                                # not re-driven and the turn ends normally, which is
+                                # the correct outcome when release is already underway.
+                                pass
+                            else:
+                                continue
                         # We are about to leave the last drain point before
                         # releasing the lock. Close the queue first, then drain
                         # once more; prompts that race after this point should
@@ -2735,6 +2946,27 @@ class NymeriaAgent:
 
                 _elapsed = time.monotonic() - _stream_start
                 logger.info(f"[ASTREAM] === END === thread={thread_id}, elapsed={_elapsed:.1f}s")
+
+                # DONE lifecycle hooks (observe plane). Fires once on normal
+                # completion, still holding the lock, before the finally releases
+                # it. Runs here (not the finally) so it can await async hooks:
+                # await/yield are forbidden during the finally's GeneratorExit.
+                try:
+                    from .hooks import HookEvent, adispatch_observe as _hook_aobserve
+                    await _hook_aobserve(
+                        HookEvent.DONE,
+                        self._done_context(
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            is_autonomous=is_autonomous_source,
+                            holder_kind=source,
+                            completed_normally=True,
+                            final_text="".join(final_response_parts),
+                        ),
+                    )
+                except Exception:
+                    logger.debug("DONE observe hook dispatch failed (async)", exc_info=True)
+
                 completed_normally = True
 
             except Exception as e:

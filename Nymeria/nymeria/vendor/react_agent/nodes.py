@@ -1566,6 +1566,182 @@ class SafeToolNode(ToolNode):
         self._dynamic_tool_resolver = dynamic_tool_resolver
         self._dynamic_tool_lock = threading.RLock()
 
+    # ------------------------------------------------------------------ #
+    # Lifecycle hooks: PRE_TOOL_USE / POST_TOOL_USE seam.
+    #
+    # We override _run_one/_arun_one (used by BOTH the concurrent and the
+    # sequential execution paths) rather than install a ``wrap_tool_call``
+    # interceptor. The parent wraps the interceptor call in a blanket
+    # ``except Exception`` that would convert a GraphBubbleUp/GraphInterrupt into
+    # an error ToolMessage; calling ``_execute_tool_sync``/``_execute_tool_async``
+    # directly preserves the parent's interrupt re-raise. When no PRE/POST tool
+    # hook is registered we delegate straight to ``super()``, so the hot path and
+    # its error semantics are unchanged by default.
+    # ------------------------------------------------------------------ #
+
+    def _run_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
+        from ...core import hooks
+        if not hooks.tool_hooks_active():
+            return super()._run_one(call, input_type, tool_runtime)
+        from langgraph.prebuilt.tool_node import ToolCallRequest
+
+        config = tool_runtime.config
+        pre = hooks.dispatch(
+            hooks.HookEvent.PRE_TOOL_USE,
+            self._build_tool_hook_ctx(hooks.HookEvent.PRE_TOOL_USE, call, config),
+        )
+        call, denied = self._apply_pre_tool_outcome(pre, call)
+        if denied is not None:
+            return denied
+        tool = self.tools_by_name.get(call["name"])
+        request = ToolCallRequest(
+            tool_call=call, tool=tool, state=tool_runtime.state, runtime=tool_runtime
+        )
+        result = self._execute_tool_sync(request, input_type, config)
+        post = hooks.dispatch(
+            hooks.HookEvent.POST_TOOL_USE,
+            self._build_tool_hook_ctx(
+                hooks.HookEvent.POST_TOOL_USE, call, config,
+                result_text=self._tool_result_text(result),
+                tool_status=self._tool_result_status(result),
+            ),
+        )
+        return self._apply_post_tool_outcome(result, post)
+
+    async def _arun_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
+        from ...core import hooks
+        if not hooks.tool_hooks_active():
+            return await super()._arun_one(call, input_type, tool_runtime)
+        from langgraph.prebuilt.tool_node import ToolCallRequest
+
+        config = tool_runtime.config
+        pre = await hooks.adispatch(
+            hooks.HookEvent.PRE_TOOL_USE,
+            self._build_tool_hook_ctx(hooks.HookEvent.PRE_TOOL_USE, call, config),
+        )
+        call, denied = self._apply_pre_tool_outcome(pre, call)
+        if denied is not None:
+            return denied
+        tool = self.tools_by_name.get(call["name"])
+        request = ToolCallRequest(
+            tool_call=call, tool=tool, state=tool_runtime.state, runtime=tool_runtime
+        )
+        result = await self._execute_tool_async(request, input_type, config)
+        post = await hooks.adispatch(
+            hooks.HookEvent.POST_TOOL_USE,
+            self._build_tool_hook_ctx(
+                hooks.HookEvent.POST_TOOL_USE, call, config,
+                result_text=self._tool_result_text(result),
+                tool_status=self._tool_result_status(result),
+            ),
+        )
+        return self._apply_post_tool_outcome(result, post)
+
+    def _build_tool_hook_ctx(self, event, call, config, *, result_text=None, tool_status=None):
+        """Build a PRE/POST tool HookContext from the call + run config.
+
+        thread_id/user_id come from the run config's ``configurable``; turn-source
+        fields (``hook_is_autonomous`` etc.) are read if a caller threaded them,
+        else defaulted (that wiring is a follow-up; the contract fields exist now).
+        """
+        from ...core import hooks
+
+        configurable = {}
+        if isinstance(config, dict):
+            configurable = config.get("configurable") or {}
+        args = call.get("args") if isinstance(call, dict) else None
+        return hooks.HookContext(
+            event=event,
+            thread_id=str(configurable.get("thread_id") or ""),
+            user_id=str(configurable.get("user_id") or ""),
+            is_autonomous=bool(configurable.get("hook_is_autonomous", False)),
+            holder_kind=configurable.get("hook_holder_kind"),
+            trigger_label=configurable.get("hook_trigger_label"),
+            tool_name=call.get("name") if isinstance(call, dict) else None,
+            tool_call_id=call.get("id") if isinstance(call, dict) else None,
+            tool_args=args if isinstance(args, dict) else None,
+            tool_result_text=result_text,
+            tool_status=tool_status,
+        )
+
+    @staticmethod
+    def _apply_pre_tool_outcome(
+        outcome, call: ToolCall
+    ) -> tuple[ToolCall, Optional[ToolMessage]]:
+        """Apply a reduced PRE outcome. Returns (call, denied_message_or_None)."""
+        decision = getattr(outcome, "decision", "allow") if outcome else "allow"
+        if decision == "deny":
+            reason = getattr(outcome, "reason", None) or "blocked by a lifecycle hook"
+            msg = ToolMessage(
+                content=f"blocked: {reason}",
+                name=str(call.get("name") or ""),
+                tool_call_id=str(call.get("id") or ""),
+                status="error",
+            )
+            return call, msg
+        if decision == "modify" and getattr(outcome, "updated_args", None):
+            new_args = {**(call.get("args") or {}), **outcome.updated_args}
+            return cast(ToolCall, {**call, "args": new_args}), None
+        return call, None
+
+    @staticmethod
+    def _apply_post_tool_outcome(result, outcome):
+        """Apply a reduced POST outcome to a ToolMessage result (or list thereof).
+
+        Command results are passed through unchanged. For multimodal (list)
+        content, a text rewrite replaces the text blocks while preserving
+        non-text (image/file) blocks; a note is appended as a new text block.
+        A fresh ToolMessage is returned via ``model_copy`` rather than mutating
+        the original in place (matching ``_truncate_tool_message``).
+        """
+        if outcome is None:
+            return result
+        updated = getattr(outcome, "updated_result_text", None)
+        extra = getattr(outcome, "additional_context", None)
+        if updated is None and not extra:
+            return result
+
+        def _is_text_block(block) -> bool:
+            return isinstance(block, str) or (
+                isinstance(block, dict) and block.get("type") == "text"
+            )
+
+        def rewrite(msg):
+            if not isinstance(msg, ToolMessage):
+                return msg
+            content = msg.content
+            if updated is not None:
+                if isinstance(content, list):
+                    # Replace text blocks with the rewrite; keep image/file blocks.
+                    non_text = [b for b in content if not _is_text_block(b)]
+                    content = non_text + [{"type": "text", "text": updated}]
+                else:
+                    content = updated
+            if extra:
+                if isinstance(content, list):
+                    content = content + [{"type": "text", "text": extra}]
+                else:
+                    content = f"{content}\n\n{extra}"
+            return msg.model_copy(update={"content": content})
+
+        if isinstance(result, list):
+            return [rewrite(m) for m in result]
+        return rewrite(result)
+
+    @staticmethod
+    def _tool_result_text(result):
+        """Plain-text content of a ToolMessage result, else None."""
+        if isinstance(result, ToolMessage) and isinstance(result.content, str):
+            return result.content
+        return None
+
+    @staticmethod
+    def _tool_result_status(result):
+        """"success"/"error" status of a ToolMessage result, else None."""
+        if isinstance(result, ToolMessage):
+            return getattr(result, "status", None)
+        return None
+
     def _register_dynamic_tool(self, tool: BaseTool) -> None:
         """Add a late-bound tool to this ToolNode's dispatch table."""
         if not getattr(tool, "name", None):

@@ -19,9 +19,9 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 
 from .agent_history import (
-    CONTEXT_PREFIX_PATTERN,
     build_message_timestamp_map,
     format_conversation_history,
+    strip_prompt_context,
 )
 from .agent_text_extract import extract_content_parts
 
@@ -424,7 +424,7 @@ def flush_memories_before_trim(
                 if current_user_msg and current_ai_parts:
                     # Strip time context from user message
                     user_content, _ = extract_content_parts(current_user_msg.content)
-                    user_content = CONTEXT_PREFIX_PATTERN.sub('', user_content)
+                    user_content = strip_prompt_context(user_content)
 
                     turn_content = f"User: {user_content}\n\nAssistant: {' '.join(current_ai_parts)}"
                     memory_index.add_chunk(
@@ -453,7 +453,7 @@ def flush_memories_before_trim(
         # Don't forget the last turn
         if current_user_msg and current_ai_parts:
             user_content, _ = extract_content_parts(current_user_msg.content)
-            user_content = CONTEXT_PREFIX_PATTERN.sub('', user_content)
+            user_content = strip_prompt_context(user_content)
 
             turn_content = f"User: {user_content}\n\nAssistant: {' '.join(current_ai_parts)}"
             memory_index.add_chunk(
