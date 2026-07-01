@@ -414,6 +414,100 @@ def register_default_commands(service: "CommandService") -> None:
         usage="/triggers history [trigger-id] [--limit N]",
         aliases=("triggers_history",),
     )
+    # Lifecycle hooks. The bare `/hook` is visible everywhere so a chat bot's
+    # command menu shows one row; the multi-token subcommands are hidden from
+    # chat surfaces to avoid dead `/hook_create`-style menu entries (execute()
+    # ignores surface, so a bot forwarding `/hook create ...` still runs).
+    # Desktop/mobile/CLI keep full subcommand autocomplete.
+    _hook_sub_surfaces = ("desktop", "mobile", "cli", "api", "agent")
+    service.register(
+        "hook",
+        description="Lifecycle-hook authoring commands",
+        category="Automation",
+        usage="/hook list|create|show|edit|enable|disable|delete|test [...]",
+        aliases=("hooks",),
+    )
+    service.register(
+        "hook list",
+        description="List lifecycle hooks",
+        category="Automation",
+        usage="/hook list [--thread <id>|current] [--global] [--enabled-only]",
+        aliases=("hook_list",),
+        surfaces=_hook_sub_surfaces,
+    )
+    service.register(
+        "hook show",
+        description="Show one hook's full configuration",
+        category="Automation",
+        usage="/hook show <id>",
+        aliases=("hook_show", "hook_detail"),
+        surfaces=_hook_sub_surfaces,
+    )
+    service.register(
+        "hook create",
+        description="Create a lifecycle hook",
+        category="Automation",
+        usage=(
+            "/hook create <name> --event E --action A "
+            '[--text ..|--url ..|--cond "f op v"..|--reason ..|--set arg=val..] '
+            "[--matcher A|B] [--scope thread|global] [--disabled]"
+        ),
+        aliases=("hook_create",),
+        surfaces=_hook_sub_surfaces,
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
+    )
+    service.register(
+        "hook edit",
+        description="Edit a hook (key=value scalars and/or --cond/--set)",
+        category="Automation",
+        usage='/hook edit <id> [key=value]... [--cond "f op v"]... [--set arg=val]...',
+        aliases=("hook_edit",),
+        surfaces=_hook_sub_surfaces,
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
+    )
+    service.register(
+        "hook enable",
+        description="Enable a hook",
+        category="Automation",
+        usage="/hook enable <id>",
+        aliases=("hook_enable",),
+        surfaces=_hook_sub_surfaces,
+        mutates_state=True,
+        agent_allowed=False,
+    )
+    service.register(
+        "hook disable",
+        description="Disable a hook",
+        category="Automation",
+        usage="/hook disable <id>",
+        aliases=("hook_disable",),
+        surfaces=_hook_sub_surfaces,
+        mutates_state=True,
+        agent_allowed=False,
+    )
+    service.register(
+        "hook delete",
+        description="Delete a hook permanently",
+        category="Automation",
+        usage="/hook delete <id> [--yes]",
+        aliases=("hook_delete",),
+        surfaces=_hook_sub_surfaces,
+        mutates_state=True,
+        danger_level="dangerous",
+        agent_allowed=False,
+    )
+    service.register(
+        "hook test",
+        description="Dry-run render a hook against sample data (no fire)",
+        category="Automation",
+        usage="/hook test <id>",
+        aliases=("hook_test",),
+        surfaces=_hook_sub_surfaces,
+    )
     service.register(
         "account",
         description="Inspect account, tokens, and linked platforms",

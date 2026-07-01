@@ -16,7 +16,12 @@ from pydantic import BaseModel, Field, ValidationError
 from ...config import get_settings
 from ...core.accounts import AuthenticatedUser
 from ...core.conditions import HookCondition
-from ...core.hook_manager import HookDefinition, HookManager
+from ...core.hook_manager import (
+    HookDefinition,
+    HookManager,
+    build_update_kwargs,
+    params_from_fields,
+)
 from ...core.text_format import safe_format
 
 logger = logging.getLogger(__name__)
@@ -25,42 +30,6 @@ HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"
 HookActionName = Literal[
     "inject_context", "block_if_matches", "rewrite_arg", "notify", "create_todo", "webhook"
 ]
-
-# Actions whose sole config is a `text` field.
-_TEXT_ACTIONS = ("inject_context", "notify", "create_todo")
-
-
-def _params_from_fields(
-    action: str,
-    *,
-    text: Optional[str],
-    conditions: Optional[List[HookCondition]],
-    reason: Optional[str],
-    updates: Optional[Dict[str, str]],
-    url: Optional[str] = None,
-) -> Optional[dict]:
-    """Assemble the logic params dict for ``action`` from the flat request fields.
-
-    Returns None when no logic field was supplied (an update that touches only
-    name/enabled/etc.). The manager validates the assembled params.
-    """
-    if action in _TEXT_ACTIONS:
-        return {"text": text or ""} if text is not None else None
-    if action == "webhook":
-        params: dict = {}
-        if url is not None:
-            params["url"] = url
-        if text is not None:
-            params["text"] = text
-        return params or None
-    params = {}
-    if conditions is not None:
-        params["conditions"] = [c.model_dump() for c in conditions]
-    if action == "block_if_matches" and reason is not None:
-        params["reason"] = reason
-    if action == "rewrite_arg" and updates is not None:
-        params["updates"] = updates
-    return params or None
 
 
 class HookCreateRequest(BaseModel):
@@ -195,7 +164,7 @@ def create_hook_router(
         thread_id = body.thread_id if body.scope == "thread" else ""
         if body.scope == "thread" and require_thread_access_fn is not None:
             require_thread_access_fn(user, thread_id)
-        params = _params_from_fields(
+        params = params_from_fields(
             body.action, text=body.text, conditions=body.conditions,
             reason=body.reason, updates=body.updates, url=body.url,
         )
@@ -241,40 +210,20 @@ def create_hook_router(
         """Update a hook's configuration."""
         user_id = user.id
         manager = _get_manager()
-        # Split the flat request into plain field updates and logic params. All
-        # logic fields (text/conditions/reason/updates/url) route through
-        # `_params_from_fields` below, so exclude them from the plain updates.
-        updates = body.model_dump(
-            exclude_none=True,
-            exclude={"action", "conditions", "reason", "updates", "text", "url"},
-        )
-        # Resolve the effective action for building params: an explicit action on
-        # the request, else the stored hook's current action.
         existing = manager.get_hook(user_id, hook_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Hook not found")
-        effective_action = body.action or existing.logic.action
-        switching_action = body.action is not None and body.action != existing.logic.action
-        provided = _params_from_fields(
-            effective_action, text=body.text, conditions=body.conditions,
-            reason=body.reason, updates=body.updates, url=body.url,
+        # Plain field updates (name/event/matcher/enabled); the logic fields
+        # (text/conditions/reason/updates/url/action) are assembled separately by
+        # ``build_update_kwargs`` so a partial PATCH keeps unspecified siblings.
+        scalars = body.model_dump(
+            exclude_none=True,
+            exclude={"action", "conditions", "reason", "updates", "text", "url"},
         )
-        # A partial PATCH must not wipe unspecified sibling sub-fields (e.g.
-        # sending only `conditions` on a block hook must keep its `reason`). When
-        # the action is unchanged, merge the provided fields onto the stored
-        # logic params; on an action switch, the provided fields stand alone.
-        if provided is not None:
-            if switching_action:
-                params = provided
-            else:
-                params = existing.logic.model_dump(exclude={"action"})
-                params.update(provided)
-        else:
-            params = None
-        if body.action is not None:
-            updates["action"] = body.action
-        if params is not None:
-            updates["params"] = params
+        updates = build_update_kwargs(
+            existing, action=body.action, text=body.text, conditions=body.conditions,
+            reason=body.reason, updates=body.updates, url=body.url, scalars=scalars,
+        )
         if not updates:
             raise HTTPException(status_code=400, detail="No updates provided")
         try:

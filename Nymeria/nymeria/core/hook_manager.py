@@ -52,6 +52,11 @@ EVENT_ACTIONS: Dict[str, set] = {
     "done": {"inject_context", "notify", "create_todo", "webhook"},
 }
 
+# Actions whose sole logic config is a single ``text`` field (a bare ``text`` is
+# a convenience alias for ``params={"text": ...}``). Shared by every authoring
+# surface via ``params_from_fields``.
+TEXT_ACTIONS = ("inject_context", "notify", "create_todo")
+
 
 # ---------------------------------------------------------------------------
 # Models
@@ -219,6 +224,86 @@ class HookDefinition(BaseModel):
         if self.event not in ("pre_tool_use", "post_tool_use") and self.matcher:
             self.matcher = None
         return self
+
+
+# ---------------------------------------------------------------------------
+# Flat-field <-> params mapping (shared by REST / command / tool authoring)
+# ---------------------------------------------------------------------------
+
+def params_from_fields(
+    action: str,
+    *,
+    text: Optional[str] = None,
+    conditions: Optional[List[HookCondition]] = None,
+    reason: Optional[str] = None,
+    updates: Optional[Dict[str, str]] = None,
+    url: Optional[str] = None,
+) -> Optional[dict]:
+    """Assemble the logic params dict for ``action`` from flat authoring fields.
+
+    One source of truth for the flat-field -> params mapping across the REST
+    router, the ``/hook`` command, and the agent tool. Returns ``None`` when no
+    logic field was supplied (an update that touches only name/enabled/etc.);
+    the manager validates the assembled params.
+    """
+    if action in TEXT_ACTIONS:
+        return {"text": text or ""} if text is not None else None
+    if action == "webhook":
+        params: dict = {}
+        if url is not None:
+            params["url"] = url
+        if text is not None:
+            params["text"] = text
+        return params or None
+    params = {}
+    if conditions is not None:
+        params["conditions"] = [c.model_dump() for c in conditions]
+    if action == "block_if_matches" and reason is not None:
+        params["reason"] = reason
+    if action == "rewrite_arg" and updates is not None:
+        params["updates"] = updates
+    return params or None
+
+
+def build_update_kwargs(
+    existing: "HookDefinition",
+    *,
+    action: Optional[str] = None,
+    text: Optional[str] = None,
+    conditions: Optional[List[HookCondition]] = None,
+    reason: Optional[str] = None,
+    updates: Optional[Dict[str, str]] = None,
+    url: Optional[str] = None,
+    scalars: Optional[dict] = None,
+) -> dict:
+    """Merge flat authoring fields into a kwargs dict for ``update_hook``.
+
+    ``scalars`` are the already-filtered plain fields (name/event/matcher/
+    enabled). A partial update must not wipe unspecified sibling sub-fields: when
+    the action is unchanged, provided logic fields merge onto the stored params;
+    on an action switch the provided fields stand alone. Returns the kwargs to
+    splat into ``HookManager.update_hook`` (empty when nothing changed).
+    """
+    out: dict = dict(scalars or {})
+    effective_action = action or existing.logic.action
+    switching = action is not None and action != existing.logic.action
+    provided = params_from_fields(
+        effective_action, text=text, conditions=conditions,
+        reason=reason, updates=updates, url=url,
+    )
+    if provided is not None:
+        if switching:
+            params = provided
+        else:
+            params = existing.logic.model_dump(exclude={"action"})
+            params.update(provided)
+    else:
+        params = None
+    if action is not None:
+        out["action"] = action
+    if params is not None:
+        out["params"] = params
+    return out
 
 
 class HookStore(BaseModel):

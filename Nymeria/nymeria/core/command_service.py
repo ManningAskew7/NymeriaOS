@@ -364,6 +364,116 @@ def _consume_flag(args: list[str], flag: str) -> tuple[bool, list[str]]:
     return present, remaining
 
 
+def _consume_all(args: list[str], option: str) -> tuple[list[str], list[str], str]:
+    """Pull EVERY ``--option value`` occurrence out of ``args`` (repeatable flag).
+
+    Returns ``(values, remaining_args, error_message)``; ``error_message`` is
+    empty on success. Unlike ``_consume_option`` (last-wins), this collects all
+    occurrences, so ``--cond a --cond b`` yields ``["a", "b"]``.
+    """
+    values: list[str] = []
+    remaining: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == option:
+            if index + 1 >= len(args) or args[index + 1].startswith("--"):
+                return values, list(args), f"{option} requires a value."
+            values.append(args[index + 1])
+            index += 2
+            continue
+        remaining.append(arg)
+        index += 1
+    return values, remaining, ""
+
+
+def _parse_hook_conditions(raw_list: list[str], case_sensitive: bool):
+    """Parse ``--cond "field op value"`` strings into ``HookCondition`` objects.
+
+    Returns ``(conditions, error)``; ``error`` is empty on success.
+    """
+    from typing import cast, get_args
+
+    from .conditions import ConditionOperator, HookCondition
+
+    valid_ops = get_args(ConditionOperator)
+    out = []
+    for raw in raw_list:
+        parts = raw.split(maxsplit=2)
+        if len(parts) < 3:
+            return [], f"condition {raw!r} must be 'field operator value'."
+        field, op, value = parts[0], parts[1], parts[2]
+        if op not in valid_ops:
+            return [], f"invalid condition operator {op!r}. Valid: {', '.join(valid_ops)}."
+        try:
+            out.append(
+                HookCondition(
+                    field=field,
+                    operator=cast(ConditionOperator, op),
+                    value=value,
+                    case_sensitive=case_sensitive,
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            return [], str(e)
+    return out, ""
+
+
+def _parse_hook_sets(raw_list: list[str]) -> tuple[dict[str, str], str]:
+    """Parse ``--set "arg=value"`` strings into an updates dict (split on first =)."""
+    out: dict[str, str] = {}
+    for raw in raw_list:
+        if "=" not in raw:
+            return {}, f"--set {raw!r} must be 'arg=value'."
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if not key:
+            return {}, f"--set {raw!r} has an empty arg name."
+        out[key] = value
+    return out, ""
+
+
+def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
+    """Parse the flag-based ``/hook create`` grammar.
+
+    Returns ``(parsed, error)``. On success ``parsed`` carries every option plus
+    ``name`` (the positional remainder) and the repeatable ``conds``/``sets``.
+    """
+    event, args, e1 = _consume_option(args, "--event", default="")
+    action, args, e2 = _consume_option(args, "--action", default="")
+    text, args, e3 = _consume_option(args, "--text", default="")
+    url, args, e4 = _consume_option(args, "--url", default="")
+    reason, args, e5 = _consume_option(args, "--reason", default="")
+    matcher, args, e6 = _consume_option(args, "--matcher", default="")
+    scope, args, e7 = _consume_option(args, "--scope", default="")
+    conds, args, e8 = _consume_all(args, "--cond")
+    sets, args, e9 = _consume_all(args, "--set")
+    disabled, args = _consume_flag(args, "--disabled")
+    case_sensitive, args = _consume_flag(args, "--case-sensitive")
+    error = next((e for e in (e1, e2, e3, e4, e5, e6, e7, e8, e9) if e), "")
+    if error:
+        return {}, error
+    # Any leftover ``--token`` is a misspelled/unknown option; folding it into the
+    # positional name would silently create a wrongly-named hook, so reject it.
+    stray = next((a for a in args if a.startswith("--")), None)
+    if stray:
+        return {}, f"unknown option {stray!r}."
+    return {
+        "name": " ".join(args).strip(),
+        "event": event,
+        "action": action,
+        "text": text,
+        "url": url,
+        "reason": reason,
+        "matcher": matcher,
+        "scope": scope,
+        "conds": conds,
+        "sets": sets,
+        "disabled": disabled,
+        "case_sensitive": case_sensitive,
+    }, ""
+
+
 def _truncate(text: str, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
@@ -2743,6 +2853,276 @@ class _CommandExecutor:
             summary = (entry.get("summary") or entry.get("message") or "")[:120]
             lines.append(f"- {timestamp} `{tid}` — {status}: {summary}")
         return "[Info]: " + "\n".join(lines)
+
+    # ── Lifecycle hooks ────────────────────────────────────────────────────
+
+    def _hook_manager(self) -> Any:
+        # Share the tool's singleton (and its mtime cache) so the command, the
+        # agent tool, and the per-turn resolver all see one HookManager.
+        from ..tools.hooks import _get_hook_manager
+
+        return _get_hook_manager()
+
+    def _resolve_hook(self, prefix: str):
+        """Resolve a hook by id prefix. Returns ``(hook, error_message)``.
+
+        Errors on >1 match (8-char hex prefixes collide) so an edit/delete
+        cannot silently hit the wrong hook.
+        """
+        hooks = self._hook_manager().get_hooks(self.user_id) or []
+        matches = [h for h in hooks if h.id.startswith(prefix)]
+        if not matches:
+            return None, f"[Error]: No hook matching '{prefix}'."
+        if len(matches) > 1:
+            ids = ", ".join(sorted(h.id for h in matches))
+            return None, f"[Error]: '{prefix}' matches multiple hooks: {ids}. Use a longer id."
+        return matches[0], None
+
+    async def _cmd_hook(self, args: list[str], rest: str) -> str:
+        # Direct ``/hook <sub>`` resolves to the registered subcommand path; this
+        # bare handler catches ``/hook`` (list) and the ``/hooks <sub>`` plural
+        # alias (which resolves to the single-token ``hook`` path with the
+        # subcommand still in args), so it re-dispatches those.
+        if not args or args[0] == "list":
+            return await self._cmd_hook_list(args[1:] if args else [], rest)
+        sub_handlers = {
+            "create": self._cmd_hook_create,
+            "show": self._cmd_hook_show,
+            "detail": self._cmd_hook_show,
+            "edit": self._cmd_hook_edit,
+            "enable": self._cmd_hook_enable,
+            "disable": self._cmd_hook_disable,
+            "delete": self._cmd_hook_delete,
+            "test": self._cmd_hook_test,
+        }
+        handler = sub_handlers.get(args[0])
+        if handler is not None:
+            return await handler(args[1:], rest)
+        return (
+            "[Error]: Usage: /hook list|create|show|edit|enable|disable|delete|test [...]"
+        )
+
+    async def _cmd_hook_list(self, args: list[str], rest: str) -> str:
+        enabled_only, args = _consume_flag(args, "--enabled-only")
+        global_only, args = _consume_flag(args, "--global")
+        thread_id, args, error = _consume_option(args, "--thread", default="")
+        if error:
+            return f"[Error]: {error}"
+        if thread_id == "current":
+            thread_id = self.thread_id
+        hooks = self._hook_manager().get_hooks(self.user_id) or []
+        if enabled_only:
+            hooks = [h for h in hooks if h.enabled]
+        if global_only:
+            hooks = [h for h in hooks if h.scope == "global"]
+        if thread_id:
+            hooks = [h for h in hooks if h.scope == "global" or h.thread_id == thread_id]
+        if not hooks:
+            return "[Info]: No hooks found."
+        lines = [
+            f"Hooks: {len(hooks)} total",
+            "",
+            "| ID | State | Event | Action | Scope | Name |",
+            "|---|---|---|---|---|---|",
+        ]
+        for h in sorted(hooks, key=lambda item: item.id):
+            state = "enabled" if h.enabled else "disabled"
+            scope = "global" if h.scope == "global" else f"thread:{h.thread_id or '?'}"
+            lines.append(
+                f"| `{h.id}` | {state} | {h.event} | {h.logic.action} | {scope} | {h.name} |"
+            )
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_hook_create(self, args: list[str], rest: str) -> str:
+        from ..tools.hooks import _logic_preview
+
+        from .hook_manager import EVENT_ACTIONS, TEXT_ACTIONS, params_from_fields
+
+        parsed, error = _parse_hook_flags(args)
+        if error:
+            return f"[Error]: {error}"
+        name = parsed["name"]
+        if not name:
+            return (
+                "[Error]: create requires a name. "
+                "Usage: /hook create <name> --event E --action A [...]"
+            )
+        event = parsed["event"]
+        if event not in EVENT_ACTIONS:
+            return f"[Error]: --event must be one of: {', '.join(EVENT_ACTIONS)}."
+        action = parsed["action"] or "inject_context"
+        legal = EVENT_ACTIONS.get(event, set())
+        if action not in legal:
+            return (
+                f"[Error]: action '{action}' is not valid for event '{event}'. "
+                f"Valid: {', '.join(sorted(legal))}."
+            )
+        # Per-action required-field prechecks (friendlier than a pydantic error).
+        if action in TEXT_ACTIONS and not parsed["text"]:
+            return f"[Error]: {action} requires --text."
+        if action == "webhook" and not parsed["url"]:
+            return "[Error]: webhook requires --url."
+        if action == "rewrite_arg" and not parsed["sets"]:
+            return "[Error]: rewrite_arg requires at least one --set arg=value."
+        conditions, cerr = _parse_hook_conditions(parsed["conds"], parsed["case_sensitive"])
+        if cerr:
+            return f"[Error]: {cerr}"
+        updates_map, uerr = _parse_hook_sets(parsed["sets"])
+        if uerr:
+            return f"[Error]: {uerr}"
+        params = params_from_fields(
+            action,
+            text=parsed["text"] or None,
+            conditions=conditions or None,
+            reason=parsed["reason"] or None,
+            updates=updates_map or None,
+            url=parsed["url"] or None,
+        )
+        scope = (parsed["scope"] or "thread").strip().lower()
+        if scope not in ("thread", "global"):
+            return "[Error]: --scope must be 'thread' or 'global'."
+        if scope == "thread" and not self.thread_id:
+            return (
+                "[Error]: A thread-scoped hook needs an active thread. "
+                "Use --scope global or send a message first."
+            )
+        thread_id = self.thread_id if scope == "thread" else ""
+        try:
+            hook = self._hook_manager().add_hook(
+                self.user_id,
+                name=name,
+                event=event,
+                action=action,
+                params=params,
+                matcher=parsed["matcher"] or None,
+                scope=scope,
+                thread_id=thread_id,
+                enabled=not parsed["disabled"],
+                created_by="user",
+            )
+        except Exception as e:  # noqa: BLE001 - surface validation as a human string
+            return f"[Error]: {e}"
+        if hook is None:
+            return "[Error]: Hook limit reached (max 50)."
+        scope_desc = "all threads" if hook.scope == "global" else f"thread {hook.thread_id}"
+        return (
+            f"[Success]: Created hook '{hook.name}' ({hook.id}) on {hook.event} "
+            f"for {scope_desc}: {_logic_preview(hook.logic)}."
+        )
+
+    async def _cmd_hook_show(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /hook show <id>"
+        hook, error = self._resolve_hook(args[0])
+        if hook is None:
+            return error or f"[Error]: No hook matching '{args[0]}'."
+        from ..tools.hooks import render_hook_detail
+
+        return render_hook_detail(hook)
+
+    async def _cmd_hook_test(self, args: list[str], rest: str) -> str:
+        if not args:
+            return "[Error]: Usage: /hook test <id>"
+        hook, error = self._resolve_hook(args[0])
+        if hook is None:
+            return error or f"[Error]: No hook matching '{args[0]}'."
+        from ..tools.hooks import render_hook_test
+
+        return render_hook_test(hook)
+
+    async def _cmd_hook_enable(self, args: list[str], rest: str) -> str:
+        return await self._set_hook_enabled(args, enabled=True)
+
+    async def _cmd_hook_disable(self, args: list[str], rest: str) -> str:
+        return await self._set_hook_enabled(args, enabled=False)
+
+    async def _set_hook_enabled(self, args: list[str], *, enabled: bool) -> str:
+        verb = "enable" if enabled else "disable"
+        if not args:
+            return f"[Error]: Usage: /hook {verb} <id>"
+        hook, error = self._resolve_hook(args[0])
+        if hook is None:
+            return error or f"[Error]: No hook matching '{args[0]}'."
+        if not self._hook_manager().update_hook(self.user_id, hook.id, enabled=enabled):
+            return f"[Error]: No hook matching '{args[0]}'."
+        return f"[Success]: {'Enabled' if enabled else 'Disabled'} hook `{hook.id}`."
+
+    async def _cmd_hook_delete(self, args: list[str], rest: str) -> str:
+        _yes, args = _consume_flag(args, "--yes")
+        if not args:
+            return "[Error]: Usage: /hook delete <id> [--yes]"
+        hook, error = self._resolve_hook(args[0])
+        if hook is None:
+            return error or f"[Error]: No hook matching '{args[0]}'."
+        if not self._hook_manager().delete_hook(self.user_id, hook.id):
+            return f"[Error]: No hook matching '{args[0]}'."
+        return f"[Success]: Deleted hook `{hook.id}`."
+
+    async def _cmd_hook_edit(self, args: list[str], rest: str) -> str:
+        from .hook_manager import build_update_kwargs
+
+        if not args:
+            return (
+                "[Error]: Usage: /hook edit <id> [key=value]... "
+                '[--cond "f op v"]... [--set arg=val]...'
+            )
+        hook, error = self._resolve_hook(args[0])
+        if hook is None:
+            return error or f"[Error]: No hook matching '{args[0]}'."
+        rest_args = args[1:]
+        conds_raw, rest_args, e1 = _consume_all(rest_args, "--cond")
+        sets_raw, rest_args, e2 = _consume_all(rest_args, "--set")
+        case_sensitive, rest_args = _consume_flag(rest_args, "--case-sensitive")
+        flag_error = e1 or e2
+        if flag_error:
+            return f"[Error]: {flag_error}"
+        # Remaining tokens are key=value scalar edits.
+        edit_keys = {"name", "enabled", "event", "matcher", "action", "text", "url", "reason"}
+        kv: dict[str, str] = {}
+        for token in rest_args:
+            if "=" not in token:
+                return f"[Error]: unexpected argument '{token}' (use key=value or --cond/--set)."
+            key, _, value = token.partition("=")
+            key = key.strip().lower()
+            if key in ("scope", "thread_id"):
+                return "[Error]: cannot re-scope a hook via edit; delete and recreate instead."
+            if key not in edit_keys:
+                return f"[Error]: unknown field '{key}'. Editable: {', '.join(sorted(edit_keys))}."
+            kv[key] = value
+        conditions, cerr = _parse_hook_conditions(conds_raw, case_sensitive)
+        if cerr:
+            return f"[Error]: {cerr}"
+        updates_map, uerr = _parse_hook_sets(sets_raw)
+        if uerr:
+            return f"[Error]: {uerr}"
+        scalars: dict = {}
+        if "name" in kv:
+            scalars["name"] = kv["name"]
+        if "event" in kv:
+            scalars["event"] = kv["event"]
+        if "matcher" in kv:
+            scalars["matcher"] = kv["matcher"] or None
+        if "enabled" in kv:
+            scalars["enabled"] = coerce_value(kv["enabled"])
+        update_kwargs = build_update_kwargs(
+            hook,
+            action=kv.get("action"),
+            text=kv.get("text"),
+            conditions=conditions if conds_raw else None,
+            reason=kv.get("reason"),
+            updates=updates_map if sets_raw else None,
+            url=kv.get("url"),
+            scalars=scalars,
+        )
+        if not update_kwargs:
+            return "[Error]: No updates provided."
+        try:
+            ok = self._hook_manager().update_hook(self.user_id, hook.id, **update_kwargs)
+        except Exception as e:  # noqa: BLE001
+            return f"[Error]: {e}"
+        if not ok:
+            return f"[Error]: No hook matching '{args[0]}'."
+        return f"[Success]: Updated hook `{hook.id}`."
 
     # ── Account ───────────────────────────────────────────────────────────
 
