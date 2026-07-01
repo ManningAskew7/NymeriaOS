@@ -109,6 +109,10 @@ _SKILL_KIT_LABELS: dict[str, tuple[str, str]] = {
         "Trigger management",
         "Create and manage trigger sources (webhooks, RSS, polls, email).",
     ),
+    "hook-management": (
+        "Hook management",
+        "Create and manage lifecycle hooks that inject context on events.",
+    ),
 }
 
 # The curated default-checked kit set: the six kits that existed when the

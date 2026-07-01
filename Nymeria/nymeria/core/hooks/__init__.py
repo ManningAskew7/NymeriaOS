@@ -33,6 +33,8 @@ from .dispatch import (
     tool_hooks_active,
     unregister,
 )
+from .actions import ACTIONS, inject_context
+from .bridge import build_registry
 from .registry import HookRegistry, Registration
 from .scratch import ScratchStore
 
@@ -62,4 +64,8 @@ __all__ = [
     "tool_hooks_active",
     "default_registry",
     "default_scratch",
+    # actions + bridge (product surface)
+    "inject_context",
+    "ACTIONS",
+    "build_registry",
 ]

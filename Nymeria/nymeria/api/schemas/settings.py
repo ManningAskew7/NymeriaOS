@@ -120,6 +120,7 @@ class ServerSettingsResponse(BaseModel):
     llm_extended_thinking: bool = False
     dynamic_tool_binding: bool = True
     sequential_tool_execution: bool = False
+    hooks_enabled: bool = True
     llm_use_model_defaults: bool = False
     llm_base_url: Optional[str] = None
     llm_context_length: Optional[int] = None
@@ -193,6 +194,7 @@ class ServerSettingsUpdate(BaseModel):
     llm_extended_thinking: Optional[bool] = None
     dynamic_tool_binding: Optional[bool] = None
     sequential_tool_execution: Optional[bool] = None
+    hooks_enabled: Optional[bool] = None
     llm_use_model_defaults: Optional[bool] = None
     llm_base_url: Optional[str] = None
     llm_context_length: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)

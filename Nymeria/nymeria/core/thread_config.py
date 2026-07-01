@@ -249,6 +249,12 @@ class ThreadConfig(BaseModel):
     # global default. (The run_tools_in_order control tool still forces a single
     # batch sequential even when this is None/False.)
     sequential_tool_execution: Optional[bool] = Field(default=None)
+    # Per-thread lifecycle-hook enablement. ``hook_overrides`` maps a hook id to
+    # a per-thread on/off that beats the hook's own ``enabled`` default (absent =
+    # inherit). ``hooks_enabled`` is a per-thread override of the global
+    # HOOKS_ENABLED master kill switch (None inherits the global).
+    hook_overrides: Dict[str, bool] = Field(default_factory=dict)
+    hooks_enabled: Optional[bool] = Field(default=None)
     # Per-thread claude_code overrides. None inherits the global
     # NYMERIA_CLAUDE_CODE_MODEL / NYMERIA_CLAUDE_CODE_DEFAULT_MODE. The host
     # runner stays the policy authority for the model (allowlist/budget) in
@@ -337,6 +343,10 @@ class ThreadConfig(BaseModel):
         if self.image_window_size is not None:
             return True
         if self.sequential_tool_execution is not None:
+            return True
+        if self.hook_overrides:
+            return True
+        if self.hooks_enabled is not None:
             return True
         if self.claude_code_model is not None or self.claude_code_mode is not None:
             return True

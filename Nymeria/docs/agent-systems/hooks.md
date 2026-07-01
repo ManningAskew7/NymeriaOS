@@ -1,12 +1,68 @@
-# Lifecycle Hooks (engine spine)
+# Lifecycle Hooks
 
 Nymeria has a Claude-Code-style lifecycle-hooks engine: small pieces of logic that
-run at defined moments in an agent turn and can observe or steer it. This document
-describes the **engine spine** that shipped first: the machinery only, wired to
-in-process fixtures. The user-facing surface (creating/toggling hooks) and the
-ready-made action vocabulary land in a later pass.
+run at defined moments in an agent turn and can observe or steer it. The engine spine
+shipped first (the machinery, wired to in-process fixtures); the first product surface
+then landed on top of it: a single canned action, **`inject_context`**, that a user or
+the agent can attach to an event so it injects a string into the model's context. This
+document covers both the engine and that first action. The wider action vocabulary and
+the `nym` workflow substrate land in later passes.
 
 Full design and rationale: `docs/private/plans/lifecycle-hooks.md`.
+
+## The `inject_context` action (product surface)
+
+One action ships today. A hook created with it injects a string into the model's
+context when its event fires, over three of the four events:
+
+| Event | Where the text lands |
+| --- | --- |
+| `prompt_submit` | appended to the model-facing message tail at every turn start |
+| `post_tool_use` | appended to the matching tool's result (scope with `matcher`) |
+| `done` | re-driven as one follow-up prompt when the turn finishes |
+
+`PRE_TOOL_USE` is not an injection target. The text is **static or templated**:
+`{placeholder}` tokens interpolate from the event context (`{tool_name}`,
+`{tool_result}`, `{tool_status}`, `{tool_args}`, `{prompt}`, `{final_text}`,
+`{thread_id}`, `{user_id}`, `{event}`); unknown placeholders and brace-free text pass
+through verbatim (`core/text_format.py::safe_format`, shared with triggers).
+
+The action is store-agnostic: `core/hooks/actions.py::inject_context` maps the event to
+the matching outcome family, and `core/hooks/bridge.py::build_registry` turns a user's
+enabled `HookDefinition` records into a per-turn `HookRegistry`. The engine below never
+learns about the store.
+
+### Authoring
+
+Two surfaces write the same per-user JSON store (`data_dir/hooks/<user>.json`, one file
+per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
+
+- **Agent tools** (`tools/hooks.py`, opt-in `CATALOG_TOOLS`): `hook_config`
+  (create/update/delete) and `hook_info` (list/detail/test). A create auto-binds the
+  current thread for `scope="thread"` (including the real `default` thread); `test`
+  renders the text against sample data without firing. The `hook-management` bundled
+  skill front-loads these.
+- **REST** (`api/routers/hooks.py`, mounted at `/hooks`): pure CRUD plus
+  `POST /hooks/{id}/test`. Every handler pins `user_id` to the authenticated caller;
+  scoped creates pass through the thread-access gate. There is no webhook/fire endpoint
+  (hooks fire in-process only).
+
+### Enable model
+
+A hook is active on a turn only if every layer says so, resolved by
+`core/agent_safety.py::get_effective_hook_enabled` (never raises), mirroring
+`sequential_tool_execution`:
+
+1. **Master kill switch** — `Settings.hooks_enabled` (env `HOOKS_ENABLED`, default on),
+   overridable per-thread by `ThreadConfig.hooks_enabled` (`Optional[bool]`). Off ⇒ no
+   hook fires on that thread.
+2. **Per-thread per-hook override** — `ThreadConfig.hook_overrides[hook_id]` (a
+   `Dict[str, bool]`) flips one hook on/off for one thread.
+3. **The hook's own flag** — `HookDefinition.enabled` (the global default).
+
+Both thread fields are set/cleared through `PATCH /threads/{id}/config`
+(`hooks_enabled`, `hook_overrides`, and their `clear_*` twins); the master switch is a
+`PATCH /settings` field.
 
 ## The model: when → logic → return
 
@@ -99,18 +155,22 @@ rather than a parallel re-drive.
   `finally`, where `await`/`yield` are forbidden during GeneratorExit), so it fires
   exactly once per normal turn and *not* on error/cancel (a documented limitation; the
   error/cancel observe path is a follow-up). DONE **continue** lives only in the
-  astream drain loop's settle point: the sync `chat` path fires `DONE` observe but
-  cannot continue (it has no drain loop). `DoneOutcome.user_message` is reduced but not
-  yet delivered out-of-band; it is reserved for the product pass.
+  astream drain loop's settle point (`_maybe_done_continuation`, async). The sync `chat`
+  path fires `DONE` observe but does not yet continue: it has a queued-prompt drain loop,
+  but the continuation dispatch is async-only, so wiring it needs a sync dispatch twin and
+  in-loop depth tracking (deferred). Practical impact: a `done` hook re-drives on the
+  streaming (SSE/desktop) path but is inert on non-streaming transports (the webhook bots,
+  non-streaming `/chat`, callable threads); `prompt_submit` and `post_tool_use` hooks work
+  on both paths. `DoneOutcome.user_message` is reduced but not yet delivered out-of-band;
+  it is reserved for a later pass.
 
-## What is deferred (not in the spine)
+## What is deferred (not yet shipped)
 
-- Persisted `HookDefinition` records + storage + a `@tool`/REST/UI authoring surface.
-- The ready-made **action vocabulary** (inject_text, block_if_matches, rewrite_arg,
-  append_result_note, notify, webhook, run_command, ...) and presets.
-- The **enable model**: a per-hook global default + per-thread `Optional[bool]` override
-  (the `sequential_tool_execution` pattern), resolved by a `get_effective_hook_enabled`
-  helper. Until then, in-process registrations are active by being registered.
+- The wider ready-made **action vocabulary** beyond `inject_context` (block_if_matches,
+  rewrite_arg, notify, webhook, run_command, ...) and presets. `PRE_TOOL_USE` therefore
+  still has no product action (the spine can veto/modify, but nothing authors it yet).
+- A **frontend UI** for authoring/toggling hooks (the tool + REST surfaces exist; no
+  desktop/mobile panel yet).
 - The `nym` **workflow** logic substrate (sandboxed, out-of-process).
 - Full turn-source threading into the tool-hook context (tool hooks currently read
   `is_autonomous`/`holder_kind` only if a caller threaded them into the run config).
@@ -125,5 +185,19 @@ rather than a parallel re-drive.
 
 ## Package
 
-`core/hooks/`: `base.py` (contract), `registry.py` (in-process registry),
-`scratch.py` (per-thread store), `dispatch.py` (planes + reduction + fault policy).
+- `core/hooks/`: `base.py` (contract), `registry.py` (in-process registry),
+  `scratch.py` (per-thread store), `dispatch.py` (planes + reduction + fault policy),
+  `actions.py` (`inject_context`), `bridge.py` (definitions → per-turn registry).
+- `core/hook_manager.py`: `HookDefinition`/`HookLogic`/`HookStore` records + the
+  per-user `HookManager` (store-only, no engine import).
+- `core/text_format.py`: `safe_format` template substitution (shared with triggers).
+- Authoring: `tools/hooks.py` (`hook_config`/`hook_info`), `api/routers/hooks.py`
+  (`/hooks` CRUD), `skills_bundled/hook-management/`.
+- Enable model: `Settings.hooks_enabled`, `ThreadConfig.hooks_enabled` /
+  `hook_overrides`, `core/agent_safety.py::get_effective_hook_enabled`.
+
+The per-turn wiring lives in `core/agent.py::_hook_registry_for_turn` (loads a user's
+enabled hooks, mtime-cached, and builds the registry) and
+`core/agent_safety.py::graph_run_config` (stamps `configurable["hook_registry"]`); every
+fire point falls back to the empty `default_registry` when no per-turn registry is set,
+so a user with no enabled hooks runs byte-identically to the spine.

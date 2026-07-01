@@ -339,6 +339,14 @@ def create_thread_config_router(
             tc.sequential_tool_execution = None
         elif request.sequential_tool_execution is not None:
             tc.sequential_tool_execution = request.sequential_tool_execution
+        if request.clear_hooks_enabled:
+            tc.hooks_enabled = None
+        elif request.hooks_enabled is not None:
+            tc.hooks_enabled = request.hooks_enabled
+        if request.clear_hook_overrides:
+            tc.hook_overrides = {}
+        elif request.hook_overrides is not None:
+            tc.hook_overrides = request.hook_overrides
         if request.clear_claude_code_model:
             tc.claude_code_model = None
         elif request.claude_code_model is not None:

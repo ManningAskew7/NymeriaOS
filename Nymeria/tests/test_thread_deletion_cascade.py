@@ -12,6 +12,7 @@ from nymeria.core.accounts import AccountsRepo
 from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.activity_log import ActivityLog, ActivityType
 from nymeria.core.fcm import load_tokens, save_tokens
+from nymeria.core.hook_manager import HookManager
 from nymeria.core.notifications import NotificationStore
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.core.thread_deletion import ThreadDeletionResult, cascade_delete_thread
@@ -215,6 +216,20 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path, a
         TriggerExecution(trigger_id=trigger.id, trigger_name=trigger.name),
     )
 
+    # Lifecycle hooks: a thread-scoped hook on the doomed thread (removed), plus a
+    # global hook and a survivor-thread hook (both kept). Exercises the fallback
+    # HookManager construction (agent has no hook_manager).
+    hook_manager = HookManager(tmp_path)
+    doomed_hook = hook_manager.add_hook(
+        "default", name="doomed", event="done", text="x", scope="thread", thread_id=target
+    )
+    hook_manager.add_hook(
+        "default", name="global", event="done", text="x", scope="global"
+    )
+    hook_manager.add_hook(
+        "default", name="kept", event="done", text="x", scope="thread", thread_id=survivor
+    )
+
     ActivityLog(tmp_path).log(ActivityType.TASK_COMPLETED, "old", "default", thread_id=target)
     ActivityLog(tmp_path).log(ActivityType.TASK_COMPLETED, "new", "default", thread_id=survivor)
     NotificationStore(tmp_path).create("default", "old", thread_id=target)
@@ -271,6 +286,11 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path, a
     assert trigger_manager.get_trigger("default", trigger.id) is None
     assert trigger_manager.get_trigger("default", survivor_trigger.id) is not None
     assert trigger_manager.get_executions("default", trigger_id=trigger.id) == []
+
+    assert result.deleted["hooks_deleted"] == 1
+    assert hook_manager.get_hook("default", doomed_hook.id) is None
+    remaining_hooks = {h.name for h in hook_manager.get_hooks("default")}
+    assert remaining_hooks == {"global", "kept"}
 
     assert agent.accounts_repo.get_thread_owner(target) is None
     assert agent.accounts_repo.get_thread_owner(survivor) == "default"

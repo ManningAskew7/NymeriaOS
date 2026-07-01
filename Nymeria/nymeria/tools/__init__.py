@@ -78,6 +78,11 @@ from .triggers import (
     trigger_info,
     TRIGGER_TOOLS,
 )
+from .hooks import (
+    hook_config,
+    hook_info,
+    HOOK_TOOLS,
+)
 from .hello_test import hello_test
 from .regression_echo import regression_echo
 from .google_docs import GOOGLE_DOCS_TOOLS
@@ -1402,6 +1407,7 @@ CATALOG_TOOLS = {t.name: t for t in (
     + OUTLOOK_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
+    + HOOK_TOOLS
     + BROWSER_TOOLS
     + CHROME_BROWSER_TOOLS
     + CALENDAR_TOOLS
@@ -2766,6 +2772,9 @@ __all__ = [
     "trigger_config",
     "trigger_info",
     "TRIGGER_TOOLS",
+    "hook_config",
+    "hook_info",
+    "HOOK_TOOLS",
     "EMAIL_TOOLS",
     "OUTLOOK_TOOLS",
     "BROWSER_TOOLS",

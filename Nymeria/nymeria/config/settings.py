@@ -686,6 +686,14 @@ class Settings(BaseSettings):
             "control tool; overridable per-thread."
         ),
     )
+    hooks_enabled: bool = Field(
+        default=True,
+        description=(
+            "Master kill switch for lifecycle hooks. When off, no hook fires on "
+            "any thread (a debug/escape hatch). Individual hooks have their own "
+            "enabled flag; this sits on top. Overridable per-thread."
+        ),
+    )
     llm_use_model_defaults: bool = Field(
         default=False,
         description="Use model-specific defaults for temperature/top_p/frequency_penalty instead of global values"
