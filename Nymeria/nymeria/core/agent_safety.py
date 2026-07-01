@@ -173,6 +173,10 @@ def graph_run_config(
     thread_id: str,
     user_id: str,
     callbacks: Optional[List[Any]] = None,
+    *,
+    hook_is_autonomous: Optional[bool] = None,
+    hook_holder_kind: Optional[str] = None,
+    hook_trigger_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     max_iterations = agent._max_iterations_for_thread(thread_id)
     settings = getattr(agent, "settings", None)
@@ -189,6 +193,17 @@ def graph_run_config(
             "sequential_tools": sequential_tools,
         },
     }
+    # Thread the turn source through to tool-event hooks. ``_build_tool_hook_ctx``
+    # (nodes.py) reads these off ``configurable`` so a PRE/POST tool hook can scope
+    # by autonomous-vs-interactive / holder / trigger. Stamped only when the caller
+    # knows the source (the graph-run sites), so read-only/no-source callers leave
+    # the config unchanged.
+    if hook_is_autonomous is not None:
+        config["configurable"]["hook_is_autonomous"] = bool(hook_is_autonomous)
+    if hook_holder_kind is not None:
+        config["configurable"]["hook_holder_kind"] = hook_holder_kind
+    if hook_trigger_label is not None:
+        config["configurable"]["hook_trigger_label"] = hook_trigger_label
     # Stamp the per-turn hook registry so the tool node (which only sees the run
     # config) can dispatch this thread's enabled hooks. Only when non-None, so a
     # turn with no enabled hooks leaves the config byte-identical to before.

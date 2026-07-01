@@ -1661,8 +1661,10 @@ class SafeToolNode(ToolNode):
         """Build a PRE/POST tool HookContext from the call + run config.
 
         thread_id/user_id come from the run config's ``configurable``; turn-source
-        fields (``hook_is_autonomous`` etc.) are read if a caller threaded them,
-        else defaulted (that wiring is a follow-up; the contract fields exist now).
+        fields (``hook_is_autonomous``/``hook_holder_kind``/``hook_trigger_label``)
+        are stamped there by ``agent_safety.graph_run_config`` for graph-run turns
+        and default when absent (e.g. a read-only state fetch), so a tool hook can
+        scope by autonomous-vs-interactive / holder / trigger.
         """
         from ...core import hooks
 

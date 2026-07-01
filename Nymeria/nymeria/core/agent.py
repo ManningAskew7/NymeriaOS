@@ -701,6 +701,85 @@ class NymeriaAgent:
             return None
         return getattr(outcome, "reason", None) or None
 
+    def _done_continuation_ctx(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        is_autonomous: bool,
+        holder_kind: Optional[str],
+        final_text: str,
+        continuation_depth: int,
+    ):
+        """Build the DONE HookContext for a mutate dispatch, stamping loop lineage."""
+        from .hooks import HookProvenance
+        return self._done_context(
+            thread_id=thread_id,
+            user_id=user_id,
+            is_autonomous=is_autonomous,
+            holder_kind=holder_kind,
+            completed_normally=True,
+            final_text=final_text,
+            provenance=HookProvenance(
+                done_continuation_active=continuation_depth > 0,
+                continuation_depth=continuation_depth,
+            ),
+        )
+
+    def _deliver_hook_user_message(
+        self, user_id: str, thread_id: str, text: str
+    ) -> None:
+        """Deliver a DONE hook's ``user_message`` out-of-band (in-app + push).
+
+        The DONE reduction can carry a ``user_message`` (a hook messaging the user
+        directly, distinct from the ``reason`` that re-drives the model). Routes it
+        through the same notification surface the ``notify`` action uses, bypassing
+        the autonomous-suppression gate so it always reaches the user. Never raises.
+        """
+        text = str(text or "").strip()
+        if not text:
+            return
+        try:
+            from .notifications import create_notification
+            create_notification(
+                user_id=user_id or "",
+                summary=text[:200],
+                thread_id=thread_id or "",
+                task_id=None,
+            )
+            if getattr(self.settings, "fcm_enabled", False):
+                from .fcm import send_to_all_devices
+                send_to_all_devices(
+                    data_dir=str(self.settings.data_dir),
+                    text=text,
+                    thread_id=thread_id or "",
+                    user_id=user_id or "",
+                )
+        except Exception:
+            logger.debug("DONE hook user_message delivery failed", exc_info=True)
+
+    def _continuation_prompt_from_outcome(self, outcome, *, continuation_depth: int, user_id: str):
+        """Build the continuation ``PendingPrompt`` from a reduced DONE outcome (or None).
+
+        Pure (no side effects): ``user_message`` delivery is the twin's job, because
+        the sync twin calls it directly while the async twin must offload the blocking
+        notification/FCM work off the event loop.
+        """
+        reason = self._resolve_done_continuation(
+            outcome, continuation_depth, self.MAX_DONE_CONTINUATIONS
+        )
+        if not reason:
+            return None
+        from .pending_prompt_queue import make_pending_prompt
+        return make_pending_prompt(
+            message=reason,
+            source="hook_continuation",
+            source_id=None,
+            source_label="Hook Continuation",
+            user_id=user_id,
+            is_autonomous=True,
+        )
+
     async def _maybe_done_continuation(
         self,
         *,
@@ -722,44 +801,150 @@ class NymeriaAgent:
         only in the per-turn registry would never fire, since the production
         ``default_registry`` is empty.
         """
-        from .hooks import HookEvent, HookProvenance, adispatch, default_registry
+        from .hooks import HookEvent, adispatch, default_registry
         reg = registry or default_registry
         if not reg.has_mutating(HookEvent.DONE):
             return None
         try:
             outcome = await adispatch(
                 HookEvent.DONE,
-                self._done_context(
+                self._done_continuation_ctx(
                     thread_id=thread_id,
                     user_id=user_id,
                     is_autonomous=is_autonomous,
                     holder_kind=holder_kind,
-                    completed_normally=True,
                     final_text=final_text,
-                    provenance=HookProvenance(
-                        done_continuation_active=continuation_depth > 0,
-                        continuation_depth=continuation_depth,
-                    ),
+                    continuation_depth=continuation_depth,
                 ),
                 registry=reg,
             )
         except Exception:
             logger.debug("DONE continue dispatch failed", exc_info=True)
             return None
-        reason = self._resolve_done_continuation(
-            outcome, continuation_depth, self.MAX_DONE_CONTINUATIONS
-        )
-        if not reason:
+        if outcome is None:
             return None
-        from .pending_prompt_queue import make_pending_prompt
-        return make_pending_prompt(
-            message=reason,
-            source="hook_continuation",
-            source_id=None,
-            source_label="Hook Continuation",
-            user_id=user_id,
-            is_autonomous=True,
+        user_message = getattr(outcome, "user_message", None)
+        if user_message:
+            # Offload the blocking notification + FCM delivery so a `done` hook's
+            # user_message never stalls the shared event loop mid-stream.
+            try:
+                await asyncio.to_thread(
+                    self._deliver_hook_user_message, user_id, thread_id, user_message
+                )
+            except Exception:
+                logger.debug("DONE hook user_message offload failed", exc_info=True)
+        return self._continuation_prompt_from_outcome(
+            outcome, continuation_depth=continuation_depth, user_id=user_id
         )
+
+    def _maybe_done_continuation_sync(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        is_autonomous: bool,
+        holder_kind: Optional[str],
+        final_text: str,
+        continuation_depth: int,
+        registry=None,
+    ):
+        """Sync twin of :meth:`_maybe_done_continuation` for the no-loop ``chat``
+        path (webhook bots, non-streaming ``/chat``, callable threads).
+
+        Uses the sync ``dispatch`` so ``done`` continuation + ``user_message``
+        delivery work on the sync path exactly as on the streaming path. Same loop
+        guard, same enqueue-and-redrive contract; returns a ``PendingPrompt`` or None.
+        """
+        from .hooks import HookEvent, default_registry, dispatch
+        reg = registry or default_registry
+        if not reg.has_mutating(HookEvent.DONE):
+            return None
+        try:
+            outcome = dispatch(
+                HookEvent.DONE,
+                self._done_continuation_ctx(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    is_autonomous=is_autonomous,
+                    holder_kind=holder_kind,
+                    final_text=final_text,
+                    continuation_depth=continuation_depth,
+                ),
+                registry=reg,
+            )
+        except Exception:
+            logger.debug("DONE continue dispatch failed (sync)", exc_info=True)
+            return None
+        if outcome is None:
+            return None
+        user_message = getattr(outcome, "user_message", None)
+        if user_message:
+            # No event loop on the sync path -> deliver directly (never raises).
+            self._deliver_hook_user_message(user_id, thread_id, user_message)
+        return self._continuation_prompt_from_outcome(
+            outcome, continuation_depth=continuation_depth, user_id=user_id
+        )
+
+    def _fire_done_observe_sync(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        is_autonomous: bool,
+        holder_kind: Optional[str],
+        completed_normally: bool,
+        final_text: str,
+    ) -> None:
+        """Fire the DONE observe plane on the sync path (fire-and-forget, never raises).
+
+        ``completed_normally`` lets the error path fire a DONE(observe) too, so a
+        ``notify``/``webhook`` on ``done`` can react to a failed turn, not only a
+        clean one. Observe returns are ignored; a hook fault is swallowed.
+        """
+        try:
+            from .hooks import HookEvent, dispatch_observe
+            dispatch_observe(
+                HookEvent.DONE,
+                self._done_context(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    is_autonomous=is_autonomous,
+                    holder_kind=holder_kind,
+                    completed_normally=completed_normally,
+                    final_text=final_text or "",
+                ),
+                registry=self._hook_registry_for_turn(thread_id, user_id),
+            )
+        except Exception:
+            logger.debug("DONE observe hook dispatch failed (sync)", exc_info=True)
+
+    async def _fire_done_observe(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        is_autonomous: bool,
+        holder_kind: Optional[str],
+        completed_normally: bool,
+        final_text: str,
+    ) -> None:
+        """Fire the DONE observe plane on the async path (fire-and-forget, never raises)."""
+        try:
+            from .hooks import HookEvent, adispatch_observe
+            await adispatch_observe(
+                HookEvent.DONE,
+                self._done_context(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    is_autonomous=is_autonomous,
+                    holder_kind=holder_kind,
+                    completed_normally=completed_normally,
+                    final_text=final_text or "",
+                ),
+                registry=self._hook_registry_for_turn(thread_id, user_id),
+            )
+        except Exception:
+            logger.debug("DONE observe hook dispatch failed (async)", exc_info=True)
 
     def _get_memory_index(self, user_id: str) -> Optional[MemoryIndex]:
         from .agent_prompt import get_memory_index
@@ -818,9 +1003,21 @@ class NymeriaAgent:
         thread_id: str,
         user_id: str,
         callbacks: Optional[List[Any]] = None,
+        *,
+        hook_is_autonomous: Optional[bool] = None,
+        hook_holder_kind: Optional[str] = None,
+        hook_trigger_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         from .agent_safety import graph_run_config
-        return graph_run_config(self, thread_id, user_id, callbacks=callbacks)
+        return graph_run_config(
+            self,
+            thread_id,
+            user_id,
+            callbacks=callbacks,
+            hook_is_autonomous=hook_is_autonomous,
+            hook_holder_kind=hook_holder_kind,
+            hook_trigger_label=hook_trigger_label,
+        )
 
     def _hook_registry_for_turn(self, thread_id: str, user_id: str):
         """Build this turn's hook registry from the user's enabled definitions.
@@ -1877,7 +2074,14 @@ class NymeriaAgent:
             # Pass user_id through config for tools to access
             # callbacks=[] prevents LLM events from leaking into a parent
             # astream_events() when chat() is called from inside a tool
-            config = self._graph_run_config(thread_id, user_id, callbacks=[])
+            config = self._graph_run_config(
+                thread_id,
+                user_id,
+                callbacks=[],
+                hook_is_autonomous=is_autonomous_source,
+                hook_holder_kind=source,
+                hook_trigger_label=_trigger_override,
+            )
 
             # Fresh-thread memory init (sync path: MCP, bots, triggers, CLI).
             self._seed_memory_init_if_empty_sync(graph, config, thread_id, user_id)
@@ -2074,16 +2278,45 @@ class NymeriaAgent:
                 if self.settings.context_management == "sliding_window":
                     self.trim_context_window(thread_id, user_id=user_id)
 
-                # Close the enqueue window before releasing the lock. Any
-                # contender that races with this phase waits for the lock and
-                # runs as the next turn; prompts that already queued are drained
-                # one final time so they are not stranded.
-                backend.begin_release(thread_id)
+                # Drain any queued prompts, and before closing the enqueue window
+                # give DONE-continue hooks a chance to extend the turn. This mirrors
+                # the async drain loop (astream): begin_release is DEFERRED until
+                # after the continuation check, so a `done` hook re-drives on the
+                # sync path (webhook bots, non-streaming /chat, callable threads) the
+                # same way it does while streaming. The two-layer loop guard
+                # (provenance flag + hard cap) bounds continuations; contenders that
+                # race past begin_release wait for the lock and run as the next turn.
                 backend.consume_halt_observation(thread_id)
+                continuation_depth = 0
                 while True:
                     pending_batch = backend.drain(thread_id)
                     if not pending_batch:
-                        break
+                        cont_prompt = self._maybe_done_continuation_sync(
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            is_autonomous=is_autonomous_source,
+                            holder_kind=source,
+                            final_text=response or "",
+                            continuation_depth=continuation_depth,
+                            registry=self._hook_registry_for_turn(thread_id, user_id),
+                        )
+                        if cont_prompt is not None:
+                            continuation_depth += 1
+                            try:
+                                backend.enqueue(thread_id, cont_prompt)
+                            except PendingPromptQueueClosingError:
+                                # Benign race: release began between the drain check
+                                # and here; the continuation is simply not re-driven
+                                # and the turn ends normally.
+                                pass
+                            else:
+                                continue
+                        # Close the enqueue window, then drain once more so prompts
+                        # that already queued are not stranded.
+                        backend.begin_release(thread_id)
+                        pending_batch = backend.drain(thread_id)
+                        if not pending_batch:
+                            break
                     new_messages = [
                         _create_human_message(
                             f"{queued_prompt_header(p)}\n\n{p.message}",
@@ -2110,6 +2343,19 @@ class NymeriaAgent:
                                 })
                                 p.fanout_mailbox.close()
                             p.notify_event.set()
+                        # begin_release is deferred (see the loop header), so on this
+                        # early break the enqueue window may still be open and the turn
+                        # ends completed_normally=True (skipping the finally's defensive
+                        # clear). Close the window and clear here so a prompt that raced
+                        # in is woken (abandoned), not stranded until lock_timeout. (The
+                        # async twin instead re-raises, leaving the finally to clear.)
+                        backend.begin_release(thread_id)
+                        try:
+                            backend.clear(thread_id, abandoned=True)
+                        except Exception:
+                            logger.debug(
+                                "post-inject-failure queue clear failed", exc_info=True
+                            )
                         break
                     for p in pending_batch:
                         if p.fanout_mailbox is not None:
@@ -2121,23 +2367,16 @@ class NymeriaAgent:
                             response, _ = _extract_content_parts(msg.content)
                             break
 
-                # DONE lifecycle hooks (observe plane, sync path).
-                try:
-                    from .hooks import HookEvent, dispatch_observe as _hook_observe
-                    _hook_observe(
-                        HookEvent.DONE,
-                        self._done_context(
-                            thread_id=thread_id,
-                            user_id=user_id,
-                            is_autonomous=is_autonomous_source,
-                            holder_kind=source,
-                            completed_normally=True,
-                            final_text=response or "",
-                        ),
-                        registry=self._hook_registry_for_turn(thread_id, user_id),
-                    )
-                except Exception:
-                    logger.debug("DONE observe hook dispatch failed (sync)", exc_info=True)
+                # DONE lifecycle hooks (observe plane, sync path). Fires once the
+                # continuation loop settles, on normal completion.
+                self._fire_done_observe_sync(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    is_autonomous=is_autonomous_source,
+                    holder_kind=source,
+                    completed_normally=True,
+                    final_text=response or "",
+                )
 
                 completed_normally = True
                 return response
@@ -2172,6 +2411,17 @@ class NymeriaAgent:
                         compact_result.get("reason", compact_result),
                     )
                 logger.error(f"Error in chat: {e}", exc_info=True)
+                # DONE observe on the error path: a `done` notify/webhook hook can
+                # react to a failed turn too. completed_normally=False marks it as
+                # an error end. (The successful-overflow branch returned above.)
+                self._fire_done_observe_sync(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    is_autonomous=is_autonomous_source,
+                    holder_kind=source,
+                    completed_normally=False,
+                    final_text="",
+                )
                 error_event = self._classify_stream_exception(e)
                 return str(error_event.get("content") or f"An error occurred: {str(e)}")
         finally:
@@ -2455,7 +2705,9 @@ class NymeriaAgent:
                 user_id, thread_id=thread_id
             )
 
-            # Pre-flight: patch any dangling tool calls from previous aborted runs
+            # Pre-flight: patch any dangling tool calls from previous aborted runs.
+            # (No tool hooks run here, so the turn source is threaded into the real
+            # run config below, not this one.)
             config = self._graph_run_config(thread_id, user_id)
             try:
                 patched = self._patch_dangling_tool_calls(graph, config)
@@ -2578,8 +2830,17 @@ class NymeriaAgent:
             if context_summary_for_ui:
                 yield {"type": "context_attached", "summary": context_summary_for_ui}
 
-            # Pass user_id through config for tools to access.
-            config = self._graph_run_config(thread_id, user_id)
+            # Pass user_id through config for tools to access. This is the config
+            # handed to GraphStreamProcessor and used for the actual stream, so the
+            # turn source is threaded HERE (a tool hook reads it via
+            # _build_tool_hook_ctx); the pre-flight config above does not run tools.
+            config = self._graph_run_config(
+                thread_id,
+                user_id,
+                hook_is_autonomous=is_autonomous_source,
+                hook_holder_kind=source,
+                hook_trigger_label=_trigger_override,
+            )
 
             # Track final response for RAG indexing.
             # Mutated by GraphStreamProcessor across every graph invocation
@@ -3000,22 +3261,14 @@ class NymeriaAgent:
                 # completion, still holding the lock, before the finally releases
                 # it. Runs here (not the finally) so it can await async hooks:
                 # await/yield are forbidden during the finally's GeneratorExit.
-                try:
-                    from .hooks import HookEvent, adispatch_observe as _hook_aobserve
-                    await _hook_aobserve(
-                        HookEvent.DONE,
-                        self._done_context(
-                            thread_id=thread_id,
-                            user_id=user_id,
-                            is_autonomous=is_autonomous_source,
-                            holder_kind=source,
-                            completed_normally=True,
-                            final_text="".join(final_response_parts),
-                        ),
-                        registry=self._hook_registry_for_turn(thread_id, user_id),
-                    )
-                except Exception:
-                    logger.debug("DONE observe hook dispatch failed (async)", exc_info=True)
+                await self._fire_done_observe(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    is_autonomous=is_autonomous_source,
+                    holder_kind=source,
+                    completed_normally=True,
+                    final_text="".join(final_response_parts),
+                )
 
                 completed_normally = True
 
@@ -3061,6 +3314,21 @@ class NymeriaAgent:
                     self._record_turn_usage(thread_id, user_id, result_messages)
                 except Exception:
                     logger.debug("Failed to extract token usage after stream error")
+
+                # DONE observe on the error path: a `done` notify/webhook hook can
+                # react to a failed turn too. completed_normally=False marks it as
+                # an error end. Safe to await here (a normal except block, not the
+                # GeneratorExit finally). (The successful-overflow branch returned
+                # above; cancel/GeneratorExit stays deferred -- no await allowed
+                # there, and a slow observe hook must not delay the force-close.)
+                await self._fire_done_observe(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    is_autonomous=is_autonomous_source,
+                    holder_kind=source,
+                    completed_normally=False,
+                    final_text="".join(final_response_parts),
+                )
         finally:
             # Patch dangling tool_calls in finally so it runs even when the
             # async generator is force-closed (GeneratorExit from SSE disconnect).

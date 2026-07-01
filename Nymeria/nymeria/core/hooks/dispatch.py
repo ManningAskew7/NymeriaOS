@@ -24,8 +24,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
+import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import replace
 from typing import Awaitable, List, Optional, cast
 
@@ -48,9 +51,50 @@ logger = logging.getLogger(__name__)
 # blocking action must not stall a turn indefinitely.
 DEFAULT_HOOK_TIMEOUT = 5.0
 
-# Shared pool for running sync hooks off the event loop (async path) and for
-# bounding sync-path hooks with a timeout.
-_sync_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hook-sync")
+
+def _pool_workers(env_name: str, default: int = 4) -> int:
+    """Pool size from ``env_name``, clamped to a sane floor (bad value -> default)."""
+    try:
+        return max(1, int(os.environ.get(env_name, "") or default))
+    except (TypeError, ValueError):
+        return default
+
+
+# Pools for running sync hooks off the event loop (async path) and for bounding
+# sync-path hooks with a timeout. SCOPED PER PLANE so the two hook classes cannot
+# starve each other: a slow side-effect ``observe`` hook (e.g. a ``webhook`` that
+# hangs for its whole 4.5s budget) must not occupy the worker a fast mutate-plane
+# guardrail (``block_if_matches`` on the PRE seam) needs -- a starved PRE hook
+# times out and, being fail-closed, would deny every tool call. Separate pools
+# keep guardrails responsive under observe-side load.
+_mutate_pool = ThreadPoolExecutor(
+    max_workers=_pool_workers("HOOK_MUTATE_POOL_WORKERS"),
+    thread_name_prefix="hook-mutate",
+)
+_observe_pool = ThreadPoolExecutor(
+    max_workers=_pool_workers("HOOK_OBSERVE_POOL_WORKERS"),
+    thread_name_prefix="hook-observe",
+)
+
+
+class _HookTimeout(Exception):
+    """A hook exceeded its budget.
+
+    ``started`` distinguishes the two very different failure modes the plain
+    ``future.result(timeout)`` wait conflates:
+
+    - ``started=True``  -- the hook body ran but overran its execution budget
+      (a genuinely slow hook).
+    - ``started=False`` -- the hook never got a worker within the budget (the
+      pool is saturated by other hung hooks). The hook made no decision at all;
+      treating this as a guardrail *veto* would let one hung hook deny unrelated
+      tool calls, so it is logged distinctly.
+    """
+
+    def __init__(self, reg_name: Optional[str], *, started: bool):
+        phase = "executing" if started else "queued (pool saturated)"
+        super().__init__(f"hook {reg_name!r} timed out {phase}")
+        self.started = started
 
 # Module-level defaults shared by the fire points and tests.
 default_registry = HookRegistry()
@@ -112,7 +156,23 @@ def _legal(event: HookEvent, outcome: HookOutcome) -> bool:
 
 
 def _fault_outcome(event: HookEvent, reg: Registration, exc: BaseException) -> Optional[HookOutcome]:
-    """Fault policy: PRE fails closed (deny), others fail open (skip)."""
+    """Fault policy: PRE fails closed (deny), others fail open (skip).
+
+    A pool-saturation timeout (the hook never ran) is logged at error level and
+    carries a distinct deny reason, so operators can tell a starved dispatch pool
+    apart from a hook that actually raised or ran too long. It still fails closed
+    on PRE: a guardrail that could not be evaluated must not silently pass.
+    """
+    if isinstance(exc, _HookTimeout) and not exc.started:
+        logger.error(
+            "hook %r could not run on %s: dispatch pool saturated", reg.name, event.value
+        )
+        if event is HookEvent.PRE_TOOL_USE:
+            return PreToolOutcome(
+                decision="deny",
+                reason=f"hook '{reg.name}' could not run (dispatch pool saturated)",
+            )
+        return None
     logger.warning("hook %r raised on %s: %s", reg.name, event.value, exc, exc_info=True)
     if event is HookEvent.PRE_TOOL_USE:
         return PreToolOutcome(decision="deny", reason=f"hook '{reg.name}' error")
@@ -148,29 +208,68 @@ def _accept(
     outcomes.append(outcome)
 
 
-async def _arun_hook(reg: Registration, ctx: HookContext, timeout: float) -> Optional[HookOutcome]:
+async def _arun_hook(
+    reg: Registration, ctx: HookContext, timeout: float, pool: ThreadPoolExecutor
+) -> Optional[HookOutcome]:
     """Run one hook on the async path, bounding it by ``timeout``.
 
-    Async hooks are awaited; sync hooks are offloaded to a thread so a blocking
-    hook cannot stall the event loop (a real risk inside ``awrap_tool_call``).
+    Async hooks are awaited; sync hooks are offloaded to ``pool`` (a plane-scoped
+    executor) so a blocking hook cannot stall the event loop (a real risk inside
+    ``awrap_tool_call``). A timeout is re-raised as ``_HookTimeout`` carrying
+    whether the hook body ever started, so the fault layer can tell a slow hook
+    from a saturated pool.
     """
     if inspect.iscoroutinefunction(reg.fn):
         coro = cast(Awaitable[Optional[HookOutcome]], reg.fn(ctx))
-        return await asyncio.wait_for(coro, timeout=timeout)
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except (asyncio.TimeoutError, FuturesTimeoutError):
+            raise _HookTimeout(reg.name, started=True) from None
+    started = threading.Event()
+
+    def _runner() -> Optional[HookOutcome]:
+        started.set()
+        return cast(Optional[HookOutcome], reg.fn(ctx))
+
     # Use our own pool (not asyncio.to_thread's default executor) so a timed-out
     # sync hook's still-running thread cannot block event-loop shutdown.
     loop = asyncio.get_running_loop()
-    result = await asyncio.wait_for(loop.run_in_executor(_sync_pool, reg.fn, ctx), timeout=timeout)
+    try:
+        result = await asyncio.wait_for(loop.run_in_executor(pool, _runner), timeout=timeout)
+    except (asyncio.TimeoutError, FuturesTimeoutError):
+        raise _HookTimeout(reg.name, started=started.is_set()) from None
     return cast(Optional[HookOutcome], result)
 
 
-def _run_hook_sync(reg: Registration, ctx: HookContext, timeout: float) -> Optional[HookOutcome]:
-    """Run one hook on the sync path (no running loop), bounding it by ``timeout``."""
+def _run_hook_sync(
+    reg: Registration, ctx: HookContext, timeout: float, pool: ThreadPoolExecutor
+) -> Optional[HookOutcome]:
+    """Run one hook on the sync path (no running loop), bounding it by ``timeout``.
+
+    A ``future.result(timeout)`` wait conflates queue time with execution time, so
+    a hook stuck behind a saturated ``pool`` looks identical to a slow hook. The
+    ``started`` event separates them: on timeout, ``started.is_set()`` tells the
+    fault layer whether the hook actually ran (see ``_HookTimeout``).
+    """
     if inspect.iscoroutinefunction(reg.fn):
         coro = cast(Awaitable[Optional[HookOutcome]], reg.fn(ctx))
-        return asyncio.run(asyncio.wait_for(coro, timeout=timeout))
-    future = _sync_pool.submit(reg.fn, ctx)
-    return cast(Optional[HookOutcome], future.result(timeout=timeout))
+        try:
+            return asyncio.run(asyncio.wait_for(coro, timeout=timeout))
+        except (asyncio.TimeoutError, FuturesTimeoutError):
+            raise _HookTimeout(reg.name, started=True) from None
+    started = threading.Event()
+
+    def _runner() -> Optional[HookOutcome]:
+        started.set()
+        return cast(Optional[HookOutcome], reg.fn(ctx))
+
+    future = pool.submit(_runner)
+    try:
+        return cast(Optional[HookOutcome], future.result(timeout=timeout))
+    except FuturesTimeoutError:
+        # Drops it from the queue if still pending; a no-op once running.
+        future.cancel()
+        raise _HookTimeout(reg.name, started=started.is_set()) from None
 
 
 def _reduce(event: HookEvent, outcomes: List[HookOutcome]) -> Optional[HookOutcome]:
@@ -272,7 +371,7 @@ async def adispatch(
         # _accept runs inside the try so a malformed scratch_patch (or any other
         # post-run failure) is isolated per hook rather than crashing the turn.
         try:
-            outcome = await _arun_hook(reg, ctx, timeout)
+            outcome = await _arun_hook(reg, ctx, timeout, _mutate_pool)
             _accept(event, reg, outcome, ctx, scratch, outcomes)
         except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
             fault = _fault_outcome(event, reg, exc)
@@ -301,7 +400,7 @@ def dispatch(
         # _accept runs inside the try so a malformed scratch_patch (or any other
         # post-run failure) is isolated per hook rather than crashing the turn.
         try:
-            outcome = _run_hook_sync(reg, ctx, timeout)
+            outcome = _run_hook_sync(reg, ctx, timeout, _mutate_pool)
             _accept(event, reg, outcome, ctx, scratch, outcomes)
         except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
             fault = _fault_outcome(event, reg, exc)
@@ -331,7 +430,7 @@ async def adispatch_observe(
     ctx = _with_scratch(ctx, scratch)
     for reg in regs:
         try:
-            await _arun_hook(reg, ctx, timeout)
+            await _arun_hook(reg, ctx, timeout, _observe_pool)
         except Exception:  # noqa: BLE001 - observe never affects the turn
             logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
 
@@ -353,6 +452,6 @@ def dispatch_observe(
     ctx = _with_scratch(ctx, scratch)
     for reg in regs:
         try:
-            _run_hook_sync(reg, ctx, timeout)
+            _run_hook_sync(reg, ctx, timeout, _observe_pool)
         except Exception:  # noqa: BLE001 - observe never affects the turn
             logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)

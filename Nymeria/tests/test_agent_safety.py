@@ -124,6 +124,42 @@ def test_graph_run_config_injects_resolved_sequential_flag():
     assert config["configurable"]["sequential_tools"] is True
 
 
+def test_graph_run_config_stamps_turn_source():
+    # slice D5: the turn source is threaded into configurable so a tool hook can
+    # scope by autonomous-vs-interactive / holder / trigger.
+    agent = _GraphConfigFacadeAgent()
+    config = graph_run_config(
+        cast(Any, agent),
+        "thread-a",
+        "user-b",
+        hook_is_autonomous=True,
+        hook_holder_kind="ticker",
+        hook_trigger_label="Scheduled TODO",
+    )
+    conf = config["configurable"]
+    assert conf["hook_is_autonomous"] is True
+    assert conf["hook_holder_kind"] == "ticker"
+    assert conf["hook_trigger_label"] == "Scheduled TODO"
+
+
+def test_graph_run_config_stamps_autonomous_false():
+    # False is a meaningful value (interactive turn), so it is stamped, not dropped.
+    agent = _GraphConfigFacadeAgent()
+    config = graph_run_config(
+        cast(Any, agent), "thread-a", "user-b", hook_is_autonomous=False
+    )
+    assert config["configurable"]["hook_is_autonomous"] is False
+
+
+def test_graph_run_config_omits_turn_source_when_absent():
+    # A no-source caller (e.g. a read-only state fetch) leaves the config unchanged.
+    agent = _GraphConfigFacadeAgent()
+    conf = graph_run_config(cast(Any, agent), "thread-a", "user-b")["configurable"]
+    assert "hook_is_autonomous" not in conf
+    assert "hook_holder_kind" not in conf
+    assert "hook_trigger_label" not in conf
+
+
 class _SeqManager:
     def __init__(self, override: Any) -> None:
         self._override = override

@@ -281,7 +281,7 @@ def test_astream_reload_resume_streams_post_reload_tool_events():
     agent._get_time_context = lambda **kwargs: "[time]"
     agent._patch_dangling_tool_calls = lambda *args, **kwargs: 0
     agent.get_pending_summary = lambda thread_id: None
-    agent._graph_run_config = lambda thread_id, user_id: {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+    agent._graph_run_config = lambda thread_id, user_id, **kwargs: {"configurable": {"thread_id": thread_id, "user_id": user_id}}
     agent._clean_tool_result_for_display = lambda result: result
     agent._tool_result_extra_events = lambda *args, **kwargs: []
     agent._index_conversation_turn = lambda **kwargs: None
