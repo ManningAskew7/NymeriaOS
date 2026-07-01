@@ -6,13 +6,18 @@ None) comes back, and templating renders from the context.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from nymeria.core.hooks import HookContext, HookEvent
 from nymeria.core.hooks.actions import (
     ACTION_PLANES,
     ACTIONS,
     block_if_matches,
+    create_todo,
     inject_context,
+    notify,
     rewrite_arg,
+    webhook,
 )
 from nymeria.core.hooks.base import (
     DoneOutcome,
@@ -183,6 +188,103 @@ def test_block_never_raises_on_bad_params():
 def test_rewrite_never_raises_on_bad_conditions():
     assert rewrite_arg(_pre(tool_name="bash", tool_args={"command": "x"}),
                        {"conditions": [42], "updates": {"command": "y"}}) is None
+
+
+# --- observe-plane actions (notify / create_todo / webhook) -----------------
+
+def _done(**kw):
+    return _ctx(HookEvent.DONE, **kw)
+
+
+def test_observe_planes_registered():
+    assert ACTIONS["notify"] is notify
+    assert ACTIONS["create_todo"] is create_todo
+    assert ACTIONS["webhook"] is webhook
+    for a in ("notify", "create_todo", "webhook"):
+        assert ACTION_PLANES[a] == "observe"
+
+
+def test_notify_delivers_templated_and_returns_none():
+    ctx = _done(final_text="all good")
+    with patch("nymeria.core.notifications.create_notification") as cn, \
+         patch("nymeria.config.get_settings") as gs:
+        gs.return_value = MagicMock(fcm_enabled=False)
+        out = notify(ctx, {"text": "finished: {final_text}"})
+    assert out is None  # observe plane
+    assert cn.call_args.kwargs["summary"] == "finished: all good"
+    assert cn.call_args.kwargs["user_id"] == "u1"
+
+
+def test_notify_sends_push_when_fcm_enabled():
+    ctx = _done(final_text="ok")
+    with patch("nymeria.core.notifications.create_notification"), \
+         patch("nymeria.config.get_settings") as gs, \
+         patch("nymeria.core.fcm.send_to_all_devices") as fcm:
+        gs.return_value = MagicMock(fcm_enabled=True, data_dir="/tmp/x")
+        notify(ctx, {"text": "hi"})
+    assert fcm.called
+    assert fcm.call_args.kwargs["text"] == "hi"
+
+
+def test_notify_empty_text_is_noop():
+    with patch("nymeria.core.notifications.create_notification") as cn:
+        assert notify(_done(), {"text": "  "}) is None
+        assert notify(_done(), {}) is None
+    assert not cn.called
+
+
+def test_notify_never_raises_on_infra_failure():
+    with patch("nymeria.core.notifications.create_notification", side_effect=RuntimeError("boom")), \
+         patch("nymeria.config.get_settings") as gs:
+        gs.return_value = MagicMock(fcm_enabled=False)
+        assert notify(_done(), {"text": "hi"}) is None  # swallowed, not raised
+
+
+def test_create_todo_adds_templated_task():
+    ctx = _done(final_text="thing")
+    with patch("nymeria.tools.todo._get_todo_manager") as gm:
+        todo_list = MagicMock()
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=todo_list)
+        cm.__exit__ = MagicMock(return_value=False)
+        gm.return_value.atomic_update.return_value = cm
+        out = create_todo(ctx, {"text": "follow up on {final_text}"})
+    assert out is None
+    assert todo_list.add_item.call_args.kwargs == {
+        "task": "follow up on thing", "created_by": "hook", "thread_id": "t1"
+    }
+
+
+def test_create_todo_never_raises():
+    with patch("nymeria.tools.todo._get_todo_manager", side_effect=RuntimeError("x")):
+        assert create_todo(_done(), {"text": "t"}) is None
+
+
+def test_webhook_posts_via_egress_policy():
+    ctx = _ctx(HookEvent.POST_TOOL_USE, tool_name="Edit")
+    with patch("nymeria.core.http_policy.httpx_request_with_policy") as hp:
+        hp.return_value = (MagicMock(), [], MagicMock())
+        out = webhook(ctx, {"url": "https://example.com/{tool_name}", "text": "ran {tool_name}"})
+    assert out is None
+    args, kwargs = hp.call_args.args, hp.call_args.kwargs
+    assert args[0] == "POST"
+    assert args[1] == "https://example.com/Edit"  # url templated
+    assert kwargs["json"]["text"] == "ran Edit"
+
+
+def test_webhook_empty_url_is_noop():
+    with patch("nymeria.core.http_policy.httpx_request_with_policy") as hp:
+        assert webhook(_done(), {"url": "", "text": "x"}) is None
+        assert webhook(_done(), {"text": "x"}) is None
+    assert not hp.called
+
+
+def test_webhook_never_raises_on_failure():
+    # A blocked/private URL raises HTTPPolicyViolation; any request failure must
+    # be swallowed (observe never raises into a turn).
+    with patch("nymeria.core.http_policy.httpx_request_with_policy",
+               side_effect=RuntimeError("blocked by egress policy")):
+        assert webhook(_done(), {"url": "http://169.254.169.254/", "text": "x"}) is None
 
 
 # --- rewrite_arg (PRE modify) -----------------------------------------------

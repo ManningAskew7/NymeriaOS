@@ -37,8 +37,11 @@ from .actions import (
     ACTION_PLANES,
     ACTIONS,
     block_if_matches,
+    create_todo,
     inject_context,
+    notify,
     rewrite_arg,
+    webhook,
 )
 from .bridge import build_registry
 from .registry import HookRegistry, Registration
@@ -74,6 +77,9 @@ __all__ = [
     "inject_context",
     "block_if_matches",
     "rewrite_arg",
+    "notify",
+    "create_todo",
+    "webhook",
     "ACTIONS",
     "ACTION_PLANES",
     "build_registry",

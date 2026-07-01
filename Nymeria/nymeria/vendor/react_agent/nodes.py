@@ -1600,16 +1600,17 @@ class SafeToolNode(ToolNode):
             tool_call=call, tool=tool, state=tool_runtime.state, runtime=tool_runtime
         )
         result = self._execute_tool_sync(request, input_type, config)
-        post = hooks.dispatch(
-            hooks.HookEvent.POST_TOOL_USE,
-            self._build_tool_hook_ctx(
-                hooks.HookEvent.POST_TOOL_USE, call, config,
-                result_text=self._tool_result_text(result),
-                tool_status=self._tool_result_status(result),
-            ),
-            registry=registry,
+        post_ctx = self._build_tool_hook_ctx(
+            hooks.HookEvent.POST_TOOL_USE, call, config,
+            result_text=self._tool_result_text(result),
+            tool_status=self._tool_result_status(result),
         )
-        return self._apply_post_tool_outcome(result, post)
+        post = hooks.dispatch(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        final = self._apply_post_tool_outcome(result, post)
+        # Observe-plane side effects (notify/create_todo/webhook) see the same
+        # original result; fire-and-forget, never affects the returned message.
+        hooks.dispatch_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        return final
 
     async def _arun_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
         from ...core import hooks
@@ -1632,16 +1633,17 @@ class SafeToolNode(ToolNode):
             tool_call=call, tool=tool, state=tool_runtime.state, runtime=tool_runtime
         )
         result = await self._execute_tool_async(request, input_type, config)
-        post = await hooks.adispatch(
-            hooks.HookEvent.POST_TOOL_USE,
-            self._build_tool_hook_ctx(
-                hooks.HookEvent.POST_TOOL_USE, call, config,
-                result_text=self._tool_result_text(result),
-                tool_status=self._tool_result_status(result),
-            ),
-            registry=registry,
+        post_ctx = self._build_tool_hook_ctx(
+            hooks.HookEvent.POST_TOOL_USE, call, config,
+            result_text=self._tool_result_text(result),
+            tool_status=self._tool_result_status(result),
         )
-        return self._apply_post_tool_outcome(result, post)
+        post = await hooks.adispatch(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        final = self._apply_post_tool_outcome(result, post)
+        # Observe-plane side effects (notify/create_todo/webhook) see the same
+        # original result; fire-and-forget, never affects the returned message.
+        await hooks.adispatch_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        return final
 
     @staticmethod
     def _hook_registry(config):

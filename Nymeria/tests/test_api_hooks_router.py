@@ -249,6 +249,58 @@ def test_patch_switch_action_uses_fresh_params(client_env):
     assert resp.json()["logic"]["updates"] == {"command": "echo hi"}
 
 
+def test_create_notify(client_env):
+    client, _agent, headers, _b = client_env
+    resp = _create(
+        client, headers, name="ping", event="done", action="notify",
+        text="finished: {final_text}",
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["action"] == "notify"
+    assert resp.json()["text"] == "finished: {final_text}"
+
+
+def test_create_webhook(client_env):
+    client, _agent, headers, _b = client_env
+    resp = _create(
+        client, headers, name="wh", event="done", action="webhook",
+        text="body", url="https://example.com/hook",
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["logic"]["url"] == "https://example.com/hook"
+    assert resp.json()["logic"]["text"] == "body"
+
+
+def test_create_notify_illegal_on_prompt_submit(client_env):
+    client, _agent, headers, _b = client_env
+    resp = _create(client, headers, event="prompt_submit", action="notify", text="x")
+    assert resp.status_code == 400  # legality rejected by the manager
+
+
+def test_webhook_test_endpoint_describes(client_env):
+    client, _agent, headers, _b = client_env
+    hook = _create(
+        client, headers, name="wh", event="done", action="webhook",
+        text="ran {tool_name}", url="https://example.com/{thread_id}",
+    ).json()
+    resp = client.post(f"/hooks/{hook['id']}/test", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "webhook"
+    assert "example.com" in resp.json()["rendered"]
+
+
+def test_update_webhook_preserves_url_on_text_only_patch(client_env):
+    client, _agent, headers, _b = client_env
+    hook = _create(
+        client, headers, name="wh", event="done", action="webhook",
+        text="old", url="https://example.com/keep",
+    ).json()
+    resp = client.patch(f"/hooks/{hook['id']}", headers=headers, json={"text": "new"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["logic"]["text"] == "new"
+    assert resp.json()["logic"]["url"] == "https://example.com/keep"  # preserved
+
+
 def test_cross_user_isolation(client_env):
     client, agent, headers, builder = client_env
     hook = _create(client, headers, name="owners-hook").json()

@@ -9,11 +9,14 @@ from pydantic import ValidationError
 
 from nymeria.core.hook_manager import (
     BlockIfMatchesLogic,
+    CreateTodoLogic,
     HookDefinition,
     HookManager,
     HookStore,
     InjectContextLogic,
+    NotifyLogic,
     RewriteArgLogic,
+    WebhookLogic,
     build_logic,
 )
 
@@ -288,3 +291,49 @@ def test_update_hook_replaces_params(manager):
     got = manager.get_hook("u1", h.id)
     assert got.logic.conditions == []
     assert got.logic.reason == "always"
+
+
+# --- observe-plane actions (Pass 3 slice B) ---------------------------------
+
+def test_notify_and_create_todo_roundtrip():
+    n = HookDefinition.model_validate(
+        {"id": "n", "name": "ping", "event": "done",
+         "logic": {"action": "notify", "text": "done: {final_text}"}}
+    )
+    assert isinstance(n.logic, NotifyLogic)
+    t = HookDefinition.model_validate(
+        {"id": "t", "name": "td", "event": "post_tool_use",
+         "logic": {"action": "create_todo", "text": "follow up"}}
+    )
+    assert isinstance(t.logic, CreateTodoLogic)
+
+
+def test_webhook_roundtrip_requires_url():
+    w = HookDefinition.model_validate(
+        {"id": "w", "name": "wh", "event": "done",
+         "logic": {"action": "webhook", "url": "https://x.test/h", "text": "body"}}
+    )
+    assert isinstance(w.logic, WebhookLogic)
+    assert w.logic.url == "https://x.test/h"
+    with pytest.raises(ValueError):  # build_logic maps ValidationError -> ValueError
+        build_logic("webhook", {"text": "no url"})  # url is required
+
+
+def test_observe_actions_legal_on_post_and_done_only():
+    for action in ("notify", "create_todo", "webhook"):
+        params = {"url": "https://x.test"} if action == "webhook" else {"text": "x"}
+        # legal on post_tool_use and done
+        for event in ("post_tool_use", "done"):
+            assert manager_add(event, action, params) is not None
+        # illegal on prompt_submit and pre_tool_use
+        for event in ("prompt_submit", "pre_tool_use"):
+            with pytest.raises(ValueError):
+                manager_add(event, action, params)
+
+
+def manager_add(event, action, params):
+    # Helper using a throwaway manager so legality (not persistence) is under test.
+    import tempfile
+    from pathlib import Path
+    m = HookManager(Path(tempfile.mkdtemp()))
+    return m.add_hook("u", name="n", event=event, action=action, params=params)

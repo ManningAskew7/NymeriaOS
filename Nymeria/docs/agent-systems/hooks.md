@@ -4,9 +4,8 @@ Nymeria has a Claude-Code-style lifecycle-hooks engine: small pieces of logic th
 run at defined moments in an agent turn and can observe or steer it. The engine spine
 shipped first (the machinery, wired to in-process fixtures); the product surface then
 landed on top of it as a set of **canned actions** a user or the agent can attach to an
-event. This document covers both the engine and those actions. The remaining
-observe-plane vocabulary (`notify`/`create_todo`/`webhook`), a frontend UI, and the
-`nym` workflow substrate land in later passes.
+event. This document covers both the engine and those actions. A frontend UI, the
+`run_command` action, and the `nym` workflow substrate land in later passes.
 
 Full design and rationale: `docs/private/plans/lifecycle-hooks.md`.
 
@@ -17,11 +16,14 @@ discriminated union on `action`, so each action carries its own typed params. Th
 actions that ship today, and the events they attach to (`EVENT_ACTIONS` in
 `core/hook_manager.py` is the legality map):
 
-| Action | Events | Effect |
-| --- | --- | --- |
-| `inject_context` | `prompt_submit`, `post_tool_use`, `done` | inject a string into the model's context |
-| `block_if_matches` | `pre_tool_use` | **deny** a tool call when conditions match its args |
-| `rewrite_arg` | `pre_tool_use` | **modify** a tool call's args when conditions match |
+| Action | Plane | Events | Effect |
+| --- | --- | --- | --- |
+| `inject_context` | mutate | `prompt_submit`, `post_tool_use`, `done` | inject a string into the model's context |
+| `block_if_matches` | mutate | `pre_tool_use` | **deny** a tool call when conditions match its args |
+| `rewrite_arg` | mutate | `pre_tool_use` | **modify** a tool call's args when conditions match |
+| `notify` | observe | `post_tool_use`, `done` | send an in-app + push notification |
+| `create_todo` | observe | `post_tool_use`, `done` | add a user TODO |
+| `webhook` | observe | `post_tool_use`, `done` | POST a JSON payload to a URL |
 
 **`inject_context`** appends its text to the model-facing tail (`prompt_submit`), to the
 matching tool's result (`post_tool_use`, scope with `matcher`), or re-drives once as a
@@ -41,11 +43,20 @@ for nested args, e.g. `input.command`). `block_if_matches` returns a deny with a
 templated `reason`; `rewrite_arg` returns the changed args only (`updates`, templated),
 which the seam shallow-merges over the call. Empty `conditions` = always fire.
 
-Actions are store-agnostic: `core/hooks/actions.py` maps each action to its outcome via
-`ACTIONS`/`ACTION_PLANES`, and `core/hooks/bridge.py::build_registry` turns a user's
-enabled `HookDefinition` records into a per-turn `HookRegistry`. The engine below never
-learns about the store. PRE guardrail actions are written **never-raise** so a malformed
-condition is a no-op (allow), not a fail-closed block of every tool call.
+**`notify`** / **`create_todo`** / **`webhook`** are the observe-plane side effects on the
+"after something happened" events (`post_tool_use`/`done`). They run fire-and-forget: the
+fire point ignores their return, and each wraps its side effect so a failure is logged, not
+raised. `notify` delivers an in-app + push notification (bypassing the autonomous-suppression
+gate, since a user-authored hook should always deliver); `create_todo` adds a user TODO;
+`webhook` POSTs `{"text", "thread_id", "user_id"}` to a `{placeholder}`-templated URL through
+the **SSRF-safe** `http_policy` egress helper (private/loopback/metadata targets are refused).
+
+Actions are store-agnostic: `core/hooks/actions.py` maps each action to its outcome/side
+effect via `ACTIONS`/`ACTION_PLANES`, and `core/hooks/bridge.py::build_registry` turns a
+user's enabled `HookDefinition` records into a per-turn `HookRegistry`, registering each hook
+on its action's plane. The engine below never learns about the store. PRE guardrail actions
+are written **never-raise** so a malformed condition is a no-op (allow), not a fail-closed
+block of every tool call.
 
 ### Authoring
 
@@ -124,9 +135,12 @@ carries `is_autonomous` / `holder_kind` so a hook can scope to a turn source.
   `updated_args` is dropped, not propagated), and the final reduction is wrapped so it
   can never raise into a turn.
 
-In the spine, only `DONE` has an observe fire point. `PROMPT_SUBMIT` / `PRE_TOOL_USE`
-/ `POST_TOOL_USE` dispatch on the mutate plane only; an observe registration on those
-events is inert until the observe seams are added (a follow-up).
+`DONE` and `POST_TOOL_USE` have observe fire points (the latter runs after the mutate POST
+apply, seeing the original tool result; `tool_hooks_active` activates the tool-node seam for
+observe-only tool hooks too). `PROMPT_SUBMIT` / `PRE_TOOL_USE` dispatch on the mutate plane
+only; an observe registration on those events is inert (no product action needs it yet). The
+POST observe dispatch runs in-band on the tool path (fire-and-forget but synchronous, bounded
+by the per-hook timeout), so a slow observe hook adds latency to that tool call.
 
 Multiple hooks on one event all run ("run-all-then-reduce"), so side effects and
 scratch writes are order-independent. Reduction is deterministic in registration
@@ -185,9 +199,9 @@ rather than a parallel re-drive.
 
 ## What is deferred (not yet shipped)
 
-- The **observe-plane action vocabulary** (`notify`, `create_todo`, `webhook`,
-  `run_command`) on `post_tool_use`/`done`, and presets. The mutate-plane actions
-  (`inject_context`, `block_if_matches`, `rewrite_arg`) all ship.
+- The `run_command` action (dispatch a slash command from a hook) and presets. The other
+  six actions (`inject_context`, `block_if_matches`, `rewrite_arg`, `notify`, `create_todo`,
+  `webhook`) all ship.
 - A **frontend UI** for authoring/toggling hooks (the tool + REST surfaces exist; no
   desktop/mobile panel yet).
 - The `nym` **workflow** logic substrate (sandboxed, out-of-process).
@@ -204,13 +218,14 @@ rather than a parallel re-drive.
 
 ## Package
 
-- `core/hooks/`: `base.py` (contract), `registry.py` (in-process registry),
-  `scratch.py` (per-thread store), `dispatch.py` (planes + reduction + fault policy),
-  `actions.py` (`inject_context`/`block_if_matches`/`rewrite_arg` + `ACTION_PLANES`),
-  `bridge.py` (definitions → per-turn registry).
-- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union
-  (`InjectContextLogic`/`BlockIfMatchesLogic`/`RewriteArgLogic`) + `HookStore` records +
-  the per-user `HookManager` (store-only, no engine import).
+- `core/hooks/`: `base.py` (contract), `registry.py` (in-process registry, `has_mutating`/
+  `has_observe`), `scratch.py` (per-thread store), `dispatch.py` (planes + reduction + fault
+  policy; `tool_hooks_active`), `actions.py` (the six actions + `ACTION_PLANES`), `bridge.py`
+  (definitions → per-turn registry, registering each on its plane).
+- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (six
+  variants) + `HookStore` records + the per-user `HookManager` (store-only, no engine
+  import). Observe actions reuse `core/notifications.py` + `core/fcm.py` (notify),
+  `core/todo_manager.py` (create_todo), and `core/http_policy.py` (webhook).
 - `core/conditions.py`: `HookCondition` + `evaluate_conditions` (shared with triggers,
   which re-export `TriggerCondition`).
 - `core/text_format.py`: `safe_format` template substitution (shared with triggers).

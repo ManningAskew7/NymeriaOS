@@ -48,8 +48,8 @@ HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"
 EVENT_ACTIONS: Dict[str, set] = {
     "prompt_submit": {"inject_context"},
     "pre_tool_use": {"block_if_matches", "rewrite_arg"},
-    "post_tool_use": {"inject_context"},
-    "done": {"inject_context"},
+    "post_tool_use": {"inject_context", "notify", "create_todo", "webhook"},
+    "done": {"inject_context", "notify", "create_todo", "webhook"},
 }
 
 
@@ -98,12 +98,51 @@ class RewriteArgLogic(BaseModel):
     )
 
 
+class NotifyLogic(BaseModel):
+    """Deliver an in-app + push notification (observe plane)."""
+
+    action: Literal["notify"] = "notify"
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=2_000,
+        description="Notification text ({placeholder} templated)",
+    )
+
+
+class CreateTodoLogic(BaseModel):
+    """Create a user TODO from the rendered text (observe plane)."""
+
+    action: Literal["create_todo"] = "create_todo"
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=2_000,
+        description="TODO task text ({placeholder} templated)",
+    )
+
+
+class WebhookLogic(BaseModel):
+    """POST a JSON payload to a URL (observe plane, SSRF-safe egress)."""
+
+    action: Literal["webhook"] = "webhook"
+    url: str = Field(..., min_length=1, max_length=2_000, description="POST target URL")
+    text: str = Field(
+        default="",
+        max_length=10_000,
+        description="Payload text -> {\"text\": ...} ({placeholder} templated)",
+    )
+
+
 # Discriminated union on ``action``. Store-compatible with legacy inject_context
 # records ({"action":"inject_context","text":...}). Adding an action is a new
 # variant here + an ``ACTIONS``/``ACTION_PLANES`` entry + an ``EVENT_ACTIONS``
 # row. The type-alias name stays ``HookLogic`` so importers do not churn.
 HookLogic = Annotated[
-    Union[InjectContextLogic, BlockIfMatchesLogic, RewriteArgLogic],
+    Union[
+        InjectContextLogic, BlockIfMatchesLogic, RewriteArgLogic,
+        NotifyLogic, CreateTodoLogic, WebhookLogic,
+    ],
     Field(discriminator="action"),
 ]
 
@@ -112,6 +151,9 @@ HOOK_LOGIC_BY_ACTION: Dict[str, type[BaseModel]] = {
     "inject_context": InjectContextLogic,
     "block_if_matches": BlockIfMatchesLogic,
     "rewrite_arg": RewriteArgLogic,
+    "notify": NotifyLogic,
+    "create_todo": CreateTodoLogic,
+    "webhook": WebhookLogic,
 }
 
 
