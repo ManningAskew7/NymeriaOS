@@ -40,6 +40,7 @@ from ..api.routers.notifications_config import create_notifications_config_route
 from ..api.routers.agent_threads import create_agent_threads_router
 from ..api.routers.devices import create_devices_router
 from ..api.routers.google_chat_bot import create_google_chat_bot_router
+from ..api.routers.hooks import create_hook_router
 from ..api.routers.instagram_bot import create_instagram_bot_router
 from ..api.routers.line_bot import create_line_bot_router
 from ..api.routers.messenger_bot import create_messenger_bot_router
@@ -848,6 +849,13 @@ def create_api_app(
         require_thread_access_fn=_require_thread_access,
     )
     app.include_router(trigger_router)
+    app.include_router(
+        create_hook_router(
+            get_agent,
+            verify_api_key,
+            require_thread_access_fn=_require_thread_access,
+        )
+    )
     app.include_router(
         create_accounts_router(
             verify_api_key,

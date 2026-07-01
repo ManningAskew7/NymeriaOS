@@ -35,6 +35,19 @@ def test_has_customizations_tracks_claude_code_overrides():
     )
 
 
+def test_has_customizations_tracks_hook_overrides():
+    assert ThreadConfig(thread_id="t").has_customizations() is False
+    assert (
+        ThreadConfig(thread_id="t", hooks_enabled=False).has_customizations() is True
+    )
+    assert (
+        ThreadConfig(thread_id="t", hook_overrides={"h1": False}).has_customizations() is True
+    )
+    # Defaults (None / empty dict) are not customizations.
+    assert ThreadConfig(thread_id="t", hooks_enabled=None).has_customizations() is False
+    assert ThreadConfig(thread_id="t", hook_overrides={}).has_customizations() is False
+
+
 # --- result-set correctness ------------------------------------------------
 
 

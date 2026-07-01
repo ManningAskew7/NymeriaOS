@@ -1183,6 +1183,16 @@ class CommandBackendClient:
             and kwargs["sequential_tool_execution"] is not None
         ):
             tc.sequential_tool_execution = bool(kwargs["sequential_tool_execution"])
+        if kwargs.get("clear_hooks_enabled"):
+            tc.hooks_enabled = None
+        elif "hooks_enabled" in kwargs and kwargs["hooks_enabled"] is not None:
+            tc.hooks_enabled = bool(kwargs["hooks_enabled"])
+        if kwargs.get("clear_hook_overrides"):
+            tc.hook_overrides = {}
+        elif "hook_overrides" in kwargs and kwargs["hook_overrides"] is not None:
+            tc.hook_overrides = {
+                str(k): bool(v) for k, v in dict(kwargs["hook_overrides"]).items()
+            }
 
         if not self.agent.thread_config_manager.save_config(tc):
             _raise_http_status(500, "Failed to save thread config")

@@ -1581,14 +1581,16 @@ class SafeToolNode(ToolNode):
 
     def _run_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
         from ...core import hooks
-        if not hooks.tool_hooks_active():
+        config = tool_runtime.config
+        registry = self._hook_registry(config)
+        if not hooks.tool_hooks_active(registry):
             return super()._run_one(call, input_type, tool_runtime)
         from langgraph.prebuilt.tool_node import ToolCallRequest
 
-        config = tool_runtime.config
         pre = hooks.dispatch(
             hooks.HookEvent.PRE_TOOL_USE,
             self._build_tool_hook_ctx(hooks.HookEvent.PRE_TOOL_USE, call, config),
+            registry=registry,
         )
         call, denied = self._apply_pre_tool_outcome(pre, call)
         if denied is not None:
@@ -1605,19 +1607,22 @@ class SafeToolNode(ToolNode):
                 result_text=self._tool_result_text(result),
                 tool_status=self._tool_result_status(result),
             ),
+            registry=registry,
         )
         return self._apply_post_tool_outcome(result, post)
 
     async def _arun_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
         from ...core import hooks
-        if not hooks.tool_hooks_active():
+        config = tool_runtime.config
+        registry = self._hook_registry(config)
+        if not hooks.tool_hooks_active(registry):
             return await super()._arun_one(call, input_type, tool_runtime)
         from langgraph.prebuilt.tool_node import ToolCallRequest
 
-        config = tool_runtime.config
         pre = await hooks.adispatch(
             hooks.HookEvent.PRE_TOOL_USE,
             self._build_tool_hook_ctx(hooks.HookEvent.PRE_TOOL_USE, call, config),
+            registry=registry,
         )
         call, denied = self._apply_pre_tool_outcome(pre, call)
         if denied is not None:
@@ -1634,8 +1639,21 @@ class SafeToolNode(ToolNode):
                 result_text=self._tool_result_text(result),
                 tool_status=self._tool_result_status(result),
             ),
+            registry=registry,
         )
         return self._apply_post_tool_outcome(result, post)
+
+    @staticmethod
+    def _hook_registry(config):
+        """Resolve the per-turn hook registry stamped into the run config.
+
+        Falls back to the module ``default_registry`` when nothing is stamped
+        (production turns with no enabled hooks, and every existing test), so the
+        no-hooks path is byte-identical to before.
+        """
+        from ...core import hooks
+        configurable = config.get("configurable") if isinstance(config, dict) else None
+        return (configurable or {}).get("hook_registry") or hooks.default_registry
 
     def _build_tool_hook_ctx(self, event, call, config, *, result_text=None, tool_status=None):
         """Build a PRE/POST tool HookContext from the call + run config.

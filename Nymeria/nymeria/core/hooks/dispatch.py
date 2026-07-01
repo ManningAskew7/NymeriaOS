@@ -77,14 +77,17 @@ def reset() -> None:
     default_scratch.clear()
 
 
-def tool_hooks_active() -> bool:
+def tool_hooks_active(registry: Optional[HookRegistry] = None) -> bool:
     """True if any mutate-plane PRE/POST tool hook is registered.
 
     Lets the tool-node seam keep the parent's fast path (and unchanged error
-    semantics) on every tool call when nothing is registered.
+    semantics) on every tool call when nothing is registered. Accepts an
+    optional per-turn registry (defaults to the module ``default_registry``) so
+    the fast-path decision is accurate for the thread being run.
     """
     from .base import HookEvent
-    return default_registry.has_mutating(HookEvent.PRE_TOOL_USE) or default_registry.has_mutating(
+    registry = registry or default_registry
+    return registry.has_mutating(HookEvent.PRE_TOOL_USE) or registry.has_mutating(
         HookEvent.POST_TOOL_USE
     )
 

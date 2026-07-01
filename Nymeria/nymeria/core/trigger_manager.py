@@ -1186,16 +1186,7 @@ class TriggerManager:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _safe_format(template: str, variables: dict) -> str:
-    """Format a template string, ignoring missing keys."""
-    try:
-        return template.format_map(_DefaultDict(variables))
-    except Exception:
-        return template
-
-
-class _DefaultDict(dict):
-    """Dict that returns ``{key}`` for missing keys instead of raising."""
-
-    def __missing__(self, key):
-        return f"{{{key}}}"
+# Template substitution now lives in ``core/text_format.py`` so the trigger and
+# lifecycle-hooks stacks share one implementation. Re-exported here (and as the
+# historical private name ``_safe_format``) so existing importers keep working.
+from .text_format import _DefaultDict, safe_format as _safe_format  # noqa: E402,F401

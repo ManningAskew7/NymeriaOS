@@ -132,6 +132,42 @@ def get_effective_sequential_tools(
     return bool(override)
 
 
+def get_effective_hook_enabled(
+    definition: Any,
+    thread_id: Optional[str],
+    *,
+    thread_config_manager: Any | None = None,
+    settings: Any | None = None,
+) -> bool:
+    """Resolve whether one hook definition is enabled for a thread.
+
+    Precedence (highest first): the master kill switch (per-thread
+    ``hooks_enabled`` override, else global ``Settings.hooks_enabled``) -> the
+    per-thread per-hook override (``ThreadConfig.hook_overrides[id]``) -> the
+    hook's own ``enabled`` default. Mirrors ``get_effective_sequential_tools``:
+    never raises (a config-lookup failure falls back safely so it cannot break a
+    turn).
+    """
+    master = bool(getattr(settings, "hooks_enabled", True)) if settings is not None else True
+    tc = None
+    if thread_id and thread_config_manager is not None:
+        try:
+            tc = thread_config_manager.get_config(thread_id)
+        except Exception:  # noqa: BLE001 - never let config lookup break a turn
+            tc = None
+    if tc is not None:
+        thread_master = getattr(tc, "hooks_enabled", None)
+        if thread_master is not None:
+            master = bool(thread_master)
+    if not master:
+        return False
+    if tc is not None:
+        override = (getattr(tc, "hook_overrides", None) or {}).get(getattr(definition, "id", None))
+        if override is not None:
+            return bool(override)
+    return bool(getattr(definition, "enabled", True))
+
+
 def graph_run_config(
     agent: "NymeriaAgent",
     thread_id: str,
@@ -153,6 +189,15 @@ def graph_run_config(
             "sequential_tools": sequential_tools,
         },
     }
+    # Stamp the per-turn hook registry so the tool node (which only sees the run
+    # config) can dispatch this thread's enabled hooks. Only when non-None, so a
+    # turn with no enabled hooks leaves the config byte-identical to before.
+    # Resolved via getattr (like settings/thread_config_manager above) so a
+    # minimal facade agent without the helper degrades to no hooks, not a crash.
+    resolve_hooks = getattr(agent, "_hook_registry_for_turn", None)
+    hook_registry = resolve_hooks(thread_id, user_id) if callable(resolve_hooks) else None
+    if hook_registry is not None:
+        config["configurable"]["hook_registry"] = hook_registry
     if callbacks is not None:
         config["callbacks"] = callbacks
     return config

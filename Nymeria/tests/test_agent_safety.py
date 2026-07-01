@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 from nymeria.core.agent_safety import (
     check_iteration_limit_hit,
+    get_effective_hook_enabled,
     get_effective_sequential_tools,
     graph_run_config,
     main_iterations_cap,
@@ -180,3 +181,83 @@ def test_turn_safety_event_uses_agent_content_facade():
         "repeated_count": 5,
     }
     assert agent.calls == [("content", safety)]
+
+
+# --------------------------------------------------------------------------- #
+# get_effective_hook_enabled: master switch -> per-thread per-hook -> hook flag
+# --------------------------------------------------------------------------- #
+
+def _hook(id_="h1", enabled=True):
+    return SimpleNamespace(id=id_, enabled=enabled)
+
+
+class _TCManager:
+    """Thread-config manager stub returning a fixed config object (or None)."""
+
+    def __init__(self, tc: Any) -> None:
+        self._tc = tc
+
+    def get_config(self, _thread_id: str) -> Any:
+        return self._tc
+
+
+def _settings(hooks_enabled=True):
+    return SimpleNamespace(hooks_enabled=hooks_enabled)
+
+
+def test_hook_enabled_defaults_to_definition_flag():
+    # No thread/manager/settings -> the hook's own flag decides.
+    assert get_effective_hook_enabled(_hook(enabled=True), None) is True
+    assert get_effective_hook_enabled(_hook(enabled=False), None) is False
+
+
+def test_hook_enabled_global_master_switch_off_disables_all():
+    assert get_effective_hook_enabled(
+        _hook(enabled=True), "t", settings=_settings(hooks_enabled=False)
+    ) is False
+
+
+def test_hook_enabled_thread_master_switch_overrides_global():
+    # Global on, thread master off -> off.
+    tcm = _TCManager(SimpleNamespace(hooks_enabled=False, hook_overrides={}))
+    assert get_effective_hook_enabled(
+        _hook(enabled=True), "t", thread_config_manager=tcm, settings=_settings(True)
+    ) is False
+    # Global off, thread master on -> on (thread override beats global).
+    tcm2 = _TCManager(SimpleNamespace(hooks_enabled=True, hook_overrides={}))
+    assert get_effective_hook_enabled(
+        _hook(enabled=True), "t", thread_config_manager=tcm2, settings=_settings(False)
+    ) is True
+
+
+def test_hook_enabled_per_hook_override_beats_definition():
+    tcm = _TCManager(SimpleNamespace(hooks_enabled=None, hook_overrides={"h1": False}))
+    assert get_effective_hook_enabled(
+        _hook(id_="h1", enabled=True), "t", thread_config_manager=tcm, settings=_settings(True)
+    ) is False
+    tcm2 = _TCManager(SimpleNamespace(hooks_enabled=None, hook_overrides={"h1": True}))
+    assert get_effective_hook_enabled(
+        _hook(id_="h1", enabled=False), "t", thread_config_manager=tcm2, settings=_settings(True)
+    ) is True
+
+
+def test_hook_enabled_master_off_beats_per_hook_override():
+    # Even a per-hook "on" cannot resurrect a hook when the master switch is off.
+    tcm = _TCManager(SimpleNamespace(hooks_enabled=False, hook_overrides={"h1": True}))
+    assert get_effective_hook_enabled(
+        _hook(id_="h1", enabled=True), "t", thread_config_manager=tcm, settings=_settings(True)
+    ) is False
+
+
+def test_hook_enabled_never_raises_on_lookup_failure():
+    class _Boom:
+        def get_config(self, _tid):
+            raise RuntimeError("disk gone")
+
+    # Falls back to the definition flag (master default True) rather than raising.
+    assert get_effective_hook_enabled(
+        _hook(enabled=True), "t", thread_config_manager=_Boom(), settings=_settings(True)
+    ) is True
+    assert get_effective_hook_enabled(
+        _hook(enabled=False), "t", thread_config_manager=_Boom(), settings=_settings(True)
+    ) is False

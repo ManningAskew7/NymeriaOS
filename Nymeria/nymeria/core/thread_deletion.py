@@ -107,6 +107,7 @@ def cascade_delete_thread(
         _delete_rag_chunks(agent, user_id, thread_id, result)
         _delete_todos(agent, thread_id, result)
         _delete_triggers(agent, settings.data_dir, thread_id, result)
+        _delete_hooks(agent, settings.data_dir, user_id, thread_id, result)
         _delete_chat_resources(agent, thread_id, result)
         _delete_activity_and_notifications(settings.data_dir, thread_id, result)
         _delete_attachments(thread_id, result)
@@ -214,6 +215,32 @@ def _delete_triggers(
                 trigger_ids,
             ),
         )
+
+
+def _delete_hooks(
+    agent: "NymeriaAgent",
+    data_dir: Path,
+    user_id: str,
+    thread_id: str,
+    result: ThreadDeletionResult,
+) -> None:
+    """Remove thread-scoped lifecycle hooks bound to the deleted thread.
+
+    Hooks bind to the current thread under the turn's own user, so a
+    thread-scoped hook for this thread is always stored under the thread owner
+    (``user_id``). Global hooks are untouched. Never raises: a cleanup failure
+    is recorded as a warning, not a deletion abort.
+    """
+    manager = getattr(agent, "hook_manager", None)
+    if manager is None:
+        from .hook_manager import HookManager
+
+        manager = HookManager(data_dir)
+    try:
+        hook_ids = manager.delete_hooks_for_thread(user_id, thread_id)
+        result.inc("hooks_deleted", len(hook_ids))
+    except Exception as exc:  # noqa: BLE001 - cleanup must not abort the deletion
+        result.warn(f"hook cleanup failed: {exc}")
 
 
 def _delete_chat_resources(agent: "NymeriaAgent", thread_id: str, result: ThreadDeletionResult) -> None:

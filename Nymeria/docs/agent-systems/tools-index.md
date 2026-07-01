@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1253 tools found.**
+**1255 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -514,6 +514,8 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `homeassistant_list_states` | `nymeria/tools/personal_device_service_integrations.py` | List Home Assistant entity states. |
 | `homeassistant_render_template` | `nymeria/tools/personal_device_service_integrations.py` | Render a Home Assistant template. |
 | `homeassistant_set_state` | `nymeria/tools/personal_device_service_integrations.py` | Create or update a Home Assistant entity state. |
+| `hook_config` | `nymeria/tools/hooks.py` | Create, update, or delete a context-injection hook. |
+| `hook_info` | `nymeria/tools/hooks.py` | List or inspect context-injection hooks. |
 | `http_request` | `nymeria/tools/http_api.py` | Make a one-off HTTP request to a documented API endpoint. |
 | `hubspot_archive_crm_object` | `nymeria/tools/customer_engagement_service_integrations.py` | Archive/delete a HubSpot CRM object. |
 | `hubspot_create_crm_object` | `nymeria/tools/customer_engagement_service_integrations.py` | Create a HubSpot CRM object. |

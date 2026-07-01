@@ -3536,6 +3536,90 @@ webhook trigger without putting the shared secret in the URL.
 
 ---
 
+## Hooks API
+
+Lifecycle hooks that inject a string into the model's context when an event
+fires. One canned action ships today, `inject_context`, over three events
+(`prompt_submit`, `post_tool_use`, `done`). Hooks fire in-process only, so
+unlike triggers there is no public fire/webhook endpoint. See
+`docs/agent-systems/hooks.md`. All routes require a Bearer token and
+operate on the authenticated user's own hooks.
+
+### List Hooks
+
+```http
+GET /hooks?enabled_only=false&thread_id=<optional>
+Authorization: Bearer <token>
+```
+
+**Query parameters:**
+- `enabled_only` (`bool`, default `false`) - return only enabled hooks
+- `thread_id` (`str`, optional) - return global hooks plus those bound to this thread
+
+### Create Hook
+
+```http
+POST /hooks
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "Remind on edit",
+  "event": "post_tool_use",
+  "text": "Re-run the tests after editing {tool_name}.",
+  "matcher": "Edit|Write",
+  "scope": "thread",
+  "thread_id": "default",
+  "enabled": true
+}
+```
+
+`event` is one of `prompt_submit`, `post_tool_use`, `done`. `matcher` (a
+pipe-list tool filter) applies to `post_tool_use` only and is dropped on other
+events. `scope` is `thread` (bound to `thread_id`) or `global` (all the user's
+threads). `text` supports `{placeholder}` interpolation; unknown placeholders
+pass through verbatim. Returns `201` with the created hook, `400` on invalid
+config or when the per-user cap (50) is reached. Creating a thread-scoped hook
+for a thread the caller cannot access is rejected.
+
+### Get / Update / Delete Hook
+
+```http
+GET    /hooks/{hook_id}
+PATCH  /hooks/{hook_id}
+DELETE /hooks/{hook_id}
+Authorization: Bearer <token>
+```
+
+`PATCH` accepts any subset of `name`, `event`, `text`, `matcher`, `enabled`
+(re-validated on save). `DELETE` returns `204`. All return `404` if the hook
+does not exist for the authenticated user.
+
+### Test Hook (Dry Run)
+
+```http
+POST /hooks/{hook_id}/test
+Authorization: Bearer <token>
+```
+
+Renders the hook's text against sample event data without firing. Returns
+`{"hook_id", "event", "rendered"}`.
+
+### Enable model
+
+A hook fires on a turn only if the master switch, any per-thread override, and
+the hook's own flag all allow it:
+
+- **Master switch**: `hooks_enabled` on `PATCH /settings` (global), overridable
+  per thread by `hooks_enabled` on `PATCH /threads/{id}/config`.
+- **Per-thread per-hook override**: `hook_overrides` (a `{hook_id: bool}` map)
+  on `PATCH /threads/{id}/config`; `clear_hook_overrides` resets it.
+- **Per-hook default**: the `enabled` flag on the hook record.
+
+---
+
 ## CLIProxy Management API
 
 Admin-only routes for driving a CLIProxy sidecar (subscription OAuth) through

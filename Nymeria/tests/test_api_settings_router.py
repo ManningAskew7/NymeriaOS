@@ -47,6 +47,7 @@ class FakeSettings:
     llm_extended_thinking: bool = False
     dynamic_tool_binding: bool = False
     sequential_tool_execution: bool = False
+    hooks_enabled: bool = True
     llm_use_model_defaults: bool = False
     llm_base_url: str | None = None
     llm_context_length: int | None = None
@@ -297,6 +298,10 @@ class FakeSettingsProvider:
             sequential_tool_execution=env_bool(
                 "SEQUENTIAL_TOOL_EXECUTION",
                 self.settings.sequential_tool_execution,
+            ),
+            hooks_enabled=env_bool(
+                "HOOKS_ENABLED",
+                self.settings.hooks_enabled,
             ),
         )
 
@@ -998,6 +1003,28 @@ def test_patch_settings_hot_reloads_sequential_tool_execution(
     assert agent.settings.sequential_tool_execution is True
     # Read at runtime from config per turn, NOT baked into the graph at build:
     # a PATCH must not trigger a graph rebuild.
+    assert agent.graph_rebuilds == []
+
+
+def test_patch_settings_updates_hooks_enabled_master_switch(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text("HOOKS_ENABLED=true\n", encoding="utf-8")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"hooks_enabled": False},
+    )
+
+    assert response.status_code == 200
+    assert "hooks_enabled" in response.json()["updated"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "HOOKS_ENABLED=false" in env_text
+    assert agent.settings.hooks_enabled is False
+    # Hooks resolve per turn, so flipping the master switch is not a graph rebuild.
     assert agent.graph_rebuilds == []
 
 

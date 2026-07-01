@@ -582,3 +582,40 @@ def test_thread_config_claude_code_mode_rejects_invalid(
         json={"claude_code_mode": "explode-everything"},
     )
     assert rejected.status_code == 422
+
+
+def test_thread_config_hook_enable_fields_round_trip(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "thread-hooks"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    # Set the per-thread master switch off and a per-hook override.
+    set_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"hooks_enabled": False, "hook_overrides": {"h1": False, "h2": True}},
+    )
+    assert set_resp.status_code == 200
+    body = set_resp.json()
+    assert body["hooks_enabled"] is False
+    assert body["hook_overrides"] == {"h1": False, "h2": True}
+    assert body["has_customizations"] is True
+
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved.hooks_enabled is False
+    assert saved.hook_overrides == {"h1": False, "h2": True}
+
+    # Clear both back to inheriting the global default.
+    clear_resp = client.patch(
+        f"/threads/{thread_id}/config",
+        headers=headers,
+        json={"clear_hooks_enabled": True, "clear_hook_overrides": True},
+    )
+    assert clear_resp.status_code == 200
+    cleared = agent.thread_config_manager.get_config(thread_id)
+    assert cleared.hooks_enabled is None
+    assert cleared.hook_overrides == {}

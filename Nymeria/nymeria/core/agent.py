@@ -34,6 +34,7 @@ from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager
 from .todo_schedule_db import TodoScheduleDB
 from .memory_index import MemoryIndex
+from .hook_manager import HookManager
 from .thread_config import ThreadConfigManager
 from .thread_metadata import ThreadMetadataManager
 from .thread_lock_manager import ThreadLockManager
@@ -297,6 +298,10 @@ class NymeriaAgent:
 
         # Initialize per-thread config manager
         self.thread_config_manager = ThreadConfigManager(self.settings.data_dir)
+
+        # Lifecycle-hook store (per-user JSON). Read once per turn to build the
+        # per-turn hook registry threaded to the fire points.
+        self.hook_manager = HookManager(self.settings.data_dir)
 
         # Initialize Agent Skills manager (SKILL.md progressive-disclosure bundles)
         self.skill_manager: SkillManager | None
@@ -705,14 +710,21 @@ class NymeriaAgent:
         holder_kind: Optional[str],
         final_text: str,
         continuation_depth: int,
+        registry=None,
     ):
         """Dispatch DONE (mutate) and build a continuation prompt if a hook asks.
 
         Returns a ``PendingPrompt`` to enqueue (absorbed by the existing drain +
         re-drive path) when a hook continues within the loop guard, else None.
+        Gates and dispatches on ``registry`` (the per-turn registry stamped into
+        the run config); falls back to ``default_registry`` so no-registry
+        callers (tests) behave as before. Without this, a DONE hook that lives
+        only in the per-turn registry would never fire, since the production
+        ``default_registry`` is empty.
         """
         from .hooks import HookEvent, HookProvenance, adispatch, default_registry
-        if not default_registry.has_mutating(HookEvent.DONE):
+        reg = registry or default_registry
+        if not reg.has_mutating(HookEvent.DONE):
             return None
         try:
             outcome = await adispatch(
@@ -729,6 +741,7 @@ class NymeriaAgent:
                         continuation_depth=continuation_depth,
                     ),
                 ),
+                registry=reg,
             )
         except Exception:
             logger.debug("DONE continue dispatch failed", exc_info=True)
@@ -808,6 +821,38 @@ class NymeriaAgent:
     ) -> Dict[str, Any]:
         from .agent_safety import graph_run_config
         return graph_run_config(self, thread_id, user_id, callbacks=callbacks)
+
+    def _hook_registry_for_turn(self, thread_id: str, user_id: str):
+        """Build this turn's hook registry from the user's enabled definitions.
+
+        Loads the user's hooks (mtime-cached), keeps those in scope for this
+        thread and enabled per ``get_effective_hook_enabled``, and builds a fresh
+        registry via the store-agnostic bridge. Returns ``None`` when there are
+        no active hooks (or no hook manager) so every fire point falls back to
+        the empty ``default_registry`` -- identical to the no-hooks path. Never
+        raises (a resolve failure must not break a turn).
+        """
+        hm = getattr(self, "hook_manager", None)
+        if hm is None:
+            return None
+        try:
+            from .agent_safety import get_effective_hook_enabled
+            from .hooks import build_registry
+            defs = [
+                d for d in hm.get_hooks_cached(user_id)
+                if (d.scope == "global" or d.thread_id == thread_id)
+                and get_effective_hook_enabled(
+                    d, thread_id,
+                    thread_config_manager=self.thread_config_manager,
+                    settings=self.settings,
+                )
+            ]
+            if not defs:
+                return None
+            return build_registry(defs)
+        except Exception:  # noqa: BLE001 - never let hook resolution break a turn
+            logger.debug("hook registry resolve failed", exc_info=True)
+            return None
 
     def _turn_safety_content(self, safety) -> str:
         from .agent_safety import turn_safety_content
@@ -1815,6 +1860,7 @@ class NymeriaAgent:
                         holder_kind=source,
                         trigger_label=_trigger_override,
                     ),
+                    registry=self._hook_registry_for_turn(thread_id, user_id),
                 )
                 _ps_injected = self._wrap_prompt_injection(_ps_out)
                 if _ps_injected:
@@ -2088,6 +2134,7 @@ class NymeriaAgent:
                             completed_normally=True,
                             final_text=response or "",
                         ),
+                        registry=self._hook_registry_for_turn(thread_id, user_id),
                     )
                 except Exception:
                     logger.debug("DONE observe hook dispatch failed (sync)", exc_info=True)
@@ -2465,6 +2512,7 @@ class NymeriaAgent:
                         holder_kind=source,
                         trigger_label=_trigger_override,
                     ),
+                    registry=self._hook_registry_for_turn(thread_id, user_id),
                 )
                 _ps_injected = self._wrap_prompt_injection(_ps_out)
                 if _ps_injected:
@@ -2697,6 +2745,7 @@ class NymeriaAgent:
                             holder_kind=source,
                             final_text="".join(final_response_parts),
                             continuation_depth=continuation_depth,
+                            registry=self._hook_registry_for_turn(thread_id, user_id),
                         )
                         if cont_prompt is not None:
                             continuation_depth += 1
@@ -2963,6 +3012,7 @@ class NymeriaAgent:
                             completed_normally=True,
                             final_text="".join(final_response_parts),
                         ),
+                        registry=self._hook_registry_for_turn(thread_id, user_id),
                     )
                 except Exception:
                     logger.debug("DONE observe hook dispatch failed (async)", exc_info=True)

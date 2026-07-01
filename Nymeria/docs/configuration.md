@@ -1591,6 +1591,7 @@ closing DNS-rebinding gaps.
 | `TOOL_TIMEOUT` | `300` | Max seconds a tool or callable-thread invocation may run |
 | `TOOL_OUTPUT_MAX_CHARS` | `100000` | Max characters stored for one tool result. Larger outputs keep the first ~75k and last ~25k characters with a truncation marker. |
 | `SEQUENTIAL_TOOL_EXECUTION` | `false` | Run a turn's tool calls one at a time in the order the model emitted them, instead of concurrently. Global default; overridable per-thread (a thread can force on or off, or inherit this). Slower for independent calls but avoids parallel-execution races. The `run_tools_in_order` tool still orders a single batch even when this is off. |
+| `HOOKS_ENABLED` | `true` | Master kill switch for lifecycle hooks. When off, no hook fires on any thread (a debug/escape hatch). Global default; overridable per-thread. Sits on top of each hook's own `enabled` flag and any per-thread per-hook override. See `docs/agent-systems/hooks.md`. |
 
 ### Context Management
 

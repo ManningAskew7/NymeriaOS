@@ -82,6 +82,8 @@ class ThreadConfigUpdateRequest(BaseModel):
     memory_char_limit: int | None = Field(default=None, ge=1, le=2_000_000)
     image_window_size: int | None = Field(default=None, ge=1, le=3000)
     sequential_tool_execution: bool | None = None
+    hooks_enabled: bool | None = None
+    hook_overrides: dict[str, bool] | None = None
     claude_code_model: str | None = Field(default=None, max_length=200)
     # Friendly permission-mode token for the claude_code tool (plan, dont_ask,
     # accept_edits, bypass, ...). Validated against the bridge's alias set.
@@ -98,6 +100,8 @@ class ThreadConfigUpdateRequest(BaseModel):
     clear_memory_char_limit: bool = False
     clear_image_window_size: bool = False
     clear_sequential_tool_execution: bool = False
+    clear_hooks_enabled: bool = False
+    clear_hook_overrides: bool = False
     clear_claude_code_model: bool = False
     clear_claude_code_mode: bool = False
     clear_dreaming: bool = False
