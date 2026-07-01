@@ -35,7 +35,11 @@ class _StubAgent:
     _done_context = NymeriaAgent._done_context
     # staticmethod on the real class; re-wrap so `self.` access does not bind self.
     _resolve_done_continuation = staticmethod(NymeriaAgent._resolve_done_continuation)
+    _done_continuation_ctx = NymeriaAgent._done_continuation_ctx
+    _continuation_prompt_from_outcome = NymeriaAgent._continuation_prompt_from_outcome
+    _deliver_hook_user_message = NymeriaAgent._deliver_hook_user_message
     _maybe_done_continuation = NymeriaAgent._maybe_done_continuation
+    _maybe_done_continuation_sync = NymeriaAgent._maybe_done_continuation_sync
     _hook_registry_for_turn = NymeriaAgent._hook_registry_for_turn
 
     def __init__(self, hook_manager, thread_config_manager, settings):
@@ -270,6 +274,30 @@ def test_done_continuation_is_one_shot_across_redrive(env):
         )
 
     assert _cont(0) is not None
+    assert _cont(1) is None
+
+
+def test_done_continuation_sync_is_one_shot_across_redrive(env):
+    # slice D1: the sync twin re-drives through the real bridge registry exactly
+    # as the async path does -- one follow-up, then the cooperative flag stops it.
+    agent, hm, _tcm = env
+    hm.add_hook("u1", name="finish", event="done", text="run checks", scope="global")
+    reg = agent._hook_registry_for_turn("t1", "u1")
+
+    def _cont(depth):
+        return agent._maybe_done_continuation_sync(
+            thread_id="t1",
+            user_id="u1",
+            is_autonomous=False,
+            holder_kind="interactive",
+            final_text="x",
+            continuation_depth=depth,
+            registry=reg,
+        )
+
+    p0 = _cont(0)
+    assert p0 is not None
+    assert p0.message == "run checks"
     assert _cont(1) is None
 
 

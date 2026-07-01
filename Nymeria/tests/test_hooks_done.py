@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from types import SimpleNamespace
 
 from nymeria.core.agent import NymeriaAgent
 from nymeria.core.hooks import DoneOutcome, HookEvent
@@ -221,5 +222,243 @@ def test_continuation_loop_stops_when_hook_stops():
         dmod.register(HookEvent.DONE, hook)
         redrives = _drive_continuation_loop(_bare_agent())
         assert redrives == 3
+    finally:
+        dmod.reset()
+
+
+# --------------------------------------------------------------------------- #
+# Sync DONE continuation twin (slice D1): the no-loop chat path re-drives too.
+# --------------------------------------------------------------------------- #
+
+def test_maybe_done_continuation_sync_builds_prompt():
+    dmod.reset()
+    try:
+        dmod.register(HookEvent.DONE, lambda c: DoneOutcome(continue_=True, reason="rerun tests"))
+        agent = _bare_agent()
+        prompt = agent._maybe_done_continuation_sync(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", final_text="done", continuation_depth=0,
+        )
+        assert prompt is not None
+        assert prompt.message == "rerun tests"
+        assert prompt.source == "hook_continuation"
+        assert prompt.is_autonomous is True
+        assert prompt.user_id == "u1"
+    finally:
+        dmod.reset()
+
+
+def test_maybe_done_continuation_sync_none_when_no_hook():
+    dmod.reset()
+    try:
+        agent = _bare_agent()
+        assert agent._maybe_done_continuation_sync(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", final_text="done", continuation_depth=0,
+        ) is None
+    finally:
+        dmod.reset()
+
+
+def test_maybe_done_continuation_sync_respects_hard_cap():
+    dmod.reset()
+    try:
+        dmod.register(HookEvent.DONE, lambda c: DoneOutcome(continue_=True, reason="again"))
+        agent = _bare_agent()
+        assert agent._maybe_done_continuation_sync(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", final_text="done",
+            continuation_depth=NymeriaAgent.MAX_DONE_CONTINUATIONS,
+        ) is None
+    finally:
+        dmod.reset()
+
+
+def test_sync_continuation_loop_stops_at_hard_cap():
+    """The sync twin mirrors the async loop guard: always-continue is bounded."""
+    dmod.reset()
+    try:
+        dmod.register(HookEvent.DONE, lambda c: DoneOutcome(continue_=True, reason="again"))
+        agent = _bare_agent()
+        depth = redrives = 0
+        while True:
+            prompt = agent._maybe_done_continuation_sync(
+                thread_id="t1", user_id="u1", is_autonomous=False,
+                holder_kind="user", final_text="", continuation_depth=depth,
+            )
+            if prompt is None:
+                break
+            depth += 1
+            redrives += 1
+            if redrives > 100:  # test-side backstop; the guard should stop us first
+                break
+        assert redrives == NymeriaAgent.MAX_DONE_CONTINUATIONS
+    finally:
+        dmod.reset()
+
+
+# --------------------------------------------------------------------------- #
+# DoneOutcome.user_message delivery (slice D3).
+# --------------------------------------------------------------------------- #
+
+def test_done_user_message_delivered_with_continuation():
+    dmod.reset()
+    delivered = []
+    try:
+        dmod.register(
+            HookEvent.DONE,
+            lambda c: DoneOutcome(continue_=True, reason="go", user_message="ping"),
+        )
+        agent = _bare_agent()
+        agent._deliver_hook_user_message = lambda uid, tid, txt: delivered.append((uid, tid, txt))
+        prompt = asyncio.run(agent._maybe_done_continuation(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", final_text="", continuation_depth=0,
+        ))
+        assert prompt is not None and prompt.message == "go"
+        assert delivered == [("u1", "t1", "ping")]
+    finally:
+        dmod.reset()
+
+
+def test_done_user_message_delivered_without_continuation():
+    dmod.reset()
+    delivered = []
+    try:
+        dmod.register(
+            HookEvent.DONE,
+            lambda c: DoneOutcome(continue_=False, user_message="fyi"),
+        )
+        agent = _bare_agent()
+        agent._deliver_hook_user_message = lambda uid, tid, txt: delivered.append((uid, tid, txt))
+        prompt = asyncio.run(agent._maybe_done_continuation(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", final_text="", continuation_depth=0,
+        ))
+        assert prompt is None  # no continuation asked
+        assert delivered == [("u1", "t1", "fyi")]  # but the message still reaches the user
+    finally:
+        dmod.reset()
+
+
+def test_done_user_message_delivered_via_sync_twin():
+    dmod.reset()
+    delivered = []
+    try:
+        dmod.register(
+            HookEvent.DONE,
+            lambda c: DoneOutcome(continue_=False, user_message="sync fyi"),
+        )
+        agent = _bare_agent()
+        agent._deliver_hook_user_message = lambda uid, tid, txt: delivered.append((uid, tid, txt))
+        prompt = agent._maybe_done_continuation_sync(
+            thread_id="t9", user_id="u9", is_autonomous=True,
+            holder_kind="ticker", final_text="", continuation_depth=0,
+        )
+        assert prompt is None
+        assert delivered == [("u9", "t9", "sync fyi")]
+    finally:
+        dmod.reset()
+
+
+def test_deliver_hook_user_message_calls_notification(monkeypatch):
+    import nymeria.core.notifications as notif
+    calls = []
+    monkeypatch.setattr(notif, "create_notification", lambda **kw: calls.append(kw))
+    agent = _bare_agent()
+    agent.settings = SimpleNamespace(fcm_enabled=False, data_dir="/tmp")
+    agent._deliver_hook_user_message("u1", "t1", "hello there")
+    assert len(calls) == 1
+    assert calls[0]["user_id"] == "u1"
+    assert calls[0]["thread_id"] == "t1"
+    assert calls[0]["summary"] == "hello there"
+
+
+def test_deliver_hook_user_message_empty_is_noop(monkeypatch):
+    import nymeria.core.notifications as notif
+    calls = []
+    monkeypatch.setattr(notif, "create_notification", lambda **kw: calls.append(kw))
+    agent = _bare_agent()
+    agent.settings = SimpleNamespace(fcm_enabled=False, data_dir="/tmp")
+    agent._deliver_hook_user_message("u1", "t1", "   ")
+    assert calls == []
+
+
+def test_deliver_hook_user_message_never_raises(monkeypatch):
+    import nymeria.core.notifications as notif
+    def boom(**kw):
+        raise RuntimeError("notification store down")
+    monkeypatch.setattr(notif, "create_notification", boom)
+    agent = _bare_agent()
+    agent.settings = SimpleNamespace(fcm_enabled=False, data_dir="/tmp")
+    agent._deliver_hook_user_message("u1", "t1", "boom")  # swallowed, must not raise
+
+
+# --------------------------------------------------------------------------- #
+# Error-path DONE observe (slice D2): the observe helpers carry completed_normally
+# so a `done` notify/webhook hook can react to a failed turn, not only a clean one.
+# --------------------------------------------------------------------------- #
+
+def test_fire_done_observe_sync_marks_error():
+    dmod.reset()
+    seen = {}
+    try:
+        dmod.register(HookEvent.DONE, lambda c: seen.update(normal=c.completed_normally), observe=True)
+        agent = _bare_agent()
+        agent._fire_done_observe_sync(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", completed_normally=False, final_text="",
+        )
+        assert seen["normal"] is False
+    finally:
+        dmod.reset()
+
+
+def test_fire_done_observe_sync_normal_completion():
+    dmod.reset()
+    seen = {}
+    try:
+        dmod.register(HookEvent.DONE, lambda c: seen.update(normal=c.completed_normally), observe=True)
+        agent = _bare_agent()
+        agent._fire_done_observe_sync(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", completed_normally=True, final_text="ok",
+        )
+        assert seen["normal"] is True
+    finally:
+        dmod.reset()
+
+
+def test_fire_done_observe_async_marks_error():
+    dmod.reset()
+    seen = {}
+    try:
+        async def obs(c):
+            seen["normal"] = c.completed_normally
+        dmod.register(HookEvent.DONE, obs, observe=True)
+        agent = _bare_agent()
+        asyncio.run(agent._fire_done_observe(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", completed_normally=False, final_text="",
+        ))
+        assert seen["normal"] is False
+    finally:
+        dmod.reset()
+
+
+def test_fire_done_observe_sync_never_raises():
+    dmod.reset()
+    try:
+        dmod.register(
+            HookEvent.DONE,
+            lambda c: (_ for _ in ()).throw(RuntimeError("boom")),
+            observe=True,
+        )
+        agent = _bare_agent()
+        # A faulting observe hook on the error path must not re-raise into cleanup.
+        agent._fire_done_observe_sync(
+            thread_id="t1", user_id="u1", is_autonomous=False,
+            holder_kind="user", completed_normally=False, final_text="",
+        )
     finally:
         dmod.reset()

@@ -106,6 +106,50 @@ def test_post_append_note():
         dmod.reset()
 
 
+def test_tool_hook_sees_threaded_turn_source():
+    """slice D5: graph_run_config stamps hook_is_autonomous/holder/trigger into
+    configurable; _build_tool_hook_ctx surfaces them to a PRE/POST tool hook."""
+    dmod.reset()
+    seen = {}
+    try:
+        def pre(c):
+            seen["autonomous"] = c.is_autonomous
+            seen["holder"] = c.holder_kind
+            seen["trigger"] = c.trigger_label
+            return None
+        dmod.register(HookEvent.PRE_TOOL_USE, pre)
+        node = SafeToolNode([echo])
+        cfg = {"configurable": {
+            CONFIG_KEY_RUNTIME: DEFAULT_RUNTIME,
+            "thread_id": "t-src",
+            "user_id": "u-src",
+            "hook_is_autonomous": True,
+            "hook_holder_kind": "ticker",
+            "hook_trigger_label": "Scheduled TODO",
+        }}
+        node.invoke(_msg([_call("hi")]), cfg)
+        assert seen == {"autonomous": True, "holder": "ticker", "trigger": "Scheduled TODO"}
+    finally:
+        dmod.reset()
+
+
+def test_tool_hook_turn_source_defaults_when_absent():
+    """No stamped source (e.g. legacy config) -> interactive defaults, no crash."""
+    dmod.reset()
+    seen = {}
+    try:
+        def pre(c):
+            seen["autonomous"] = c.is_autonomous
+            seen["holder"] = c.holder_kind
+            return None
+        dmod.register(HookEvent.PRE_TOOL_USE, pre)
+        node = SafeToolNode([echo])
+        node.invoke(_msg([_call("hi")]), _config())
+        assert seen == {"autonomous": False, "holder": None}
+    finally:
+        dmod.reset()
+
+
 def test_matcher_scopes_hook_out():
     dmod.reset()
     try:

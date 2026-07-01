@@ -117,7 +117,7 @@ the middle is pluggable. Everything crosses the same typed boundary.
 | `PROMPT_SUBMIT` | at every turn start (user AND autonomous) | inject context onto the model-facing message tail |
 | `PRE_TOOL_USE` | before a single tool call executes | allow / deny (veto) / modify the call's args |
 | `POST_TOOL_USE` | after a single tool call executes | rewrite the tool result or append a note for the model |
-| `DONE` | when a turn finishes normally | observe (fire-and-forget) and/or continue (force another turn) |
+| `DONE` | when a turn finishes (observe fires on normal completion and on error) | observe (fire-and-forget) and/or continue (force another turn) |
 
 `PROMPT_SUBMIT` firing on autonomous turns too (scheduled TODOs, triggers, watchdog,
 dreams) is a deliberate upgrade over Claude Code's user-only event: `HookContext`
@@ -140,7 +140,13 @@ apply, seeing the original tool result; `tool_hooks_active` activates the tool-n
 observe-only tool hooks too). `PROMPT_SUBMIT` / `PRE_TOOL_USE` dispatch on the mutate plane
 only; an observe registration on those events is inert (no product action needs it yet). The
 POST observe dispatch runs in-band on the tool path (fire-and-forget but synchronous, bounded
-by the per-hook timeout), so a slow observe hook adds latency to that tool call.
+by the per-hook timeout), so a slow observe hook adds latency to that tool call. The two
+planes run their sync hooks on **separate thread pools** (`_mutate_pool` / `_observe_pool`,
+sized by `HOOK_MUTATE_POOL_WORKERS` / `HOOK_OBSERVE_POOL_WORKERS`), so a slow observe hook
+cannot starve the worker a fast mutate-plane guardrail needs. If a hook still cannot get a
+worker within its budget, the dispatcher distinguishes that queue-wait timeout from a genuine
+execution overrun: it logs the saturation distinctly and, on `PRE_TOOL_USE`, still fails
+closed (a guardrail that could not be evaluated must not silently pass).
 
 Multiple hooks on one event all run ("run-all-then-reduce"), so side effects and
 scratch writes are order-independent. Reduction is deterministic in registration
@@ -185,17 +191,20 @@ rather than a parallel re-drive.
   no PRE/POST tool hook is registered, they delegate straight to `super()`, so the hot
   path is unchanged by default.
 - `DONE` observe: dispatched at the normal-completion site of `chat`/`astream` (not the
-  `finally`, where `await`/`yield` are forbidden during GeneratorExit), so it fires
-  exactly once per normal turn and *not* on error/cancel (a documented limitation; the
-  error/cancel observe path is a follow-up). DONE **continue** lives only in the
-  astream drain loop's settle point (`_maybe_done_continuation`, async). The sync `chat`
-  path fires `DONE` observe but does not yet continue: it has a queued-prompt drain loop,
-  but the continuation dispatch is async-only, so wiring it needs a sync dispatch twin and
-  in-loop depth tracking (deferred). Practical impact: a `done` hook re-drives on the
-  streaming (SSE/desktop) path but is inert on non-streaming transports (the webhook bots,
-  non-streaming `/chat`, callable threads); `prompt_submit` and `post_tool_use` hooks work
-  on both paths. `DoneOutcome.user_message` is reduced but not yet delivered out-of-band;
-  it is reserved for a later pass.
+  `finally`, where `await`/`yield` are forbidden during GeneratorExit), and **also on the
+  error path** (`completed_normally=False`) so a `done` `notify`/`webhook` can react to a
+  failed turn. It still does *not* fire on cancel/GeneratorExit (SSE disconnect): the
+  `finally` forbids `await`, and running a possibly-slow observe hook there would delay the
+  force-close (a documented limitation). Both paths share the `_fire_done_observe` /
+  `_fire_done_observe_sync` helpers.
+- `DONE` **continue**: fires on **both** paths. The async `astream` drain loop and the sync
+  `chat` tail each defer `backend.begin_release` until after a DONE-continue check
+  (`_maybe_done_continuation` / `_maybe_done_continuation_sync`, the sync twin using the sync
+  `dispatch`), so a `done` hook re-drives identically on streaming and non-streaming
+  transports (webhook bots, non-streaming `/chat`, callable threads). The reduced outcome's
+  `DoneOutcome.user_message` is delivered out-of-band through the same notification surface
+  as the `notify` action (`_deliver_hook_user_message`), whether or not a continuation is
+  also requested.
 
 ## What is deferred (not yet shipped)
 
@@ -205,23 +214,19 @@ rather than a parallel re-drive.
 - A **frontend UI** for authoring/toggling hooks (the tool + REST surfaces exist; no
   desktop/mobile panel yet).
 - The `nym` **workflow** logic substrate (sandboxed, out-of-process).
-- Full turn-source threading into the tool-hook context (tool hooks currently read
-  `is_autonomous`/`holder_kind` only if a caller threaded them into the run config).
-- Observe fire points for `PROMPT_SUBMIT`/`PRE_TOOL_USE`/`POST_TOOL_USE`, DONE-continue
-  on the sync path, and `user_message` delivery (see "Two planes" above).
-- Sync-hook pool hardening: sync hooks share one small `ThreadPoolExecutor`. A hook
-  that hangs past its timeout keeps occupying its worker (Python cannot cancel a
-  running thread), so under heavy real-hook load a saturated pool could turn queued
-  `PRE_TOOL_USE` dispatches into spurious denies (fail-closed). Harmless in the spine
-  (no production hooks run), but the product pass should size/scope the pool and
-  distinguish a queue-wait timeout from a hook-execution timeout.
+- Observe fire points for `PROMPT_SUBMIT` / `PRE_TOOL_USE` (a registration on those
+  events is inert; no product action needs them yet). `POST_TOOL_USE` and `DONE` have
+  observe fire points.
+- `DONE` observe on cancel/GeneratorExit (it fires on normal completion and on error, but
+  not on an SSE disconnect: `await` is forbidden in the force-close `finally`).
 
 ## Package
 
 - `core/hooks/`: `base.py` (contract), `registry.py` (in-process registry, `has_mutating`/
   `has_observe`), `scratch.py` (per-thread store), `dispatch.py` (planes + reduction + fault
-  policy; `tool_hooks_active`), `actions.py` (the six actions + `ACTION_PLANES`), `bridge.py`
-  (definitions → per-turn registry, registering each on its plane).
+  policy; `tool_hooks_active`; plane-scoped `_mutate_pool`/`_observe_pool` + the
+  queue-wait-vs-execution timeout split), `actions.py` (the six actions + `ACTION_PLANES`),
+  `bridge.py` (definitions → per-turn registry, registering each on its plane).
 - `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (six
   variants) + `HookStore` records + the per-user `HookManager` (store-only, no engine
   import). Observe actions reuse `core/notifications.py` + `core/fcm.py` (notify),
@@ -236,6 +241,8 @@ rather than a parallel re-drive.
 
 The per-turn wiring lives in `core/agent.py::_hook_registry_for_turn` (loads a user's
 enabled hooks, mtime-cached, and builds the registry) and
-`core/agent_safety.py::graph_run_config` (stamps `configurable["hook_registry"]`); every
-fire point falls back to the empty `default_registry` when no per-turn registry is set,
+`core/agent_safety.py::graph_run_config` (stamps `configurable["hook_registry"]` plus the
+turn source `hook_is_autonomous`/`hook_holder_kind`/`hook_trigger_label`, which
+`nodes.py::_build_tool_hook_ctx` surfaces so a tool hook can scope by autonomous-vs-interactive);
+every fire point falls back to the empty `default_registry` when no per-turn registry is set,
 so a user with no enabled hooks runs byte-identically to the spine.

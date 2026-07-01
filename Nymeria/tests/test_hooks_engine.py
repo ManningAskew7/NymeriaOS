@@ -8,7 +8,9 @@ pytest-asyncio configuration.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -22,6 +24,7 @@ from nymeria.core.hooks import (
     PromptOutcome,
     ScratchStore,
 )
+from nymeria.core.hooks.registry import Registration
 import importlib
 
 dmod = importlib.import_module("nymeria.core.hooks.dispatch")
@@ -442,3 +445,128 @@ def test_default_register_and_reset():
     assert out.user_message == "hi"
     dmod.reset()
     assert run(dmod.adispatch(HookEvent.DONE, ctx(HookEvent.DONE))) is None
+
+
+# --------------------------------------------------------------------------- #
+# Dispatch pool hardening (slice D4): queue-wait vs execution timeout,
+# per-plane pool scoping, and saturation classification.
+# --------------------------------------------------------------------------- #
+
+def _reg(fn, event=HookEvent.PRE_TOOL_USE, name="h", observe=False):
+    return Registration(id=0, event=event, fn=fn, matcher=None, name=name, observe=observe)
+
+
+def test_pool_workers_env_parsing(monkeypatch):
+    monkeypatch.setenv("HOOK_TEST_WORKERS", "6")
+    assert dmod._pool_workers("HOOK_TEST_WORKERS") == 6
+    monkeypatch.setenv("HOOK_TEST_WORKERS", "0")
+    assert dmod._pool_workers("HOOK_TEST_WORKERS") == 1  # clamped to a floor of 1
+    monkeypatch.setenv("HOOK_TEST_WORKERS", "garbage")
+    assert dmod._pool_workers("HOOK_TEST_WORKERS", default=3) == 3
+    monkeypatch.delenv("HOOK_TEST_WORKERS", raising=False)
+    assert dmod._pool_workers("HOOK_TEST_WORKERS", default=5) == 5
+
+
+def test_mutate_and_observe_pools_are_distinct():
+    # Scoped per plane so a slow observe hook cannot starve a mutate guardrail.
+    assert dmod._mutate_pool is not dmod._observe_pool
+
+
+def test_run_hook_sync_execution_timeout_is_started():
+    """A hook that runs but overruns its budget classifies started=True."""
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        def slow(c):
+            time.sleep(2)
+        with pytest.raises(dmod._HookTimeout) as ei:
+            dmod._run_hook_sync(_reg(slow), ctx(HookEvent.PRE_TOOL_USE), 0.1, pool)
+        assert ei.value.started is True
+    finally:
+        pool.shutdown(wait=False)
+
+
+def test_run_hook_sync_queue_timeout_is_not_started():
+    """A hook stuck behind a saturated pool never runs -> started=False."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    release = threading.Event()
+    ran = {"v": False}
+    try:
+        pool.submit(release.wait)  # occupy the only worker
+
+        def quick(c):
+            ran["v"] = True
+
+        with pytest.raises(dmod._HookTimeout) as ei:
+            dmod._run_hook_sync(_reg(quick), ctx(HookEvent.PRE_TOOL_USE), 0.1, pool)
+        assert ei.value.started is False
+        assert ran["v"] is False  # never got a worker
+    finally:
+        release.set()
+        pool.shutdown(wait=False)
+
+
+def test_fault_outcome_distinguishes_saturation():
+    guard = _reg(lambda c: None, name="guard")
+    sat = dmod._fault_outcome(
+        HookEvent.PRE_TOOL_USE, guard, dmod._HookTimeout("guard", started=False)
+    )
+    assert sat.decision == "deny"
+    assert "saturated" in (sat.reason or "")
+    exe = dmod._fault_outcome(
+        HookEvent.PRE_TOOL_USE, guard, dmod._HookTimeout("guard", started=True)
+    )
+    assert exe.decision == "deny"
+    assert "saturated" not in (exe.reason or "")  # plain execution overrun
+    # A non-PRE saturation fails open (skipped), not a spurious side effect.
+    assert dmod._fault_outcome(
+        HookEvent.DONE, guard, dmod._HookTimeout("guard", started=False)
+    ) is None
+
+
+def test_pre_saturation_denies_end_to_end(reg, scratch, monkeypatch):
+    """A PRE hook that cannot get a worker fails closed with a saturation reason."""
+    small = ThreadPoolExecutor(max_workers=1)
+    hold = threading.Event()
+    monkeypatch.setattr(dmod, "_mutate_pool", small)
+    try:
+        small.submit(hold.wait)  # occupy the only worker so the hook stays queued
+        reg.register(
+            HookEvent.PRE_TOOL_USE,
+            lambda c: PreToolOutcome(decision="allow"),
+            name="guard",
+        )
+        out = dmod.dispatch(
+            HookEvent.PRE_TOOL_USE,
+            ctx(HookEvent.PRE_TOOL_USE, tool_name="bash"),
+            registry=reg,
+            scratch=scratch,
+            timeout=0.1,
+        )
+        assert out.decision == "deny"
+        assert "could not run" in (out.reason or "")
+    finally:
+        hold.set()
+        small.shutdown(wait=False)
+
+
+def test_dispatch_routes_to_scoped_pools(reg, scratch, monkeypatch):
+    captured = []
+    real = dmod._run_hook_sync
+
+    def spy(r, c, t, pool):
+        captured.append(pool)
+        return real(r, c, t, pool)
+
+    monkeypatch.setattr(dmod, "_run_hook_sync", spy)
+    reg.register(HookEvent.POST_TOOL_USE, lambda c: None, name="m")
+    reg.register(HookEvent.POST_TOOL_USE, lambda c: None, name="o", observe=True)
+    dmod.dispatch(
+        HookEvent.POST_TOOL_USE, ctx(HookEvent.POST_TOOL_USE, tool_name="Edit"),
+        registry=reg, scratch=scratch,
+    )
+    dmod.dispatch_observe(
+        HookEvent.POST_TOOL_USE, ctx(HookEvent.POST_TOOL_USE, tool_name="Edit"),
+        registry=reg, scratch=scratch,
+    )
+    assert dmod._mutate_pool in captured   # mutate dispatch -> mutate pool
+    assert dmod._observe_pool in captured  # observe dispatch -> observe pool
