@@ -209,38 +209,42 @@ def _hook_list(*, current_thread_only: bool, config: RunnableConfig) -> str:
     return "\n".join(lines)
 
 
-def _hook_inspect(*, hook_id: str, action: str, config: RunnableConfig) -> str:
-    user_id = get_user_id(config)
-    manager = _get_hook_manager()
-    hook = manager.get_hook(user_id, hook_id)
-    if hook is None:
-        return f"[Error]: no hook found with id '{hook_id}'."
-    logic = hook.logic
-    if action == "detail":
-        lines = [
-            f"Hook {hook.id}: {hook.name}",
-            f"  event: {hook.event}",
-            f"  enabled: {hook.enabled}",
-            f"  matcher: {hook.matcher or '(any tool)'}",
-            f"  scope: {hook.scope}"
-            + (f" (thread {hook.thread_id})" if hook.scope == "thread" else ""),
-            f"  action: {logic.action}",
-        ]
-        if logic.action in _TEXT_ACTIONS:
-            lines.append(f"  text: {getattr(logic, 'text', '')!r}")
-        elif logic.action == "block_if_matches":
-            lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
-            lines.append(f"  reason: {logic.reason or '(default)'}")
-        elif logic.action == "rewrite_arg":
-            lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
-            lines.append(f"  updates: {logic.updates}")
-        elif logic.action == "webhook":
-            lines.append(f"  url: {logic.url}")
-            lines.append(f"  text: {logic.text!r}")
-        lines.append(f"  created_by: {hook.created_by}")
-        return "\n".join(lines)
+def render_hook_detail(hook: HookDefinition) -> str:
+    """Full human-readable configuration of a hook (the 'detail' view).
 
-    # action == "test": dry-run description
+    Pure (no store access) so the ``/hook show`` command reuses it verbatim.
+    """
+    logic = hook.logic
+    lines = [
+        f"Hook {hook.id}: {hook.name}",
+        f"  event: {hook.event}",
+        f"  enabled: {hook.enabled}",
+        f"  matcher: {hook.matcher or '(any tool)'}",
+        f"  scope: {hook.scope}"
+        + (f" (thread {hook.thread_id})" if hook.scope == "thread" else ""),
+        f"  action: {logic.action}",
+    ]
+    if logic.action in _TEXT_ACTIONS:
+        lines.append(f"  text: {getattr(logic, 'text', '')!r}")
+    elif logic.action == "block_if_matches":
+        lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
+        lines.append(f"  reason: {logic.reason or '(default)'}")
+    elif logic.action == "rewrite_arg":
+        lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
+        lines.append(f"  updates: {logic.updates}")
+    elif logic.action == "webhook":
+        lines.append(f"  url: {logic.url}")
+        lines.append(f"  text: {logic.text!r}")
+    lines.append(f"  created_by: {hook.created_by}")
+    return "\n".join(lines)
+
+
+def render_hook_test(hook: HookDefinition) -> str:
+    """Dry-run description of what a hook would do against sample data (no fire).
+
+    Pure (no store access) so the ``/hook test`` command reuses it verbatim.
+    """
+    logic = hook.logic
     if logic.action in _TEXT_ACTIONS:
         sample = dict(_SAMPLE_VARS)
         sample["event"] = hook.event
@@ -278,6 +282,17 @@ def _hook_inspect(*, hook_id: str, action: str, config: RunnableConfig) -> str:
             f"{logic.updates}."
         )
     return f"[Info]: Hook {hook.id} action {logic.action} has no test render."
+
+
+def _hook_inspect(*, hook_id: str, action: str, config: RunnableConfig) -> str:
+    user_id = get_user_id(config)
+    manager = _get_hook_manager()
+    hook = manager.get_hook(user_id, hook_id)
+    if hook is None:
+        return f"[Error]: no hook found with id '{hook_id}'."
+    if action == "detail":
+        return render_hook_detail(hook)
+    return render_hook_test(hook)
 
 
 @tool

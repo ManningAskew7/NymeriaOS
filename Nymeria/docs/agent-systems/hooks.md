@@ -60,7 +60,7 @@ block of every tool call.
 
 ### Authoring
 
-Two surfaces write the same per-user JSON store (`data_dir/hooks/<user>.json`, one file
+Three surfaces write the same per-user JSON store (`data_dir/hooks/<user>.json`, one file
 per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
 
 - **Agent tools** (`tools/hooks.py`, opt-in `CATALOG_TOOLS`): `hook_config`
@@ -70,6 +70,21 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   `{"conditions": [...], "updates": {...}}`). A create auto-binds the current thread for
   `scope="thread"` (including the real `default` thread); `test` renders/describes the
   hook without firing. The `hook-management` bundled skill front-loads these.
+- **Slash command** `/hook` (`core/command_service.py`, catalog in `core/registry_defaults.py`):
+  `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test`, reaching
+  the same store through `POST /commands/execute` (so it works in the desktop/mobile command
+  bar, the terminal CLI, and any chat bot wired to forward it). A deterministic authoring
+  path that does not depend on the model calling the tool. The grammar is flag-based (a
+  single line, so it round-trips through chat surfaces): `/hook create <name> --event E
+  --action A [--text ..|--url ..|--cond "field op value"..|--reason ..|--set arg=value..]
+  [--matcher A|B] [--scope thread|global] [--disabled]`; `--cond`/`--set` repeat; `edit`
+  takes `key=value` scalars plus `--cond`/`--set`. It reuses the same flat-field mapping
+  (`params_from_fields` / `build_update_kwargs` in `core/hook_manager.py`) as the REST
+  surface, so the three authoring paths cannot drift. The mutating subcommands are
+  `agent_allowed=False` (the agent authors via the tool) and hidden from chat command menus
+  (only the bare `/hook` lists there). Known limitation: an option value that begins with
+  `--` (e.g. a `--text` starting with two dashes) cannot be expressed on the command line
+  (shared arg-parser behavior); use the tool, REST, or GUI for such content.
 - **REST** (`api/routers/hooks.py`, mounted at `/hooks`): pure CRUD plus
   `POST /hooks/{id}/test`. The request carries `action` plus the flat per-action fields
   (`text` / `conditions` / `reason` / `updates`); the response exposes the full `logic`

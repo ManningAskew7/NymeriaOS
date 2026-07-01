@@ -1406,8 +1406,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 90
-    assert sum(cmd.executable for cmd in service._commands.values()) == 76
+    assert len(service._commands) == 99
+    assert sum(cmd.executable for cmd in service._commands.values()) == 85
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -1430,6 +1430,16 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
         ("mcp_delete",),
     )
     assert by_name["tools core"].aliases == (("tools_core",), ("tools", "list_core"))
+
+    # Lifecycle-hook commands: mutating subcommands are agent-gated (the agent
+    # authors via the hook_config tool) and hidden from chat surfaces, while the
+    # bare `/hook` read command stays available everywhere.
+    assert by_name["hook"].agent_allowed is True
+    assert by_name["hook"].aliases == (("hooks",),)
+    hook_create = by_name["hook create"]
+    assert (hook_create.agent_allowed, hook_create.mutates_state) == (False, True)
+    assert "telegram" not in hook_create.surfaces
+    assert by_name["hook delete"].danger_level == "dangerous"
 
     # The catalog registers onto whichever service instance is passed in.
     fresh = CommandService()
