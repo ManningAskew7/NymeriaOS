@@ -397,6 +397,7 @@ _SOURCE_LABELS = {
     "mcp": "MCP Client",
     "watchdog": "Watchdog",
     "background_bash": "Background Bash",
+    "hook_continuation": "Hook Continuation",
 }
 
 
