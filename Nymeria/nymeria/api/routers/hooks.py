@@ -12,6 +12,7 @@ from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from ...config import get_settings
 from ...core.accounts import AuthenticatedUser
@@ -186,6 +187,72 @@ def create_hook_router(
         if hook is None:
             raise HTTPException(status_code=400, detail="Hook limit reached for this user.")
         return HookResponse.from_definition(hook)
+
+    # NOTE: /schema and /executions are registered before the /{hook_id} routes
+    # so the literal paths win (FastAPI matches in registration order; later,
+    # "executions" would bind as a hook_id).
+    @router.get("/schema")
+    async def hooks_schema(
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
+    ):
+        """The machine-readable authoring taxonomy.
+
+        Derived from the ``core/hook_spec.py`` single source plus the pydantic
+        logic variants, so clients (the GUI form, bot command builders) can
+        render event/action pickers and per-action param fields from data
+        instead of hardcoding the legality map. ``params_schema`` is each
+        action's JSON schema minus the ``action`` discriminator.
+        """
+        from typing import get_args
+
+        from ...core.conditions import ConditionOperator
+        from ...core.hook_manager import HOOK_LOGIC_BY_ACTION, HookStore
+        from ...core.hook_spec import ACTION_SPECS, EVENTS, TOOL_EVENTS, event_actions
+
+        legality = event_actions()
+        actions = {}
+        for name, spec in ACTION_SPECS.items():
+            schema = HOOK_LOGIC_BY_ACTION[name].model_json_schema()
+            schema.get("properties", {}).pop("action", None)
+            required = [f for f in schema.get("required", []) if f != "action"]
+            if required:
+                schema["required"] = required
+            else:
+                schema.pop("required", None)
+            actions[name] = {
+                "plane": spec.plane,
+                "events": list(spec.events),
+                "text_action": spec.text_action,
+                "params_schema": schema,
+            }
+        return {
+            "events": {
+                e: {"tool_event": e in TOOL_EVENTS, "actions": sorted(legality[e])}
+                for e in EVENTS
+            },
+            "actions": actions,
+            "operators": list(get_args(ConditionOperator)),
+            "max_hooks": HookStore.model_fields["MAX_HOOKS"].default,
+        }
+
+    @router.get("/executions")
+    async def list_hook_executions(
+        hook_id: Optional[str] = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
+    ):
+        """Recent hook executions (newest first), optionally for one hook.
+
+        Each entry records one hook run: status ``ok`` / ``no_op`` (ran,
+        produced nothing) / ``error`` / ``timeout`` / ``saturated`` (dispatch
+        pool starved; on pre_tool_use this failed closed) / ``illegal``, plus
+        an outcome/error detail summary and the run duration.
+        """
+        # get_executions blocks on the write-behind flush barrier plus file
+        # I/O; keep it off the event loop.
+        return await run_in_threadpool(
+            _get_manager().get_executions, user.id, hook_id=hook_id, limit=limit
+        )
 
     @router.get("/{hook_id}", response_model=HookResponse)
     async def get_hook(

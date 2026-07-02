@@ -90,6 +90,23 @@ def test_update_missing_hook(store):
     assert "[Error]" in out
 
 
+def test_update_rejects_scope_change(store):
+    h = store.add_hook("u1", name="n", event="done", text="x", thread_id="t1")
+    # Re-scoping on update is forbidden (matches REST PATCH and /hook edit): an
+    # update cannot supply the access-gated thread binding, so allowing it could
+    # orphan the hook as scope="thread" with thread_id="".
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "update", "hook_id": h.id, "scope": "global"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+    assert "scope" in out
+    fresh = store.get_hook("u1", h.id)
+    assert fresh.scope == "thread"
+    assert fresh.thread_id == "t1"
+
+
 def test_delete_hook(store):
     h = store.add_hook("u1", name="n", event="done", text="x")
     out = _invoke(hook_tools.hook_config, {"action": "delete", "hook_id": h.id}, _cfg())
@@ -283,3 +300,41 @@ def test_detail_missing_hook(store):
 def test_hook_tools_grouped_for_catalog():
     names = {t.name for t in hook_tools.HOOK_TOOLS}
     assert names == {"hook_config", "hook_info"}
+
+
+# --- hook_info: execution log ------------------------------------------------
+
+def test_log_empty(store):
+    out = _invoke(hook_tools.hook_info, {"action": "log"}, _cfg())
+    assert "[Info]" in out
+    assert "No hook executions" in out
+
+
+def test_log_lists_entries_newest_first(store):
+    from nymeria.core.hook_manager import HookExecution
+
+    store.log_execution("u1", HookExecution(
+        hook_id="h1", hook_name="guard", event="pre_tool_use", plane="mutate",
+        status="ok", detail="deny: nope", tool_name="bash",
+    ))
+    store.log_execution("u1", HookExecution(
+        hook_id="h2", hook_name="notifier", event="done", plane="observe",
+        status="error", detail="side effect failed",
+    ))
+    out = _invoke(hook_tools.hook_info, {"action": "log"}, _cfg())
+    assert "2 hook execution(s)" in out
+    # Newest first: the done/error entry precedes the pre_tool_use one.
+    assert out.index("h2") < out.index("h1")
+    assert "[error]" in out
+    assert "deny: nope" in out
+    assert "tool=bash" in out
+
+
+def test_log_filters_by_hook_id(store):
+    from nymeria.core.hook_manager import HookExecution
+
+    store.log_execution("u1", HookExecution(hook_id="h1", event="done", status="ok"))
+    store.log_execution("u1", HookExecution(hook_id="h2", event="done", status="no_op"))
+    out = _invoke(hook_tools.hook_info, {"action": "log", "hook_id": "h1"}, _cfg())
+    assert "h1" in out
+    assert "h2" not in out

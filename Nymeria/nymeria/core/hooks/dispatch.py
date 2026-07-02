@@ -26,6 +26,7 @@ import inspect
 import logging
 import os
 import threading
+import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -186,16 +187,21 @@ def _accept(
     ctx: HookContext,
     scratch: ScratchStore,
     outcomes: List[HookOutcome],
-) -> None:
-    """Validate an outcome, apply its scratch patch, and collect it."""
+) -> str:
+    """Validate an outcome, apply its scratch patch, and collect it.
+
+    Returns the run status for the execution recorder: ``"ok"`` (outcome
+    collected), ``"no_op"`` (hook ran and returned None), or ``"illegal"``
+    (wrong outcome type for the event; dropped).
+    """
     if outcome is None:
-        return
+        return "no_op"
     if not _legal(event, outcome):
         logger.error(
             "hook %r returned illegal outcome %s for %s; dropping",
             reg.name, type(outcome).__name__, event.value,
         )
-        return
+        return "illegal"
     patch = getattr(outcome, "scratch_patch", None)
     if patch:
         if isinstance(patch, Mapping):
@@ -206,6 +212,86 @@ def _accept(
                 reg.name, type(patch).__name__,
             )
     outcomes.append(outcome)
+    return "ok"
+
+
+def _fault_status(exc: BaseException) -> str:
+    """Execution-log status for a hook fault."""
+    if isinstance(exc, _HookTimeout):
+        return "timeout" if exc.started else "saturated"
+    return "error"
+
+
+def _outcome_detail(outcome: Optional[HookOutcome]) -> str:
+    """Short human summary of an outcome for the execution log."""
+    if outcome is None:
+        return ""
+    if isinstance(outcome, PreToolOutcome):
+        if outcome.decision == "deny":
+            return f"deny: {outcome.reason}" if outcome.reason else "deny"
+        if outcome.decision == "modify":
+            keys = (
+                sorted(str(k) for k in outcome.updated_args)
+                if isinstance(outcome.updated_args, Mapping)
+                else []
+            )
+            return f"modify: {', '.join(keys)}" if keys else "modify"
+        return "allow"
+    if isinstance(outcome, PromptOutcome):
+        return f"inject {len(outcome.inject_context or '')} chars"
+    if isinstance(outcome, PostToolOutcome):
+        parts = []
+        if outcome.updated_result_text is not None:
+            parts.append(f"rewrite result ({len(outcome.updated_result_text)} chars)")
+        if outcome.additional_context:
+            parts.append(f"note {len(outcome.additional_context)} chars")
+        return "; ".join(parts) or "no change"
+    if isinstance(outcome, DoneOutcome):
+        parts = []
+        if outcome.continue_:
+            parts.append("continue")
+        if outcome.user_message:
+            parts.append(f"user_message {len(outcome.user_message)} chars")
+        return "; ".join(parts) or "no change"
+    return type(outcome).__name__
+
+
+def _record(
+    registry: HookRegistry,
+    reg: Registration,
+    ctx: HookContext,
+    *,
+    status: str,
+    duration: float,
+    outcome: Optional[HookOutcome] = None,
+    error: Optional[BaseException] = None,
+) -> None:
+    """Report one hook run to the registry's recorder, if any (never raises).
+
+    The recorder is an opaque callable the product layer attaches to the
+    per-turn registry (bound to the per-user execution log); the engine stays
+    store-agnostic. ``default_registry`` carries no recorder, so the spine and
+    zero-hook paths record nothing. The detail summary is computed in here,
+    under this function's own guard, and the dispatch loops call ``_record``
+    OUTSIDE their fault handling: a recording or summarization bug is confined
+    to the log entry and can never alter the turn (on the PRE seam, a raise
+    inside the dispatch try would become a fail-closed deny).
+    """
+    recorder = getattr(registry, "recorder", None)
+    if recorder is None:
+        return
+    try:
+        if error is not None:
+            detail = str(error)
+        elif status == "ok":
+            detail = _outcome_detail(outcome)
+        elif status == "illegal":
+            detail = f"dropped {type(outcome).__name__}"
+        else:
+            detail = ""
+        recorder(reg, ctx, status=status, detail=detail, duration=duration)
+    except Exception:  # noqa: BLE001 - recording must never raise into a turn
+        logger.warning("hook execution recorder raised", exc_info=True)
 
 
 async def _arun_hook(
@@ -369,14 +455,24 @@ async def adispatch(
     outcomes: List[HookOutcome] = []
     for reg in regs:
         # _accept runs inside the try so a malformed scratch_patch (or any other
-        # post-run failure) is isolated per hook rather than crashing the turn.
+        # post-run failure) is isolated per hook rather than crashing the turn;
+        # _record runs after the fault handling (see its docstring).
+        started_at = time.monotonic()
+        outcome: Optional[HookOutcome] = None
+        error: Optional[BaseException] = None
         try:
             outcome = await _arun_hook(reg, ctx, timeout, _mutate_pool)
-            _accept(event, reg, outcome, ctx, scratch, outcomes)
+            status = _accept(event, reg, outcome, ctx, scratch, outcomes)
         except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
+            error, status = exc, _fault_status(exc)
             fault = _fault_outcome(event, reg, exc)
             if fault is not None:
                 outcomes.append(fault)
+        _record(
+            registry, reg, ctx,
+            status=status, duration=time.monotonic() - started_at,
+            outcome=outcome, error=error,
+        )
     return _reduce_safe(event, outcomes)
 
 
@@ -398,14 +494,24 @@ def dispatch(
     outcomes: List[HookOutcome] = []
     for reg in regs:
         # _accept runs inside the try so a malformed scratch_patch (or any other
-        # post-run failure) is isolated per hook rather than crashing the turn.
+        # post-run failure) is isolated per hook rather than crashing the turn;
+        # _record runs after the fault handling (see its docstring).
+        started_at = time.monotonic()
+        outcome: Optional[HookOutcome] = None
+        error: Optional[BaseException] = None
         try:
             outcome = _run_hook_sync(reg, ctx, timeout, _mutate_pool)
-            _accept(event, reg, outcome, ctx, scratch, outcomes)
+            status = _accept(event, reg, outcome, ctx, scratch, outcomes)
         except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
+            error, status = exc, _fault_status(exc)
             fault = _fault_outcome(event, reg, exc)
             if fault is not None:
                 outcomes.append(fault)
+        _record(
+            registry, reg, ctx,
+            status=status, duration=time.monotonic() - started_at,
+            outcome=outcome, error=error,
+        )
     return _reduce_safe(event, outcomes)
 
 
@@ -429,10 +535,18 @@ async def adispatch_observe(
         return
     ctx = _with_scratch(ctx, scratch)
     for reg in regs:
+        started_at = time.monotonic()
+        status = "ok"
+        error: Optional[BaseException] = None
         try:
             await _arun_hook(reg, ctx, timeout, _observe_pool)
-        except Exception:  # noqa: BLE001 - observe never affects the turn
+        except Exception as exc:  # noqa: BLE001 - observe never affects the turn
             logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
+            error, status = exc, _fault_status(exc)
+        _record(
+            registry, reg, ctx,
+            status=status, duration=time.monotonic() - started_at, error=error,
+        )
 
 
 def dispatch_observe(
@@ -451,7 +565,15 @@ def dispatch_observe(
         return
     ctx = _with_scratch(ctx, scratch)
     for reg in regs:
+        started_at = time.monotonic()
+        status = "ok"
+        error: Optional[BaseException] = None
         try:
             _run_hook_sync(reg, ctx, timeout, _observe_pool)
-        except Exception:  # noqa: BLE001 - observe never affects the turn
+        except Exception as exc:  # noqa: BLE001 - observe never affects the turn
             logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
+            error, status = exc, _fault_status(exc)
+        _record(
+            registry, reg, ctx,
+            status=status, duration=time.monotonic() - started_at, error=error,
+        )

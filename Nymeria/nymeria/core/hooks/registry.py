@@ -1,9 +1,11 @@
-"""In-process hook registry (the spine's logic substrate).
+"""In-process hook registry (the engine's logic substrate).
 
-The spine binds logic as plain Python callables (the Pi/opencode ``.on(event,
-handler)`` shape), not persisted records: a later pass adds the ``HookDefinition``
-record, storage, and authoring surface on top of the same contract. A callable
-returns a typed ``HookOutcome`` (or ``None``) synchronously or asynchronously.
+The registry binds logic as plain Python callables (the Pi/opencode ``.on(event,
+handler)`` shape). Persisted ``HookDefinition`` records reach it through
+``bridge.build_registry``, which compiles a user's enabled definitions into a
+fresh per-turn registry; tests and fixtures register callables directly. A
+callable returns a typed ``HookOutcome`` (or ``None``) synchronously or
+asynchronously.
 
 Thread-safety is real, not cosmetic: hooks run both on the event loop (the
 concurrent async tool path) and in a ``ThreadPoolExecutor`` worker (the sequential
@@ -25,7 +27,12 @@ HookFn = Callable[[HookContext], Union[Optional[HookOutcome], Awaitable[Optional
 
 @dataclass
 class Registration:
-    """A single bound hook: its event, matcher, callable, and plane."""
+    """A single bound hook: its event, matcher, callable, and plane.
+
+    ``definition_id`` carries the persisted ``HookDefinition`` id when the
+    registration came through the bridge (None for direct/fixture
+    registrations), so the execution recorder can attribute runs.
+    """
 
     id: int
     event: HookEvent
@@ -33,6 +40,7 @@ class Registration:
     matcher: Optional[str]
     name: str
     observe: bool
+    definition_id: Optional[str] = None
 
 
 def _matches(matcher: Optional[str], tool_name: Optional[str]) -> bool:
@@ -49,12 +57,20 @@ def _matches(matcher: Optional[str], tool_name: Optional[str]) -> bool:
 
 
 class HookRegistry:
-    """A lock-guarded ordered collection of hook registrations."""
+    """A lock-guarded ordered collection of hook registrations.
+
+    ``recorder`` is an optional opaque callable the product layer attaches
+    (the bridge binds it to the per-user execution log); dispatch reports each
+    hook run through it. ``None`` (the default, and always the case for
+    ``default_registry``) records nothing, keeping the spine and zero-hook
+    paths byte-identical.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._regs: List[Registration] = []
         self._counter = 0
+        self.recorder: Optional[Callable[..., None]] = None
 
     def register(
         self,
@@ -64,6 +80,7 @@ class HookRegistry:
         matcher: Optional[str] = None,
         name: Optional[str] = None,
         observe: bool = False,
+        definition_id: Optional[str] = None,
     ) -> int:
         """Register a hook; returns an opaque handle for :meth:`unregister`."""
         with self._lock:
@@ -75,6 +92,7 @@ class HookRegistry:
                 matcher=matcher,
                 name=name or getattr(fn, "__name__", "hook"),
                 observe=observe,
+                definition_id=definition_id,
             )
             self._regs.append(reg)
             return reg.id

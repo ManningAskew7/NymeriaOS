@@ -66,14 +66,17 @@ Three surfaces write the same per-user JSON store (`data_dir/hooks/<user>.json`,
 per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
 
 - **Agent tools** (`tools/hooks.py`, opt-in `CATALOG_TOOLS`): `hook_config`
-  (create/update/delete) and `hook_info` (list/detail/test). The action is picked with
+  (create/update/delete) and `hook_info` (list/detail/test/log). The action is picked with
   `hook_action` (default `inject_context`); text actions take `text`, the guardrail
   actions take a `params` dict (`{"conditions": [...], "reason": ...}` /
   `{"conditions": [...], "updates": {...}}`). A create auto-binds the current thread for
   `scope="thread"` (including the real `default` thread); `test` renders/describes the
-  hook without firing. The `hook-management` bundled skill front-loads these.
+  hook without firing; `log` reads the execution log (below). The `hook-management`
+  bundled skill front-loads these. Like every surface, `scope` is create-only
+  (a re-scope is a delete + create: an update cannot supply the access-gated
+  thread binding).
 - **Slash command** `/hook` (`core/command_service.py`, catalog in `core/registry_defaults.py`):
-  `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test`, reaching
+  `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test` / `log`, reaching
   the same store through `POST /commands/execute` (so it works in the desktop/mobile command
   bar, the terminal CLI, and any chat bot wired to forward it: Telegram forwards the raw
   `/hook ...` line verbatim, Discord's `hook` slash-command group assembles the flag grammar
@@ -91,7 +94,11 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   `--` (e.g. a `--text` starting with two dashes) cannot be expressed on the command line
   (shared arg-parser behavior); use the tool, REST, or GUI for such content.
 - **REST** (`api/routers/hooks.py`, mounted at `/hooks`): pure CRUD plus
-  `POST /hooks/{id}/test`. The request carries `action` plus the flat per-action fields
+  `POST /hooks/{id}/test`, `GET /hooks/executions` (the execution log, below), and
+  `GET /hooks/schema` (the machine-readable taxonomy: per-event legal actions,
+  per-action plane/events/params JSON schema, condition operators, the cap; derived
+  from `core/hook_spec.py` so clients can render authoring forms from data). The
+  request carries `action` plus the flat per-action fields
   (`text` / `conditions` / `reason` / `updates`); the response exposes the full `logic`
   object (discriminated on `action`). Every handler pins `user_id` to the authenticated
   caller; scoped creates pass through the thread-access gate. There is no webhook/fire
@@ -122,6 +129,30 @@ Both thread fields are set/cleared through `PATCH /threads/{id}/config`
 `PATCH /settings` field. In the GUI, the per-thread **Hooks** tab (Thread Settings) surfaces
 this as a tri-state master (Inherit / On / Off, where Inherit sends `clear_hooks_enabled`)
 plus per-hook Default / On / Off overrides, folded into the panel's Save batch.
+
+### Execution log
+
+Every hook run is recorded to a bounded per-user log (cap 200, mirroring the
+trigger execution log): hook id/name, event, plane, status, an outcome or error
+`detail` summary, duration, and the thread/tool it ran against. Statuses: `ok`
+(ran and produced an outcome or side effect; `detail` summarizes it, e.g.
+`deny: <reason>`, `modify: command`, `inject 84 chars`, `continue`), `no_op`
+(ran and produced nothing), `error`, `timeout` (overran the per-hook budget),
+`saturated` (never got a dispatch worker), `illegal` (wrong outcome type for
+the event; dropped). On `pre_tool_use` an `error`/`timeout`/`saturated` run
+also denied the tool call (the fail-closed policy); observe-plane runs record
+`ok` on success, never `no_op` (their return values are ignored). This is what
+distinguishes "fired and did nothing" (a `no_op` entry) from "never fired" (no
+entry), and a guardrail's fail-closed deny (`error`/`timeout`/`saturated`) from
+a deliberate one.
+
+Recording is write-behind: the engine reports each run to a recorder attached
+to the per-turn registry (`HookRegistry.recorder`, set by the bridge; the empty
+`default_registry` has none, so the zero-hook path records nothing), and the
+store buffers entries in memory and flushes them on a single worker off the
+turn, so recording adds no file I/O to a tool call. Surfaced through
+`hook_info(action="log")`, `/hook log [id] [--limit N]`, and
+`GET /hooks/executions`; deleting a hook purges its entries.
 
 ## The model: when → logic → return
 
@@ -250,14 +281,25 @@ rather than a parallel re-drive.
 ## Package
 
 - `core/hooks/`: `base.py` (contract), `registry.py` (in-process registry, `has_mutating`/
-  `has_observe`), `scratch.py` (per-thread store), `dispatch.py` (planes + reduction + fault
-  policy; `tool_hooks_active`; plane-scoped `_mutate_pool`/`_observe_pool` + the
-  queue-wait-vs-execution timeout split), `actions.py` (the six actions + `ACTION_PLANES`),
-  `bridge.py` (definitions → per-turn registry, registering each on its plane).
+  `has_observe`, the per-turn `recorder` slot), `scratch.py` (per-thread store),
+  `dispatch.py` (planes + reduction + fault policy; `tool_hooks_active`; plane-scoped
+  `_mutate_pool`/`_observe_pool` + the queue-wait-vs-execution timeout split; reports
+  each run to the recorder), `actions.py` (the six actions; `ACTION_PLANES` derives
+  from the spec), `bridge.py` (definitions → per-turn registry, registering each on
+  its plane with its `definition_id` + the recorder).
+- `core/hook_spec.py`: the taxonomy single source (`ActionSpec`: plane, legal events,
+  text-action flag). `EVENT_ACTIONS`/`TEXT_ACTIONS` (store) and `ACTION_PLANES`
+  (engine) derive from it; `GET /hooks/schema` exposes it;
+  `tests/test_hook_spec.py` pins the independent copies (the engine `ACTIONS` table,
+  the logic variants, the frontend `HOOK_EVENT_ACTIONS`) in lockstep.
 - `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (six
   variants) + `HookStore` records + the per-user `HookManager` (store-only, no engine
-  import). Observe actions reuse `core/notifications.py` + `core/fcm.py` (notify),
-  `core/todo_manager.py` (create_todo), and `core/http_policy.py` (webhook).
+  import; a corrupt store file is quarantined to `<user>.corrupt-*.json`, never
+  silently overwritten), plus the execution log (`HookExecution`,
+  `log_execution`/`get_executions` write-behind on a single worker,
+  `make_execution_recorder`). Observe actions reuse `core/notifications.py` +
+  `core/fcm.py` (notify), `core/todo_manager.py` (create_todo), and
+  `core/http_policy.py` (webhook).
 - `core/conditions.py`: `HookCondition` + `evaluate_conditions` (shared with triggers,
   which re-export `TriggerCondition`).
 - `core/text_format.py`: `safe_format` template substitution (shared with triggers).

@@ -309,3 +309,67 @@ def test_cross_user_isolation(client_env):
     other_headers = builder.auth(agent.accounts_repo.issue_token("intruder"))
     assert client.get("/hooks", headers=other_headers).json() == []
     assert client.get(f"/hooks/{hook['id']}", headers=other_headers).status_code == 404
+
+
+# --- execution log ------------------------------------------------------------
+
+def test_executions_empty_and_route_not_shadowed(client_env):
+    client, _agent, headers, _b = client_env
+    # The literal /hooks/executions route must win over /hooks/{hook_id}.
+    resp = client.get("/hooks/executions", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_executions_lists_and_filters(client_env, tmp_path):
+    from nymeria.core.hook_manager import HookExecution, HookManager
+
+    client, _agent, headers, _b = client_env
+    hook = _create(client, headers, name="Finisher").json()
+    # Log through a manager on the same data_dir the router reads.
+    mgr = HookManager(tmp_path)
+    mgr.log_execution("owner", HookExecution(
+        hook_id=hook["id"], hook_name="Finisher", event="done", plane="mutate",
+        status="ok", detail="continue",
+    ))
+    mgr.log_execution("owner", HookExecution(
+        hook_id="deadbeef", hook_name="Other", event="post_tool_use", plane="observe",
+        status="error", detail="side effect failed", tool_name="Edit",
+    ))
+    mgr.flush_execution_log("owner")
+
+    entries = client.get("/hooks/executions", headers=headers).json()
+    assert len(entries) == 2
+    assert entries[0]["hook_id"] == "deadbeef"  # newest first
+    assert entries[0]["status"] == "error"
+    assert entries[1]["detail"] == "continue"
+
+    filtered = client.get(
+        f"/hooks/executions?hook_id={hook['id']}", headers=headers
+    ).json()
+    assert [e["hook_id"] for e in filtered] == [hook["id"]]
+
+    limited = client.get("/hooks/executions?limit=1", headers=headers).json()
+    assert len(limited) == 1
+
+
+# --- taxonomy schema ------------------------------------------------------------
+
+def test_schema_endpoint_shape(client_env):
+    client, _agent, headers, _b = client_env
+    resp = client.get("/hooks/schema", headers=headers)
+    assert resp.status_code == 200
+    schema = resp.json()
+    assert set(schema["events"]) == {"prompt_submit", "pre_tool_use", "post_tool_use", "done"}
+    assert schema["events"]["pre_tool_use"]["tool_event"] is True
+    assert schema["events"]["done"]["tool_event"] is False
+    assert "block_if_matches" in schema["events"]["pre_tool_use"]["actions"]
+    wh = schema["actions"]["webhook"]
+    assert wh["plane"] == "observe"
+    assert wh["events"] == ["post_tool_use", "done"]
+    assert "url" in wh["params_schema"]["properties"]
+    assert "action" not in wh["params_schema"]["properties"]
+    inj = schema["actions"]["inject_context"]
+    assert inj["text_action"] is True
+    assert "contains" in schema["operators"]
+    assert schema["max_hooks"] == 50

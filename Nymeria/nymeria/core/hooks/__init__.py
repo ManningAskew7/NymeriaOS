@@ -1,9 +1,12 @@
-"""Lifecycle-hooks engine (spine pass).
+"""Lifecycle-hooks engine.
 
-Public surface for the fire points and tests. The engine ships the machinery
-only: the frozen contract, an in-process registry, and the dispatch planes. The
-persisted record, authoring surface, canned actions, presets, enable model, and
-``nym`` workflow substrate are later passes on top of this contract.
+Public surface for the fire points and tests: the frozen contract (``base``),
+the in-process registry, the two dispatch planes, the canned actions, and the
+store->registry bridge. The persisted record + authoring surfaces live in
+``core/hook_manager.py`` (plus the ``/hooks`` REST router, the ``hook_config``
+tool, and the ``/hook`` command); the enable model lives in
+``core/agent_safety.py``. The ``nym`` workflow substrate (a second logic
+substrate behind the same contract) is the remaining deferred pass.
 
 Design doc: ``docs/private/plans/lifecycle-hooks.md``.
 """
