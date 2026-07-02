@@ -54,6 +54,7 @@ EXACT_MATCH: set[str] = {
     "lib/services/api/humanizeError.ts",
     "lib/services/api/index.ts",
     "lib/utils/fileProcessing.ts",
+    "lib/utils/hooks.ts",
     "lib/utils/ids.ts",
     "lib/utils/models.ts",
     "lib/utils/providerRoutes.ts",
@@ -137,6 +138,11 @@ KNOWN_DRIFT: set[str] = {
     "lib/components/triggers/TriggerFeed.svelte",
     "lib/components/triggers/TriggerItem.svelte",
     "lib/components/triggers/TriggerSetupWizard.svelte",
+    # Hooks (feed/form ported from desktop; item diverges per platform idiom).
+    # The desktop-only HooksConfigTab has no mobile twin, so it is not listed.
+    "lib/components/hooks/HookFeed.svelte",
+    "lib/components/hooks/HookItem.svelte",
+    "lib/components/hooks/HookForm.svelte",
     # Notifications: different prop contracts (MOB-003)
     "lib/components/notifications/NotificationCenter.svelte",
     "lib/components/notifications/NotificationItem.svelte",
@@ -154,6 +160,7 @@ KNOWN_DRIFT: set[str] = {
     "lib/services/api/todos.ts",
     "lib/services/api/tools.ts",
     "lib/services/api/triggers.ts",
+    "lib/services/api/hooks.ts",
     # Types: desktop is superset
     "lib/types/index.ts",
     # Stores with platform-specific behavior
@@ -171,6 +178,7 @@ KNOWN_DRIFT: set[str] = {
     "lib/stores/todos.svelte.ts",
     "lib/stores/tools.svelte.ts",
     "lib/stores/triggers.svelte.ts",
+    "lib/stores/hooks.svelte.ts",
     "lib/stores/unifiedTools.svelte.ts",
     # Utils with platform tweaks
     "lib/utils/markdown.ts",

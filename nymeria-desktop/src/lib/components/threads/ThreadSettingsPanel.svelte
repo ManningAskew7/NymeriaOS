@@ -33,6 +33,7 @@
   import SkillsConfigTab from './SkillsConfigTab.svelte';
   import MemoryConfigTab from './MemoryConfigTab.svelte';
   import DreamingConfigTab from './DreamingConfigTab.svelte';
+  import HooksConfigTab from './HooksConfigTab.svelte';
   import AgentConfigTab from './AgentConfigTab.svelte';
   import ConnectionsConfigTab from './ConnectionsConfigTab.svelte';
 
@@ -46,6 +47,7 @@
     | 'tools-mcp'
     | 'skills'
     | 'dreaming'
+    | 'hooks'
     | 'agent'
     | 'connections';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
@@ -82,6 +84,7 @@
       label: 'Autonomous',
       items: [
         { id: 'dreaming', label: 'Dreaming', icon: 'clock' },
+        { id: 'hooks', label: 'Hooks', icon: 'bolt' },
         { id: 'agent', label: 'Agent', icon: 'users' },
         { id: 'connections', label: 'Connections', icon: 'bell' },
       ],
@@ -106,6 +109,8 @@
       case 'notepad': return 'memory';
       case 'dreaming':
       case 'dream': return 'dreaming';
+      case 'hooks':
+      case 'hook': return 'hooks';
       case 'agent': return 'agent';
       case 'connections':
       case 'chatapp': return 'connections';
@@ -444,6 +449,18 @@
   let dreamRunning = $state(false);
   let dreamStatus = $state('');
 
+  // Per-thread lifecycle-hook enablement (authoring lives in the dashboard).
+  // `hooksEnabled` null = inherit the global setting; `hookOverrides` maps a
+  // hook id to a per-thread on/off (absent = the hook's own default).
+  function getInitialHooksEnabled(): boolean | null {
+    return threadConfig?.hooksEnabled ?? null;
+  }
+  function getInitialHookOverrides(): Record<string, boolean> {
+    return { ...(threadConfig?.hookOverrides ?? {}) };
+  }
+  let hooksEnabled = $state<boolean | null>(getInitialHooksEnabled());
+  let hookOverrides = $state<Record<string, boolean>>(getInitialHookOverrides());
+
   let saving = $state(false);
   let error = $state('');
   let showToolWarning = $state(false);
@@ -509,6 +526,9 @@
   const mcpToolsCustomized = $derived(toolOverrides.some((n) => isMcpToolName(n)));
   const dreamingActive = $derived(dreamEnabled);
   const agentActive = $derived(isCallable);
+  const hooksActive = $derived(
+    hooksEnabled !== null || Object.keys(hookOverrides).length > 0
+  );
 
   const navCustomized: Record<ThreadSettingsTab, boolean> = $derived({
     behavior: behaviorCustomized,
@@ -520,6 +540,7 @@
     'tools-mcp': mcpToolsCustomized,
     skills: skillsCustomized,
     dreaming: dreamingActive,
+    hooks: hooksActive,
     agent: agentActive,
     connections: connectionsCount > 0,
   });
@@ -722,6 +743,16 @@
     if (dreamSystemPrompt !== origDreamSystemPrompt) return true;
     if (dreamKickoffPrompt !== origDreamKickoffPrompt) return true;
 
+    const origHooksEnabled = threadConfig?.hooksEnabled ?? null;
+    if ((hooksEnabled ?? null) !== origHooksEnabled) return true;
+    const origHookOverrides = threadConfig?.hookOverrides ?? {};
+    const origHookKeys = Object.keys(origHookOverrides);
+    const curHookKeys = Object.keys(hookOverrides);
+    if (origHookKeys.length !== curHookKeys.length) return true;
+    for (const k of curHookKeys) {
+      if (hookOverrides[k] !== origHookOverrides[k]) return true;
+    }
+
     return false;
   }
 
@@ -882,6 +913,18 @@
         updates.clear_dreaming = true;
       }
 
+      // Lifecycle-hook per-thread enablement.
+      if (hooksEnabled === null) {
+        updates.clear_hooks_enabled = true;
+      } else {
+        updates.hooks_enabled = hooksEnabled;
+      }
+      if (Object.keys(hookOverrides).length > 0) {
+        updates.hook_overrides = { ...hookOverrides };
+      } else {
+        updates.clear_hook_overrides = true;
+      }
+
       const result = await threadConfigStore.updateConfig(thread.id, updates);
 
       // The notepad is a standalone store (not part of ThreadConfig), so save it
@@ -966,6 +1009,8 @@
     dreamSystemPrompt = '';
     dreamKickoffPrompt = '';
     dreamStatus = '';
+    hooksEnabled = null;
+    hookOverrides = {};
   }
 
   async function handleReset() {
@@ -1200,6 +1245,12 @@
                 {saving}
                 hasUnsavedChanges={hasChanges()}
                 onRunDream={handleRunDream}
+              />
+            {:else if activeTab === 'hooks'}
+              <HooksConfigTab
+                {thread}
+                bind:hooksEnabled
+                bind:hookOverrides
               />
             {:else if activeTab === 'agent'}
               <AgentConfigTab

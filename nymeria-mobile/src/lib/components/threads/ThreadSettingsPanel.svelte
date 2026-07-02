@@ -6,6 +6,13 @@
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { hooksStore } from '$lib/stores/hooks.svelte';
+  import {
+    hookCategory,
+    HOOK_ACTION_META,
+    HOOK_CATEGORIES,
+    HOOK_EVENT_META,
+  } from '$lib/utils/hooks';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
@@ -50,7 +57,7 @@
 
   let { threadId, open, onClose }: Props = $props();
 
-  type Tab = 'instructions' | 'system' | 'agent' | 'dream' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
+  type Tab = 'instructions' | 'system' | 'agent' | 'dream' | 'hooks' | 'model' | 'tools' | 'mcp' | 'skills' | 'triggers' | 'chatapp';
   type TelegramAutonomousDelivery = ThreadConfig['telegramAutonomousDelivery'];
   type InAppNotificationLevel = ThreadConfig['inAppNotificationLevel'];
   const DREAM_DEFAULT_MIN_INTERVAL_HOURS = 6;
@@ -78,6 +85,11 @@
   let dreamModel = $state('');
   let dreamRunning = $state(false);
   let dreamStatus = $state('');
+
+  // Form state — Hooks (per-thread enablement). `hooksEnabled` null = inherit
+  // the global setting; `hookOverrides` maps a hook id to a per-thread on/off.
+  let hooksEnabled = $state<boolean | null>(null);
+  let hookOverrides = $state<Record<string, boolean>>({});
 
   // Form state — System Prompt & Agent
   let systemPrompt = $state('');
@@ -456,6 +468,35 @@
     triggersStore.triggers.filter(t => t.enabled && t.thread_id === threadId).length
   );
 
+  // Hooks that apply to this thread (its own + globals) and the per-thread
+  // override count, for the Hooks tab.
+  const threadHooks = $derived(hooksStore.threadHooks(threadId));
+  const hookGroups = $derived(
+    HOOK_CATEGORIES.map((meta) => ({
+      meta,
+      hooks: threadHooks.filter((h) => hookCategory(h.action) === meta.key),
+    })).filter((g) => g.hooks.length > 0)
+  );
+  const hookOverrideCount = $derived(Object.keys(hookOverrides).length);
+
+  type HookMaster = 'inherit' | 'on' | 'off';
+  const hooksMasterValue = $derived<HookMaster>(
+    hooksEnabled === null || hooksEnabled === undefined ? 'inherit' : hooksEnabled ? 'on' : 'off'
+  );
+  function setHooksMaster(v: HookMaster) {
+    hooksEnabled = v === 'inherit' ? null : v === 'on';
+  }
+  function hookOverrideValue(id: string): 'default' | 'on' | 'off' {
+    const v = hookOverrides[id];
+    return v === undefined ? 'default' : v ? 'on' : 'off';
+  }
+  function setHookOverride(id: string, v: 'default' | 'on' | 'off') {
+    const next = { ...hookOverrides };
+    if (v === 'default') delete next[id];
+    else next[id] = v === 'on';
+    hookOverrides = next;
+  }
+
   // Load config and deps
   $effect(() => {
     if (open && threadId) {
@@ -468,6 +509,7 @@
       untrack(() => {
         if (!unifiedToolsStore.loaded && !unifiedToolsStore.loading) unifiedToolsStore.loadTools();
         if (!triggersStore.loaded && !triggersStore.loading) triggersStore.loadTriggers();
+        if (!hooksStore.loaded && !hooksStore.loading) hooksStore.loadHooks();
         if (!modelsStore.loaded && !modelsStore.loading) modelsStore.loadModels();
         if (!serverSettingsStore.loaded && !serverSettingsStore.loading) serverSettingsStore.load();
         if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
@@ -517,6 +559,8 @@
     dreamMinTurnsSinceLast = String(cfg?.dreaming?.minTurnsSinceLast ?? DREAM_DEFAULT_MIN_TURNS_SINCE_LAST);
     dreamModel = cfg?.dreaming?.model ?? '';
     dreamStatus = '';
+    hooksEnabled = cfg?.hooksEnabled ?? null;
+    hookOverrides = { ...(cfg?.hookOverrides ?? {}) };
     systemPrompt = cfg?.systemPrompt ?? '';
     isCallable = cfg?.callable ?? false;
     callableName = cfg?.callableName ?? '';
@@ -672,6 +716,13 @@
     for (const skill of threadEnabledSkills) { if (!origEnabledSkills.has(skill)) return true; }
     if (threadDisabledSkills.size !== origDisabledSkills.size) return true;
     for (const skill of threadDisabledSkills) { if (!origDisabledSkills.has(skill)) return true; }
+    const origHooksEnabled = orig?.hooksEnabled ?? null;
+    if ((hooksEnabled ?? null) !== origHooksEnabled) return true;
+    const origHookOverrides = orig?.hookOverrides ?? {};
+    const origHookKeys = Object.keys(origHookOverrides);
+    const curHookKeys = Object.keys(hookOverrides);
+    if (origHookKeys.length !== curHookKeys.length) return true;
+    for (const k of curHookKeys) { if (hookOverrides[k] !== origHookOverrides[k]) return true; }
     return false;
   }
 
@@ -811,6 +862,18 @@
         updates.clear_dreaming = true;
       }
 
+      // Lifecycle-hook per-thread enablement.
+      if (hooksEnabled === null) {
+        updates.clear_hooks_enabled = true;
+      } else {
+        updates.hooks_enabled = hooksEnabled;
+      }
+      if (Object.keys(hookOverrides).length > 0) {
+        updates.hook_overrides = { ...hookOverrides };
+      } else {
+        updates.clear_hook_overrides = true;
+      }
+
       const result = await threadConfigStore.updateConfig(threadId, updates);
 
       // Sync sidebar title to callable name
@@ -908,6 +971,10 @@
       <button class="tab-btn" class:active={activeTab === 'dream'} aria-current={activeTab === 'dream' ? 'page' : undefined} onclick={() => (activeTab = 'dream')}>
         Dream
         {#if dreamEnabled}<span class="tab-badge">1</span>{/if}
+      </button>
+      <button class="tab-btn" class:active={activeTab === 'hooks'} aria-current={activeTab === 'hooks' ? 'page' : undefined} onclick={() => (activeTab = 'hooks')}>
+        Hooks
+        {#if hooksEnabled !== null || hookOverrideCount > 0}<span class="tab-badge">{hookOverrideCount || '•'}</span>{/if}
       </button>
       <button class="tab-btn" class:active={activeTab === 'model'} aria-current={activeTab === 'model' ? 'page' : undefined} onclick={() => (activeTab = 'model')}>
         Model
@@ -1134,6 +1201,52 @@
             <span class="dream-status">{dreamStatus}</span>
           {/if}
         </div>
+
+      {:else if activeTab === 'hooks'}
+        <div class="section-divider">
+          <span class="section-heading">Hooks</span>
+          <p class="hint">
+            Control which lifecycle hooks run on this thread. Create and edit hooks from the dashboard Hooks panel or the /hook command.
+          </p>
+        </div>
+        <div class="setting-group">
+          <span class="setting-label">Hooks on this thread</span>
+          <div class="hook-seg" role="group" aria-label="Hooks master switch">
+            <button class="hseg" class:active={hooksMasterValue === 'inherit'} type="button" onclick={() => setHooksMaster('inherit')}>Inherit</button>
+            <button class="hseg" class:active={hooksMasterValue === 'on'} type="button" onclick={() => setHooksMaster('on')}>On</button>
+            <button class="hseg" class:active={hooksMasterValue === 'off'} type="button" onclick={() => setHooksMaster('off')}>Off</button>
+          </div>
+          <p class="hint">Inherit follows the global hooks setting. On / Off force hooks for this thread.</p>
+        </div>
+
+        {#if threadHooks.length === 0}
+          <p class="hint">No hooks apply to this thread yet. Global hooks and hooks created for this thread will appear here.</p>
+        {:else}
+          <div class="hook-ovr-list" class:dimmed={hooksMasterValue === 'off'}>
+            {#each hookGroups as group (group.meta.key)}
+              <div class="hook-cat">
+                <div class="hook-cat-head">
+                  <Icon name={group.meta.icon} size={12} />
+                  <span>{group.meta.label}</span>
+                </div>
+                {#each group.hooks as hook (hook.id)}
+                  <div class="hook-ovr-row">
+                    <div class="hook-ovr-meta">
+                      <span class="hook-ovr-name">{hook.name}</span>
+                      <span class="hook-ovr-sub">{HOOK_EVENT_META[hook.event].label} · {HOOK_ACTION_META[hook.action].label}{hook.scope === 'global' ? ' · Global' : ''}</span>
+                    </div>
+                    <div class="hook-seg small" role="group" aria-label="Override for {hook.name}">
+                      <button class="hseg" class:active={hookOverrideValue(hook.id) === 'default'} type="button" onclick={() => setHookOverride(hook.id, 'default')}>Default</button>
+                      <button class="hseg" class:active={hookOverrideValue(hook.id) === 'on'} type="button" onclick={() => setHookOverride(hook.id, 'on')}>On</button>
+                      <button class="hseg" class:active={hookOverrideValue(hook.id) === 'off'} type="button" onclick={() => setHookOverride(hook.id, 'off')}>Off</button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/each}
+          </div>
+          <p class="hint">Default uses the hook's own state. On / Off override it for this thread only.</p>
+        {/if}
 
       {:else if activeTab === 'model'}
         <div class="setting-group">
@@ -2488,6 +2601,96 @@
   .binding-type,
   .binding-when {
     font-size: var(--font-size-xs);
+    color: var(--text-muted);
+  }
+
+  /* Hooks tab — per-thread enablement */
+  .hook-seg {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    margin-top: var(--spacing-xs);
+  }
+
+  .hseg {
+    padding: 5px 12px;
+    font-size: var(--font-size-2xs);
+    font-weight: 500;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+  }
+
+  .hook-seg.small .hseg { padding: 4px 9px; }
+
+  .hseg.active {
+    background: var(--accent-primary);
+    color: var(--text-on-accent, white);
+  }
+
+  .hook-ovr-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    transition: opacity var(--transition-fast);
+  }
+
+  .hook-ovr-list.dimmed { opacity: 0.5; }
+
+  .hook-cat {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-2xs);
+  }
+
+  .hook-cat-head {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+  }
+
+  .hook-ovr-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding: var(--spacing-sm) 0;
+    border-top: 1px solid var(--glass-border);
+  }
+
+  .hook-cat .hook-ovr-row:first-of-type { border-top: none; }
+
+  .hook-ovr-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .hook-ovr-name {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hook-ovr-sub {
+    font-size: 10px;
     color: var(--text-muted);
   }
 </style>
