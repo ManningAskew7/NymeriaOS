@@ -263,3 +263,49 @@ def test_reschedule_recurring_done_is_noop_without_recurrence():
     assert item.status == TodoStatus.DONE
     assert item.last_execution is None
     assert item.scheduled_for == anchor
+
+
+def test_todo_create_workflow_binding_validation(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """Phase 4: workflow TODOs validate the binding at create time (400) and
+    round-trip workflow_id/workflow_params through the response model."""
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    headers = api_client_builder.auth(token)
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.workflow_binding_error",
+        lambda wf, p, *, allow_event=False: f"no published workflow tool named {wf!r}",
+    )
+    rejected = client.post(
+        "/todos",
+        headers=headers,
+        json={"task": "Run report", "scheduled_for": "30m", "workflow_id": "wf_x"},
+    )
+    assert rejected.status_code == 400
+    assert "no published workflow tool" in rejected.json()["detail"]
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.workflow_binding_error",
+        lambda wf, p, *, allow_event=False: None,
+    )
+    created = client.post(
+        "/todos",
+        headers=headers,
+        json={
+            "task": "Run report",
+            "scheduled_for": "30m",
+            "workflow_id": "wf_x",
+            "workflow_params": {"channel": "ops"},
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["workflow_id"] == "wf_x"
+    assert body["workflow_params"] == {"channel": "ops"}
+
+    listed = client.get("/todos", headers=headers).json()
+    assert listed["items"][0]["workflow_id"] == "wf_x"

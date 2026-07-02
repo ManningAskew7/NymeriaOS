@@ -97,6 +97,8 @@ def _todo_to_response(item: TodoItem) -> TodoItemResponse:
         last_execution=item.last_execution,
         created_by=item.created_by,
         recurrence=item.recurrence,
+        workflow_id=item.workflow_id,
+        workflow_params=item.workflow_params,
     )
 
 
@@ -238,6 +240,16 @@ def create_todos_router(
         # Default thread_id from request, fallback to user-scoped default
         todo_thread_id = request.thread_id or f"default-{user_id}"
 
+        workflow_id = (request.workflow_id or "").strip() or None
+        if workflow_id:
+            from ...core.workflows.tool_runtime import workflow_binding_error
+
+            binding_error = workflow_binding_error(
+                workflow_id, request.workflow_params or {}, allow_event=False
+            )
+            if binding_error:
+                raise HTTPException(status_code=400, detail=binding_error)
+
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(
                 task=request.task,
@@ -246,6 +258,8 @@ def create_todos_router(
                 thread_id=todo_thread_id,
                 created_by="user",
                 recurrence=canonical_recurrence,
+                workflow_id=workflow_id,
+                workflow_params=request.workflow_params if workflow_id else None,
             )
 
             if item is None:

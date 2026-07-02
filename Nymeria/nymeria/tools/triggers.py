@@ -49,6 +49,19 @@ def _parse_conditions(conditions: list) -> List[TriggerCondition]:
     ]
 
 
+def _run_workflow_action_error(action_config: dict) -> Optional[str]:
+    """Bind-time validation for the run_workflow action type."""
+    from ..core.workflows.tool_runtime import workflow_binding_error
+
+    workflow_id = str((action_config or {}).get("workflow_id") or "").strip()
+    if not workflow_id:
+        return "run_workflow requires 'workflow_id' in action_config."
+    params = (action_config or {}).get("params") or {}
+    if not isinstance(params, dict):
+        return "run_workflow 'params' must be a dict."
+    return workflow_binding_error(workflow_id, params, allow_event=True)
+
+
 def _trigger_create(
     name: str,
     source_type: str,
@@ -74,10 +87,17 @@ def _trigger_create(
             "agent_prompt" -- send a prompt to yourself (most powerful).
             "notify" -- send a notification to the user (no LLM call).
             "create_todo" -- create a TODO item (no LLM call).
+            "run_workflow" -- run a published workflow tool (no LLM call).
         action_config: Action-specific configuration dict.
             agent_prompt: {"prompt_template": "..."}
             notify: {"message_template": "...", "platform": "auto"}
             create_todo: {"task_template": "..."}
+            run_workflow: {"workflow_id": "...", "params": {...}}. The raw
+            event dict is passed as the workflow's 'event' parameter when
+            its signature declares one; the workflow must be approved and
+            every required parameter covered by params/event/defaults. The
+            fire never delivers output anywhere by itself; the workflow
+            must deliver explicitly (nym.thread / nym.notify).
             Templates support {variable} interpolation from event data.
         source_config: Source-specific config. Webhooks require
             {"secret": "mykey"} for public fire requests.
@@ -128,6 +148,10 @@ def _trigger_create(
         return "[Error]: notify requires 'message_template' in action_config."
     if action_type == "create_todo" and not action_config.get("task_template"):
         return "[Error]: create_todo requires 'task_template' in action_config."
+    if action_type == "run_workflow":
+        binding_error = _run_workflow_action_error(action_config)
+        if binding_error:
+            return f"[Error]: {binding_error}"
 
     # Parse conditions
     condition_objects = None
@@ -138,7 +162,10 @@ def _trigger_create(
             return f"[Error]: Invalid conditions format: {e}. Each condition needs at least 'field'."
 
     action = TriggerAction(
-        type=cast(Literal["agent_prompt", "notify", "create_todo"], action_type),
+        type=cast(
+            Literal["agent_prompt", "notify", "create_todo", "run_workflow"],
+            action_type,
+        ),
         config=action_config,
     )
     trigger = manager.add_trigger(
@@ -278,8 +305,15 @@ def _trigger_update(
             return f"[Error]: Trigger '{trigger_id}' not found."
         new_type = action_type or existing.action.type
         new_config = action_config if action_config is not None else existing.action.config
+        if new_type == "run_workflow":
+            binding_error = _run_workflow_action_error(new_config)
+            if binding_error:
+                return f"[Error]: {binding_error}"
         kwargs["action"] = TriggerAction(
-            type=cast(Literal["agent_prompt", "notify", "create_todo"], new_type),
+            type=cast(
+                Literal["agent_prompt", "notify", "create_todo", "run_workflow"],
+                new_type,
+            ),
             config=new_config,
         )
 
@@ -426,6 +460,14 @@ def _inspect_test(manager: TriggerManager, user_id: str, trigger_id: str) -> str
         rendered = _safe_format(action_cfg.config.get("message_template", ""), template_vars)
     elif action_cfg.type == "create_todo":
         rendered = _safe_format(action_cfg.config.get("task_template", ""), template_vars)
+    elif action_cfg.type == "run_workflow":
+        wf_id = action_cfg.config.get("workflow_id", "?")
+        wf_params = action_cfg.config.get("params") or {}
+        rendered = (
+            f"run workflow '{wf_id}' with params {json.dumps(wf_params)} "
+            "(the sample event would be passed as 'event' if declared); dry "
+            "run only, nothing executed"
+        )
     else:
         rendered = "(unknown action type)"
 

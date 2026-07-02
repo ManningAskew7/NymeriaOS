@@ -474,7 +474,9 @@ async def test_draft(
             raise ValueError(
                 f"sample_params missing required parameter(s): {', '.join(sorted(missing))}"
             )
+        from ..core.workflows.envelope import STATUS_NEEDS_APPROVAL
         from ..core.workflows.executor import execute_workflow
+        from ..core.workflows.registry import ApprovalRuntime
         from ..core.workflows.tool_runtime import format_envelope_for_agent
 
         run = await execute_workflow(
@@ -485,8 +487,19 @@ async def test_draft(
             thread_id=thread_id,
             workflow_id=draft.tool_id,
             budget=budget_from_config(draft.workflow_config),
+            approval=ApprovalRuntime(
+                origin="draft",
+                revision_hash=config_revision_hash(
+                    draft.workflow_config, draft.parameters
+                ),
+                continuations=tuple(draft.workflow_config.continuations or []),
+                owner_user_id=user_id,
+            ),
         )
-        ok = run.envelope.ok
+        # Reaching nym.approve IS the workflow behaving correctly, so a
+        # suspended test counts as a pass (else a checkpoint workflow could
+        # never satisfy the tested-before-publish rule).
+        ok = run.envelope.ok or run.envelope.status == STATUS_NEEDS_APPROVAL
         response = format_envelope_for_agent(run.envelope)
     else:
         raise ValueError(f"Unsupported implementation_type: {draft.implementation_type}")

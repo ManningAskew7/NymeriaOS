@@ -79,6 +79,18 @@ class TodoItem(BaseModel):
     # flip a goal-locked TODO to done.
     goal_id: Optional[str] = Field(default=None, description="Parent goal_id when this TODO is goal-locked")
 
+    # Scheduled-workflow integration: when workflow_id is set, the ticker
+    # runs that published workflow tool headlessly (no agent turn) instead
+    # of prompting the agent with the task text. Recurrence, retries, and
+    # the missed-work policy apply unchanged.
+    workflow_id: Optional[str] = Field(
+        default=None,
+        description="Published workflow tool to run instead of an agent turn",
+    )
+    workflow_params: Optional[dict] = Field(
+        default=None, description="Parameters bound to the scheduled workflow run"
+    )
+
     @field_validator("created_at", "updated_at", "scheduled_for", "last_execution")
     @classmethod
     def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
@@ -138,6 +150,8 @@ class TodoList(BaseModel):
         created_by: str = "agent",
         recurrence: Optional[str] = None,
         notes: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        workflow_params: Optional[dict] = None,
     ) -> Optional[TodoItem]:
         """
         Add a new TODO item.
@@ -151,6 +165,10 @@ class TodoList(BaseModel):
                 (e.g. '5m', '2h', '1d'). Callers should pass values already
                 validated by todo_constants.validate_recurrence.
             notes: Additional notes
+            workflow_id: Published workflow tool the ticker runs headlessly
+                instead of an agent turn. Callers should pass values already
+                validated by workflows.tool_runtime.workflow_binding_error.
+            workflow_params: Parameters bound to the scheduled workflow run
 
         Returns:
             The created TodoItem, or None if at limit.
@@ -174,6 +192,8 @@ class TodoList(BaseModel):
             created_by=created_by,
             recurrence=recurrence,
             notes=notes[:1000] if notes else None,
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
         )
         self.items.append(item)
         self.updated_at = utc_now()

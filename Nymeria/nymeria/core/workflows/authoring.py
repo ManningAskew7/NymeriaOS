@@ -326,6 +326,13 @@ def _validate_continuation_signature(
             f"continuation {name!r} must accept exactly (state, decision); "
             f"it declares {len(positional)} parameter(s)"
         )
+    elif [arg.arg for arg in positional] != ["state", "decision"]:
+        # The resume path invokes the continuation by name, so the names are
+        # part of the contract, not a style choice.
+        problems.append(
+            f"continuation {name!r} parameters must be named (state, decision); "
+            f"it declares ({positional[0].arg}, {positional[1].arg})"
+        )
     return problems
 
 

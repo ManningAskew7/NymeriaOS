@@ -153,6 +153,8 @@ def nym_todo(
     recurrence: Optional[str] = None,
     clear_schedule: bool = False,
     clear_recurrence: bool = False,
+    workflow_id: Optional[str] = None,
+    workflow_params: Optional[dict] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
@@ -182,6 +184,13 @@ def nym_todo(
             "weekly", "monthly", "5min", "10min", "15min", "30min".
         clear_schedule: Remove scheduled time
         clear_recurrence: Remove recurrence pattern
+        workflow_id: Create-only. Run this published workflow tool headlessly
+            at the scheduled time instead of waking the agent (no LLM turn).
+            The workflow must be approved and every required parameter
+            covered by workflow_params or defaults. The run never delivers
+            output anywhere by itself; the workflow must deliver explicitly
+            (nym.thread / nym.notify).
+        workflow_params: Parameters for the scheduled workflow run.
 
     Returns:
         Create: "[Added]: TODO <id>: <task> (scheduled for <time>)".
@@ -218,6 +227,19 @@ def nym_todo(
             except ValueError as exc:
                 return f"[Error]: {exc}"
 
+        workflow_binding: Optional[str] = None
+        if workflow_id:
+            from ..core.workflows.tool_runtime import workflow_binding_error
+
+            workflow_binding = workflow_id.strip()
+            if not isinstance(workflow_params or {}, dict):
+                return "[Error]: workflow_params must be a dict."
+            binding_error = workflow_binding_error(
+                workflow_binding, workflow_params or {}, allow_event=False
+            )
+            if binding_error:
+                return f"[Error]: {binding_error}"
+
         # Use atomic update to prevent race conditions
         with manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(
@@ -225,6 +247,8 @@ def nym_todo(
                 scheduled_for=todo_scheduled,
                 thread_id=thread_id,
                 recurrence=todo_recurrence,
+                workflow_id=workflow_binding,
+                workflow_params=dict(workflow_params) if workflow_params else None,
             )
             if item:
                 logger.info(f"TODO added for user {user_id}: {item.id} - {task[:50]}")
@@ -258,11 +282,18 @@ def nym_todo(
                     result += f" (scheduled for {scheduled_for})"
                 if todo_recurrence:
                     result += f" (recurring: {todo_recurrence})"
+                if workflow_binding:
+                    result += f" (runs workflow '{workflow_binding}', no agent turn)"
                 return result
             else:
                 return f"[Error]: TODO limit reached ({todo_list.MAX_TODOS} active items). Complete or delete some tasks first."
 
     # --- UPDATE mode (todo_id provided) ---
+    if workflow_id or workflow_params:
+        return (
+            "[Error]: workflow_id/workflow_params are create-only; delete and "
+            "recreate the TODO to change its workflow binding."
+        )
     logger.info(f"nym_todo update: id={todo_id}")
 
     # Parse status

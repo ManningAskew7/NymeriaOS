@@ -508,3 +508,37 @@ def test_workflow_info_log_reads_run_records(wf_env):
             config={"configurable": {"user_id": "someone_else", "thread_id": "t"}},
         )
     assert "no run records" in other
+
+
+def test_workflow_info_approvals_action(wf_env, monkeypatch):
+    """Phase 4: the approvals action lists suspensions, owner-scoped."""
+    from nymeria.core.workflows.approvals import create_pending_approval
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.approvals.get_settings",
+        lambda: SimpleNamespace(data_dir=wf_env.tmp),
+    )
+    assert "no workflow runs are suspended" in _info("approvals", admin=False)
+
+    def _mint(record_id: str, user_id: str) -> None:
+        create_pending_approval(
+            run_id=record_id,
+            workflow_id="wf_lc_susp",
+            origin="tool",
+            owner_user_id=user_id,
+            user_id=user_id,
+            thread_id="t1",
+            revision_hash="h" * 64,
+            resume_entrypoint="cont",
+            state={},
+            prompt="Ship it?",
+        )
+
+    _mint("rec-mine", "u1")
+    _mint("rec-other", "someone_else")
+
+    mine = _info("approvals", admin=False)
+    assert "rec-mine" in mine and "rec-other" not in mine
+    assert "human-only" in mine
+    both = _info("approvals", admin=True)
+    assert "rec-mine" in both and "rec-other" in both

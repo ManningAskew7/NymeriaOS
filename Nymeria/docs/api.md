@@ -1095,6 +1095,8 @@ Returns the callable thread tools actually available from that caller thread aft
 | `auth_prompt` | Credential setup prompt from `request_credential`; desktop opens the modal and chat bots render the secure setup link | `prompt_id`, `credential_id`, `provider`, `display_name`, `mode`, `fields`, `timeout_seconds`, optional `expires_at`, optional `connect_url`, `connect_url_required`, `connect_url_error`, optional OAuth fields such as `flow`, `auth_url`, `user_code`, `verification_uri`, `scopes` |
 | `auth_prompt_resolved` | Credential prompt completed. Desktop keeps OAuth prompts open long enough to show success; non-OAuth prompts normally close from the submit action | `prompt_id`, `credential_id`, `status`, optional `message`, `email`, `name` |
 | `auth_prompt_cancelled` | Credential prompt ended without an active credential, including user cancel, OAuth denial, expiry, or provider error | `prompt_id`, `reason`, optional `message` |
+| `workflow_approval` | A workflow run suspended on `nym.approve`, awaiting the owner's decision (resolve via `POST /workflows/approvals/{record_id}/resolve`) | `record_id`, `workflow_id`, `prompt`, `expires_at` |
+| `workflow_approval_resolved` | A suspended workflow run was approved, declined, or expired; the continuation ran (or was refused) | `record_id`, `workflow_id`, `approved`, `note`, `run_id` |
 | `dispatched` | Leading `@thread` mention routed the turn to another thread | `target_thread_id`, `title`, `matched_ref`, `dispatched_to` |
 | `response` | Visible assistant text chunk. May appear before a `tool_call` as preamble/commentary, or after tools as the final answer. | `content` |
 | `context_attached` | Previous context summary attached to this message | `summary` |
@@ -2095,6 +2097,8 @@ Authorization: Bearer <token>
 | `recurrence` | string | No | Interval as a canonical duration string (`Nm`, `Nh`, `Nd`, `Nw`; or `Ns` with a 60s minimum). Examples: `"5m"`, `"2h"`, `"1d"`. Legacy preset names (`hourly`, `daily`, `weekly`, `monthly`, `5min` … `30min`) are accepted on input and normalised to canonical form on storage. |
 | `thread_id` | string | No | Thread for autonomous output, defaults to a user-scoped default thread |
 | `notes` | string | No | Additional context |
+| `workflow_id` | string | No | Create-only: run this published workflow tool headlessly at the scheduled time instead of an agent turn. The binding is validated at create time (400 on a missing tool, unapproved revision, or uncovered required parameters). The run never delivers output by itself; the workflow must deliver explicitly. To change a binding, delete and recreate the TODO. |
+| `workflow_params` | object | No | Parameters bound to the scheduled workflow run |
 
 **Response:** Created TODO object
 
@@ -2563,6 +2567,75 @@ Authorization: Bearer <token>
 
 Recent run records (`run_id`, `status`, `timestamp`, envelope and step trace).
 Admins see every run; other callers see only their own.
+
+### Runtime Approvals (nym.approve suspensions)
+
+Distinct from revision approvals above: a running workflow that calls
+`nym.approve(prompt, state, resume="continuation")` suspends with a durable
+pending record and a `needs_approval` envelope. The run holds no live
+process; resolution spawns a fresh subprocess into the declared continuation
+with the persisted `state` and a `decision` dict. Resolution is also
+REST-only and owner-or-admin (the run owner decides; a prompt-injected turn
+cannot).
+
+```http
+GET /workflows/approvals
+Authorization: Bearer <token>
+```
+
+Pending suspensions, newest first; non-admins see only their own. Entries
+carry `record_id`, `workflow_id`, `origin`, `user_id`, `thread_id`, `prompt`,
+`resume_entrypoint`, `created_at`, `expires_at` (never the resume token or
+the raw state).
+
+```http
+POST /workflows/approvals/{record_id}/resolve
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{ "approved": true, "note": "optional note passed to the continuation" }
+```
+
+Claims the record atomically (a concurrent resolve gets **409**) and runs the
+continuation in the background; the ack carries `run_id` so the outcome can be
+read from `GET /workflows/runs/{workflow_id}`. A **declined** resolution ALSO
+runs the continuation, with `decision.approved = false`, so the author can
+clean up or notify. Missing and not-yours both return **404** (no existence
+leak). Resume is refused (`resume_invalid` envelope, nothing executes) when
+the workflow's content hash changed since the suspension, its revision
+approval was revoked, or the continuation is no longer declared. Pending
+records expire after 7 days: expiry resolves as declined with note
+`expired`, driven by an hourly sweep in the API process.
+
+SSE event types: `workflow_approval` (a run suspended; carries `record_id`,
+`workflow_id`, `prompt`, `expires_at`) and `workflow_approval_resolved`
+(carries `record_id`, `approved`, `note`, `run_id`). The owner also gets
+normal notifications for both.
+
+### Execute a Workflow
+
+```http
+POST /workflows/{workflow_id}/execute
+Content-Type: application/json
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{ "params": {"name": "value"}, "thread_id": "optional-thread" }
+```
+
+Runs one published workflow tool as the caller and blocks until the run
+finishes (bounded by the workflow's wall-clock cap); returns `{workflow_id,
+run_id, envelope}`. The headless execution surface: the Docker worker relays
+scheduled workflow TODOs here, and frontends can run a workflow directly.
+The revision approval gate is re-checked at call time. Refusals map to
+**404** (no such workflow tool) or **403** (unapproved revision, depth cap).
+The run never delivers output anywhere by itself; delivery is the workflow's
+own explicit job (`nym.thread` / `nym.notify`).
 
 ---
 
@@ -3523,6 +3596,16 @@ Content-Type: application/json
   "enabled": true
 }
 ```
+
+`action_type` is one of `agent_prompt` (render `prompt_template` and run an
+agent turn), `notify`, `create_todo`, or `run_workflow`. A `run_workflow`
+action runs a published workflow tool headlessly (no LLM call):
+`action_config` takes `workflow_id` plus optional `params`, the binding is
+validated at create/update time (400 on a missing tool, unapproved revision,
+unknown or uncovered required parameters), and at fire time the raw event
+dict is passed as the workflow's `event` parameter when its signature
+declares one. A run that suspends on `nym.approve` counts as a successful
+fire; an error envelope records a failed execution.
 
 ### List Triggers
 

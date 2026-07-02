@@ -42,6 +42,31 @@ class VerbError(Exception):
 
 
 @dataclass
+class ApprovalRuntime:
+    """What a run needs for ``nym.approve`` to be able to suspend it.
+
+    Constructed by callers that execute a SAVED workflow (published tool or
+    draft), because only saved content can be re-validated at resume time.
+    The immutable half identifies the revision; the mutable slot is filled by
+    the ``approve`` verb when it mints the durable pending record, and is what
+    the executor verifies the child's ``needs_approval`` finish against (a
+    child cannot forge a suspension the parent did not mint).
+    """
+
+    origin: str  # "tool" | "draft"
+    revision_hash: str
+    continuations: tuple = ()
+    # Draft owner (draft origin only); the run user tests their own drafts,
+    # but resume must know which draft store to re-read.
+    owner_user_id: str = ""
+    # Mutable slot, set by the approve verb for this run.
+    record_id: Optional[str] = None
+    token: Optional[str] = None
+    prompt: str = ""
+    expires_at: Optional[str] = None
+
+
+@dataclass
 class VerbContext:
     """Per-run context threaded into every verb handler."""
 
@@ -52,6 +77,8 @@ class VerbContext:
     depth: int = 0
     budget: WorkflowBudget = field(default_factory=WorkflowBudget)
     usage: BudgetUsage = field(default_factory=BudgetUsage)
+    # Present only when the run came from a saved workflow; gates nym.approve.
+    approval: Optional[ApprovalRuntime] = None
 
 
 @dataclass(frozen=True)
@@ -130,7 +157,8 @@ def load_builtin_verbs() -> None:
     Grows one line per verb module as phases land. Import errors are raised,
     not swallowed: an engine missing its built-ins is a deployment bug.
     """
-    from . import verbs_effects  # noqa: F401 - registration happens at import
+    from . import verbs_approve  # noqa: F401 - registration happens at import
+    from . import verbs_effects  # noqa: F401
     from . import verbs_llm  # noqa: F401
     from . import verbs_thread  # noqa: F401
     from . import verbs_tools  # noqa: F401

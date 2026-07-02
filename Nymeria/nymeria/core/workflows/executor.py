@@ -14,6 +14,7 @@ nothing else (no provider keys, no DB creds, no vault key).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -41,7 +42,7 @@ from .envelope import (
     timeout_envelope,
 )
 from .pump import FRAME_LIMIT_BYTES, VerbPump
-from .registry import VerbContext, load_builtin_verbs
+from .registry import ApprovalRuntime, VerbContext, load_builtin_verbs
 from .trace import StepTrace, persist_run_record
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,24 @@ class WorkflowRunResult:
 
     def to_dict(self) -> dict:
         return {"envelope": self.envelope.to_dict(), "trace": self.trace.to_dict()}
+
+
+def _discard_unfinished_suspension(approval: Optional[ApprovalRuntime]) -> None:
+    """Drop a pending record whose run did not end cleanly suspended."""
+    if approval is None or not approval.record_id:
+        return
+    try:
+        from .approvals import delete_approval
+
+        delete_approval(approval.record_id)
+        logger.info(
+            "discarded approval record %s (run did not suspend cleanly)",
+            approval.record_id,
+        )
+    except Exception:  # noqa: BLE001 - cleanup must not mask the real outcome
+        logger.warning("approval record cleanup failed", exc_info=True)
+    approval.record_id = None
+    approval.token = None
 
 
 def _scrubbed_env(run_id: str, user_id: str) -> dict:
@@ -167,7 +186,13 @@ async def _start_server(pump: VerbPump, rt_dir: Path):
     return server, {"family": "tcp", "host": "127.0.0.1", "port": port}
 
 
-def _finish_to_envelope(finish: Optional[dict], usage_snapshot: dict, returncode, stderr_tail: str) -> WorkflowEnvelope:
+def _finish_to_envelope(
+    finish: Optional[dict],
+    usage_snapshot: dict,
+    returncode,
+    stderr_tail: str,
+    approval: Optional[ApprovalRuntime] = None,
+) -> WorkflowEnvelope:
     """Map the child's terminal report (or its absence) to the envelope."""
     if finish is None:
         detail = f" stderr: {stderr_tail.strip()}" if stderr_tail.strip() else ""
@@ -185,12 +210,39 @@ def _finish_to_envelope(finish: Optional[dict], usage_snapshot: dict, returncode
     if status == STATUS_OK:
         return ok_envelope(finish.get("output"), usage_snapshot)
     if status == STATUS_NEEDS_APPROVAL:
-        # Reserved for the phase 4 suspend/resume checkpoint.
+        # A suspension is only real when it matches the record the approve
+        # verb minted for THIS run; the child cannot forge one (a phase 1
+        # deferred item: never trust child-supplied finish fields).
+        reported = str(finish.get("resume_token") or "")
+        if (
+            approval is None
+            or not approval.record_id
+            or not approval.token
+            or not hmac.compare_digest(reported, approval.token)
+        ):
+            return error_envelope(
+                WorkflowError(
+                    kind=KIND_RUNNER_ERROR,
+                    message=(
+                        "the child reported a suspension the engine did not "
+                        "mint; refusing the resume token"
+                    ),
+                ),
+                usage_snapshot,
+            )
         return WorkflowEnvelope(
             ok=False,
             status=STATUS_NEEDS_APPROVAL,
+            # The public resume handle is the record id, resolved via
+            # POST /workflows/approvals/{id}/resolve; the internal token
+            # never leaves the engine.
+            resume_token=approval.record_id,
+            output={
+                "record_id": approval.record_id,
+                "prompt": approval.prompt,
+                "expires_at": approval.expires_at,
+            },
             budget=usage_snapshot,
-            resume_token=str(finish.get("resume_token") or "") or None,
         )
     error = finish.get("error") if isinstance(finish.get("error"), dict) else {}
     kind = str(error.get("kind") or KIND_RUNNER_ERROR)
@@ -221,13 +273,15 @@ async def execute_workflow(
     depth: int = 0,
     run_id: Optional[str] = None,
     persist_record: bool = True,
+    approval: Optional[ApprovalRuntime] = None,
 ) -> WorkflowRunResult:
     """Run one workflow source end to end and return envelope plus trace.
 
     Never raises for anything the workflow did (author bugs, verb failures,
     caps): those are envelope statuses. It re-raises ``CancelledError`` after
     killing the child (a turn abort must keep cancelling upward), and lets
-    genuine engine bugs propagate.
+    genuine engine bugs propagate. ``approval`` (saved workflows only)
+    enables ``nym.approve``; without it the verb refuses.
     """
     load_builtin_verbs()
     budget = budget or WorkflowBudget()
@@ -241,6 +295,7 @@ async def execute_workflow(
         depth=depth,
         budget=budget,
         usage=usage,
+        approval=approval,
     )
     trace = StepTrace(run_id=run_id, workflow_id=workflow_id)
     token = secrets.token_urlsafe(32)
@@ -323,6 +378,7 @@ async def execute_workflow(
         # Turn abort / operator stop: kill the whole group, then keep
         # cancelling upward. The finally below also runs, belt and braces.
         _kill_process_group(proc, pgid)
+        _discard_unfinished_suspension(approval)
         raise
     except Exception as exc:  # noqa: BLE001 - spawn/listener failure is runner_error
         logger.warning("workflow run %s failed to launch", run_id, exc_info=True)
@@ -386,8 +442,14 @@ async def execute_workflow(
     else:
         envelope = _finish_to_envelope(
             pump.finish, usage.snapshot(), proc.returncode if proc else None,
-            stderr_text[-1000:],
+            stderr_text[-1000:], approval,
         )
+
+    # A run that minted a pending record but did not end suspended (author
+    # swallowed the suspend signal, timeout, error) must not leave a
+    # resumable orphan behind.
+    if envelope.status != STATUS_NEEDS_APPROVAL:
+        _discard_unfinished_suspension(approval)
 
     if persist_record:
         try:

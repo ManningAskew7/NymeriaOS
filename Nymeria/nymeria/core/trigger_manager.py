@@ -45,7 +45,7 @@ MAX_EXECUTION_LOG = 200
 class TriggerAction(BaseModel):
     """What to do when a trigger fires."""
 
-    type: Literal["agent_prompt", "notify", "create_todo"] = Field(
+    type: Literal["agent_prompt", "notify", "create_todo", "run_workflow"] = Field(
         ..., description="Action type"
     )
     config: dict = Field(
@@ -54,7 +54,9 @@ class TriggerAction(BaseModel):
             "Action-specific config. "
             "agent_prompt: {prompt_template (or prompt), thread_id?}. "
             "notify: {message_template, platform?}. "
-            "create_todo: {task_template, scheduled_for?}."
+            "create_todo: {task_template, scheduled_for?}. "
+            "run_workflow: {workflow_id, params?} (the raw event dict is "
+            "passed as the workflow's 'event' parameter when it declares one)."
         ),
     )
 
@@ -698,6 +700,8 @@ class TriggerManager:
                 self._fire_notify(action.config, template_vars, user_id, trigger)
             elif action.type == "create_todo":
                 self._fire_create_todo(action.config, template_vars, user_id)
+            elif action.type == "run_workflow":
+                self._fire_run_workflow(action.config, event, agent, user_id, trigger)
             else:
                 logger.error(f"Unknown action type: {action.type}")
             execution.status = "success"
@@ -1152,6 +1156,64 @@ class TriggerManager:
                         todo_list.update_item(item.id, scheduled_for=parsed)
             else:
                 logger.warning("[TRIGGER] Failed to create TODO (at limit?)")
+
+    def _fire_run_workflow(
+        self,
+        config: dict,
+        event: dict,
+        agent: "NymeriaAgent | TurnExecutor",
+        user_id: str,
+        trigger: TriggerDefinition,
+    ) -> None:
+        """Run a published workflow tool (no LLM call).
+
+        The RAW event dict is passed as the workflow's ``event`` parameter
+        when its signature declares one (no per-field mapping config: the
+        authored body extracts what it needs). Executes via the turn
+        executor's ``run_workflow`` seam so the run always happens in the API
+        process (slim: directly; Docker worker: relayed). Never delivers
+        output anywhere itself; delivery is the workflow's own explicit job
+        (nym.thread / nym.notify), so a headless fire cannot leak output to a
+        guessed destination.
+        """
+        import asyncio
+
+        from .turn_executor import TurnExecutor, wrap_for_stream
+
+        workflow_id = str(config.get("workflow_id") or "").strip()
+        if not workflow_id:
+            raise ValueError("run_workflow action config needs workflow_id")
+
+        from .workflows.tool_runtime import workflow_declares_event
+
+        params = dict(config.get("params") or {})
+        if workflow_declares_event(workflow_id):
+            params.setdefault("event", dict(event))
+        thread_id = trigger.thread_id or f"trigger-{trigger.id}"
+        executor: TurnExecutor = wrap_for_stream(agent)
+
+        logger.info(
+            f"[TRIGGER] Running workflow {workflow_id} for trigger "
+            f"'{trigger.name}' ({trigger.id})"
+        )
+        envelope = asyncio.run(
+            executor.run_workflow(
+                workflow_id, params, user_id=user_id, thread_id=thread_id
+            )
+        )
+        status = str(envelope.get("status") or "")
+        if status == "needs_approval":
+            # The run suspended awaiting the owner's decision: a successful
+            # fire (the approve verb already announced it).
+            logger.info(f"[TRIGGER] Workflow {workflow_id} suspended for approval")
+            return
+        if not envelope.get("ok"):
+            error = envelope.get("error") or {}
+            raise RuntimeError(
+                f"workflow {workflow_id} {status or 'error'} "
+                f"({error.get('kind', 'unknown')}): {error.get('message', '')}"
+            )
+        logger.info(f"[TRIGGER] Workflow {workflow_id} finished ok")
 
 
 # ---------------------------------------------------------------------------

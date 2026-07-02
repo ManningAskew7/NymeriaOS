@@ -384,3 +384,149 @@ def test_archive_isolates_per_user_failure(tmp_path: Path, monkeypatch):
     # Must not raise; u2 is still processed after u1's failure.
     ticker._archive_completed_todos()
     assert processed == ["u1", "u2"]
+
+
+# ------------------------------------------------------------------
+# Workflow TODOs (phase 4): the headless run_workflow branch
+# ------------------------------------------------------------------
+
+
+class _FakeWorkflowExecutor:
+    """TurnExecutor stand-in recording run_workflow calls."""
+
+    is_remote = False
+
+    def __init__(self, envelope: dict | None = None) -> None:
+        self.envelope = envelope or {"ok": True, "status": "ok"}
+        self.calls: list[dict] = []
+
+    async def run_workflow(self, workflow_id, params=None, *, user_id, thread_id=None):
+        self.calls.append(
+            {
+                "workflow_id": workflow_id,
+                "params": dict(params or {}),
+                "user_id": user_id,
+                "thread_id": thread_id,
+            }
+        )
+        return dict(self.envelope)
+
+
+def _add_workflow_todo(agent: FakeAgent, *, recurrence: str | None = None):
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        return todo_list.add_item(
+            "Run the report workflow",
+            scheduled_for=datetime.now(timezone.utc) - timedelta(minutes=1),
+            thread_id="thread-1",
+            created_by="user",
+            recurrence=recurrence,
+            workflow_id="wf_report",
+            workflow_params={"channel": "ops"},
+        )
+
+
+def _entry_for(todo) -> ScheduledTodoEntry:
+    return ScheduledTodoEntry(
+        todo_id=todo.id,
+        user_id="owner",
+        thread_id="thread-1",
+        scheduled_for=time.time() - 1,
+        task_preview=todo.task,
+        created_at=time.time(),
+    )
+
+
+def _silence_ticker_io(monkeypatch, events: list):
+    monkeypatch.setattr(
+        ticker_module, "publish_autonomous_event",
+        lambda event_type, **kw: events.append({"event_type": event_type, **kw}),
+    )
+    monkeypatch.setattr(ticker_module, "log_activity", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        ticker_module, "create_autonomous_notification", lambda **kw: None
+    )
+
+
+def test_workflow_todo_runs_headlessly_and_completes(tmp_path: Path, monkeypatch):
+    """No agent stream; the executor seam is called and the TODO closes."""
+    ticker, agent = _make_ticker(tmp_path)
+    executor = _FakeWorkflowExecutor()
+    ticker._turn_executor = executor
+    todo = _add_workflow_todo(agent)
+    events: list = []
+    _silence_ticker_io(monkeypatch, events)
+
+    ticker._execute_scheduled_todo(_entry_for(todo))
+
+    assert executor.calls == [
+        {
+            "workflow_id": "wf_report",
+            "params": {"channel": "ops"},
+            "user_id": "owner",
+            "thread_id": "thread-1",
+        }
+    ]
+    completed = [e for e in events if e["event_type"] == "task_completed"]
+    assert len(completed) == 1
+    assert "finished ok" in completed[0]["data"]["content"]
+    # A workflow TODO has no agent turn to close it: the branch marks the
+    # non-recurring item done itself.
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed.status.value == "done"
+
+
+def test_workflow_todo_recurring_reschedules(tmp_path: Path, monkeypatch):
+    ticker, agent = _make_ticker(tmp_path)
+    ticker._turn_executor = _FakeWorkflowExecutor()
+    todo = _add_workflow_todo(agent, recurrence="1h")
+    events: list = []
+    _silence_ticker_io(monkeypatch, events)
+
+    ticker._execute_scheduled_todo(_entry_for(todo))
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed.status.value == "pending"
+    assert refreshed.scheduled_for is not None
+
+
+def test_workflow_todo_needs_approval_counts_as_success(tmp_path: Path, monkeypatch):
+    ticker, agent = _make_ticker(tmp_path)
+    ticker._turn_executor = _FakeWorkflowExecutor(
+        {"ok": False, "status": "needs_approval", "resume_token": "rec-1"}
+    )
+    todo = _add_workflow_todo(agent)
+    events: list = []
+    _silence_ticker_io(monkeypatch, events)
+
+    ticker._execute_scheduled_todo(_entry_for(todo))
+
+    completed = [e for e in events if e["event_type"] == "task_completed"]
+    assert len(completed) == 1
+    assert "awaiting your approval" in completed[0]["data"]["content"]
+    assert todo.id not in ticker._retry_counts
+
+
+def test_workflow_todo_error_envelope_engages_retry(tmp_path: Path, monkeypatch):
+    ticker, agent = _make_ticker(tmp_path)
+    ticker._turn_executor = _FakeWorkflowExecutor(
+        {
+            "ok": False,
+            "status": "error",
+            "error": {"kind": "author_error", "message": "boom"},
+        }
+    )
+    todo = _add_workflow_todo(agent)
+    events: list = []
+    _silence_ticker_io(monkeypatch, events)
+
+    ticker._execute_scheduled_todo(_entry_for(todo))
+
+    # The failure handler engaged: error event published, retry scheduled.
+    errored = [
+        e
+        for e in events
+        if e["event_type"] == "task_completed" and e["data"].get("error")
+    ]
+    assert len(errored) == 1
+    assert "author_error" in errored[0]["data"]["error_message"]
+    assert ticker._retry_counts.get(todo.id) == 1

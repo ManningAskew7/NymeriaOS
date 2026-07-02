@@ -832,6 +832,13 @@ class Ticker:
         try:
             self._print_wakeup_banner(todo.task)
             logger.info(f"[TICKER] === START === TODO {todo.id}, thread={thread_id}, user={entry.user_id}")
+
+            if todo.workflow_id:
+                # A workflow TODO runs the published workflow headlessly (no
+                # agent turn); recurrence and retries below apply unchanged.
+                self._execute_workflow_todo(entry, todo, thread_id)
+                return
+
             logger.debug(f"[TICKER] Prompt: {prompt[:200]}...")
 
             stream_result, renderer, completed_early = self._stream_todo_execution(
@@ -858,6 +865,100 @@ class Ticker:
     # ------------------------------------------------------------------
     # Helpers for _execute_scheduled_todo
     # ------------------------------------------------------------------
+
+    def _execute_workflow_todo(
+        self, entry: ScheduledTodoEntry, todo, thread_id: str
+    ) -> None:
+        """Run a workflow TODO headlessly through the executor seam.
+
+        The run always happens in the API process (slim: the local executor
+        calls the engine directly; the Docker worker's executor relays to
+        ``POST /workflows/{id}/execute``). Output is never auto-delivered:
+        delivery is the workflow's own explicit job (nym.thread/nym.notify
+        with explicit targets); the owner gets only the usual scheduled-task
+        status notification. A ``needs_approval`` outcome is a success (the
+        run suspended awaiting the owner; the approve verb announced it).
+        Error envelopes raise so the standard retry/backoff machinery in
+        ``_handle_execution_failure`` engages.
+        """
+        import asyncio
+
+        params = dict(todo.workflow_params or {})
+        logger.info(
+            f"[TICKER] Running scheduled workflow {todo.workflow_id} "
+            f"for TODO {todo.id}"
+        )
+        publish_autonomous_event(
+            event_type="task_started",
+            thread_id=thread_id,
+            user_id=entry.user_id,
+            task_id=todo.id,
+            data={"todo_id": todo.id, "workflow_id": todo.workflow_id},
+        )
+        envelope = asyncio.run(
+            self._turn_executor.run_workflow(
+                todo.workflow_id,
+                params,
+                user_id=entry.user_id,
+                thread_id=thread_id,
+            )
+        )
+        status = str(envelope.get("status") or "")
+        if not envelope.get("ok") and status != "needs_approval":
+            error = envelope.get("error") or {}
+            raise RuntimeError(
+                f"workflow {todo.workflow_id} {status or 'error'} "
+                f"({error.get('kind', 'unknown')}): {error.get('message', '')}"
+            )
+
+        self._handle_recurrence(entry, todo)
+        current = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
+        if current and not current.recurrence:
+            # The agent path leaves closing the TODO to the agent turn; a
+            # workflow TODO has no agent turn, so close it here (recurring
+            # ones were just reset to PENDING by _handle_recurrence).
+            with self.todo_manager.atomic_update(entry.user_id) as todo_list:
+                todo_list.update_item(todo.id, status=TodoStatus.DONE)
+        if todo.id in self._retry_counts:
+            del self._retry_counts[todo.id]
+
+        summary = f"Scheduled workflow '{todo.workflow_id}' " + (
+            "suspended awaiting your approval"
+            if status == "needs_approval"
+            else "finished ok"
+        )
+        should_notify = self._should_create_autonomous_notification(thread_id)
+        publish_autonomous_event(
+            event_type="task_completed",
+            thread_id=thread_id,
+            user_id=entry.user_id,
+            task_id=todo.id,
+            data={
+                "notify": should_notify,
+                "content": summary,
+                "todo_id": todo.id,
+                "workflow_id": todo.workflow_id,
+            },
+        )
+        log_activity(
+            ActivityType.TASK_COMPLETED,
+            summary,
+            user_id=entry.user_id,
+            thread_id=thread_id,
+            metadata={"todo_id": todo.id, "workflow_id": todo.workflow_id},
+        )
+        if should_notify:
+            create_autonomous_notification(
+                user_id=entry.user_id,
+                thread_id=thread_id,
+                task_id=todo.id,
+                summary=summary,
+                settings=self.settings,
+                thread_config_manager=self.thread_config_manager,
+            )
+        logger.info(
+            f"TODO {todo.id} workflow execution completed ({status or 'ok'})"
+        )
 
     @staticmethod
     def _print_wakeup_banner(task_text: str) -> None:
