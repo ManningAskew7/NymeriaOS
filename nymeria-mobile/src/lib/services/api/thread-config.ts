@@ -47,6 +47,8 @@ export class ThreadConfigApi extends MCPApi {
         lastDreamThreadId: data.dreaming.last_dream_thread_id ?? null,
       } : null,
       shadowParentId: data.shadow_parent_id ?? null,
+      hooksEnabled: data.hooks_enabled ?? null,
+      hookOverrides: data.hook_overrides ?? {},
       createdAt: data.created_at ?? null,
       updatedAt: data.updated_at ?? null,
       hasCustomizations: data.has_customizations ?? false,

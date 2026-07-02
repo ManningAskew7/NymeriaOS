@@ -6,9 +6,12 @@
   import TodoForm from '$lib/components/todos/TodoForm.svelte';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
   import TriggerSetupWizard from '$lib/components/triggers/TriggerSetupWizard.svelte';
+  import HookFeed from '$lib/components/hooks/HookFeed.svelte';
+  import HookForm from '$lib/components/hooks/HookForm.svelte';
   import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { hooksStore } from '$lib/stores/hooks.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { switchToThread } from '$lib/stores/navigation.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
@@ -24,6 +27,7 @@
   // own modal inside each feed.
   let showTaskCreate = $state(false);
   let showTriggerCreate = $state(false);
+  let showHookCreate = $state(false);
 
   // True for the brief window when switching INTO the 'thread' tab. Hides
   // scrollbars on the whole panel during that window so they don't flash /
@@ -151,6 +155,19 @@
         {/if}
       </SectionHeader>
 
+      <!-- Hooks -->
+      <SectionHeader
+        title="Hooks"
+        count={hooksStore.enabledCount}
+        action={{ label: 'New hook', onClick: () => (showHookCreate = true) }}
+      >
+        {#if activeTab === 'thread' && currentThreadId}
+          <HookFeed threadId={currentThreadId} />
+        {:else}
+          <HookFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
+        {/if}
+      </SectionHeader>
+
       <!-- Activity (no create action; same chevron + title chrome) -->
       <SectionHeader title="Activity">
         {#if activeTab === 'thread' && currentThreadId}
@@ -172,6 +189,12 @@
   <TriggerSetupWizard
     threadId={activeTab === 'thread' && currentThreadId ? currentThreadId : undefined}
     onClose={() => (showTriggerCreate = false)}
+  />
+{/if}
+{#if showHookCreate}
+  <HookForm
+    threadId={activeTab === 'thread' && currentThreadId ? currentThreadId : undefined}
+    onClose={() => (showHookCreate = false)}
   />
 {/if}
 

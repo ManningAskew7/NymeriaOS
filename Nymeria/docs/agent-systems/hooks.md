@@ -4,8 +4,10 @@ Nymeria has a Claude-Code-style lifecycle-hooks engine: small pieces of logic th
 run at defined moments in an agent turn and can observe or steer it. The engine spine
 shipped first (the machinery, wired to in-process fixtures); the product surface then
 landed on top of it as a set of **canned actions** a user or the agent can attach to an
-event. This document covers both the engine and those actions. A frontend UI, the
-`run_command` action, and the `nym` workflow substrate land in later passes.
+event. This document covers both the engine and those actions. The desktop and mobile
+clients ship a GUI over the REST surface (a dashboard **Hooks** panel to author and toggle
+hooks, plus a per-thread **Hooks** tab for enablement); the `run_command` action and the
+`nym` workflow substrate land in later passes.
 
 Full design and rationale: `docs/private/plans/lifecycle-hooks.md`.
 
@@ -92,6 +94,13 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   caller; scoped creates pass through the thread-access gate. There is no webhook/fire
   endpoint (hooks fire in-process only).
 
+The **desktop and mobile GUI** are clients of that REST surface (not a fourth store
+writer): a dashboard **Hooks** section (`components/hooks/`: category-grouped feed +
+a single adaptive **HookForm** modal whose fields reflow by event and action) authors,
+edits, tests, and toggles hooks; a per-thread **Hooks** tab drives the enable model
+below. The action families are category-coded (Guardrails / Context / Reactions) so the
+feed and form read as three families rather than one flat list.
+
 ### Enable model
 
 A hook is active on a turn only if every layer says so, resolved by
@@ -107,7 +116,9 @@ A hook is active on a turn only if every layer says so, resolved by
 
 Both thread fields are set/cleared through `PATCH /threads/{id}/config`
 (`hooks_enabled`, `hook_overrides`, and their `clear_*` twins); the master switch is a
-`PATCH /settings` field.
+`PATCH /settings` field. In the GUI, the per-thread **Hooks** tab (Thread Settings) surfaces
+this as a tri-state master (Inherit / On / Off, where Inherit sends `clear_hooks_enabled`)
+plus per-hook Default / On / Off overrides, folded into the panel's Save batch.
 
 ## The model: when → logic → return
 
@@ -226,8 +237,6 @@ rather than a parallel re-drive.
 - The `run_command` action (dispatch a slash command from a hook) and presets. The other
   six actions (`inject_context`, `block_if_matches`, `rewrite_arg`, `notify`, `create_todo`,
   `webhook`) all ship.
-- A **frontend UI** for authoring/toggling hooks (the tool + REST surfaces exist; no
-  desktop/mobile panel yet).
 - The `nym` **workflow** logic substrate (sandboxed, out-of-process).
 - Observe fire points for `PROMPT_SUBMIT` / `PRE_TOOL_USE` (a registration on those
   events is inert; no product action needs them yet). `POST_TOOL_USE` and `DONE` have

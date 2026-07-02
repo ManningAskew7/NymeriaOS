@@ -4,10 +4,12 @@
   import { ActivityFeed } from '$lib/components/dashboard';
   import { TodoFeed } from '$lib/components/dashboard';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
+  import HookFeed from '$lib/components/hooks/HookFeed.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { activityStore } from '$lib/stores/activity.svelte';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { hooksStore } from '$lib/stores/hooks.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { switchToThread } from '$lib/stores/navigation.svelte';
 
@@ -38,6 +40,7 @@
     activityStore.fetch(50, tid);
     todosStore.fetch(undefined, tid);
     triggersStore.loadTriggers();
+    hooksStore.loadHooks();
   }
 </script>
 
@@ -122,6 +125,21 @@
         <TriggerFeed threadId={currentThreadId} />
       {:else}
         <TriggerFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
+      {/if}
+    </Collapsible>
+
+    <!-- Hooks Section -->
+    <Collapsible title="Hooks" defaultOpen={true}>
+      {#snippet header()}
+        <span class="section-heading">Hooks</span>
+        {#if hooksStore.enabledCount > 0}
+          <span class="section-count">{hooksStore.enabledCount}</span>
+        {/if}
+      {/snippet}
+      {#if activeTab === 'thread' && currentThreadId}
+        <HookFeed threadId={currentThreadId} />
+      {:else}
+        <HookFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
       {/if}
     </Collapsible>
 

@@ -307,6 +307,16 @@ export interface ThreadConfig {
   notificationProfile?: string | null;
   dreaming?: DreamingConfig | null;
   shadowParentId?: string | null;
+  /**
+   * Per-thread master switch for lifecycle hooks. `null` inherits the global
+   * `Settings.hooks_enabled`; `true`/`false` override it for this thread only.
+   */
+  hooksEnabled?: boolean | null;
+  /**
+   * Per-thread per-hook overrides: hook id -> enabled. A hook absent from the
+   * map falls back to its own `enabled` default.
+   */
+  hookOverrides?: Record<string, boolean>;
   createdAt?: string | null;
   updatedAt?: string | null;
   hasCustomizations: boolean;
@@ -343,6 +353,8 @@ export interface ThreadConfigUpdateRequest {
   memory_char_limit?: number | null;
   image_window_size?: number | null;
   sequential_tool_execution?: boolean | null;
+  hooks_enabled?: boolean | null;
+  hook_overrides?: Record<string, boolean> | null;
   inject_todos_in_prompt?: boolean;
   show_autonomous_prompts?: boolean;
   show_prompt_metadata?: boolean;
@@ -361,6 +373,8 @@ export interface ThreadConfigUpdateRequest {
   clear_memory_char_limit?: boolean;
   clear_image_window_size?: boolean;
   clear_sequential_tool_execution?: boolean;
+  clear_hooks_enabled?: boolean;
+  clear_hook_overrides?: boolean;
   clear_dreaming?: boolean;
 }
 
@@ -2446,4 +2460,83 @@ export interface TriggerTestResult {
   action_type: string;
   template_variables_used: string[];
   conditions_pass: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle Hook Types
+//
+// Hooks are the deterministic when/logic/return records the engine fires
+// around a turn. The four events and six actions mirror the backend
+// (`core/hook_manager.py`); `logic` is the action-specific config the backend
+// returns, discriminated on `action`.
+
+export type HookEvent = 'prompt_submit' | 'pre_tool_use' | 'post_tool_use' | 'done';
+export type HookAction =
+  | 'inject_context'
+  | 'block_if_matches'
+  | 'rewrite_arg'
+  | 'notify'
+  | 'create_todo'
+  | 'webhook';
+export type HookScope = 'global' | 'thread';
+export type HookCreatedBy = 'user' | 'agent';
+
+/**
+ * PRE-tool guardrail condition (matches tool args). Same shape as
+ * `TriggerCondition`: field / operator / value / optional case-sensitivity.
+ */
+export type HookCondition = TriggerCondition;
+
+export interface Hook {
+  id: string;
+  name: string;
+  event: HookEvent;
+  action: HookAction;
+  /** Full action-specific config (discriminated on `action`). */
+  logic: Record<string, unknown>;
+  /** Convenience mirror of the text body for the text actions; "" otherwise. */
+  text: string;
+  matcher: string | null;
+  enabled: boolean;
+  scope: HookScope;
+  thread_id: string;
+  created_by: HookCreatedBy;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HookCreateRequest {
+  name: string;
+  event: HookEvent;
+  action: HookAction;
+  text?: string;
+  conditions?: HookCondition[];
+  reason?: string;
+  updates?: Record<string, string>;
+  url?: string;
+  matcher?: string | null;
+  scope: HookScope;
+  thread_id?: string;
+  enabled?: boolean;
+}
+
+export interface HookUpdateRequest {
+  name?: string;
+  event?: HookEvent;
+  action?: HookAction;
+  text?: string;
+  conditions?: HookCondition[];
+  reason?: string;
+  updates?: Record<string, string>;
+  url?: string;
+  matcher?: string | null;
+  enabled?: boolean;
+}
+
+export interface HookTestResult {
+  hook_id: string;
+  event: string;
+  action: string;
+  /** Rendered dry-run preview (template render or guardrail description). */
+  rendered?: string;
 }
