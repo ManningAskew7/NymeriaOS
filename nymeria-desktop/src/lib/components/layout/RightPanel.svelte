@@ -8,10 +8,12 @@
   import TriggerSetupWizard from '$lib/components/triggers/TriggerSetupWizard.svelte';
   import HookFeed from '$lib/components/hooks/HookFeed.svelte';
   import HookForm from '$lib/components/hooks/HookForm.svelte';
+  import WorkflowFeed from '$lib/components/workflows/WorkflowFeed.svelte';
   import { ActivityFeed, ConnectionStatus } from '$lib/components/dashboard';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { hooksStore } from '$lib/stores/hooks.svelte';
+  import { workflowsStore } from '$lib/stores/workflows.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { switchToThread } from '$lib/stores/navigation.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
@@ -167,6 +169,14 @@
           <HookFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
         {/if}
       </SectionHeader>
+
+      <!-- Workflows (global only: runs and approvals are per-user, not
+           per-thread; authored in chat, so no create action here) -->
+      {#if activeTab === 'global'}
+        <SectionHeader title="Workflows" count={workflowsStore.pendingCount}>
+          <WorkflowFeed />
+        </SectionHeader>
+      {/if}
 
       <!-- Activity (no create action; same chevron + title chrome) -->
       <SectionHeader title="Activity">

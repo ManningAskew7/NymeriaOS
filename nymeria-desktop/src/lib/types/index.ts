@@ -2552,3 +2552,88 @@ export interface HookTestResult {
   /** Rendered dry-run preview (template render or guardrail description). */
   rendered?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Workflow Types
+//
+// Workflows are published `nym` automation tools. The dashboard reads two
+// backend surfaces (pending `nym.approve` suspensions and recent run
+// records) and assembles in-flight runs from the `workflow_step` /
+// `workflow_run_finished` SSE events.
+
+/** One pending nym.approve suspension awaiting the owner's decision. */
+export interface WorkflowApproval {
+  record_id: string;
+  workflow_id: string;
+  /** Where the suspended run started (e.g. 'tool', 'trigger', 'todo'). */
+  origin: string;
+  user_id: string;
+  thread_id: string;
+  /** The approval prompt the workflow raised (truncated server-side). */
+  prompt: string;
+  resume_entrypoint: string;
+  created_at: string;
+  expires_at: string;
+}
+
+/** Envelope statuses (`core/workflows/envelope.py`). */
+export type WorkflowRunStatus = 'ok' | 'error' | 'timeout' | 'cancelled' | 'needs_approval';
+
+/** One nym.* call from a persisted run trace (args/result are summaries). */
+export interface WorkflowRunStep {
+  step: number;
+  verb: string;
+  status: 'ok' | 'error';
+  duration_ms: number;
+  args: string;
+  result: string;
+  error_kind?: string;
+}
+
+/** One persisted run record (`GET /workflows/runs`). */
+export interface WorkflowRun {
+  run_id: string;
+  workflow_id: string;
+  user_id: string;
+  thread_id: string;
+  status: WorkflowRunStatus | string;
+  timestamp: string;
+  /** Normalized result envelope (status, output or error, budget). */
+  envelope: Record<string, unknown>;
+  steps: WorkflowRunStep[];
+}
+
+export interface WorkflowApprovalResolveResult {
+  ok: boolean;
+  record_id: string;
+  decision: string;
+  /** Run id of the continuation run the resolution started. */
+  run_id: string;
+  workflow_id: string;
+}
+
+/** `workflow_step` SSE payload (lean; args/results never ride the bus). */
+export interface WorkflowStepEvent {
+  workflow_id: string;
+  run_id: string;
+  step: number;
+  verb: string;
+  status: 'ok' | 'error';
+  duration_ms: number;
+  error_kind?: string;
+}
+
+/** `workflow_run_finished` SSE payload. */
+export interface WorkflowRunFinishedEvent {
+  workflow_id: string;
+  run_id: string;
+  status: WorkflowRunStatus | string;
+}
+
+/** One in-flight run assembled from workflow_step events. */
+export interface LiveWorkflowRun {
+  run_id: string;
+  workflow_id: string;
+  /** Sorted by step (events can arrive out of order). */
+  steps: WorkflowStepEvent[];
+}
