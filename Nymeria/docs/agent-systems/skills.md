@@ -147,6 +147,7 @@ that each bind their tools (ttl 2h) only when activated:
 | `skill-management` | `skill_manage`, `skill_write`, `skill_edit` | find/install/create/edit Skills and Skill Kits |
 | `mcp-management` | `manage_mcp` | find/install/test/manage MCP servers (ships with the single `manage_mcp` tool today) |
 | `credential-management` | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` | request/inspect/clean up credentials (binds these auth tools on activation, like the other capability kits) |
+| `workflow-authoring` | `tool_create`, `workflow_info` | author/test/publish nym-SDK workflow tools (the cookbook: economics, the approve/continuation idiom, delivery targets, cross-run state). NOT default-on; discovered via skill search or `/kit workflow-authoring` |
 
 Nymeria initializes `self-improve` and all four `*-management` kits in each user
 profile's `enabled_global_skills` list once, so they are on by default for new

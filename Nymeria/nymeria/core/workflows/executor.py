@@ -41,7 +41,7 @@ from .envelope import (
     ok_envelope,
     timeout_envelope,
 )
-from .pump import FRAME_LIMIT_BYTES, VerbPump
+from .pump import FRAME_LIMIT_BYTES, VerbPump, publish_engine_event
 from .registry import ApprovalRuntime, VerbContext, load_builtin_verbs
 from .trace import StepTrace, persist_run_record
 
@@ -462,6 +462,21 @@ async def execute_workflow(
             )
         except Exception:  # noqa: BLE001 - observability must not fail the run
             logger.warning("workflow run-record persistence failed", exc_info=True)
+
+    # Fires for EVERY run (adhoc included): workflow_step events fire for
+    # every run too, so a live progress consumer always sees the run close
+    # even when nothing is persisted.
+    publish_engine_event(
+        "workflow_run_finished",
+        thread_id=thread_id,
+        user_id=user_id,
+        task_id=run_id,
+        data={
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "status": envelope.status,
+        },
+    )
 
     if envelope.status not in (STATUS_OK,):
         logger.info(

@@ -74,18 +74,18 @@ class StepTrace:
         args: Any,
         result: Any = None,
         error_kind: Optional[str] = None,
-    ) -> None:
-        self.steps.append(
-            StepRecord(
-                step=len(self.steps) + 1,
-                verb=verb,
-                status=status,
-                duration_ms=duration_ms,
-                args_summary=_summarize(args),
-                result_summary=_summarize(result) if result is not None else "",
-                error_kind=error_kind,
-            )
+    ) -> StepRecord:
+        record = StepRecord(
+            step=len(self.steps) + 1,
+            verb=verb,
+            status=status,
+            duration_ms=duration_ms,
+            args_summary=_summarize(args),
+            result_summary=_summarize(result) if result is not None else "",
+            error_kind=error_kind,
         )
+        self.steps.append(record)
+        return record
 
     def to_dict(self) -> dict:
         return {
@@ -183,6 +183,62 @@ def read_run_records(
         return records
     except Exception:  # noqa: BLE001 - a read surface must never raise into a turn
         logger.warning("workflow run record read failed", exc_info=True)
+        return []
+
+
+# Newest-first bound on how many run FILES one aggregate read will open when
+# filtering for a specific owner (a user with few runs on a busy multi-user
+# store must not force a read+parse of the entire runs tree per request).
+MAX_AGGREGATE_SCAN_FILES = 500
+
+
+def read_recent_run_records(
+    *, limit: int = 20, user_id: Optional[str] = None
+) -> List[dict]:
+    """Read recent run records across ALL workflows, newest first; sync,
+    call off-loop.
+
+    The dashboard-feed shape: one owner's (or, for the admin view, every
+    user's) latest runs regardless of workflow. Same skip-unreadable
+    semantics as ``read_run_records``; additionally the owner filter stops
+    scanning after ``MAX_AGGREGATE_SCAN_FILES`` newest files, so a sparse
+    owner's feed may miss runs older than that window (a bounded read beats
+    an unbounded one for a dashboard surface).
+    """
+    try:
+        from ...config import get_settings
+
+        runs_root = Path(get_settings().data_dir) / "workflows" / "runs"
+        if not runs_root.is_dir():
+            return []
+
+        def _sort_key(p: Path):
+            # A concurrently pruned file must not blow up the whole sort;
+            # rank it oldest and let the read loop skip it.
+            try:
+                return (p.stat().st_mtime_ns, p.name)
+            except OSError:
+                return (0, p.name)
+
+        paths = sorted(runs_root.glob("*/*.json"), key=_sort_key, reverse=True)
+        records: List[dict] = []
+        for scanned, path in enumerate(paths):
+            if len(records) >= max(1, limit):
+                break
+            if scanned >= MAX_AGGREGATE_SCAN_FILES:
+                break
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            if user_id is not None and record.get("user_id") != user_id:
+                continue
+            records.append(record)
+        return records
+    except Exception:  # noqa: BLE001 - a read surface must never raise into a turn
+        logger.warning("workflow run record aggregate read failed", exc_info=True)
         return []
 
 

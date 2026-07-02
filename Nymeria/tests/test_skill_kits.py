@@ -778,6 +778,7 @@ def test_bundled_capability_kits_expose_exact_required_tools():
         "credential-management": [
             "auth_inspect", "auth_cleanup", "auth_bindings", "request_credential",
         ],
+        "workflow-authoring": ["tool_create", "workflow_info"],
     }
     bundled = _bundled_skills_dir()
     for name, tools in expected.items():

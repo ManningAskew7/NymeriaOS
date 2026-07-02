@@ -1097,6 +1097,8 @@ Returns the callable thread tools actually available from that caller thread aft
 | `auth_prompt_cancelled` | Credential prompt ended without an active credential, including user cancel, OAuth denial, expiry, or provider error | `prompt_id`, `reason`, optional `message` |
 | `workflow_approval` | A workflow run suspended on `nym.approve`, awaiting the owner's decision (resolve via `POST /workflows/approvals/{record_id}/resolve`) | `record_id`, `workflow_id`, `prompt`, `expires_at` |
 | `workflow_approval_resolved` | A suspended workflow run was approved, declined, or expired; the continuation ran (or was refused) | `record_id`, `workflow_id`, `approved`, `note`, `run_id` |
+| `workflow_step` | One completed `nym.*` verb dispatch in a running workflow (live progress; best-effort and unordered, sort by `step`). Lean by design: args/result summaries live in the persisted run record, not on the wire | `workflow_id`, `run_id`, `step`, `verb`, `status`, `duration_ms`, optional `error_kind` |
+| `workflow_run_finished` | A workflow run ended (fires for every run, including adhoc test runs that persist nothing) | `workflow_id`, `run_id`, `status` |
 | `dispatched` | Leading `@thread` mention routed the turn to another thread | `target_thread_id`, `title`, `matched_ref`, `dispatched_to` |
 | `response` | Visible assistant text chunk. May appear before a `tool_call` as preamble/commentary, or after tools as the final answer. | `content` |
 | `context_attached` | Previous context summary attached to this message | `summary` |
@@ -2561,12 +2563,17 @@ not review. Unknown targets return **404**.
 ### Workflow Run Records
 
 ```http
+GET /workflows/runs?limit=20
 GET /workflows/runs/{workflow_id}?limit=20
 Authorization: Bearer <token>
 ```
 
 Recent run records (`run_id`, `status`, `timestamp`, envelope and step trace).
-Admins see every run; other callers see only their own.
+The bare `/runs` form aggregates across all workflows, newest first (the
+dashboard feed shape); the per-workflow form scopes to one workflow. Admins
+see every run; other callers see only their own. A refused resume
+(`resume_invalid`) also leaves a stepless run record under the ack's
+`run_id`.
 
 ### Runtime Approvals (nym.approve suspensions)
 
@@ -2613,7 +2620,10 @@ records expire after 7 days: expiry resolves as declined with note
 SSE event types: `workflow_approval` (a run suspended; carries `record_id`,
 `workflow_id`, `prompt`, `expires_at`) and `workflow_approval_resolved`
 (carries `record_id`, `approved`, `note`, `run_id`). The owner also gets
-normal notifications for both.
+normal notifications for both. Live run progress rides `workflow_step` (one
+per completed verb dispatch; best-effort fire-and-forget, so sort by `step`)
+and `workflow_run_finished` (every run's terminal status). Engine event
+types are reserved: `nym.emit` refuses to publish them.
 
 ### Execute a Workflow
 

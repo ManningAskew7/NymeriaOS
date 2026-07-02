@@ -246,6 +246,22 @@ def create_workflows_router(
             "workflow_id": str(claimed.get("workflow_id") or ""),
         }
 
+    @router.get("/runs")
+    async def recent_workflow_runs(
+        limit: int = Query(default=20, ge=1, le=100),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ) -> dict:
+        """Recent runs across ALL workflows (the dashboard feed shape),
+        newest first; non-admins see only their own."""
+        from ...core.workflows.trace import read_recent_run_records
+
+        records: List[dict] = await asyncio.to_thread(
+            read_recent_run_records,
+            limit=limit,
+            user_id=None if user.role == "admin" else user.id,
+        )
+        return {"runs": records, "total": len(records)}
+
     @router.get("/runs/{workflow_id}")
     async def workflow_runs(
         workflow_id: str,
@@ -255,7 +271,8 @@ def create_workflows_router(
         """Recent run records for a workflow; non-admins see only their own."""
         from ...core.workflows.trace import read_run_records
 
-        records: List[dict] = read_run_records(
+        records: List[dict] = await asyncio.to_thread(
+            read_run_records,
             workflow_id,
             limit=limit,
             user_id=None if user.role == "admin" else user.id,

@@ -25,7 +25,9 @@ import asyncio
 import hmac
 import json
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from .budget import WorkflowBudgetExceeded
@@ -41,6 +43,79 @@ logger = logging.getLogger(__name__)
 
 # Generous per-frame ceiling; per-verb payloads are capped separately.
 FRAME_LIMIT_BYTES = 8 * 1024 * 1024
+
+
+# Telemetry publishes get their OWN single-worker pool (the dedicated-pool
+# idiom from verbs_thread): a slow-but-connected Redis can block a publish
+# for seconds, and 50 step events per run on the process-wide default
+# executor would delay unrelated to_thread work. On this pool a slow bus
+# only ever delays telemetry behind itself.
+_telemetry_pool_instance: Optional[ThreadPoolExecutor] = None
+_telemetry_pool_lock = threading.Lock()
+
+
+def _telemetry_pool() -> ThreadPoolExecutor:
+    global _telemetry_pool_instance
+    if _telemetry_pool_instance is None:
+        with _telemetry_pool_lock:
+            if _telemetry_pool_instance is None:
+                _telemetry_pool_instance = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="wf-telemetry"
+                )
+    return _telemetry_pool_instance
+
+
+def publish_engine_event(
+    event_type: str, *, thread_id: str, user_id: str, task_id: str, data: dict
+) -> None:
+    """Best-effort, fire-and-forget engine telemetry onto the autonomous bus.
+
+    Engine progress events must never add latency to the run (the Redis bus
+    publish is a blocking network call that can take seconds), so the publish
+    is scheduled on a dedicated single-worker pool and not awaited; failures
+    are logged at debug and dropped. Cross-event ordering is therefore not
+    guaranteed: ``workflow_step`` consumers sort by the ``step`` field.
+    """
+
+    def _publish() -> None:
+        try:
+            from ..event_bus import publish_autonomous_event
+
+            publish_autonomous_event(event_type, thread_id, user_id, task_id, data)
+        except Exception:  # noqa: BLE001 - telemetry only, never fails the run
+            logger.debug("%s publish failed", event_type, exc_info=True)
+
+    try:
+        _telemetry_pool().submit(_publish)
+    except RuntimeError:
+        # Interpreter shutting down (executor refuses new work): drop the event.
+        logger.debug("%s publish dropped at shutdown", event_type)
+
+
+def _publish_step_event(ctx: VerbContext, record: Any) -> None:
+    """One ``workflow_step`` progress event per completed verb dispatch.
+
+    Lean payload by design: verb/status/duration only. Args and result
+    summaries stay in the persisted run record (owner-scoped reads), not on
+    the wire.
+    """
+    data: dict = {
+        "workflow_id": ctx.workflow_id,
+        "run_id": ctx.run_id,
+        "step": record.step,
+        "verb": record.verb,
+        "status": record.status,
+        "duration_ms": record.duration_ms,
+    }
+    if record.error_kind:
+        data["error_kind"] = record.error_kind
+    publish_engine_event(
+        "workflow_step",
+        thread_id=ctx.thread_id,
+        user_id=ctx.user_id,
+        task_id=ctx.run_id,
+        data=data,
+    )
 
 
 class VerbPump:
@@ -176,13 +251,14 @@ class VerbPump:
         started = time.monotonic()
 
         def _error(kind: str, message: str) -> dict:
-            self._trace.record(
+            record = self._trace.record(
                 verb=verb,
                 status="error",
                 duration_ms=int((time.monotonic() - started) * 1000),
                 args=args,
                 error_kind=kind,
             )
+            _publish_step_event(self._ctx, record)
             return {
                 "t": "result",
                 "id": request_id,
@@ -233,13 +309,14 @@ class VerbPump:
             trace_result = {"record_id": (value or {}).get("record_id")}
         else:
             trace_args, trace_result = args, value
-        self._trace.record(
+        record = self._trace.record(
             verb=verb,
             status="ok",
             duration_ms=int((time.monotonic() - started) * 1000),
             args=trace_args,
             result=trace_result,
         )
+        _publish_step_event(self._ctx, record)
         return {"t": "result", "id": request_id, "ok": True, "value": value}
 
     def _normalize(self, result: Any) -> Any:

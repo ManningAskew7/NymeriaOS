@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 WORKFLOW_EVENT_PREFIX = "workflow_"
 _EVENT_TYPE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
+# Engine-published event types an author's nym.emit must not spoof: consumers
+# treat these as engine telemetry (live progress, approval prompts).
+RESERVED_EVENT_TYPES = frozenset(
+    {
+        "workflow_step",
+        "workflow_run_finished",
+        "workflow_approval",
+        "workflow_approval_resolved",
+    }
+)
+
 
 # --- nym.emit ---------------------------------------------------------------
 
@@ -72,6 +83,11 @@ async def _emit_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
         raise VerbError("payload must be a JSON object")
     if not event_type.startswith(WORKFLOW_EVENT_PREFIX):
         event_type = WORKFLOW_EVENT_PREFIX + event_type
+    if event_type in RESERVED_EVENT_TYPES:
+        raise VerbError(
+            f"event type {event_type!r} is reserved for the workflow engine; "
+            "pick a different name"
+        )
     await asyncio.to_thread(
         _publish_autonomous_event,
         event_type,

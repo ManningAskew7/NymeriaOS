@@ -428,6 +428,110 @@ class TestExistingArgsStillWork:
 
 
 # ---------------------------------------------------------------------------
+# kit= (phase 5: activate a skill or Skill Kit on the new thread)
+# ---------------------------------------------------------------------------
+
+
+def _kit_skill(*, is_kit: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        name="research-kit",
+        is_skill_kit=is_kit,
+        required_tools=["web_search"],
+        tool_ttl="2h",
+    )
+
+
+class TestKitBinding:
+    def test_missing_skill_manager_errors(self, stub_agent):
+        # The stub agent has no skill_manager attribute at all.
+        result = spawn_thread.invoke(
+            {"title": "child", "kit": "research-kit"},
+            config=_runnable_config(),
+        )
+        assert result.startswith("[Error]")
+        assert "Skill manager unavailable" in result
+
+    def test_unknown_kit_fails_fast_without_creating_thread(self, stub_agent):
+        stub_agent.skill_manager = SimpleNamespace(
+            get=lambda name, user_id=None: None
+        )
+        result = spawn_thread.invoke(
+            {"title": "child", "kit": "no-such-kit"},
+            config=_runnable_config(),
+        )
+        assert result.startswith("[Error]")
+        assert "not found" in result
+        assert stub_agent.thread_config_manager.list_configured_threads() == []
+
+    def test_kit_activation_success_adds_preamble_line(self, stub_agent):
+        stub_agent.skill_manager = SimpleNamespace(
+            get=lambda name, user_id=None: _kit_skill()
+        )
+        calls: dict[str, Any] = {}
+
+        def fake_activate(*, agent, thread_id, user_id, skill_name, reason):
+            calls.update(thread_id=thread_id, user_id=user_id, skill_name=skill_name)
+            return True, "[Success]: kit activated"
+
+        with patch(
+            "nymeria.core.command_service.activate_skill_kit",
+            side_effect=fake_activate,
+        ):
+            result = spawn_thread.invoke(
+                {"title": "researcher", "kit": "research-kit"},
+                config=_runnable_config(),
+            )
+        assert not result.startswith("[Error]"), result
+        new_id = _extract_thread_id(result)
+        assert calls == {
+            "thread_id": new_id,
+            "user_id": "u1",
+            "skill_name": "research-kit",
+        }
+        assert "Kit: research-kit (tools: web_search, TTL 2h)" in result
+
+    def test_plain_skill_gets_skill_line(self, stub_agent):
+        stub_agent.skill_manager = SimpleNamespace(
+            get=lambda name, user_id=None: _kit_skill(is_kit=False)
+        )
+        with patch(
+            "nymeria.core.command_service.activate_skill_kit",
+            return_value=(True, "[Success]: Skill activated."),
+        ):
+            result = spawn_thread.invoke(
+                {"title": "guided", "kit": "research-kit"},
+                config=_runnable_config(),
+            )
+        assert not result.startswith("[Error]"), result
+        assert "Skill: research-kit enabled" in result
+
+    def test_bind_failure_rolls_back_config(self, stub_agent):
+        stub_agent.skill_manager = SimpleNamespace(
+            get=lambda name, user_id=None: _kit_skill()
+        )
+        seen: dict[str, Any] = {}
+
+        def fake_activate(*, agent, thread_id, user_id, skill_name, reason):
+            seen["thread_id"] = thread_id
+            return False, "[Error]: admin-blocked required tool"
+
+        with patch(
+            "nymeria.core.command_service.activate_skill_kit",
+            side_effect=fake_activate,
+        ):
+            result = spawn_thread.invoke(
+                {"title": "child", "kit": "research-kit"},
+                config=_runnable_config(),
+            )
+        assert result.startswith("[Error]")
+        assert "admin-blocked required tool" in result
+        # The half-created thread was rolled back: no config, no metadata.
+        tid = seen["thread_id"]
+        assert stub_agent.thread_config_manager.get_config(tid) is None
+        assert stub_agent.thread_metadata_manager.get_thread("u1", tid) is None
+
+
+# ---------------------------------------------------------------------------
 # _invoke_spawned internals (the autonomous-turn SSE scaffold, slice 18 F3)
 # ---------------------------------------------------------------------------
 

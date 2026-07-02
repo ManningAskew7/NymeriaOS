@@ -148,6 +148,8 @@ workflow; changing Nymeria's own codebase is a separate, admin-only path.
   exposed as a server -> `mcp-management`.
 - You have solved a repeating workflow and want to save the tools plus
   instructions -> `skill-management`.
+- The repeating routine should run as saved CODE, unattended and multi-step
+  (poll something, chain tools, approval checkpoints) -> `workflow-authoring`.
 - A tool needs an API key, OAuth login, or other credential -> `credential-management`.
 - The user wants a persistent, re-invocable specialist (not just a tool) ->
   `callable-thread-builder`.
