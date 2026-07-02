@@ -884,6 +884,10 @@ class NymeriaTelegramBot:
         command("todo_complete", self._cmd_todo_complete)
         command("todo_delete", self._cmd_todo_delete)
 
+        # Lifecycle-hook commands (single /hook token; subcommands ride as args
+        # and the backend longest-prefix path match routes them).
+        command("hook", self._cmd_hook)
+
         # Config commands
         command("config_show", self._cmd_config_show)
         command("config_get", self._cmd_config_get)
@@ -2188,6 +2192,20 @@ class NymeriaTelegramBot:
             return
 
         await self._send_backend_command(update, context, "todos delete")
+
+    # =========================================================================
+    # Lifecycle-hook Commands
+    # =========================================================================
+
+    async def _cmd_hook(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /hook [list|create|show|edit|enable|disable|delete|test ...].
+
+        A single ``/hook`` token: the subcommand and its flags arrive as args and
+        the backend command dispatcher does the longest-prefix path match, so the
+        whole flag grammar (``--event``/``--action``/``--cond``/``--set`` ...) is
+        authorable from a Telegram DM exactly as on the CLI.
+        """
+        await self._send_backend_command(update, context, "hook")
 
     # =========================================================================
     # Config Commands

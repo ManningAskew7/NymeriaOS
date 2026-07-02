@@ -75,7 +75,10 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
 - **Slash command** `/hook` (`core/command_service.py`, catalog in `core/registry_defaults.py`):
   `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test`, reaching
   the same store through `POST /commands/execute` (so it works in the desktop/mobile command
-  bar, the terminal CLI, and any chat bot wired to forward it). A deterministic authoring
+  bar, the terminal CLI, and any chat bot wired to forward it: Telegram forwards the raw
+  `/hook ...` line verbatim, Discord's `hook` slash-command group assembles the flag grammar
+  from typed UI fields; the other native/webhook bots do not yet forward any backend command,
+  tracked as backlog #73). A deterministic authoring
   path that does not depend on the model calling the tool. The grammar is flag-based (a
   single line, so it round-trips through chat surfaces): `/hook create <name> --event E
   --action A [--text ..|--url ..|--cond "field op value"..|--reason ..|--set arg=value..]

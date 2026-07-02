@@ -8,6 +8,7 @@ from typing import Any, Optional
 from nymeria.triggers.discord_bot import NymeriaDiscordBot
 from nymeria.triggers.discord_cogs.chat import ChatCog
 from nymeria.triggers.discord_cogs.config import ConfigCog
+from nymeria.triggers.discord_cogs.hooks import HooksCog
 from nymeria.triggers.discord_cogs.info import InfoCog
 from nymeria.triggers.discord_cogs.memory import MemoryCog
 from nymeria.triggers.discord_cogs.todos import TodosCog
@@ -365,3 +366,185 @@ def test_help_merges_backend_catalog_with_discord_local_commands_without_duplica
     assert "`/tools core` - Show core tools." in help_text
     assert "`/tools search <query>` - Search tools by name, category, or description." in help_text
     assert help_text.count("`/compact`") == 1
+
+
+class _Choice:
+    """Stand-in for app_commands.Choice (only .value is read by the cog)."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+
+def test_hook_create_assembles_and_quotes_the_flag_line():
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = HooksCog(bot)
+
+    async def run() -> None:
+        await HooksCog.cmd_hook_create.callback(
+            cog,
+            interaction,
+            "Guard rm",
+            _Choice("pre_tool_use"),
+            _Choice("block_if_matches"),
+            matcher="bash",
+            condition="command contains rm -rf",
+            reason="No destructive deletes",
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == (
+        "/hook create 'Guard rm' --event pre_tool_use --action block_if_matches "
+        "--matcher bash --cond 'command contains rm -rf' "
+        "--reason 'No destructive deletes'"
+    )
+    assert api.command_calls[0]["surface"] == "discord"
+
+
+def test_hook_create_flag_line_round_trips_through_the_backend_parser():
+    """The quoted line the cog emits must re-tokenize to the intended fields."""
+    from nymeria.core.command_service import (
+        _parse_hook_flags,
+        _split_args,
+        _split_rest_after_tokens,
+    )
+
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = HooksCog(bot)
+
+    async def run() -> None:
+        await HooksCog.cmd_hook_create.callback(
+            cog,
+            interaction,
+            "Guard rm",
+            _Choice("pre_tool_use"),
+            _Choice("block_if_matches"),
+            matcher="bash",
+            condition="command contains rm -rf",
+            reason="No destructive deletes",
+        )
+
+    asyncio.run(run())
+
+    command_text = api.command_calls[0]["command"]
+    # Strip the two path tokens ("hook create") the dispatcher would consume.
+    rest = _split_rest_after_tokens(command_text, 2)
+    parsed, error = _parse_hook_flags(_split_args(rest))
+    assert error == ""
+    assert parsed["name"] == "Guard rm"
+    assert parsed["event"] == "pre_tool_use"
+    assert parsed["action"] == "block_if_matches"
+    assert parsed["matcher"] == "bash"
+    assert parsed["conds"] == ["command contains rm -rf"]
+    assert parsed["reason"] == "No destructive deletes"
+
+
+def test_hook_list_maps_scope_and_enabled_only_to_flags():
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = HooksCog(bot)
+
+    async def run() -> None:
+        await HooksCog.cmd_hook_list.callback(
+            cog, interaction, _Choice("global"), True
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == "/hook list --global --enabled-only"
+
+
+def test_hook_edit_assembles_key_values_and_repeatable_flags():
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = HooksCog(bot)
+
+    async def run() -> None:
+        await HooksCog.cmd_hook_edit.callback(
+            cog,
+            interaction,
+            "abc12345",
+            name="New Name",
+            enabled=False,
+            action=_Choice("notify"),
+            text="hello world",
+            condition="tool_name equals bash",
+        )
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == (
+        "/hook edit abc12345 name='New Name' enabled=false action=notify "
+        "text='hello world' --cond 'tool_name equals bash'"
+    )
+
+
+def test_hook_edit_flag_line_round_trips_values_with_equals_and_quote_characters():
+    """An edit value containing '=' or quote chars must survive shlex + partition("=").
+
+    The backend's edit grammar treats any non---cond/--set token containing '='
+    as a scalar key=value pair, split on the FIRST '=' (partition). The cog only
+    shlex.quotes the VALUE half of key=value, so this locks that the quoting
+    still produces one shlex token whose value, after partition("="), is exactly
+    what the user typed, with no leaked quote characters and no `=`
+    mis-splitting (e.g. a value of "a=b" must not be truncated to "a").
+    """
+    from nymeria.core.command_service import (
+        _consume_all,
+        _consume_flag,
+        _split_args,
+        _split_rest_after_tokens,
+    )
+
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = HooksCog(bot)
+
+    async def run() -> None:
+        await HooksCog.cmd_hook_edit.callback(
+            cog,
+            interaction,
+            "abc12345",
+            text="a=b and it's \"quoted\"",
+        )
+
+    asyncio.run(run())
+
+    command_text = api.command_calls[0]["command"]
+    # Strip "hook edit" (2 path tokens) and the hook-id positional (1 more).
+    rest = _split_rest_after_tokens(command_text, 2)
+    args = _split_args(rest)
+    assert args[0] == "abc12345"
+    rest_args = args[1:]
+    # Mirror _cmd_hook_edit's own parsing exactly (command_service.py).
+    _conds_raw, rest_args, e1 = _consume_all(rest_args, "--cond")
+    _sets_raw, rest_args, e2 = _consume_all(rest_args, "--set")
+    _case_sensitive, rest_args = _consume_flag(rest_args, "--case-sensitive")
+    assert not (e1 or e2)
+    kv: dict[str, str] = {}
+    for token in rest_args:
+        assert "=" in token
+        key, _, value = token.partition("=")
+        kv[key.strip().lower()] = value
+    assert kv["text"] == "a=b and it's \"quoted\""
+
+
+def test_hook_delete_forwards_confirmation_flag():
+    api = _FakeAPI()
+    bot = _bot(api)
+    interaction = _FakeInteraction()
+    cog = HooksCog(bot)
+
+    async def run() -> None:
+        await HooksCog.cmd_hook_delete.callback(cog, interaction, "abc12345")
+
+    asyncio.run(run())
+
+    assert api.command_calls[0]["command"] == "/hook delete abc12345 --yes"
