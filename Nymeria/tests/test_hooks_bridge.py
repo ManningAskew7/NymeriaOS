@@ -186,3 +186,25 @@ def test_webhook_registers_observe_and_passes_params():
         HookEvent.POST_TOOL_USE, _ctx(HookEvent.POST_TOOL_USE, tool_name="Edit"), observe=True
     )
     assert len(regs) == 1
+
+
+# --- Pass 4: execution-recorder threading -------------------------------------
+
+def test_build_registry_threads_definition_id_and_recorder():
+    calls = []
+
+    def recorder(reg, ctx, **kw):
+        calls.append(reg)
+
+    registry = build_registry(
+        [_defn("abc12345", "done", "hi", name="my hook")], recorder=recorder
+    )
+    assert registry.recorder is recorder
+    regs = registry.matching(HookEvent.DONE, _ctx(HookEvent.DONE))
+    assert len(regs) == 1
+    assert regs[0].definition_id == "abc12345"
+
+
+def test_build_registry_defaults_to_no_recorder():
+    registry = build_registry([_defn("a", "done", "hi")])
+    assert registry.recorder is None

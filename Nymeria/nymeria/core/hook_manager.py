@@ -22,14 +22,16 @@ import json
 import logging
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union
+from typing import Annotated, Dict, List, Literal, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from .conditions import HookCondition
+from .hook_spec import TOOL_EVENTS, event_actions, text_actions
 from .keyed_locks import KeyedRLockMap
 from .storage_paths import safe_path_segment
 from .time_utils import ensure_aware_utc, utc_now
@@ -39,23 +41,30 @@ logger = logging.getLogger(__name__)
 # Thread-safe locks keyed by user_id.
 _hook_locks = KeyedRLockMap()
 
-# The events an action may attach to, and the actions legal for each. Mirrors
-# ``core/hooks/base.py`` EVENT_OUTCOME_TYPES: adding an action or event is a
-# local edit here. ``pre_tool_use`` carries the mutate-plane guardrail actions
-# (deny/rewrite); the observe-plane actions (notify/create_todo/webhook) land in
-# a later slice on the post_tool_use/done events.
+# Execution-log cap per user (matches the trigger execution log).
+MAX_HOOK_EXECUTION_LOG = 200
+
+# Single-worker write-behind executor for the execution log. Hooks fire at
+# per-tool-call frequency (a PRE guardrail runs inside every tool call), so the
+# in-band cost of recording must be a list append + submit, never file I/O; the
+# worker drains a user's pending entries in one coalesced read-modify-write.
+# One worker also serializes every log-file write (flush, read-barrier, purge),
+# so there is no multi-writer race on the file.
+_log_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hook-exec-log")
+
+# The events an action may attach to, and the actions legal for each, both
+# derived from the ``core/hook_spec.py`` single source (which mirrors
+# ``core/hooks/base.py`` EVENT_OUTCOME_TYPES; ``tests/test_hook_spec.py`` pins
+# the lockstep). ``pre_tool_use`` carries the mutate-plane guardrail actions
+# (deny/rewrite); the observe-plane actions (notify/create_todo/webhook) attach
+# to the "after something happened" events (post_tool_use/done).
 HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
-EVENT_ACTIONS: Dict[str, set] = {
-    "prompt_submit": {"inject_context"},
-    "pre_tool_use": {"block_if_matches", "rewrite_arg"},
-    "post_tool_use": {"inject_context", "notify", "create_todo", "webhook"},
-    "done": {"inject_context", "notify", "create_todo", "webhook"},
-}
+EVENT_ACTIONS: Dict[str, set] = event_actions()
 
 # Actions whose sole logic config is a single ``text`` field (a bare ``text`` is
 # a convenience alias for ``params={"text": ...}``). Shared by every authoring
 # surface via ``params_from_fields``.
-TEXT_ACTIONS = ("inject_context", "notify", "create_todo")
+TEXT_ACTIONS = text_actions()
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +230,7 @@ class HookDefinition(BaseModel):
         # A matcher (tool-name filter) only makes sense on a tool event; on any
         # other event a set matcher would silently never match (no tool_name),
         # disabling the hook.
-        if self.event not in ("pre_tool_use", "post_tool_use") and self.matcher:
+        if self.event not in TOOL_EVENTS and self.matcher:
             self.matcher = None
         return self
 
@@ -327,6 +336,67 @@ class HookStore(BaseModel):
         return None
 
 
+class HookExecution(BaseModel):
+    """One hook run, recorded for the per-user diagnostic log.
+
+    Mirrors ``TriggerExecution``: this is what lets a user tell "fired and did
+    nothing" (a ``no_op`` entry) apart from "never fired" (no entry), and a
+    guardrail's spurious fail-closed deny (``saturated``/``timeout``/``error``)
+    apart from a deliberate one (``ok`` with a deny detail).
+    """
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    hook_id: str = ""
+    hook_name: str = ""
+    event: str = ""
+    plane: Literal["mutate", "observe", ""] = ""
+    status: Literal["ok", "no_op", "error", "timeout", "saturated", "illegal"] = "ok"
+    detail: str = ""  # outcome/error summary, capped by the recorder
+    duration_seconds: float = 0.0
+    thread_id: str = ""
+    tool_name: str = ""
+    timestamp: datetime = Field(default_factory=utc_now)
+
+    @field_validator("timestamp")
+    @classmethod
+    def _timestamp_as_utc(cls, value: datetime) -> datetime:
+        return ensure_aware_utc(value)
+
+
+def make_execution_recorder(manager: "HookManager", user_id: str):
+    """Build the engine-side recorder callable bound to a user's execution log.
+
+    The engine calls it as ``recorder(reg, ctx, status=..., detail=...,
+    duration=...)`` after each hook run. ``reg``/``ctx`` are duck-typed (this
+    module keeps its no-engine-imports rule): ``reg`` carries
+    ``definition_id``/``name``/``observe``, ``ctx`` carries the event and turn
+    fields. Recording never raises into a turn.
+    """
+
+    def _recorder(reg, ctx, *, status: str, detail: str, duration: float) -> None:
+        try:
+            event = getattr(ctx, "event", None)
+            event_name = getattr(event, "value", None) or str(event or "")
+            manager.log_execution(
+                user_id,
+                HookExecution(
+                    hook_id=getattr(reg, "definition_id", None) or "",
+                    hook_name=getattr(reg, "name", "") or "",
+                    event=event_name,
+                    plane="observe" if getattr(reg, "observe", False) else "mutate",
+                    status=status,  # type: ignore[arg-type] - validated by pydantic
+                    detail=(detail or "")[:300],
+                    duration_seconds=round(float(duration), 4),
+                    thread_id=getattr(ctx, "thread_id", "") or "",
+                    tool_name=getattr(ctx, "tool_name", None) or "",
+                ),
+            )
+        except Exception:  # noqa: BLE001 - recording must never raise into a turn
+            logger.warning("hook execution recording failed", exc_info=True)
+
+    return _recorder
+
+
 # ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
@@ -339,6 +409,9 @@ class HookManager:
         self.hooks_dir.mkdir(parents=True, exist_ok=True)
         # mtime-keyed read cache for the hot per-turn path: (mtime_ns, hooks).
         self._read_cache: Dict[str, Tuple[int, List[HookDefinition]]] = {}
+        # Write-behind execution-log buffer (drained by the shared log executor).
+        self._pending_executions: Dict[str, List[HookExecution]] = {}
+        self._pending_lock = threading.Lock()
         logger.info("HookManager initialized: %s", self.hooks_dir)
 
     # -- locking ----------------------------------------------------------
@@ -376,16 +449,50 @@ class HookManager:
     def _path_for(self, user_id: str) -> Path:
         return self.hooks_dir / f"{safe_path_segment(user_id)}.json"
 
+    @staticmethod
+    def _quarantine_corrupt(path: Path) -> Optional[Path]:
+        """Move an unparseable store file aside so its bytes survive.
+
+        Without this, the load falls back to an empty store and the next save
+        overwrites the original file: a user's whole hook set silently vanishes.
+        Returns the quarantine path, or ``None`` if the rename failed (which
+        degrades to the old replace-with-empty behavior; loading still never
+        raises into a turn).
+        """
+        try:
+            stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
+            target = path.with_name(
+                f"{path.stem}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}.json"
+            )
+            path.rename(target)
+            return target
+        except OSError:
+            return None
+
     def _load(self, user_id: str) -> HookStore:
         path = self._path_for(user_id)
-        if path.exists():
+        # Read + parse + quarantine run under the per-user lock (an RLock, so
+        # locked callers like atomic_update re-enter freely). Unlocked readers
+        # (get_hooks / get_hook) would otherwise race a concurrent locked
+        # write: parse a stale corrupt file, lose to a repairing _save, then
+        # quarantine-rename the freshly written valid store aside.
+        with self._get_lock(user_id):
+            if not path.exists():
+                return HookStore(user_id=user_id)
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 return HookStore.model_validate(data)
             except Exception as e:  # noqa: BLE001 - never let a bad file break a turn
-                logger.error("Failed to load hooks for %s: %s", user_id, e)
+                quarantine = self._quarantine_corrupt(path)
+                logger.error(
+                    "Failed to load hooks for %s: %s (%s)",
+                    user_id,
+                    e,
+                    f"corrupt file preserved at {quarantine}"
+                    if quarantine
+                    else "quarantine rename failed; file left in place",
+                )
                 return HookStore(user_id=user_id)
-        return HookStore(user_id=user_id)
 
     def _save(self, store: HookStore) -> bool:
         path = self._path_for(store.user_id)
@@ -495,11 +602,14 @@ class HookManager:
         return True
 
     def delete_hook(self, user_id: str, hook_id: str) -> bool:
-        """Remove a hook permanently."""
+        """Remove a hook permanently (and its execution-log entries)."""
         with self.atomic_update(user_id) as store:
             before = len(store.hooks)
             store.hooks = [h for h in store.hooks if h.id != hook_id]
-            return len(store.hooks) < before
+            deleted = len(store.hooks) < before
+        if deleted:
+            self.delete_executions_for_hooks(user_id, [hook_id])
+        return deleted
 
     def delete_hooks_for_thread(self, user_id: str, thread_id: str) -> List[str]:
         """Remove all thread-scoped hooks bound to ``thread_id``. Returns deleted IDs."""
@@ -514,7 +624,9 @@ class HookManager:
                 ]
                 if not self._save(store):
                     raise RuntimeError(f"Failed to save hook cleanup for user {user_id}")
-            return deleted
+        if deleted:
+            self.delete_executions_for_hooks(user_id, deleted)
+        return deleted
 
     def get_hooks(self, user_id: str) -> List[HookDefinition]:
         """All hooks for a user (fresh read, for authoring/listing)."""
@@ -543,3 +655,133 @@ class HookManager:
             hooks = list(self._load(user_id).hooks)
             self._read_cache[user_id] = (mtime, hooks)
             return hooks
+
+    # -- execution log (write-behind) ---------------------------------------
+
+    def _executions_path(self, user_id: str) -> Path:
+        return self.hooks_dir / f"{safe_path_segment(user_id)}_executions.json"
+
+    def log_execution(self, user_id: str, execution: HookExecution) -> None:
+        """Queue an execution record (write-behind; no file I/O in-band).
+
+        Appends to the in-memory buffer and schedules a coalescing flush on the
+        shared single-worker executor. Never raises and never blocks beyond the
+        buffer append: this runs inside dispatch, including the PRE mutate path
+        that sits inside every tool call.
+        """
+        try:
+            with self._pending_lock:
+                self._pending_executions.setdefault(user_id, []).append(execution)
+            _log_executor.submit(self._flush_executions, user_id)
+        except Exception as e:  # noqa: BLE001 - recording must never raise
+            logger.warning("Failed to queue hook execution entry: %s", e)
+
+    def _flush_executions(self, user_id: str) -> None:
+        """Drain a user's pending entries into the log file (executor-only).
+
+        Runs only on the single log-executor worker, which serializes every
+        write to the file; a burst of firings coalesces into one
+        read-modify-write because the first flush drains everything pending.
+        """
+        try:
+            with self._pending_lock:
+                pending = self._pending_executions.pop(user_id, [])
+            if not pending:
+                return  # an earlier coalesced flush already drained us
+            path = self._executions_path(user_id)
+            entries: list = []
+            if path.exists():
+                try:
+                    loaded = json.loads(path.read_text(encoding="utf-8"))
+                    entries = loaded if isinstance(loaded, list) else []
+                except (OSError, ValueError):
+                    # A corrupt log file must not wedge logging forever (every
+                    # flush would raise and drop its drained batch): reset it.
+                    logger.warning(
+                        "hook execution log for %s unreadable; resetting it", user_id
+                    )
+            entries.extend(e.model_dump(mode="json") for e in pending)
+            if len(entries) > MAX_HOOK_EXECUTION_LOG:
+                entries = entries[-MAX_HOOK_EXECUTION_LOG:]
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps(entries, default=str), encoding="utf-8")
+            temp.replace(path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to flush hook executions for %s: %s", user_id, e)
+
+    def flush_execution_log(self, user_id: str, timeout: float = 5.0) -> None:
+        """Synchronously drain a user's pending entries (read barrier / tests)."""
+        try:
+            _log_executor.submit(self._flush_executions, user_id).result(timeout=timeout)
+        except Exception:  # noqa: BLE001 - a stuck flush must not break callers
+            logger.warning("hook execution log flush barrier failed", exc_info=True)
+
+    def get_executions(
+        self,
+        user_id: str,
+        hook_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[dict]:
+        """Read execution history, newest first, optionally for one hook."""
+        self.flush_execution_log(user_id)
+        path = self._executions_path(user_id)
+        if not path.exists():
+            return []
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, list):
+                return []
+            entries = loaded
+            if hook_id:
+                entries = [
+                    e for e in entries
+                    if isinstance(e, dict) and e.get("hook_id") == hook_id
+                ]
+            return list(reversed(entries[-max(1, limit):]))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to read hook executions for %s: %s", user_id, e)
+            return []
+
+    def delete_executions_for_hooks(self, user_id: str, hook_ids: List[str]) -> int:
+        """Remove log entries for deleted hooks. Returns the removed file count."""
+        if not hook_ids:
+            return 0
+        try:
+            future = _log_executor.submit(
+                self._purge_executions, user_id, set(hook_ids)
+            )
+            return future.result(timeout=5.0)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to purge hook executions for %s: %s", user_id, e)
+            return 0
+
+    def _purge_executions(self, user_id: str, hook_ids: Set[str]) -> int:
+        """Drop pending + persisted entries for ``hook_ids`` (executor-only)."""
+        with self._pending_lock:
+            pending = self._pending_executions.get(user_id)
+            if pending:
+                self._pending_executions[user_id] = [
+                    e for e in pending if e.hook_id not in hook_ids
+                ]
+        path = self._executions_path(user_id)
+        if not path.exists():
+            return 0
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.warning(
+                "hook execution log for %s unreadable; skipping purge", user_id
+            )
+            return 0
+        if not isinstance(loaded, list):
+            return 0
+        kept = [
+            e for e in loaded
+            if not (isinstance(e, dict) and e.get("hook_id") in hook_ids)
+        ]
+        removed = len(loaded) - len(kept)
+        if removed:
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps(kept, default=str), encoding="utf-8")
+            temp.replace(path)
+        return removed

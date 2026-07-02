@@ -3621,9 +3621,12 @@ Authorization: Bearer <token>
 ```
 
 `PATCH` accepts any subset of `name`, `event`, `action`, `matcher`, `enabled`,
-`scope`, and the per-action logic fields (`text` / `conditions` / `reason` /
-`updates`); the logic is rebuilt and re-validated on save. `DELETE` returns
-`204`. All return `404` if the hook does not exist for the authenticated user.
+and the per-action logic fields (`text` / `conditions` / `reason` / `updates` /
+`url`); the logic is rebuilt and re-validated on save. `scope`/`thread_id` are
+deliberately not patchable (every authoring surface enforces this): a re-scope
+needs a thread binding and its access gate, so it is a delete + create.
+`DELETE` returns `204` and purges the hook's execution-log entries. All return
+`404` if the hook does not exist for the authenticated user.
 
 ### Test Hook (Dry Run)
 
@@ -3635,6 +3638,40 @@ Authorization: Bearer <token>
 Previews the hook against sample event data without firing: `inject_context`
 renders its template, the guardrail actions describe what they would do. Returns
 `{"hook_id", "event", "action", "rendered"}`.
+
+### Hook Executions
+
+```http
+GET /hooks/executions?hook_id=<optional>&limit=50
+Authorization: Bearer <token>
+```
+
+Recent hook executions, newest first (bounded per-user log, cap 200, written
+behind the turn so recording adds no in-band latency). Each entry:
+`{id, hook_id, hook_name, event, plane, status, detail, duration_seconds,
+thread_id, tool_name, timestamp}`. `status` is `ok` (ran, produced an outcome
+or side effect; `detail` summarizes it, e.g. `deny: <reason>` or
+`inject 84 chars`), `no_op` (ran, produced nothing), `error`, `timeout`
+(execution overran the per-hook budget), `saturated` (never got a dispatch
+worker), or `illegal` (returned the wrong outcome type; dropped). On
+`pre_tool_use` an `error`/`timeout`/`saturated` run also denied the tool call
+(the fail-closed policy). Observe-plane runs record `ok` on success, never
+`no_op` (their return values are ignored). A hook with no entries never fired.
+Also surfaced as `/hook log [id] [--limit N]` and `hook_info(action="log")`.
+
+### Authoring Schema
+
+```http
+GET /hooks/schema
+Authorization: Bearer <token>
+```
+
+The machine-readable authoring taxonomy, derived from the backend single
+source (`core/hook_spec.py`): per-event legal actions and tool-event flag,
+per-action plane/events/`text_action` plus `params_schema` (the action's JSON
+schema minus the `action` discriminator), the condition `operators`, and
+`max_hooks`. Clients can render authoring forms from this instead of
+hardcoding the legality map.
 
 ### Enable model
 

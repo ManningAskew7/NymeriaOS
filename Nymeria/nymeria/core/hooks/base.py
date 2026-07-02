@@ -9,9 +9,11 @@ object. Reads of cross-event scratch state arrive as a read-only snapshot on the
 context; writes go back as ``scratch_patch`` on the outcome (see
 ``core/hooks/scratch.py``).
 
-Design doc: ``docs/private/plans/lifecycle-hooks.md``. This is the "spine" pass:
-the machinery only, wired to in-process fixtures. No persisted records, authoring
-surface, canned actions, presets, or enable model yet.
+Design doc: ``docs/private/plans/lifecycle-hooks.md``. This contract carries the
+whole product surface: persisted ``HookDefinition`` records (``core/hook_manager``),
+the canned actions (``actions.py``), the store->registry bridge (``bridge.py``),
+and the enable model (``core/agent_safety``) all sit on top of it unchanged. The
+``nym`` workflow substrate is the remaining deferred consumer.
 """
 
 from __future__ import annotations

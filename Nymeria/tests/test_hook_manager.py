@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 
 import pytest
 from pydantic import ValidationError
 
 from nymeria.core.hook_manager import (
+    MAX_HOOK_EXECUTION_LOG,
     BlockIfMatchesLogic,
     CreateTodoLogic,
     HookDefinition,
+    HookExecution,
     HookManager,
     HookStore,
     InjectContextLogic,
@@ -18,6 +22,7 @@ from nymeria.core.hook_manager import (
     RewriteArgLogic,
     WebhookLogic,
     build_logic,
+    make_execution_recorder,
 )
 
 
@@ -167,6 +172,58 @@ def test_load_never_raises_on_corrupt_file(manager, tmp_path):
     path.write_text("{ this is not json", encoding="utf-8")
     # A bad file must not raise; it degrades to an empty store.
     assert manager.get_hooks("u1") == []
+
+
+def test_corrupt_file_is_quarantined_not_destroyed(manager, tmp_path):
+    path = manager._path_for("u1")
+    corrupt_bytes = "{ this is not json"
+    path.write_text(corrupt_bytes, encoding="utf-8")
+    assert manager.get_hooks("u1") == []
+    # The original bytes survive under a quarantine name for manual recovery.
+    quarantined = list(path.parent.glob(f"{path.stem}.corrupt-*.json"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == corrupt_bytes
+    assert not path.exists()
+
+
+def test_save_after_corrupt_load_does_not_clobber_quarantine(manager, tmp_path):
+    path = manager._path_for("u1")
+    corrupt_bytes = '{"hooks": "not a list"'
+    path.write_text(corrupt_bytes, encoding="utf-8")
+    # A write after the corrupt load lands in a fresh store file; the
+    # quarantined original keeps its bytes.
+    h = manager.add_hook("u1", name="n", event="done", text="fresh")
+    assert manager.get_hook("u1", h.id) is not None
+    quarantined = list(path.parent.glob(f"{path.stem}.corrupt-*.json"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == corrupt_bytes
+
+
+def test_corrupt_load_waits_for_user_lock(manager):
+    """Quarantine serializes on the per-user lock: it cannot race a locked writer.
+
+    Without the lock in _load, an unlocked reader (get_hooks) could parse a
+    stale corrupt file while a locked writer repairs it, then quarantine-rename
+    the freshly written valid store aside.
+    """
+    path = manager._path_for("u1")
+    path.write_text("{ not json", encoding="utf-8")
+    results: list = []
+    reader = threading.Thread(target=lambda: results.append(manager.get_hooks("u1")))
+    lock = manager._get_lock("u1")
+    lock.acquire()
+    try:
+        reader.start()
+        time.sleep(0.2)
+        # The reader is blocked on the lock: no quarantine has happened yet.
+        assert path.exists()
+        assert not list(path.parent.glob(f"{path.stem}.corrupt-*.json"))
+    finally:
+        lock.release()
+    reader.join(timeout=5)
+    assert results == [[]]
+    assert not path.exists()
+    assert len(list(path.parent.glob(f"{path.stem}.corrupt-*.json"))) == 1
 
 
 def test_mtime_cache_refreshes_on_write(manager):
@@ -337,3 +394,96 @@ def manager_add(event, action, params):
     from pathlib import Path
     m = HookManager(Path(tempfile.mkdtemp()))
     return m.add_hook("u", name="n", event=event, action=action, params=params)
+
+
+# --- execution log (write-behind) --------------------------------------------
+
+def _exec(hook_id="h1", **kw):
+    base = dict(hook_id=hook_id, hook_name="n", event="done", plane="mutate", status="ok")
+    base.update(kw)
+    return HookExecution(**base)
+
+
+def test_execution_log_round_trip_newest_first(manager):
+    manager.log_execution("u1", _exec(detail="first"))
+    manager.log_execution("u1", _exec(detail="second"))
+    entries = manager.get_executions("u1")
+    assert [e["detail"] for e in entries] == ["second", "first"]
+    e = entries[0]
+    assert e["hook_id"] == "h1"
+    assert e["event"] == "done"
+    assert e["plane"] == "mutate"
+    assert e["status"] == "ok"
+
+
+def test_execution_log_filter_by_hook_and_limit(manager):
+    for i in range(5):
+        manager.log_execution("u1", _exec(hook_id="a", detail=f"a{i}"))
+        manager.log_execution("u1", _exec(hook_id="b", detail=f"b{i}"))
+    only_a = manager.get_executions("u1", hook_id="a")
+    assert {e["hook_id"] for e in only_a} == {"a"}
+    assert len(only_a) == 5
+    limited = manager.get_executions("u1", limit=3)
+    assert len(limited) == 3
+    assert limited[0]["detail"] == "b4"  # newest first
+
+
+def test_execution_log_caps_entries(manager):
+    for i in range(MAX_HOOK_EXECUTION_LOG + 25):
+        manager.log_execution("u1", _exec(detail=str(i)))
+    manager.flush_execution_log("u1")
+    entries = manager.get_executions("u1", limit=MAX_HOOK_EXECUTION_LOG + 25)
+    assert len(entries) == MAX_HOOK_EXECUTION_LOG
+    # The oldest entries were dropped, the newest kept.
+    assert entries[0]["detail"] == str(MAX_HOOK_EXECUTION_LOG + 24)
+
+
+def test_execution_log_purged_on_hook_delete(manager):
+    h = manager.add_hook("u1", name="n", event="done", text="x")
+    manager.log_execution("u1", _exec(hook_id=h.id))
+    manager.log_execution("u1", _exec(hook_id="other"))
+    assert manager.delete_hook("u1", h.id) is True
+    assert manager.get_executions("u1", hook_id=h.id) == []
+    # Unrelated entries survive.
+    assert len(manager.get_executions("u1")) == 1
+
+
+def test_execution_log_purged_on_thread_delete(manager):
+    h = manager.add_hook("u1", name="n", event="done", text="x", thread_id="t9")
+    manager.log_execution("u1", _exec(hook_id=h.id))
+    deleted = manager.delete_hooks_for_thread("u1", "t9")
+    assert deleted == [h.id]
+    assert manager.get_executions("u1", hook_id=h.id) == []
+
+
+def test_make_execution_recorder_duck_types_engine_objects(manager):
+    from types import SimpleNamespace
+
+    recorder = make_execution_recorder(manager, "u1")
+    reg = SimpleNamespace(definition_id="abcd1234", name="guard", observe=False)
+    ctx = SimpleNamespace(
+        event=SimpleNamespace(value="pre_tool_use"),
+        thread_id="t1",
+        tool_name="bash",
+    )
+    recorder(reg, ctx, status="ok", detail="deny: nope", duration=0.0123)
+    entries = manager.get_executions("u1")
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["hook_id"] == "abcd1234"
+    assert e["hook_name"] == "guard"
+    assert e["event"] == "pre_tool_use"
+    assert e["plane"] == "mutate"
+    assert e["tool_name"] == "bash"
+    assert e["detail"] == "deny: nope"
+
+
+def test_make_execution_recorder_never_raises(manager):
+    from types import SimpleNamespace
+
+    recorder = make_execution_recorder(manager, "u1")
+    reg = SimpleNamespace(definition_id="x", name="n", observe=False)
+    ctx = SimpleNamespace(event=None, thread_id="t", tool_name=None)
+    # An invalid status fails pydantic validation; the recorder swallows it.
+    recorder(reg, ctx, status="bogus-status", detail="", duration=0.0)
+    assert manager.get_executions("u1") == []

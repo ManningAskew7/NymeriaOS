@@ -14,7 +14,7 @@ Definitions are duck-typed: each needs ``event`` (str), ``matcher``, a
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from .actions import ACTION_PLANES, ACTIONS
 from .base import HookContext, HookEvent, HookOutcome
@@ -46,13 +46,20 @@ def _make_action_fn(definition):
     return _fn
 
 
-def build_registry(definitions: Iterable) -> HookRegistry:
+def build_registry(
+    definitions: Iterable,
+    recorder: Optional[Callable[..., None]] = None,
+) -> HookRegistry:
     """Build a fresh registry registering one hook per definition.
 
     Each hook lands on its action's plane (``ACTION_PLANES``): mutate-plane
     actions return an in-band outcome; observe-plane actions run fire-and-forget.
+    ``recorder`` (usually ``hook_manager.make_execution_recorder``) is attached
+    to the registry so dispatch reports each run to the per-user execution log;
+    None records nothing.
     """
     registry = HookRegistry()
+    registry.recorder = recorder
     for definition in definitions:
         try:
             event = HookEvent(definition.event)
@@ -72,5 +79,6 @@ def build_registry(definitions: Iterable) -> HookRegistry:
             matcher=definition.matcher,
             name=definition.name or definition.id,
             observe=observe,
+            definition_id=definition.id,
         )
     return registry

@@ -363,3 +363,41 @@ def test_edit_no_updates(manager: HookManager) -> None:
     result = _run(f"/hook edit {hook.id}")
     assert result.success is False
     assert "No updates" in result.markdown
+
+
+# --- /hook log ---------------------------------------------------------------
+
+def test_hook_log_empty(manager: HookManager) -> None:
+    result = _run("/hook log")
+    assert result.success is True
+    assert "No hook executions" in result.markdown
+
+
+def test_hook_log_lists_and_filters(manager: HookManager) -> None:
+    from nymeria.core.hook_manager import HookExecution
+
+    hook = manager.add_hook("alice", name="Guard", event="pre_tool_use",
+                            action="block_if_matches", params={"conditions": []})
+    assert hook is not None
+    manager.log_execution("alice", HookExecution(
+        hook_id=hook.id, hook_name="Guard", event="pre_tool_use", plane="mutate",
+        status="ok", detail="deny: nope", tool_name="bash",
+    ))
+    manager.log_execution("alice", HookExecution(
+        hook_id="deadbeef", hook_name="Other", event="done", plane="observe", status="no_op",
+    ))
+    result = _run("/hook log")
+    assert result.success is True
+    assert "Hook executions: 2" in result.markdown
+    assert "deny: nope" in result.markdown
+    # Filter by (prefix-resolved) hook id.
+    result = _run(f"/hook log {hook.id[:4]}")
+    assert result.success is True
+    assert hook.id in result.markdown
+    assert "deadbeef" not in result.markdown
+
+
+def test_hook_log_unknown_prefix(manager: HookManager) -> None:
+    result = _run("/hook log zzzz")
+    assert result.success is False
+    assert "No hook matching" in result.markdown

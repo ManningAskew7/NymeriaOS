@@ -26,7 +26,7 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
-from ..core.hook_manager import EVENT_ACTIONS, HookDefinition, HookManager
+from ..core.hook_manager import EVENT_ACTIONS, TEXT_ACTIONS, HookDefinition, HookManager
 from ..core.text_format import safe_format
 from .utils import get_thread_id, get_user_id
 
@@ -38,8 +38,9 @@ _EVENTS = tuple(EVENT_ACTIONS.keys())
 
 # Actions whose sole config is a single `text` field (a bare `text` arg is
 # accepted as a convenience alias for `params={"text": ...}`). The rest need a
-# structured `params` dict (conditions/updates/url).
-_TEXT_ACTIONS = ("inject_context", "notify", "create_todo")
+# structured `params` dict (conditions/updates/url). Derived from the
+# core/hook_spec.py taxonomy via the store.
+_TEXT_ACTIONS = TEXT_ACTIONS
 
 # Representative sample values for the ``test`` dry-run render, per event.
 _SAMPLE_VARS = {
@@ -116,18 +117,17 @@ def _hook_create(
     # Bind to the actual current thread (including 'default', which is a real
     # thread in single-thread deployments) when thread-scoped.
     thread_id = get_thread_id(config) if scope_value == "thread" else ""
-    # ``text`` is a convenience alias for the text actions; explicit ``params``
-    # wins when both are given.
-    effective_params = dict(params) if params else None
-    if effective_params is None and text is not None:
-        effective_params = {"text": text}
     try:
         hook = manager.add_hook(
             user_id,
             name=name,
             event=event,
             action=action,
-            params=effective_params,
+            # ``text`` is the manager-level convenience alias for the text
+            # actions; explicit ``params`` wins when both are given (the manager
+            # only maps ``text`` when ``params`` is None).
+            params=dict(params) if params else None,
+            text=text,
             matcher=matcher,
             scope=scope_value,
             thread_id=thread_id,
@@ -160,6 +160,14 @@ def _hook_update(
 ) -> str:
     user_id = get_user_id(config)
     manager = _get_hook_manager()
+    if scope is not None:
+        # Mirror the REST PATCH / `/hook edit` rule: a re-scope needs a thread
+        # binding (and its access gate), which an update cannot supply without
+        # silently binding to "" (an inert orphan that never fires).
+        return (
+            "[Error]: scope cannot be changed on update. Delete the hook and "
+            "re-create it with the new scope."
+        )
     updates: dict = {}
     if name is not None:
         updates["name"] = name
@@ -175,8 +183,6 @@ def _hook_update(
         updates["matcher"] = matcher or None
     if enabled is not None:
         updates["enabled"] = enabled
-    if scope is not None:
-        updates["scope"] = scope
     if not updates:
         return "[Error]: update requires at least one field to change."
     try:
@@ -295,6 +301,31 @@ def _hook_inspect(*, hook_id: str, action: str, config: RunnableConfig) -> str:
     return render_hook_test(hook)
 
 
+def _hook_log(*, hook_id: Optional[str], limit: int, config: RunnableConfig) -> str:
+    """Recent hook executions (newest first), optionally for one hook.
+
+    An entry with status ``no_op`` means the hook ran and produced nothing; no
+    entry at all means it never fired. ``saturated``/``timeout``/``error`` on a
+    ``pre_tool_use`` hook explain a fail-closed deny.
+    """
+    user_id = get_user_id(config)
+    manager = _get_hook_manager()
+    entries = manager.get_executions(user_id, hook_id=hook_id or None, limit=max(1, limit))
+    if not entries:
+        scope = f" for hook {hook_id}" if hook_id else ""
+        return f"[Info]: No hook executions recorded{scope}."
+    lines = [f"{len(entries)} hook execution(s), newest first:"]
+    for e in entries:
+        ts = str(e.get("timestamp") or "")
+        tool = f" tool={e['tool_name']}" if e.get("tool_name") else ""
+        detail = f" :: {e['detail']}" if e.get("detail") else ""
+        lines.append(
+            f"- {ts} {e.get('hook_id') or '?'} [{e.get('status', '?')}] "
+            f"{e.get('event', '')}{tool}{detail}"
+        )
+    return "\n".join(lines)
+
+
 @tool
 def hook_config(
     action: str,
@@ -338,7 +369,8 @@ def hook_config(
             Conditions match the tool call's ARGS (field is an arg name).
         matcher: Pipe-list tool-NAME filter for pre_tool_use/post_tool_use, e.g.
             "Edit|Write" (omit to match every tool). Ignored on other events.
-        scope: "thread" (default; only the current thread) or "global" (all your threads).
+        scope: "thread" (default; only the current thread) or "global" (all your
+            threads). Create only; to re-scope, delete and re-create the hook.
         enabled: Enable/disable an existing hook on update.
     """
     action_key = (action or "").strip().lower()
@@ -390,18 +422,23 @@ def hook_info(
     action: str = "list",
     hook_id: Optional[str] = None,
     current_thread_only: bool = False,
+    limit: int = 20,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """List or inspect context-injection hooks.
+    """List, inspect, or debug lifecycle hooks.
 
     Actions: "list" for hook summaries, "detail" for one hook's full config,
-    "test" for a dry-run render of a hook's text against sample data (no fire).
+    "test" for a dry-run render of a hook's text against sample data (no fire),
+    "log" for recent executions (what fired, its outcome or fault, and timing;
+    a "no_op" entry means the hook ran and produced nothing, no entry means it
+    never fired).
 
     Args:
-        action: "list", "detail", or "test".
-        hook_id: Required for detail/test.
+        action: "list", "detail", "test", or "log".
+        hook_id: Required for detail/test; optional filter for log.
         current_thread_only: List only hooks that apply to this thread.
+        limit: Max execution entries for log (default 20).
     """
     action_key = (action or "list").strip().lower()
 
@@ -413,7 +450,10 @@ def hook_info(
             return f"[Error]: {action_key} requires hook_id."
         return _hook_inspect(hook_id=hook_id, action=action_key, config=config)
 
-    return "[Error]: action must be one of: list, detail, test."
+    if action_key == "log":
+        return _hook_log(hook_id=hook_id, limit=limit, config=config)
+
+    return "[Error]: action must be one of: list, detail, test, log."
 
 
 # Grouped export for CATALOG_TOOLS registration (opt-in).

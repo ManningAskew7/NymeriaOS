@@ -2894,12 +2894,13 @@ class _CommandExecutor:
             "disable": self._cmd_hook_disable,
             "delete": self._cmd_hook_delete,
             "test": self._cmd_hook_test,
+            "log": self._cmd_hook_log,
         }
         handler = sub_handlers.get(args[0])
         if handler is not None:
             return await handler(args[1:], rest)
         return (
-            "[Error]: Usage: /hook list|create|show|edit|enable|disable|delete|test [...]"
+            "[Error]: Usage: /hook list|create|show|edit|enable|disable|delete|test|log [...]"
         )
 
     async def _cmd_hook_list(self, args: list[str], rest: str) -> str:
@@ -3029,6 +3030,51 @@ class _CommandExecutor:
         from ..tools.hooks import render_hook_test
 
         return render_hook_test(hook)
+
+    async def _cmd_hook_log(self, args: list[str], rest: str) -> str:
+        limit_str, remaining, error = _consume_option(args, "--limit", default="20")
+        if error:
+            return f"[Error]: {error}"
+        try:
+            limit = max(1, int(limit_str))
+        except (TypeError, ValueError):
+            limit = 20
+        hook_id = None
+        if remaining:
+            hook, err = self._resolve_hook(remaining[0])
+            if hook is None:
+                return err or f"[Error]: No hook matching '{remaining[0]}'."
+            hook_id = hook.id
+
+        entries = self._hook_manager().get_executions(
+            self.user_id, hook_id=hook_id, limit=limit
+        )
+        if not entries:
+            scope = f" for `{hook_id}`" if hook_id else ""
+            return (
+                f"[Info]: No hook executions recorded{scope}. A hook that never "
+                "appears here never fired; a `no_op` entry fired and produced "
+                "nothing."
+            )
+        lines = [
+            f"Hook executions: {len(entries)}"
+            + (f" for `{hook_id}`" if hook_id else "")
+            + " (newest first)",
+            "",
+            "| Time | Hook | Event | Status | Detail |",
+            "|---|---|---|---|---|",
+        ]
+        for e in entries:
+            ts = str(e.get("timestamp") or "")
+            event = str(e.get("event") or "")
+            if e.get("tool_name"):
+                event += f" ({e['tool_name']})"
+            detail = str(e.get("detail") or "").replace("|", "\\|")[:80]
+            lines.append(
+                f"| {ts} | `{e.get('hook_id') or '?'}` | {event} "
+                f"| {e.get('status', '?')} | {detail} |"
+            )
+        return "[Info]: " + "\n".join(lines)
 
     async def _cmd_hook_enable(self, args: list[str], rest: str) -> str:
         return await self._set_hook_enabled(args, enabled=True)

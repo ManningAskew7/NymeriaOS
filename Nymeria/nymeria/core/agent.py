@@ -1034,6 +1034,7 @@ class NymeriaAgent:
             return None
         try:
             from .agent_safety import get_effective_hook_enabled
+            from .hook_manager import make_execution_recorder
             from .hooks import build_registry
             defs = [
                 d for d in hm.get_hooks_cached(user_id)
@@ -1046,7 +1047,9 @@ class NymeriaAgent:
             ]
             if not defs:
                 return None
-            return build_registry(defs)
+            # The recorder feeds the per-user execution log (write-behind, so
+            # recording adds no file I/O in-band, even inside tool calls).
+            return build_registry(defs, recorder=make_execution_recorder(hm, user_id))
         except Exception:  # noqa: BLE001 - never let hook resolution break a turn
             logger.debug("hook registry resolve failed", exc_info=True)
             return None

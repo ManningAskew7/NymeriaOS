@@ -424,7 +424,7 @@ def register_default_commands(service: "CommandService") -> None:
         "hook",
         description="Lifecycle-hook authoring commands",
         category="Automation",
-        usage="/hook list|create|show|edit|enable|disable|delete|test [...]",
+        usage="/hook list|create|show|edit|enable|disable|delete|test|log [...]",
         aliases=("hooks",),
     )
     service.register(
@@ -506,6 +506,14 @@ def register_default_commands(service: "CommandService") -> None:
         category="Automation",
         usage="/hook test <id>",
         aliases=("hook_test",),
+        surfaces=_hook_sub_surfaces,
+    )
+    service.register(
+        "hook log",
+        description="Show recent hook executions (status, outcome, timing)",
+        category="Automation",
+        usage="/hook log [id] [--limit N]",
+        aliases=("hook_log",),
         surfaces=_hook_sub_surfaces,
     )
     service.register(

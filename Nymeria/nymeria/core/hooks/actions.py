@@ -31,6 +31,7 @@ import logging
 from typing import Callable, Dict, Optional
 
 from ..conditions import HookCondition, evaluate_conditions
+from ..hook_spec import action_planes
 from ..text_format import safe_format
 from .base import (
     DoneOutcome,
@@ -256,8 +257,10 @@ def webhook(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     return None
 
 
-# The action table. The bridge looks actions up by name; adding an action is a
-# one-line addition here plus an ``EVENT_ACTIONS`` entry in ``hook_manager``.
+# The action table. The bridge looks actions up by name. Adding an action:
+# the function + an entry here, an ``ActionSpec`` in ``core/hook_spec.py`` (the
+# taxonomy single source), and a logic variant in ``core/hook_manager.py``;
+# ``tests/test_hook_spec.py`` pins the three in lockstep.
 ActionFn = Callable[[HookContext, dict], Optional[HookOutcome]]
 ACTIONS: Dict[str, ActionFn] = {
     "inject_context": inject_context,
@@ -268,15 +271,8 @@ ACTIONS: Dict[str, ActionFn] = {
     "webhook": webhook,
 }
 
-# Each action's dispatch plane. Mutate-plane actions return an in-band outcome
-# the fire point applies; observe-plane actions run fire-and-forget (the fire
-# point ignores their return). The bridge reads this to register a hook on the
-# right plane.
-ACTION_PLANES: Dict[str, str] = {
-    "inject_context": "mutate",
-    "block_if_matches": "mutate",
-    "rewrite_arg": "mutate",
-    "notify": "observe",
-    "create_todo": "observe",
-    "webhook": "observe",
-}
+# Each action's dispatch plane, derived from ``core/hook_spec.py``. Mutate-plane
+# actions return an in-band outcome the fire point applies; observe-plane
+# actions run fire-and-forget (the fire point ignores their return). The bridge
+# reads this to register a hook on the right plane.
+ACTION_PLANES: Dict[str, str] = action_planes()
