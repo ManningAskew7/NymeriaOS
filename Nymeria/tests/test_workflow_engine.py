@@ -86,6 +86,93 @@ async def test_author_error_returns_traceback():
     assert "ValueError" in (env.error.traceback or "")
 
 
+async def _drain_events(events, count, *, timeout=3.0):
+    """Wait for fire-and-forget engine publishes to land (default executor)."""
+    for _ in range(int(timeout / 0.025)):
+        if len(events) >= count:
+            return
+        await asyncio.sleep(0.025)
+
+
+async def test_workflow_step_and_run_finished_events(monkeypatch):
+    _register_echo()
+
+    @register_verb("test.fail")
+    async def _fail(ctx, verb, args):
+        raise VerbError("deliberate")
+
+    events = []
+    monkeypatch.setattr(
+        "nymeria.core.event_bus.publish_autonomous_event",
+        lambda event_type, thread_id, user_id, task_id, data: events.append(
+            (event_type, thread_id, user_id, task_id, dict(data))
+        ),
+    )
+    source = (
+        "@workflow\n"
+        "def run():\n"
+        "    nym.test.echo('one')\n"
+        "    try:\n"
+        "        nym.test.fail()\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return 'done'\n"
+    )
+    result = await _run(source)
+    assert result.envelope.status == "ok"
+    await _drain_events(events, 3)
+
+    steps = sorted(
+        (e for e in events if e[0] == "workflow_step"), key=lambda e: e[4]["step"]
+    )
+    assert len(steps) == 2
+    ok_step, error_step = steps[0][4], steps[1][4]
+    assert ok_step["verb"] == "test.echo" and ok_step["status"] == "ok"
+    assert ok_step["workflow_id"] == "adhoc"
+    assert ok_step["run_id"] == result.trace.run_id
+    assert "duration_ms" in ok_step and "args" not in ok_step  # lean payload
+    assert error_step["verb"] == "test.fail" and error_step["status"] == "error"
+    assert error_step["error_kind"] == "verb_error"
+    # Identity triple rides the event itself, not the payload.
+    assert steps[0][1] == "wf-test-thread" and steps[0][2] == "tester"
+    assert steps[0][3] == result.trace.run_id
+
+    finished = [e for e in events if e[0] == "workflow_run_finished"]
+    assert len(finished) == 1
+    assert finished[0][4] == {
+        "workflow_id": "adhoc",
+        "run_id": result.trace.run_id,
+        "status": "ok",
+    }
+
+
+async def test_run_finished_event_carries_error_status(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "nymeria.core.event_bus.publish_autonomous_event",
+        lambda event_type, thread_id, user_id, task_id, data: events.append(
+            (event_type, data)
+        ),
+    )
+    result = await _run("def run():\n    raise ValueError('x')\n")
+    assert result.envelope.status == "error"
+    await _drain_events(events, 1)
+    finished = [e for e in events if e[0] == "workflow_run_finished"]
+    assert len(finished) == 1 and finished[0][1]["status"] == "error"
+
+
+async def test_step_event_publish_failure_does_not_fail_verb(monkeypatch):
+    _register_echo()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("bus down")
+
+    monkeypatch.setattr("nymeria.core.event_bus.publish_autonomous_event", _boom)
+    result = await _run("def run():\n    return nym.test.echo('hi')\n")
+    assert result.envelope.status == "ok"
+    assert result.envelope.output == {"echo": "hi", "user": "tester"}
+
+
 async def test_budget_exceeded_keeps_taxonomy_when_uncaught():
     _register_echo()
     source = (
@@ -276,6 +363,43 @@ async def test_run_record_persisted_and_pruned(tmp_path, monkeypatch):
     payload = json.loads(records[0].read_text())
     assert payload["envelope"]["status"] == "ok"
     assert payload["trace"]["steps"][0]["verb"] == "test.echo"
+
+
+async def test_read_recent_run_records_aggregates_across_workflows(
+    tmp_path, monkeypatch
+):
+    import time as _time
+
+    from nymeria.core.workflows.trace import (
+        StepTrace,
+        persist_run_record,
+        read_recent_run_records,
+    )
+
+    class _S:
+        data_dir = tmp_path
+
+    monkeypatch.setattr("nymeria.config.get_settings", lambda: _S(), raising=True)
+    for i, (workflow_id, user_id) in enumerate(
+        [("wf-a", "alice"), ("wf-b", "bob"), ("wf-a", "alice")]
+    ):
+        persist_run_record(
+            StepTrace(run_id=f"run-{i}", workflow_id=workflow_id),
+            {"status": "ok"},
+            user_id=user_id,
+            thread_id="t",
+        )
+        _time.sleep(0.002)  # distinct mtimes for deterministic ordering
+
+    all_records = read_recent_run_records(limit=10)
+    assert [r["run_id"] for r in all_records] == ["run-2", "run-1", "run-0"]
+    assert {r["workflow_id"] for r in all_records} == {"wf-a", "wf-b"}
+
+    alice_only = read_recent_run_records(limit=10, user_id="alice")
+    assert [r["run_id"] for r in alice_only] == ["run-2", "run-0"]
+
+    capped = read_recent_run_records(limit=1)
+    assert [r["run_id"] for r in capped] == ["run-2"]
 
 
 async def test_child_env_is_scrubbed():

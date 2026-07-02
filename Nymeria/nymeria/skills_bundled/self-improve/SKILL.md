@@ -37,6 +37,7 @@ Load the kit that matches the task and follow its instructions:
 | To find, install, create, or edit a Skill or Skill Kit | `skill-management` |
 | An API key, OAuth login, or other credential (or a tool failed for missing auth) | `credential-management` |
 | A persistent, isolated, re-invocable specialist ("my email manager") | `callable-thread-builder` |
+| A recurring routine saved as code (a poll, briefing, or cleanup that runs unattended, with AI only where needed) | `workflow-authoring` |
 
 If the first kit turns out to be the wrong one, each kit ends with a "Not the right
 kit?" pointer to its siblings, so you can re-route without coming back here.

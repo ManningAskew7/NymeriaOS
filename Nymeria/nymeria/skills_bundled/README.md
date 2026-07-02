@@ -15,6 +15,7 @@ Built-in SKILL.md bundles shipped with Nymeria. Each subdirectory contains a SKI
 - `skill-management/`  -  kit: find, install, create, and edit Skills and Skill Kits
 - `tool-management/`  -  kit: find, enable, and build tools, including HTTP/API-backed ones
 - `trigger-management/`  -  kit: inspect and manage event triggers
+- `workflow-authoring/`  -  kit: author, test, and publish nym-SDK workflows (not default-on; discovered via search or `/kit`)
 
 The `*-management` kits plus `self-improve` are the default-on capability set
 (see `nymeria/core/user_profile.py` `DEFAULT_GLOBAL_SKILLS`). `self-improve` is a

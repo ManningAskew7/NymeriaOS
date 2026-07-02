@@ -25,6 +25,7 @@ in ``trace.py``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -332,9 +333,24 @@ async def resolve_approval_record(
     decision_label = "approved" if approved else "declined"
     run_id = run_id or uuid.uuid4().hex[:12]
 
-    def _invalid(reason: str) -> Dict[str, Any]:
+    async def _invalid(reason: str) -> Dict[str, Any]:
+        from .trace import StepTrace, persist_run_record
+
         envelope = error_envelope(
             WorkflowError(kind=KIND_RESUME_INVALID, message=reason), {}
+        )
+        # The resolve ack already handed out this run_id: persist a stepless
+        # run record so the id resolves in the runs surfaces instead of
+        # dangling (persist never raises; the write runs off-loop).
+        await asyncio.to_thread(
+            persist_run_record,
+            StepTrace(
+                run_id=str(run_id),
+                workflow_id=str(record.get("workflow_id") or "adhoc"),
+            ),
+            envelope.to_dict(),
+            user_id=str(record.get("user_id") or ""),
+            thread_id=str(record.get("thread_id") or ""),
         )
         _notify_owner(
             record,
@@ -350,20 +366,22 @@ async def resolve_approval_record(
     try:
         target = _load_target(record)
         if target is None:
-            return _invalid("the workflow no longer exists")
+            return await _invalid("the workflow no longer exists")
         config, parameters = target
         current_hash = config_revision_hash(config, parameters)
         if current_hash != str(record.get("revision_hash") or ""):
-            return _invalid(
+            return await _invalid(
                 "the workflow changed since this approval was requested; "
                 "re-fire the workflow instead"
             )
         gate_error = workflow_execution_gate(config, parameters)
         if gate_error:
-            return _invalid(f"the workflow revision is no longer approved: {gate_error}")
+            return await _invalid(
+                f"the workflow revision is no longer approved: {gate_error}"
+            )
         resume_entrypoint = str(record.get("resume_entrypoint") or "")
         if resume_entrypoint not in (config.continuations or []):
-            return _invalid(
+            return await _invalid(
                 f"continuation {resume_entrypoint!r} is no longer declared"
             )
 

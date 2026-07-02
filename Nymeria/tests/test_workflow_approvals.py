@@ -59,10 +59,19 @@ SUSPEND_SOURCE = (
 
 @pytest.fixture(autouse=True)
 def _pending_store(tmp_path, monkeypatch):
-    """Redirect the approval record store (and silence announcements)."""
+    """Redirect the approval record store (and silence announcements).
+
+    The global settings patch also redirects trace.py's run-record store
+    (the resume_invalid path persists a stepless record); the engine reads
+    only ``data_dir`` from global settings.
+    """
     monkeypatch.setattr(
         approvals_module,
         "get_settings",
+        lambda: SimpleNamespace(data_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        "nymeria.config.get_settings",
         lambda: SimpleNamespace(data_dir=tmp_path),
     )
     notifications: list[dict] = []
@@ -347,7 +356,7 @@ async def test_resolve_declined_still_runs_continuation(monkeypatch):
     assert envelope["output"]["note"] == "not now"
 
 
-async def test_resume_refused_when_content_changed(monkeypatch):
+async def test_resume_refused_when_content_changed(monkeypatch, tmp_path):
     _saved_workflow(monkeypatch)
     _mint(revision_hash="0" * 64)
     claimed = claim_approval("run-1")
@@ -357,6 +366,19 @@ async def test_resume_refused_when_content_changed(monkeypatch):
     assert envelope["error"]["kind"] == "resume_invalid"
     assert "changed since" in envelope["error"]["message"]
     assert not list(pending_dir().glob("*"))
+    # The ack's run_id must not dangle: a refused resume persists a stepless
+    # run record with the resume_invalid envelope.
+    record_path = (
+        tmp_path / "workflows" / "runs" / "wf_demo" / f"{result['run_id']}.json"
+    )
+    assert record_path.is_file()
+    import json as _json
+
+    record = _json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["status"] == "error"
+    assert record["envelope"]["error"]["kind"] == "resume_invalid"
+    assert record["trace"]["steps"] == []
+    assert record["user_id"] == "owner"
 
 
 async def test_resume_refused_when_workflow_gone(monkeypatch):

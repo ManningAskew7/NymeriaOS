@@ -15,7 +15,22 @@ Two shapes behind one verb:
 
 ``schema=`` runs the turn normally, then extracts structured JSON from the
 reply with the shared structured-output helper (post-hoc extraction,
-plan-settled). ``kit=`` is phase 5 breadth and rejected with a clear message.
+plan-settled). ``kit=`` activates a skill or Skill Kit on a FRESH spawn
+(existing threads take kits via ``nym.threads.configure``).
+
+This module also owns the ``nym.threads.*`` definition verbs (phase 5):
+
+- ``nym.threads.create``: create a configured thread WITHOUT running a turn
+  (the ``spawn_thread`` tool's create-without-prompt path). Returns the new
+  ``thread_id`` (and ``callable_name``), so create-then-invoke is the
+  CANCELLABLE composition: a later ``nym.thread(id_or_title=...)`` turn gets
+  the existing-thread abort cascade that an inline fresh-spawn turn cannot
+  (the child id is unknown until the spawn tool returns).
+- ``nym.threads.configure``: adjust an EXISTING owned thread's config
+  (instructions, model, tools enable/disable, kit activation). Addressing by
+  id reaches any thread the caller owns; addressing by name resolves among
+  the caller's callable threads (only those have names). Config changes
+  apply from the thread's next turn.
 
 Blocking dispatches run on a DEDICATED bounded pool (not the loop's default
 executor: a sub-turn blocks its OS thread for minutes, and the default pool
@@ -36,9 +51,10 @@ import asyncio
 import contextlib
 import functools
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from .registry import VerbContext, VerbError, register_verb
 from .structured import ainvoke_structured
@@ -80,13 +96,13 @@ def _current_agent() -> Optional[Any]:
     return current_agent()
 
 
-def _check_ownership(agent: Any, user_id: str, thread_id: str) -> Optional[str]:
+def _check_ownership(
+    agent: Any, user_id: str, thread_id: str, name: str = "nym.thread"
+) -> Optional[str]:
     """Seam: the callable-thread ownership gate (fail-closed, admin rules)."""
     from ...agents.tool_factory import _check_callable_ownership
 
-    return _check_callable_ownership(
-        agent, user_id, name="nym.thread", thread_id=thread_id
-    )
+    return _check_callable_ownership(agent, user_id, name=name, thread_id=thread_id)
 
 
 def _invoke_thread(
@@ -246,6 +262,8 @@ def _build_spawn_args(agent: Any, args: dict) -> dict:
         if not isinstance(tools, list):
             raise VerbError("tools must be a list of tool names")
         spawn_args["optional_tools"] = [str(t) for t in tools]
+    if args.get("kit") is not None:
+        spawn_args["kit"] = str(args["kit"])
     model = str(args.get("model") or "").strip()
     if model:
         if is_thread_tier_alias(model):
@@ -287,10 +305,6 @@ async def _thread_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
         raise VerbError("nym.thread requires a non-empty prompt")
-    if args.get("kit") is not None:
-        raise VerbError(
-            "kit= is not supported yet; pass tools= with explicit tool names"
-        )
     mode = str(args.get("mode") or "ask").strip().lower()
     if mode not in MODES:
         raise VerbError(f'mode must be one of {MODES}, got {mode!r}')
@@ -306,6 +320,12 @@ async def _thread_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
 
     id_or_title = args.get("id_or_title")
     if id_or_title is not None:
+        if args.get("kit") is not None:
+            raise VerbError(
+                "kit= applies to fresh spawns only; use "
+                "nym.threads.configure(id_or_title, kit=...) for an "
+                "existing thread"
+            )
         # Resolution reads thread/account stores (disk + SQL); off-loop.
         target, label = await asyncio.to_thread(
             resolve_target_thread, agent, ctx.user_id, str(id_or_title)
@@ -332,3 +352,290 @@ async def _thread_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
     if schema is not None:
         return await _extract(ctx, agent, text, schema)
     return text
+
+
+# --- nym.threads.* definition verbs (phase 5) -------------------------------
+
+_SPAWN_ID_RE = re.compile(r"^\[Spawned\]: thread_id=(\S+)", re.MULTILINE)
+_SPAWN_CALLABLE_RE = re.compile(r"^Callable as: ([A-Za-z0-9_]+)\(", re.MULTILINE)
+
+
+def _parse_spawn_receipt(text: str) -> dict:
+    """Parse the spawn tool's ``[Spawned]`` receipt into a structured result.
+
+    The preamble opening lines are a stable contract (pinned by the spawn
+    preamble tests and by this module's tests); parsing them keeps the verb a
+    thin facade over the tool instead of growing a second create path.
+    """
+    id_match = _SPAWN_ID_RE.search(text or "")
+    if not id_match:
+        raise VerbError(f"unrecognized spawn receipt: {(text or '')[:200]}")
+    callable_match = _SPAWN_CALLABLE_RE.search(text or "")
+    return {
+        "thread_id": id_match.group(1),
+        "callable_name": callable_match.group(1) if callable_match else None,
+    }
+
+
+def _activate_kit(
+    agent: Any, thread_id: str, user_id: str, kit: str
+) -> Tuple[bool, str]:
+    """Seam: the shared skill/kit activation (the /kit and spawn code path)."""
+    from ..command_service import activate_skill_kit
+
+    return activate_skill_kit(
+        agent=agent,
+        thread_id=thread_id,
+        user_id=user_id,
+        skill_name=kit,
+        reason="nym.threads.configure kit activation",
+    )
+
+
+def _resolve_owned_thread(agent: Any, user_id: str, id_or_title: str) -> Any:
+    """Resolve ``id_or_title`` to a ThreadConfig for a thread the caller OWNS.
+
+    Exact thread id first (an owned-but-unconfigured thread gets a fresh
+    default config), then the caller's callable threads by name (only
+    callable threads have names). Unlike ``resolve_target_thread`` the target
+    need NOT be callable: that flag is consent to programmatic INVOCATION,
+    not to configuration by its own owner.
+    """
+    from ..thread_config import ThreadConfig
+
+    manager = agent.thread_config_manager
+    wanted = str(id_or_title or "").strip()
+    if not wanted:
+        raise VerbError("id_or_title must be a thread id or a callable thread name")
+
+    tc = manager.get_config(wanted)
+    if tc is None:
+        owned = set(agent.accounts_repo.list_threads_for_user(user_id))
+        if wanted in owned:
+            tc = ThreadConfig(thread_id=wanted)
+        else:
+            for candidate in manager.list_callable_threads(owned_thread_ids=owned):
+                name = str(candidate.callable_name or "")
+                if name.casefold() == wanted.casefold():
+                    tc = candidate
+                    break
+    if tc is None:
+        raise VerbError(
+            f"no thread matches {wanted!r} (pass a thread id you own or the "
+            "callable name of one of your callable threads)"
+        )
+    denial = _check_ownership(agent, user_id, tc.thread_id, name="nym.threads.configure")
+    if denial:
+        raise VerbError(denial)
+    return tc
+
+
+def _tool_name_list(args: dict, key: str) -> List[str]:
+    value = args.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise VerbError(f"{key} must be a list of tool names")
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _gate_restricted_tools(agent: Any, user_id: str, names: List[str]) -> None:
+    """The REST PATCH admin gate: non-admins cannot enable restricted tools.
+
+    Without this a non-admin's workflow could enable reload_all/claude_code
+    on a thread and escalate via that thread's next turn, exactly the spawn
+    escalation the spawn gate closes.
+    """
+    user = agent.accounts_repo.get_user_by_id(user_id)
+    role = getattr(user, "role", None) or "user"
+    if role == "admin":
+        return
+    from ...tools import ADMIN_ONLY_TOOL_NAMES, DEVELOPER_ONLY_TOOL_NAMES
+
+    blocked = ADMIN_ONLY_TOOL_NAMES.intersection(names)
+    if blocked:
+        raise VerbError(
+            f"admin-only tools cannot be enabled by this user: {sorted(blocked)}"
+        )
+    blocked = DEVELOPER_ONLY_TOOL_NAMES.intersection(names)
+    if blocked:
+        raise VerbError(
+            "developer-only diagnostic tools cannot be enabled by this "
+            f"user: {sorted(blocked)}"
+        )
+
+
+def _apply_thread_configuration(
+    agent: Any, user_id: str, tc: Any, args: dict
+) -> List[str]:
+    """Mutate and save the config; returns the updated field names.
+
+    Mirrors the load-bearing REST PATCH rules for the fields this verb
+    exposes: the admin/developer-only tool gate for non-admins, the 5000-char
+    instructions cap (ThreadConfig does not validate on assignment), and
+    clearing the active LLM fallback when the model changes. Enabling a tool
+    also removes it from disabled_tools (and vice versa): disabled_tools is
+    authoritative subtraction at graph build, so a bare add would be a no-op.
+    """
+    from ...config.model_tiers import (
+        is_thread_tier_alias,
+        resolve_tier,
+        split_provider_model,
+    )
+    from ..thread_config import ThreadLLMConfig
+
+    updated: List[str] = []
+
+    instructions = args.get("instructions")
+    if instructions is not None:
+        text = str(instructions)
+        if len(text) > 5000:
+            raise VerbError("instructions must be at most 5000 characters")
+        tc.instructions = text or None
+        updated.append("instructions")
+
+    model = str(args.get("model") or "").strip()
+    if model:
+        if is_thread_tier_alias(model):
+            resolved = resolve_tier(
+                model, agent.settings, provider=agent.settings.llm_provider
+            )
+            if resolved is None:
+                raise VerbError(f"model tier {model!r} could not be resolved")
+            provider, model_name = resolved
+        else:
+            provider, model_name = split_provider_model(
+                model, agent.settings.llm_provider
+            )
+        if tc.llm_config is not None:
+            tc.llm_config = tc.llm_config.model_copy(
+                update={"provider": provider, "model": model_name}
+            )
+        else:
+            tc.llm_config = ThreadLLMConfig(provider=provider, model=model_name)
+        tc.active_llm_fallback = None
+        updated.append("model")
+
+    tools_enable = _tool_name_list(args, "tools_enable")
+    tools_disable = _tool_name_list(args, "tools_disable")
+    both = set(tools_enable) & set(tools_disable)
+    if both:
+        raise VerbError(
+            f"tools cannot be both enabled and disabled: {sorted(both)}"
+        )
+    if tools_enable:
+        _gate_restricted_tools(agent, user_id, tools_enable)
+        tc.enabled_tools = sorted(set(tc.enabled_tools or []) | set(tools_enable))
+        tc.disabled_tools = [
+            t for t in (tc.disabled_tools or []) if t not in set(tools_enable)
+        ]
+        updated.append("tools_enable")
+    if tools_disable:
+        tc.disabled_tools = sorted(set(tc.disabled_tools or []) | set(tools_disable))
+        tc.enabled_tools = [
+            t for t in (tc.enabled_tools or []) if t not in set(tools_disable)
+        ]
+        updated.append("tools_disable")
+
+    if updated:
+        if not agent.thread_config_manager.save_config(tc):
+            raise VerbError(f"failed to save config for thread {tc.thread_id!r}")
+        with contextlib.suppress(Exception):
+            agent.invalidate_thread_config_cache(tc.thread_id)
+    return updated
+
+
+@register_verb(
+    "threads.create",
+    side_effect=True,
+    positional=("title",),
+    description=(
+        "Create a configured thread WITHOUT running a turn (instructions=, "
+        "model=, tools=, kit=, callable=, ttl_hours=); returns {thread_id, "
+        "callable_name} for later nym.thread calls."
+    ),
+)
+async def _threads_create_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
+    title = str(args.get("title") or "").strip()
+    if not title:
+        raise VerbError("threads.create requires a non-empty title")
+    if args.get("prompt") is not None:
+        raise VerbError(
+            "threads.create does not run a turn; create first, then "
+            "nym.thread(id_or_title=<thread_id>, prompt=...)"
+        )
+    agent = _current_agent()
+    if agent is None:
+        raise VerbError("no agent runtime is available for nym.threads.create")
+
+    spawn_args = _build_spawn_args(agent, args)
+    callable_flag = args.get("callable", True)
+    if not isinstance(callable_flag, bool):
+        raise VerbError("callable must be a boolean")
+    spawn_args["make_callable"] = callable_flag
+    ttl_hours = args.get("ttl_hours")
+    if ttl_hours is not None:
+        if isinstance(ttl_hours, bool) or not isinstance(ttl_hours, int) or ttl_hours < 1:
+            raise VerbError("ttl_hours must be a positive integer")
+        spawn_args["ttl_hours"] = ttl_hours
+
+    config = {"configurable": {"user_id": ctx.user_id, "thread_id": ctx.thread_id}}
+    text = await _run_dispatch(_spawn_fresh, spawn_args, config)
+    marker = _error_markered(text, include_plain=True)
+    if marker is not None:
+        raise VerbError(f"thread creation failed: {marker}")
+    return _parse_spawn_receipt(text)
+
+
+@register_verb(
+    "threads.configure",
+    side_effect=True,
+    positional=("id_or_title",),
+    description=(
+        "Reconfigure one of your threads (instructions=, model=, "
+        "tools_enable=, tools_disable=, kit=); changes apply from the "
+        "thread's next turn."
+    ),
+)
+async def _threads_configure_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
+    agent = _current_agent()
+    if agent is None:
+        raise VerbError("no agent runtime is available for nym.threads.configure")
+
+    kit = args.get("kit")
+    has_field = kit is not None or any(
+        args.get(field) is not None
+        for field in ("instructions", "model", "tools_enable", "tools_disable")
+    )
+    if not has_field:
+        raise VerbError(
+            "nothing to configure; pass at least one of instructions=, "
+            "model=, tools_enable=, tools_disable=, kit="
+        )
+
+    # Resolution + application read/write thread and account stores; off-loop.
+    tc = await asyncio.to_thread(
+        _resolve_owned_thread, agent, ctx.user_id, str(args.get("id_or_title") or "")
+    )
+    updated = await asyncio.to_thread(
+        _apply_thread_configuration, agent, ctx.user_id, tc, args
+    )
+
+    if kit is not None:
+        # After the config save: activation re-reads the config by thread_id
+        # (and creates a default one for an unconfigured owned thread).
+        ok, message = await asyncio.to_thread(
+            _activate_kit, agent, tc.thread_id, ctx.user_id, str(kit)
+        )
+        if not ok:
+            # Honest partial-apply failure: earlier fields are already saved
+            # (owner-only config, so no rollback dance), say so explicitly.
+            applied = (
+                f" (already applied and kept: {', '.join(updated)})"
+                if updated
+                else ""
+            )
+            raise VerbError(f"kit activation failed{applied}: {message}")
+        updated.append("kit")
+
+    return {"thread_id": tc.thread_id, "updated": updated}

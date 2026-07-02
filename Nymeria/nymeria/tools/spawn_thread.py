@@ -637,6 +637,7 @@ def _build_spawn_preamble(
     enabled_tools: List[str],
     disabled_tools: List[str],
     warnings: List[str],
+    kit_line: Optional[str] = None,
 ) -> str:
     """Render the ``[Spawned]`` preamble (everything before the optional child
     response). Byte-for-byte identical to the former inline block."""
@@ -654,6 +655,8 @@ def _build_spawn_preamble(
         preamble_lines.append(
             f'Callable as: {callable_name}(task="..."). Any thread can invoke this.'
         )
+    if kit_line:
+        preamble_lines.append(kit_line)
     if tool_resolution_records:
         head = tool_resolution_records[:6]
         rendered = ", ".join(
@@ -701,6 +704,7 @@ def spawn_thread(
     llm_max_tokens: Optional[int] = None,
     llm_extended_thinking: Optional[bool] = None,
     llm_reasoning_effort: Optional[str] = None,
+    kit: Optional[str] = None,
     prompt: Optional[str] = None,
     action: str = "create",
     delete_thread_id: Optional[str] = None,
@@ -772,6 +776,12 @@ def spawn_thread(
             a different provider), so you can pick a cheap model for simple
             sub-tasks or a stronger model for hard ones without naming an exact
             model ID.
+        kit: Optional skill or Skill Kit name to activate on the new
+            thread (e.g. "web-research"). The skill is added to the
+            child's enabled_skills; if it is a Skill Kit, its
+            required_tools are also bound with the kit's declared TTL.
+            An unknown kit name or a failed tool binding aborts the
+            spawn (no half-configured thread is left behind).
         prompt: If provided, dispatches this message to the new
             thread and BLOCKS until the child returns its response. The
             child's response becomes part of this tool's output.
@@ -842,6 +852,23 @@ def spawn_thread(
     if not title or not title.strip():
         return "[Error]: title is required when action='create' and cannot be empty."
     title = title.strip()[:80]
+
+    # Resolve the kit BEFORE creating anything, so a typo'd name fails fast
+    # without burning spawn rate limit or leaving a thread to roll back.
+    kit_skill = None
+    if kit and kit.strip():
+        skill_manager = getattr(agent, "skill_manager", None)
+        if skill_manager is None:
+            return "[Error]: Skill manager unavailable; cannot bind a kit."
+        try:
+            kit_skill = skill_manager.get(kit.strip(), user_id=user_id)
+        except Exception as e:
+            return f"[Error]: Skill lookup failed for kit '{kit.strip()}': {e}"
+        if kit_skill is None:
+            return (
+                f"[Error]: Kit '{kit.strip()}' not found. Use "
+                "skill_search to discover available skills and kits."
+            )
 
     mode_norm = (mode or "fresh").strip().lower()
     if mode_norm not in VALID_MODES:
@@ -1008,6 +1035,46 @@ def spawn_thread(
         if not agent.thread_config_manager.save_config(tc):
             return "[Error]: Failed to save thread config."
 
+    # Kit activation runs after the config exists (bind_tools_for_thread
+    # reads it by thread_id) and before metadata/ownership, so a strict-bind
+    # failure (e.g. an admin-blocked required tool for this user) rolls back
+    # with a single config delete: no half-configured thread leaks.
+    kit_line: Optional[str] = None
+    if kit_skill is not None:
+        from ..core.command_service import activate_skill_kit
+
+        kit_ok, kit_message = activate_skill_kit(
+            agent=agent,
+            thread_id=new_thread_id,
+            user_id=user_id,
+            skill_name=kit_skill.name,
+            reason=f"spawn_thread kit binding for {new_thread_id}",
+        )
+        if not kit_ok:
+            try:
+                agent.thread_config_manager.delete_config(new_thread_id)
+            except Exception:
+                logger.warning(
+                    "Failed to rollback thread config after kit-bind failure",
+                    exc_info=True,
+                )
+            if mode_norm == "branched":
+                # branch_thread already copied checkpoint history; a config
+                # delete alone would orphan those rows.
+                _delete_checkpoints(new_thread_id)
+            return (
+                f"[Error]: Failed to activate kit '{kit_skill.name}' on the "
+                f"spawned thread: {kit_message}"
+            )
+        if getattr(kit_skill, "is_skill_kit", False):
+            kit_line = (
+                f"Kit: {kit_skill.name} (tools: "
+                f"{', '.join(kit_skill.required_tools)}, "
+                f"TTL {kit_skill.tool_ttl})"
+            )
+        else:
+            kit_line = f"Skill: {kit_skill.name} enabled"
+
     platform_meta: Dict[str, str] = {"spawn_depth": str(new_depth)}
     if parent_thread_id:
         platform_meta["spawn_parent"] = parent_thread_id
@@ -1080,6 +1147,7 @@ def spawn_thread(
         enabled_tools=tc.enabled_tools,
         disabled_tools=tc.disabled_tools,
         warnings=warnings,
+        kit_line=kit_line,
     )
 
     if not prompt or not prompt.strip():

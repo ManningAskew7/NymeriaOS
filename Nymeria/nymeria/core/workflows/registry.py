@@ -160,5 +160,6 @@ def load_builtin_verbs() -> None:
     from . import verbs_approve  # noqa: F401 - registration happens at import
     from . import verbs_effects  # noqa: F401
     from . import verbs_llm  # noqa: F401
+    from . import verbs_state  # noqa: F401
     from . import verbs_thread  # noqa: F401
     from . import verbs_tools  # noqa: F401

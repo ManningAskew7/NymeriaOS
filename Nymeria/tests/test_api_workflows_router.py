@@ -244,6 +244,41 @@ def test_admin_sees_all_runs(tmp_path, api_client_builder, monkeypatch):
     assert body["total"] == 2
 
 
+def test_aggregate_runs_across_workflows_user_scoped(
+    tmp_path, api_client_builder, monkeypatch
+):
+    _sandbox_tool_create(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "nymeria.config.get_settings", lambda: SimpleNamespace(data_dir=tmp_path)
+    )
+    from nymeria.core.workflows.trace import StepTrace, persist_run_record
+
+    for run_id, workflow_id, user in (
+        ("r1", "wf_alpha", "caller"),
+        ("r2", "wf_beta", "caller"),
+        ("r3", "wf_beta", "other"),
+    ):
+        persist_run_record(
+            StepTrace(run_id=run_id, workflow_id=workflow_id),
+            {"ok": True, "status": "ok", "output": "x", "budget": {}},
+            user_id=user,
+            thread_id="t",
+        )
+
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    body = client.get(
+        "/workflows/runs", headers=api_client_builder.auth(token)
+    ).json()
+    assert body["total"] == 2
+    assert {r["workflow_id"] for r in body["runs"]} == {"wf_alpha", "wf_beta"}
+    assert all(r["user_id"] == "caller" for r in body["runs"])
+
+    limited = client.get(
+        "/workflows/runs?limit=1", headers=api_client_builder.auth(token)
+    ).json()
+    assert limited["total"] == 1
+
+
 # --- runtime approvals (nym.approve suspensions, phase 4) -----------------------
 
 

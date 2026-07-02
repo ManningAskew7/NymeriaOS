@@ -18,7 +18,7 @@ import pytest
 
 from nymeria.core.workflows import WorkflowBudget, execute_workflow
 from nymeria.core.workflows import runner as wf_runner
-from nymeria.core.workflows import verbs_effects, verbs_llm, verbs_thread
+from nymeria.core.workflows import verbs_effects, verbs_llm, verbs_state, verbs_thread
 from nymeria.core.workflows.registry import (
     VerbContext,
     VerbError,
@@ -340,11 +340,15 @@ async def test_thread_verb_arg_validation(monkeypatch):
     monkeypatch.setattr(verbs_thread, "_current_agent", lambda: object())
     with pytest.raises(VerbError):
         await verbs_thread._thread_verb(_ctx(), "thread", {"prompt": ""})
+    # kit= is fresh-spawn-only on nym.thread; existing threads take kits via
+    # nym.threads.configure (the phase 2 blanket rejection was lifted).
     with pytest.raises(VerbError) as excinfo:
         await verbs_thread._thread_verb(
-            _ctx(), "thread", {"prompt": "p", "kit": "web-research"}
+            _ctx(),
+            "thread",
+            {"prompt": "p", "kit": "web-research", "id_or_title": "t-x"},
         )
-    assert "kit=" in str(excinfo.value)
+    assert "threads.configure" in str(excinfo.value)
     with pytest.raises(VerbError):
         await verbs_thread._thread_verb(
             _ctx(), "thread", {"prompt": "p", "mode": "yolo"}
@@ -540,12 +544,14 @@ async def test_thread_verb_fresh_spawn_maps_args(monkeypatch):
             "title": "Research",
             "tools": ["web_search"],
             "model": "openai:gpt-x",
+            "kit": "web-research",
         },
     )
     assert "child says hi" in result
     assert seen["args"]["optional_tools"] == ["web_search"]
     assert seen["args"]["llm_provider"] == "openai"
     assert seen["args"]["llm_model"] == "gpt-x"
+    assert seen["args"]["kit"] == "web-research"
     assert seen["config"]["configurable"] == {
         "user_id": "tester",
         "thread_id": "t1",
@@ -658,6 +664,21 @@ async def test_emit_prefixes_and_validates(monkeypatch):
         )
 
 
+async def test_emit_rejects_engine_reserved_types(monkeypatch):
+    monkeypatch.setattr(
+        verbs_effects, "_publish_autonomous_event", lambda *a: None
+    )
+    # Both spellings of every reserved type: bare ("step" gets prefixed into
+    # "workflow_step") and already-prefixed.
+    for reserved in sorted(verbs_effects.RESERVED_EVENT_TYPES):
+        for spelling in (reserved, reserved[len("workflow_"):]):
+            with pytest.raises(VerbError) as excinfo:
+                await verbs_effects._emit_verb(
+                    _ctx(), "emit", {"event_type": spelling, "payload": {}}
+                )
+            assert "reserved" in str(excinfo.value)
+
+
 async def test_todo_add_follows_hook_path():
     todo_list = MagicMock()
     todo_list.add_item.return_value = SimpleNamespace(
@@ -761,14 +782,492 @@ async def test_memory_tool_error_string_is_verb_error(monkeypatch):
     assert "memory store unavailable" in str(excinfo.value)
 
 
+# --- nym.threads.create / nym.threads.configure ------------------------------
+
+
+def _configure_tc(thread_id="t-9", **overrides):
+    defaults = dict(
+        thread_id=thread_id,
+        callable=False,
+        callable_name=None,
+        instructions=None,
+        llm_config=None,
+        enabled_tools=[],
+        disabled_tools=[],
+        active_llm_fallback=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _configure_agent(tc=None, *, callables=(), owned=(), role="user", save_ok=True):
+    saved = []
+    manager = SimpleNamespace(
+        get_config=lambda tid: (
+            tc if tc is not None and tid == tc.thread_id else None
+        ),
+        list_callable_threads=lambda owned_thread_ids=None: list(callables),
+        save_config=lambda cfg: (saved.append(cfg), save_ok)[1],
+    )
+    agent = SimpleNamespace(
+        thread_config_manager=manager,
+        accounts_repo=SimpleNamespace(
+            list_threads_for_user=lambda user_id: list(owned),
+            get_user_by_id=lambda uid: SimpleNamespace(role=role),
+        ),
+        settings=SimpleNamespace(llm_provider="anthropic"),
+        invalidate_thread_config_cache=lambda tid: None,
+    )
+    agent._saved = saved
+    return agent
+
+
+SPAWN_RECEIPT = (
+    "[Spawned]: thread_id=spawned-research-a1b2c3d4\n"
+    'Callable as: spawned_research_a1b2c3d4(task="..."). Any thread can invoke this.\n'
+    "To delete later: ..."
+)
+
+
+async def test_threads_create_maps_args_and_parses_receipt(monkeypatch):
+    seen = {}
+
+    def fake_spawn(spawn_args, config):
+        seen["args"], seen["config"] = spawn_args, config
+        return SPAWN_RECEIPT
+
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: _thread_agent(None))
+    monkeypatch.setattr(verbs_thread, "_spawn_fresh", fake_spawn)
+    result = await verbs_thread._threads_create_verb(
+        _ctx(),
+        "threads.create",
+        {
+            "title": "Research",
+            "instructions": "focus",
+            "tools": ["web_search"],
+            "kit": "web-research",
+            "ttl_hours": 5,
+        },
+    )
+    assert result == {
+        "thread_id": "spawned-research-a1b2c3d4",
+        "callable_name": "spawned_research_a1b2c3d4",
+    }
+    assert seen["args"]["prompt"] == ""  # create-only: no turn runs
+    assert seen["args"]["title"] == "Research"
+    assert seen["args"]["kit"] == "web-research"
+    assert seen["args"]["make_callable"] is True
+    assert seen["args"]["ttl_hours"] == 5
+    assert seen["config"]["configurable"] == {"user_id": "tester", "thread_id": "t1"}
+
+
+async def test_threads_create_non_callable_receipt(monkeypatch):
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: _thread_agent(None))
+    monkeypatch.setattr(
+        verbs_thread,
+        "_spawn_fresh",
+        lambda spawn_args, config: "[Spawned]: thread_id=spawned-x-1\nTo delete later: ...",
+    )
+    result = await verbs_thread._threads_create_verb(
+        _ctx(), "threads.create", {"title": "X", "callable": False}
+    )
+    assert result == {"thread_id": "spawned-x-1", "callable_name": None}
+
+
+async def test_threads_create_arg_validation(monkeypatch):
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: _thread_agent(None))
+    with pytest.raises(VerbError):
+        await verbs_thread._threads_create_verb(_ctx(), "threads.create", {})
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_create_verb(
+            _ctx(), "threads.create", {"title": "X", "prompt": "run this"}
+        )
+    assert "does not run a turn" in str(excinfo.value)
+    with pytest.raises(VerbError):
+        await verbs_thread._threads_create_verb(
+            _ctx(), "threads.create", {"title": "X", "callable": "yes"}
+        )
+    with pytest.raises(VerbError):
+        await verbs_thread._threads_create_verb(
+            _ctx(), "threads.create", {"title": "X", "ttl_hours": 0}
+        )
+    with pytest.raises(VerbError):
+        await verbs_thread._threads_create_verb(
+            _ctx(), "threads.create", {"title": "X", "ttl_hours": True}
+        )
+
+
+async def test_threads_create_error_marker_raises(monkeypatch):
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: _thread_agent(None))
+    monkeypatch.setattr(
+        verbs_thread,
+        "_spawn_fresh",
+        lambda spawn_args, config: "[Error]: Spawn depth limit reached (3).",
+    )
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_create_verb(
+            _ctx(), "threads.create", {"title": "X"}
+        )
+    assert "thread creation failed" in str(excinfo.value)
+
+
+async def test_parse_spawn_receipt_unrecognized():
+    with pytest.raises(VerbError):
+        verbs_thread._parse_spawn_receipt("something unexpected")
+
+
+async def test_threads_configure_requires_a_field(monkeypatch):
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: _configure_agent())
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_configure_verb(
+            _ctx(), "threads.configure", {"id_or_title": "t-9"}
+        )
+    assert "nothing to configure" in str(excinfo.value)
+
+
+async def test_threads_configure_applies_fields(monkeypatch):
+    tc = _configure_tc(disabled_tools=["web_search"], active_llm_fallback="stale")
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(),
+        "threads.configure",
+        {
+            "id_or_title": "t-9",
+            "instructions": "Be brief.",
+            "model": "openai:gpt-x",
+            "tools_enable": ["web_search"],
+            "tools_disable": ["bash_execute"],
+        },
+    )
+    assert result == {
+        "thread_id": "t-9",
+        "updated": ["instructions", "model", "tools_enable", "tools_disable"],
+    }
+    assert tc.instructions == "Be brief."
+    assert tc.llm_config.provider == "openai"
+    assert tc.llm_config.model == "gpt-x"
+    assert tc.active_llm_fallback is None
+    assert "web_search" in tc.enabled_tools
+    assert "web_search" not in tc.disabled_tools
+    assert "bash_execute" in tc.disabled_tools
+    assert agent._saved  # persisted
+
+
+async def test_threads_configure_target_need_not_be_callable(monkeypatch):
+    # The config target is any OWNED thread; callable is an invocation rule.
+    tc = _configure_tc(callable=False)
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(),
+        "threads.configure",
+        {"id_or_title": "t-9", "instructions": "hi"},
+    )
+    assert result["thread_id"] == "t-9"
+
+
+async def test_threads_configure_resolves_by_callable_name(monkeypatch):
+    tc = _configure_tc(thread_id="t-2", callable=True, callable_name="Helper")
+    agent = _configure_agent(None, callables=[tc], owned=["t-2"])
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(), "threads.configure", {"id_or_title": "helper", "instructions": "x"}
+    )
+    assert result["thread_id"] == "t-2"
+
+
+async def test_threads_configure_ownership_denial(monkeypatch):
+    tc = _configure_tc()
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread,
+        "_check_ownership",
+        lambda a, u, t, name="x": "denied: not your thread",
+    )
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_configure_verb(
+            _ctx(), "threads.configure", {"id_or_title": "t-9", "instructions": "x"}
+        )
+    assert "denied" in str(excinfo.value)
+
+
+async def test_threads_configure_unknown_target(monkeypatch):
+    agent = _configure_agent(None)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_configure_verb(
+            _ctx(), "threads.configure", {"id_or_title": "nope", "instructions": "x"}
+        )
+    assert "no thread matches" in str(excinfo.value)
+
+
+async def test_threads_configure_blocks_admin_only_tools(monkeypatch):
+    tc = _configure_tc()
+    agent = _configure_agent(tc, role="user")
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_configure_verb(
+            _ctx(),
+            "threads.configure",
+            {"id_or_title": "t-9", "tools_enable": ["claude_code"]},
+        )
+    assert "admin-only" in str(excinfo.value)
+    assert not agent._saved  # gate fires before any save
+
+
+async def test_threads_configure_admin_can_enable_admin_tools(monkeypatch):
+    tc = _configure_tc()
+    agent = _configure_agent(tc, role="admin")
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(),
+        "threads.configure",
+        {"id_or_title": "t-9", "tools_enable": ["claude_code"]},
+    )
+    assert "tools_enable" in result["updated"]
+    assert "claude_code" in tc.enabled_tools
+
+
+async def test_threads_configure_enable_disable_conflict(monkeypatch):
+    tc = _configure_tc()
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_configure_verb(
+            _ctx(),
+            "threads.configure",
+            {
+                "id_or_title": "t-9",
+                "tools_enable": ["web_search"],
+                "tools_disable": ["web_search"],
+            },
+        )
+    assert "both enabled and disabled" in str(excinfo.value)
+
+
+async def test_threads_configure_instructions_cap(monkeypatch):
+    tc = _configure_tc()
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_configure_verb(
+            _ctx(),
+            "threads.configure",
+            {"id_or_title": "t-9", "instructions": "x" * 5001},
+        )
+    assert "5000" in str(excinfo.value)
+
+
+async def test_threads_configure_kit_activation(monkeypatch):
+    # Kit-only configure on an owned-but-unconfigured thread: resolution
+    # falls back to a fresh default config, activation runs post-save.
+    agent = _configure_agent(None, owned=["t-9"])
+    calls = {}
+
+    def fake_activate(a, thread_id, user_id, kit):
+        calls["thread_id"], calls["user_id"], calls["kit"] = thread_id, user_id, kit
+        return True, "[Success]: kit activated"
+
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    monkeypatch.setattr(verbs_thread, "_activate_kit", fake_activate)
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(), "threads.configure", {"id_or_title": "t-9", "kit": "web-research"}
+    )
+    assert result == {"thread_id": "t-9", "updated": ["kit"]}
+    assert calls == {"thread_id": "t-9", "user_id": "tester", "kit": "web-research"}
+
+
+async def test_threads_configure_kit_failure_raises(monkeypatch):
+    tc = _configure_tc()
+    agent = _configure_agent(tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    monkeypatch.setattr(
+        verbs_thread,
+        "_activate_kit",
+        lambda a, t, u, k: (False, "[Error]: tool binding failed"),
+    )
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_configure_verb(
+            _ctx(), "threads.configure", {"id_or_title": "t-9", "kit": "bad-kit"}
+        )
+    assert "kit activation failed" in str(excinfo.value)
+
+
+# --- nym.state ----------------------------------------------------------------
+
+
+def _patch_state_store(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        verbs_state, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path)
+    )
+
+
+async def test_state_requires_saved_workflow(monkeypatch, tmp_path):
+    _patch_state_store(monkeypatch, tmp_path)
+    for handler, args in (
+        (verbs_state._state_get_verb, {"key": "k"}),
+        (verbs_state._state_set_verb, {"key": "k", "value": 1}),
+        (verbs_state._state_delete_verb, {"key": "k"}),
+    ):
+        with pytest.raises(VerbError) as excinfo:
+            await handler(_ctx(), "state", args)  # default workflow_id="adhoc"
+        assert "saved workflow" in str(excinfo.value)
+
+
+async def test_state_set_get_roundtrip(monkeypatch, tmp_path):
+    _patch_state_store(monkeypatch, tmp_path)
+    ctx = _ctx(workflow_id="wf-1")
+    stored = await verbs_state._state_set_verb(
+        ctx, "state.set", {"key": "last_hash", "value": {"sha": "abc", "n": 3}}
+    )
+    assert stored == {"key": "last_hash", "stored": True}
+    value = await verbs_state._state_get_verb(
+        ctx, "state.get", {"key": "last_hash"}
+    )
+    assert value == {"sha": "abc", "n": 3}
+    # Absent key: default= when given, None otherwise.
+    assert (
+        await verbs_state._state_get_verb(
+            ctx, "state.get", {"key": "missing", "default": "fallback"}
+        )
+        == "fallback"
+    )
+    assert (
+        await verbs_state._state_get_verb(ctx, "state.get", {"key": "missing"})
+        is None
+    )
+
+
+async def test_state_isolated_per_workflow_and_user(monkeypatch, tmp_path):
+    _patch_state_store(monkeypatch, tmp_path)
+    await verbs_state._state_set_verb(
+        _ctx(workflow_id="wf-1"), "state.set", {"key": "k", "value": "mine"}
+    )
+    other_workflow = await verbs_state._state_get_verb(
+        _ctx(workflow_id="wf-2"), "state.get", {"key": "k"}
+    )
+    other_user = await verbs_state._state_get_verb(
+        _ctx(workflow_id="wf-1", user_id="someone-else"), "state.get", {"key": "k"}
+    )
+    assert other_workflow is None
+    assert other_user is None
+
+
+async def test_state_delete(monkeypatch, tmp_path):
+    _patch_state_store(monkeypatch, tmp_path)
+    ctx = _ctx(workflow_id="wf-1")
+    await verbs_state._state_set_verb(ctx, "state.set", {"key": "k", "value": 1})
+    first = await verbs_state._state_delete_verb(ctx, "state.delete", {"key": "k"})
+    second = await verbs_state._state_delete_verb(ctx, "state.delete", {"key": "k"})
+    assert first == {"key": "k", "deleted": True}
+    assert second == {"key": "k", "deleted": False}
+    assert (
+        await verbs_state._state_get_verb(ctx, "state.get", {"key": "k"}) is None
+    )
+
+
+async def test_state_cap_enforced(monkeypatch, tmp_path):
+    _patch_state_store(monkeypatch, tmp_path)
+    ctx = _ctx(workflow_id="wf-1", budget=WorkflowBudget(state_cap_bytes=16))
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_state._state_set_verb(
+            ctx, "state.set", {"key": "k", "value": "x" * 64}
+        )
+    assert "byte cap" in str(excinfo.value)
+
+
+async def test_state_shrinking_writes_recover_over_cap_documents(
+    monkeypatch, tmp_path
+):
+    # Write under a generous cap, then lower it: delete/set must still offer
+    # a way OUT of the over-cap document (shrinking writes always allowed).
+    _patch_state_store(monkeypatch, tmp_path)
+    big = _ctx(workflow_id="wf-1", budget=WorkflowBudget(state_cap_bytes=4096))
+    await verbs_state._state_set_verb(big, "state.set", {"key": "a", "value": "x" * 200})
+    await verbs_state._state_set_verb(big, "state.set", {"key": "b", "value": "y" * 200})
+
+    small = _ctx(workflow_id="wf-1", budget=WorkflowBudget(state_cap_bytes=64))
+    # A growing write is still refused under the lowered cap...
+    with pytest.raises(VerbError):
+        await verbs_state._state_set_verb(
+            small, "state.set", {"key": "c", "value": "z" * 200}
+        )
+    # ...but deleting a key (a shrinking write) succeeds and recovers space.
+    result = await verbs_state._state_delete_verb(small, "state.delete", {"key": "a"})
+    assert result == {"key": "a", "deleted": True}
+    # And a shrinking set is allowed too.
+    stored = await verbs_state._state_set_verb(
+        small, "state.set", {"key": "b", "value": "tiny"}
+    )
+    assert stored == {"key": "b", "stored": True}
+
+
+async def test_state_corrupt_document_reads_empty(monkeypatch, tmp_path):
+    _patch_state_store(monkeypatch, tmp_path)
+    ctx = _ctx(workflow_id="wf-1")
+    path = verbs_state._state_path("wf-1", "tester")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    assert (
+        await verbs_state._state_get_verb(
+            ctx, "state.get", {"key": "k", "default": "d"}
+        )
+        == "d"
+    )
+
+
+async def test_state_key_and_value_validation(monkeypatch, tmp_path):
+    _patch_state_store(monkeypatch, tmp_path)
+    ctx = _ctx(workflow_id="wf-1")
+    with pytest.raises(VerbError):
+        await verbs_state._state_get_verb(ctx, "state.get", {"key": "  "})
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_state._state_set_verb(ctx, "state.set", {"key": "k"})
+    assert "requires a value" in str(excinfo.value)
+
+
 # --- registry, budget, wire --------------------------------------------------
 
 
-async def test_all_phase2_verbs_registered_with_positionals():
+async def test_all_builtin_verbs_registered_with_positionals():
     load_builtin_verbs()
     meta = verb_metadata()
     assert meta["llm"]["positional"] == ["prompt"]
     assert meta["thread"]["positional"] == ["prompt"]
+    assert meta["threads.create"]["positional"] == ["title"]
+    assert meta["threads.configure"]["positional"] == ["id_or_title"]
+    assert meta["state.get"]["positional"] == ["key"]
+    assert meta["state.set"]["positional"] == ["key", "value"]
+    assert meta["state.delete"]["positional"] == ["key"]
     assert meta["emit"]["positional"] == ["event_type", "payload"]
     assert meta["todo.add"]["positional"] == ["task"]
     assert meta["notify"]["positional"] == ["message"]
