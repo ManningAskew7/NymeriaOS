@@ -6,7 +6,10 @@ Two planes:
   for an event, applies their scratch patches, and reduces their outcomes to a
   single typed ``HookOutcome`` the fire point applies in-band.
 - Observe plane (:func:`adispatch_observe` / :func:`dispatch_observe`):
-  fire-and-forget side effects; never blocks or affects the turn.
+  side-effect hooks; faults are swallowed and no outcome is returned. The
+  dispatch calls themselves still run the hooks in-band; fire points that must
+  not wait use :func:`schedule_observe`, which schedules the dispatch
+  off-turn (a loop task or a dedicated pool) and returns immediately.
 
 Each plane has an async form (for the ``astream`` / ``awrap_tool_call`` seams) and
 a sync form (a bridge for the sync ``chat`` path and the sequential threadpool tool
@@ -28,10 +31,11 @@ import os
 import threading
 import time
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from concurrent.futures import wait as futures_wait
 from dataclasses import replace
-from typing import Awaitable, List, Optional, cast
+from typing import Awaitable, Callable, Dict, List, Optional, Set, cast
 
 from .base import (
     EVENT_OUTCOME_TYPES,
@@ -76,6 +80,23 @@ _observe_pool = ThreadPoolExecutor(
     max_workers=_pool_workers("HOOK_OBSERVE_POOL_WORKERS"),
     thread_name_prefix="hook-observe",
 )
+
+# Runs whole ``dispatch_observe`` calls off-turn for sync fire points (see
+# ``schedule_observe``). DEDICATED pool, never ``_observe_pool``: a dispatcher
+# blocks waiting on ``_observe_pool`` workers for each hook, so dispatchers
+# sharing that pool could occupy every worker and starve the very hooks they
+# wait for (spurious ``saturated`` faults).
+_observe_dispatch_pool = ThreadPoolExecutor(
+    max_workers=_pool_workers("HOOK_OBSERVE_DISPATCH_WORKERS", 2),
+    thread_name_prefix="hook-observe-dispatch",
+)
+
+# Strong references to in-flight fire-and-forget observe work. Event loops
+# hold tasks only weakly (an unreferenced task can be GC'd mid-flight), and the
+# future set gives the sync path a real drain barrier (a sentinel submit cannot
+# tell "queue empty" from "another worker still busy").
+_observe_tasks: Set[asyncio.Task] = set()
+_observe_futures: Set[Future] = set()
 
 
 class _HookTimeout(Exception):
@@ -256,6 +277,28 @@ def _outcome_detail(outcome: Optional[HookOutcome]) -> str:
     return type(outcome).__name__
 
 
+# Statuses that always warrant a live activity line (the hook faulted); an "ok"
+# run is meaningful only when it actually changed something (see _meaningful).
+_ACTIVITY_FAULT_STATUSES = ("error", "timeout", "saturated", "illegal")
+# "ok" details that mean the hook ran but changed nothing model-visible; no line.
+_ACTIVITY_INERT_DETAILS = ("", "allow", "no change")
+
+
+def _meaningful_activity(status: str, detail: str) -> bool:
+    """True if a hook run is worth surfacing as a live in-chat activity line.
+
+    Faults always are. A clean run is only meaningful when it did something
+    (a deny/modify, an inject, a rewrite/note, a continue): a bare ``allow`` or
+    ``no change`` would put a noisy line on every guarded tool call. ``no_op``
+    (ran, returned None) is never surfaced; it lives in ``/hook log``.
+    """
+    if status in _ACTIVITY_FAULT_STATUSES:
+        return True
+    if status == "ok":
+        return detail not in _ACTIVITY_INERT_DETAILS
+    return False
+
+
 def _record(
     registry: HookRegistry,
     reg: Registration,
@@ -265,8 +308,9 @@ def _record(
     duration: float,
     outcome: Optional[HookOutcome] = None,
     error: Optional[BaseException] = None,
+    emit: Optional[Callable[[Dict[str, object]], None]] = None,
 ) -> None:
-    """Report one hook run to the registry's recorder, if any (never raises).
+    """Report one hook run to the registry's recorder + optional activity emitter.
 
     The recorder is an opaque callable the product layer attaches to the
     per-turn registry (bound to the per-user execution log); the engine stays
@@ -276,9 +320,15 @@ def _record(
     OUTSIDE their fault handling: a recording or summarization bug is confined
     to the log entry and can never alter the turn (on the PRE seam, a raise
     inside the dispatch try would become a fail-closed deny).
+
+    ``emit`` is the mutate-plane fire point's collector for ephemeral live
+    activity lines (Slice E): a plain sink (typically ``list.append``) the fire
+    point drains and streams after dispatch. It runs under the same guard as the
+    recorder, and only for a :func:`_meaningful_activity` run, so a broken sink
+    can never crash the turn and no-op runs never reach the stream.
     """
     recorder = getattr(registry, "recorder", None)
-    if recorder is None:
+    if recorder is None and emit is None:
         return
     try:
         if error is not None:
@@ -289,7 +339,17 @@ def _record(
             detail = f"dropped {type(outcome).__name__}"
         else:
             detail = ""
-        recorder(reg, ctx, status=status, detail=detail, duration=duration)
+        if recorder is not None:
+            recorder(reg, ctx, status=status, detail=detail, duration=duration)
+        if emit is not None and _meaningful_activity(status, detail):
+            emit({
+                "name": reg.name,
+                "event": ctx.event.value,
+                "status": status,
+                "detail": detail,
+                "tool_name": ctx.tool_name,
+                "tool_call_id": ctx.tool_call_id,
+            })
     except Exception:  # noqa: BLE001 - recording must never raise into a turn
         logger.warning("hook execution recorder raised", exc_info=True)
 
@@ -444,8 +504,13 @@ async def adispatch(
     registry: Optional[HookRegistry] = None,
     scratch: Optional[ScratchStore] = None,
     timeout: float = DEFAULT_HOOK_TIMEOUT,
+    emit: Optional[Callable[[Dict[str, object]], None]] = None,
 ) -> Optional[HookOutcome]:
-    """Async mutate-plane dispatch: run all matching hooks, reduce to one outcome."""
+    """Async mutate-plane dispatch: run all matching hooks, reduce to one outcome.
+
+    ``emit``, if given, is a sink for ephemeral activity records (Slice E): the
+    fire point passes a collector, then streams what it collected in its own way.
+    """
     registry = registry or default_registry
     scratch = scratch or default_scratch
     regs = registry.matching(event, ctx, observe=False)
@@ -461,7 +526,7 @@ async def adispatch(
         outcome: Optional[HookOutcome] = None
         error: Optional[BaseException] = None
         try:
-            outcome = await _arun_hook(reg, ctx, timeout, _mutate_pool)
+            outcome = await _arun_hook(reg, ctx, reg.timeout or timeout, _mutate_pool)
             status = _accept(event, reg, outcome, ctx, scratch, outcomes)
         except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
             error, status = exc, _fault_status(exc)
@@ -471,7 +536,7 @@ async def adispatch(
         _record(
             registry, reg, ctx,
             status=status, duration=time.monotonic() - started_at,
-            outcome=outcome, error=error,
+            outcome=outcome, error=error, emit=emit,
         )
     return _reduce_safe(event, outcomes)
 
@@ -483,6 +548,7 @@ def dispatch(
     registry: Optional[HookRegistry] = None,
     scratch: Optional[ScratchStore] = None,
     timeout: float = DEFAULT_HOOK_TIMEOUT,
+    emit: Optional[Callable[[Dict[str, object]], None]] = None,
 ) -> Optional[HookOutcome]:
     """Sync mutate-plane dispatch (bridge for no-loop callers)."""
     registry = registry or default_registry
@@ -500,7 +566,7 @@ def dispatch(
         outcome: Optional[HookOutcome] = None
         error: Optional[BaseException] = None
         try:
-            outcome = _run_hook_sync(reg, ctx, timeout, _mutate_pool)
+            outcome = _run_hook_sync(reg, ctx, reg.timeout or timeout, _mutate_pool)
             status = _accept(event, reg, outcome, ctx, scratch, outcomes)
         except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
             error, status = exc, _fault_status(exc)
@@ -510,7 +576,7 @@ def dispatch(
         _record(
             registry, reg, ctx,
             status=status, duration=time.monotonic() - started_at,
-            outcome=outcome, error=error,
+            outcome=outcome, error=error, emit=emit,
         )
     return _reduce_safe(event, outcomes)
 
@@ -539,7 +605,7 @@ async def adispatch_observe(
         status = "ok"
         error: Optional[BaseException] = None
         try:
-            await _arun_hook(reg, ctx, timeout, _observe_pool)
+            await _arun_hook(reg, ctx, reg.timeout or timeout, _observe_pool)
         except Exception as exc:  # noqa: BLE001 - observe never affects the turn
             logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
             error, status = exc, _fault_status(exc)
@@ -569,7 +635,7 @@ def dispatch_observe(
         status = "ok"
         error: Optional[BaseException] = None
         try:
-            _run_hook_sync(reg, ctx, timeout, _observe_pool)
+            _run_hook_sync(reg, ctx, reg.timeout or timeout, _observe_pool)
         except Exception as exc:  # noqa: BLE001 - observe never affects the turn
             logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
             error, status = exc, _fault_status(exc)
@@ -577,3 +643,81 @@ def dispatch_observe(
             registry, reg, ctx,
             status=status, duration=time.monotonic() - started_at, error=error,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Fire-and-forget scheduling (observe plane)
+# --------------------------------------------------------------------------- #
+
+def schedule_observe(
+    event: HookEvent,
+    ctx: HookContext,
+    *,
+    registry: Optional[HookRegistry] = None,
+    scratch: Optional[ScratchStore] = None,
+    timeout: float = DEFAULT_HOOK_TIMEOUT,
+) -> None:
+    """Schedule an observe-plane dispatch off-turn and return immediately.
+
+    This is what makes the observe plane truly fire-and-forget: the fire point
+    no longer waits for the hooks (previously each observe hook's run, up to
+    its timeout, sat in-band on the turn tail or inside the tool call). The
+    per-hook machinery (budgets, recording, fault swallowing) is unchanged;
+    only where the dispatch is awaited moves.
+
+    Never blocks and never raises. Safe from any context, including a
+    ``finally`` during ``GeneratorExit`` (it awaits nothing): with a running
+    loop the dispatch becomes a background task (strong-ref'd in
+    ``_observe_tasks``); without one it is submitted to the dedicated
+    ``_observe_dispatch_pool``. Zero-hook turns return before either.
+
+    Semantics callers accept: side effects may complete after the turn ends
+    (and after the thread lock releases); pending work is best-effort at
+    process shutdown; the scratch snapshot is taken when the dispatch runs,
+    after the same event's in-band mutate hooks.
+    """
+    registry = registry or default_registry
+    try:
+        if not registry.has_observe(event):
+            return
+        try:
+            loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            try:
+                task = loop.create_task(
+                    adispatch_observe(
+                        event, ctx, registry=registry, scratch=scratch, timeout=timeout
+                    )
+                )
+                _observe_tasks.add(task)
+                task.add_done_callback(_observe_tasks.discard)
+                return
+            except RuntimeError:
+                pass  # loop is shutting down; fall through to the pool path
+        future = _observe_dispatch_pool.submit(
+            dispatch_observe, event, ctx, registry=registry, scratch=scratch, timeout=timeout
+        )
+        _observe_futures.add(future)
+        future.add_done_callback(_observe_futures.discard)
+    except Exception:  # noqa: BLE001 - scheduling must never raise into a turn
+        logger.warning("failed to schedule observe hooks on %s", event.value, exc_info=True)
+
+
+async def adrain_observe() -> None:
+    """Await all loop-scheduled observe dispatches (test / shutdown barrier)."""
+    tasks = [t for t in list(_observe_tasks) if not t.done()]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def drain_observe(timeout: float = 5.0) -> None:
+    """Wait for pool-scheduled observe dispatches (test / shutdown barrier).
+
+    Only covers the no-loop path; loop-scheduled tasks belong to their loop and
+    are drained with :func:`adrain_observe` from within it.
+    """
+    futures = [f for f in list(_observe_futures) if not f.done()]
+    if futures:
+        futures_wait(futures, timeout=timeout)

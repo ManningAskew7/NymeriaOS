@@ -16,7 +16,8 @@ from __future__ import annotations
 import logging
 from typing import Callable, Iterable, Optional
 
-from .actions import ACTION_PLANES, ACTIONS
+from ..hook_spec import plane_for
+from .actions import ACTIONS
 from .base import HookContext, HookEvent, HookOutcome
 from .registry import HookRegistry
 
@@ -52,11 +53,13 @@ def build_registry(
 ) -> HookRegistry:
     """Build a fresh registry registering one hook per definition.
 
-    Each hook lands on its action's plane (``ACTION_PLANES``): mutate-plane
-    actions return an in-band outcome; observe-plane actions run fire-and-forget.
-    ``recorder`` (usually ``hook_manager.make_execution_recorder``) is attached
-    to the registry so dispatch reports each run to the per-user execution log;
-    None records nothing.
+    Each hook lands on the plane resolved for its (action, event) pair
+    (``plane_for``): mutate-plane hooks return an in-band outcome; observe-plane
+    hooks run fire-and-forget. Most actions are single-plane; ``run_command``
+    flips per event. ``recorder`` (usually
+    ``hook_manager.make_execution_recorder``) is attached to the registry so
+    dispatch reports each run to the per-user execution log; None records
+    nothing.
     """
     registry = HookRegistry()
     registry.recorder = recorder
@@ -72,7 +75,7 @@ def build_registry(
                 "hook %r has unknown action %r; skipping", definition.id, definition.logic.action
             )
             continue
-        observe = ACTION_PLANES.get(definition.logic.action, "mutate") == "observe"
+        observe = plane_for(definition.logic.action, definition.event) == "observe"
         registry.register(
             event,
             fn,
@@ -80,5 +83,24 @@ def build_registry(
             name=definition.name or definition.id,
             observe=observe,
             definition_id=definition.id,
+            timeout=_reg_timeout(definition),
         )
     return registry
+
+
+def _reg_timeout(definition) -> Optional[float]:
+    """Per-hook dispatcher budget for a definition, or None for the default.
+
+    ``run_command`` carries an author-configured ``timeout_seconds``; the
+    dispatcher budget is set a hair above it (+0.5s) so the action's own
+    subprocess kill fires first and returns a clean outcome, rather than the
+    dispatcher timing the whole hook out.
+    """
+    logic = getattr(definition, "logic", None)
+    secs = getattr(logic, "timeout_seconds", None)
+    if secs is None:
+        return None
+    try:
+        return float(secs) + 0.5
+    except (TypeError, ValueError):
+        return None

@@ -8,14 +8,14 @@
 
 import type { Hook, HookAction, HookCondition, HookEvent } from '$lib/types';
 
-export type HookCategory = 'guardrails' | 'context' | 'reactions';
+export type HookCategory = 'guardrails' | 'context' | 'reactions' | 'commands';
 
 /** Which actions are legal for each event (gates the authoring action list). */
 export const HOOK_EVENT_ACTIONS: Record<HookEvent, HookAction[]> = {
-  prompt_submit: ['inject_context'],
-  pre_tool_use: ['block_if_matches', 'rewrite_arg'],
-  post_tool_use: ['inject_context', 'notify', 'create_todo', 'webhook'],
-  done: ['inject_context', 'notify', 'create_todo', 'webhook'],
+  prompt_submit: ['inject_context', 'run_command'],
+  pre_tool_use: ['block_if_matches', 'rewrite_arg', 'run_command'],
+  post_tool_use: ['inject_context', 'notify', 'create_todo', 'webhook', 'run_command'],
+  done: ['inject_context', 'notify', 'create_todo', 'webhook', 'run_command'],
 };
 
 /** Events that fire around a tool call, where a tool-name matcher applies. */
@@ -28,6 +28,7 @@ const CATEGORY_OF: Record<HookAction, HookCategory> = {
   notify: 'reactions',
   create_todo: 'reactions',
   webhook: 'reactions',
+  run_command: 'commands',
 };
 
 export function hookCategory(action: HookAction): HookCategory {
@@ -60,6 +61,12 @@ export const HOOK_CATEGORIES: HookCategoryMeta[] = [
     label: 'Reactions',
     icon: 'bell',
     description: 'Notify, create a task, or call a webhook',
+  },
+  {
+    key: 'commands',
+    label: 'Commands',
+    icon: 'terminal',
+    description: 'Run a shell command (admin only)',
   },
 ];
 
@@ -100,6 +107,11 @@ export const HOOK_ACTION_META: Record<HookAction, HookActionMeta> = {
     label: 'Webhook',
     icon: 'globe',
     hint: 'POST a rendered body to a URL.',
+  },
+  run_command: {
+    label: 'Run command',
+    icon: 'terminal',
+    hint: 'Run a shell command (admin only; must be enabled on the server).',
   },
 };
 
@@ -166,6 +178,10 @@ export function describeHookLogic(hook: Hook): string {
       const updates = (logic.updates ?? {}) as Record<string, string>;
       const keys = Object.keys(updates);
       return keys.length ? `Rewrite ${keys.join(', ')}${matcher}` : `Rewrite args${matcher}`;
+    }
+    case 'run_command': {
+      const command = String(logic.command ?? '').replace(/\s+/g, ' ').trim();
+      return command ? `Run ${command}${matcher}` : '(no command)';
     }
     default:
       return hook.action;

@@ -33,12 +33,21 @@ TOOL_EVENTS: Tuple[str, ...] = ("pre_tool_use", "post_tool_use")
 
 @dataclass(frozen=True)
 class ActionSpec:
-    """One canned action's place in the taxonomy."""
+    """One canned action's place in the taxonomy.
+
+    ``plane`` is the action's base plane; ``observe_events`` names the subset of
+    ``events`` on which it instead runs on the observe plane. Almost every
+    action is single-plane (``observe_events=()``); ``run_command`` is the
+    exception (a mutate guardrail/injector on prompt_submit/pre_tool_use, a
+    fire-and-forget side effect on post_tool_use/done), so plane is resolved
+    per (action, event) via :func:`plane_for`.
+    """
 
     name: str
-    plane: str  # "mutate" | "observe"
+    plane: str  # base plane: "mutate" | "observe"
     events: Tuple[str, ...]  # events the action may attach to
     text_action: bool = False  # sole config is a single `text` field (alias-authorable)
+    observe_events: Tuple[str, ...] = ()  # events where the plane flips to observe
 
 
 ACTION_SPECS: Dict[str, ActionSpec] = {
@@ -53,6 +62,11 @@ ACTION_SPECS: Dict[str, ActionSpec] = {
         ActionSpec("notify", "observe", ("post_tool_use", "done"), text_action=True),
         ActionSpec("create_todo", "observe", ("post_tool_use", "done"), text_action=True),
         ActionSpec("webhook", "observe", ("post_tool_use", "done")),
+        ActionSpec(
+            "run_command", "mutate",
+            ("prompt_submit", "pre_tool_use", "post_tool_use", "done"),
+            observe_events=("post_tool_use", "done"),
+        ),
     )
 }
 
@@ -67,8 +81,33 @@ def event_actions() -> Dict[str, Set[str]]:
 
 
 def action_planes() -> Dict[str, str]:
-    """Derive the action -> plane map (``core/hooks/actions.ACTION_PLANES``)."""
+    """Derive the action -> base-plane map (``core/hooks/actions.ACTION_PLANES``).
+
+    This is the action's base plane only; for actions that flip plane per event
+    (``run_command``) use :func:`plane_for` at the (action, event) granularity.
+    """
     return {name: spec.plane for name, spec in ACTION_SPECS.items()}
+
+
+def plane_for(action: str, event: str) -> str:
+    """Resolve the dispatch plane for one (action, event) pair.
+
+    Returns ``"observe"`` when the event is in the action's ``observe_events``,
+    else the action's base ``plane``. Unknown actions fall back to ``"mutate"``
+    (the bridge separately drops unknown actions).
+    """
+    spec = ACTION_SPECS.get(action)
+    if spec is None:
+        return "mutate"
+    return "observe" if event in spec.observe_events else spec.plane
+
+
+def plane_by_event(action: str) -> Dict[str, str]:
+    """The event -> plane map for one action (all its legal events)."""
+    spec = ACTION_SPECS.get(action)
+    if spec is None:
+        return {}
+    return {event: plane_for(action, event) for event in spec.events}
 
 
 def text_actions() -> Tuple[str, ...]:

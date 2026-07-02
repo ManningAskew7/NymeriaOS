@@ -36,6 +36,7 @@ _ACTION_CHOICES = [
     app_commands.Choice(name="notify", value="notify"),
     app_commands.Choice(name="create todo", value="create_todo"),
     app_commands.Choice(name="webhook", value="webhook"),
+    app_commands.Choice(name="run command (admin)", value="run_command"),
 ]
 
 _CREATE_SCOPE_CHOICES = [
@@ -106,6 +107,8 @@ class HooksCog(commands.Cog):
         reason="Denial message (block_if_matches)",
         set_arg="Argument rewrite 'arg=value' (rewrite_arg)",
         url="Webhook URL (webhook)",
+        command="Shell command (run_command; admin + HOOKS_RUN_COMMAND_ENABLED only)",
+        timeout="run_command timeout in seconds (1-300, default 10)",
         scope="Thread-scoped (default) or global",
         disabled="Create it disabled",
     )
@@ -124,6 +127,8 @@ class HooksCog(commands.Cog):
         reason: Optional[str] = None,
         set_arg: Optional[str] = None,
         url: Optional[str] = None,
+        command: Optional[str] = None,
+        timeout: Optional[float] = None,
         scope: Optional[app_commands.Choice[str]] = None,
         disabled: bool = False,
     ):
@@ -135,6 +140,9 @@ class HooksCog(commands.Cog):
         parts += _opt("--reason", reason)
         parts += _opt("--set", set_arg)
         parts += _opt("--url", url)
+        parts += _opt("--command", command)
+        if timeout is not None:
+            parts += ["--timeout", str(timeout)]
         if scope:
             parts += ["--scope", scope.value]
         if disabled:
@@ -196,6 +204,8 @@ class HooksCog(commands.Cog):
         text="New injected/notify/todo text",
         reason="New denial message",
         url="New webhook URL",
+        command="New run_command shell command (admin-gated)",
+        timeout="New run_command timeout in seconds",
         condition="Replace conditions with one 'field operator value'",
         set_arg="Replace rewrites with one 'arg=value'",
     )
@@ -212,6 +222,8 @@ class HooksCog(commands.Cog):
         text: Optional[str] = None,
         reason: Optional[str] = None,
         url: Optional[str] = None,
+        command: Optional[str] = None,
+        timeout: Optional[float] = None,
         condition: Optional[str] = None,
         set_arg: Optional[str] = None,
     ):
@@ -228,6 +240,9 @@ class HooksCog(commands.Cog):
         parts += _kv("text", text)
         parts += _kv("reason", reason)
         parts += _kv("url", url)
+        parts += _kv("command", command)
+        if timeout is not None:
+            parts.append(f"timeout={timeout}")
         parts += _opt("--cond", condition)
         parts += _opt("--set", set_arg)
         await self.bot._send_backend_command(

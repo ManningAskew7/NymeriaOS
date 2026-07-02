@@ -193,6 +193,7 @@ def test_post_observe_hook_fires_and_is_ignored():
         dmod.register(HookEvent.POST_TOOL_USE, observe, observe=True)
         node = SafeToolNode([echo])
         out = node.invoke(_msg([_call("hi")]), _config())
+        dmod.drain_observe()  # observe now runs off-turn (pool path on sync invoke)
         assert fired == {"name": "echo", "result": "echo:hi"}
         assert _first_msg(out).content == "echo:hi"  # observe return not applied
     finally:
@@ -208,7 +209,14 @@ def test_async_post_observe_hook_fires():
             return None
         dmod.register(HookEvent.POST_TOOL_USE, observe, observe=True)
         node = SafeToolNode([echo])
-        out = asyncio.run(node.ainvoke(_msg([_call("data")]), _config()))
+
+        async def _run():
+            # Drain inside the same loop: observe now runs as a background task.
+            result = await node.ainvoke(_msg([_call("data")]), _config())
+            await dmod.adrain_observe()
+            return result
+
+        out = asyncio.run(_run())
         assert fired["result"] == "echo:data"
         assert _first_msg(out).content == "echo:data"
     finally:
@@ -222,6 +230,84 @@ def test_async_pre_deny():
         node = SafeToolNode([echo])
         out = asyncio.run(node.ainvoke(_msg([_call("x")]), _config()))
         assert "blocked: async-no" in _first_msg(out).content
+    finally:
+        dmod.reset()
+
+
+def test_pre_deny_emits_hook_activity(monkeypatch):
+    """The sync tool path forwards meaningful mutate runs as hook_activity events."""
+    import nymeria.vendor.react_agent.nodes as nmod
+
+    dmod.reset()
+    captured: list = []
+    monkeypatch.setattr(
+        nmod, "_dispatch_provider_event",
+        lambda name, payload, cfg: captured.append((name, payload)),
+    )
+    try:
+        dmod.register(
+            HookEvent.PRE_TOOL_USE,
+            lambda c: PreToolOutcome(decision="deny", reason="nope"),
+            name="guard",
+        )
+        node = SafeToolNode([echo])
+        node.invoke(_msg([_call("world")]), _config())
+        acts = [p for (n, p) in captured if n == "hook_activity"]
+        assert len(acts) == 1
+        assert acts[0]["name"] == "guard"
+        assert acts[0]["event"] == "pre_tool_use"
+        assert acts[0]["status"] == "ok"
+        assert acts[0]["detail"] == "deny: nope"
+        assert acts[0]["tool_name"] == "echo"
+    finally:
+        dmod.reset()
+
+
+def test_async_post_rewrite_emits_hook_activity(monkeypatch):
+    """The async tool path forwards a post_tool_use rewrite as hook_activity."""
+    import nymeria.vendor.react_agent.nodes as nmod
+
+    dmod.reset()
+    captured: list = []
+
+    async def _fake_emit(name, payload, cfg):
+        captured.append((name, payload))
+
+    monkeypatch.setattr(nmod, "_adispatch_provider_event", _fake_emit)
+    try:
+        dmod.register(
+            HookEvent.POST_TOOL_USE,
+            lambda c: PostToolOutcome(updated_result_text="REDACTED"),
+            name="redactor",
+        )
+        node = SafeToolNode([echo])
+        asyncio.run(node.ainvoke(_msg([_call("secret")]), _config()))
+        acts = [p for (n, p) in captured if n == "hook_activity"]
+        assert len(acts) == 1
+        assert acts[0]["name"] == "redactor"
+        assert acts[0]["event"] == "post_tool_use"
+        assert "rewrite result" in acts[0]["detail"]
+    finally:
+        dmod.reset()
+
+
+def test_pre_allow_emits_no_hook_activity(monkeypatch):
+    """A bare allow is inert and must not put a line on every guarded call."""
+    import nymeria.vendor.react_agent.nodes as nmod
+
+    dmod.reset()
+    captured: list = []
+    monkeypatch.setattr(
+        nmod, "_dispatch_provider_event",
+        lambda name, payload, cfg: captured.append((name, payload)),
+    )
+    try:
+        dmod.register(
+            HookEvent.PRE_TOOL_USE, lambda c: PreToolOutcome(decision="allow"), name="allower"
+        )
+        node = SafeToolNode([echo])
+        node.invoke(_msg([_call("world")]), _config())
+        assert [p for (n, p) in captured if n == "hook_activity"] == []
     finally:
         dmod.reset()
 

@@ -66,6 +66,33 @@ EVENT_ACTIONS: Dict[str, set] = event_actions()
 # surface via ``params_from_fields``.
 TEXT_ACTIONS = text_actions()
 
+# Actions gated behind an admin account AND a deployment opt-in flag, because
+# authoring one is remote code execution on the backend host. Shared by every
+# authoring surface via ``run_command_authoring_error``.
+GATED_ACTIONS = frozenset({"run_command"})
+
+
+def run_command_authoring_error(action: str, *, is_admin: Optional[bool]) -> Optional[str]:
+    """Reason a gated action may not be authored, or ``None`` if allowed.
+
+    Two conditions, both required for a gated action: the deployment enabled it
+    (``HOOKS_RUN_COMMAND_ENABLED``) AND the caller is an admin. Distinct copy
+    per failure so the surface can 403 vs 400 appropriately. ``is_admin`` is the
+    already-resolved caller privilege (each surface resolves it its own way);
+    ``None`` is treated as trusted (a local no-account CLI/agent context).
+    """
+    if action not in GATED_ACTIONS:
+        return None
+    from ..config import get_settings
+    if not getattr(get_settings(), "hooks_run_command_enabled", False):
+        return (
+            f"The '{action}' action is disabled on this deployment. An operator "
+            "must set HOOKS_RUN_COMMAND_ENABLED=true to allow it."
+        )
+    if is_admin is False:
+        return f"The '{action}' action is admin-only (it runs shell commands on the host)."
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Models
@@ -148,6 +175,35 @@ class WebhookLogic(BaseModel):
     )
 
 
+class RunCommandLogic(BaseModel):
+    """Run a shell command; its stdout drives the outcome (admin + flag gated).
+
+    Per-event plane (see ``hook_spec.plane_for``): a mutate guardrail/injector on
+    prompt_submit/pre_tool_use, a fire-and-forget side effect on
+    post_tool_use/done. The hook context is passed to the process as JSON on
+    stdin. Authoring is admin-only and requires ``HOOKS_RUN_COMMAND_ENABLED``;
+    the action re-checks the flag at execution time.
+    """
+
+    action: Literal["run_command"] = "run_command"
+    command: str = Field(
+        ...,
+        min_length=1,
+        max_length=4_000,
+        description="Shell command; receives the hook context as JSON on stdin",
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        ge=1.0,
+        le=300.0,
+        description=(
+            "Subprocess wall-clock budget. The action clamps mutate-plane events "
+            "(prompt_submit/pre_tool_use, which run in-band) to 60s; observe "
+            "events (post_tool_use/done, off-turn) keep the full range."
+        ),
+    )
+
+
 # Discriminated union on ``action``. Store-compatible with legacy inject_context
 # records ({"action":"inject_context","text":...}). Adding an action is a new
 # variant here + an ``ACTIONS``/``ACTION_PLANES`` entry + an ``EVENT_ACTIONS``
@@ -155,7 +211,7 @@ class WebhookLogic(BaseModel):
 HookLogic = Annotated[
     Union[
         InjectContextLogic, BlockIfMatchesLogic, RewriteArgLogic,
-        NotifyLogic, CreateTodoLogic, WebhookLogic,
+        NotifyLogic, CreateTodoLogic, WebhookLogic, RunCommandLogic,
     ],
     Field(discriminator="action"),
 ]
@@ -168,6 +224,7 @@ HOOK_LOGIC_BY_ACTION: Dict[str, type[BaseModel]] = {
     "notify": NotifyLogic,
     "create_todo": CreateTodoLogic,
     "webhook": WebhookLogic,
+    "run_command": RunCommandLogic,
 }
 
 
@@ -247,6 +304,8 @@ def params_from_fields(
     reason: Optional[str] = None,
     updates: Optional[Dict[str, str]] = None,
     url: Optional[str] = None,
+    command: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
 ) -> Optional[dict]:
     """Assemble the logic params dict for ``action`` from flat authoring fields.
 
@@ -263,6 +322,13 @@ def params_from_fields(
             params["url"] = url
         if text is not None:
             params["text"] = text
+        return params or None
+    if action == "run_command":
+        params = {}
+        if command is not None:
+            params["command"] = command
+        if timeout_seconds is not None:
+            params["timeout_seconds"] = timeout_seconds
         return params or None
     params = {}
     if conditions is not None:
@@ -283,6 +349,8 @@ def build_update_kwargs(
     reason: Optional[str] = None,
     updates: Optional[Dict[str, str]] = None,
     url: Optional[str] = None,
+    command: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
     scalars: Optional[dict] = None,
 ) -> dict:
     """Merge flat authoring fields into a kwargs dict for ``update_hook``.
@@ -299,6 +367,7 @@ def build_update_kwargs(
     provided = params_from_fields(
         effective_action, text=text, conditions=conditions,
         reason=reason, updates=updates, url=url,
+        command=command, timeout_seconds=timeout_seconds,
     )
     if provided is not None:
         if switching:

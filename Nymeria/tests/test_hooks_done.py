@@ -409,6 +409,7 @@ def test_fire_done_observe_sync_marks_error():
             thread_id="t1", user_id="u1", is_autonomous=False,
             holder_kind="user", completed_normally=False, final_text="",
         )
+        dmod.drain_observe()  # the fire point schedules off-turn now
         assert seen["normal"] is False
     finally:
         dmod.reset()
@@ -424,6 +425,7 @@ def test_fire_done_observe_sync_normal_completion():
             thread_id="t1", user_id="u1", is_autonomous=False,
             holder_kind="user", completed_normally=True, final_text="ok",
         )
+        dmod.drain_observe()  # the fire point schedules off-turn now
         assert seen["normal"] is True
     finally:
         dmod.reset()
@@ -437,10 +439,15 @@ def test_fire_done_observe_async_marks_error():
             seen["normal"] = c.completed_normally
         dmod.register(HookEvent.DONE, obs, observe=True)
         agent = _bare_agent()
-        asyncio.run(agent._fire_done_observe(
-            thread_id="t1", user_id="u1", is_autonomous=False,
-            holder_kind="user", completed_normally=False, final_text="",
-        ))
+
+        async def _run():
+            await agent._fire_done_observe(
+                thread_id="t1", user_id="u1", is_autonomous=False,
+                holder_kind="user", completed_normally=False, final_text="",
+            )
+            await dmod.adrain_observe()  # the fire point schedules a loop task now
+
+        asyncio.run(_run())
         assert seen["normal"] is False
     finally:
         dmod.reset()
@@ -460,5 +467,68 @@ def test_fire_done_observe_sync_never_raises():
             thread_id="t1", user_id="u1", is_autonomous=False,
             holder_kind="user", completed_normally=False, final_text="",
         )
+        dmod.drain_observe()
+    finally:
+        dmod.reset()
+
+
+def test_hard_cancel_fires_done_observe_via_deferred_finally():
+    """Faithfully simulate astream's deferred-DONE contract (pass 5, slice B).
+
+    astream sets ``done_observe_fired`` at both in-band fire points and its
+    ``finally`` fires the deferred DONE observe (completed_normally=False) when
+    neither ran, which is exactly the hard-cancel path: ``aclose()`` throws
+    GeneratorExit past ``except Exception``. Scheduling never awaits, so the
+    fire is legal inside the closing generator. Uses the real helper + real
+    scheduling under a real ``aclose()``.
+    """
+    dmod.reset()
+    seen = []
+    try:
+        dmod.register(
+            HookEvent.DONE, lambda c: seen.append(c.completed_normally), observe=True
+        )
+        agent = _bare_agent()
+
+        def skeleton():
+            async def gen():
+                done_observe_fired = False
+                try:
+                    yield "one"
+                    yield "two"
+                    agent._fire_done_observe_sync(
+                        thread_id="t1", user_id="u1", is_autonomous=False,
+                        holder_kind="user", completed_normally=True, final_text="done",
+                    )
+                    done_observe_fired = True
+                finally:
+                    if not done_observe_fired:
+                        agent._fire_done_observe_sync(
+                            thread_id="t1", user_id="u1", is_autonomous=False,
+                            holder_kind="user", completed_normally=False, final_text="",
+                        )
+            return gen()
+
+        async def _cancelled_run():
+            gen = skeleton()
+            assert await gen.__anext__() == "one"
+            await gen.aclose()  # GeneratorExit into the suspended yield
+            await dmod.adrain_observe()
+
+        asyncio.run(_cancelled_run())
+        dmod.drain_observe()
+        assert seen == [False]
+
+        seen.clear()
+
+        async def _normal_run():
+            async for _ in skeleton():
+                pass
+            await dmod.adrain_observe()
+
+        asyncio.run(_normal_run())
+        dmod.drain_observe()
+        # Exactly once: the finally must not double-fire after the normal tail.
+        assert seen == [True]
     finally:
         dmod.reset()

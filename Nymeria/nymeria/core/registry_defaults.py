@@ -449,7 +449,8 @@ def register_default_commands(service: "CommandService") -> None:
         category="Automation",
         usage=(
             "/hook create <name> --event E --action A "
-            '[--text ..|--url ..|--cond "f op v"..|--reason ..|--set arg=val..] '
+            '[--text ..|--url ..|--cond "f op v"..|--reason ..|--set arg=val..'
+            "|--command ..|--timeout N] "
             "[--matcher A|B] [--scope thread|global] [--disabled]"
         ),
         aliases=("hook_create",),

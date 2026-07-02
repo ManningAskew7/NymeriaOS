@@ -536,6 +536,23 @@ async def _adispatch_provider_event(
         logger.debug("[LLM] Failed to dispatch %s event: %s", name, exc)
 
 
+def _emit_hook_activity_sync(records: list, run_config: Any) -> None:
+    """Stream collected mutate-plane hook-activity records (sync tool path).
+
+    Each record is an ephemeral ``hook_activity`` custom event surfaced to the
+    chat stream as ``{type: "hook_activity", ...}``. Best-effort: a turn without
+    a callback manager (or a stream that already closed) simply drops the line.
+    """
+    for rec in records:
+        _dispatch_provider_event("hook_activity", dict(rec), run_config)
+
+
+async def _emit_hook_activity(records: list, run_config: Any) -> None:
+    """Async twin of :func:`_emit_hook_activity_sync` for the concurrent tool path."""
+    for rec in records:
+        await _adispatch_provider_event("hook_activity", dict(rec), run_config)
+
+
 def _llm_config_for_fallback(
     llm_config: LLMConfig,
     fallback: Any,
@@ -1587,11 +1604,14 @@ class SafeToolNode(ToolNode):
             return super()._run_one(call, input_type, tool_runtime)
         from langgraph.prebuilt.tool_node import ToolCallRequest
 
+        pre_activity: list = []
         pre = hooks.dispatch(
             hooks.HookEvent.PRE_TOOL_USE,
             self._build_tool_hook_ctx(hooks.HookEvent.PRE_TOOL_USE, call, config),
             registry=registry,
+            emit=pre_activity.append,
         )
+        _emit_hook_activity_sync(pre_activity, config)
         call, denied = self._apply_pre_tool_outcome(pre, call)
         if denied is not None:
             return denied
@@ -1605,11 +1625,17 @@ class SafeToolNode(ToolNode):
             result_text=self._tool_result_text(result),
             tool_status=self._tool_result_status(result),
         )
-        post = hooks.dispatch(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        post_activity: list = []
+        post = hooks.dispatch(
+            hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry,
+            emit=post_activity.append,
+        )
+        _emit_hook_activity_sync(post_activity, config)
         final = self._apply_post_tool_outcome(result, post)
         # Observe-plane side effects (notify/create_todo/webhook) see the same
-        # original result; fire-and-forget, never affects the returned message.
-        hooks.dispatch_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        # original result; scheduled off-turn, so they neither delay the tool
+        # return nor count against the tool timeout budget.
+        hooks.schedule_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
         return final
 
     async def _arun_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
@@ -1620,11 +1646,14 @@ class SafeToolNode(ToolNode):
             return await super()._arun_one(call, input_type, tool_runtime)
         from langgraph.prebuilt.tool_node import ToolCallRequest
 
+        pre_activity: list = []
         pre = await hooks.adispatch(
             hooks.HookEvent.PRE_TOOL_USE,
             self._build_tool_hook_ctx(hooks.HookEvent.PRE_TOOL_USE, call, config),
             registry=registry,
+            emit=pre_activity.append,
         )
+        await _emit_hook_activity(pre_activity, config)
         call, denied = self._apply_pre_tool_outcome(pre, call)
         if denied is not None:
             return denied
@@ -1638,11 +1667,17 @@ class SafeToolNode(ToolNode):
             result_text=self._tool_result_text(result),
             tool_status=self._tool_result_status(result),
         )
-        post = await hooks.adispatch(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        post_activity: list = []
+        post = await hooks.adispatch(
+            hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry,
+            emit=post_activity.append,
+        )
+        await _emit_hook_activity(post_activity, config)
         final = self._apply_post_tool_outcome(result, post)
         # Observe-plane side effects (notify/create_todo/webhook) see the same
-        # original result; fire-and-forget, never affects the returned message.
-        await hooks.adispatch_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
+        # original result; scheduled off-turn (a loop task), so they neither
+        # delay the tool return nor count against the tool timeout budget.
+        hooks.schedule_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
         return final
 
     @staticmethod

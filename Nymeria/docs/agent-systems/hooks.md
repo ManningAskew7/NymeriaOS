@@ -6,8 +6,9 @@ shipped first (the machinery, wired to in-process fixtures); the product surface
 landed on top of it as a set of **canned actions** a user or the agent can attach to an
 event. This document covers both the engine and those actions. The desktop and mobile
 clients ship a GUI over the REST surface (a dashboard **Hooks** panel to author and toggle
-hooks, plus a per-thread **Hooks** tab for enablement); the `run_command` action and the
-`nym` workflow substrate land in later passes.
+hooks, plus a per-thread **Hooks** tab for enablement). The `run_command` action (a hook
+that shells out, admin + deployment-flag gated) ships as the pathfinder for the eventual
+`nym` workflow substrate, which lands in a later pass.
 
 Full design and rationale: `docs/private/plans/lifecycle-hooks.md`.
 
@@ -26,6 +27,7 @@ actions that ship today, and the events they attach to (`EVENT_ACTIONS` in
 | `notify` | observe | `post_tool_use`, `done` | send an in-app + push notification |
 | `create_todo` | observe | `post_tool_use`, `done` | add a user TODO |
 | `webhook` | observe | `post_tool_use`, `done` | POST a JSON payload to a URL |
+| `run_command` | mutate on `prompt_submit`/`pre_tool_use`, observe on `post_tool_use`/`done` | all four | run a shell command with the hook context as JSON on stdin (admin + flag gated) |
 
 **`inject_context`** appends its text to the model-facing tail (`prompt_submit`), to the
 matching tool's result (`post_tool_use`, scope with `matcher`), or re-drives once as a
@@ -52,6 +54,23 @@ raised. `notify` delivers an in-app + push notification (bypassing the autonomou
 gate, since a user-authored hook should always deliver); `create_todo` adds a user TODO;
 `webhook` POSTs `{"text", "thread_id", "user_id"}` to a `{placeholder}`-templated URL through
 the **SSRF-safe** `http_policy` egress helper (private/loopback/metadata targets are refused).
+
+**`run_command`** runs a shell command and is the **one action whose plane flips per event**:
+mutate on `prompt_submit`/`pre_tool_use` (its output can steer the turn), observe on
+`post_tool_use`/`done` (fire-and-forget). It is the pathfinder for the `nym` subprocess
+substrate, so it is deliberately hardened and **double-gated** (admin account AND the
+`HOOKS_RUN_COMMAND_ENABLED` deployment flag, enforced both at authoring on every surface and
+again at execution). The command receives the full hook context as **JSON on stdin** (never
+argv) and runs with a **minimal environment** (`PATH`/`HOME`/`LANG`/`LC_ALL`/`TMPDIR` plus
+`NYMERIA_HOOK_EVENT`/`_THREAD_ID`/`_USER_ID`/`_TOOL_NAME`; no inherited process secrets), in
+its own process group (`start_new_session`), under the author-configured `timeout_seconds`
+(1..300; the mutate/in-band events additionally cap it at 60s so a hook cannot stall a turn).
+On timeout the whole process group is `SIGKILL`ed. The contract by event: on `prompt_submit`,
+exit 0 stdout is injected as context (**fail-open**: a spawn error or non-zero exit injects
+nothing); on `pre_tool_use`, exit 2 is a **deny** (stderr is the reason), exit 0 with empty
+stdout is allow, exit 0 with a JSON decision object is that decision, any other failure or a
+timeout is a **fail-closed deny**; on `post_tool_use`/`done` it is observe (output ignored).
+Output is read-capped (50 KB captured, 10 KB injected).
 
 Actions are store-agnostic: `core/hooks/actions.py` maps each action to its outcome/side
 effect via `ACTIONS`/`ACTION_PLANES`, and `core/hooks/bridge.py::build_registry` turns a
@@ -99,10 +118,11 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   per-action plane/events/params JSON schema, condition operators, the cap; derived
   from `core/hook_spec.py` so clients can render authoring forms from data). The
   request carries `action` plus the flat per-action fields
-  (`text` / `conditions` / `reason` / `updates`); the response exposes the full `logic`
-  object (discriminated on `action`). Every handler pins `user_id` to the authenticated
-  caller; scoped creates pass through the thread-access gate. There is no webhook/fire
-  endpoint (hooks fire in-process only).
+  (`text` / `conditions` / `reason` / `updates` / `url` / `command` / `timeout_seconds`); the
+  response exposes the full `logic` object (discriminated on `action`). Every handler pins
+  `user_id` to the authenticated caller; scoped creates pass through the thread-access gate;
+  authoring (or switching to) `run_command` is rejected for non-admins (403) or when the
+  deployment flag is off (400). There is no webhook/fire endpoint (hooks fire in-process only).
 
 The **desktop and mobile GUI** are clients of that REST surface (not a fourth store
 writer): a dashboard **Hooks** section (`components/hooks/`: category-grouped feed +
@@ -185,8 +205,13 @@ carries `is_autonomous` / `holder_kind` so a hook can scope to a turn source.
 
 ## Two planes
 
-- **Observe plane**: fire-and-forget side effects (`dispatch_observe`). Never blocks
-  or affects the turn; hook faults are logged and swallowed.
+- **Observe plane**: fire-and-forget side effects, **scheduled off-turn** by
+  `schedule_observe` (a background loop task when a loop is running, else the dedicated
+  `_observe_dispatch_pool`, sized by `HOOK_OBSERVE_DISPATCH_WORKERS`). The fire point returns
+  immediately without awaiting the hooks; never blocks or affects the turn, and faults are
+  logged and swallowed. The trade-off callers accept: a side effect may complete *after* the
+  turn ends (and after the thread lock releases), and pending work is best-effort at process
+  shutdown.
 - **Mutate plane**: synchronous, in-band (`dispatch` / `adispatch`). The fire point
   awaits the reduced outcome and applies it. Fault policy: the veto path fails closed
   (a raising `PRE_TOOL_USE` hook becomes a `deny`); every other path fails open
@@ -195,18 +220,21 @@ carries `is_autonomous` / `holder_kind` so a hook can scope to a turn source.
   `updated_args` is dropped, not propagated), and the final reduction is wrapped so it
   can never raise into a turn.
 
-`DONE` and `POST_TOOL_USE` have observe fire points (the latter runs after the mutate POST
-apply, seeing the original tool result; `tool_hooks_active` activates the tool-node seam for
-observe-only tool hooks too). `PROMPT_SUBMIT` / `PRE_TOOL_USE` dispatch on the mutate plane
-only; an observe registration on those events is inert (no product action needs it yet). The
-POST observe dispatch runs in-band on the tool path (fire-and-forget but synchronous, bounded
-by the per-hook timeout), so a slow observe hook adds latency to that tool call. The two
-planes run their sync hooks on **separate thread pools** (`_mutate_pool` / `_observe_pool`,
-sized by `HOOK_MUTATE_POOL_WORKERS` / `HOOK_OBSERVE_POOL_WORKERS`), so a slow observe hook
-cannot starve the worker a fast mutate-plane guardrail needs. If a hook still cannot get a
-worker within its budget, the dispatcher distinguishes that queue-wait timeout from a genuine
-execution overrun: it logs the saturation distinctly and, on `PRE_TOOL_USE`, still fails
-closed (a guardrail that could not be evaluated must not silently pass).
+`DONE` and `POST_TOOL_USE` have observe fire points (the latter is scheduled after the mutate
+POST apply, seeing the original tool result; `tool_hooks_active` activates the tool-node seam
+for observe-only tool hooks too). `PROMPT_SUBMIT` / `PRE_TOOL_USE` dispatch on the mutate plane
+only; an observe registration on those events is inert (no product action needs it yet).
+Because observe now dispatches **off-turn** (`schedule_observe`), a slow observe hook no longer
+adds latency to the tool call or the turn tail: the POST observe is scheduled and the tool
+returns immediately. When observe hooks *do* run, the two planes run their sync hooks on
+**separate thread pools** (`_mutate_pool` / `_observe_pool`, sized by `HOOK_MUTATE_POOL_WORKERS`
+/ `HOOK_OBSERVE_POOL_WORKERS`), and the off-turn dispatchers use their **own** pool
+(`_observe_dispatch_pool`, `HOOK_OBSERVE_DISPATCH_WORKERS`) so a dispatcher waiting on observe
+workers cannot starve the very hooks it dispatches. A slow observe hook thus cannot starve the
+worker a fast mutate-plane guardrail needs. If a hook still cannot get a worker within its
+budget, the dispatcher distinguishes that queue-wait timeout from a genuine execution overrun:
+it logs the saturation distinctly and, on `PRE_TOOL_USE`, still fails closed (a guardrail that
+could not be evaluated must not silently pass).
 
 Multiple hooks on one event all run ("run-all-then-reduce"), so side effects and
 scratch writes are order-independent. Reduction is deterministic in registration
@@ -250,13 +278,15 @@ rather than a parallel re-drive.
   `GraphBubbleUp` re-raise) and fire on both the concurrent and sequential paths. When
   no PRE/POST tool hook is registered, they delegate straight to `super()`, so the hot
   path is unchanged by default.
-- `DONE` observe: dispatched at the normal-completion site of `chat`/`astream` (not the
-  `finally`, where `await`/`yield` are forbidden during GeneratorExit), and **also on the
+- `DONE` observe: dispatched at the normal-completion site of `chat`/`astream`, **also on the
   error path** (`completed_normally=False`) so a `done` `notify`/`webhook` can react to a
-  failed turn. It still does *not* fire on cancel/GeneratorExit (SSE disconnect): the
-  `finally` forbids `await`, and running a possibly-slow observe hook there would delay the
-  force-close (a documented limitation). Both paths share the `_fire_done_observe` /
-  `_fire_done_observe_sync` helpers.
+  failed turn, **and now on cancel/GeneratorExit** (SSE disconnect / `POST /stop`). Because
+  observe is fire-and-forget via `schedule_observe` (which awaits nothing), it is now safe to
+  fire from the force-close `finally`: a `done_observe_fired` flag tracks whether an in-band
+  site already fired, and the `finally` schedules a deferred `_fire_done_observe_sync`
+  (`completed_normally=False`) only when it did not, so a `done` `notify` reliably fires
+  exactly once even when the client disconnects mid-turn. Both paths share the
+  `_fire_done_observe` / `_fire_done_observe_sync` helpers (the async one only schedules).
 - `DONE` **continue**: fires on **both** paths. The async `astream` drain loop and the sync
   `chat` tail each defer `backend.begin_release` until after a DONE-continue check
   (`_maybe_done_continuation` / `_maybe_done_continuation_sync`, the sync twin using the sync
@@ -266,40 +296,61 @@ rather than a parallel re-drive.
   as the `notify` action (`_deliver_hook_user_message`), whether or not a continuation is
   also requested.
 
+## In-chat activity lines (desktop)
+
+Meaningful **mutate-plane** hook runs surface as ephemeral, Claude-Code-style activity lines
+in the chat, drawn with the desktop's curved-elbow treatment (the same `.elbow` the prompt-bar
+hints use), tinted on a fault. They are emitted from the same dispatch seam as the execution
+log: `adispatch`/`dispatch` take an optional `emit` sink, and `_record` feeds it a small
+`hook_activity` record (`name`/`event`/`status`/`detail`/`tool_name`) only for a *meaningful*
+run (a deny/modify/inject/rewrite or a fault; a bare `allow`/`no change`/`no_op` is skipped, so
+a guarded tool call does not draw a line every time). The fire point streams it: the tool node
+(`prompt_submit` under the user message, `pre`/`post_tool_use` around the tool block) rides the
+`hook_activity` custom event; `astream` yields it directly. The lines are **live-only**:
+nothing is persisted, so a reload shows the message without them (the durable record is
+`/hook log`). Observe-plane runs are not surfaced this way (they dispatch off-turn, possibly
+after the stream closes); the `done` line is likewise deferred. Mobile is a later render port;
+the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
+
 ## What is deferred (not yet shipped)
 
-- The `run_command` action (dispatch a slash command from a hook) and presets. The other
-  six actions (`inject_context`, `block_if_matches`, `rewrite_arg`, `notify`, `create_todo`,
-  `webhook`) all ship.
-- The `nym` **workflow** logic substrate (sandboxed, out-of-process).
+- The `nym` **workflow** logic substrate (sandboxed, out-of-process). `run_command` is the
+  shipped subprocess pathfinder for it. The seven canned actions (`inject_context`,
+  `block_if_matches`, `rewrite_arg`, `notify`, `create_todo`, `webhook`, `run_command`) all ship.
 - Observe fire points for `PROMPT_SUBMIT` / `PRE_TOOL_USE` (a registration on those
   events is inert; no product action needs them yet). `POST_TOOL_USE` and `DONE` have
   observe fire points.
-- `DONE` observe on cancel/GeneratorExit (it fires on normal completion and on error, but
-  not on an SSE disconnect: `await` is forbidden in the force-close `finally`).
+- In-chat activity lines for the `done` event and for the mobile client, and the presets
+  library.
 
 ## Package
 
 - `core/hooks/`: `base.py` (contract), `registry.py` (in-process registry, `has_mutating`/
   `has_observe`, the per-turn `recorder` slot), `scratch.py` (per-thread store),
   `dispatch.py` (planes + reduction + fault policy; `tool_hooks_active`; plane-scoped
-  `_mutate_pool`/`_observe_pool` + the queue-wait-vs-execution timeout split; reports
-  each run to the recorder), `actions.py` (the six actions; `ACTION_PLANES` derives
-  from the spec), `bridge.py` (definitions → per-turn registry, registering each on
-  its plane with its `definition_id` + the recorder).
-- `core/hook_spec.py`: the taxonomy single source (`ActionSpec`: plane, legal events,
-  text-action flag). `EVENT_ACTIONS`/`TEXT_ACTIONS` (store) and `ACTION_PLANES`
-  (engine) derive from it; `GET /hooks/schema` exposes it;
+  `_mutate_pool`/`_observe_pool` + the off-turn `schedule_observe` on its own
+  `_observe_dispatch_pool` + the queue-wait-vs-execution timeout split; reports each run to
+  the recorder and, on the mutate plane, to an optional `emit` sink for in-chat lines),
+  `actions.py` (the seven actions incl. `run_command`; per-event planes via the spec's
+  `plane_for`/`plane_by_event`), `bridge.py` (definitions → per-turn registry, registering
+  each on its per-event plane with its `definition_id`, a per-registration timeout, + the
+  recorder).
+- `core/hook_spec.py`: the taxonomy single source (`ActionSpec`: base plane, legal events,
+  `observe_events` for per-event plane flips, text-action flag; `plane_for`/`plane_by_event`).
+  `EVENT_ACTIONS`/`TEXT_ACTIONS` (store) and `ACTION_PLANES` (engine) derive from it;
+  `GET /hooks/schema` exposes it (including `plane_by_event` and a `gated` flag);
   `tests/test_hook_spec.py` pins the independent copies (the engine `ACTIONS` table,
   the logic variants, the frontend `HOOK_EVENT_ACTIONS`) in lockstep.
-- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (six
+- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (seven
   variants) + `HookStore` records + the per-user `HookManager` (store-only, no engine
   import; a corrupt store file is quarantined to `<user>.corrupt-*.json`, never
   silently overwritten), plus the execution log (`HookExecution`,
   `log_execution`/`get_executions` write-behind on a single worker,
   `make_execution_recorder`). Observe actions reuse `core/notifications.py` +
   `core/fcm.py` (notify), `core/todo_manager.py` (create_todo), and
-  `core/http_policy.py` (webhook).
+  `core/http_policy.py` (webhook). `run_command`'s double gate is `GATED_ACTIONS` +
+  `run_command_authoring_error(action, *, is_admin)` (checks `HOOKS_RUN_COMMAND_ENABLED`
+  then admin), shared by all three authoring surfaces and re-checked at execution.
 - `core/conditions.py`: `HookCondition` + `evaluate_conditions` (shared with triggers,
   which re-export `TriggerCondition`).
 - `core/text_format.py`: `safe_format` template substitution (shared with triggers).

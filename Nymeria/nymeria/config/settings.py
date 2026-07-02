@@ -694,6 +694,15 @@ class Settings(BaseSettings):
             "enabled flag; this sits on top. Overridable per-thread."
         ),
     )
+    hooks_run_command_enabled: bool = Field(
+        default=False,
+        description=(
+            "Allow the run_command lifecycle-hook action, which executes a shell "
+            "command on the backend host as the API process user (remote code "
+            "execution for whoever can author one). Off by default; when on, "
+            "authoring is still admin-only. Gated at authoring AND execution time."
+        ),
+    )
     llm_use_model_defaults: bool = Field(
         default=False,
         description="Use model-specific defaults for temperature/top_p/frequency_penalty instead of global values"

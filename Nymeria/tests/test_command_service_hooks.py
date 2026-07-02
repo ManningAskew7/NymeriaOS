@@ -401,3 +401,78 @@ def test_hook_log_unknown_prefix(manager: HookManager) -> None:
     result = _run("/hook log zzzz")
     assert result.success is False
     assert "No hook matching" in result.markdown
+
+
+# --- run_command authoring gate ---------------------------------------------
+
+def _set_run_command_flag(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    from nymeria import config as config_module
+
+    monkeypatch.setattr(
+        config_module, "get_settings",
+        lambda: SimpleNamespace(hooks_run_command_enabled=enabled),
+    )
+
+
+def test_run_command_create_edit_roundtrip(
+    manager: HookManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_run_command_flag(monkeypatch, True)  # caller is admin via patched_agent
+    result = _run(
+        '/hook create RC --event done --action run_command '
+        '--command "echo hi" --timeout 20'
+    )
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.logic.action == "run_command"
+    assert hook.logic.command == "echo hi"
+    assert hook.logic.timeout_seconds == 20
+    edited = _run(f'/hook edit {hook.id[:6]} command="echo bye"')
+    assert edited.success is True, edited.markdown
+    assert manager.get_hooks("alice")[0].logic.command == "echo bye"
+
+
+def test_run_command_requires_command_flag(
+    manager: HookManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_run_command_flag(monkeypatch, True)
+    result = _run('/hook create RC --event done --action run_command')
+    assert result.success is False
+    assert "requires --command" in result.markdown
+    assert manager.get_hooks("alice") == []
+
+
+def test_run_command_denied_when_flag_off(
+    manager: HookManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_run_command_flag(monkeypatch, False)
+    result = _run(
+        '/hook create RC --event done --action run_command --command "echo hi"'
+    )
+    assert result.success is False
+    assert "HOOKS_RUN_COMMAND_ENABLED" in result.markdown
+    assert manager.get_hooks("alice") == []
+
+
+def test_run_command_denied_for_non_admin(
+    manager: HookManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_run_command_flag(monkeypatch, True)
+    # Re-point the current agent at a non-admin account (overrides patched_agent).
+    monkeypatch.setattr(
+        agent_module, "get_current_agent",
+        lambda: SimpleNamespace(accounts_repo=_UserRoleAccountsRepo()),
+    )
+    result = _run(
+        '/hook create RC --event done --action run_command --command "echo hi"'
+    )
+    assert result.success is False
+    assert "admin-only" in result.markdown
+    assert manager.get_hooks("alice") == []
+
+
+class _UserRoleAccountsRepo:
+    def get_user_by_id(self, user_id: str):
+        return SimpleNamespace(
+            id=user_id, email=f"{user_id}@example.test", display_name=user_id, role="user"
+        )

@@ -678,6 +678,31 @@ export function createChatStore() {
     },
 
     /**
+     * Append an ephemeral lifecycle-hook activity line to the streaming
+     * assistant message. Interleaves in the ordered step stream so the line
+     * lands near the tool block (pre/post) or at the top of the turn
+     * (prompt_submit), Claude Code style. Nothing here is persisted: on reload
+     * the message reloads without these lines, which is by design.
+     */
+    addHookActivityStep(
+      data: Pick<MessageStep, 'hookName' | 'hookEvent' | 'hookStatus' | 'hookDetail' | 'hookToolName'>
+    ) {
+      this._forceFlush();
+      if (!isLastAssistantStreaming()) return;
+
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+      if (lastMessage.role !== 'assistant') return;
+
+      const newStep: MessageStep = { type: 'hook_activity', ...data };
+      const updatedSteps = [...(lastMessage.steps || []), newStep];
+      messages = [
+        ...messages.slice(0, lastIndex),
+        { ...lastMessage, steps: updatedSteps }
+      ];
+    },
+
+    /**
      * Update a tool call step with its result.
      */
     updateToolCallStepResult(id: string, result: string, status: ToolCallStatus) {

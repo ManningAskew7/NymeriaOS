@@ -27,6 +27,7 @@ class ApiTestSettings:
     todo_auto_archive_days: int = 7
     scheduler_missed_work_policy: str = "run"
     scheduler_active_execution_stale_minutes: int = 1440
+    hooks_run_command_enabled: bool = False
     nymeria_debug: bool = False
     api_docs_enabled: bool = False
     whatsapp_access_token: str | None = None
