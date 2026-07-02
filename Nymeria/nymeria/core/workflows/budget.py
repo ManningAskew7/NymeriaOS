@@ -49,7 +49,16 @@ class WorkflowBudget:
     log_cap_chars: int = DEFAULT_LOG_CAP_CHARS
     result_cap_chars: int = DEFAULT_RESULT_CAP_CHARS
 
-    def resolve_verb_timeout(self) -> float:
+    def resolve_verb_timeout(self, *, ai: bool = False) -> float:
+        """Per-verb timeout: ``tool_timeout`` for plain verbs, wall clock for AI.
+
+        An AI verb (``nym.llm``, ``nym.thread``) legitimately runs a sub-agent
+        turn that outlives a tool timeout, and it is separately capped by
+        ``max_ai_calls`` and the run's wall-clock watchdog, so its per-frame
+        ceiling is the wall clock rather than ``tool_timeout``.
+        """
+        if ai:
+            return max(1.0, float(self.wall_clock_seconds))
         if self.verb_timeout_seconds is not None:
             return max(1.0, float(self.verb_timeout_seconds))
         try:

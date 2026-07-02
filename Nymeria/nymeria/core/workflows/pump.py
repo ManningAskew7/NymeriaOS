@@ -199,7 +199,7 @@ class VerbPump:
         except WorkflowBudgetExceeded as exc:
             return _error(KIND_BUDGET_EXCEEDED, exc.message)
 
-        timeout = self._ctx.budget.resolve_verb_timeout()
+        timeout = self._ctx.budget.resolve_verb_timeout(ai=spec.ai)
         try:
             result = await asyncio.wait_for(
                 spec.handler(self._ctx, verb, args), timeout=timeout

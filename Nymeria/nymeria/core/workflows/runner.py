@@ -121,8 +121,9 @@ class _Nym:
                 kwargs[name] = value
         self._counter[0] += 1
         request_id = self._counter[0]
+        wire_args = {name: _wire_safe(value) for name, value in kwargs.items()}
         self._channel.send(
-            {"t": "call", "id": request_id, "verb": verb, "args": kwargs}
+            {"t": "call", "id": request_id, "verb": verb, "args": wire_args}
         )
         while True:
             frame = self._channel.recv()
@@ -158,6 +159,33 @@ def _retry(fn, attempts: int = 3, delay: float = 1.0):
             if i + 1 < attempts:
                 time.sleep(max(0.0, float(delay)))
     raise last  # type: ignore[misc]
+
+
+def _wire_safe(value):
+    """Duck-type pydantic-style values into JSON before a frame is sent.
+
+    Stdlib-only by construction: no import, just attribute probes. A model
+    CLASS passed as an argument (the ``schema=MyModel`` idiom) becomes its
+    JSON schema dict; a model INSTANCE becomes its field dict. Without this,
+    ``json.dumps(default=str)`` would stringify either into garbage the
+    parent cannot use. Anything else passes through untouched.
+    """
+    try:
+        if isinstance(value, type):
+            mjs = getattr(value, "model_json_schema", None)
+            if callable(mjs):
+                out = mjs()
+                if isinstance(out, dict):
+                    return out
+        else:
+            dump = getattr(value, "model_dump", None)
+            if callable(dump):
+                out = dump()
+                if isinstance(out, dict):
+                    return out
+    except Exception:  # noqa: BLE001
+        pass  # best-effort conversion; the plain value falls through below
+    return value
 
 
 def _json_safe(value):
