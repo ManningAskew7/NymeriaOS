@@ -130,4 +130,7 @@ def load_builtin_verbs() -> None:
     Grows one line per verb module as phases land. Import errors are raised,
     not swallowed: an engine missing its built-ins is a deployment bug.
     """
-    from . import verbs_tools  # noqa: F401 - registration happens at import
+    from . import verbs_effects  # noqa: F401 - registration happens at import
+    from . import verbs_llm  # noqa: F401
+    from . import verbs_thread  # noqa: F401
+    from . import verbs_tools  # noqa: F401
