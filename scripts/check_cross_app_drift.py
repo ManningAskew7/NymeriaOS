@@ -53,6 +53,8 @@ EXACT_MATCH: set[str] = {
     "lib/services/api/credentials.ts",
     "lib/services/api/humanizeError.ts",
     "lib/services/api/index.ts",
+    "lib/services/api/workflows.ts",
+    "lib/stores/workflows.svelte.ts",
     "lib/utils/fileProcessing.ts",
     "lib/utils/hooks.ts",
     "lib/utils/ids.ts",
@@ -143,6 +145,11 @@ KNOWN_DRIFT: set[str] = {
     "lib/components/hooks/HookFeed.svelte",
     "lib/components/hooks/HookItem.svelte",
     "lib/components/hooks/HookForm.svelte",
+    # Workflows (feed ported from desktop; items diverge per platform idiom:
+    # touch targets + :active on mobile, hover + entrance stagger on desktop)
+    "lib/components/workflows/WorkflowFeed.svelte",
+    "lib/components/workflows/WorkflowApprovalItem.svelte",
+    "lib/components/workflows/WorkflowRunItem.svelte",
     # Notifications: different prop contracts (MOB-003)
     "lib/components/notifications/NotificationCenter.svelte",
     "lib/components/notifications/NotificationItem.svelte",

@@ -5,11 +5,13 @@
   import { TodoFeed } from '$lib/components/dashboard';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
   import HookFeed from '$lib/components/hooks/HookFeed.svelte';
+  import WorkflowFeed from '$lib/components/workflows/WorkflowFeed.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { activityStore } from '$lib/stores/activity.svelte';
   import { todosStore } from '$lib/stores/todos.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
   import { hooksStore } from '$lib/stores/hooks.svelte';
+  import { workflowsStore } from '$lib/stores/workflows.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import { switchToThread } from '$lib/stores/navigation.svelte';
 
@@ -41,6 +43,7 @@
     todosStore.fetch(undefined, tid);
     triggersStore.loadTriggers();
     hooksStore.loadHooks();
+    workflowsStore.loadWorkflows();
   }
 </script>
 
@@ -142,6 +145,20 @@
         <HookFeed {threadTitleMap} onNavigateToThread={navigateToThread} />
       {/if}
     </Collapsible>
+
+    <!-- Workflows Section (global only: runs and approvals are per-user,
+         not per-thread) -->
+    {#if activeTab === 'global'}
+      <Collapsible title="Workflows" defaultOpen={true}>
+        {#snippet header()}
+          <span class="section-heading">Workflows</span>
+          {#if workflowsStore.pendingCount > 0}
+            <span class="section-count">{workflowsStore.pendingCount}</span>
+          {/if}
+        {/snippet}
+        <WorkflowFeed />
+      </Collapsible>
+    {/if}
 
     <!-- Activity Section -->
     <div class="section-divider"></div>

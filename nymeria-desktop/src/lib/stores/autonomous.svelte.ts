@@ -13,6 +13,7 @@ import { activityStore } from './activity.svelte';
 import { todosStore } from './todos.svelte';
 import { threadConfigStore } from './threadConfig.svelte';
 import { notificationStore } from './notifications.svelte';
+import { workflowsStore } from './workflows.svelte';
 import { authPromptStore } from './authPrompt.svelte';
 import { api } from '$lib/services/api.svelte';
 import { debugLog, debugLoggingEnabled } from '$lib/utils/debug';
@@ -1012,6 +1013,32 @@ function createAutonomousStore() {
         break;
 
       // ================================================================
+      // Workflow runtime events (nym runs and approvals)
+      // ================================================================
+
+      case 'workflow_approval':
+      case 'workflow_approval_resolved':
+        // A run suspended on nym.approve, or a suspension was resolved
+        // (possibly by another client); refetch the pending list.
+        workflowsStore.refreshApprovals();
+        break;
+
+      // The autonomous wire is FLAT: the backend spreads the event's data
+      // dict into the top level (event_bus.autonomous_event_to_payload), so
+      // the payload fields live on the event itself, never under `.data`.
+      case 'workflow_step':
+        workflowsStore.noteStepEvent(
+          event as unknown as import('$lib/types').WorkflowStepEvent
+        );
+        break;
+
+      case 'workflow_run_finished':
+        workflowsStore.noteRunFinished(
+          event as unknown as import('$lib/types').WorkflowRunFinishedEvent
+        );
+        break;
+
+      // ================================================================
       // Cross-client sync events (from other frontend instances)
       // ================================================================
 
@@ -1064,8 +1091,8 @@ function createAutonomousStore() {
       // ================================================================
       case 'prompt_injected': {
         if (!isCurrentThread || !isOurTask) break;
-        const data = event.data as { count: number; sources?: string[] };
-        const injected = chatStore.consumeQueuedPrompts(data.count);
+        // Flat wire (see the workflow cases above): `count` is top-level.
+        const injected = chatStore.consumeQueuedPrompts((event.count as number) ?? 0);
         chatStore.flushStreamingBuffers();
         chatStore.setLastMessageComplete();
         chatStore.clearActiveToolCalls();
