@@ -97,13 +97,24 @@ class StepTrace:
         }
 
 
-def persist_run_record(trace: StepTrace, envelope_dict: dict) -> Optional[Path]:
+def persist_run_record(
+    trace: StepTrace,
+    envelope_dict: dict,
+    *,
+    user_id: str = "",
+    thread_id: str = "",
+) -> Optional[Path]:
     """Write one run record and prune old ones; sync, call off-loop.
 
-    Never raises: run records are observability, and losing one must not fail
-    the run that produced it.
+    Records carry ``user_id``/``thread_id``/``status``/``timestamp`` so the
+    read surfaces can scope runs to their owner and sort them without parsing
+    the envelope. Never raises: run records are observability, and losing one
+    must not fail the run that produced it.
     """
     try:
+        from datetime import timezone
+        import datetime as _datetime
+
         from ...config import get_settings
 
         runs_dir = (
@@ -114,7 +125,16 @@ def persist_run_record(trace: StepTrace, envelope_dict: dict) -> Optional[Path]:
         )
         runs_dir.mkdir(parents=True, exist_ok=True)
         path = runs_dir / f"{trace.run_id}.json"
-        record = {"envelope": envelope_dict, "trace": trace.to_dict()}
+        record = {
+            "run_id": trace.run_id,
+            "workflow_id": trace.workflow_id,
+            "user_id": user_id,
+            "thread_id": thread_id,
+            "status": str(envelope_dict.get("status") or ""),
+            "timestamp": _datetime.datetime.now(timezone.utc).isoformat(),
+            "envelope": envelope_dict,
+            "trace": trace.to_dict(),
+        }
         path.write_text(
             json.dumps(record, indent=2, default=str), encoding="utf-8"
         )
@@ -123,6 +143,47 @@ def persist_run_record(trace: StepTrace, envelope_dict: dict) -> Optional[Path]:
     except Exception:  # noqa: BLE001
         logger.warning("workflow run record write failed", exc_info=True)
         return None
+
+
+def read_run_records(
+    workflow_id: str,
+    *,
+    limit: int = 20,
+    user_id: Optional[str] = None,
+) -> List[dict]:
+    """Read recent run records for a workflow, newest first; sync, call off-loop.
+
+    ``user_id`` filters to one owner's runs (pass None for the admin view).
+    Unreadable files are skipped: this is a debugging surface, not a ledger.
+    """
+    try:
+        from ...config import get_settings
+
+        runs_dir = Path(get_settings().data_dir) / "workflows" / "runs" / workflow_id
+        if not runs_dir.is_dir():
+            return []
+        paths = sorted(
+            runs_dir.glob("*.json"),
+            key=lambda p: (p.stat().st_mtime_ns, p.name),
+            reverse=True,
+        )
+        records: List[dict] = []
+        for path in paths:
+            if len(records) >= max(1, limit):
+                break
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            if user_id is not None and record.get("user_id") != user_id:
+                continue
+            records.append(record)
+        return records
+    except Exception:  # noqa: BLE001 - a read surface must never raise into a turn
+        logger.warning("workflow run record read failed", exc_info=True)
+        return []
 
 
 def _prune(runs_dir: Path, cap: Optional[int] = None) -> None:

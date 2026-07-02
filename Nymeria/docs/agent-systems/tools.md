@@ -74,7 +74,8 @@ tools; it provides the operating philosophy and routes to these kits.
 | 4 | `skill_manage` | Skills | MODERATE | List, search, install, enable, disable, prune, and inspect skills |
 | 5 | `http_request` | Core | MODERATE | Make a one-off HTTP request to a documented API endpoint |
 | 6 | `api_discover` | Core | MODERATE | Discover OpenAPI/Swagger metadata for an API base URL |
-| 7 | `tool_create` | Custom | MODERATE | Draft, test, publish, hot-load, and enable reusable HTTP or Python tools |
+| 7 | `tool_create` | Custom | MODERATE | Draft, test, publish, hot-load, and enable reusable HTTP, Python, or nym-SDK workflow tools (workflow revisions execute only after admin approval; admin saves self-approve) |
+| 7b | `workflow_info` | Custom | SAFE | Inspect workflow tools: definitions, approval states, run logs, and (admin) the pending-approval queue; approving happens over REST, never through an agent tool |
 | 8 | `skill_write` | Custom | MODERATE | Write a full SKILL.md package with optional scripts and required tools |
 | 9 | `skill_edit` | Custom | MODERATE | Edit an existing SKILL.md body/frontmatter/tool bindings |
 | 10 | `search_mcp` / `install_mcp_server` | MCP | SAFE/MODERATE | Compatibility low-level MCP helpers |

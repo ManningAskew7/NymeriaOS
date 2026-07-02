@@ -57,8 +57,16 @@ def create_custom_tools_router(
             )
 
         try:
-            definition = build_custom_tool_definition(request)
+            definition = build_custom_tool_definition(request, actor_user_id=user.id)
             loader.save_definition(definition)
+            if definition.implementation_type == "workflow" and definition.workflow_config:
+                from ...core.workflows.authoring import retain_source_revision
+
+                retain_source_revision(
+                    definition.id,
+                    definition.workflow_config.revision_hash,
+                    definition.workflow_config.source_code,
+                )
             get_agent_fn().reload_tools()
 
             return custom_tool_definition_to_response(definition)
@@ -143,9 +151,17 @@ def create_custom_tools_router(
                 detail=f"Tool '{tool_id}' not found",
             )
 
-        apply_custom_tool_update(definition, request)
+        apply_custom_tool_update(definition, request, actor_user_id=user.id)
 
         loader.save_definition(definition)
+        if definition.implementation_type == "workflow" and definition.workflow_config:
+            from ...core.workflows.authoring import retain_source_revision
+
+            retain_source_revision(
+                definition.id,
+                definition.workflow_config.revision_hash,
+                definition.workflow_config.source_code,
+            )
         get_agent_fn().reload_tools()
 
         return custom_tool_definition_to_response(definition)
@@ -221,6 +237,35 @@ def create_custom_tools_router(
                     request.params,
                     target_id=definition.id,
                 )
+            elif definition.implementation_type == "workflow":
+                if definition.workflow_config is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Tool '{tool_id}' is type 'workflow' but has no workflow_config",
+                    )
+                from ...core.workflows.authoring import (
+                    budget_from_config,
+                    workflow_execution_gate,
+                )
+                from ...core.workflows.executor import execute_workflow
+                from ...core.workflows.tool_runtime import format_envelope_for_agent
+
+                gate_error = workflow_execution_gate(
+                    definition.workflow_config, definition.parameters
+                )
+                if gate_error:
+                    result = f"[Error]: approval_required - {gate_error}"
+                else:
+                    run = await execute_workflow(
+                        source=definition.workflow_config.source_code,
+                        entrypoint=definition.workflow_config.entrypoint,
+                        params=request.params,
+                        user_id=user.id,
+                        thread_id="",
+                        workflow_id=definition.id,
+                        budget=budget_from_config(definition.workflow_config),
+                    )
+                    result = format_envelope_for_agent(run.envelope)
             else:
                 result = f"[Error]: Unknown implementation type: {definition.implementation_type}"
 

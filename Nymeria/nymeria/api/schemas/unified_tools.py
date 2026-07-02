@@ -33,6 +33,7 @@ class UnifiedToolResponse(BaseModel):
     http_config: dict[str, Any] | None = None
     mcp_config: dict[str, Any] | None = None
     python_config: dict[str, Any] | None = None
+    workflow_config: dict[str, Any] | None = None
     tags: list[str] = []
     editable: bool = False
     configurable: bool = False
@@ -136,6 +137,7 @@ def custom_tool_definition_to_unified(
     http_config = None
     mcp_config = None
     python_config = None
+    workflow_config = None
 
     if impl_type == "http" and defn.http_config is not None:
         http_config = {
@@ -167,6 +169,20 @@ def custom_tool_definition_to_unified(
             "entrypoint": defn.python_config.entrypoint,
             "runtime": defn.python_config.runtime,
         }
+    elif impl_type == "workflow" and defn.workflow_config is not None:
+        from ...core.workflows.authoring import approval_state
+
+        workflow_config = {
+            "source_code": defn.workflow_config.source_code,
+            "entrypoint": defn.workflow_config.entrypoint,
+            "continuations": list(defn.workflow_config.continuations),
+            "wall_clock_seconds": defn.workflow_config.wall_clock_seconds,
+            "max_calls": defn.workflow_config.max_calls,
+            "max_ai_calls": defn.workflow_config.max_ai_calls,
+            "revision_hash": defn.workflow_config.revision_hash,
+            "approval": approval_state(defn.workflow_config, defn.parameters),
+            "created_by": defn.workflow_config.created_by,
+        }
 
     params = None
     if defn.parameters:
@@ -196,6 +212,7 @@ def custom_tool_definition_to_unified(
         http_config=http_config,
         mcp_config=mcp_config,
         python_config=python_config,
+        workflow_config=workflow_config,
         tags=defn.tags or [],
         editable=True,
         configurable=False,

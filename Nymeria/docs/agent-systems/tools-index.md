@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1255 tools found.**
+**1256 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1220,6 +1220,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `wordpress_get_record` | `nymeria/tools/content_management_service_integrations.py` | Get a WordPress post, page, or user by ID. |
 | `wordpress_list_records` | `nymeria/tools/content_management_service_integrations.py` | List WordPress posts, pages, or users. |
 | `wordpress_update_record` | `nymeria/tools/content_management_service_integrations.py` | Update a WordPress post, page, or user. |
+| `workflow_info` | `nymeria/tools/workflow_info.py` | Inspect nym-SDK workflow tools: definitions, approvals, and run logs. |
 | `xero_create_contact` | `nymeria/tools/commerce_billing_service_integrations.py` | Create a Xero contact. |
 | `xero_create_invoice` | `nymeria/tools/commerce_billing_service_integrations.py` | Create a Xero invoice. |
 | `xero_get_record` | `nymeria/tools/commerce_billing_service_integrations.py` | Get a Xero contact or invoice by ID. |

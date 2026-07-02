@@ -35,6 +35,7 @@ from ..api.routers.commands import create_commands_router
 from ..api.routers.credentials import create_credentials_router
 from ..api.routers.credential_prompts import create_credential_prompts_router
 from ..api.routers.custom_tools import create_custom_tools_router
+from ..api.routers.workflows import create_workflows_router
 from ..api.routers.activity import create_activity_router
 from ..api.routers.notifications_config import create_notifications_config_router
 from ..api.routers.agent_threads import create_agent_threads_router
@@ -964,6 +965,7 @@ def create_api_app(
         )
     )
     app.include_router(create_custom_tools_router(require_admin_user, get_agent))
+    app.include_router(create_workflows_router(require_admin_user, verify_api_key))
     app.include_router(
         create_settings_router(
             verify_api_key,

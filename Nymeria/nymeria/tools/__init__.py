@@ -168,6 +168,7 @@ from .tool_order import run_tools_in_order
 from .tool_search import tool_manage, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
+from .workflow_info import workflow_info, WORKFLOW_INFO_TOOLS
 from .auth_manager import auth_inspect, auth_cleanup, auth_bindings, AUTH_MANAGER_TOOLS
 from .credential_prompt import request_credential, REQUEST_CREDENTIAL_TOOLS
 from .skill_config import (
@@ -1424,6 +1425,7 @@ CATALOG_TOOLS = {t.name: t for t in (
     + SEARCH_MCP_TOOLS
     + HTTP_API_TOOLS
     + TOOL_CREATE_TOOLS
+    + WORKFLOW_INFO_TOOLS
     + SKILL_CONFIG_TOOLS
     + AUTH_MANAGER_TOOLS
     + REQUEST_CREDENTIAL_TOOLS
@@ -2865,6 +2867,8 @@ __all__ = [
     "HTTP_API_TOOLS",
     "tool_create",
     "TOOL_CREATE_TOOLS",
+    "workflow_info",
+    "WORKFLOW_INFO_TOOLS",
     "auth_inspect",
     "auth_cleanup",
     "auth_bindings",

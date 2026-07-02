@@ -1,11 +1,14 @@
 """Custom tool loader and executor.
 
 Loads custom tool definitions from JSON files and converts them to
-LangChain @tool functions. Supports HTTP, MCP, and Python tool implementations.
+LangChain @tool functions. Supports HTTP, MCP, Python, and workflow tool
+implementations.
 
 HTTP tools make REST API calls with parameter interpolation.
 MCP tools communicate with Model Context Protocol servers via JSON-RPC.
 Python tools execute configured source code in a child process.
+Workflow tools run nym-SDK source through the core/workflows engine
+(subprocess + verb RPC), gated on per-revision admin approval.
 
 Based on MCP best practices 2025-2026:
 - Environment variable interpolation for secrets
@@ -126,6 +129,8 @@ class CustomToolLoader:
                 tool = self._create_mcp_tool(definition)
             elif definition.implementation_type == "python":
                 tool = self._create_python_tool(definition)
+            elif definition.implementation_type == "workflow":
+                tool = self._create_workflow_tool(definition)
             else:
                 logger.error(f"Unknown implementation type: {definition.implementation_type}")
                 return None
@@ -220,6 +225,37 @@ class CustomToolLoader:
                 target_id=definition.id,
             ),
             coroutine=execute_python,
+            name=definition.id,
+            description=definition.description,
+            args_schema=_create_pydantic_schema(definition.id, definition.parameters),
+        )
+
+    def _create_workflow_tool(self, definition: CustomToolDefinition) -> BaseTool:
+        """Create a nym-SDK workflow tool (subprocess + verb RPC engine).
+
+        Coroutine-only: the workflow engine needs the running event loop for
+        its per-run RPC listener, and the agent runtime is async. The
+        coroutine re-reads the definition from this loader at call time (the
+        execution-time approval re-gate), so the closure captures only the id.
+        The ``config`` parameter's ``RunnableConfig`` annotation makes
+        langchain inject the run config (the bash.py pattern), which carries
+        ``user_id``/``thread_id``/``workflow_depth``.
+        """
+        from langchain_core.runnables import RunnableConfig
+
+        tool_id = definition.id
+        loader = self
+
+        async def execute_workflow_tool(
+            config: RunnableConfig = None,  # type: ignore[assignment]
+            **kwargs: Any,
+        ) -> str:
+            from .workflows.tool_runtime import run_workflow_tool
+
+            return await run_workflow_tool(loader, tool_id, kwargs, config)
+
+        return StructuredTool.from_function(
+            coroutine=execute_workflow_tool,
             name=definition.id,
             description=definition.description,
             args_schema=_create_pydantic_schema(definition.id, definition.parameters),
