@@ -6,5 +6,6 @@ from .config import ConfigCog
 from .tools import ToolsCog
 from .memory import MemoryCog
 from .info import InfoCog
+from .hooks import HooksCog
 
-ALL_COGS = [ChatCog, TodosCog, ConfigCog, ToolsCog, MemoryCog, InfoCog]
+ALL_COGS = [ChatCog, TodosCog, ConfigCog, ToolsCog, MemoryCog, InfoCog, HooksCog]
