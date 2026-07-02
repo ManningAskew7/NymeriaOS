@@ -391,7 +391,13 @@ async def execute_workflow(
 
     if persist_record:
         try:
-            await asyncio.to_thread(persist_run_record, trace, envelope.to_dict())
+            await asyncio.to_thread(
+                persist_run_record,
+                trace,
+                envelope.to_dict(),
+                user_id=user_id,
+                thread_id=thread_id,
+            )
         except Exception:  # noqa: BLE001 - observability must not fail the run
             logger.warning("workflow run-record persistence failed", exc_info=True)
 

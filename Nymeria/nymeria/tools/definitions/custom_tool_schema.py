@@ -126,10 +126,99 @@ class PythonToolConfig(BaseModel):
     )
 
 
+class WorkflowToolConfig(BaseModel):
+    """Configuration for nym-SDK workflow custom tools.
+
+    The source runs out of process against the parent-side nym.* verb RPC
+    (core/workflows). The definition's ``parameters`` map is DERIVED from the
+    entrypoint signature at draft time (never hand-declared), and
+    ``revision_hash`` covers {source, entrypoint, continuations, parameters},
+    so any behavior-changing edit resets approval by construction. Execution
+    of a revision requires ``approved_revision`` to equal the recomputed hash
+    (checked at execution time; see core/workflows/authoring.py).
+    """
+
+    source_code: str = Field(
+        ...,
+        min_length=1,
+        description="Python source containing the workflow entrypoint",
+    )
+    entrypoint: str = Field(
+        default="run",
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description="Entrypoint function name to invoke",
+    )
+    continuations: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Declared continuation entrypoints for nym.approve resume; each "
+            "must exist in the source with signature (state, decision)"
+        ),
+    )
+    revision_hash: str = Field(
+        default="",
+        description=(
+            "Content hash over {source, entrypoint, continuations, parameters}; "
+            "recomputed on every save"
+        ),
+    )
+    approved_revision: Optional[str] = Field(
+        default=None,
+        description="revision_hash an admin approved; execution requires a match",
+    )
+    approved_by: Optional[str] = Field(default=None, description="Approving admin user id")
+    approved_at: Optional[datetime] = Field(default=None, description="Approval timestamp")
+    declined_by: Optional[str] = Field(default=None, description="Declining admin user id")
+    declined_at: Optional[datetime] = Field(default=None, description="Decline timestamp")
+    declined_revision: Optional[str] = Field(
+        default=None,
+        description="revision_hash an admin declined (a re-request needs an edit)",
+    )
+    decline_note: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Admin note explaining a decline (author-visible)",
+    )
+    created_by: str = Field(
+        default="",
+        description="Author user id; approval decisions notify this user",
+    )
+    wall_clock_seconds: Optional[float] = Field(
+        default=None,
+        ge=5,
+        le=3600,
+        description="Budget override: run wall clock (engine default when unset)",
+    )
+    max_calls: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=500,
+        description="Budget override: total nym.* calls (engine default when unset)",
+    )
+    max_ai_calls: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Budget override: AI nym.* calls (engine default when unset)",
+    )
+
+    @field_validator("continuations")
+    @classmethod
+    def validate_continuations(cls, v: List[str]) -> List[str]:
+        """Each continuation must be a valid Python identifier."""
+        import re
+
+        for name in v:
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name or ""):
+                raise ValueError(f"invalid continuation entrypoint name: {name!r}")
+        return v
+
+
 class CustomToolDefinition(BaseModel):
     """Complete definition of a custom tool.
 
-    Custom tools can be HTTP-based, MCP-based, or subprocess-backed Python.
+    Custom tools can be HTTP-based, MCP-based, subprocess-backed Python, or
+    nym-SDK workflows.
 
     The tool is converted to a LangChain @tool function at runtime,
     with parameters extracted from the definition.
@@ -158,7 +247,7 @@ class CustomToolDefinition(BaseModel):
         default_factory=dict,
         description="Tool parameters with their schemas",
     )
-    implementation_type: Literal["http", "mcp", "python"] = Field(
+    implementation_type: Literal["http", "mcp", "python", "workflow"] = Field(
         ...,
         description="Type of tool implementation",
     )
@@ -173,6 +262,10 @@ class CustomToolDefinition(BaseModel):
     python_config: Optional[PythonToolConfig] = Field(
         default=None,
         description="Python tool configuration (required if type is 'python')",
+    )
+    workflow_config: Optional[WorkflowToolConfig] = Field(
+        default=None,
+        description="Workflow tool configuration (required if type is 'workflow')",
     )
     enabled: bool = Field(
         default=True,
@@ -205,6 +298,8 @@ class CustomToolDefinition(BaseModel):
             raise ValueError("mcp_config is required when implementation_type is 'mcp'")
         if self.implementation_type == "python" and self.python_config is None:
             raise ValueError("python_config is required when implementation_type is 'python'")
+        if self.implementation_type == "workflow" and self.workflow_config is None:
+            raise ValueError("workflow_config is required when implementation_type is 'workflow'")
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Convert parameters to JSON Schema format for LangChain."""
@@ -238,4 +333,5 @@ __all__ = [
     "MCPToolConfig",
     "PythonToolConfig",
     "ToolParameter",
+    "WorkflowToolConfig",
 ]

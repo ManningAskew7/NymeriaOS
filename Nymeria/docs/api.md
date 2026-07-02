@@ -2492,6 +2492,80 @@ Import tools from a JSON array.
 
 ---
 
+## Workflow Approvals API
+
+Custom tools with `implementation_type: "workflow"` carry a per-revision
+approval gate: a content hash over `{source, entrypoint, continuations,
+parameters}` must be admin-approved before the workflow can run. These routes
+are the resolution surface. Approval is deliberately REST-only (no agent tool
+can approve), so a prompt-injected turn cannot satisfy the gate.
+
+### List Pending Workflow Revisions
+
+**Admin-only.**
+
+```http
+GET /workflows/pending
+Authorization: Bearer <admin-token>
+```
+
+Returns drafts and published workflow tools whose current revision is neither
+approved nor declined. Each entry includes `kind` (`draft` or `tool`), `id`,
+`owner_user_id`, `tool_id`, `author`, `revision` (the content hash), and
+`parameter_names`.
+
+### Review Workflow Source
+
+**Admin-only.**
+
+```http
+GET /workflows/source?kind=draft&id=<id>&owner_user_id=<user>
+Authorization: Bearer <admin-token>
+```
+
+The review view: the pending entry fields plus `source_code` and the current
+`approval` state. `owner_user_id` is required for `kind=draft`.
+
+### Approve / Decline a Revision
+
+**Admin-only.**
+
+```http
+POST /workflows/approve
+POST /workflows/decline
+Content-Type: application/json
+Authorization: Bearer <admin-token>
+```
+
+**Request Body:**
+```json
+{
+  "kind": "draft",
+  "id": "wf_daily_digest",
+  "owner_user_id": "user-123",
+  "note": "optional note for the author",
+  "revision": "optional content hash the admin reviewed"
+}
+```
+
+Approving pins the hash recomputed from content; declining records the
+decision (and revokes a same-hash approval). The author is notified either
+way. When `revision` is supplied and the content on disk no longer hashes to
+it, the call fails with **409** so an admin never blesses an edit they did
+not review. Unknown targets return **404**.
+
+### Workflow Run Records
+
+```http
+GET /workflows/runs/{workflow_id}?limit=20
+Authorization: Bearer <token>
+```
+
+Recent run records (`run_id`, `status`, `timestamp`, envelope and step trace).
+Admins see every run; other callers see only their own.
+
+---
+
 ## Callable Threads API
 
 Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool  -  but only within threads owned by the **same user** that owns the callable. The tool registry is global, but `_build_graph_with_prompt` filters callables by ownership when building each user's graph, and the runtime gate in `agents/tool_factory.py` rejects cross-user invocations even on cache stale paths. Admins can route through another user's callables via `X-Nymeria-Act-As`.

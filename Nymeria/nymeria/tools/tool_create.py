@@ -1,8 +1,16 @@
 """Agent-facing custom tool creation workflow.
 
-V1 supports HTTP custom tools only. Drafts are scoped per user; published
-definitions go into the global custom-tool registry but are not enabled by
-default for other users or threads.
+Supports HTTP, Python, and nym-SDK workflow custom tools. Drafts are scoped
+per user; published definitions go into the global custom-tool registry but
+are not enabled by default for other users or threads.
+
+Workflow tools follow the per-revision approval model (plan:
+docs/private/plans/workflow-tools.md "Authoring gate"): ANY user may draft
+(authoring is inert), but executing a revision (test, publish, run) requires
+an admin-approved revision hash. Admin saves self-approve; non-admin saves
+create a pending request announced to admins. The approval service functions
+(``list_pending_workflows`` / ``resolve_workflow_approval``) live here so the
+REST router and the ``workflow_info`` tool share one implementation.
 """
 
 from __future__ import annotations
@@ -29,11 +37,23 @@ from ..core.python_custom_tools import (
 from ..core.time_utils import utc_now
 from ..core.time_utils import parse_tool_ttl
 from ..core.tool_reload import tool_reload_command
+from ..core.workflows.authoring import (
+    approval_state,
+    approve_revision,
+    budget_from_config,
+    config_revision_hash,
+    decline_revision,
+    retain_source_revision,
+    stamp_revision,
+    validate_workflow_static,
+    workflow_execution_gate,
+)
 from .definitions.custom_tool_schema import (
     CustomToolDefinition,
     HTTPToolConfig,
     PythonToolConfig,
     ToolParameter,
+    WorkflowToolConfig,
 )
 from .tool_search import DEFAULT_TTL, _enable
 from .utils import get_thread_id, get_user_id, versioned_json_result
@@ -50,16 +70,17 @@ CREDENTIAL_REF_PATTERN = re.compile(
 
 
 class HTTPToolDraft(BaseModel):
-    """Persisted draft for an agent-created HTTP or Python tool."""
+    """Persisted draft for an agent-created HTTP, Python, or workflow tool."""
 
     draft_id: str
     tool_id: str
     name: str
     description: str
     parameters: dict[str, ToolParameter] = Field(default_factory=dict)
-    implementation_type: Literal["http", "python"] = "http"
+    implementation_type: Literal["http", "python", "workflow"] = "http"
     http_config: Optional[HTTPToolConfig] = None
     python_config: Optional[PythonToolConfig] = None
+    workflow_config: Optional[WorkflowToolConfig] = None
     created_by_user_id: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -70,7 +91,12 @@ class HTTPToolDraft(BaseModel):
     last_test_error: Optional[str] = None
 
     def public_summary(self) -> dict[str, Any]:
-        return {
+        entrypoint = None
+        if self.python_config:
+            entrypoint = self.python_config.entrypoint
+        elif self.workflow_config:
+            entrypoint = self.workflow_config.entrypoint
+        summary = {
             "draft_id": self.draft_id,
             "tool_id": self.tool_id,
             "name": self.name,
@@ -79,11 +105,18 @@ class HTTPToolDraft(BaseModel):
             "parameter_names": sorted(self.parameters.keys()),
             "method": self.http_config.method if self.http_config else None,
             "url": self.http_config.url if self.http_config else None,
-            "entrypoint": self.python_config.entrypoint if self.python_config else None,
+            "entrypoint": entrypoint,
             "last_test_ok": self.last_test_ok,
             "last_tested_at": self.last_tested_at.isoformat() if self.last_tested_at else None,
             "updated_at": self.updated_at.isoformat(),
         }
+        if self.workflow_config is not None:
+            summary["revision"] = self.workflow_config.revision_hash[:12]
+            summary["approval"] = approval_state(self.workflow_config, self.parameters)
+            summary["continuations"] = list(self.workflow_config.continuations)
+            if self.workflow_config.decline_note:
+                summary["decline_note"] = self.workflow_config.decline_note
+        return summary
 
 
 class ToolDraftStore:
@@ -137,6 +170,14 @@ class ToolDraftStore:
 
 def _draft_store() -> ToolDraftStore:
     return ToolDraftStore(get_settings().data_dir / "tool_drafts")
+
+
+class WorkflowApprovalRequired(ValueError):
+    """Raised when an unapproved workflow revision is asked to execute."""
+
+
+class WorkflowRevisionMismatch(ValueError):
+    """Raised when an approval targets a revision the content no longer matches."""
 
 
 def _json_result(**payload: Any) -> str:
@@ -249,6 +290,40 @@ def _coerce_python_config(python_code: str, entrypoint: str = "run") -> PythonTo
         raise ValueError(f"Invalid python_config: {exc}") from exc
 
 
+_WORKFLOW_BUDGET_KEYS = ("wall_clock_seconds", "max_calls", "max_ai_calls")
+
+
+def _coerce_workflow_config(
+    python_code: str,
+    entrypoint: str = "run",
+    continuations: Optional[list[Any]] = None,
+    budget: Optional[dict[str, Any]] = None,
+) -> WorkflowToolConfig:
+    code = (python_code or "").strip()
+    if not code:
+        raise ValueError("python_code is required for workflow tools (the nym-SDK source)")
+    overrides: dict[str, Any] = {}
+    if budget is not None:
+        if not isinstance(budget, dict):
+            raise ValueError("budget must be an object")
+        unknown = set(budget) - set(_WORKFLOW_BUDGET_KEYS)
+        if unknown:
+            raise ValueError(
+                f"unknown budget key(s): {', '.join(sorted(map(str, unknown)))}; "
+                f"allowed: {', '.join(_WORKFLOW_BUDGET_KEYS)}"
+            )
+        overrides = {k: budget[k] for k in _WORKFLOW_BUDGET_KEYS if budget.get(k) is not None}
+    try:
+        return WorkflowToolConfig(
+            source_code=code,
+            entrypoint=entrypoint or "run",
+            continuations=[str(c) for c in (continuations or [])],
+            **overrides,
+        )
+    except ValidationError as exc:
+        raise ValueError(f"Invalid workflow_config: {exc}") from exc
+
+
 def _reserved_tool_names(agent: Any = None) -> set[str]:
     from . import SEED_TOOLS, CATALOG_TOOLS
 
@@ -283,6 +358,8 @@ def create_draft_definition(
     implementation_type: str = "http",
     python_code: str = "",
     entrypoint: str = "run",
+    continuations: Optional[list[Any]] = None,
+    budget: Optional[dict[str, Any]] = None,
     draft_id: str = "",
     agent: Any = None,
 ) -> HTTPToolDraft:
@@ -300,15 +377,33 @@ def create_draft_definition(
     if not clean_description:
         raise ValueError("description is required")
     impl = (implementation_type or "http").strip().lower()
-    if impl not in {"http", "python"}:
-        raise ValueError("implementation_type must be 'http' or 'python'")
+    if impl not in {"http", "python", "workflow"}:
+        raise ValueError("implementation_type must be 'http', 'python', or 'workflow'")
 
-    clean_parameters = _coerce_parameters(parameters)
     clean_http_config = None
     clean_python_config = None
-    if impl == "http":
+    clean_workflow_config = None
+    if impl == "workflow":
+        # Workflow parameters are DERIVED from the entrypoint signature
+        # (generation replaces cross-validation); a declared map would drift.
+        if parameters:
+            raise ValueError(
+                "workflow parameters are derived from the entrypoint signature; "
+                "do not pass parameters"
+            )
+        clean_workflow_config = _coerce_workflow_config(
+            python_code, entrypoint, continuations, budget
+        ).model_copy(update={"created_by": user_id})
+        derived, errors = validate_workflow_static(config=clean_workflow_config)
+        if errors:
+            raise ValueError("; ".join(errors))
+        clean_parameters = derived
+        clean_workflow_config = stamp_revision(clean_workflow_config, derived)
+    elif impl == "http":
+        clean_parameters = _coerce_parameters(parameters)
         clean_http_config = _coerce_http_config(http_config)
     else:
+        clean_parameters = _coerce_parameters(parameters)
         clean_python_config = _coerce_python_config(python_code, entrypoint)
 
     return HTTPToolDraft(
@@ -320,6 +415,7 @@ def create_draft_definition(
         implementation_type=impl,
         http_config=clean_http_config,
         python_config=clean_python_config,
+        workflow_config=clean_workflow_config,
         created_by_user_id=user_id,
     )
 
@@ -330,6 +426,7 @@ async def test_draft(
     draft_id: str,
     sample_params: Optional[dict[str, Any]],
     validation_timeout_seconds: Optional[int] = None,
+    thread_id: str = "",
 ) -> dict[str, Any]:
     draft = store.get(user_id, _normalize_draft_id(draft_id))
     if draft is None:
@@ -359,6 +456,38 @@ async def test_draft(
         )
         ok = run_result.ok
         response = run_result.public_text()
+    elif draft.implementation_type == "workflow":
+        # A workflow test IS a real run of an approved revision: side effects
+        # fire (there is no mock nym in v1), and the approval gate applies
+        # exactly as it would to any other execution.
+        if draft.workflow_config is None:
+            raise ValueError("Draft is missing workflow_config")
+        gate_error = workflow_execution_gate(draft.workflow_config, draft.parameters)
+        if gate_error:
+            raise WorkflowApprovalRequired(gate_error)
+        missing = [
+            name
+            for name, parameter in draft.parameters.items()
+            if parameter.required and name not in params
+        ]
+        if missing:
+            raise ValueError(
+                f"sample_params missing required parameter(s): {', '.join(sorted(missing))}"
+            )
+        from ..core.workflows.executor import execute_workflow
+        from ..core.workflows.tool_runtime import format_envelope_for_agent
+
+        run = await execute_workflow(
+            source=draft.workflow_config.source_code,
+            entrypoint=draft.workflow_config.entrypoint,
+            params=params,
+            user_id=user_id,
+            thread_id=thread_id,
+            workflow_id=draft.tool_id,
+            budget=budget_from_config(draft.workflow_config),
+        )
+        ok = run.envelope.ok
+        response = format_envelope_for_agent(run.envelope)
     else:
         raise ValueError(f"Unsupported implementation_type: {draft.implementation_type}")
 
@@ -377,7 +506,7 @@ async def test_draft(
 
 
 def _published_summary(definition: CustomToolDefinition) -> dict[str, Any]:
-    return {
+    summary = {
         "tool_id": definition.id,
         "name": definition.name,
         "description": definition.description,
@@ -388,6 +517,12 @@ def _published_summary(definition: CustomToolDefinition) -> dict[str, Any]:
         "created_at": definition.created_at.isoformat(),
         "updated_at": definition.updated_at.isoformat(),
     }
+    if definition.workflow_config is not None:
+        summary["revision"] = definition.workflow_config.revision_hash[:12]
+        summary["approval"] = approval_state(
+            definition.workflow_config, definition.parameters
+        )
+    return summary
 
 
 def _prefix_command_result(result: Union[str, Command], prefix: str, tool_call_id: str) -> Union[str, Command]:
@@ -433,6 +568,9 @@ def _publish_draft(
         publish_params = sample_params
 
     if draft.last_test_ok is not True:
+        # Workflows have no publish-with-sample_params shortcut: a workflow
+        # test is a real side-effecting run the author should invoke
+        # deliberately via action='test'.
         if draft.implementation_type == "python" and sample_params is not None:
             draft.last_test_params = sample_params
         else:
@@ -497,6 +635,22 @@ def _publish_draft(
                 },
             )
 
+    if draft.implementation_type == "workflow":
+        if draft.workflow_config is None:
+            return _json_result(
+                ok=False,
+                error={"type": "validation_error", "message": "Draft is missing workflow_config"},
+            )
+        # The publish-time gate mirrors test/run: an unapproved or edited
+        # revision cannot become a live tool. The approval fields carry over
+        # verbatim, so the published definition stays executable.
+        gate_error = workflow_execution_gate(draft.workflow_config, draft.parameters)
+        if gate_error:
+            return _json_result(
+                ok=False,
+                error={"type": "approval_required", "message": gate_error},
+            )
+
     if draft.implementation_type == "http":
         definition = CustomToolDefinition(
             id=draft.tool_id,
@@ -519,6 +673,17 @@ def _publish_draft(
             enabled=True,
             tags=["agent-created", "python", f"user:{user_id}"],
         )
+    elif draft.implementation_type == "workflow":
+        definition = CustomToolDefinition(
+            id=draft.tool_id,
+            name=draft.name,
+            description=draft.description,
+            parameters=draft.parameters,
+            implementation_type="workflow",
+            workflow_config=draft.workflow_config,
+            enabled=True,
+            tags=["agent-created", "workflow", f"user:{user_id}"],
+        )
     else:
         return _json_result(
             ok=False,
@@ -532,6 +697,12 @@ def _publish_draft(
         except Exception:
             registry_before = 0
     path = loader.save_definition(definition)
+    if definition.implementation_type == "workflow" and definition.workflow_config:
+        retain_source_revision(
+            definition.id,
+            definition.workflow_config.revision_hash,
+            definition.workflow_config.source_code,
+        )
 
     loaded_names: list[str] = []
     if agent is not None:
@@ -607,6 +778,323 @@ def _user_is_admin(user_id: str) -> bool:
         return False
 
 
+def _active_admin_user_ids() -> list[str]:
+    """All enabled admin account ids; empty on any resolution failure."""
+    try:
+        from ..core.agent import get_current_agent
+
+        agent = get_current_agent()
+        repo = getattr(agent, "accounts_repo", None) if agent is not None else None
+        if repo is None:
+            return []
+        return [
+            user.id
+            for user in repo.list_users()
+            if getattr(user, "role", None) == "admin" and not getattr(user, "disabled", False)
+        ]
+    except Exception:  # noqa: BLE001 - announcement is best-effort
+        logger.warning("could not enumerate admin users", exc_info=True)
+        return []
+
+
+def _notify_user(user_id: str, summary: str, thread_id: str = "") -> None:
+    """Best-effort in-app notification (the hooks notify-action idiom)."""
+    try:
+        from ..core.notifications import create_notification
+
+        create_notification(
+            user_id=user_id,
+            summary=summary[:200],
+            thread_id=thread_id,
+            task_id=None,
+        )
+    except Exception:  # noqa: BLE001 - notification failure never blocks authoring
+        logger.warning("workflow approval notification failed", exc_info=True)
+
+
+def _announce_workflow_approval_request(draft: HTTPToolDraft, author_user_id: str) -> None:
+    """Tell every active admin a workflow revision awaits review."""
+    if draft.workflow_config is None:
+        return
+    revision = draft.workflow_config.revision_hash[:12]
+    summary = (
+        f"Workflow '{draft.tool_id}' by {author_user_id} awaits approval "
+        f"(revision {revision}). Review via GET /workflows/pending."
+    )
+    for admin_id in _active_admin_user_ids():
+        _notify_user(admin_id, summary)
+
+
+# --- workflow approval service (shared by the REST router and workflow_info) --
+
+
+def list_all_workflow_drafts() -> list[HTTPToolDraft]:
+    """Every user's workflow drafts (admin surfaces only)."""
+    store = _draft_store()
+    drafts: list[HTTPToolDraft] = []
+    try:
+        user_dirs = sorted(p for p in store.base_dir.iterdir() if p.is_dir())
+    except OSError:
+        return []
+    for user_dir in user_dirs:
+        for path in sorted(user_dir.glob("*.json")):
+            try:
+                draft = HTTPToolDraft.model_validate_json(path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - skip invalid drafts, matching store.list
+                continue
+            if draft.implementation_type == "workflow" and draft.workflow_config is not None:
+                drafts.append(draft)
+    return drafts
+
+
+def _iter_workflow_definitions() -> list[CustomToolDefinition]:
+    """Workflow definitions read from disk (includes disabled ones)."""
+    definitions: list[CustomToolDefinition] = []
+    try:
+        import json as _json
+
+        for path in sorted(get_settings().custom_tools_dir.glob("*.json")):
+            try:
+                definition = CustomToolDefinition(
+                    **_json.loads(path.read_text(encoding="utf-8"))
+                )
+            except Exception:  # noqa: BLE001 - skip invalid definitions
+                continue
+            if (
+                definition.implementation_type == "workflow"
+                and definition.workflow_config is not None
+            ):
+                definitions.append(definition)
+    except OSError:
+        return definitions
+    return definitions
+
+
+def _pending_entry(
+    *,
+    kind: str,
+    owner_user_id: str,
+    target_id: str,
+    tool_id: str,
+    name: str,
+    config: WorkflowToolConfig,
+    parameters: dict[str, ToolParameter],
+    updated_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "owner_user_id": owner_user_id,
+        "id": target_id,
+        "tool_id": tool_id,
+        "name": name,
+        "author": config.created_by or owner_user_id,
+        "entrypoint": config.entrypoint,
+        "continuations": list(config.continuations),
+        "revision": config_revision_hash(config, parameters),
+        "parameter_names": sorted(parameters.keys()),
+        "updated_at": updated_at.isoformat(),
+    }
+
+
+def list_pending_workflows() -> list[dict[str, Any]]:
+    """Workflow drafts and published definitions awaiting approval."""
+    pending: list[dict[str, Any]] = []
+    for draft in list_all_workflow_drafts():
+        config = draft.workflow_config
+        if config is None or approval_state(config, draft.parameters) != "pending":
+            continue
+        pending.append(
+            _pending_entry(
+                kind="draft",
+                owner_user_id=draft.created_by_user_id,
+                target_id=draft.draft_id,
+                tool_id=draft.tool_id,
+                name=draft.name,
+                config=config,
+                parameters=draft.parameters,
+                updated_at=draft.updated_at,
+            )
+        )
+    for definition in _iter_workflow_definitions():
+        config = definition.workflow_config
+        if config is None or approval_state(config, definition.parameters) != "pending":
+            continue
+        pending.append(
+            _pending_entry(
+                kind="tool",
+                owner_user_id=config.created_by or "",
+                target_id=definition.id,
+                tool_id=definition.id,
+                name=definition.name,
+                config=config,
+                parameters=definition.parameters,
+                updated_at=definition.updated_at,
+            )
+        )
+    return pending
+
+
+def get_workflow_source(kind: str, owner_user_id: str, target_id: str) -> Optional[dict[str, Any]]:
+    """Source and metadata for one pending target (the admin review view)."""
+    if kind == "draft":
+        draft = _draft_store().get(owner_user_id, _normalize_draft_id(target_id))
+        if (
+            draft is None
+            or draft.implementation_type != "workflow"
+            or draft.workflow_config is None
+        ):
+            return None
+        entry = _pending_entry(
+            kind="draft",
+            owner_user_id=draft.created_by_user_id,
+            target_id=draft.draft_id,
+            tool_id=draft.tool_id,
+            name=draft.name,
+            config=draft.workflow_config,
+            parameters=draft.parameters,
+            updated_at=draft.updated_at,
+        )
+        entry["source_code"] = draft.workflow_config.source_code
+        entry["approval"] = approval_state(draft.workflow_config, draft.parameters)
+        return entry
+    definition = next(
+        (d for d in _iter_workflow_definitions() if d.id == target_id), None
+    )
+    if definition is None or definition.workflow_config is None:
+        return None
+    entry = _pending_entry(
+        kind="tool",
+        owner_user_id=definition.workflow_config.created_by or "",
+        target_id=definition.id,
+        tool_id=definition.id,
+        name=definition.name,
+        config=definition.workflow_config,
+        parameters=definition.parameters,
+        updated_at=definition.updated_at,
+    )
+    entry["source_code"] = definition.workflow_config.source_code
+    entry["approval"] = approval_state(definition.workflow_config, definition.parameters)
+    return entry
+
+
+def _check_expected_revision(
+    expected_revision: Optional[str],
+    config: WorkflowToolConfig,
+    parameters: dict[str, ToolParameter],
+) -> None:
+    """Refuse a resolution pinned to a revision the content no longer matches."""
+    if not expected_revision:
+        return
+    current = config_revision_hash(config, parameters)
+    if expected_revision != current:
+        raise WorkflowRevisionMismatch(
+            "workflow content changed since it was reviewed: current revision is "
+            f"{current[:16]}; re-review the source before deciding"
+        )
+
+
+def resolve_workflow_approval(
+    *,
+    kind: str,
+    owner_user_id: str,
+    target_id: str,
+    approve: bool,
+    actor_user_id: str,
+    note: Optional[str] = None,
+    expected_revision: Optional[str] = None,
+) -> dict[str, Any]:
+    """Approve or decline one workflow revision (draft or published tool).
+
+    The caller must have verified the actor is an admin; this function is the
+    single state transition both surfaces share. Approving pins the hash
+    recomputed from CONTENT (never the stored field) and retains the source
+    revision for later diffing; either decision notifies the author.
+    ``expected_revision`` (when given) pins the decision to the revision the
+    admin actually reviewed: if the content on disk hashes differently, the
+    resolution is refused with ``WorkflowRevisionMismatch``.
+    Raises ValueError when the target does not exist.
+    """
+    decision = "approved" if approve else "declined"
+    if kind == "draft":
+        store = _draft_store()
+        draft = store.get(owner_user_id, _normalize_draft_id(target_id))
+        if (
+            draft is None
+            or draft.implementation_type != "workflow"
+            or draft.workflow_config is None
+        ):
+            raise ValueError(f"workflow draft not found: {owner_user_id}/{target_id}")
+        _check_expected_revision(
+            expected_revision, draft.workflow_config, draft.parameters
+        )
+        if approve:
+            draft.workflow_config = approve_revision(
+                draft.workflow_config, draft.parameters, approved_by=actor_user_id
+            )
+            retain_source_revision(
+                draft.tool_id,
+                draft.workflow_config.revision_hash,
+                draft.workflow_config.source_code,
+            )
+        else:
+            draft.workflow_config = decline_revision(
+                draft.workflow_config,
+                draft.parameters,
+                declined_by=actor_user_id,
+                note=note,
+            )
+        store.save(owner_user_id, draft)
+        author = draft.workflow_config.created_by or draft.created_by_user_id
+        _notify_user(
+            author,
+            f"Your workflow draft '{draft.tool_id}' was {decision} by {actor_user_id}"
+            + (f": {note}" if note else ""),
+        )
+        return {"kind": "draft", "id": draft.draft_id, "decision": decision, "draft": draft.public_summary()}
+
+    if kind != "tool":
+        raise ValueError("kind must be 'draft' or 'tool'")
+    loader = get_custom_tool_loader()
+    definition = next(
+        (d for d in _iter_workflow_definitions() if d.id == target_id), None
+    )
+    if definition is None or definition.workflow_config is None:
+        raise ValueError(f"workflow tool not found: {target_id}")
+    _check_expected_revision(
+        expected_revision, definition.workflow_config, definition.parameters
+    )
+    if approve:
+        definition.workflow_config = approve_revision(
+            definition.workflow_config, definition.parameters, approved_by=actor_user_id
+        )
+        retain_source_revision(
+            definition.id,
+            definition.workflow_config.revision_hash,
+            definition.workflow_config.source_code,
+        )
+    else:
+        definition.workflow_config = decline_revision(
+            definition.workflow_config,
+            definition.parameters,
+            declined_by=actor_user_id,
+            note=note,
+        )
+    loader.save_definition(definition)
+    author = definition.workflow_config.created_by
+    if author:
+        _notify_user(
+            author,
+            f"Your workflow tool '{definition.id}' was {decision} by {actor_user_id}"
+            + (f": {note}" if note else ""),
+        )
+    return {
+        "kind": "tool",
+        "id": definition.id,
+        "decision": decision,
+        "tool": _published_summary(definition),
+    }
+
+
 def _python_admin_required_result() -> str:
     return _json_result(
         ok=False,
@@ -633,6 +1121,8 @@ async def tool_create(
     implementation_type: str = "http",
     python_code: str = "",
     entrypoint: str = "run",
+    continuations: Optional[list[str]] = None,
+    budget: Optional[dict[str, Any]] = None,
     draft_id: str = "",
     sample_params: Optional[dict[str, Any]] = None,
     ttl: str = DEFAULT_TTL,
@@ -643,28 +1133,44 @@ async def tool_create(
 ) -> Union[str, Command]:
     """Draft, test, publish, list, or delete agent-created custom tools.
 
-    Supports HTTP tools and subprocess-backed Python tools. HTTP tools are best
-    after discovering a stable API request with api_discover/http_request.
-    HTTP auth/secrets must use credential-vault references such as
-    ${credential:cred_id.value}; raw secrets and ${env:...} references are
-    rejected for agent-created tools. Plain public headers like Accept are OK.
+    Supports HTTP tools, subprocess-backed Python tools, and nym-SDK workflow
+    tools. HTTP tools are best after discovering a stable API request with
+    api_discover/http_request. HTTP auth/secrets must use credential-vault
+    references such as ${credential:cred_id.value}; raw secrets and
+    ${env:...} references are rejected for agent-created tools. Plain public
+    headers like Accept are OK.
     Python tools are for small deterministic helpers that can be expressed as
     a pure function. Python code is stored in data/custom_tools and executed in
     a child process. That child runs with the same OS user, environment, and
     network access as the API, so it is not a security sandbox; creating,
     testing, and publishing Python tools is therefore restricted to admins.
+    Workflow tools (implementation_type="workflow") run python_code out of
+    process against the nym.* SDK (nym.tools.<name>, nym.llm, nym.thread,
+    nym.emit, nym.todo.add, nym.notify, nym.memory.*). Anyone may draft one,
+    but EXECUTING a revision (test, publish, or run) requires that exact
+    revision to be admin-approved: admin saves approve themselves; non-admin
+    saves notify admins and wait. Editing the source, entrypoint, or
+    continuations resets approval. Tool parameters are DERIVED from the
+    entrypoint's type-hinted signature (str/int/float/bool/list/dict,
+    Optional[...] or a default makes a parameter optional; docstring Args
+    lines become parameter descriptions), so do not pass parameters for
+    workflows. A workflow test is a REAL run: side effects fire.
 
     Actions:
       draft:   Save or update a per-user tool draft. HTTP requires http_config.
                Python requires implementation_type="python", python_code, and
-               an entrypoint function (default "run").
+               an entrypoint function (default "run"). Workflow requires
+               implementation_type="workflow" and python_code (nym-SDK
+               source); optional continuations and budget
+               ({wall_clock_seconds, max_calls, max_ai_calls}).
       test:    Execute a saved draft with sample_params and record whether it
-               succeeded.
+               succeeded. Workflow tests require an approved revision and
+               really execute (side effects fire).
       publish: Save a successfully tested draft into the global custom-tool
                registry, rerun Python validation when applicable, reload it,
                and enable it on this thread with ttl. For Python drafts,
                providing sample_params on publish can validate and publish in
-               one call.
+               one call. Workflow drafts must have a successful prior test.
       list:    Show this user's drafts and globally published custom tools
                without exposing request headers or bodies.
       delete:  Delete this user's draft only. It does not delete a globally
@@ -679,6 +1185,11 @@ async def tool_create(
            headers, query params, and body_template. Sensitive headers
            (Authorization, X-API-Key, Cookie, etc.) must use
            ${credential:cred_id.field}; never pass raw secret strings.
+      continuations: Workflow-only. Continuation entrypoint names for
+           nym.approve resume; each must exist in python_code with the
+           signature (state, decision).
+      budget: Workflow-only. Budget overrides, e.g. {"wall_clock_seconds":
+           900, "max_calls": 100, "max_ai_calls": 20}.
       ttl: Publish-only TTL for enabling the new tool on this thread. Format:
            Nm/Nh/Nd/Nw or "never"/"permanent". Default "2h".
       validation_timeout_seconds: Python test/publish timeout. Default 60s.
@@ -706,11 +1217,37 @@ async def tool_create(
                 implementation_type=implementation_type,
                 python_code=python_code,
                 entrypoint=entrypoint,
+                continuations=continuations,
+                budget=budget,
                 draft_id=draft_id,
                 agent=get_current_agent(),
             )
+            approval_note: Optional[str] = None
+            if draft.implementation_type == "workflow" and draft.workflow_config is not None:
+                if _user_is_admin(user_id):
+                    # Admin saves self-approve (the trust model that already
+                    # lets admins publish Python custom tools).
+                    draft.workflow_config = approve_revision(
+                        draft.workflow_config, draft.parameters, approved_by=user_id
+                    )
+                    approval_note = "revision auto-approved (admin author)"
+                else:
+                    approval_note = (
+                        "revision awaits admin approval; admins were notified. "
+                        "Testing and publishing are blocked until it is approved."
+                    )
             store.save(user_id, draft)
-            return _json_result(ok=True, action="draft", draft=draft.public_summary())
+            if (
+                draft.implementation_type == "workflow"
+                and draft.workflow_config is not None
+                and draft.workflow_config.approved_revision
+                != draft.workflow_config.revision_hash
+            ):
+                _announce_workflow_approval_request(draft, user_id)
+            result_payload: dict[str, Any] = {"draft": draft.public_summary()}
+            if approval_note:
+                result_payload["approval_note"] = approval_note
+            return _json_result(ok=True, action="draft", **result_payload)
 
         if action_key == "test":
             target_draft_id = _normalize_draft_id(draft_id or tool_id)
@@ -727,6 +1264,7 @@ async def tool_create(
                 target_draft_id,
                 sample_params,
                 validation_timeout_seconds=validation_timeout_seconds,
+                thread_id=thread_id,
             )
             return _json_result(action="test", **result)
 
@@ -781,6 +1319,8 @@ async def tool_create(
                 "message": "action must be one of: draft, test, publish, list, delete",
             },
         )
+    except WorkflowApprovalRequired as exc:
+        return _json_result(ok=False, error={"type": "approval_required", "message": str(exc)})
     except ValueError as exc:
         return _json_result(ok=False, error={"type": "validation_error", "message": str(exc)})
     except Exception as exc:

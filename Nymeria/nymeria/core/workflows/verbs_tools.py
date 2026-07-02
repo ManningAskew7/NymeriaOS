@@ -108,6 +108,7 @@ async def dispatch_tool_by_name(
     tool_name: str,
     args: dict,
     tool_call_id: str,
+    workflow_depth: int = 0,
 ) -> Any:
     """Resolve and invoke one tool as the calling user; raises VerbError.
 
@@ -129,7 +130,16 @@ async def dispatch_tool_by_name(
             f"tool {tool_name!r} is not enabled for this thread"
         )
 
-    config = {"configurable": {"user_id": user_id, "thread_id": thread_id}}
+    # workflow_depth makes workflow-calls-workflow nesting bounded: a workflow
+    # custom tool dispatched from inside a run reads it from its configurable
+    # and refuses past budget.max_depth (core/workflows/tool_runtime.py).
+    config = {
+        "configurable": {
+            "user_id": user_id,
+            "thread_id": thread_id,
+            "workflow_depth": workflow_depth,
+        }
+    }
     call_args = {k: v for k, v in (args or {}).items() if k != "tool_call_id"}
     # A tool that declares an InjectedToolCallId arg must be invoked with a full
     # ToolCall envelope (langchain's contract), with a synthesized id since a
@@ -173,4 +183,5 @@ async def _tools_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
         tool_name=tool_name,
         args=args,
         tool_call_id=f"wf_{ctx.run_id}_{ctx.usage.calls_used}",
+        workflow_depth=ctx.depth + 1,
     )

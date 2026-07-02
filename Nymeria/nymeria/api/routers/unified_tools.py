@@ -358,7 +358,7 @@ def create_unified_tools_router(
                 detail=f"Tool '{request.id}' already exists",
             )
 
-        definition = build_custom_tool_definition(request)
+        definition = build_custom_tool_definition(request, actor_user_id=user.id)
 
         loader.save_definition(definition)
         get_agent_fn().reload_tools()
@@ -388,7 +388,7 @@ def create_unified_tools_router(
                 detail=f"Tool '{tool_id}' not found",
             )
 
-        apply_custom_tool_update(definition, request)
+        apply_custom_tool_update(definition, request, actor_user_id=user.id)
 
         loader.save_definition(definition)
         get_agent_fn().reload_tools()

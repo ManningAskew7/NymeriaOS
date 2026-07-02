@@ -1,7 +1,7 @@
 """Custom tool API schemas and conversion helpers."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -11,6 +11,7 @@ from ...tools.definitions.custom_tool_schema import (
     HTTPToolConfig,
     PythonToolConfig,
     ToolParameter,
+    WorkflowToolConfig,
 )
 from ...tools.definitions.mcp_schema import MCPToolConfig
 
@@ -18,7 +19,7 @@ from ...tools.definitions.mcp_schema import MCPToolConfig
 ParameterType = Literal["string", "integer", "number", "boolean", "array", "object"]
 HTTPMethod = Literal["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
 ResponseFormat = Literal["json", "text", "auto"]
-ImplementationType = Literal["http", "mcp", "python"]
+ImplementationType = Literal["http", "mcp", "python", "workflow"]
 
 
 class ToolParameterModel(BaseModel):
@@ -97,6 +98,36 @@ class PythonToolConfigModel(BaseModel):
     runtime: Literal["subprocess"] = "subprocess"
 
 
+class WorkflowToolConfigModel(BaseModel):
+    """API request model for nym-SDK workflow custom tools.
+
+    Approval fields are deliberately absent: the server derives the revision
+    hash from content and self-approves for the (admin) REST actor. Tool
+    parameters are derived from the entrypoint signature, never submitted.
+    """
+
+    source_code: str
+    entrypoint: str = "run"
+    continuations: list[str] = []
+    wall_clock_seconds: float | None = None
+    max_calls: int | None = None
+    max_ai_calls: int | None = None
+
+
+class WorkflowToolConfigResponseModel(WorkflowToolConfigModel):
+    """API response model: request fields plus server-managed state."""
+
+    revision_hash: str = ""
+    approval: str = "pending"
+    approved_revision: str | None = None
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    declined_by: str | None = None
+    declined_at: datetime | None = None
+    decline_note: str | None = None
+    created_by: str = ""
+
+
 class CustomToolResponse(BaseModel):
     """Response model for a custom tool."""
 
@@ -108,6 +139,7 @@ class CustomToolResponse(BaseModel):
     http_config: HTTPToolConfigModel | None = None
     mcp_config: MCPToolConfigModel | None = None
     python_config: PythonToolConfigModel | None = None
+    workflow_config: WorkflowToolConfigResponseModel | None = None
     enabled: bool
     tags: list[str] = []
     created_at: datetime
@@ -125,6 +157,7 @@ class CustomToolCreateRequest(BaseModel):
     http_config: HTTPToolConfigModel | None = None
     mcp_config: MCPToolConfigModel | None = None
     python_config: PythonToolConfigModel | None = None
+    workflow_config: WorkflowToolConfigModel | None = None
     enabled: bool = True
     tags: list[str] = []
 
@@ -138,6 +171,7 @@ class CustomToolUpdateRequest(BaseModel):
     http_config: HTTPToolConfigModel | None = None
     mcp_config: MCPToolConfigModel | None = None
     python_config: PythonToolConfigModel | None = None
+    workflow_config: WorkflowToolConfigModel | None = None
     enabled: bool | None = None
     tags: list[str] | None = None
 
@@ -207,8 +241,45 @@ def python_config_to_core(config: PythonToolConfigModel) -> PythonToolConfig:
     )
 
 
+def workflow_config_to_core(
+    config: WorkflowToolConfigModel,
+    *,
+    actor_user_id: str,
+    created_by: str = "",
+) -> tuple[WorkflowToolConfig, dict[str, ToolParameter]]:
+    """Build a validated, ADMIN-APPROVED core workflow config from a request.
+
+    The REST create/update surfaces are admin-gated, so the actor's save
+    self-approves the revision (the tool_create admin-draft rule). Static
+    validation failures map to 400; the derived parameters are returned so the
+    caller can install them on the definition (parameters are never
+    client-declared for workflows).
+    """
+    from ...core.workflows.authoring import approve_revision, validate_workflow_static
+
+    try:
+        core = WorkflowToolConfig(
+            source_code=config.source_code,
+            entrypoint=config.entrypoint,
+            continuations=list(config.continuations),
+            wall_clock_seconds=config.wall_clock_seconds,
+            max_calls=config.max_calls,
+            max_ai_calls=config.max_ai_calls,
+            created_by=created_by or actor_user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid workflow_config: {exc}") from exc
+    parameters, errors = validate_workflow_static(config=core)
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    core = approve_revision(core, parameters, approved_by=actor_user_id)
+    return core, parameters
+
+
 def build_custom_tool_definition(
     request: CustomToolCreateRequest,
+    *,
+    actor_user_id: str = "",
 ) -> CustomToolDefinition:
     """Build a core ``CustomToolDefinition`` from a create request.
 
@@ -221,11 +292,15 @@ def build_custom_tool_definition(
 
     ``request.parameters`` is always a dict (the schema defaults it to ``{}``),
     so this matches the prior ``parameters or {}`` and bare ``parameters`` call
-    sites identically.
+    sites identically. Workflow tools are the exception: their parameters are
+    derived from the entrypoint signature and client-declared ones are a 400;
+    the (admin) actor's save self-approves the revision.
     """
     http_config = None
     mcp_config = None
     python_config = None
+    workflow_config = None
+    parameters = tool_parameters_to_core(request.parameters)
     if request.implementation_type == "http":
         if not request.http_config:
             raise HTTPException(
@@ -247,16 +322,34 @@ def build_custom_tool_definition(
                 detail="python_config is required for Python tools",
             )
         python_config = python_config_to_core(request.python_config)
+    elif request.implementation_type == "workflow":
+        if not request.workflow_config:
+            raise HTTPException(
+                status_code=400,
+                detail="workflow_config is required for workflow tools",
+            )
+        if request.parameters:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "workflow parameters are derived from the entrypoint "
+                    "signature; do not pass parameters"
+                ),
+            )
+        workflow_config, parameters = workflow_config_to_core(
+            request.workflow_config, actor_user_id=actor_user_id
+        )
 
     return CustomToolDefinition(
         id=request.id,
         name=request.name,
         description=request.description,
-        parameters=tool_parameters_to_core(request.parameters),
+        parameters=parameters,
         implementation_type=request.implementation_type,
         http_config=http_config,
         mcp_config=mcp_config,
         python_config=python_config,
+        workflow_config=workflow_config,
         enabled=request.enabled,
         tags=request.tags,
     )
@@ -265,6 +358,8 @@ def build_custom_tool_definition(
 def apply_custom_tool_update(
     definition: CustomToolDefinition,
     request: CustomToolUpdateRequest,
+    *,
+    actor_user_id: str = "",
 ) -> None:
     """Apply a partial update request to an existing custom-tool definition.
 
@@ -272,12 +367,26 @@ def apply_custom_tool_update(
     the config block matching the definition's ``implementation_type`` is
     replaced. Field assignments are independent, so the order here is immaterial
     to the resulting definition.
+
+    Workflow updates replace the whole workflow_config (re-validated,
+    re-derived parameters, re-approved by the admin actor while preserving the
+    original author); client-declared parameters for a workflow are a 400.
+    Name/enabled/tags edits never touch the revision hash, so they cannot
+    reset an approval.
     """
     if request.name is not None:
         definition.name = request.name
     if request.description is not None:
         definition.description = request.description
     if request.parameters is not None:
+        if definition.implementation_type == "workflow":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "workflow parameters are derived from the entrypoint "
+                    "signature; do not pass parameters"
+                ),
+            )
         definition.parameters = tool_parameters_to_core(request.parameters)
     if request.http_config is not None and definition.implementation_type == "http":
         definition.http_config = http_config_to_core(request.http_config)
@@ -285,6 +394,15 @@ def apply_custom_tool_update(
         definition.mcp_config = mcp_config_to_core(request.mcp_config)
     if request.python_config is not None and definition.implementation_type == "python":
         definition.python_config = python_config_to_core(request.python_config)
+    if request.workflow_config is not None and definition.implementation_type == "workflow":
+        created_by = (
+            definition.workflow_config.created_by if definition.workflow_config else ""
+        )
+        definition.workflow_config, definition.parameters = workflow_config_to_core(
+            request.workflow_config,
+            actor_user_id=actor_user_id,
+            created_by=created_by,
+        )
     if request.enabled is not None:
         definition.enabled = request.enabled
     if request.tags is not None:
@@ -332,8 +450,36 @@ def custom_tool_definition_to_response(defn: CustomToolDefinition) -> CustomTool
             entrypoint=defn.python_config.entrypoint,
             runtime=defn.python_config.runtime,
         ) if defn.python_config else None,
+        workflow_config=_workflow_config_to_response(defn) if defn.workflow_config else None,
         enabled=defn.enabled,
         tags=defn.tags,
         created_at=defn.created_at,
         updated_at=defn.updated_at,
+    )
+
+
+def _workflow_config_to_response(
+    defn: CustomToolDefinition,
+) -> Optional[WorkflowToolConfigResponseModel]:
+    config = defn.workflow_config
+    if config is None:
+        return None
+    from ...core.workflows.authoring import approval_state
+
+    return WorkflowToolConfigResponseModel(
+        source_code=config.source_code,
+        entrypoint=config.entrypoint,
+        continuations=list(config.continuations),
+        wall_clock_seconds=config.wall_clock_seconds,
+        max_calls=config.max_calls,
+        max_ai_calls=config.max_ai_calls,
+        revision_hash=config.revision_hash,
+        approval=approval_state(config, defn.parameters),
+        approved_revision=config.approved_revision,
+        approved_by=config.approved_by,
+        approved_at=config.approved_at,
+        declined_by=config.declined_by,
+        declined_at=config.declined_at,
+        decline_note=config.decline_note,
+        created_by=config.created_by,
     )
