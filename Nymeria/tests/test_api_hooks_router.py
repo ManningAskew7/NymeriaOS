@@ -394,11 +394,13 @@ def test_schema_exposes_plane_by_event_and_gated(client_env):
 
 # --- run_command authoring gate -------------------------------------------------
 
-def _client_for(builder, monkeypatch, tmp_path, *, role: str, flag: bool):
+def _client_agent_for(builder, monkeypatch, tmp_path, *, role: str, flag: bool):
     """A client whose caller has ``role`` and whose deployment flag is ``flag``.
 
     Points both the router's own ``get_settings`` and the config-level one used
     by ``run_command_authoring_error`` at a settings object carrying the flag.
+    Also returns the agent (for account mutations, e.g. demoting the caller)
+    and the live settings object (mutable, for mid-test flag flips).
     """
     from nymeria import config as config_module
 
@@ -409,7 +411,22 @@ def _client_for(builder, monkeypatch, tmp_path, *, role: str, flag: bool):
     )
     monkeypatch.setattr(hooks_router_module, "get_settings", lambda: settings)
     monkeypatch.setattr(config_module, "get_settings", lambda: settings)
-    return client, builder.auth(token)
+    return client, builder.auth(token), agent, settings
+
+
+def _client_for(builder, monkeypatch, tmp_path, *, role: str, flag: bool):
+    client, headers, _agent, _settings = _client_agent_for(
+        builder, monkeypatch, tmp_path, role=role, flag=flag
+    )
+    return client, headers
+
+
+def _demote_owner(agent):
+    """Demote ``owner`` to a plain user (a second admin dodges the last-admin guard)."""
+    agent.accounts_repo.create_user(
+        "admin2", "admin2@example.com", "Admin Two", role="admin"
+    )
+    agent.accounts_repo.update_user("owner", role="user")
 
 
 def _run_command_body(**over):
@@ -485,3 +502,60 @@ def test_update_to_run_command_rejected_when_flag_off(
     )
     assert resp.status_code == 400
     assert "HOOKS_RUN_COMMAND_ENABLED" in resp.json()["detail"]
+
+
+def test_update_run_command_command_403_for_demoted_owner(
+    api_client_builder, monkeypatch, tmp_path
+):
+    # In-place behavior edits of a stored run_command hook re-gate on role:
+    # authoring-time admin is not a permanent pass (e.g. the owner was demoted).
+    client, headers, agent, _settings = _client_agent_for(
+        api_client_builder, monkeypatch, tmp_path, role="admin", flag=True
+    )
+    created = client.post("/hooks", headers=headers, json=_run_command_body()).json()
+    _demote_owner(agent)
+    resp = client.patch(
+        f"/hooks/{created['id']}", headers=headers, json={"command": "echo pwned"}
+    )
+    assert resp.status_code == 403
+    assert "admin-only" in resp.json()["detail"]
+    unchanged = client.get(f"/hooks/{created['id']}", headers=headers).json()
+    assert unchanged["logic"]["command"] == "echo hi"
+
+
+def test_update_run_command_command_400_when_flag_turned_off(
+    api_client_builder, monkeypatch, tmp_path
+):
+    # Flipping the deployment flag off freezes behavior edits of stored
+    # run_command hooks (flag precedence: 400, not 403, even for an admin).
+    client, headers, _agent, settings = _client_agent_for(
+        api_client_builder, monkeypatch, tmp_path, role="admin", flag=True
+    )
+    created = client.post("/hooks", headers=headers, json=_run_command_body()).json()
+    settings.hooks_run_command_enabled = False
+    resp = client.patch(
+        f"/hooks/{created['id']}", headers=headers, json={"command": "echo bye"}
+    )
+    assert resp.status_code == 400
+    assert "HOOKS_RUN_COMMAND_ENABLED" in resp.json()["detail"]
+
+
+def test_update_run_command_enabled_toggle_allowed_for_non_admin(
+    api_client_builder, monkeypatch, tmp_path
+):
+    # Enabled/name-only updates stay ungated: toggling never changes what the
+    # hook executes, and the GUI enable switch must keep working for the owner.
+    client, headers, agent, _settings = _client_agent_for(
+        api_client_builder, monkeypatch, tmp_path, role="admin", flag=True
+    )
+    created = client.post("/hooks", headers=headers, json=_run_command_body()).json()
+    _demote_owner(agent)
+    resp = client.patch(
+        f"/hooks/{created['id']}", headers=headers,
+        json={"enabled": False, "name": "rc-off"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is False
+    assert body["name"] == "rc-off"
+    assert body["logic"]["command"] == "echo hi"

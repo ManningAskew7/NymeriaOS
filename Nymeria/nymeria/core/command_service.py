@@ -3176,9 +3176,19 @@ class _CommandExecutor:
             if key not in edit_keys:
                 return f"[Error]: unknown field '{key}'. Editable: {', '.join(sorted(edit_keys))}."
             kv[key] = value
-        # Switching TO a gated action (run_command) is admin + flag gated.
-        if "action" in kv:
-            gate = self._gated_action_error(kv["action"].strip().lower())
+        # Switching TO a gated action AND any behavior edit of an existing
+        # gated hook is admin + flag gated; enabled/name-only edits stay
+        # ungated (shared rule in ``gated_update_action``).
+        from .hook_manager import gated_update_action
+        touched = set(kv) - {"action"}
+        if conds_raw:
+            touched.add("conditions")
+        if sets_raw:
+            touched.add("updates")
+        requested_action = kv["action"].strip().lower() if "action" in kv else None
+        gate_on = gated_update_action(hook.logic.action, requested_action, touched)
+        if gate_on is not None:
+            gate = self._gated_action_error(gate_on)
             if gate:
                 return gate
         conditions, cerr = _parse_hook_conditions(conds_raw, case_sensitive)

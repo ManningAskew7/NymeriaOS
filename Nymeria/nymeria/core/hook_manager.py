@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Dict, List, Literal, Optional, Set, Tuple, Union
+from typing import Annotated, Dict, Iterable, List, Literal, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -91,6 +91,34 @@ def run_command_authoring_error(action: str, *, is_admin: Optional[bool]) -> Opt
         )
     if is_admin is False:
         return f"The '{action}' action is admin-only (it runs shell commands on the host)."
+    return None
+
+
+# Update fields a caller may touch on an existing gated hook WITHOUT passing
+# the gate: toggling or renaming never changes what the hook executes, and the
+# per-hook enable switch is a first-class product surface (GUI toggles).
+UNGATED_UPDATE_FIELDS = frozenset({"enabled", "name"})
+
+
+def gated_update_action(
+    existing_action: Optional[str],
+    requested_action: Optional[str],
+    touched_fields: Iterable[str],
+) -> Optional[str]:
+    """The action an update must be gate-checked against, or ``None`` if free.
+
+    Shared by every authoring surface so the update-gate rule cannot drift:
+    a switch TO a gated action is always gated, and an in-place edit of an
+    existing gated hook is gated unless it only touches
+    ``UNGATED_UPDATE_FIELDS`` (without this, the create-time admin gate could
+    be sidestepped by editing a stored run_command hook's command in place,
+    e.g. by an owner whose admin role was later revoked). Switching AWAY from
+    a gated action is privilege-reducing and stays ungated.
+    """
+    if requested_action is not None:
+        return requested_action if requested_action in GATED_ACTIONS else None
+    if existing_action in GATED_ACTIONS and set(touched_fields) - UNGATED_UPDATE_FIELDS:
+        return existing_action
     return None
 
 

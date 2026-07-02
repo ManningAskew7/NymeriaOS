@@ -314,10 +314,13 @@ def _execute_command(ctx: HookContext, command: str, timeout: float) -> _Command
 
     Own process group + SIGKILL of the whole group on timeout (mirrors
     ``claude_code_bridge``), minimal env. Working dir is the data dir (a stable,
-    writable location; not the repo root). The read cap bounds what we RETAIN
-    (`communicate` still buffers the child's full output first); a runaway
-    emitter is bounded instead by the wall-clock ``timeout`` and the
-    child-biased OOM score, so the API process is evicted last.
+    writable location; not the repo root). The read cap bounds what we RETAIN,
+    not peak memory: ``communicate`` buffers the child's full output in THIS
+    process first, so a fast stdout emitter grows the parent's heap and the
+    child-biased OOM score does not protect against that (it only covers
+    child-side memory hogs). The effective bound is the wall-clock ``timeout``;
+    accepted under the admin + deployment-flag gate, with a bounded incremental
+    reader noted as a backlog follow-up.
     """
     from ...config import get_settings
     from ...oom import oom_score_preexec

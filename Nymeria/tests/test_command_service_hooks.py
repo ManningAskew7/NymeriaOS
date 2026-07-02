@@ -476,3 +476,44 @@ class _UserRoleAccountsRepo:
         return SimpleNamespace(
             id=user_id, email=f"{user_id}@example.test", display_name=user_id, role="user"
         )
+
+
+def test_run_command_edit_denied_for_non_admin(
+    manager: HookManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In-place behavior edits re-gate: authoring admin is not a permanent pass."""
+    _set_run_command_flag(monkeypatch, True)
+    created = _run(
+        '/hook create RC --event done --action run_command --command "echo hi"'
+    )
+    assert created.success is True, created.markdown
+    hook = _only(manager)
+    monkeypatch.setattr(
+        agent_module, "get_current_agent",
+        lambda: SimpleNamespace(accounts_repo=_UserRoleAccountsRepo()),
+    )
+    result = _run(f'/hook edit {hook.id[:6]} command="echo bye"')
+    assert result.success is False
+    assert "admin-only" in result.markdown
+    assert manager.get_hooks("alice")[0].logic.command == "echo hi"
+
+
+def test_run_command_edit_enabled_allowed_for_non_admin(
+    manager: HookManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enabled/name-only edits stay ungated so the owner can switch a hook off."""
+    _set_run_command_flag(monkeypatch, True)
+    created = _run(
+        '/hook create RC --event done --action run_command --command "echo hi"'
+    )
+    assert created.success is True, created.markdown
+    hook = _only(manager)
+    monkeypatch.setattr(
+        agent_module, "get_current_agent",
+        lambda: SimpleNamespace(accounts_repo=_UserRoleAccountsRepo()),
+    )
+    result = _run(f'/hook edit {hook.id[:6]} enabled=false')
+    assert result.success is True, result.markdown
+    updated = manager.get_hooks("alice")[0]
+    assert updated.enabled is False
+    assert updated.logic.command == "echo hi"

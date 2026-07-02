@@ -486,14 +486,32 @@ def hook_config(
             return "[Error]: update requires hook_id."
         if event is not None and event not in _EVENTS:
             return f"[Error]: event must be one of: {', '.join(_EVENTS)}."
-        if hook_action is not None:
-            gate = _gated_action_error(hook_action_key, config)
+        existing = _get_hook_manager().get_hook(get_user_id(config), hook_id)
+        # Gate a switch TO a gated action AND any behavior edit of an existing
+        # gated hook; enabled/name-only updates stay ungated (shared rule in
+        # ``gated_update_action`` so the surfaces cannot drift).
+        from ..core.hook_manager import gated_update_action
+        touched = {
+            key
+            for key, value in {
+                "name": name, "event": event, "text": text, "params": params,
+                "matcher": matcher, "scope": scope, "enabled": enabled,
+                "command": command, "timeout_seconds": timeout_seconds,
+            }.items()
+            if value is not None
+        }
+        gate_on = gated_update_action(
+            getattr(existing.logic, "action", None) if existing is not None else None,
+            hook_action_key if hook_action is not None else None,
+            touched,
+        )
+        if gate_on is not None:
+            gate = _gated_action_error(gate_on, config)
             if gate is not None:
                 return gate
         # Resolve the effective action + merge onto stored params from the
         # existing hook, so editing a run_command hook's command without
         # re-stating the action works and does not reset timeout_seconds.
-        existing = _get_hook_manager().get_hook(get_user_id(config), hook_id)
         params = _merge_run_command_params(
             hook_action_key if hook_action is not None else None,
             params, command, timeout_seconds,
