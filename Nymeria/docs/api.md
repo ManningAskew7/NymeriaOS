@@ -3632,7 +3632,10 @@ Authorization: Bearer <token>
 and the per-action logic fields (`text` / `conditions` / `reason` / `updates` /
 `url` / `command` / `timeout_seconds`); the logic is rebuilt and re-validated on
 save. Switching `action` TO `run_command` is gated exactly as create (403
-non-admin / 400 flag-off). `scope`/`thread_id` are
+non-admin / 400 flag-off), and so is any behavior edit of an existing
+run_command hook (anything beyond `enabled`/`name`): authoring-time admin is
+not a permanent pass. Enabled/name-only updates stay ungated so the owner can
+always toggle or rename. `scope`/`thread_id` are
 deliberately not patchable (every authoring surface enforces this): a re-scope
 needs a thread binding and its access gate, so it is a delete + create.
 `DELETE` returns `204` and purges the hook's execution-log entries. All return

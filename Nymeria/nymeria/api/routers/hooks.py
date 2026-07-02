@@ -316,11 +316,15 @@ def create_hook_router(
         existing = manager.get_hook(user_id, hook_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Hook not found")
-        # Guard a switch TO a gated action (admin + deployment flag). Switching
-        # away is always fine; an unchanged action is not re-gated here (the
-        # execution-time flag check in the action is the backstop).
-        if body.action is not None:
-            _reject_gated_action(body.action, user)
+        # Guard a switch TO a gated action AND any behavior edit of an existing
+        # gated hook (admin + deployment flag). Enabled/name-only updates stay
+        # ungated (toggling never changes what the hook executes); switching
+        # away from a gated action is privilege-reducing and stays ungated.
+        from ...core.hook_manager import gated_update_action
+        touched = set(body.model_dump(exclude_none=True)) - {"action"}
+        gate_on = gated_update_action(existing.logic.action, body.action, touched)
+        if gate_on is not None:
+            _reject_gated_action(gate_on, user)
         # Plain field updates (name/event/matcher/enabled); the logic fields
         # (text/conditions/reason/updates/url/command/action) are assembled
         # separately by ``build_update_kwargs`` so a partial PATCH keeps

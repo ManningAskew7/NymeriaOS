@@ -122,7 +122,10 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   response exposes the full `logic` object (discriminated on `action`). Every handler pins
   `user_id` to the authenticated caller; scoped creates pass through the thread-access gate;
   authoring (or switching to) `run_command` is rejected for non-admins (403) or when the
-  deployment flag is off (400). There is no webhook/fire endpoint (hooks fire in-process only).
+  deployment flag is off (400), and any behavior edit of an existing `run_command` hook
+  (anything beyond `enabled`/`name`) re-passes the same gate on every surface (the shared
+  `gated_update_action` rule), so authoring-time admin is not a permanent pass. There is
+  no webhook/fire endpoint (hooks fire in-process only).
 
 The **desktop and mobile GUI** are clients of that REST surface (not a fourth store
 writer): a dashboard **Hooks** section (`components/hooks/`: category-grouped feed +
@@ -350,7 +353,9 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `core/fcm.py` (notify), `core/todo_manager.py` (create_todo), and
   `core/http_policy.py` (webhook). `run_command`'s double gate is `GATED_ACTIONS` +
   `run_command_authoring_error(action, *, is_admin)` (checks `HOOKS_RUN_COMMAND_ENABLED`
-  then admin), shared by all three authoring surfaces and re-checked at execution.
+  then admin) at create AND on any behavior update of a gated hook (the shared
+  `gated_update_action` rule; enabled/name-only edits are exempt), on all three
+  authoring surfaces; execution re-checks the deployment flag (not role).
 - `core/conditions.py`: `HookCondition` + `evaluate_conditions` (shared with triggers,
   which re-export `TriggerCondition`).
 - `core/text_format.py`: `safe_format` template substitution (shared with triggers).

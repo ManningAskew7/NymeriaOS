@@ -431,3 +431,48 @@ def test_run_command_update_command_preserves_timeout(store, monkeypatch):
     updated = store.get_hooks("u1")[0]
     assert updated.logic.command == "echo bye"
     assert updated.logic.timeout_seconds == 42  # sibling preserved, not reset to default
+
+
+def test_run_command_update_command_denied_for_non_admin(store, monkeypatch):
+    """In-place behavior edits re-gate: authoring admin is not a permanent pass."""
+    _set_run_command_flag(monkeypatch, True)
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: True)
+    _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "rc", "event": "done", "scope": "global",
+         "hook_action": "run_command", "command": "echo hi"},
+        _cfg(),
+    )
+    hook = store.get_hooks("u1")[0]
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: False)
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "update", "hook_id": hook.id, "command": "echo bye"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+    assert "admin-only" in out
+    assert store.get_hooks("u1")[0].logic.command == "echo hi"
+
+
+def test_run_command_update_enabled_toggle_allowed_for_non_admin(store, monkeypatch):
+    """Enabled/name-only updates stay ungated so the owner can switch a hook off."""
+    _set_run_command_flag(monkeypatch, True)
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: True)
+    _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "rc", "event": "done", "scope": "global",
+         "hook_action": "run_command", "command": "echo hi"},
+        _cfg(),
+    )
+    hook = store.get_hooks("u1")[0]
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: False)
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "update", "hook_id": hook.id, "enabled": False},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    updated = store.get_hooks("u1")[0]
+    assert updated.enabled is False
+    assert updated.logic.command == "echo hi"
