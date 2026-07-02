@@ -243,28 +243,22 @@ def create_custom_tools_router(
                         status_code=422,
                         detail=f"Tool '{tool_id}' is type 'workflow' but has no workflow_config",
                     )
-                from ...core.workflows.authoring import (
-                    budget_from_config,
-                    workflow_execution_gate,
+                from ...core.workflows.tool_runtime import (
+                    format_envelope_for_agent,
+                    run_workflow_by_id,
                 )
-                from ...core.workflows.executor import execute_workflow
-                from ...core.workflows.tool_runtime import format_envelope_for_agent
 
-                gate_error = workflow_execution_gate(
-                    definition.workflow_config, definition.parameters
+                refusal, run = await run_workflow_by_id(
+                    loader,
+                    definition.id,
+                    request.params,
+                    user_id=user.id,
+                    thread_id="",
                 )
-                if gate_error:
-                    result = f"[Error]: approval_required - {gate_error}"
+                if refusal is not None:
+                    result = f"[Error]: {refusal}"
                 else:
-                    run = await execute_workflow(
-                        source=definition.workflow_config.source_code,
-                        entrypoint=definition.workflow_config.entrypoint,
-                        params=request.params,
-                        user_id=user.id,
-                        thread_id="",
-                        workflow_id=definition.id,
-                        budget=budget_from_config(definition.workflow_config),
-                    )
+                    assert run is not None  # one of (refusal, run) is None
                     result = format_envelope_for_agent(run.envelope)
             else:
                 result = f"[Error]: Unknown implementation type: {definition.implementation_type}"

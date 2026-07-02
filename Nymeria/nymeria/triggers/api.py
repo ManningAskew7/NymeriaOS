@@ -1054,6 +1054,11 @@ def create_api_app(
     # can hit the 300s tool-execution timeout.
     _register_tool_index_warm_lifecycle(app)
 
+    # Expire stale nym.approve pending records. Unconditional for the same
+    # reason as the warm loop: workflows execute in the API process in both
+    # shapes, so the expiry (which runs the declined continuation) must too.
+    _register_workflow_approval_sweep_lifecycle(app)
+
     # ========================================================================
     # Slim-mode wiring (embedded MCP + in-process watchdog)
     #
@@ -1387,6 +1392,35 @@ def _register_dream_scheduler_lifecycle(
         startup_delay_seconds=60,
         start_log="Dream scheduler task started (Docker mode)",
         error_label="Dream scheduler",
+    )
+
+
+def _register_workflow_approval_sweep_lifecycle(app: FastAPI) -> None:
+    """Resolve expired ``nym.approve`` pending records as declined.
+
+    A suspended workflow is a durable JSON record with no live process; this
+    heartbeat is the only thing that ages it out (default expiry 7 days).
+    Expiry runs the declined continuation, so it must execute where workflows
+    run: the API process, in both deployment shapes.
+    """
+
+    async def _run_pass() -> None:
+        from ..core.workflows.approvals import sweep_expired_approvals
+
+        resolved = await sweep_expired_approvals()
+        if resolved:
+            logger.info("Workflow approval sweep expired %d record(s)", resolved)
+
+    from ..core.workflows.approvals import APPROVAL_SWEEP_INTERVAL_SECONDS
+
+    _register_periodic_task(
+        app,
+        state_prefix="workflow_approval_sweep",
+        run_pass=_run_pass,
+        interval_seconds=APPROVAL_SWEEP_INTERVAL_SECONDS,
+        startup_delay_seconds=120,
+        start_log="Workflow approval sweep task started",
+        error_label="Workflow approval sweep",
     )
 
 

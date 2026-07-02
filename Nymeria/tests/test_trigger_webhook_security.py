@@ -148,6 +148,7 @@ def _insert_webhook_trigger(
     trigger_id: str = "webhook1",
     name: str = "Webhook",
     source_config: dict | None = None,
+    action: TriggerAction | None = None,
 ) -> None:
     manager = TriggerManager(data_dir)
     trigger = TriggerDefinition(
@@ -155,7 +156,8 @@ def _insert_webhook_trigger(
         name=name,
         source_type="webhook",
         source_config=source_config or {},
-        action=TriggerAction(
+        action=action
+        or TriggerAction(
             type="agent_prompt",
             config={"prompt_template": "Webhook payload: {message}"},
         ),
@@ -321,3 +323,85 @@ def test_webhook_trigger_creation_requires_secret(
     assert response.json()["detail"] == (
         "Failed to create trigger. Check source_type and config."
     )
+
+
+def test_webhook_fire_routes_non_agent_actions_through_fire_action(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    """Phase 4 routing fix: a notify/create_todo/run_workflow webhook fire
+    goes through ``fire_action``'s type dispatch, not the /chat relay."""
+    import threading
+
+    client, _token = _client(tmp_path, api_client_builder, monkeypatch)
+    _insert_webhook_trigger(
+        tmp_path,
+        source_config={"secret": "shared"},
+        action=TriggerAction(
+            type="run_workflow", config={"workflow_id": "wf_demo"}
+        ),
+    )
+
+    fired = threading.Event()
+    fire_calls: list[tuple[str, str, str]] = []
+
+    def fake_fire_action(self, trigger, event, executor, user_id):
+        fire_calls.append((trigger.id, trigger.action.type, user_id))
+        fired.set()
+
+    monkeypatch.setattr(TriggerManager, "fire_action", fake_fire_action)
+    dispatch_calls: list[dict] = []
+    monkeypatch.setattr(
+        trigger_api_module,
+        "_dispatch_trigger_fire",
+        lambda **kw: dispatch_calls.append(kw),
+    )
+
+    response = client.post(
+        "/triggers/fire/webhook1?user_id=owner&secret=shared",
+        json={"message": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "fired"
+    assert response.json()["action_type"] == "run_workflow"
+    assert fired.wait(5), "fire_action was never dispatched"
+    assert fire_calls == [("webhook1", "run_workflow", "owner")]
+    assert dispatch_calls == []
+
+
+def test_webhook_fire_agent_prompt_still_relays_to_chat(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    import threading
+
+    client, _token = _client(tmp_path, api_client_builder, monkeypatch)
+    _insert_webhook_trigger(tmp_path, source_config={"secret": "shared"})
+
+    dispatched = threading.Event()
+    dispatch_calls: list[dict] = []
+
+    def fake_dispatch(**kwargs):
+        dispatch_calls.append(kwargs)
+        dispatched.set()
+
+    monkeypatch.setattr(trigger_api_module, "_dispatch_trigger_fire", fake_dispatch)
+    fire_calls: list = []
+    monkeypatch.setattr(
+        TriggerManager,
+        "fire_action",
+        lambda self, *a, **kw: fire_calls.append(a),
+    )
+
+    response = client.post(
+        "/triggers/fire/webhook1?user_id=owner&secret=shared",
+        json={"message": "hello"},
+    )
+
+    assert response.status_code == 200
+    assert dispatched.wait(5), "_dispatch_trigger_fire was never dispatched"
+    assert dispatch_calls and dispatch_calls[0]["action_type"] == "agent_prompt"
+    assert fire_calls == []

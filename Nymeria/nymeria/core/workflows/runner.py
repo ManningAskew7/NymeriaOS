@@ -46,6 +46,21 @@ class NymVerbError(Exception):
         self.step = step
 
 
+class _WorkflowSuspend(BaseException):
+    """Raised after a successful ``nym.approve``: the run suspends here.
+
+    ``BaseException`` on purpose so an author's ``except Exception`` cannot
+    swallow it by accident. The parent minted the resume record before the
+    verb returned; this signal only carries the token back out to the finish
+    frame (the engine verifies it against its own record, so a forged or
+    swallowed suspension never yields a resumable run).
+    """
+
+    def __init__(self, resume_token: str) -> None:
+        super().__init__("workflow suspended for approval")
+        self.resume_token = resume_token
+
+
 class _Channel:
     """Blocking newline-JSON frame channel over a connected socket."""
 
@@ -130,7 +145,13 @@ class _Nym:
             if frame.get("t") == "result" and frame.get("id") == request_id:
                 break
         if frame.get("ok"):
-            return frame.get("value")
+            value = frame.get("value")
+            if verb == "approve":
+                # nym.approve does not return: the run suspends here and
+                # resumes later in a fresh process via the continuation.
+                token = str((value or {}).get("resume_token") or "")
+                raise _WorkflowSuspend(token)
+            return value
         error = frame.get("error") or {}
         raise NymVerbError(
             str(error.get("message") or "verb failed"),
@@ -255,6 +276,22 @@ def main() -> int:
             {"t": "finish", "status": "ok", "output": _json_safe(result)}
         )
         return 0
+    except _WorkflowSuspend as exc:
+        try:
+            channel.send(
+                {
+                    "t": "finish",
+                    "status": "needs_approval",
+                    "resume_token": exc.resume_token,
+                }
+            )
+            return 0
+        except Exception as send_exc:  # noqa: BLE001 - engine gone
+            print(
+                f"workflow runner could not report suspension: {send_exc}",
+                file=sys.stderr,
+            )
+            return 1
     except NymVerbError as exc:
         # An uncaught verb failure keeps its taxonomy (budget_exceeded stays
         # budget_exceeded) instead of collapsing into author_error.

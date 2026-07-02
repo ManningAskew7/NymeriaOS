@@ -276,11 +276,14 @@ EXPECTED_ROUTES = [
     ('/voice/chat', ('POST',)),
     ('/voice/stt', ('POST',)),
     ('/voice/tts', ('POST',)),
+    ('/workflows/approvals', ('GET',)),
+    ('/workflows/approvals/{record_id}/resolve', ('POST',)),
     ('/workflows/approve', ('POST',)),
     ('/workflows/decline', ('POST',)),
     ('/workflows/pending', ('GET',)),
     ('/workflows/runs/{workflow_id}', ('GET',)),
     ('/workflows/source', ('GET',)),
+    ('/workflows/{workflow_id}/execute', ('POST',)),
     ('/workspace/download', ('GET',)),
 ]
 

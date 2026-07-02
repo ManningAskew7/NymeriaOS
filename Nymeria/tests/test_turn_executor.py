@@ -253,3 +253,118 @@ def test_wrap_for_stream_passes_local_executor_through():
     agent = _RecordingAgent()
     executor = LocalAgentExecutor(agent)
     assert wrap_for_stream(executor) is executor
+
+
+# ---------------------------------------------------------------------------
+# run_workflow (phase 4): the headless-workflow relay seam
+# ---------------------------------------------------------------------------
+
+
+def test_local_executor_run_workflow_returns_envelope(monkeypatch):
+    from types import SimpleNamespace
+
+    async def fake_run(loader, workflow_id, params, *, user_id, thread_id, depth=0):
+        run = SimpleNamespace(
+            envelope=SimpleNamespace(
+                to_dict=lambda: {"ok": True, "status": "ok", "output": params}
+            )
+        )
+        return None, run
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.run_workflow_by_id", fake_run
+    )
+    monkeypatch.setattr(
+        "nymeria.core.custom_tools.get_custom_tool_loader", lambda: None
+    )
+    executor = LocalAgentExecutor(_RecordingAgent())
+    envelope = asyncio.run(
+        executor.run_workflow("wf_x", {"a": 1}, user_id="u1", thread_id="t1")
+    )
+    assert envelope == {"ok": True, "status": "ok", "output": {"a": 1}}
+
+
+def test_local_executor_run_workflow_raises_on_refusal(monkeypatch):
+    async def fake_run(loader, workflow_id, params, *, user_id, thread_id, depth=0):
+        return "execution requires an admin-approved revision", None
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.run_workflow_by_id", fake_run
+    )
+    monkeypatch.setattr(
+        "nymeria.core.custom_tools.get_custom_tool_loader", lambda: None
+    )
+    executor = LocalAgentExecutor(_RecordingAgent())
+    try:
+        asyncio.run(
+            executor.run_workflow("wf_x", {}, user_id="u1", thread_id="t1")
+        )
+    except RuntimeError as exc:
+        assert "admin-approved" in str(exc)
+    else:
+        raise AssertionError("refusal did not raise")
+
+
+class _WorkflowAPIClient:
+    """API-client stand-in for the run_workflow relay."""
+
+    def __init__(self, result=None, error=None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def run_workflow(self, workflow_id, params=None, *, user_id, thread_id=None):
+        self.calls.append(
+            {
+                "workflow_id": workflow_id,
+                "params": params,
+                "user_id": user_id,
+                "thread_id": thread_id,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+    async def aclose(self) -> None:
+        pass
+
+
+def test_api_executor_run_workflow_unwraps_envelope():
+    client = _WorkflowAPIClient(
+        result={"workflow_id": "wf_x", "run_id": "r1", "envelope": {"ok": True}}
+    )
+    executor = APIClientExecutor(client)
+    envelope = asyncio.run(
+        executor.run_workflow("wf_x", {"a": 1}, user_id="u1", thread_id="t1")
+    )
+    assert envelope == {"ok": True}
+    assert client.calls[0]["thread_id"] == "t1"
+
+
+def test_api_executor_run_workflow_maps_http_error_to_runtime_error():
+    import httpx
+
+    response = httpx.Response(
+        403,
+        json={"detail": "execution requires an admin-approved revision"},
+        request=httpx.Request("POST", "http://api/workflows/wf_x/execute"),
+    )
+    error = httpx.HTTPStatusError("403", request=response.request, response=response)
+    executor = APIClientExecutor(_WorkflowAPIClient(error=error))
+    try:
+        asyncio.run(executor.run_workflow("wf_x", {}, user_id="u1", thread_id="t1"))
+    except RuntimeError as exc:
+        assert "admin-approved" in str(exc)
+    else:
+        raise AssertionError("HTTP refusal did not raise")
+
+
+def test_api_executor_run_workflow_requires_envelope():
+    executor = APIClientExecutor(_WorkflowAPIClient(result={"nope": True}))
+    try:
+        asyncio.run(executor.run_workflow("wf_x", {}, user_id="u1", thread_id="t1"))
+    except RuntimeError as exc:
+        assert "no envelope" in str(exc)
+    else:
+        raise AssertionError("missing envelope did not raise")

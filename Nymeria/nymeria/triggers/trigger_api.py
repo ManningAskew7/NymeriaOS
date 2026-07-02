@@ -44,7 +44,7 @@ class TriggerCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     source_type: str = Field(..., min_length=1)
     source_config: dict = Field(default_factory=dict)
-    action_type: Literal["agent_prompt", "notify", "create_todo"] = Field(...)
+    action_type: Literal["agent_prompt", "notify", "create_todo", "run_workflow"] = Field(...)
     action_config: dict = Field(default_factory=dict)
     conditions: List[TriggerConditionRequest] = Field(default_factory=list)
     cooldown_seconds: int = Field(default=0, ge=0)
@@ -56,7 +56,9 @@ class TriggerUpdateRequest(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
     source_config: Optional[dict] = None
-    action_type: Optional[Literal["agent_prompt", "notify", "create_todo"]] = None
+    action_type: Optional[
+        Literal["agent_prompt", "notify", "create_todo", "run_workflow"]
+    ] = None
     action_config: Optional[dict] = None
     conditions: Optional[List[TriggerConditionRequest]] = None
     cooldown_seconds: Optional[int] = None
@@ -252,6 +254,19 @@ def _dispatch_trigger_fire(
         manager.log_execution(user_id, execution)
 
 
+def _run_workflow_binding_error(action_config: dict) -> Optional[str]:
+    """Bind-time validation for run_workflow trigger actions (REST path)."""
+    from ..core.workflows.tool_runtime import workflow_binding_error
+
+    workflow_id = str((action_config or {}).get("workflow_id") or "").strip()
+    if not workflow_id:
+        return "run_workflow requires 'workflow_id' in action_config"
+    params = (action_config or {}).get("params") or {}
+    if not isinstance(params, dict):
+        return "run_workflow 'params' must be a dict"
+    return workflow_binding_error(workflow_id, params, allow_event=True)
+
+
 # ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
@@ -352,6 +367,10 @@ def create_trigger_router(
         if body.thread_id and require_thread_access_fn is not None:
             require_thread_access_fn(user, body.thread_id)
         manager = _get_manager()
+        if body.action_type == "run_workflow":
+            binding_error = _run_workflow_binding_error(body.action_config)
+            if binding_error:
+                raise HTTPException(status_code=400, detail=binding_error)
         action = TriggerAction(type=body.action_type, config=body.action_config)
 
         trigger = manager.add_trigger(
@@ -489,6 +508,10 @@ def create_trigger_router(
                 raise HTTPException(status_code=404, detail="Trigger not found")
             new_type = body.action_type or existing.action.type
             new_config = body.action_config if body.action_config is not None else existing.action.config
+            if new_type == "run_workflow":
+                binding_error = _run_workflow_binding_error(new_config)
+                if binding_error:
+                    raise HTTPException(status_code=400, detail=binding_error)
             kwargs["action"] = TriggerAction(type=new_type, config=new_config)
 
         if not kwargs:
@@ -571,6 +594,11 @@ def create_trigger_router(
             rendered = _safe_format(action.config.get("message_template", ""), template_vars)
         elif action.type == "create_todo":
             rendered = _safe_format(action.config.get("task_template", ""), template_vars)
+        elif action.type == "run_workflow":
+            rendered = (
+                f"run workflow '{action.config.get('workflow_id', '?')}' "
+                f"(dry run only, nothing executed)"
+            )
         else:
             rendered = ""
 
@@ -655,12 +683,37 @@ def create_trigger_router(
             action_config = dict(live_trigger.action.config)
             action_type = live_trigger.action.type
             thread_id = live_trigger.thread_id or f"trigger-{trigger_id}"
+            fired_trigger = live_trigger.model_copy(deep=True)
+
+        import threading
+
+        # Non-agent actions (notify / create_todo / run_workflow) execute
+        # through fire_action's type dispatch, exactly like the poll path.
+        # Historically EVERY webhook fire was rendered into a prompt and
+        # relayed to /chat as an agent turn regardless of its action type;
+        # that bypass is the routing bug this branch closes. fire_action logs
+        # its own TriggerExecution, so nothing is double-logged here.
+        if action_type != "agent_prompt":
+            from ..core.turn_executor import LocalAgentExecutor
+
+            executor = LocalAgentExecutor(get_agent_fn())
+            threading.Thread(
+                target=manager.fire_action,
+                args=(fired_trigger, event, executor, user_id),
+                name=f"trigger-fire-{trigger_id}",
+                daemon=True,
+            ).start()
+            return {
+                "status": "fired",
+                "trigger_id": trigger_id,
+                "trigger_name": trigger_name,
+                "action_type": action_type,
+            }
 
         # Route through POST /chat with is_self_invoke=True so the
         # autonomous event publishing uses the same proven path as the
         # watchdog/ticker.  This ensures the frontend receives streaming
         # events through the exact same code that TODO streaming uses.
-        import threading
         settings = get_settings()
 
         template = (

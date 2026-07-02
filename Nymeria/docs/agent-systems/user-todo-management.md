@@ -70,7 +70,25 @@ class TodoItem(BaseModel):
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created: 'agent' or 'user'")
     recurrence: Optional[str] = Field(default=None, description="Canonical duration string (e.g. '5m', '2h', '1d', '1w', '1mo'). Calendar months (Nmo) use calendar arithmetic; everything else is a fixed duration. Validated by core.todo_constants.validate_recurrence; legacy preset names are accepted on input.")
+
+    # Scheduled workflow TODOs (create-only; delete and recreate to rebind)
+    workflow_id: Optional[str] = None      # published workflow tool to run headlessly
+    workflow_params: Optional[dict] = None # parameters bound to the run
 ```
+
+A TODO with `workflow_id` set runs that published nym-SDK workflow tool at
+the scheduled time instead of waking the agent: no prompt, no LLM turn. The
+binding is validated at create time on every surface (`nym_todo` tool and
+`POST /todos`): the workflow must exist, its revision must be
+admin-approved, and every required parameter must be covered by
+`workflow_params` or defaults. Both fields are create-only; updates that try
+to change them are refused. The run never delivers output by itself
+(delivery is the workflow's job via `nym.thread`/`nym.notify`); the owner
+gets the usual scheduled-task status notification. Recurrence and retry
+behave exactly like agent TODOs, and since no agent turn exists to close
+the item, the ticker marks a successful non-recurring workflow TODO done
+itself. A run that suspends on `nym.approve` counts as a successful
+execution.
 
 ### REST API Endpoints
 
@@ -142,7 +160,9 @@ for that TODO, using `todo.id` as the stable task id. Slim runs the ticker
 in-process against the local agent (no change in behaviour). The injection
 point is the `TurnExecutor` passed to `Ticker.__init__`  -  `LocalAgentExecutor`
 in slim, `APIClientExecutor` in the Docker worker. See
-`nymeria/core/turn_executor.py`.
+`nymeria/core/turn_executor.py`. Workflow TODOs ride the same seam through
+its `run_workflow` method: slim runs the workflow engine in-process, the
+Docker worker relays to `POST /workflows/{id}/execute` on the API container.
 
 ### Startup missed-work handling
 

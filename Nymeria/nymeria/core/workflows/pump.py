@@ -220,12 +220,25 @@ class VerbPump:
             return _error(KIND_VERB_ERROR, f"verb {verb!r} failed: {exc}")
 
         value = self._normalize(result)
+        if verb == "approve":
+            # The child needs the real result (it reports the resume token
+            # back in its finish frame), but the persisted step trace is
+            # served over GET /workflows/runs: never record the secret token
+            # or the raw suspension state there.
+            trace_args = {
+                "prompt": args.get("prompt"),
+                "resume": args.get("resume"),
+                "state": "[redacted]",
+            }
+            trace_result = {"record_id": (value or {}).get("record_id")}
+        else:
+            trace_args, trace_result = args, value
         self._trace.record(
             verb=verb,
             status="ok",
             duration_ms=int((time.monotonic() - started) * 1000),
-            args=args,
-            result=value,
+            args=trace_args,
+            result=trace_result,
         )
         return {"t": "result", "id": request_id, "ok": True, "value": value}
 

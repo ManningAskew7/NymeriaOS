@@ -265,3 +265,50 @@ def test_todo_activity_entries_carry_thread_id(
 
     todo_tools.nym_todo_delete.func(todo_id=todo_id, config=_config("thread-a"))
     assert _thread_id_for(ActivityType.TODO_DELETED) == "thread-a"
+
+
+def test_nym_todo_workflow_binding_is_create_only(tmp_path: Path, monkeypatch):
+    """Phase 4: nym_todo validates workflow bindings at create time and
+    refuses to change them on update."""
+    manager = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", manager)
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.workflow_binding_error",
+        lambda wf, p, *, allow_event=False: "no published workflow tool named 'wf_x'",
+    )
+    rejected = todo_tools.nym_todo.func(
+        task="Run report",
+        scheduled_for="30m",
+        workflow_id="wf_x",
+        config=_config("thread-a"),
+    )
+    assert rejected.startswith("[Error]:")
+    assert "no published workflow tool" in rejected
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.workflow_binding_error",
+        lambda wf, p, *, allow_event=False: None,
+    )
+    created = todo_tools.nym_todo.func(
+        task="Run report",
+        scheduled_for="30m",
+        workflow_id="wf_x",
+        workflow_params={"channel": "ops"},
+        config=_config("thread-a"),
+    )
+    assert created.startswith("[Added]:")
+    assert "runs workflow 'wf_x'" in created
+    todo_id = created.split("TODO ")[1].split(":")[0]
+
+    item = manager.get_todo_by_id("owner", todo_id)
+    assert item.workflow_id == "wf_x"
+    assert item.workflow_params == {"channel": "ops"}
+
+    update = todo_tools.nym_todo.func(
+        todo_id=todo_id,
+        workflow_id="wf_other",
+        config=_config("thread-a"),
+    )
+    assert "create-only" in update
+    assert manager.get_todo_by_id("owner", todo_id).workflow_id == "wf_x"

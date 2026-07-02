@@ -242,3 +242,231 @@ def test_admin_sees_all_runs(tmp_path, api_client_builder, monkeypatch):
         "/workflows/runs/wf_router_runs", headers=api_client_builder.auth(token)
     ).json()
     assert body["total"] == 2
+
+
+# --- runtime approvals (nym.approve suspensions, phase 4) -----------------------
+
+
+def _approvals_store(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "nymeria.core.workflows.approvals.get_settings",
+        lambda: SimpleNamespace(data_dir=tmp_path),
+    )
+
+
+def _mint_runtime_approval(record_id: str, user_id: str):
+    from nymeria.core.workflows.approvals import create_pending_approval
+
+    return create_pending_approval(
+        run_id=record_id,
+        workflow_id="wf_pending",
+        origin="tool",
+        owner_user_id=user_id,
+        user_id=user_id,
+        thread_id="t1",
+        revision_hash="h" * 64,
+        resume_entrypoint="cont",
+        state={"secret": "payload"},
+        prompt="Ship it?",
+    )
+
+
+def test_runtime_approvals_list_is_owner_scoped(
+    tmp_path, api_client_builder, monkeypatch
+):
+    _sandbox_tool_create(monkeypatch, tmp_path)
+    _approvals_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "nymeria.core.notifications.create_notification", lambda **kw: None
+    )
+    _mint_runtime_approval("rec-mine", "caller")
+    _mint_runtime_approval("rec-other", "other")
+
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    body = client.get(
+        "/workflows/approvals", headers=api_client_builder.auth(token)
+    ).json()
+    assert body["total"] == 1
+    entry = body["approvals"][0]
+    assert entry["record_id"] == "rec-mine"
+    # Public entries never expose the resume token or the raw state.
+    assert "resume_token" not in entry and "state" not in entry
+
+    # A second client needs its own accounts DB (same email would collide);
+    # the approvals store stays the patched shared one.
+    admin_dir = tmp_path / "admin-host"
+    admin_dir.mkdir()
+    admin_settings = api_client_builder.settings(admin_dir)
+    admin_client, admin_token = api_client_builder.authenticated_client(
+        FakeAgent(admin_dir), admin_settings, user_id="boss", role="admin"
+    )
+    body = admin_client.get(
+        "/workflows/approvals", headers=api_client_builder.auth(admin_token)
+    ).json()
+    assert body["total"] == 2
+
+
+def test_resolve_runtime_approval_owner_ack_and_claim(
+    tmp_path, api_client_builder, monkeypatch
+):
+    _sandbox_tool_create(monkeypatch, tmp_path)
+    _approvals_store(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "nymeria.core.notifications.create_notification", lambda **kw: None
+    )
+    resolved: list[dict] = []
+
+    async def fake_resolve(record, **kwargs):
+        resolved.append({"record": record, **kwargs})
+        return {"record_id": record["record_id"]}
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.approvals.resolve_approval_record", fake_resolve
+    )
+    _mint_runtime_approval("rec-1", "caller")
+
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    ack = client.post(
+        "/workflows/approvals/rec-1/resolve",
+        json={"approved": True, "note": "go"},
+        headers=api_client_builder.auth(token),
+    )
+    assert ack.status_code == 200
+    body = ack.json()
+    assert body["ok"] is True
+    assert body["record_id"] == "rec-1"
+    assert body["decision"] == "approved"
+    assert body["workflow_id"] == "wf_pending"
+    assert body["run_id"]
+    # The claim happened synchronously: the record is no longer pending.
+    from nymeria.core.workflows.approvals import load_approval
+
+    assert load_approval("rec-1") is None
+    assert (tmp_path / "workflows" / "pending" / "rec-1.json.claimed").exists()
+
+
+def test_resolve_runtime_approval_hides_other_users_records(
+    tmp_path, api_client_builder, monkeypatch
+):
+    _sandbox_tool_create(monkeypatch, tmp_path)
+    _approvals_store(monkeypatch, tmp_path)
+    _mint_runtime_approval("rec-other", "other")
+
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    headers = api_client_builder.auth(token)
+    # Not yours and missing look identical: 404, no existence leak.
+    not_yours = client.post(
+        "/workflows/approvals/rec-other/resolve",
+        json={"approved": False},
+        headers=headers,
+    )
+    missing = client.post(
+        "/workflows/approvals/ghost/resolve",
+        json={"approved": True},
+        headers=headers,
+    )
+    assert not_yours.status_code == 404
+    assert missing.status_code == 404
+    # The record was never claimed.
+    from nymeria.core.workflows.approvals import load_approval
+
+    assert load_approval("rec-other") is not None
+
+
+def test_resolve_runtime_approval_conflict_when_already_claimed(
+    tmp_path, api_client_builder, monkeypatch
+):
+    _sandbox_tool_create(monkeypatch, tmp_path)
+    _approvals_store(monkeypatch, tmp_path)
+    _mint_runtime_approval("rec-1", "caller")
+    # Simulate losing the claim race: the record loads but the claim fails.
+    monkeypatch.setattr(
+        "nymeria.core.workflows.approvals.claim_approval", lambda rid: None
+    )
+
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    conflict = client.post(
+        "/workflows/approvals/rec-1/resolve",
+        json={"approved": True},
+        headers=api_client_builder.auth(token),
+    )
+    assert conflict.status_code == 409
+
+
+# --- POST /workflows/{id}/execute ----------------------------------------------
+
+
+def _patch_execute(monkeypatch, *, refusal=None, output=None):
+    calls: list[dict] = []
+
+    async def fake_run(loader, workflow_id, params, *, user_id, thread_id, depth=0):
+        calls.append(
+            {
+                "workflow_id": workflow_id,
+                "params": params,
+                "user_id": user_id,
+                "thread_id": thread_id,
+            }
+        )
+        if refusal is not None:
+            return refusal, None
+        run = SimpleNamespace(
+            trace=SimpleNamespace(run_id="run-exec-1"),
+            envelope=SimpleNamespace(
+                to_dict=lambda: {"ok": True, "status": "ok", "output": output}
+            ),
+        )
+        return None, run
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.run_workflow_by_id", fake_run
+    )
+    monkeypatch.setattr(
+        "nymeria.core.custom_tools.get_custom_tool_loader", lambda: None
+    )
+    return calls
+
+
+def test_execute_endpoint_returns_envelope(tmp_path, api_client_builder, monkeypatch):
+    _sandbox_tool_create(monkeypatch, tmp_path)
+    calls = _patch_execute(monkeypatch, output={"echo": 1})
+
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    response = client.post(
+        "/workflows/wf_exec/execute",
+        json={"params": {"name": "x"}, "thread_id": "t9"},
+        headers=api_client_builder.auth(token),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["workflow_id"] == "wf_exec"
+    assert body["run_id"] == "run-exec-1"
+    assert body["envelope"]["output"] == {"echo": 1}
+    assert calls == [
+        {
+            "workflow_id": "wf_exec",
+            "params": {"name": "x"},
+            "user_id": "caller",
+            "thread_id": "t9",
+        }
+    ]
+
+
+def test_execute_endpoint_maps_refusals(tmp_path, api_client_builder, monkeypatch):
+    _sandbox_tool_create(monkeypatch, tmp_path)
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    headers = api_client_builder.auth(token)
+
+    _patch_execute(monkeypatch, refusal="workflow tool 'wf_ghost' was not found")
+    missing = client.post(
+        "/workflows/wf_ghost/execute", json={"params": {}}, headers=headers
+    )
+    assert missing.status_code == 404
+
+    _patch_execute(
+        monkeypatch, refusal="workflow execution requires an admin-approved revision"
+    )
+    ungated = client.post(
+        "/workflows/wf_exec/execute", json={"params": {}}, headers=headers
+    )
+    assert ungated.status_code == 403

@@ -33,11 +33,24 @@ class TurnExecutor(Protocol):
     through HTTP (and therefore can't assume in-memory agent state is
     available locally). ``astream`` must accept the same kwargs as
     :meth:`NymeriaAgent.astream` and yield the same chunk dicts.
+    ``run_workflow`` is the headless workflow-firing seam: local executors
+    run the engine in-process (the API is the only workflow runtime, exactly
+    like agent turns), remote ones relay to ``POST /workflows/{id}/execute``.
     """
 
     is_remote: bool
 
     def astream(self, **astream_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        ...
+
+    async def run_workflow(
+        self,
+        workflow_id: str,
+        params: dict[str, Any],
+        *,
+        user_id: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
         ...
 
     async def aclose(self) -> None:
@@ -55,6 +68,36 @@ class LocalAgentExecutor:
     async def astream(self, **astream_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
         async for chunk in self._agent.astream(**astream_kwargs):
             yield chunk
+
+    async def run_workflow(
+        self,
+        workflow_id: str,
+        params: dict[str, Any],
+        *,
+        user_id: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
+        """Run one published workflow in-process; returns the envelope dict.
+
+        Refusals (missing definition, unapproved revision, depth) raise
+        ``RuntimeError`` so callers' failure handling (trigger health, TODO
+        retries) sees them; a completed run returns its envelope whatever the
+        status, and the caller decides what an error envelope means.
+        """
+        from .custom_tools import get_custom_tool_loader
+        from .workflows.tool_runtime import run_workflow_by_id
+
+        refusal, run = await run_workflow_by_id(
+            get_custom_tool_loader(),
+            workflow_id,
+            dict(params or {}),
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+        if refusal is not None:
+            raise RuntimeError(f"workflow {workflow_id!r} refused: {refusal}")
+        assert run is not None  # exactly one of (refusal, run) is None
+        return run.envelope.to_dict()
 
     async def aclose(self) -> None:
         # The agent's lifetime is owned by whoever constructed it; nothing
@@ -94,6 +137,45 @@ class APIClientExecutor:
         translated = self._translate_kwargs(astream_kwargs)
         async for chunk in self._client.chat_stream(**translated):
             yield chunk
+
+    async def run_workflow(
+        self,
+        workflow_id: str,
+        params: dict[str, Any],
+        *,
+        user_id: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
+        """Relay a headless workflow run to the API container.
+
+        Same contract as the local executor: the envelope dict for any
+        completed run, ``RuntimeError`` for refusals (HTTP 403/404) so the
+        caller's failure machinery engages.
+        """
+        import httpx
+
+        try:
+            result = await self._client.run_workflow(
+                workflow_id,
+                dict(params or {}),
+                user_id=user_id,
+                thread_id=thread_id or None,
+            )
+        except httpx.HTTPStatusError as exc:
+            detail = ""
+            try:
+                detail = str(exc.response.json().get("detail") or "")
+            except Exception:  # noqa: BLE001 - non-JSON error body
+                detail = exc.response.text[:200]
+            raise RuntimeError(
+                f"workflow {workflow_id!r} refused: {detail or exc}"
+            ) from exc
+        envelope = result.get("envelope") if isinstance(result, dict) else None
+        if not isinstance(envelope, dict):
+            raise RuntimeError(
+                f"workflow {workflow_id!r} relay returned no envelope"
+            )
+        return envelope
 
     async def aclose(self) -> None:
         await self._client.aclose()

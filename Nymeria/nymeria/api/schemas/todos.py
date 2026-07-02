@@ -20,6 +20,8 @@ class TodoItemResponse(BaseModel):
     last_execution: Optional[datetime] = None
     created_by: str = "agent"
     recurrence: Optional[str] = None
+    workflow_id: Optional[str] = None
+    workflow_params: Optional[dict] = None
 
 
 class TodoCreateRequest(BaseModel):
@@ -46,6 +48,16 @@ class TodoCreateRequest(BaseModel):
     )
     thread_id: Optional[str] = Field(
         default=None, description="Thread ID for scheduled execution output"
+    )
+    workflow_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Published workflow tool the ticker runs headlessly at the "
+            "scheduled time instead of an agent turn (create-only)"
+        ),
+    )
+    workflow_params: Optional[dict] = Field(
+        default=None, description="Parameters bound to the scheduled workflow run"
     )
 
 

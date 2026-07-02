@@ -6,10 +6,11 @@ Event-driven automations that react to external events  -  webhooks, emails, RSS
 
 **Source**  -  watches for external events (webhook, email, RSS, etc.). Lightweight, no LLM calls. Poll sources are checked every 30s by the ticker; webhook sources fire on-demand.
 
-**Action**  -  what to do when events arrive. Three types:
+**Action**  -  what to do when events arrive. Four types:
 - `agent_prompt`  -  send a prompt to Nymeria in the trigger's bound thread
 - `notify`  -  publish a notification via SSE
 - `create_todo`  -  add a TODO item
+- `run_workflow`  -  run a published nym-SDK workflow tool headlessly (no LLM call)
 
 **Condition**  -  optional AND-logic filters applied to events before firing. Evaluated against event fields using operators like `contains`, `equals`, `matches_regex`.
 
@@ -155,6 +156,32 @@ Creates a TODO item for the user.
   }
 }
 ```
+
+### run_workflow
+
+Runs a published workflow tool headlessly: no prompt, no LLM call, no agent
+turn. The workflow body decides what to do with the event.
+
+```json
+{
+  "type": "run_workflow",
+  "config": {
+    "workflow_id": "wf_slack_digest",
+    "params": {"channel": "ops"}
+  }
+}
+```
+
+The binding is validated when the trigger is created or updated (the
+workflow must exist, its revision must be admin-approved, `params` may only
+name declared parameters, and every required parameter must be covered). At
+fire time the raw event dict is passed as the workflow's `event` parameter
+when its signature declares one; there is no per-field mapping config, the
+authored body extracts what it needs. A run that suspends on `nym.approve`
+counts as a successful fire. The run never delivers output anywhere by
+itself: delivery is the workflow's explicit job (`nym.thread` /
+`nym.notify`), so a headless fire cannot leak output to a guessed
+destination.
 
 ## Conditions
 

@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 _CHAT_TIMEOUT = httpx.Timeout(connect=10, read=300, write=10, pool=10)
 _SSE_TIMEOUT = httpx.Timeout(connect=10, read=None, write=10, pool=10)
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
+# A relayed workflow run blocks until the engine finishes; its wall clock is
+# clamped to 3600s per definition, so read must outlast that.
+_WORKFLOW_TIMEOUT = httpx.Timeout(connect=10, read=3700, write=10, pool=10)
 
 
 def _path_param(value: Any) -> str:
@@ -253,6 +256,33 @@ class NymeriaAPIClient:
         if trigger_override:
             body["trigger_override"] = trigger_override
         return await self._post("/chat/sync", json=body, act_as=user_id)
+
+    # ── Workflows ─────────────────────────────────────────────────────────
+
+    async def run_workflow(
+        self,
+        workflow_id: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        user_id: str,
+        thread_id: Optional[str] = None,
+    ) -> dict:
+        """Execute a published workflow tool as ``user_id`` (headless relay).
+
+        Blocks until the run finishes (bounded by the workflow's wall-clock
+        cap). Returns ``{workflow_id, run_id, envelope}``; a refused run
+        (missing definition, unapproved revision) raises the HTTP error.
+        """
+        body: Dict[str, Any] = {"params": params or {}}
+        if thread_id:
+            body["thread_id"] = thread_id
+        return await self._request(
+            "POST",
+            f"/workflows/{_path_param(workflow_id)}/execute",
+            json_body=body,
+            act_as=user_id,
+            timeout=_WORKFLOW_TIMEOUT,
+        )
 
     # ── Voice ─────────────────────────────────────────────────────────────
 

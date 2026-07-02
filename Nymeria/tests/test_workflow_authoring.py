@@ -467,3 +467,66 @@ def test_persist_and_read_run_records(tmp_path, monkeypatch):
     assert len(read_run_records("wf_echo", limit=10)) == 3
 
     assert read_run_records("missing_wf") == []
+
+
+# --- headless binding validation (phase 4) --------------------------------------
+
+
+BINDING_SOURCE = (
+    "def run(event: dict, name: str, count: int = 2):\n"
+    "    return {'name': name}\n"
+)
+
+
+def _published_binding_definition(monkeypatch, *, approved: bool = True):
+    config = _config(BINDING_SOURCE)
+    params, errors = validate_workflow_static(config=config)
+    assert errors == [], errors
+    if approved:
+        config = approve_revision(config, params, approved_by="admin")
+    definition = SimpleNamespace(
+        implementation_type="workflow", workflow_config=config, parameters=params
+    )
+    monkeypatch.setattr(
+        "nymeria.core.custom_tools.get_custom_tool_loader",
+        lambda: SimpleNamespace(
+            get_definition=lambda wf: definition if wf == "wf_bind" else None
+        ),
+    )
+    return definition
+
+
+def test_workflow_binding_error_paths(monkeypatch):
+    from nymeria.core.workflows.tool_runtime import (
+        workflow_binding_error,
+        workflow_declares_event,
+    )
+
+    _published_binding_definition(monkeypatch)
+
+    assert "no published workflow tool" in workflow_binding_error("ghost", {})
+    # Sound binding: event supplied by the firing surface, name bound.
+    assert (
+        workflow_binding_error("wf_bind", {"name": "x"}, allow_event=True) is None
+    )
+    # Required name not covered.
+    assert "does not cover" in workflow_binding_error(
+        "wf_bind", {}, allow_event=True
+    )
+    # event declared and required, but this surface never supplies one.
+    assert "does not cover" in workflow_binding_error(
+        "wf_bind", {"name": "x"}, allow_event=False
+    )
+    assert "unknown parameter" in workflow_binding_error(
+        "wf_bind", {"name": "x", "bogus": 1}, allow_event=True
+    )
+    assert workflow_declares_event("wf_bind") is True
+    assert workflow_declares_event("ghost") is False
+
+
+def test_workflow_binding_error_regates_revision(monkeypatch):
+    from nymeria.core.workflows.tool_runtime import workflow_binding_error
+
+    _published_binding_definition(monkeypatch, approved=False)
+    error = workflow_binding_error("wf_bind", {"name": "x"}, allow_event=True)
+    assert error is not None and "approv" in error
