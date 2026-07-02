@@ -1091,6 +1091,7 @@ Returns the callable thread tools actually available from that caller thread aft
 | `tool_reload` | Tool registry was reloaded mid-turn; resume metadata for next iteration | `tools`, `ttl`, `ttl_seconds`, `source`, `skill_name`, `reason` |
 | `provider_retry` | Retryable provider/model failure; backend is sleeping before retry. If the provider failed after partial stream output, the backend rewound to the latest stable checkpoint first. | `provider`, `model`, `attempt`, `max_retries`, `delay_seconds`, `reason`, optional `http_status`, optional `rewound`, optional `stream_chunks` |
 | `provider_fallback` | Primary retries were exhausted; backend switched to a configured fallback provider/model. May also follow a post-stream rewind. | `from_provider`, `from_model`, `to_provider`, `to_model`, `hold_seconds`, `expires_at`, `reason`, optional `http_status`, optional `rewound`, optional `stream_chunks` |
+| `hook_activity` | A meaningful mutate-plane lifecycle-hook run (a deny/modify/inject or a fault); ephemeral live line only, nothing persisted. Only emitted while hooks are enabled and a mutate hook did something; the durable record is `GET /hooks/executions`. | `name`, `event`, `status`, `detail`, optional `tool_name` |
 | `auth_prompt` | Credential setup prompt from `request_credential`; desktop opens the modal and chat bots render the secure setup link | `prompt_id`, `credential_id`, `provider`, `display_name`, `mode`, `fields`, `timeout_seconds`, optional `expires_at`, optional `connect_url`, `connect_url_required`, `connect_url_error`, optional OAuth fields such as `flow`, `auth_url`, `user_code`, `verification_uri`, `scopes` |
 | `auth_prompt_resolved` | Credential prompt completed. Desktop keeps OAuth prompts open long enough to show success; non-OAuth prompts normally close from the submit action | `prompt_id`, `credential_id`, `status`, optional `message`, `email`, `name` |
 | `auth_prompt_cancelled` | Credential prompt ended without an active credential, including user cancel, OAuth denial, expiry, or provider error | `prompt_id`, `reason`, optional `message` |
@@ -3596,13 +3597,20 @@ A `pre_tool_use` guardrail instead sends `action` plus per-action fields:
 
 `event` is one of `prompt_submit`, `pre_tool_use`, `post_tool_use`, `done`;
 `action` is `inject_context` (default), `block_if_matches`, `rewrite_arg`,
-`notify`, `create_todo`, or `webhook`, and must be legal for the event
-(`notify`/`create_todo`/`webhook` are `post_tool_use`/`done` only). `matcher` (a
-pipe-list tool-NAME filter) applies to the tool events
-(`pre_tool_use`/`post_tool_use`) and is dropped on others. Per-action fields:
-`text` (inject_context / notify / create_todo, and the webhook body,
-`{placeholder}` interpolated); `conditions` + `reason` (block_if_matches);
-`conditions` + `updates` (rewrite_arg); `url` + `text` (webhook).
+`notify`, `create_todo`, `webhook`, or `run_command`, and must be legal for the
+event (`notify`/`create_todo`/`webhook` are `post_tool_use`/`done` only;
+`run_command` is legal on all four). `matcher` (a pipe-list tool-NAME filter)
+applies to the tool events (`pre_tool_use`/`post_tool_use`) and is dropped on
+others. Per-action fields: `text` (inject_context / notify / create_todo, and
+the webhook body, `{placeholder}` interpolated); `conditions` + `reason`
+(block_if_matches); `conditions` + `updates` (rewrite_arg); `url` + `text`
+(webhook); `command` + `timeout_seconds` (run_command).
+
+**`run_command` is gated.** It runs a shell command on the host, so it is
+admin-only AND requires the `HOOKS_RUN_COMMAND_ENABLED` deployment flag.
+Authoring (creating, or `PATCH`ing an existing hook to) `run_command` returns
+`403` for a non-admin caller and `400` when the flag is off. See
+`docs/agent-systems/hooks.md` for its stdin/env/timeout contract.
 `conditions` match the tool call's args (operators `equals`,
 `not_equals`, `contains`, `starts_with`, `matches_regex`; `field` supports dotted
 paths). `scope` is `thread` (bound to `thread_id`) or `global` (all the user's
@@ -3622,7 +3630,9 @@ Authorization: Bearer <token>
 
 `PATCH` accepts any subset of `name`, `event`, `action`, `matcher`, `enabled`,
 and the per-action logic fields (`text` / `conditions` / `reason` / `updates` /
-`url`); the logic is rebuilt and re-validated on save. `scope`/`thread_id` are
+`url` / `command` / `timeout_seconds`); the logic is rebuilt and re-validated on
+save. Switching `action` TO `run_command` is gated exactly as create (403
+non-admin / 400 flag-off). `scope`/`thread_id` are
 deliberately not patchable (every authoring surface enforces this): a re-scope
 needs a thread binding and its access gate, so it is a delete + create.
 `DELETE` returns `204` and purges the hook's execution-log entries. All return
@@ -3668,10 +3678,12 @@ Authorization: Bearer <token>
 
 The machine-readable authoring taxonomy, derived from the backend single
 source (`core/hook_spec.py`): per-event legal actions and tool-event flag,
-per-action plane/events/`text_action` plus `params_schema` (the action's JSON
-schema minus the `action` discriminator), the condition `operators`, and
-`max_hooks`. Clients can render authoring forms from this instead of
-hardcoding the legality map.
+per-action `plane`/`events`/`text_action`, a `plane_by_event` map (which
+event dispatches on which plane; `run_command` flips mutate-to-observe across
+its four events), a `gated` flag (true for admin + flag-gated actions, i.e.
+`run_command`), `params_schema` (the action's JSON schema minus the `action`
+discriminator), the condition `operators`, and `max_hooks`. Clients can render
+authoring forms from this instead of hardcoding the legality map.
 
 ### Enable model
 

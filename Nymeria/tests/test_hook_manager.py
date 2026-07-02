@@ -396,6 +396,55 @@ def manager_add(event, action, params):
     return m.add_hook("u", name="n", event=event, action=action, params=params)
 
 
+# --- run_command (pass 5) ----------------------------------------------------
+
+def test_run_command_roundtrips_on_all_four_events():
+    from nymeria.core.hook_manager import RunCommandLogic
+    for event in ("prompt_submit", "pre_tool_use", "post_tool_use", "done"):
+        h = HookDefinition.model_validate(
+            {"id": "rc", "name": "cmd", "event": event,
+             "logic": {"action": "run_command", "command": "echo hi", "timeout_seconds": 12}}
+        )
+        assert isinstance(h.logic, RunCommandLogic)
+        assert h.logic.command == "echo hi"
+        assert h.logic.timeout_seconds == 12
+
+
+def test_run_command_timeout_bounds_enforced():
+    with pytest.raises(ValueError):
+        build_logic("run_command", {"command": "x", "timeout_seconds": 0})  # < 1
+    with pytest.raises(ValueError):
+        build_logic("run_command", {"command": "x", "timeout_seconds": 999})  # > 300
+    with pytest.raises(ValueError):
+        build_logic("run_command", {"command": ""})  # command required
+
+
+def test_run_command_flat_fields_map_to_params():
+    from nymeria.core.hook_manager import params_from_fields
+    params = params_from_fields("run_command", command="ls -la", timeout_seconds=42.0)
+    assert params == {"command": "ls -la", "timeout_seconds": 42.0}
+    assert params_from_fields("run_command", command=None, timeout_seconds=None) is None
+
+
+def test_run_command_authoring_gate():
+    from nymeria.core.hook_manager import run_command_authoring_error
+    from unittest.mock import patch
+    # Non-gated action is always allowed regardless of flag/admin.
+    assert run_command_authoring_error("inject_context", is_admin=False) is None
+    # Flag off -> error mentioning the env var (even for an admin).
+    with patch("nymeria.config.get_settings",
+               return_value=type("S", (), {"hooks_run_command_enabled": False})()):
+        msg = run_command_authoring_error("run_command", is_admin=True)
+        assert msg and "HOOKS_RUN_COMMAND_ENABLED" in msg
+    # Flag on but not admin -> admin-only error.
+    with patch("nymeria.config.get_settings",
+               return_value=type("S", (), {"hooks_run_command_enabled": True})()):
+        assert "admin-only" in run_command_authoring_error("run_command", is_admin=False)
+        # Flag on + admin -> allowed. None (trusted local) is also allowed.
+        assert run_command_authoring_error("run_command", is_admin=True) is None
+        assert run_command_authoring_error("run_command", is_admin=None) is None
+
+
 # --- execution log (write-behind) --------------------------------------------
 
 def _exec(hook_id="h1", **kw):

@@ -32,6 +32,11 @@ class Registration:
     ``definition_id`` carries the persisted ``HookDefinition`` id when the
     registration came through the bridge (None for direct/fixture
     registrations), so the execution recorder can attribute runs.
+
+    ``timeout`` overrides the dispatcher's per-hook budget for this one hook
+    (None = use the dispatch default). The bridge sets it for actions whose
+    runtime is author-configured (``run_command``), so a long-running command
+    is not cut at the 5s default.
     """
 
     id: int
@@ -41,6 +46,7 @@ class Registration:
     name: str
     observe: bool
     definition_id: Optional[str] = None
+    timeout: Optional[float] = None
 
 
 def _matches(matcher: Optional[str], tool_name: Optional[str]) -> bool:
@@ -81,6 +87,7 @@ class HookRegistry:
         name: Optional[str] = None,
         observe: bool = False,
         definition_id: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> int:
         """Register a hook; returns an opaque handle for :meth:`unregister`."""
         with self._lock:
@@ -93,6 +100,7 @@ class HookRegistry:
                 name=name or getattr(fn, "__name__", "hook"),
                 observe=observe,
                 definition_id=definition_id,
+                timeout=timeout,
             )
             self._regs.append(reg)
             return reg.id

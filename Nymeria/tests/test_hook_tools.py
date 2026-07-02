@@ -338,3 +338,96 @@ def test_log_filters_by_hook_id(store):
     out = _invoke(hook_tools.hook_info, {"action": "log", "hook_id": "h1"}, _cfg())
     assert "h1" in out
     assert "h2" not in out
+
+
+# --- hook_config: run_command authoring gate ---------------------------------
+
+def _set_run_command_flag(monkeypatch, enabled: bool):
+    """Point the config-level get_settings (used by the gate) at a flag shim."""
+    from types import SimpleNamespace
+
+    from nymeria import config as config_module
+
+    monkeypatch.setattr(
+        config_module, "get_settings",
+        lambda: SimpleNamespace(hooks_run_command_enabled=enabled),
+    )
+
+
+def test_run_command_denied_when_flag_off(store, monkeypatch):
+    _set_run_command_flag(monkeypatch, False)
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: True)
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "rc", "event": "done",
+         "hook_action": "run_command", "command": "echo hi"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+    assert "HOOKS_RUN_COMMAND_ENABLED" in out
+    assert store.get_hooks("u1") == []
+
+
+def test_run_command_denied_for_non_admin(store, monkeypatch):
+    _set_run_command_flag(monkeypatch, True)
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: False)
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "rc", "event": "done",
+         "hook_action": "run_command", "command": "echo hi"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+    assert "admin-only" in out
+    assert store.get_hooks("u1") == []
+
+
+def test_run_command_created_for_admin_with_flag_on(store, monkeypatch):
+    _set_run_command_flag(monkeypatch, True)
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: True)
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "rc", "event": "done", "scope": "global",
+         "hook_action": "run_command", "command": "echo hi", "timeout_seconds": 12},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    h = store.get_hooks("u1")[0]
+    assert h.logic.action == "run_command"
+    assert h.logic.command == "echo hi"
+    assert h.logic.timeout_seconds == 12
+
+
+def test_run_command_requires_command(store, monkeypatch):
+    _set_run_command_flag(monkeypatch, True)
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: True)
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "rc", "event": "done",
+         "hook_action": "run_command"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+    assert "run_command requires command" in out
+
+
+def test_run_command_update_command_preserves_timeout(store, monkeypatch):
+    """Editing just `command` (no `hook_action`) must reach the store and keep timeout."""
+    _set_run_command_flag(monkeypatch, True)
+    monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: True)
+    _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "rc", "event": "done", "scope": "global",
+         "hook_action": "run_command", "command": "echo hi", "timeout_seconds": 42},
+        _cfg(),
+    )
+    hook = store.get_hooks("u1")[0]
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "update", "hook_id": hook.id, "command": "echo bye"},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    updated = store.get_hooks("u1")[0]
+    assert updated.logic.command == "echo bye"
+    assert updated.logic.timeout_seconds == 42  # sibling preserved, not reset to default

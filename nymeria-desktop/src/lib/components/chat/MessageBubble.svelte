@@ -218,6 +218,27 @@
     return `Using fallback ${fallbackLabel} for ${duration}.${rewind}`;
   }
 
+  const HOOK_EVENT_LABELS: Record<string, string> = {
+    prompt_submit: 'prompt',
+    pre_tool_use: 'pre-tool',
+    post_tool_use: 'post-tool',
+    done: 'done',
+  };
+
+  // One-line summary for an ephemeral lifecycle-hook activity step. Reads like a
+  // Claude Code hook line: "Hook <name>: <what it did>", with the tool in
+  // parentheses when the hook fired around a tool call.
+  function hookActivityText(step: MessageStep): string {
+    const name = step.hookName || 'hook';
+    const where = step.hookEvent ? (HOOK_EVENT_LABELS[step.hookEvent] || step.hookEvent) : '';
+    const tool = step.hookToolName ? ` (${step.hookToolName})` : '';
+    const isFault = step.hookStatus && step.hookStatus !== 'ok';
+    const detail = isFault
+      ? `${step.hookStatus}${step.hookDetail ? `: ${step.hookDetail}` : ''}`
+      : (step.hookDetail || where || 'ran');
+    return `Hook ${name}${tool}: ${detail}`;
+  }
+
   async function downloadAttachment(file: FileAttachment) {
     const threadId = threadsStore.currentThreadId;
     if (!threadId) {
@@ -497,6 +518,11 @@
             <div class="provider-status-step">
               <Icon name={step.providerStatus === 'fallback' ? 'server' : 'refresh'} size={14} />
               <span>{providerStatusText(step)}</span>
+            </div>
+          {:else if step.type === 'hook_activity'}
+            <div class="hook-activity-step" class:is-fault={step.hookStatus && step.hookStatus !== 'ok'}>
+              <span class="elbow" aria-hidden="true"></span>
+              <span class="hook-activity-text">{hookActivityText(step)}</span>
             </div>
           {:else if step.type === 'response' && step.content}
             <div class="message-content">
@@ -790,6 +816,43 @@
   .provider-status-step :global(.icon) {
     color: var(--accent-primary);
     flex-shrink: 0;
+  }
+
+  /* Ephemeral lifecycle-hook line. Uses the same curved elbow the prompt-bar
+     hints draw (InputHintTips.svelte), so it reads as a soft connector rather
+     than a carbon copy of Claude Code's square L. */
+  .hook-activity-step {
+    position: relative;
+    margin: 2px 0 var(--spacing-xs);
+    padding-left: 20px;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    line-height: 1.4;
+  }
+
+  .hook-activity-step .elbow {
+    position: absolute;
+    left: 4px;
+    top: -2px;
+    bottom: 8px;
+    width: 9px;
+    border-left: 1.5px solid var(--border-default);
+    border-bottom: 1.5px solid var(--border-default);
+    border-bottom-left-radius: 6px;
+    pointer-events: none;
+  }
+
+  .hook-activity-step.is-fault {
+    color: color-mix(in srgb, var(--error) 80%, var(--text-muted));
+  }
+
+  .hook-activity-step.is-fault .elbow {
+    border-color: color-mix(in srgb, var(--error) 55%, var(--border-default));
+  }
+
+  .hook-activity-text {
+    display: inline-block;
+    word-break: break-word;
   }
 
   .assistant .bubble-content {

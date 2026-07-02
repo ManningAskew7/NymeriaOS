@@ -292,6 +292,84 @@ def test_illegal_outcome_dropped(reg, scratch):
     assert out.inject_context == "ok"
 
 
+# --------------------------------------------------------------------------- #
+# Dispatch: activity emit (Slice E in-chat hook lines)
+# --------------------------------------------------------------------------- #
+
+def test_emit_collects_meaningful_pre_deny(reg, scratch):
+    reg.register(
+        HookEvent.PRE_TOOL_USE,
+        lambda c: PreToolOutcome(decision="deny", reason="no bash"),
+        name="guard",
+    )
+    activity: list = []
+    run(dmod.adispatch(
+        HookEvent.PRE_TOOL_USE, ctx(HookEvent.PRE_TOOL_USE, tool_name="bash", tool_call_id="tc1"),
+        registry=reg, scratch=scratch, emit=activity.append,
+    ))
+    assert len(activity) == 1
+    rec = activity[0]
+    assert rec["name"] == "guard"
+    assert rec["event"] == "pre_tool_use"
+    assert rec["status"] == "ok"
+    assert rec["detail"] == "deny: no bash"
+    assert rec["tool_name"] == "bash"
+    assert rec["tool_call_id"] == "tc1"
+
+
+def test_emit_skips_inert_allow_and_no_op(reg, scratch):
+    reg.register(HookEvent.PRE_TOOL_USE, lambda c: PreToolOutcome(decision="allow"), name="allower")
+    reg.register(HookEvent.PRE_TOOL_USE, lambda c: None, name="noop")
+    activity: list = []
+    run(dmod.adispatch(
+        HookEvent.PRE_TOOL_USE, ctx(HookEvent.PRE_TOOL_USE, tool_name="bash"),
+        registry=reg, scratch=scratch, emit=activity.append,
+    ))
+    assert activity == []  # a bare allow and a no-op are not surfaced
+
+
+def test_emit_prompt_inject_is_meaningful(reg, scratch):
+    reg.register(HookEvent.PROMPT_SUBMIT, lambda c: PromptOutcome(inject_context="hi"), name="inj")
+    activity: list = []
+    run(dmod.adispatch(
+        HookEvent.PROMPT_SUBMIT, ctx(HookEvent.PROMPT_SUBMIT),
+        registry=reg, scratch=scratch, emit=activity.append,
+    ))
+    assert [r["detail"] for r in activity] == ["inject 2 chars"]
+
+
+def test_emit_records_pre_fault(reg, scratch):
+    def boom(c):
+        raise RuntimeError("nope")
+    reg.register(HookEvent.PRE_TOOL_USE, boom, name="boom")
+    activity: list = []
+    out = run(dmod.adispatch(
+        HookEvent.PRE_TOOL_USE, ctx(HookEvent.PRE_TOOL_USE, tool_name="bash"),
+        registry=reg, scratch=scratch, emit=activity.append,
+    ))
+    assert out.decision == "deny"  # fails closed as before
+    assert len(activity) == 1
+    assert activity[0]["status"] == "error"  # fault always surfaces
+
+
+def test_emit_sink_exception_never_crashes_turn(reg, scratch):
+    reg.register(
+        HookEvent.PRE_TOOL_USE,
+        lambda c: PreToolOutcome(decision="deny", reason="x"),
+        name="guard",
+    )
+
+    def bad_sink(_rec):
+        raise RuntimeError("sink boom")
+
+    # A broken sink is swallowed under the recorder guard: the deny still lands.
+    out = run(dmod.adispatch(
+        HookEvent.PRE_TOOL_USE, ctx(HookEvent.PRE_TOOL_USE, tool_name="bash"),
+        registry=reg, scratch=scratch, emit=bad_sink,
+    ))
+    assert out.decision == "deny"
+
+
 def test_malformed_scratch_patch_does_not_crash(reg, scratch):
     # A non-mapping scratch_patch must be ignored, not raise out of dispatch.
     reg.register(

@@ -433,6 +433,16 @@ def _parse_hook_sets(raw_list: list[str]) -> tuple[dict[str, str], str]:
     return out, ""
 
 
+def _parse_hook_timeout(raw: str) -> tuple[float | None, str]:
+    """Parse ``--timeout N`` seconds into a float (None when unset)."""
+    if not raw:
+        return None, ""
+    try:
+        return float(raw), ""
+    except (TypeError, ValueError):
+        return None, f"--timeout {raw!r} must be a number of seconds."
+
+
 def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
     """Parse the flag-based ``/hook create`` grammar.
 
@@ -446,11 +456,13 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
     reason, args, e5 = _consume_option(args, "--reason", default="")
     matcher, args, e6 = _consume_option(args, "--matcher", default="")
     scope, args, e7 = _consume_option(args, "--scope", default="")
+    command, args, e10 = _consume_option(args, "--command", default="")
+    timeout, args, e11 = _consume_option(args, "--timeout", default="")
     conds, args, e8 = _consume_all(args, "--cond")
     sets, args, e9 = _consume_all(args, "--set")
     disabled, args = _consume_flag(args, "--disabled")
     case_sensitive, args = _consume_flag(args, "--case-sensitive")
-    error = next((e for e in (e1, e2, e3, e4, e5, e6, e7, e8, e9) if e), "")
+    error = next((e for e in (e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11) if e), "")
     if error:
         return {}, error
     # Any leftover ``--token`` is a misspelled/unknown option; folding it into the
@@ -467,6 +479,8 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
         "reason": reason,
         "matcher": matcher,
         "scope": scope,
+        "command": command,
+        "timeout": timeout,
         "conds": conds,
         "sets": sets,
         "disabled": disabled,
@@ -2934,6 +2948,20 @@ class _CommandExecutor:
             )
         return "[Info]: " + "\n".join(lines)
 
+    def _gated_action_error(self, action: str) -> str | None:
+        """Admin + flag gate for run_command on the command surface (or None).
+
+        Admin is resolved from the account repo (fail-closed), mirroring the
+        agent tool. The bare local CLI has no account and resolves to non-admin,
+        so a run_command hook cannot be authored from an unauthenticated shell.
+        """
+        from ..tools.utils import is_admin
+        from .hook_manager import run_command_authoring_error
+        reason = run_command_authoring_error(
+            action, is_admin=is_admin(self.user_id, agent=self._agent())
+        )
+        return f"[Error]: {reason}" if reason else None
+
     async def _cmd_hook_create(self, args: list[str], rest: str) -> str:
         from ..tools.hooks import _logic_preview
 
@@ -2958,6 +2986,9 @@ class _CommandExecutor:
                 f"[Error]: action '{action}' is not valid for event '{event}'. "
                 f"Valid: {', '.join(sorted(legal))}."
             )
+        gate = self._gated_action_error(action)
+        if gate:
+            return gate
         # Per-action required-field prechecks (friendlier than a pydantic error).
         if action in TEXT_ACTIONS and not parsed["text"]:
             return f"[Error]: {action} requires --text."
@@ -2965,12 +2996,17 @@ class _CommandExecutor:
             return "[Error]: webhook requires --url."
         if action == "rewrite_arg" and not parsed["sets"]:
             return "[Error]: rewrite_arg requires at least one --set arg=value."
+        if action == "run_command" and not parsed["command"]:
+            return "[Error]: run_command requires --command."
         conditions, cerr = _parse_hook_conditions(parsed["conds"], parsed["case_sensitive"])
         if cerr:
             return f"[Error]: {cerr}"
         updates_map, uerr = _parse_hook_sets(parsed["sets"])
         if uerr:
             return f"[Error]: {uerr}"
+        timeout_val, terr = _parse_hook_timeout(parsed["timeout"])
+        if terr:
+            return f"[Error]: {terr}"
         params = params_from_fields(
             action,
             text=parsed["text"] or None,
@@ -2978,6 +3014,8 @@ class _CommandExecutor:
             reason=parsed["reason"] or None,
             updates=updates_map or None,
             url=parsed["url"] or None,
+            command=parsed["command"] or None,
+            timeout_seconds=timeout_val,
         )
         scope = (parsed["scope"] or "thread").strip().lower()
         if scope not in ("thread", "global"):
@@ -3123,7 +3161,10 @@ class _CommandExecutor:
         if flag_error:
             return f"[Error]: {flag_error}"
         # Remaining tokens are key=value scalar edits.
-        edit_keys = {"name", "enabled", "event", "matcher", "action", "text", "url", "reason"}
+        edit_keys = {
+            "name", "enabled", "event", "matcher", "action", "text", "url", "reason",
+            "command", "timeout",
+        }
         kv: dict[str, str] = {}
         for token in rest_args:
             if "=" not in token:
@@ -3135,12 +3176,20 @@ class _CommandExecutor:
             if key not in edit_keys:
                 return f"[Error]: unknown field '{key}'. Editable: {', '.join(sorted(edit_keys))}."
             kv[key] = value
+        # Switching TO a gated action (run_command) is admin + flag gated.
+        if "action" in kv:
+            gate = self._gated_action_error(kv["action"].strip().lower())
+            if gate:
+                return gate
         conditions, cerr = _parse_hook_conditions(conds_raw, case_sensitive)
         if cerr:
             return f"[Error]: {cerr}"
         updates_map, uerr = _parse_hook_sets(sets_raw)
         if uerr:
             return f"[Error]: {uerr}"
+        timeout_val, terr = _parse_hook_timeout(kv.get("timeout", ""))
+        if terr:
+            return f"[Error]: {terr}"
         scalars: dict = {}
         if "name" in kv:
             scalars["name"] = kv["name"]
@@ -3158,6 +3207,8 @@ class _CommandExecutor:
             reason=kv.get("reason"),
             updates=updates_map if sets_raw else None,
             url=kv.get("url"),
+            command=kv.get("command"),
+            timeout_seconds=timeout_val,
             scalars=scalars,
         )
         if not update_kwargs:

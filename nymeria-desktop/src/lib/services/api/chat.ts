@@ -627,6 +627,22 @@ export class ChatApi extends CredentialsApi {
             timestamp: new Date(),
             threadId
           };
+
+        case 'hook_activity':
+          // Ephemeral lifecycle-hook activity line (nothing persisted); the
+          // backend only emits meaningful runs (a deny/modify/inject or a fault).
+          return {
+            type: 'hook_activity',
+            data: {
+              name: data.name as string | undefined,
+              event: data.event as string | undefined,
+              status: data.status as string | undefined,
+              detail: data.detail as string | undefined,
+              toolName: data.tool_name as string | null | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
       }
     }
 

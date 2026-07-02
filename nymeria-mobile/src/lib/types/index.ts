@@ -2193,7 +2193,8 @@ export type HookAction =
   | 'rewrite_arg'
   | 'notify'
   | 'create_todo'
-  | 'webhook';
+  | 'webhook'
+  | 'run_command';
 export type HookScope = 'global' | 'thread';
 export type HookCreatedBy = 'user' | 'agent';
 
@@ -2232,6 +2233,8 @@ export interface HookCreateRequest {
   reason?: string;
   updates?: Record<string, string>;
   url?: string;
+  command?: string;
+  timeout_seconds?: number;
   matcher?: string | null;
   scope: HookScope;
   thread_id?: string;
@@ -2247,6 +2250,8 @@ export interface HookUpdateRequest {
   reason?: string;
   updates?: Record<string, string>;
   url?: string;
+  command?: string;
+  timeout_seconds?: number;
   matcher?: string | null;
   enabled?: boolean;
 }

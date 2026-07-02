@@ -373,3 +373,115 @@ def test_schema_endpoint_shape(client_env):
     assert inj["text_action"] is True
     assert "contains" in schema["operators"]
     assert schema["max_hooks"] == 50
+
+
+def test_schema_exposes_plane_by_event_and_gated(client_env):
+    client, _agent, headers, _b = client_env
+    schema = client.get("/hooks/schema", headers=headers).json()
+    rc = schema["actions"]["run_command"]
+    # run_command is the only gated action and flips plane per event.
+    assert rc["gated"] is True
+    assert rc["plane_by_event"] == {
+        "prompt_submit": "mutate",
+        "pre_tool_use": "mutate",
+        "post_tool_use": "observe",
+        "done": "observe",
+    }
+    # Every non-gated action stays single-plane across its legal events.
+    assert schema["actions"]["notify"]["gated"] is False
+    assert set(schema["actions"]["notify"]["plane_by_event"].values()) == {"observe"}
+
+
+# --- run_command authoring gate -------------------------------------------------
+
+def _client_for(builder, monkeypatch, tmp_path, *, role: str, flag: bool):
+    """A client whose caller has ``role`` and whose deployment flag is ``flag``.
+
+    Points both the router's own ``get_settings`` and the config-level one used
+    by ``run_command_authoring_error`` at a settings object carrying the flag.
+    """
+    from nymeria import config as config_module
+
+    settings = builder.settings(tmp_path, hooks_run_command_enabled=flag)
+    agent = FakeAgent(tmp_path)
+    client, token = builder.authenticated_client(
+        agent, settings, user_id="owner", email="owner@example.com", role=role
+    )
+    monkeypatch.setattr(hooks_router_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    return client, builder.auth(token)
+
+
+def _run_command_body(**over):
+    body = {
+        "name": "rc",
+        "event": "done",
+        "action": "run_command",
+        "command": "echo hi",
+        "scope": "global",
+    }
+    body.update(over)
+    return body
+
+
+def test_create_run_command_403_when_not_admin(api_client_builder, monkeypatch, tmp_path):
+    client, headers = _client_for(
+        api_client_builder, monkeypatch, tmp_path, role="user", flag=True
+    )
+    resp = client.post("/hooks", headers=headers, json=_run_command_body())
+    assert resp.status_code == 403
+    assert "admin-only" in resp.json()["detail"]
+
+
+def test_create_run_command_400_when_flag_off(api_client_builder, monkeypatch, tmp_path):
+    client, headers = _client_for(
+        api_client_builder, monkeypatch, tmp_path, role="admin", flag=False
+    )
+    resp = client.post("/hooks", headers=headers, json=_run_command_body())
+    assert resp.status_code == 400
+    assert "HOOKS_RUN_COMMAND_ENABLED" in resp.json()["detail"]
+
+
+def test_create_run_command_400_for_non_admin_when_flag_off(
+    api_client_builder, monkeypatch, tmp_path
+):
+    # Flag is checked first, so a flag-off deployment is a 400 (config) even for
+    # a non-admin, with the flag-off message: status and message must agree.
+    client, headers = _client_for(
+        api_client_builder, monkeypatch, tmp_path, role="user", flag=False
+    )
+    resp = client.post("/hooks", headers=headers, json=_run_command_body())
+    assert resp.status_code == 400
+    assert "HOOKS_RUN_COMMAND_ENABLED" in resp.json()["detail"]
+
+
+def test_create_run_command_succeeds_for_admin_with_flag_on(
+    api_client_builder, monkeypatch, tmp_path
+):
+    client, headers = _client_for(
+        api_client_builder, monkeypatch, tmp_path, role="admin", flag=True
+    )
+    resp = client.post("/hooks", headers=headers, json=_run_command_body(timeout_seconds=15))
+    assert resp.status_code == 201
+    hook = resp.json()
+    assert hook["action"] == "run_command"
+    assert hook["logic"]["command"] == "echo hi"
+    assert hook["logic"]["timeout_seconds"] == 15
+
+
+def test_update_to_run_command_rejected_when_flag_off(
+    api_client_builder, monkeypatch, tmp_path
+):
+    client, headers = _client_for(
+        api_client_builder, monkeypatch, tmp_path, role="admin", flag=False
+    )
+    created = client.post(
+        "/hooks", headers=headers,
+        json={"name": "n", "event": "done", "text": "check", "scope": "global"},
+    ).json()
+    resp = client.patch(
+        f"/hooks/{created['id']}", headers=headers,
+        json={"action": "run_command", "command": "echo hi"},
+    )
+    assert resp.status_code == 400
+    assert "HOOKS_RUN_COMMAND_ENABLED" in resp.json()["detail"]

@@ -208,3 +208,50 @@ def test_build_registry_threads_definition_id_and_recorder():
 def test_build_registry_defaults_to_no_recorder():
     registry = build_registry([_defn("a", "done", "hi")])
     assert registry.recorder is None
+
+
+# --- Pass 5: run_command per-event plane + per-registration timeout ------------
+
+from nymeria.core.hook_manager import RunCommandLogic  # noqa: E402
+
+
+def _rc_defn(id_, event, *, command="echo hi", timeout=10.0):
+    return SimpleNamespace(
+        id=id_, name=id_, event=event, matcher=None,
+        logic=RunCommandLogic(command=command, timeout_seconds=timeout),
+    )
+
+
+def test_run_command_lands_on_mutate_plane_for_in_band_events():
+    reg = build_registry([
+        _rc_defn("a", "prompt_submit"),
+        _rc_defn("b", "pre_tool_use"),
+    ])
+    assert reg.has_mutating(HookEvent.PROMPT_SUBMIT)
+    assert reg.has_mutating(HookEvent.PRE_TOOL_USE)
+    assert not reg.has_observe(HookEvent.PROMPT_SUBMIT)
+
+
+def test_run_command_lands_on_observe_plane_for_after_events():
+    reg = build_registry([
+        _rc_defn("a", "post_tool_use"),
+        _rc_defn("b", "done"),
+    ])
+    assert reg.has_observe(HookEvent.POST_TOOL_USE)
+    assert reg.has_observe(HookEvent.DONE)
+    assert not reg.has_mutating(HookEvent.POST_TOOL_USE)
+
+
+def test_run_command_sets_per_registration_timeout():
+    reg = build_registry([_rc_defn("a", "done", timeout=30.0)])
+    regs = reg.matching(HookEvent.DONE, _ctx(HookEvent.DONE), observe=True)
+    assert len(regs) == 1
+    # Dispatcher budget is the author timeout + 0.5s grace (so the action's own
+    # subprocess kill fires first).
+    assert regs[0].timeout == 30.5
+
+
+def test_non_run_command_hook_has_no_timeout_override():
+    reg = build_registry([_defn("a", "done", "hi")])
+    regs = reg.matching(HookEvent.DONE, _ctx(HookEvent.DONE))
+    assert regs[0].timeout is None

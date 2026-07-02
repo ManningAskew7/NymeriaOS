@@ -59,6 +59,8 @@
       text: String(logic.text ?? h?.text ?? ''),
       url: String(logic.url ?? ''),
       reason: String(logic.reason ?? ''),
+      command: String(logic.command ?? ''),
+      timeoutSeconds: typeof logic.timeout_seconds === 'number' ? logic.timeout_seconds : 10,
       conditions: Array.isArray(logic.conditions)
         ? (logic.conditions as HookCondition[]).map((c) => ({ ...c }))
         : [],
@@ -82,6 +84,8 @@
   let text = $state(init.text);
   let url = $state(init.url);
   let reason = $state(init.reason);
+  let command = $state(init.command);
+  let timeoutSeconds = $state(init.timeoutSeconds);
   let conditions = $state<HookCondition[]>(init.conditions);
   let updateRows = $state<UpdateRow[]>(init.updateRows);
   let enabled = $state(init.enabled);
@@ -149,6 +153,11 @@
       const rows = updateRows.filter((r) => r.key.trim());
       if (rows.length === 0) return 'Rewrite needs at least one argument to set.';
     }
+    if (action === 'run_command') {
+      if (!command.trim()) return 'A command hook needs a command to run.';
+      if (!(timeoutSeconds >= 1 && timeoutSeconds <= 300))
+        return 'Timeout must be between 1 and 300 seconds.';
+    }
     return null;
   }
 
@@ -197,6 +206,10 @@
           req.conditions = cleanConditions;
           req.updates = updates;
         }
+        if (action === 'run_command') {
+          req.command = command.trim();
+          req.timeout_seconds = timeoutSeconds;
+        }
         await hooksStore.updateHook(editHook.id, req);
       } else {
         const req: HookCreateRequest = {
@@ -217,6 +230,10 @@
         if (action === 'rewrite_arg') {
           req.conditions = cleanConditions;
           req.updates = updates;
+        }
+        if (action === 'run_command') {
+          req.command = command.trim();
+          req.timeout_seconds = timeoutSeconds;
         }
         const created = await hooksStore.createHook(req);
         onCreated?.(created);
@@ -464,6 +481,36 @@
           <button class="add-row-btn" onclick={addUpdateRow} type="button">
             <Icon name="plus" size={12} /> <span>Add argument</span>
           </button>
+        </div>
+      {/if}
+
+      {#if action === 'run_command'}
+        <div class="field-row">
+          <label class="field-label" for="hook-command">Command <span class="required">*</span></label>
+          <textarea
+            id="hook-command"
+            class="field-textarea"
+            bind:value={command}
+            rows={3}
+            maxlength={4000}
+            placeholder="Shell command. The hook context arrives as JSON on stdin."
+          ></textarea>
+          <span class="field-hint">
+            Runs on the server as the backend user (admin only; must be enabled on the server).
+            On <code>pre_tool_use</code>, exit 2 denies the tool call (stderr is the reason).
+          </span>
+        </div>
+        <div class="field-row">
+          <label class="field-label" for="hook-timeout">Timeout (seconds)</label>
+          <input
+            id="hook-timeout"
+            class="field-input"
+            type="number"
+            min={1}
+            max={300}
+            bind:value={timeoutSeconds}
+          />
+          <span class="field-hint">1 to 300. In-band events (on your message / before a tool) are capped at 60.</span>
         </div>
       {/if}
 

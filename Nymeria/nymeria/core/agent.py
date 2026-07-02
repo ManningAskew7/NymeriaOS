@@ -899,11 +899,13 @@ class NymeriaAgent:
 
         ``completed_normally`` lets the error path fire a DONE(observe) too, so a
         ``notify``/``webhook`` on ``done`` can react to a failed turn, not only a
-        clean one. Observe returns are ignored; a hook fault is swallowed.
+        clean one. Observe returns are ignored; a hook fault is swallowed. The
+        dispatch is scheduled off-turn (``schedule_observe``), so it never
+        delays the turn tail and is safe from a ``finally`` during teardown.
         """
         try:
-            from .hooks import HookEvent, dispatch_observe
-            dispatch_observe(
+            from .hooks import HookEvent, schedule_observe
+            schedule_observe(
                 HookEvent.DONE,
                 self._done_context(
                     thread_id=thread_id,
@@ -928,10 +930,15 @@ class NymeriaAgent:
         completed_normally: bool,
         final_text: str,
     ) -> None:
-        """Fire the DONE observe plane on the async path (fire-and-forget, never raises)."""
+        """Fire the DONE observe plane on the async path (fire-and-forget, never raises).
+
+        Kept ``async`` for call-site and monkeypatch stability, but the body
+        only schedules (``schedule_observe`` puts the dispatch on the running
+        loop as a background task and returns immediately).
+        """
         try:
-            from .hooks import HookEvent, adispatch_observe
-            await adispatch_observe(
+            from .hooks import HookEvent, schedule_observe
+            schedule_observe(
                 HookEvent.DONE,
                 self._done_context(
                     thread_id=thread_id,
@@ -2015,6 +2022,10 @@ class NymeriaAgent:
             # holder path below so the prompt runs as the next normal turn.
 
         completed_normally = False
+        # Mirrors astream: the finally fires the deferred DONE observe for turn
+        # ends that skip both in-band fire points (BaseException escapes, the
+        # successful overflow-recovery return).
+        done_observe_fired = False
         try:
             holder = "autonomous" if is_autonomous_source else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
@@ -2380,6 +2391,7 @@ class NymeriaAgent:
                     completed_normally=True,
                     final_text=response or "",
                 )
+                done_observe_fired = True
 
                 completed_normally = True
                 return response
@@ -2416,7 +2428,8 @@ class NymeriaAgent:
                 logger.error(f"Error in chat: {e}", exc_info=True)
                 # DONE observe on the error path: a `done` notify/webhook hook can
                 # react to a failed turn too. completed_normally=False marks it as
-                # an error end. (The successful-overflow branch returned above.)
+                # an error end. (The successful-overflow branch returned above and
+                # is covered by the deferred fire in the finally.)
                 self._fire_done_observe_sync(
                     thread_id=thread_id,
                     user_id=user_id,
@@ -2425,9 +2438,25 @@ class NymeriaAgent:
                     completed_normally=False,
                     final_text="",
                 )
+                done_observe_fired = True
                 error_event = self._classify_stream_exception(e)
                 return str(error_event.get("content") or f"An error occurred: {str(e)}")
         finally:
+            # Deferred DONE observe (see astream's finally): covers BaseException
+            # escapes and the successful overflow-recovery return. Scheduling
+            # never blocks; DONE mutate deliberately never runs on these paths.
+            if not done_observe_fired:
+                try:
+                    self._fire_done_observe_sync(
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        is_autonomous=is_autonomous_source,
+                        holder_kind=source,
+                        completed_normally=False,
+                        final_text="",
+                    )
+                except Exception:
+                    logger.debug("deferred DONE observe failed (sync finally)", exc_info=True)
             if not completed_normally:
                 try:
                     drained = backend.clear(thread_id, abandoned=True)
@@ -2692,6 +2721,10 @@ class NymeriaAgent:
                     return
 
         completed_normally = False
+        # Tracks whether either in-band DONE observe fire point ran; the finally
+        # fires the deferred one for turn ends that skip both (hard cancel,
+        # the successful overflow-recovery return).
+        done_observe_fired = False
         try:
             holder = "autonomous" if is_autonomous_source else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
@@ -2755,6 +2788,7 @@ class NymeriaAgent:
 
             # PROMPT_SUBMIT lifecycle hooks (async path). Never breaks a turn:
             # dispatch isolates hook faults, and the seam swallows setup errors.
+            _ps_activity: list = []
             try:
                 from .hooks import HookEvent, adispatch as _hook_adispatch
                 _ps_out = await _hook_adispatch(
@@ -2768,12 +2802,18 @@ class NymeriaAgent:
                         trigger_label=_trigger_override,
                     ),
                     registry=self._hook_registry_for_turn(thread_id, user_id),
+                    emit=_ps_activity.append,
                 )
                 _ps_injected = self._wrap_prompt_injection(_ps_out)
                 if _ps_injected:
                     message_with_context = f"{message_with_context}\n\n{_ps_injected}"
             except Exception:
                 logger.debug("PROMPT_SUBMIT hook dispatch failed (async)", exc_info=True)
+            # Ephemeral in-chat activity lines (Slice E): surface meaningful
+            # prompt_submit runs under the user message. Best-effort; nothing
+            # persists, so a dropped frame just means no line this turn.
+            for _rec in _ps_activity:
+                yield {"type": "hook_activity", **_rec}
 
             # Pre-flight auto-compact for streaming chat. Without this, a
             # bloated thread can fail on the first provider call before the
@@ -3261,9 +3301,8 @@ class NymeriaAgent:
                 logger.info(f"[ASTREAM] === END === thread={thread_id}, elapsed={_elapsed:.1f}s")
 
                 # DONE lifecycle hooks (observe plane). Fires once on normal
-                # completion, still holding the lock, before the finally releases
-                # it. Runs here (not the finally) so it can await async hooks:
-                # await/yield are forbidden during the finally's GeneratorExit.
+                # completion; the dispatch itself is scheduled off-turn by
+                # schedule_observe, so it no longer delays the turn tail.
                 await self._fire_done_observe(
                     thread_id=thread_id,
                     user_id=user_id,
@@ -3272,6 +3311,7 @@ class NymeriaAgent:
                     completed_normally=True,
                     final_text="".join(final_response_parts),
                 )
+                done_observe_fired = True
 
                 completed_normally = True
 
@@ -3320,10 +3360,9 @@ class NymeriaAgent:
 
                 # DONE observe on the error path: a `done` notify/webhook hook can
                 # react to a failed turn too. completed_normally=False marks it as
-                # an error end. Safe to await here (a normal except block, not the
-                # GeneratorExit finally). (The successful-overflow branch returned
-                # above; cancel/GeneratorExit stays deferred -- no await allowed
-                # there, and a slow observe hook must not delay the force-close.)
+                # an error end. (The successful-overflow branch returned above and
+                # is covered by the deferred fire in the finally, as are
+                # cancel/GeneratorExit.)
                 await self._fire_done_observe(
                     thread_id=thread_id,
                     user_id=user_id,
@@ -3332,7 +3371,28 @@ class NymeriaAgent:
                     completed_normally=False,
                     final_text="".join(final_response_parts),
                 )
+                done_observe_fired = True
         finally:
+            # Deferred DONE observe for turn ends that skipped both in-band fire
+            # points: hard cancel (GeneratorExit / CancelledError bypass `except
+            # Exception`) and the successful overflow-recovery return. Scheduling
+            # never awaits or blocks (schedule_observe), so it is legal during
+            # GeneratorExit; DONE mutate (continuation) deliberately never runs
+            # on these paths.
+            if not done_observe_fired:
+                try:
+                    self._fire_done_observe_sync(
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        is_autonomous=is_autonomous_source,
+                        holder_kind=source,
+                        completed_normally=False,
+                        final_text="".join(final_response_parts),
+                    )
+                except (NameError, UnboundLocalError):
+                    pass  # turn ended before the stream state was bound
+                except Exception:
+                    logger.debug("deferred DONE observe failed (finally)", exc_info=True)
             # Patch dangling tool_calls in finally so it runs even when the
             # async generator is force-closed (GeneratorExit from SSE disconnect).
             # Must use the SYNC patch — await is forbidden during GeneratorExit.

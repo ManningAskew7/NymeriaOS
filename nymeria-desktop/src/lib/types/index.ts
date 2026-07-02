@@ -54,9 +54,15 @@ export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error' | 'canc
 // Step in a message - either thinking content or a tool call
 // Steps are ordered by arrival time to preserve interleaving
 export interface MessageStep {
-  type: 'thinking' | 'tool_call' | 'response' | 'provider_status';
+  type: 'thinking' | 'tool_call' | 'response' | 'provider_status' | 'hook_activity';
   // For thinking:
   content?: string;
+  // For hook_activity (ephemeral lifecycle-hook line, Claude Code style):
+  hookName?: string;
+  hookEvent?: string;       // prompt_submit | pre_tool_use | post_tool_use | done
+  hookStatus?: string;      // ok | error | timeout | saturated | illegal
+  hookDetail?: string;      // e.g. "deny: no bash", "inject 42 chars"
+  hookToolName?: string;    // tool the pre/post hook fired around, if any
   // For provider_status:
   providerStatus?: 'retry' | 'fallback';
   provider?: string;
@@ -821,7 +827,8 @@ export type SSEEventType =
   | 'compacted'
   | 'context_attached'
   | 'iteration_limit'
-  | 'tool_reload';
+  | 'tool_reload'
+  | 'hook_activity';
 
 export type PendingPromptStatus = 'sending' | 'queued' | 'error';
 
@@ -2477,7 +2484,8 @@ export type HookAction =
   | 'rewrite_arg'
   | 'notify'
   | 'create_todo'
-  | 'webhook';
+  | 'webhook'
+  | 'run_command';
 export type HookScope = 'global' | 'thread';
 export type HookCreatedBy = 'user' | 'agent';
 
@@ -2514,6 +2522,8 @@ export interface HookCreateRequest {
   reason?: string;
   updates?: Record<string, string>;
   url?: string;
+  command?: string;
+  timeout_seconds?: number;
   matcher?: string | null;
   scope: HookScope;
   thread_id?: string;
@@ -2529,6 +2539,8 @@ export interface HookUpdateRequest {
   reason?: string;
   updates?: Record<string, string>;
   url?: string;
+  command?: string;
+  timeout_seconds?: number;
   matcher?: string | null;
   enabled?: boolean;
 }

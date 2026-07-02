@@ -316,3 +316,136 @@ def test_rewrite_empty_updates_returns_none():
 def test_rewrite_never_raises_on_bad_params():
     assert rewrite_arg(_pre(tool_name="bash"), {"updates": "not a dict"}) is None
     assert rewrite_arg(_pre(tool_name="bash"), None) is None
+
+
+# --- run_command (subprocess pathfinder) ------------------------------------
+
+import json  # noqa: E402
+import sys  # noqa: E402
+
+from nymeria.core.hooks.actions import run_command  # noqa: E402
+
+
+def _prompt(**kw):
+    return _ctx(HookEvent.PROMPT_SUBMIT, **kw)
+
+
+def _post(**kw):
+    return _ctx(HookEvent.POST_TOOL_USE, **kw)
+
+
+def _run_settings(enabled=True):
+    return MagicMock(hooks_run_command_enabled=enabled, data_dir="/tmp")
+
+
+def _patch_run_settings(enabled=True):
+    # run_command imports get_settings twice (gate + cwd resolution), both from
+    # nymeria.config.get_settings.
+    return patch("nymeria.config.get_settings", return_value=_run_settings(enabled))
+
+
+def test_run_command_gate_off_returns_none():
+    with patch("nymeria.config.get_settings",
+               return_value=MagicMock(hooks_run_command_enabled=False)):
+        assert run_command(_prompt(), {"command": "echo hi"}) is None
+
+
+def test_run_command_empty_command_is_noop():
+    with _patch_run_settings():
+        assert run_command(_prompt(), {"command": "  "}) is None
+
+
+def test_run_command_prompt_submit_injects_stdout():
+    with _patch_run_settings():
+        out = run_command(_prompt(), {"command": "printf 'hello world'"})
+    assert isinstance(out, PromptOutcome)
+    assert out.inject_context == "hello world"
+
+
+def test_run_command_prompt_submit_fails_open_on_nonzero():
+    with _patch_run_settings():
+        out = run_command(_prompt(), {"command": "echo nope; exit 1"})
+    assert out is None  # injection is an enhancement, so failure is silent
+
+
+def test_run_command_receives_context_json_on_stdin():
+    # The command reads stdin and echoes back a field, proving the payload wiring.
+    script = f"{sys.executable} -c \"import sys,json; print(json.load(sys.stdin)['thread_id'])\""
+    with _patch_run_settings():
+        out = run_command(_prompt(thread_id="thread-xyz"), {"command": script})
+    assert isinstance(out, PromptOutcome)
+    assert out.inject_context == "thread-xyz"
+
+
+def test_run_command_env_is_minimal_no_secret_leak():
+    # A secret in the parent env must NOT reach the child (minimal env only).
+    import os
+    os.environ["NYMERIA_SECRET_PROBE"] = "leaked"
+    try:
+        script = (
+            f"{sys.executable} -c \"import os; "
+            "print(os.environ.get('NYMERIA_SECRET_PROBE','ABSENT'))\""
+        )
+        with _patch_run_settings():
+            out = run_command(_prompt(), {"command": script})
+        assert isinstance(out, PromptOutcome)
+        assert out.inject_context == "ABSENT"
+    finally:
+        del os.environ["NYMERIA_SECRET_PROBE"]
+
+
+def test_run_command_pre_allows_on_exit0_empty():
+    with _patch_run_settings():
+        out = run_command(_pre(tool_name="bash"), {"command": "true"})
+    assert out is None  # allow
+
+
+def test_run_command_pre_denies_on_exit2():
+    with _patch_run_settings():
+        out = run_command(
+            _pre(tool_name="bash"),
+            {"command": "echo 'no rm allowed' 1>&2; exit 2"},
+        )
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "deny"
+    assert "no rm allowed" in out.reason
+
+
+def test_run_command_pre_json_deny():
+    payload = json.dumps({"decision": "deny", "reason": "policy says no"})
+    with _patch_run_settings():
+        out = run_command(_pre(tool_name="bash"), {"command": f"printf %s '{payload}'"})
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "deny"
+    assert out.reason == "policy says no"
+
+
+def test_run_command_pre_json_modify():
+    payload = json.dumps({"decision": "modify", "updated_args": {"command": "ls -la"}})
+    with _patch_run_settings():
+        out = run_command(_pre(tool_name="bash"), {"command": f"printf %s '{payload}'"})
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "modify"
+    assert out.updated_args == {"command": "ls -la"}
+
+
+def test_run_command_pre_other_nonzero_is_nonblocking():
+    with _patch_run_settings():
+        out = run_command(_pre(tool_name="bash"), {"command": "exit 1"})
+    assert out is None  # a script bug is non-blocking (mirrors Claude Code)
+
+
+def test_run_command_pre_timeout_fails_closed():
+    with _patch_run_settings():
+        out = run_command(
+            _pre(tool_name="bash"),
+            {"command": "sleep 5", "timeout_seconds": 1},
+        )
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "deny"
+    assert "timed out" in out.reason
+
+
+def test_run_command_observe_returns_none():
+    with _patch_run_settings():
+        assert run_command(_post(tool_name="bash"), {"command": "echo side effect"}) is None

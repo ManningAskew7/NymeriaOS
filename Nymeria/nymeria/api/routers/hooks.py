@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
 HookActionName = Literal[
-    "inject_context", "block_if_matches", "rewrite_arg", "notify", "create_todo", "webhook"
+    "inject_context", "block_if_matches", "rewrite_arg", "notify", "create_todo",
+    "webhook", "run_command",
 ]
 
 
@@ -47,6 +48,12 @@ class HookCreateRequest(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=500, description="block_if_matches")
     updates: Optional[Dict[str, str]] = Field(default=None, description="rewrite_arg")
     url: Optional[str] = Field(default=None, max_length=2_000, description="webhook target URL")
+    command: Optional[str] = Field(
+        default=None, max_length=4_000, description="run_command shell command (admin + flag gated)"
+    )
+    timeout_seconds: Optional[float] = Field(
+        default=None, ge=1.0, le=300.0, description="run_command subprocess budget"
+    )
     matcher: Optional[str] = Field(default=None, description="Tool-name filter (tool events)")
     scope: Literal["global", "thread"] = Field(default="thread")
     thread_id: Optional[str] = Field(default=None)
@@ -62,6 +69,8 @@ class HookUpdateRequest(BaseModel):
     reason: Optional[str] = None
     updates: Optional[Dict[str, str]] = None
     url: Optional[str] = None
+    command: Optional[str] = None
+    timeout_seconds: Optional[float] = None
     matcher: Optional[str] = None
     enabled: Optional[bool] = None
     # Note: no `scope`/`thread_id` here. Re-scoping a hook to a thread needs a
@@ -131,6 +140,20 @@ def create_hook_router(
             _manager = HookManager(get_settings().data_dir)
         return _manager
 
+    def _reject_gated_action(action: str, user: AuthenticatedUser) -> None:
+        """403/400 if the caller may not author a gated action (run_command)."""
+        from ...core.hook_manager import run_command_authoring_error
+        reason = run_command_authoring_error(action, is_admin=user.role == "admin")
+        if reason is None:
+            return
+        # Match run_command_authoring_error's precedence: the deployment flag is
+        # checked FIRST, so a flag-off deployment is a 400 (config) regardless of
+        # role, and an enabled-but-not-admin caller is a 403 (authz). Deriving the
+        # status from role alone would 403 a non-admin with the flag-off message.
+        flag_on = getattr(get_settings(), "hooks_run_command_enabled", False)
+        status = 403 if (flag_on and user.role != "admin") else 400
+        raise HTTPException(status_code=status, detail=reason)
+
     @router.get("", response_model=List[HookResponse])
     async def list_hooks(
         user_id: str = Query(default="default"),
@@ -155,6 +178,7 @@ def create_hook_router(
     ):
         """Create a hook."""
         user_id = user.id  # Override any client-claimed ?user_id=
+        _reject_gated_action(body.action, user)
         # A thread-scoped hook needs a thread to bind to; without one it would be
         # stored inert (its thread_id never matches a real turn). Reject early.
         if body.scope == "thread" and not body.thread_id:
@@ -168,6 +192,7 @@ def create_hook_router(
         params = params_from_fields(
             body.action, text=body.text, conditions=body.conditions,
             reason=body.reason, updates=body.updates, url=body.url,
+            command=body.command, timeout_seconds=body.timeout_seconds,
         )
         try:
             hook = _get_manager().add_hook(
@@ -206,8 +231,14 @@ def create_hook_router(
         from typing import get_args
 
         from ...core.conditions import ConditionOperator
-        from ...core.hook_manager import HOOK_LOGIC_BY_ACTION, HookStore
-        from ...core.hook_spec import ACTION_SPECS, EVENTS, TOOL_EVENTS, event_actions
+        from ...core.hook_manager import GATED_ACTIONS, HOOK_LOGIC_BY_ACTION, HookStore
+        from ...core.hook_spec import (
+            ACTION_SPECS,
+            EVENTS,
+            TOOL_EVENTS,
+            event_actions,
+            plane_by_event,
+        )
 
         legality = event_actions()
         actions = {}
@@ -221,8 +252,13 @@ def create_hook_router(
                 schema.pop("required", None)
             actions[name] = {
                 "plane": spec.plane,
+                # Full event -> plane map (run_command flips per event; every
+                # other action reports its single plane for every legal event).
+                "plane_by_event": plane_by_event(name),
                 "events": list(spec.events),
                 "text_action": spec.text_action,
+                # True when authoring is admin + HOOKS_RUN_COMMAND_ENABLED gated.
+                "gated": name in GATED_ACTIONS,
                 "params_schema": schema,
             }
         return {
@@ -280,16 +316,26 @@ def create_hook_router(
         existing = manager.get_hook(user_id, hook_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Hook not found")
+        # Guard a switch TO a gated action (admin + deployment flag). Switching
+        # away is always fine; an unchanged action is not re-gated here (the
+        # execution-time flag check in the action is the backstop).
+        if body.action is not None:
+            _reject_gated_action(body.action, user)
         # Plain field updates (name/event/matcher/enabled); the logic fields
-        # (text/conditions/reason/updates/url/action) are assembled separately by
-        # ``build_update_kwargs`` so a partial PATCH keeps unspecified siblings.
+        # (text/conditions/reason/updates/url/command/action) are assembled
+        # separately by ``build_update_kwargs`` so a partial PATCH keeps
+        # unspecified siblings.
         scalars = body.model_dump(
             exclude_none=True,
-            exclude={"action", "conditions", "reason", "updates", "text", "url"},
+            exclude={
+                "action", "conditions", "reason", "updates", "text", "url",
+                "command", "timeout_seconds",
+            },
         )
         updates = build_update_kwargs(
             existing, action=body.action, text=body.text, conditions=body.conditions,
-            reason=body.reason, updates=body.updates, url=body.url, scalars=scalars,
+            reason=body.reason, updates=body.updates, url=body.url,
+            command=body.command, timeout_seconds=body.timeout_seconds, scalars=scalars,
         )
         if not updates:
             raise HTTPException(status_code=400, detail="No updates provided")
@@ -359,6 +405,13 @@ def create_hook_router(
         elif logic.action == "rewrite_arg":
             result["rendered"] = (
                 f"Rewrites {list(logic.updates.keys())} on {hook.matcher or 'any tool'}"
+            )
+        elif logic.action == "run_command":
+            from ...core.hook_spec import plane_for
+            plane = plane_for("run_command", hook.event)
+            result["rendered"] = (
+                f"Runs {logic.command!r} ({plane} plane, timeout {logic.timeout_seconds}s) "
+                f"with the hook context as JSON on stdin. No command is executed by this preview."
             )
         return result
 

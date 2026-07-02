@@ -28,7 +28,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Callable, Dict, Optional
+import os
+import signal
+import subprocess
+from typing import Any, Callable, Dict, Optional
 
 from ..conditions import HookCondition, evaluate_conditions
 from ..hook_spec import action_planes
@@ -257,6 +260,205 @@ def webhook(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     return None
 
 
+# run_command: caps and the minimal env. A shell command hook is the SDK
+# subprocess pathfinder, so it is deliberately conservative: stdin-only context
+# (never argv), a minimal environment (the API process env carries provider keys
+# and DB credentials that must not leak into an author's command), output reads
+# truncated, and mutate-plane events (in-band on the turn) clamped harder than
+# off-turn observe events.
+_RUN_COMMAND_READ_CAP = 50_000      # bytes read from stdout/stderr before truncation
+_RUN_COMMAND_INJECT_CAP = 10_000    # chars injected (matches InjectContextLogic.text)
+_RUN_COMMAND_MUTATE_TIMEOUT_CAP = 60.0  # in-band events cannot block the turn for long
+_RUN_COMMAND_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
+
+
+def _run_command_env(ctx: HookContext) -> Dict[str, str]:
+    """Minimal environment for a run_command subprocess (no inherited secrets)."""
+    env = {k: os.environ[k] for k in _RUN_COMMAND_ENV_PASSTHROUGH if k in os.environ}
+    env["NYMERIA_HOOK_EVENT"] = ctx.event.value if isinstance(ctx.event, HookEvent) else str(ctx.event)
+    env["NYMERIA_HOOK_THREAD_ID"] = ctx.thread_id or ""
+    env["NYMERIA_HOOK_USER_ID"] = ctx.user_id or ""
+    if ctx.tool_name:
+        env["NYMERIA_HOOK_TOOL_NAME"] = ctx.tool_name
+    return env
+
+
+def _run_command_payload(ctx: HookContext) -> str:
+    """The JSON hook context handed to the command on stdin."""
+    payload: Dict[str, Any] = dict(_template_vars(ctx))
+    # Structured (object) forms alongside the string-templated ones.
+    payload["tool_args"] = ctx.tool_args or {}
+    try:
+        payload["scratch"] = dict(ctx.scratch or {})
+    except Exception:  # noqa: BLE001 - scratch is a mapping snapshot; be defensive
+        payload["scratch"] = {}
+    try:
+        return json.dumps(payload, default=str)
+    except Exception:  # noqa: BLE001 - a payload must always serialize
+        return "{}"
+
+
+class _CommandResult:
+    __slots__ = ("returncode", "stdout", "stderr", "timed_out", "spawn_failed")
+
+    def __init__(self, *, returncode=None, stdout="", stderr="", timed_out=False, spawn_failed=False):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+        self.spawn_failed = spawn_failed
+
+
+def _execute_command(ctx: HookContext, command: str, timeout: float) -> _CommandResult:
+    """Run ``command`` with the context on stdin; never raises.
+
+    Own process group + SIGKILL of the whole group on timeout (mirrors
+    ``claude_code_bridge``), minimal env. Working dir is the data dir (a stable,
+    writable location; not the repo root). The read cap bounds what we RETAIN
+    (`communicate` still buffers the child's full output first); a runaway
+    emitter is bounded instead by the wall-clock ``timeout`` and the
+    child-biased OOM score, so the API process is evicted last.
+    """
+    from ...config import get_settings
+    from ...oom import oom_score_preexec
+    try:
+        cwd = str(get_settings().data_dir)
+    except Exception:  # noqa: BLE001
+        cwd = None
+    proc = None
+    try:
+        proc = subprocess.Popen(  # noqa: S602 - shell command is the feature; admin+flag gated
+            command,
+            shell=True,
+            cwd=cwd,
+            env=_run_command_env(ctx),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,  # own process group, so we can kill children
+            preexec_fn=oom_score_preexec(),
+        )
+        stdout, stderr = proc.communicate(input=_run_command_payload(ctx), timeout=timeout)
+        return _CommandResult(
+            returncode=proc.returncode,
+            stdout=(stdout or "")[:_RUN_COMMAND_READ_CAP],
+            stderr=(stderr or "")[:_RUN_COMMAND_READ_CAP],
+        )
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc)
+        return _CommandResult(timed_out=True)
+    except Exception:  # noqa: BLE001 - spawn failure (bad cwd, fork limit, etc.)
+        logger.warning("hook run_command failed to execute", exc_info=True)
+        _kill_process_group(proc)
+        return _CommandResult(spawn_failed=True)
+
+
+def _kill_process_group(proc) -> None:
+    """Best-effort SIGKILL of a subprocess's whole group (POSIX); never raises."""
+    if proc is None:
+        return
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001 - the process may already be gone
+        pass
+
+
+def run_command(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
+    """Execute a shell command; map its result to the event's outcome.
+
+    Gated at execution time on ``HOOKS_RUN_COMMAND_ENABLED`` (belt-and-braces
+    with the admin+flag authoring gates, and the backstop for records that
+    predate a flag flip or arrive by store-file edit). The command receives the
+    hook context as JSON on stdin. Contract per event:
+
+    - ``prompt_submit`` (mutate): exit 0 with stdout -> inject it; anything else
+      (empty output, nonzero exit, timeout, spawn failure) -> None. Injection is
+      an enhancement, so this fails OPEN.
+    - ``pre_tool_use`` (mutate, guardrail): exit 0 + empty stdout -> allow; exit
+      0 + JSON ``{"decision","reason","updated_args"}`` -> that outcome; exit 2
+      -> deny (reason = stderr tail, Claude Code convention); other nonzero exit
+      -> None (script bug, non-blocking); timeout / spawn failure -> DENY. A
+      guardrail that could not be evaluated must not silently pass, so this fails
+      CLOSED (consistent with the dispatcher's PRE fault policy).
+    - ``post_tool_use`` / ``done`` (observe): run for side effects, return None.
+
+    Never raises: every failure mode maps to an explicit outcome or None.
+    """
+    from ...config import get_settings
+    if not getattr(get_settings(), "hooks_run_command_enabled", False):
+        logger.warning("hook run_command skipped: HOOKS_RUN_COMMAND_ENABLED is off")
+        return None
+    params = params or {}
+    command = str(params.get("command") or "").strip()
+    if not command:
+        return None
+    event = ctx.event
+    timeout = float(params.get("timeout_seconds") or 10.0)
+    # In-band (mutate) events must not block the turn for long; observe events
+    # run off-turn and keep the author's full budget.
+    if event in (HookEvent.PROMPT_SUBMIT, HookEvent.PRE_TOOL_USE):
+        timeout = min(timeout, _RUN_COMMAND_MUTATE_TIMEOUT_CAP)
+
+    result = _execute_command(ctx, command, timeout)
+
+    if event is HookEvent.PROMPT_SUBMIT:
+        if result.returncode == 0 and result.stdout.strip():
+            return PromptOutcome(inject_context=result.stdout.strip()[:_RUN_COMMAND_INJECT_CAP])
+        return None
+
+    if event is HookEvent.PRE_TOOL_USE:
+        if result.timed_out or result.spawn_failed:
+            why = "timed out" if result.timed_out else "could not run"
+            return PreToolOutcome(
+                decision="deny", reason=f"guardrail command {why}"
+            )
+        if result.returncode == 2:
+            # Claude Code convention: exit 2 is a hard block, stderr is the reason.
+            reason = (result.stderr or "").strip()[:500] or "blocked by a lifecycle hook"
+            return PreToolOutcome(decision="deny", reason=reason)
+        if result.returncode == 0:
+            out = result.stdout.strip()
+            if not out:
+                return None  # allow
+            return _pre_outcome_from_json(out)
+        # Other nonzero exit: a script bug, non-blocking (mirrors Claude Code).
+        logger.warning(
+            "hook run_command (pre_tool_use) exited %s (non-blocking); stderr: %s",
+            result.returncode, (result.stderr or "")[:200],
+        )
+        return None
+
+    # post_tool_use / done: observe plane. Run for side effects; return nothing.
+    if result.timed_out or result.spawn_failed:
+        logger.warning("hook run_command (%s observe) did not complete cleanly", event)
+    return None
+
+
+def _pre_outcome_from_json(out: str) -> Optional[HookOutcome]:
+    """Parse a pre_tool_use command's stdout JSON decision (lenient, never raises)."""
+    try:
+        data = json.loads(out)
+    except Exception:  # noqa: BLE001 - non-JSON stdout on exit 0 -> allow
+        return None
+    if not isinstance(data, dict):
+        return None
+    decision = str(data.get("decision") or "allow").lower()
+    if decision == "deny":
+        reason = str(data.get("reason") or "blocked by a lifecycle hook")[:500]
+        return PreToolOutcome(decision="deny", reason=reason)
+    if decision == "modify":
+        updates = data.get("updated_args")
+        if isinstance(updates, dict) and updates:
+            return PreToolOutcome(decision="modify", updated_args={str(k): v for k, v in updates.items()})
+        return None
+    return None  # allow / unknown decision -> no-op
+
+
 # The action table. The bridge looks actions up by name. Adding an action:
 # the function + an entry here, an ``ActionSpec`` in ``core/hook_spec.py`` (the
 # taxonomy single source), and a logic variant in ``core/hook_manager.py``;
@@ -269,6 +471,7 @@ ACTIONS: Dict[str, ActionFn] = {
     "notify": notify,
     "create_todo": create_todo,
     "webhook": webhook,
+    "run_command": run_command,
 }
 
 # Each action's dispatch plane, derived from ``core/hook_spec.py``. Mutate-plane

@@ -28,7 +28,7 @@ from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.hook_manager import EVENT_ACTIONS, TEXT_ACTIONS, HookDefinition, HookManager
 from ..core.text_format import safe_format
-from .utils import get_thread_id, get_user_id
+from .utils import get_thread_id, get_user_id, is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,10 @@ def _logic_preview(logic) -> str:
         return f"rewrite args {list(logic.updates.keys())}"
     if action == "webhook":
         return f"POST webhook {logic.url}"
+    if action == "run_command":
+        cmd = logic.command
+        short = cmd if len(cmd) <= 60 else cmd[:57] + "..."
+        return f"run_command {short!r} (timeout {logic.timeout_seconds}s)"
     return action
 
 
@@ -96,6 +100,52 @@ def _summary(h: HookDefinition) -> str:
     scope = "global" if h.scope == "global" else f"thread:{h.thread_id or '?'}"
     matcher = f" matcher={h.matcher}" if h.matcher else ""
     return f"- {h.id} [{state}] {h.event}{matcher} ({scope}) :: {h.name} -> {_logic_preview(h.logic)}"
+
+
+def _gated_action_error(hook_action: str, config: RunnableConfig) -> Optional[str]:
+    """Admin + flag gate for run_command (returns an ``[Error]:`` string or None)."""
+    from ..core.hook_manager import run_command_authoring_error
+    reason = run_command_authoring_error(
+        hook_action, is_admin=is_admin(get_user_id(config))
+    )
+    return f"[Error]: {reason}" if reason else None
+
+
+def _merge_run_command_params(
+    hook_action: Optional[str],
+    params: Optional[dict],
+    command: Optional[str],
+    timeout_seconds: Optional[float],
+    *,
+    existing_logic=None,
+) -> Optional[dict]:
+    """Fold the flat run_command fields into a params dict (explicit params win).
+
+    On update, ``existing_logic`` (the stored hook's logic) resolves the action
+    when the caller did not re-state it, and lets a partial edit (e.g. just
+    ``command``) merge onto the stored params so a sibling like
+    ``timeout_seconds`` is preserved. This mirrors the REST
+    ``build_update_kwargs`` merge-onto-existing behavior so the surfaces cannot
+    drift.
+    """
+    if params is not None or (command is None and timeout_seconds is None):
+        return params
+    action = hook_action
+    if action is None and existing_logic is not None:
+        action = getattr(existing_logic, "action", None)
+    if action != "run_command":
+        return params
+    # An in-place edit of a run_command hook merges onto its stored params; a
+    # switch TO run_command from another action starts fresh.
+    if existing_logic is not None and getattr(existing_logic, "action", None) == "run_command":
+        out: dict = existing_logic.model_dump(exclude={"action"})
+    else:
+        out = {}
+    if command is not None:
+        out["command"] = command
+    if timeout_seconds is not None:
+        out["timeout_seconds"] = timeout_seconds
+    return out or None
 
 
 def _hook_create(
@@ -241,6 +291,9 @@ def render_hook_detail(hook: HookDefinition) -> str:
     elif logic.action == "webhook":
         lines.append(f"  url: {logic.url}")
         lines.append(f"  text: {logic.text!r}")
+    elif logic.action == "run_command":
+        lines.append(f"  command: {logic.command!r}")
+        lines.append(f"  timeout_seconds: {logic.timeout_seconds}")
     lines.append(f"  created_by: {hook.created_by}")
     return "\n".join(lines)
 
@@ -286,6 +339,20 @@ def render_hook_test(hook: HookDefinition) -> str:
         return (
             f"[Info]: Hook {hook.id} (rewrite_arg) on {tool} (gate: {cond}) rewrites args: "
             f"{logic.updates}."
+        )
+    if logic.action == "run_command":
+        from ..core.hook_spec import plane_for
+        plane = plane_for("run_command", hook.event)
+        effect = {
+            "prompt_submit": "its stdout is injected into the turn",
+            "pre_tool_use": "exit 2 (or stdout JSON) denies/rewrites the tool call",
+            "post_tool_use": "it runs off-turn for side effects (output is logged)",
+            "done": "it runs off-turn for side effects (output is logged)",
+        }.get(hook.event, "it runs")
+        return (
+            f"[Info]: Hook {hook.id} (run_command, {plane} plane) on {hook.event} runs "
+            f"{logic.command!r} (timeout {logic.timeout_seconds}s) with the hook context "
+            f"as JSON on stdin; {effect}. No command is executed by this dry run."
         )
     return f"[Info]: Hook {hook.id} action {logic.action} has no test render."
 
@@ -338,6 +405,8 @@ def hook_config(
     matcher: Optional[str] = None,
     scope: Optional[str] = None,
     enabled: Optional[bool] = None,
+    command: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
@@ -353,10 +422,12 @@ def hook_config(
         name: Hook display name (create; optional on update).
         event: The lifecycle event. "pre_tool_use" takes block_if_matches/
             rewrite_arg; "prompt_submit" takes inject_context; "post_tool_use"/
-            "done" take inject_context/notify/create_todo/webhook.
+            "done" take inject_context/notify/create_todo/webhook. run_command
+            attaches to all four (admin + HOOKS_RUN_COMMAND_ENABLED only).
         hook_action: The hook's action. "inject_context" (default) injects text;
             "block_if_matches"/"rewrite_arg" guard a tool call; "notify" sends a
-            notification; "create_todo" adds a TODO; "webhook" POSTs to a URL.
+            notification; "create_todo" adds a TODO; "webhook" POSTs to a URL;
+            "run_command" runs a shell command (admin-gated).
         text: For the text actions (inject_context/notify/create_todo, and the
             webhook body): the text. Supports {placeholder} interpolation
             ({tool_name}, {tool_result}, {prompt}, {final_text}, {thread_id}).
@@ -372,6 +443,12 @@ def hook_config(
         scope: "thread" (default; only the current thread) or "global" (all your
             threads). Create only; to re-scope, delete and re-create the hook.
         enabled: Enable/disable an existing hook on update.
+        command: For run_command: the shell command. It receives the hook
+            context as JSON on stdin. On pre_tool_use, exit 2 denies (stderr is
+            the reason) or stdout JSON {"decision","reason","updated_args"};
+            on prompt_submit, stdout is injected.
+        timeout_seconds: For run_command: subprocess budget (1..300; in-band
+            events clamped to 60). Defaults to 10.
     """
     action_key = (action or "").strip().lower()
     hook_action_key = (hook_action or "inject_context").strip().lower()
@@ -387,7 +464,14 @@ def hook_config(
                 f"[Error]: action '{hook_action_key}' is not valid for event '{event}'. "
                 f"Valid: {', '.join(sorted(legal))}."
             )
-        if hook_action_key in _TEXT_ACTIONS:
+        gate = _gated_action_error(hook_action_key, config)
+        if gate is not None:
+            return gate
+        params = _merge_run_command_params(hook_action_key, params, command, timeout_seconds)
+        if hook_action_key == "run_command":
+            if not (params and params.get("command")):
+                return "[Error]: run_command requires command."
+        elif hook_action_key in _TEXT_ACTIONS:
             if not text and not params:
                 return f"[Error]: {hook_action_key} requires text."
         elif not params:
@@ -402,6 +486,19 @@ def hook_config(
             return "[Error]: update requires hook_id."
         if event is not None and event not in _EVENTS:
             return f"[Error]: event must be one of: {', '.join(_EVENTS)}."
+        if hook_action is not None:
+            gate = _gated_action_error(hook_action_key, config)
+            if gate is not None:
+                return gate
+        # Resolve the effective action + merge onto stored params from the
+        # existing hook, so editing a run_command hook's command without
+        # re-stating the action works and does not reset timeout_seconds.
+        existing = _get_hook_manager().get_hook(get_user_id(config), hook_id)
+        params = _merge_run_command_params(
+            hook_action_key if hook_action is not None else None,
+            params, command, timeout_seconds,
+            existing_logic=(existing.logic if existing is not None else None),
+        )
         return _hook_update(
             hook_id=hook_id, name=name, event=event,
             action=(hook_action_key if hook_action is not None else None),

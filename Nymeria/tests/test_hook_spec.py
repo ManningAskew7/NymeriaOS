@@ -71,6 +71,31 @@ def test_text_actions_have_a_text_field():
         assert "text" in HOOK_LOGIC_BY_ACTION[action].model_fields, action
 
 
+def test_plane_for_resolves_per_event():
+    from nymeria.core.hook_spec import plane_by_event, plane_for
+    # Single-plane actions report their base plane on every legal event.
+    assert plane_for("inject_context", "prompt_submit") == "mutate"
+    assert plane_for("notify", "done") == "observe"
+    # run_command flips: mutate on the in-band events, observe on the after events.
+    assert plane_for("run_command", "prompt_submit") == "mutate"
+    assert plane_for("run_command", "pre_tool_use") == "mutate"
+    assert plane_for("run_command", "post_tool_use") == "observe"
+    assert plane_for("run_command", "done") == "observe"
+    # Unknown action falls back to mutate; plane_by_event covers all legal events.
+    assert plane_for("nope", "done") == "mutate"
+    assert plane_by_event("run_command") == {
+        "prompt_submit": "mutate",
+        "pre_tool_use": "mutate",
+        "post_tool_use": "observe",
+        "done": "observe",
+    }
+
+
+def test_observe_events_are_a_subset_of_events():
+    for spec in ACTION_SPECS.values():
+        assert set(spec.observe_events) <= set(spec.events), spec.name
+
+
 # --- frontend lockstep ---------------------------------------------------------
 
 _FRONTEND_TAXONOMY = (

@@ -1594,6 +1594,8 @@ closing DNS-rebinding gaps.
 | `HOOKS_ENABLED` | `true` | Master kill switch for lifecycle hooks. When off, no hook fires on any thread (a debug/escape hatch). Global default; overridable per-thread. Sits on top of each hook's own `enabled` flag and any per-thread per-hook override. See `docs/agent-systems/hooks.md`. |
 | `HOOK_MUTATE_POOL_WORKERS` | `4` | Thread-pool size for running sync mutate-plane hooks (the `pre_tool_use` / `post_tool_use` guardrails). Scoped separately from the observe pool so a slow side-effect hook cannot starve a guardrail. Clamped to a floor of 1. |
 | `HOOK_OBSERVE_POOL_WORKERS` | `4` | Thread-pool size for running sync observe-plane hooks (the `notify` / `create_todo` / `webhook` side effects). Separate from the mutate pool. Clamped to a floor of 1. |
+| `HOOK_OBSERVE_DISPATCH_WORKERS` | `2` | Thread-pool size for the off-turn observe *dispatchers* on the no-loop (sync) path. Observe hooks are fire-and-forget: the fire point schedules the dispatch and returns immediately (a background loop task when a loop is running, else this pool). Dedicated so a dispatcher waiting on `HOOK_OBSERVE_POOL_WORKERS` cannot starve the hooks it dispatches. Clamped to a floor of 1. |
+| `HOOKS_RUN_COMMAND_ENABLED` | `false` | Deployment gate for the `run_command` hook action (a hook that shells out on the host). Off by default. Even when on, only an admin account may author a `run_command` hook; the gate is enforced at authoring on every surface AND again at execution. Leave off unless you trust every admin with host shell access. See `docs/agent-systems/hooks.md`. |
 
 ### Context Management
 

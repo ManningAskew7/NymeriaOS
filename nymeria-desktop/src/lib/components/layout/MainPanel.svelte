@@ -466,6 +466,26 @@
         break;
       }
 
+      case 'hook_activity': {
+        // Ephemeral lifecycle-hook line interleaved into the assistant step
+        // stream (Claude Code style). Backend only emits meaningful runs.
+        const data = event.data as {
+          name?: string;
+          event?: string;
+          status?: string;
+          detail?: string;
+          toolName?: string | null;
+        };
+        chatStore.addHookActivityStep({
+          hookName: data.name,
+          hookEvent: data.event,
+          hookStatus: data.status,
+          hookDetail: data.detail,
+          hookToolName: data.toolName ?? undefined,
+        });
+        break;
+      }
+
       case 'response': {
         // Add response as a step (preserves order with thinking and tool calls)
         const data = event.data as { content: string; isComplete: boolean };
