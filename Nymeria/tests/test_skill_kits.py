@@ -776,7 +776,8 @@ def test_bundled_capability_kits_expose_exact_required_tools():
         "skill-management": ["skill_manage", "skill_write", "skill_edit"],
         "mcp-management": ["manage_mcp"],
         "credential-management": [
-            "auth_inspect", "auth_cleanup", "auth_bindings", "auth_test", "request_credential",
+            "auth_inspect", "auth_cleanup", "auth_bindings", "auth_test", "auth_write",
+            "request_credential",
         ],
         "workflow-authoring": ["tool_create", "workflow_info"],
     }
