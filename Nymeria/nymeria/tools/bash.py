@@ -100,6 +100,12 @@ def bash_execute(
     included in the result, which you can read with file_read or search with
     grep/sed via another bash_execute call.
 
+    Each call is a fresh shell with a minimal environment: only PATH, HOME,
+    LANG, LC_ALL, TMPDIR (plus deployment-configured extras) are set, so
+    inherited process variables and exports from earlier calls are NOT
+    available. Set variables inline (FOO=bar cmd) and chain dependent steps
+    with && inside one command.
+
     Args:
         command: The shell command to execute
         working_directory: Optional directory to run the command in. Relative
