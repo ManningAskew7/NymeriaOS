@@ -889,7 +889,10 @@ def test_generate_cliproxy_deployment_writes_pinned_files(tmp_path):
     compose = (tmp_path / "cliproxy" / "docker-compose.yml").read_text()
     config = (tmp_path / "cliproxy" / "config.yaml").read_text()
     assert CLIPROXY_PINNED_IMAGE in compose
-    assert '"8318:8317"' in compose
+    # Loopback-bound by default: Docker-published ports bypass UFW, so the
+    # proxy (OAuth subscriptions + management API) must not be published on
+    # all interfaces unless the deployment shape requires the bridge path.
+    assert '"127.0.0.1:8318:8317"' in compose
     assert "nymeria_edge" in compose and "cli-proxy-api" in compose
     assert 'secret-key: "cpm-test"' in config
     assert '"cpx-test"' in config
@@ -897,7 +900,7 @@ def test_generate_cliproxy_deployment_writes_pinned_files(tmp_path):
     assert secret_file.stat().st_mode & 0o777 == 0o600
     assert deployment.management_url == "http://localhost:8318"
 
-    # No external network block when not joining one.
+    # No external network block when not joining one; still loopback-bound.
     generate_cliproxy_deployment(
         tmp_path / "solo",
         management_secret="cpm-test",
@@ -905,3 +908,18 @@ def test_generate_cliproxy_deployment_writes_pinned_files(tmp_path):
     )
     solo = (tmp_path / "solo" / "docker-compose.yml").read_text()
     assert "external" not in solo
+    assert '"127.0.0.1:8318:8317"' in solo
+
+    # The single-container backend shape opts out (host.docker.internal
+    # traffic arrives on the Docker bridge, which a loopback bind cannot
+    # serve); the generated compose carries the firewall warning instead.
+    generate_cliproxy_deployment(
+        tmp_path / "bridge",
+        management_secret="cpm-test",
+        gatekeeper_key="cpx-test",
+        loopback_only=False,
+    )
+    bridge = (tmp_path / "bridge" / "docker-compose.yml").read_text()
+    assert '"8318:8317"' in bridge
+    assert '"127.0.0.1:8318:8317"' not in bridge
+    assert "DOCKER-USER" in bridge

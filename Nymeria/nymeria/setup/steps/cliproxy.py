@@ -270,11 +270,21 @@ class CLIProxyEndpointStep(FormStep):
             and state.docker_stack is DockerStack.FULL
             else None
         )
+        # The single-container backend reaches the proxy through
+        # host.docker.internal (the Docker bridge, not loopback), so only
+        # that shape keeps the all-interfaces publish; every other shape
+        # binds the host port to 127.0.0.1 because Docker-published ports
+        # bypass UFW and the proxy must never be internet-facing.
+        needs_bridge_publish = (
+            state.hosting is HostingOption.DOCKER
+            and state.docker_stack is not DockerStack.FULL
+        )
         deployment = generate_cliproxy_deployment(
             root / "cliproxy",
             management_secret=secret,
             gatekeeper_key=gatekeeper,
             join_network=join_network,
+            loopback_only=not needs_bridge_publish,
         )
         # Record the endpoint before the (cancellable) bring-up so a back-out
         # mid-provision does not lose the credentials of a container that may
