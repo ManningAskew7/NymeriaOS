@@ -249,8 +249,18 @@ def activate_temporary_llm_fallback(
 def get_llm_config_for_thread(
     agent: "NymeriaAgent",
     thread_id: str = "",
+    acting_user_id: str | None = None,
 ) -> LLMConfig:
-    """Build LLMConfig with per-thread overrides applied on top of global settings."""
+    """Build LLMConfig with per-thread overrides applied on top of global settings.
+
+    ``acting_user_id`` is the turn's authenticated user, used ONLY as the
+    credential-owner fallback when the thread has no ``thread_owners`` row
+    (dev-todo #76): autonomous turns run on synthetic, never-claimed thread
+    ids (``todo-<id>``, trigger threads), and without an owner the vault
+    lookup narrows to system-owned credentials, silently diverging from the
+    interactive path whenever the LLM credential is a user-owned vault
+    record. An existing owner row always wins over the acting user.
+    """
     if thread_id:
         clear_expired_llm_fallback_if_idle(agent, thread_id)
 
@@ -327,6 +337,11 @@ def get_llm_config_for_thread(
         if thread_id and hasattr(agent, "accounts_repo")
         else None
     )
+    if owner_user_id is None and acting_user_id:
+        # Unclaimed (usually synthetic autonomous) thread: resolve
+        # credentials as the acting user so their user-owned vault records
+        # apply exactly as on an interactive thread. See the docstring.
+        owner_user_id = acting_user_id
     credential_vault = getattr(agent, "credential_vault", None)
 
     provider_credentials: dict[str, Any] = {}

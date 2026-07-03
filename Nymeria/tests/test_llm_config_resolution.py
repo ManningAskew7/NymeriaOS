@@ -369,3 +369,117 @@ def test_public_accessor_preserves_private_monkeypatch_seam():
     agent._get_llm_config_for_thread = lambda thread_id: (sentinel, thread_id)
 
     assert agent.get_llm_config_for_thread("thread-9") == (sentinel, "thread-9")
+
+
+# --- dev-todo #76: acting-user credential-owner fallback for unclaimed threads
+
+
+def _make_agent_with_accounts(owner: str | None, **settings_overrides):
+    agent = _make_agent(**settings_overrides)
+    accounts = MagicMock()
+    accounts.get_thread_owner.return_value = owner
+    agent.accounts_repo = accounts
+    agent.credential_vault = MagicMock()
+    return agent
+
+
+def _capture_credential_owner(seen: dict, credential=None):
+    def fake(provider, *, vault, owner_user_id=None, thread_id=None):
+        seen["owner_user_id"] = owner_user_id
+        return credential
+
+    return fake
+
+
+def test_acting_user_is_credential_owner_fallback_for_unclaimed_thread():
+    """Synthetic autonomous threads (todo-<id>, trigger threads) have no
+    thread_owners row; the acting user's user-owned vault credentials must
+    resolve exactly as they would on an interactive thread."""
+    from nymeria.core.llm_credentials import LLMProviderCredential
+
+    agent = _make_agent_with_accounts(owner=None)
+    seen: dict = {}
+    credential = LLMProviderCredential(
+        api_key="vault-user-key",
+        base_url="https://vault.example",
+        credential_id="cred-1",
+    )
+
+    with patch(
+        "nymeria.core.agent_llm_config.get_llm_provider_credential",
+        side_effect=_capture_credential_owner(seen, credential),
+    ):
+        config = agent._get_llm_config_for_thread("todo-42", "user-7")
+
+    assert seen["owner_user_id"] == "user-7"
+    assert config.api_key == "vault-user-key"
+    assert config.base_url == "https://vault.example"
+
+
+def test_thread_owner_row_always_wins_over_acting_user():
+    agent = _make_agent_with_accounts(owner="owner-1")
+    seen: dict = {}
+
+    with patch(
+        "nymeria.core.agent_llm_config.get_llm_provider_credential",
+        side_effect=_capture_credential_owner(seen),
+    ):
+        agent._get_llm_config_for_thread("thread-1", "user-7")
+
+    assert seen["owner_user_id"] == "owner-1"
+
+
+def test_no_acting_user_keeps_prior_ownerless_resolution():
+    agent = _make_agent_with_accounts(owner=None)
+    seen: dict = {}
+
+    with patch(
+        "nymeria.core.agent_llm_config.get_llm_provider_credential",
+        side_effect=_capture_credential_owner(seen),
+    ):
+        agent._get_llm_config_for_thread("todo-42")
+
+    assert seen["owner_user_id"] is None
+
+
+def test_graph_build_forwards_graph_user_as_acting_user():
+    """build_agent_config passes the graph's user into the LLM-config accessor
+    so every turn (interactive or autonomous) carries the owner fallback."""
+    agent = _make_agent()
+    agent.settings.tool_timeout = 30
+    agent.settings.tool_output_max_chars = 1000
+    agent.settings.log_level = "INFO"
+    agent.TURN_SAME_TOOL_RESULT_LIMIT = 3
+    agent._on_tool_timeout = lambda *args, **kwargs: None
+    captured: dict = {}
+
+    def fake_config(thread_id, acting_user_id=None):
+        captured["thread_id"] = thread_id
+        captured["acting_user_id"] = acting_user_id
+        return MagicMock()
+
+    agent._get_llm_config_for_thread = fake_config
+
+    agent._build_agent_config(
+        "prompt", {"configurable": {}}, "todo-9", None, acting_user_id="user-3"
+    )
+
+    assert captured == {"thread_id": "todo-9", "acting_user_id": "user-3"}
+
+
+def test_public_accessor_forwards_acting_user_and_keeps_one_arg_seam():
+    """With an acting user the public accessor forwards it; without one it
+    keeps the historical one-arg call so single-parameter stubs never break."""
+    agent = _make_agent()
+    calls: list = []
+
+    def stub(thread_id, acting_user_id=None):
+        calls.append((thread_id, acting_user_id))
+        return object()
+
+    agent._get_llm_config_for_thread = stub
+
+    agent.get_llm_config_for_thread("t-1", "user-5")
+    agent.get_llm_config_for_thread("t-1")
+
+    assert calls == [("t-1", "user-5"), ("t-1", None)]

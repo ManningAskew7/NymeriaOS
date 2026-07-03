@@ -1383,18 +1383,28 @@ class NymeriaAgent:
         from .agent_context_stats import record_turn_usage
         return record_turn_usage(self, thread_id, user_id, messages)
 
-    def _get_llm_config_for_thread(self, thread_id: str = "") -> LLMConfig:
+    def _get_llm_config_for_thread(
+        self, thread_id: str = "", acting_user_id: str | None = None
+    ) -> LLMConfig:
         from .agent_llm_config import get_llm_config_for_thread
-        return get_llm_config_for_thread(self, thread_id)
+        return get_llm_config_for_thread(self, thread_id, acting_user_id)
 
-    def get_llm_config_for_thread(self, thread_id: str = "") -> LLMConfig:
+    def get_llm_config_for_thread(
+        self, thread_id: str = "", acting_user_id: str | None = None
+    ) -> LLMConfig:
         """Public accessor for a thread's resolved ``LLMConfig``.
 
         Stable surface for helper modules outside the ``agent_*`` family (e.g.
         ``core/rag_quality.py``) so they need not reach into the private
         ``_get_llm_config_for_thread`` facade. Delegates to that facade so the
         existing monkeypatch test seam keeps working. See slice 07 F10.
+
+        ``acting_user_id`` is the credential-owner fallback for unclaimed
+        threads (dev-todo #76); the one-arg call shape is preserved when it
+        is absent so single-parameter monkeypatch stubs keep working.
         """
+        if acting_user_id:
+            return self._get_llm_config_for_thread(thread_id, acting_user_id)
         return self._get_llm_config_for_thread(thread_id)
 
     def is_thread_busy(self, thread_id: str) -> bool:
@@ -1480,10 +1490,19 @@ class NymeriaAgent:
         from .agent_graph import compute_tool_superset
         return compute_tool_superset(self, user_id, thread_id)
 
-    def _build_agent_config(self, system_prompt: str, checkpointer_config, thread_id: str, tc):
+    def _build_agent_config(
+        self,
+        system_prompt: str,
+        checkpointer_config,
+        thread_id: str,
+        tc,
+        acting_user_id: str | None = None,
+    ):
         """Build an AgentConfig with the given checkpointer config."""
         from .agent_graph import build_agent_config
-        return build_agent_config(self, system_prompt, checkpointer_config, thread_id, tc)
+        return build_agent_config(
+            self, system_prompt, checkpointer_config, thread_id, tc, acting_user_id
+        )
 
     def _is_dynamic_tool_binding(self) -> bool:
         """Return True when dynamic-binding mode is on."""
