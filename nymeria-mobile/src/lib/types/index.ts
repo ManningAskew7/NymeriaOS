@@ -422,6 +422,12 @@ export interface DefaultToolInfo {
   security_level: string;
   is_optional: boolean;
   is_default: boolean;
+  // Credential axis. auth_status is one of "connected" / "pending" /
+  // "needs_setup" / "optional", or null when the tool needs no credential.
+  // auth_provider is the provider slug (e.g. "todoist"). Snake_case to mirror
+  // this raw-passthrough type.
+  auth_status?: string | null;
+  auth_provider?: string | null;
 }
 
 export interface DefaultToolsResponse {
@@ -1688,6 +1694,10 @@ export interface UnifiedTool {
   };
   tags: string[];
   editable: boolean;
+  // Credential axis: "connected" / "pending" / "needs_setup" / "optional" or
+  // null; authProvider is the provider slug (e.g. "todoist").
+  authStatus?: string | null;
+  authProvider?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }
