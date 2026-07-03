@@ -315,3 +315,204 @@ def test_status_counts_system_credentials(tmp_path, monkeypatch):
         secret_fields={"api_key": "system-key"},
     )
     assert provider_credential_status(spec, "alice") == "connected"
+
+
+# ---------------------------------------------------------------------------
+# Batch helpers: provider_credential_status_map / auth_status_for_tools
+# ---------------------------------------------------------------------------
+
+
+def test_status_map_agrees_with_single_spec_helper(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.tools.credential_registry import provider_credential_status_map
+
+    repo = _vault(tmp_path, monkeypatch)
+    todoist = get_provider_spec("todoist")
+    assert todoist is not None
+
+    # Empty vault: both helpers agree on needs_setup.
+    assert provider_credential_status(todoist, "alice") == "needs_setup"
+    assert provider_credential_status_map([todoist], "alice") == {"todoist": "needs_setup"}
+
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="todoist key",
+        provider="todoist",
+        kind="api_key",
+        secret_fields={"api_key": "sk-x"},
+    )
+    assert provider_credential_status(todoist, "alice") == "connected"
+    assert provider_credential_status_map([todoist], "alice") == {"todoist": "connected"}
+
+
+def test_status_map_dedupes_duplicate_specs_for_same_provider(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.tools.credential_registry import provider_credential_status_map
+
+    _vault(tmp_path, monkeypatch)
+    todoist = get_provider_spec("todoist")
+    assert todoist is not None
+
+    # The same provider passed multiple times collapses to one entry.
+    result = provider_credential_status_map([todoist, todoist], "alice")
+    assert result == {"todoist": "needs_setup"}
+
+
+def test_status_map_reads_vault_once_for_many_specs(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.tools.credential_registry import provider_credential_status_map
+
+    repo = _vault(tmp_path, monkeypatch)
+    todoist = get_provider_spec("todoist")
+    trello = get_provider_spec("trello")
+    assert todoist is not None and trello is not None
+
+    calls = {"count": 0}
+    real_list = repo.list_credentials
+
+    def counting(*args, **kwargs):
+        calls["count"] += 1
+        return real_list(*args, **kwargs)
+
+    monkeypatch.setattr(repo, "list_credentials", counting)
+
+    provider_credential_status_map([todoist, trello], "alice")
+    # Two distinct providers, one batched vault metadata read.
+    assert calls["count"] == 1
+
+
+def test_auth_status_for_tools_only_spec_mapped_tools(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.tools.credential_registry import auth_status_for_tools
+
+    _vault(tmp_path, monkeypatch)
+
+    result = auth_status_for_tools(
+        ["todoist_list_tasks", "get_current_time", "definitely_not_a_tool"],
+        "alice",
+    )
+    # Provider-mapped tool present; spec-less and unknown tools absent.
+    assert result["todoist_list_tasks"] == ("todoist", "needs_setup")
+    assert "get_current_time" not in result
+    assert "definitely_not_a_tool" not in result
+
+
+def test_auth_status_for_tools_reflects_connected(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.tools.credential_registry import auth_status_for_tools
+
+    repo = _vault(tmp_path, monkeypatch)
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="todoist key",
+        provider="todoist",
+        kind="api_key",
+        secret_fields={"api_key": "sk-x"},
+    )
+    result = auth_status_for_tools(["todoist_list_tasks"], "alice")
+    assert result["todoist_list_tasks"] == ("todoist", "connected")
+
+
+def test_status_map_pending_optional_and_alias(tmp_path, monkeypatch):
+    from nymeria.tools.credential_registry import provider_credential_status_map
+
+    repo = _vault(tmp_path, monkeypatch)
+
+    pending_spec = _spec("testreg_map_pending")
+    optional_spec = _spec(
+        "testreg_map_optional",
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+        ),
+        hint_fields=(),
+    )
+    alias_spec = _spec("testreg_map_alias")  # aliases=("testreg_map_alias_api",)
+
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="pending one",
+        provider="testreg_map_pending",
+        kind="api_key",
+        status="pending_setup",
+    )
+    # Saved under the ALIAS provider name; must still count for alias_spec.
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="alias saved",
+        provider="testreg_map_alias_api",
+        kind="api_key",
+        secret_fields={"api_key": "sk-alias"},
+    )
+
+    result = provider_credential_status_map(
+        [pending_spec, optional_spec, alias_spec], "alice"
+    )
+    assert result["testreg_map_pending"] == "pending"
+    assert result["testreg_map_optional"] == "optional"
+    assert result["testreg_map_alias"] == "connected"
+
+
+def test_status_map_counts_system_credentials(tmp_path, monkeypatch):
+    from nymeria.tools.credential_registry import provider_credential_status_map
+
+    repo = _vault(tmp_path, monkeypatch)
+    spec = _spec("testreg_map_system")
+    repo.create_credential(
+        owner_type="system",
+        owner_user_id=None,
+        name="ops-provisioned",
+        provider="testreg_map_system",
+        kind="api_key",
+        secret_fields={"api_key": "system-key"},
+    )
+    assert provider_credential_status_map([spec], "alice") == {
+        "testreg_map_system": "connected"
+    }
+
+
+def test_batch_helpers_survive_vault_outage(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.tools.credential_registry import (
+        auth_status_for_tools,
+        provider_credential_status_map,
+    )
+
+    repo = _vault(tmp_path, monkeypatch)
+    # Seed a would-be "connected" record; the outage must still NOT report it.
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="would connect",
+        provider="testreg_outage_req",
+        kind="api_key",
+        secret_fields={"api_key": "sk-x"},
+    )
+
+    required_spec = _spec("testreg_outage_req")
+    optional_spec = _spec(
+        "testreg_outage_opt",
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+        ),
+        hint_fields=(),
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("vault down")
+
+    monkeypatch.setattr(repo, "list_credentials", boom)
+
+    result = provider_credential_status_map([required_spec, optional_spec], "alice")
+    # Understate, never overstate: a required-group provider reads needs_setup,
+    # an optional-only provider reads optional, and nothing reads connected.
+    assert result["testreg_outage_req"] == "needs_setup"
+    assert result["testreg_outage_opt"] == "optional"
+    assert "connected" not in result.values()
+
+    # auth_status_for_tools degrades the same way and does not raise.
+    pairs = auth_status_for_tools(["todoist_list_tasks"], "alice")
+    assert pairs["todoist_list_tasks"] == ("todoist", "needs_setup")

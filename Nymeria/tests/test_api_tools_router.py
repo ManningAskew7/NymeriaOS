@@ -370,3 +370,120 @@ def test_user_tool_search_endpoint_returns_ranked_hints(
     assert first["enable_hint"].startswith("/tools enable") or first[
         "enable_hint"
     ].startswith("Already enabled")
+
+
+# ---------------------------------------------------------------------------
+# Credential (auth) axis on the tool read models (dev-todo #7).
+# ---------------------------------------------------------------------------
+
+
+def _seed_vault(tmp_path: Path, monkeypatch, *, connected_user: str | None = None):
+    """Bind a tmp CredentialVaultRepo onto get_credential_vault_repo.
+
+    Settings-independent (unlike the get_settings-based fixture in
+    test_credential_registry.py) so it works inside the HTTP client context too.
+    The owning user must already exist in tmp_path/accounts.db (FK requirement).
+    """
+    from cryptography.fernet import Fernet
+
+    import nymeria.core.credential_vault as vault_mod
+
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
+    repo = vault_mod.CredentialVaultRepo(tmp_path / "accounts.db")
+    monkeypatch.setattr(vault_mod, "get_credential_vault_repo", lambda *a, **k: repo)
+    if connected_user is not None:
+        repo.create_credential(
+            owner_type="user",
+            owner_user_id=connected_user,
+            name="todoist key",
+            provider="todoist",
+            kind="api_key",
+            secret_fields={"api_key": "sk-x"},
+        )
+    return repo
+
+
+def test_serialize_default_tools_stamps_auth_axis_incl_mcp(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.api.routers.tools import serialize_default_tools
+    from nymeria.tools.credential_registry import spec_for_tool
+    from nymeria.tools.metadata import (
+        register_mcp_server_tool_metadata,
+        unregister_mcp_server_tool_metadata,
+    )
+
+    agent = FakeAgent(tmp_path)
+    _create_user(agent, "owner")
+    _seed_vault(tmp_path, monkeypatch, connected_user="owner")
+    register_mcp_server_tool_metadata("mcp__testserver__ping", "Ping the test server")
+    try:
+        payload = serialize_default_tools(agent, user_id="owner", role="user")
+    finally:
+        unregister_mcp_server_tool_metadata("mcp__testserver__ping")
+
+    tools = {item["name"]: item for item in payload["available_tools"]}
+    # Every serialized tool carries the axis keys (stamp runs after the MCP loop).
+    for item in payload["available_tools"]:
+        assert "auth_status" in item
+        assert "auth_provider" in item
+
+    # Provider-mapped tool gets real values.
+    assert tools["todoist_list_tasks"]["auth_provider"] == "todoist"
+    assert tools["todoist_list_tasks"]["auth_status"] == "connected"
+
+    # The MCP entry is present and carries the keys (no provider spec -> None).
+    assert "mcp__testserver__ping" in tools
+    assert tools["mcp__testserver__ping"]["auth_status"] is None
+    assert tools["mcp__testserver__ping"]["auth_provider"] is None
+
+    # A spec-less builtin gets None for both.
+    plain_name = next(
+        item["name"]
+        for item in payload["available_tools"]
+        if spec_for_tool(item["name"]) is None
+    )
+    assert tools[plain_name]["auth_status"] is None
+    assert tools[plain_name]["auth_provider"] is None
+
+
+def test_tool_search_response_model_preserves_auth_fields(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    # Regression: response_model=ToolSearchResponse used to silently drop
+    # auth_status/auth_provider. A provider-mapped result must round-trip them.
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.core import tool_search_index as search_index_module
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    _seed_vault(tmp_path, monkeypatch, connected_user="owner")
+    monkeypatch.setattr(
+        search_index_module,
+        "_DEFAULT_INDEX",
+        ToolSearchIndex(openai_api_key=None),
+    )
+
+    response = client.get(
+        "/users/owner/tools/search",
+        params={"query": "todoist", "top_k": 15},
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    todoist = next(r for r in results if r["name"].startswith("todoist_"))
+    assert todoist["auth_provider"] == "todoist"
+    assert todoist["auth_status"] == "connected"
+    # A non-integration result serializes the keys with a null value.
+    plain = next(
+        (r for r in results if r["auth_provider"] is None),
+        None,
+    )
+    if plain is not None:
+        assert plain["auth_status"] is None

@@ -305,9 +305,26 @@ def _search(
             f"  {c.name} ({c.category}, {c.security_level}){status}"
             f"\n    {c.description}"
             f"\n    Enable hint: {c.enable_hint}"
+            + _auth_line(c)
         )
 
     return "\n".join(lines)
+
+
+_AUTH_LINE_BY_STATUS = {
+    "connected": "credential saved",
+    "pending": "credential setup pending (user has not finished saving it)",
+    "needs_setup": "no credential saved; request_credential or the credential-management kit sets one up",
+    "optional": "works without a credential (optional override available)",
+}
+
+
+def _auth_line(c: Any) -> str:
+    """Render the per-result credential axis; absent = no credential required."""
+    if not getattr(c, "auth_status", None):
+        return ""
+    detail = _AUTH_LINE_BY_STATUS.get(c.auth_status, c.auth_status)
+    return f"\n    Auth: {c.auth_provider} {c.auth_status} ({detail})"
 
 
 def _validate_and_gate_tools(
@@ -561,6 +578,7 @@ def _format_binding_result(
     warnings: List[str],
     ttl_key: str,
     ttl_seconds: Optional[int],
+    credential_nudges: Optional[List[str]] = None,
 ) -> str:
     """Render the agent-facing success text for a completed binding."""
     newly_added = binding.newly_added
@@ -606,6 +624,8 @@ def _format_binding_result(
         lines.append(f"  Already permanent (no change): {', '.join(sorted(already_permanent))}")
     if warnings:
         lines.append(f"[Warning]: {'; '.join(warnings)}")
+    for nudge in credential_nudges or []:
+        lines.append(nudge)
     if invalid:
         lines.append(f"[Not found]: {', '.join(invalid)}")
     if unloadable:
@@ -650,6 +670,52 @@ def _format_binding_result(
     else:
         lines.append("No binding changes; nothing to reload.")
     return "\n".join(lines)
+
+
+def _credential_nudges(tool_names: List[str], user_id: str) -> List[str]:
+    """One line per provider whose newly-available tools lack a usable credential.
+
+    Consumes the credential-spec registry (dev-todo #8): tools with no
+    provider spec need no credential and produce nothing; "connected"
+    providers are suppressed (the nudge would be noise). Best-effort: any
+    failure nudges nothing rather than breaking the enable.
+    """
+    if not tool_names:
+        return []
+    try:
+        from .credential_registry import provider_credential_status_map, spec_for_tool
+
+        specs = []
+        claimed: set[str] = set()
+        for name in tool_names:
+            spec = spec_for_tool(name)
+            if spec is None or spec.provider in claimed:
+                continue
+            claimed.add(spec.provider)
+            specs.append(spec)
+        seen = provider_credential_status_map(specs, user_id)
+        lines = []
+        for provider, status in sorted(seen.items()):
+            if status == "connected":
+                continue
+            if status == "pending":
+                detail = (
+                    "a credential setup is pending; the user has not finished "
+                    "saving it (auth_inspect shows it)"
+                )
+            elif status == "optional":
+                detail = "works without a credential; an optional override can be saved"
+            else:
+                detail = (
+                    "no credential saved; before relying on these tools, set one "
+                    'up with the credential-management kit (request_credential, '
+                    "or auth_write for a user-pasted key)"
+                )
+            lines.append(f"[Credential]: provider \"{provider}\": {detail}.")
+        return lines
+    except Exception:
+        logger.debug("credential nudge computation failed", exc_info=True)
+        return []
 
 
 def bind_tools_for_thread(
@@ -830,6 +896,9 @@ def bind_tools_for_thread(
         warnings=warnings,
         ttl_key=ttl_key,
         ttl_seconds=ttl_seconds,
+        credential_nudges=_credential_nudges(
+            sorted(set(delta.newly_added) | set(delta.un_disabled)), user_id
+        ),
     )
 
     return ToolBindingResult(
@@ -1254,7 +1323,9 @@ def tool_search(
     Returns:
         "[Tool Search]: N result(s)" header + per result: name
         (category, security_level) [ENABLED/DISABLED], description,
-        and enable hint. "[No results]: ..." when empty.
+        enable hint, and for tools needing a credential an Auth line
+        (connected / pending / needs_setup / optional).
+        "[No results]: ..." when empty.
     """
     thread_id = get_thread_id(config)
     user_id = get_user_id(config)

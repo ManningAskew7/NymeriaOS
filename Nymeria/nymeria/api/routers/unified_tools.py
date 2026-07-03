@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -25,6 +26,8 @@ from ..schemas.unified_tools import (
     builtin_tool_to_unified,
     custom_tool_definition_to_unified,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_unified_tools_router(
@@ -161,6 +164,19 @@ def create_unified_tools_router(
 
         type_order = {"builtin": 0, "mcp_server": 1, "custom": 2}
         unified_tools.sort(key=lambda tool: (type_order.get(tool.tool_type, 9), tool.name))
+
+        # Credential axis: one batched vault read covers every provider-mapped
+        # tool; tools without a provider spec stay None (no credential needed).
+        try:
+            from ...tools.credential_registry import auth_status_for_tools
+
+            pairs = auth_status_for_tools((tool.name for tool in unified_tools), user_id)
+            for tool in unified_tools:
+                pair = pairs.get(tool.name)
+                if pair is not None:
+                    tool.auth_provider, tool.auth_status = pair
+        except Exception:
+            logger.debug("unified tools auth-status overlay failed", exc_info=True)
 
         builtin_count = sum(1 for tool in unified_tools if tool.tool_type == "builtin")
         custom_count = sum(1 for tool in unified_tools if tool.tool_type == "custom")

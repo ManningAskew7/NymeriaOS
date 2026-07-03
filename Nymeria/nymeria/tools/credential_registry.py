@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +293,10 @@ def provider_credential_status(spec: ProviderCredentialSpec, user_id: str) -> st
             "Credential status lookup failed for provider %s", spec.provider, exc_info=True
         )
 
+    return _status_from_matches(spec, matches)
+
+
+def _status_from_matches(spec: ProviderCredentialSpec, matches: list) -> str:
     required = spec.required_groups
     if not required:
         return "connected" if any(r.status == "active" for r in matches) else "optional"
@@ -308,12 +312,71 @@ def provider_credential_status(spec: ProviderCredentialSpec, user_id: str) -> st
     return "needs_setup"
 
 
+def provider_credential_status_map(
+    specs: "Iterable[ProviderCredentialSpec]", user_id: str
+) -> dict[str, str]:
+    """Batch ``provider_credential_status``: one vault metadata read total.
+
+    Same per-spec semantics and fail-closed behavior (a failed read counts as
+    nothing saved), but the ``list_credentials`` metadata read happens once
+    for the whole batch. Returns ``{spec.provider: status}``. Use this from
+    whole-catalog serializers; the single-spec helper stays for one-off calls.
+    """
+    unique: dict[str, ProviderCredentialSpec] = {}
+    for spec in specs:
+        unique.setdefault(spec.provider, spec)
+    if not unique:
+        return {}
+    records: list = []
+    try:
+        from ..core.credential_vault import get_credential_vault_repo
+
+        records = get_credential_vault_repo().list_credentials(
+            owner_user_id=user_id, include_system=True
+        )
+    except Exception:
+        logger.debug("Batch credential status lookup failed", exc_info=True)
+
+    from .native_credentials import provider_candidates
+
+    out: dict[str, str] = {}
+    for provider, spec in unique.items():
+        candidates = provider_candidates(spec.provider, spec.aliases)
+        matches = [record for record in records if record.provider in candidates]
+        out[provider] = _status_from_matches(spec, matches)
+    return out
+
+
+def auth_status_for_tools(
+    names: Iterable[str], user_id: str
+) -> dict[str, tuple[str, str]]:
+    """Batch credential axis for tool names: ``{name: (provider, status)}``.
+
+    Tools with no provider spec are absent (= "no credential required"). One
+    vault metadata read total, however many names are passed. The shared
+    engine behind the tool_search overlay and the tool-list serializers
+    (dev-todo #7).
+    """
+    spec_by_tool: dict[str, ProviderCredentialSpec] = {}
+    for name in names:
+        spec = spec_for_tool(name)
+        if spec is not None:
+            spec_by_tool[name] = spec
+    statuses = provider_credential_status_map(spec_by_tool.values(), user_id)
+    return {
+        name: (spec.provider, statuses[spec.provider])
+        for name, spec in spec_by_tool.items()
+    }
+
+
 __all__ = [
     "CredentialFieldGroup",
     "ProviderCredentialSpec",
+    "auth_status_for_tools",
     "get_provider_spec",
     "iter_provider_specs",
     "provider_credential_status",
+    "provider_credential_status_map",
     "register_provider_spec",
     "spec_for_tool",
     "tools_hint_for_spec",

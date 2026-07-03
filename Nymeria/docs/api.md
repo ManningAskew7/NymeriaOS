@@ -3225,7 +3225,9 @@ provided.
       "is_default": false,
       "status": "available",
       "score": 2.31,
-      "enable_hint": "/tools enable browser_open"
+      "enable_hint": "/tools enable browser_open",
+      "auth_status": null,
+      "auth_provider": null
     }
   ]
 }
@@ -3233,6 +3235,10 @@ provided.
 
 `mode` is one of `semantic`, `bm25`, `fuzzy`, or `substring`. `warning` is
 `null` when semantic search is active or no fallback warning is needed.
+`auth_status`/`auth_provider` form the credential axis for provider-mapped
+tools (`connected` / `pending` / `needs_setup` / `optional`, vault metadata
+only); both are `null` for tools that need no credential. The same two
+fields appear on `GET /tools/defaults` items and unified-tool responses.
 
 ---
 
@@ -3287,7 +3293,9 @@ Authorization: Bearer <token>
 Returns all visible tools in a unified format. Custom tool definitions include
 HTTP/MCP configuration, so they are only returned to admin users. The response
 uses `tool_type` values `builtin`, `mcp_server`, or `custom`, plus
-`builtin_count` and `custom_count`.
+`builtin_count` and `custom_count`. Each tool also carries the credential
+axis fields `auth_status`/`auth_provider` (see the tool-search endpoint
+above); tools that need no credential return `null` for both.
 
 ### Enable Unified Tool
 
