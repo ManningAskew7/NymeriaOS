@@ -590,10 +590,25 @@ def compute_tool_superset(agent: "NymeriaAgent", user_id: str, thread_id: str):
 
 
 def build_agent_config(
-    agent: "NymeriaAgent", system_prompt: str, checkpointer_config, thread_id: str, tc
+    agent: "NymeriaAgent",
+    system_prompt: str,
+    checkpointer_config,
+    thread_id: str,
+    tc,
+    acting_user_id: str | None = None,
 ):
-    """Build an AgentConfig with the given checkpointer config."""
-    llm_config = agent._get_llm_config_for_thread(thread_id)
+    """Build an AgentConfig with the given checkpointer config.
+
+    ``acting_user_id`` (the graph's user) is the credential-owner fallback
+    for threads without a ``thread_owners`` row, so autonomous turns on
+    synthetic thread ids resolve user-owned vault LLM credentials like
+    interactive turns do (dev-todo #76). The one-arg accessor call shape is
+    preserved when absent so single-parameter monkeypatch stubs keep working.
+    """
+    if acting_user_id:
+        llm_config = agent._get_llm_config_for_thread(thread_id, acting_user_id)
+    else:
+        llm_config = agent._get_llm_config_for_thread(thread_id)
 
     if tc and tc.callable and tc.callable_name:
         max_iters = tc.callable_max_iterations or agent.CALLABLE_DEFAULT_MAX_ITERATIONS
@@ -638,7 +653,9 @@ def build_graph_with_prompt(
             system_prompt, user_id, thread_id, agent._checkpointer_config
         )
     tools, tc = agent._select_tools_for_graph(user_id, thread_id)
-    config = agent._build_agent_config(system_prompt, agent._checkpointer_config, thread_id, tc)
+    config = agent._build_agent_config(
+        system_prompt, agent._checkpointer_config, thread_id, tc, acting_user_id=user_id
+    )
     return create_graph(config=config, tools=tools)
 
 
@@ -654,7 +671,13 @@ def build_async_graph_with_prompt(
             system_prompt, user_id, thread_id, agent._async_checkpointer_config
         )
     tools, tc = agent._select_tools_for_graph(user_id, thread_id)
-    config = agent._build_agent_config(system_prompt, agent._async_checkpointer_config, thread_id, tc)
+    config = agent._build_agent_config(
+        system_prompt,
+        agent._async_checkpointer_config,
+        thread_id,
+        tc,
+        acting_user_id=user_id,
+    )
     return create_graph(config=config, tools=tools)
 
 
@@ -679,7 +702,9 @@ def build_dynamic_graph_with_prompt(
     agent._current_tool_superset_names = superset_names
 
     tc = agent.thread_config_manager.get_config(thread_id) if thread_id else None
-    config = agent._build_agent_config(system_prompt, checkpointer_config, thread_id, tc)
+    config = agent._build_agent_config(
+        system_prompt, checkpointer_config, thread_id, tc, acting_user_id=user_id
+    )
     resolver = agent._make_dynamic_tool_resolver(user_id, thread_id)
     return create_graph(
         config=config,

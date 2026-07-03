@@ -279,8 +279,10 @@ def _build_spawn_args(agent: Any, args: dict) -> dict:
 
 async def _extract(ctx: VerbContext, agent: Any, text: str, schema: Any) -> Any:
     """Post-hoc extraction: the reply through the structured helper."""
+    # ctx.user_id rides along as the credential-owner fallback for unclaimed
+    # threads (dev-todo #76), matching the nym.llm wire path.
     llm = await asyncio.to_thread(
-        build_llm_for_thread, agent, ctx.thread_id, DEFAULT_LLM_TIER
+        build_llm_for_thread, agent, ctx.thread_id, DEFAULT_LLM_TIER, ctx.user_id
     )
     prompt = (
         "Extract the requested data from this sub-agent reply. Use only what "

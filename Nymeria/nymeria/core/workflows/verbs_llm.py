@@ -39,7 +39,12 @@ def _create_llm(config: Any) -> Any:
     return create_llm(config)
 
 
-def build_llm_for_thread(agent: Any, thread_id: str, model: Optional[str]) -> Any:
+def build_llm_for_thread(
+    agent: Any,
+    thread_id: str,
+    model: Optional[str],
+    acting_user_id: Optional[str] = None,
+) -> Any:
     """A configured chat model for ``thread_id`` with an optional model override.
 
     Base config comes from the per-thread accessor (per-thread overrides and
@@ -51,10 +56,18 @@ def build_llm_for_thread(agent: Any, thread_id: str, model: Optional[str]) -> An
     branch, including the CLIProxy path derivation and the Anthropic
     direct-vs-proxy key nuance). The reasoning effort is re-clamped for the
     new model: the thread's value was clamped for the ORIGINAL model's ladder.
+
+    ``acting_user_id`` (the workflow run's user) is the credential-owner
+    fallback for unclaimed threads (dev-todo #76), so a scheduled workflow
+    running on a synthetic thread id resolves user-owned vault LLM
+    credentials exactly like an interactive turn.
     """
     from ...config.model_tiers import resolve_tier, split_provider_model
 
-    cfg = agent.get_llm_config_for_thread(thread_id)
+    if acting_user_id:
+        cfg = agent.get_llm_config_for_thread(thread_id, acting_user_id)
+    else:
+        cfg = agent.get_llm_config_for_thread(thread_id)
     wanted = str(model or "").strip()
     if wanted:
         pair = resolve_tier(wanted, agent.settings, provider=cfg.provider)
@@ -138,7 +151,9 @@ async def _llm_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
 
     # Config assembly reads thread/account stores (sync file/DB I/O); keep it
     # off the event loop like every other sync surface these verbs touch.
-    llm = await asyncio.to_thread(build_llm_for_thread, agent, ctx.thread_id, model)
+    llm = await asyncio.to_thread(
+        build_llm_for_thread, agent, ctx.thread_id, model, ctx.user_id
+    )
 
     if schema is not None:
         return await ainvoke_structured(llm, prompt, schema)

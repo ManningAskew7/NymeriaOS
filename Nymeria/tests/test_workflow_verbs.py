@@ -193,15 +193,18 @@ async def test_llm_verb_plain_text(monkeypatch):
     seen = {}
     llm = FakeLLM(replies=["  the answer  "])
 
-    def fake_build(agent, thread_id, model):
+    def fake_build(agent, thread_id, model, acting_user_id=None):
         seen["thread_id"], seen["model"] = thread_id, model
+        seen["acting_user_id"] = acting_user_id
         return llm
 
     monkeypatch.setattr(verbs_llm, "_current_agent", lambda: object())
     monkeypatch.setattr(verbs_llm, "build_llm_for_thread", fake_build)
     result = await verbs_llm._llm_verb(_ctx(), "llm", {"prompt": "hi"})
     assert result == "the answer"
-    assert seen == {"thread_id": "t1", "model": "fast"}
+    # The workflow run's user rides along as the credential-owner fallback
+    # for unclaimed threads (dev-todo #76).
+    assert seen == {"thread_id": "t1", "model": "fast", "acting_user_id": "tester"}
 
 
 async def test_llm_verb_schema_returns_dict(monkeypatch):
@@ -209,7 +212,7 @@ async def test_llm_verb_schema_returns_dict(monkeypatch):
     monkeypatch.setattr(
         verbs_llm,
         "build_llm_for_thread",
-        lambda agent, tid, model: FakeLLM(native={"answer": 1}),
+        lambda agent, tid, model, acting_user_id=None: FakeLLM(native={"answer": 1}),
     )
     result = await verbs_llm._llm_verb(
         _ctx(), "llm", {"prompt": "hi", "schema": SCHEMA}
@@ -222,7 +225,7 @@ async def test_llm_verb_empty_reply_is_verb_error(monkeypatch):
     monkeypatch.setattr(
         verbs_llm,
         "build_llm_for_thread",
-        lambda agent, tid, model: FakeLLM(replies=[""]),
+        lambda agent, tid, model, acting_user_id=None: FakeLLM(replies=[""]),
     )
     with pytest.raises(VerbError):
         await verbs_llm._llm_verb(_ctx(), "llm", {"prompt": "hi"})
@@ -240,7 +243,9 @@ def _fake_agent(cfg, **settings_overrides):
     settings = SimpleNamespace(**values)
     return SimpleNamespace(
         settings=settings,
-        get_llm_config_for_thread=lambda thread_id="": cfg,
+        # Accepts the dev-todo #76 acting-user owner-fallback argument the
+        # nym.llm wire path now passes (the workflow run's user).
+        get_llm_config_for_thread=lambda thread_id="", acting_user_id=None: cfg,
     )
 
 
@@ -587,7 +592,9 @@ async def test_thread_verb_schema_extracts_from_reply(monkeypatch):
     )
     monkeypatch.setattr(verbs_thread, "_invoke_thread", lambda *a: "raw reply here")
     monkeypatch.setattr(
-        verbs_thread, "build_llm_for_thread", lambda agent, tid, model: FakeLLM()
+        verbs_thread,
+        "build_llm_for_thread",
+        lambda agent, tid, model, acting_user_id=None: FakeLLM(),
     )
     monkeypatch.setattr(verbs_thread, "ainvoke_structured", fake_structured)
     result = await verbs_thread._thread_verb(
@@ -1311,7 +1318,7 @@ async def test_end_to_end_llm_schema_wire_path(monkeypatch):
     Schema dict and the structured helper returns a dict to the author."""
     received = {}
 
-    def fake_build(agent, thread_id, model):
+    def fake_build(agent, thread_id, model, acting_user_id=None):
         return FakeLLM(native={"answer": 42})
 
     async def fake_structured(llm, prompt, schema):
