@@ -1095,6 +1095,8 @@ Returns the callable thread tools actually available from that caller thread aft
 | `auth_prompt` | Credential setup prompt from `request_credential`; desktop opens the modal and chat bots render the secure setup link | `prompt_id`, `credential_id`, `provider`, `display_name`, `mode`, `fields`, `timeout_seconds`, optional `expires_at`, optional `connect_url`, `connect_url_required`, `connect_url_error`, optional OAuth fields such as `flow`, `auth_url`, `user_code`, `verification_uri`, `scopes` |
 | `auth_prompt_resolved` | Credential prompt completed. Desktop keeps OAuth prompts open long enough to show success; non-OAuth prompts normally close from the submit action | `prompt_id`, `credential_id`, `status`, optional `message`, `email`, `name` |
 | `auth_prompt_cancelled` | Credential prompt ended without an active credential, including user cancel, OAuth denial, expiry, or provider error | `prompt_id`, `reason`, optional `message` |
+| `hook_approval` | A `require_approval` hook is holding a tool call for the user's decision (resolve via `POST /hooks/approvals/{record_id}/resolve`, the tool-call card buttons, `/hook approve\|deny`, or the Telegram/Discord buttons); no answer by `expires_at` denies the call | `record_id`, `tool_call_id`, `tool_name`, `tool_args_preview`, `prompt`, `hook_id`, `hook_name`, `is_autonomous`, `created_at`, `expires_at` |
+| `hook_approval_resolved` | A held tool call was resolved from any surface (or timed out, or its turn was aborted); every client retracts its approval prompt | `record_id`, `tool_call_id`, `tool_name`, `outcome` (`approved`/`denied`/`timeout`/`aborted`/`stale`), `resolved_by`, `note` |
 | `workflow_approval` | A workflow run suspended on `nym.approve`, awaiting the owner's decision (resolve via `POST /workflows/approvals/{record_id}/resolve`) | `record_id`, `workflow_id`, `prompt`, `expires_at` |
 | `workflow_approval_resolved` | A suspended workflow run was approved, declined, or expired; the continuation ran (or was refused) | `record_id`, `workflow_id`, `approved`, `note`, `run_id` |
 | `workflow_step` | One completed `nym.*` verb dispatch in a running workflow (live progress; best-effort and unordered, sort by `step`). Lean by design: args/result summaries live in the persisted run record, not on the wire | `workflow_id`, `run_id`, `step`, `verb`, `status`, `duration_ms`, optional `error_kind` |
@@ -3717,7 +3719,9 @@ webhook trigger without putting the shared secret in the URL.
 Lifecycle hooks that run a canned action when an event fires. Actions:
 `inject_context` (inject a string, on `prompt_submit`/`post_tool_use`/`done`),
 `block_if_matches` (deny a tool call, `pre_tool_use`), `rewrite_arg` (modify a
-tool call's args, `pre_tool_use`), and the observe-plane side effects `notify`
+tool call's args, `pre_tool_use`), `require_approval` (hold a tool call for the
+user's approve/deny decision, `pre_tool_use`; no answer within the window
+denies it), and the observe-plane side effects `notify`
 (in-app + push notification), `create_todo` (add a TODO), and `webhook` (POST to
 a URL) on `post_tool_use`/`done`. Hooks fire in-process only, so unlike triggers
 there is no public fire/webhook endpoint. See
@@ -3772,13 +3776,17 @@ A `pre_tool_use` guardrail instead sends `action` plus per-action fields:
 
 `event` is one of `prompt_submit`, `pre_tool_use`, `post_tool_use`, `done`;
 `action` is `inject_context` (default), `block_if_matches`, `rewrite_arg`,
-`notify`, `create_todo`, `webhook`, or `run_command`, and must be legal for the
+`require_approval`, `notify`, `create_todo`, `webhook`, or `run_command`, and
+must be legal for the
 event (`notify`/`create_todo`/`webhook` are `post_tool_use`/`done` only;
+`require_approval` is `pre_tool_use` only;
 `run_command` is legal on all four). `matcher` (a pipe-list tool-NAME filter)
 applies to the tool events (`pre_tool_use`/`post_tool_use`) and is dropped on
 others. Per-action fields: `text` (inject_context / notify / create_todo, and
 the webhook body, `{placeholder}` interpolated); `conditions` + `reason`
-(block_if_matches); `conditions` + `updates` (rewrite_arg); `url` + `text`
+(block_if_matches); `conditions` + `updates` (rewrite_arg); `conditions` +
+`text` (the approval prompt) + `timeout_seconds` (require_approval, window
+10..600s, default 180); `url` + `text`
 (webhook); `command` + `timeout_seconds` (run_command).
 
 **`run_command` is gated.** It runs a shell command on the host, so it is
@@ -3846,6 +3854,43 @@ worker), or `illegal` (returned the wrong outcome type; dropped). On
 (the fail-closed policy). Observe-plane runs record `ok` on success, never
 `no_op` (their return values are ignored). A hook with no entries never fired.
 Also surfaced as `/hook log [id] [--limit N]` and `hook_info(action="log")`.
+
+### Pending Approvals
+
+```http
+GET /hooks/approvals
+Authorization: Bearer <token>
+```
+
+Pending `require_approval` holds: tool calls paused for a decision. Admins see
+every user's pending holds; everyone else sees their own. Returns
+`{"approvals": [...]}`, each entry
+`{record_id, user_id, thread_id, hook_id, hook_name, tool_name, tool_call_id,
+tool_args_preview, prompt, is_autonomous, created_at, expires_at}`. A hold not
+resolved by `expires_at` denies the tool call.
+
+### Resolve Approval
+
+```http
+POST /hooks/approvals/{record_id}/resolve
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+```json
+{"approved": true, "note": "optional, shown to the agent on deny"}
+```
+
+Approve or deny a held tool call (owner or admin; the resolver's identity is
+recorded as `resolved_by`). Returns `{"ok", "record_id", "decision"}`. `404`
+covers both a missing record and another user's record (existence is not
+leaked); `409` means the hold already ended (timed out, resolved elsewhere, or
+its turn died); the stale record is cleaned up on the spot. Every resolution
+(including timeout and turn abort) publishes a `hook_approval_resolved` SSE
+event so all surfaces retract their prompt. The `/hook approvals`,
+`/hook approve <id> [note]`, and `/hook deny <id> [note]` slash commands are a
+command-surface front for these endpoints (agent-denied: the agent can never
+approve its own held calls).
 
 ### Authoring Schema
 
