@@ -1013,6 +1013,41 @@ function createAutonomousStore() {
         break;
 
       // ================================================================
+      // Lifecycle-hook approval holds (require_approval, backlog #77)
+      // ================================================================
+
+      // Flat payload (see the workflow_step note below). The hold pins to the
+      // tool-call card by the tool_call id the backend threads end to end;
+      // marking is scoped to the open thread (elsewhere, the notification and
+      // the /hook approvals surfaces cover it) but clearing is global so a
+      // late thread switch never strands stale buttons.
+      case 'hook_approval': {
+        const recordId = event.record_id as string | undefined;
+        if (!recordId) break;
+        if (isCurrentThread) {
+          chatStore.markToolCallPendingApproval(
+            (event.tool_call_id as string) || '',
+            {
+              recordId,
+              prompt: (event.prompt as string) || '',
+              expiresAt: (event.expires_at as string) || ''
+            }
+          );
+        }
+        break;
+      }
+
+      case 'hook_approval_resolved': {
+        const recordId = event.record_id as string | undefined;
+        if (!recordId) break;
+        chatStore.clearToolCallPendingApproval(
+          recordId,
+          (event.tool_call_id as string) || undefined
+        );
+        break;
+      }
+
+      // ================================================================
       // Workflow runtime events (nym runs and approvals)
       // ================================================================
 

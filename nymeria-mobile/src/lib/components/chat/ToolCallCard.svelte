@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { ToolCall, WorkspaceArtifact } from '$lib/types';
   import { Collapsible, Icon } from '$lib/components/common';
+  import { api } from '$lib/services/api.svelte';
+  import { humanizeErrorText } from '$lib/services/api/humanizeError';
+  import { chatStore } from '$lib/stores/chat.svelte';
   import { formatFileSize } from '$lib/utils/fileProcessing';
   import { getToolSummary } from '$lib/utils/toolSummary';
   import { formatMessageTime } from '$lib/utils/time';
@@ -14,6 +17,31 @@
 
   let { toolCall }: Props = $props();
   let modalArtifact = $state<WorkspaceArtifact | null>(null);
+
+  // require_approval hold (backlog #77): the backend paused this call until
+  // the user decides. The row clears via the hook_approval_resolved event.
+  let approvalBusy = $state(false);
+  let approvalError = $state('');
+
+  async function resolveApproval(approved: boolean) {
+    const recordId = toolCall.pendingApproval?.recordId;
+    if (!recordId || approvalBusy) return;
+    approvalBusy = true;
+    approvalError = '';
+    try {
+      await api.resolveHookApproval(recordId, approved);
+      // A 200 is authoritative: clear the bar locally so a dropped
+      // hook_approval_resolved SSE event cannot strand disabled buttons
+      // (the SSE clear then no-ops).
+      chatStore.clearToolCallPendingApproval(recordId);
+    } catch (e) {
+      approvalError = humanizeErrorText(e, {
+        action: approved ? 'approve' : 'decline',
+        resource: 'the tool call'
+      });
+      approvalBusy = false;
+    }
+  }
 
   // Image artifacts render inline below the card (always visible, even when the
   // card is collapsed); non-image artifacts stay as chips inside the details.
@@ -74,6 +102,8 @@
           <span class="duration-badge">{duration}</span>
         {:else if toolCall.status === 'cancelled'}
           <span class="duration-badge cancelled-badge">Cancelled</span>
+        {:else if toolCall.pendingApproval}
+          <span class="duration-badge approval-badge">Awaiting approval</span>
         {/if}
       </div>
     {/snippet}
@@ -128,6 +158,40 @@
     </div>
   </Collapsible>
 
+  {#if toolCall.pendingApproval}
+    <!-- Always visible (outside the collapsible): a held call is time-boxed,
+         so the decision must not hide behind an expand. No answer = deny. -->
+    <div class="approval-bar">
+      <div class="approval-copy">
+        <Icon name="flag" size={16} />
+        <span class="approval-prompt">
+          {toolCall.pendingApproval.prompt || `Approve tool call ${toolCall.name}?`}
+        </span>
+      </div>
+      <div class="approval-actions">
+        <button
+          type="button"
+          class="approval-btn approve"
+          disabled={approvalBusy}
+          onclick={() => resolveApproval(true)}
+        >
+          Approve
+        </button>
+        <button
+          type="button"
+          class="approval-btn deny"
+          disabled={approvalBusy}
+          onclick={() => resolveApproval(false)}
+        >
+          Deny
+        </button>
+      </div>
+      {#if approvalError}
+        <p class="approval-error" role="alert">{approvalError}</p>
+      {/if}
+    </div>
+  {/if}
+
   {#if imageArtifacts.length}
     <div class="tool-call-images">
       {#each imageArtifacts as artifact (artifact.path)}
@@ -163,6 +227,87 @@
   .cancelled-badge {
     color: var(--text-muted);
     font-style: italic;
+  }
+
+  .approval-badge {
+    color: var(--warning);
+  }
+
+  /* require_approval hold: decision bar pinned below the header, visible even
+     while the card is collapsed (the hold is time-boxed; no answer = deny). */
+  .approval-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-top: 1px solid var(--glass-border);
+    background: color-mix(in srgb, var(--warning) 6%, var(--bg-elevated));
+  }
+
+  .approval-copy {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    flex: 1;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .approval-prompt {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .approval-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    flex-shrink: 0;
+  }
+
+  .approval-btn {
+    min-height: var(--touch-target-min);
+    padding: 4px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .approval-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .approval-btn.approve {
+    background: color-mix(in srgb, var(--success) 18%, var(--bg-elevated-2));
+    border-color: color-mix(in srgb, var(--success) 45%, transparent);
+    color: var(--text-primary);
+  }
+
+  .approval-btn.approve:active:not(:disabled) {
+    background: color-mix(in srgb, var(--success) 30%, var(--bg-elevated-2));
+  }
+
+  .approval-btn.deny {
+    background: color-mix(in srgb, var(--error) 14%, var(--bg-elevated-2));
+    border-color: color-mix(in srgb, var(--error) 40%, transparent);
+    color: var(--text-primary);
+  }
+
+  .approval-btn.deny:active:not(:disabled) {
+    background: color-mix(in srgb, var(--error) 26%, var(--bg-elevated-2));
+  }
+
+  .approval-error {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--error);
   }
 
   /* Gradient wave animation — accent-colored band sweeps left to right */

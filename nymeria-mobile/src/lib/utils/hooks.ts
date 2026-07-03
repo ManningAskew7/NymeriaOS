@@ -13,7 +13,7 @@ export type HookCategory = 'guardrails' | 'context' | 'reactions' | 'commands';
 /** Which actions are legal for each event (gates the authoring action list). */
 export const HOOK_EVENT_ACTIONS: Record<HookEvent, HookAction[]> = {
   prompt_submit: ['inject_context', 'run_command'],
-  pre_tool_use: ['block_if_matches', 'rewrite_arg', 'run_command'],
+  pre_tool_use: ['block_if_matches', 'rewrite_arg', 'require_approval', 'run_command'],
   post_tool_use: ['inject_context', 'notify', 'create_todo', 'webhook', 'run_command'],
   done: ['inject_context', 'notify', 'create_todo', 'webhook', 'run_command'],
 };
@@ -24,6 +24,7 @@ export const HOOK_TOOL_EVENTS: HookEvent[] = ['pre_tool_use', 'post_tool_use'];
 const CATEGORY_OF: Record<HookAction, HookCategory> = {
   block_if_matches: 'guardrails',
   rewrite_arg: 'guardrails',
+  require_approval: 'guardrails',
   inject_context: 'context',
   notify: 'reactions',
   create_todo: 'reactions',
@@ -92,6 +93,11 @@ export const HOOK_ACTION_META: Record<HookAction, HookActionMeta> = {
     label: 'Rewrite argument',
     icon: 'edit',
     hint: "Change a tool argument before the call runs.",
+  },
+  require_approval: {
+    label: 'Require approval',
+    icon: 'flag',
+    hint: 'Hold the tool call until you approve or deny it (no answer = deny).',
   },
   notify: {
     label: 'Notify',
@@ -178,6 +184,16 @@ export function describeHookLogic(hook: Hook): string {
       const updates = (logic.updates ?? {}) as Record<string, string>;
       const keys = Object.keys(updates);
       return keys.length ? `Rewrite ${keys.join(', ')}${matcher}` : `Rewrite args${matcher}`;
+    }
+    case 'require_approval': {
+      const conds = Array.isArray(logic.conditions) ? logic.conditions : [];
+      const when = conds.length
+        ? (conds as HookCondition[])
+            .map((c) => `${c.field} ${c.operator} ${c.value}`)
+            .join(' and ')
+        : 'always';
+      const window = Number(logic.timeout_seconds ?? 180);
+      return `Hold for approval${matcher} when ${when} (${window}s window)`;
     }
     case 'run_command': {
       const command = String(logic.command ?? '').replace(/\s+/g, ' ').trim();
