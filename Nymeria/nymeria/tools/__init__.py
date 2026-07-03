@@ -32,6 +32,7 @@ everyone, and auto-synced into every existing user's defaults on reload) or in a
 """
 
 from .bash import bash_execute
+from .bash_job import bash_job, BASH_JOB_TOOLS
 from .filesystem import file_read, file_write
 from .file_edit import file_edit, FILE_EDIT_TOOLS
 from .web import web_search_perplexity, WEB_SEARCH_SERVICE_TOOLS
@@ -1408,6 +1409,7 @@ _PRV_TOOLS_A = (
 # the ToolRegistry (which holds only SEED_TOOLS + callable/custom/MCP tools).
 CATALOG_TOOLS = {t.name: t for t in (
     [claude_code, hello_test, regression_echo, memory_clear_all, personality_set, rag_settings]
+    + BASH_JOB_TOOLS
     + CONSULT_TOOLS
     + WEB_SEARCH_SERVICE_TOOLS
     + WEB_SEARCH_INTEGRATION_TOOLS
@@ -1630,6 +1632,8 @@ def static_tool_catalog() -> dict:
 
 __all__ = [
     "bash_execute",
+    "bash_job",
+    "BASH_JOB_TOOLS",
     "file_read",
     "file_write",
     "file_edit",

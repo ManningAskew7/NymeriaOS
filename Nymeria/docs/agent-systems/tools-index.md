@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1258 tools found.**
+**1259 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -115,6 +115,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `baserow_list_tables` | `nymeria/tools/data_table_service_integrations.py` | List Baserow tables available to the credential. |
 | `baserow_update_row` | `nymeria/tools/data_table_service_integrations.py` | Update a Baserow row from a JSON field mapping. |
 | `bash_execute` | `nymeria/tools/bash.py` | Execute a shell command and return the output. |
+| `bash_job` | `nymeria/tools/bash_job.py` | Inspect or control background bash jobs (from bash_execute run_in_background). |
 | `beeminder_create_datapoint` | `nymeria/tools/time_hr_service_integrations.py` | Create a Beeminder datapoint. |
 | `beeminder_delete_datapoint` | `nymeria/tools/time_hr_service_integrations.py` | Delete a Beeminder datapoint. |
 | `beeminder_get_goal` | `nymeria/tools/time_hr_service_integrations.py` | Get a Beeminder goal by slug. |

@@ -9,6 +9,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 TAIL_BYTES = 4096
 MAX_COMPLETED_JOBS = 128
 SOURCE = "background_bash"
+# Age after which orphaned bash spill files in the system temp dir are swept.
+STALE_OUTPUT_AGE_SECONDS = 7 * 24 * 3600
 
 
 @dataclass
@@ -135,6 +138,33 @@ def cleanup_output_files(*paths: str) -> None:
         _unlink_quietly(path)
 
 
+def sweep_stale_output_files(max_age_seconds: int = STALE_OUTPUT_AGE_SECONDS) -> int:
+    """Best-effort removal of old bash spill files in the system temp dir.
+
+    Foreground spills normally land in the per-thread command dir (cleaned up
+    with the thread), but the no-thread fallback and every background job write
+    to the system temp dir with no lifecycle owner. Age-sweeping them keeps the
+    temp dir from accumulating stale output. Never raises; returns the count
+    removed. Called opportunistically when a new background job starts.
+    """
+
+    removed = 0
+    try:
+        tmp = Path(tempfile.gettempdir())
+        cutoff = time.time() - max_age_seconds
+        for pattern in ("nymeria-bg-*", "nymeria-bash-*"):
+            for path in tmp.glob(pattern):
+                try:
+                    if path.is_file() and path.stat().st_mtime < cutoff:
+                        path.unlink()
+                        removed += 1
+                except OSError:
+                    continue
+    except Exception as exc:  # noqa: BLE001 - housekeeping must never fail a launch
+        logger.debug("Background bash temp sweep failed: %s", exc)
+    return removed
+
+
 def _unlink_quietly(path: str) -> None:
     try:
         os.unlink(path)
@@ -247,7 +277,8 @@ def build_completion_prompt(record: BackgroundJobRecord) -> str:
         "--- stderr tail starts ---\n"
         f"{stderr_tail or '[empty]'}\n"
         "--- stderr tail ends ---\n\n"
-        "Temp files persist until manually removed."
+        "The full stdout/stderr files above are swept automatically after a few "
+        "days; read them with file_read while they exist."
     )
 
 

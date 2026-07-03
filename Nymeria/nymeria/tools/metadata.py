@@ -189,6 +189,7 @@ _CATEGORY_GROUPS: tuple[tuple[ToolCategory, tuple[str, ...]], ...] = (
 _GENERAL_MODERATE_TOOL_NAMES = frozenset(
     {
         "bash_execute",
+        "bash_job",
         "file_write",
         "file_edit",
         "notify",

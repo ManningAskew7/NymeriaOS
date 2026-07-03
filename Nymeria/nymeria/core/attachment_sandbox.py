@@ -123,6 +123,26 @@ def get_thread_fetch_dir(thread_id: str) -> Path:
     return base
 
 
+def get_thread_command_dir(thread_id: str) -> Path:
+    """Resolve (and create) the per-thread shell-output spill directory.
+
+    Layout: ``<workspace>/threads/<thread_id>/commands/`` (sibling of
+    ``fetched/``). Used by ``bash_execute`` to drop the full stdout/stderr of an
+    over-length command so the agent can ``file_read`` / grep it. Like
+    ``get_thread_fetch_dir``, the whole ``threads/<id>/`` tree is removed by
+    ``cleanup_thread_attachments``, so this directory is cleaned up with the
+    thread (no separate sweep needed for the foreground path).
+    """
+    sanitized = _sanitize_thread_id(thread_id)
+    base = _workspace_root() / "threads" / sanitized / "commands"
+    base.mkdir(parents=True, exist_ok=True)
+    try:
+        base.chmod(0o700)
+    except (PermissionError, OSError):
+        logger.debug("Could not chmod %s; continuing", base)
+    return base
+
+
 def _sanitize_thread_id(thread_id: str) -> str:
     """Defensive: thread ids come from auth-protected code paths, but we still
     refuse traversal characters here so the path stays inside the workspace.
