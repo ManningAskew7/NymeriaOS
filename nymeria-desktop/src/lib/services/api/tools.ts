@@ -43,7 +43,9 @@ export class ToolsApi extends NotificationsApi {
         group: (item.group as string | null | undefined) ?? null,
         groupLabel: (item.group_label as string | null | undefined) ?? null,
         service: (item.service as string | null | undefined) ?? null,
-        serviceLabel: (item.service_label as string | null | undefined) ?? null
+        serviceLabel: (item.service_label as string | null | undefined) ?? null,
+        authStatus: (item.auth_status as string | null | undefined) ?? null,
+        authProvider: (item.auth_provider as string | null | undefined) ?? null
       }))
     };
   }
@@ -349,6 +351,8 @@ export class ToolsApi extends NotificationsApi {
       groupLabel: (item.group_label as string | null | undefined) ?? null,
       service: (item.service as string | null | undefined) ?? null,
       serviceLabel: (item.service_label as string | null | undefined) ?? null,
+      authStatus: (item.auth_status as string | null | undefined) ?? null,
+      authProvider: (item.auth_provider as string | null | undefined) ?? null,
       createdAt: item.created_at as string | undefined,
       updatedAt: item.updated_at as string | undefined
     };

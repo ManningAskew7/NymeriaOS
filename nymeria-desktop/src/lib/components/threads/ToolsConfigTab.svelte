@@ -66,6 +66,8 @@
     isDefault: boolean;
     isTemporary: boolean;
     expiresAt?: string | null;
+    authStatus?: string | null;
+    authProvider?: string | null;
   };
 
   const searchActive = $derived(query.trim().length > 0);
@@ -119,6 +121,8 @@
     groupLabel?: string | null;
     service?: string | null;
     serviceLabel?: string | null;
+    authStatus?: string | null;
+    authProvider?: string | null;
   };
 
   const allItems = $derived.by(() => {
@@ -130,6 +134,7 @@
       meta.set(t.name, {
         description: t.description, category: t.category,
         group: t.group, groupLabel: t.group_label, service: t.service, serviceLabel: t.service_label,
+        authStatus: t.auth_status ?? null, authProvider: t.auth_provider ?? null,
       });
     }
     for (const t of unifiedToolsStore.tools) {
@@ -138,6 +143,7 @@
         meta.set(t.name, {
           description: t.description, category: t.category,
           group: t.group, groupLabel: t.groupLabel, service: t.service, serviceLabel: t.serviceLabel,
+          authStatus: t.authStatus ?? null, authProvider: t.authProvider ?? null,
         });
       }
     }
@@ -164,6 +170,8 @@
         isDefault: defaultSet.has(name),
         isTemporary: liveTempNames.has(name),
         expiresAt: temporaryTools?.[name]?.expiresAt ?? null,
+        authStatus: m?.authStatus ?? null,
+        authProvider: m?.authProvider ?? null,
       });
     }
 
@@ -283,6 +291,11 @@
           isDefault: defaultSet.has(r.name),
           isTemporary: false,
           expiresAt: null,
+          // Parity with ToolManagementPanel's synthesizeDefaultToolInfo. These
+          // search calls use includeStatus: false, so the values are always null
+          // today; wired for structural consistency, not to change that flag.
+          authStatus: r.authStatus ?? null,
+          authProvider: r.authProvider ?? null,
         });
       }
     }
@@ -426,6 +439,14 @@
   {/if}
 </div>
 
+{#snippet authBadge(status: string | null | undefined, provider: string | null | undefined)}
+  {#if status === 'needs_setup'}
+    <span class="auth-badge needs-setup" data-tooltip={`Provider "${provider}": no credential saved`}>auth required</span>
+  {:else if status === 'pending'}
+    <span class="auth-badge pending" data-tooltip={`Provider "${provider}": credential setup pending`}>auth pending</span>
+  {/if}
+{/snippet}
+
 {#snippet toolRow(gi: GroupedToolItem)}
   {@const item = gi.data as ToolItem}
   {@const enabled = enabledNameSet.has(item.name)}
@@ -436,6 +457,7 @@
         {item.shortName}
         {#if item.isTemporary}<span class="tt-tag" data-tooltip="Temporary tool bound with a TTL (e.g. by a Skill Kit)">temporary</span>{/if}
         {#if dormant}<span class="tt-tag" data-tooltip="MCP server is stopped. Enable it in Settings → MCP.">stopped</span>{/if}
+        {@render authBadge(item.authStatus, item.authProvider)}
       </span>
       <span class="tt-desc">{item.description || 'No description'}</span>
     </div>
@@ -575,5 +597,28 @@
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     background: var(--bg-elevated-2);
+  }
+  /* Credential-axis nudge badge. Same geometry as .tt-tag; the "needs_setup"
+     variant takes the warning tone, "pending" stays neutral like .tt-tag.
+     Only these two states render (see the authBadge snippet). */
+  .auth-badge {
+    flex-shrink: 0;
+    font-size: var(--font-size-3xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    text-indent: 0.03em;
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+  }
+  .auth-badge.needs-setup {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  }
+  .auth-badge.pending {
+    color: var(--text-secondary);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
   }
 </style>

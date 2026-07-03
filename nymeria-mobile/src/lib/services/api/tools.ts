@@ -344,6 +344,8 @@ export class ToolsApi extends TodosApi {
       mcpConfig: item.mcp_config as UnifiedTool['mcpConfig'],
       tags: (item.tags as string[]) || [],
       editable: item.editable as boolean,
+      authStatus: (item.auth_status as string | null | undefined) ?? null,
+      authProvider: (item.auth_provider as string | null | undefined) ?? null,
       createdAt: item.created_at as string | undefined,
       updatedAt: item.updated_at as string | undefined
     };

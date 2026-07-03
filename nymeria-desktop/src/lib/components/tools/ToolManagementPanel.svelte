@@ -174,6 +174,8 @@
       group_label: r.groupLabel ?? null,
       service: r.service ?? null,
       service_label: r.serviceLabel ?? null,
+      auth_status: r.authStatus ?? null,
+      auth_provider: r.authProvider ?? null,
     };
   }
 
@@ -861,6 +863,14 @@
   {/if}
 </div>
 
+{#snippet authBadge(status: string | null | undefined, provider: string | null | undefined)}
+  {#if status === 'needs_setup'}
+    <span class="auth-badge needs-setup" data-tooltip={`Provider "${provider}": no credential saved`}>auth required</span>
+  {:else if status === 'pending'}
+    <span class="auth-badge pending" data-tooltip={`Provider "${provider}": credential setup pending`}>auth pending</span>
+  {/if}
+{/snippet}
+
 {#snippet builtinRow(gi: GroupedToolItem)}
   {@const tool = gi.data as DefaultToolInfo}
   {@const selected = selectedTools.has(tool.name)}
@@ -870,6 +880,7 @@
       {#if isAdminOnlyTool(tool.name)}
         <span class="admin-only-badge" data-tooltip={isAdmin ? "Requires admin role" : "You don't have the admin role. Toggling this tool will work, but the agent will hit 403 when invoking it"}>admin only</span>
       {/if}
+      {@render authBadge(tool.auth_status, tool.auth_provider)}
     </span>
     <span class="tool-desc">{tool.description}</span>
   </div>
@@ -1160,6 +1171,31 @@
     letter-spacing: 0.6px;
     text-indent: 0.6px;
     margin-left: 4px;
+  }
+
+  /* Credential-axis nudge badge. Warning tone mirrors .admin-only-badge for
+     "needs_setup"; the muted tone mirrors the .tt-tag neutral chip for the
+     softer "pending" state. Only these two states render (see authBadge). */
+  .auth-badge {
+    display: inline-block;
+    font-size: var(--font-size-3xs);
+    font-weight: 700;
+    padding: 0 5px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    text-indent: 0.6px;
+    margin-left: 4px;
+  }
+  .auth-badge.needs-setup {
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  }
+  .auth-badge.pending {
+    background: var(--bg-elevated-2);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
   }
 
   .tool-desc {

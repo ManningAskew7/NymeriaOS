@@ -64,6 +64,14 @@
   }
 </script>
 
+{#snippet authBadge(status: string | null | undefined, provider: string | null | undefined)}
+  {#if status === 'needs_setup'}
+    <span class="auth-badge needs-setup" title={`Provider "${provider}": no credential saved`}>auth required</span>
+  {:else if status === 'pending'}
+    <span class="auth-badge pending" title={`Provider "${provider}": credential setup pending`}>auth pending</span>
+  {/if}
+{/snippet}
+
 {#if open}
   <div class="tool-panel">
     <div class="panel-header">
@@ -117,6 +125,7 @@
                         admin only
                       </span>
                     {/if}
+                    {@render authBadge(tool.authStatus, tool.authProvider)}
                   </span>
                   <span class="tool-desc">{tool.description}</span>
                 </div>
@@ -281,6 +290,31 @@
     text-transform: uppercase;
     letter-spacing: 0.6px;
     vertical-align: middle;
+  }
+
+  /* Credential-axis nudge badge. Warning tone mirrors .admin-only-badge for
+     "needs_setup"; "pending" uses a neutral/muted tone. Only these two states
+     render (see the authBadge snippet). */
+  .auth-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 0 5px;
+    margin-left: 4px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    vertical-align: middle;
+  }
+  .auth-badge.needs-setup {
+    background: rgba(var(--warning-rgb), 0.12);
+    color: var(--warning);
+    border: 1px solid rgba(var(--warning-rgb), 0.4);
+  }
+  .auth-badge.pending {
+    background: var(--bg-elevated-2);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
   }
 
   .tool-desc {
