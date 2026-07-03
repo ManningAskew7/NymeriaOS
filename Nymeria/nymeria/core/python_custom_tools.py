@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from ..config import get_settings
 from ..oom import oom_score_preexec
 from ..tools.definitions.custom_tool_schema import PythonToolConfig, ToolParameter
 from .http_policy import SECRET_PATTERNS
+from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,99 @@ def clamp_validation_timeout(value: Optional[int]) -> int:
     except (TypeError, ValueError):
         seconds = DEFAULT_VALIDATION_TIMEOUT_SECONDS
     return max(MIN_VALIDATION_TIMEOUT_SECONDS, min(seconds, MAX_VALIDATION_TIMEOUT_SECONDS))
+
+
+# --- revision hash and the execution-time approval gate ----------------------
+#
+# Python tool authoring is admin-only, but the generic file tools can write
+# ``data/custom_tools/<id>.json`` directly, so the admin gate is ALSO enforced
+# at execution time (mirroring the workflow gate in
+# core/workflows/authoring.py). The approval is a content hash an admin stamped
+# at publish; the loader recomputes it from live source on every call and runs
+# only on a match, so an edited or unapproved record fails closed. These are a
+# deliberately separate, co-located parallel to the workflow helpers: this hash
+# is its own security boundary (it must not shift if the workflow canonical
+# form changes) and the field set differs (no ``continuations``).
+#
+# Residual (not solved here): the hash lives in the same file it protects, so a
+# determined writer who replicates this canonical form could forge a matching
+# approval; a hard boundary needs write confinement + subprocess env scrubbing
+# (the #75 confinement slice). A bash-capable caller already holds the secret
+# key and has code execution regardless.
+
+
+def compute_python_revision_hash(
+    *,
+    source: str,
+    entrypoint: str,
+    parameters: Mapping[str, ToolParameter],
+) -> str:
+    """Canonical content hash over {source, entrypoint, parameters}."""
+    canonical = json.dumps(
+        {
+            "source": source,
+            "entrypoint": entrypoint,
+            "parameters": {
+                name: parameters[name].model_dump(mode="json") for name in sorted(parameters)
+            },
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def config_python_revision_hash(
+    config: PythonToolConfig, parameters: Mapping[str, ToolParameter]
+) -> str:
+    return compute_python_revision_hash(
+        source=config.source_code,
+        entrypoint=config.entrypoint,
+        parameters=parameters,
+    )
+
+
+def approve_python_revision(
+    config: PythonToolConfig,
+    parameters: Mapping[str, ToolParameter],
+    *,
+    approved_by: str,
+) -> PythonToolConfig:
+    """Return a copy approving the CURRENT content revision (recomputed).
+
+    Called only from the admin-gated publish/create paths, so a valid
+    ``approved_revision`` can be produced only by an admin.
+    """
+    revision = config_python_revision_hash(config, parameters)
+    return config.model_copy(
+        update={
+            "revision_hash": revision,
+            "approved_revision": revision,
+            "approved_by": approved_by,
+            "approved_at": utc_now(),
+        }
+    )
+
+
+def python_execution_gate(
+    config: PythonToolConfig, parameters: Mapping[str, ToolParameter]
+) -> Optional[str]:
+    """None when this revision may execute, else the refusal copy (fail closed).
+
+    Recomputes the hash from live content so a stale stored ``revision_hash``
+    can never satisfy the gate, and re-reads ``approved_revision`` on every
+    call so a revoked approval (or an edited source) takes effect immediately.
+    """
+    current = config_python_revision_hash(config, parameters)
+    if config.approved_revision == current:
+        return None
+    if config.approved_revision:
+        return (
+            "this python tool changed since its approval; an admin must "
+            "re-publish it before it can run"
+        )
+    return "this python tool is not approved; an admin must publish it before it can run"
 
 
 def validate_python_tool_static(
@@ -317,8 +412,12 @@ __all__ = [
     "MAX_VALIDATION_TIMEOUT_SECONDS",
     "MIN_VALIDATION_TIMEOUT_SECONDS",
     "PythonToolRunResult",
+    "approve_python_revision",
     "clamp_validation_timeout",
+    "compute_python_revision_hash",
+    "config_python_revision_hash",
     "execute_python_tool",
+    "python_execution_gate",
     "run_python_tool_subprocess",
     "validate_python_tool_runtime",
     "validate_python_tool_static",

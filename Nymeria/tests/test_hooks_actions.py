@@ -320,6 +320,7 @@ def test_rewrite_never_raises_on_bad_params():
 
 # --- run_command (subprocess pathfinder) ------------------------------------
 
+import contextlib  # noqa: E402
 import json  # noqa: E402
 import sys  # noqa: E402
 
@@ -338,16 +339,49 @@ def _run_settings(enabled=True):
     return MagicMock(hooks_run_command_enabled=enabled, data_dir="/tmp")
 
 
-def _patch_run_settings(enabled=True):
-    # run_command imports get_settings twice (gate + cwd resolution), both from
-    # nymeria.config.get_settings.
-    return patch("nymeria.config.get_settings", return_value=_run_settings(enabled))
+@contextlib.contextmanager
+def _patch_run_settings(enabled=True, *, owner_is_admin=True):
+    # run_command imports get_settings twice (gate + cwd resolution) and
+    # is_admin once (owner re-check). Patch all at their import sources. The
+    # owner defaults to admin so the existing run_command tests exercise
+    # execution; the gate-symmetry tests pass owner_is_admin=False.
+    with patch("nymeria.config.get_settings", return_value=_run_settings(enabled)), \
+            patch("nymeria.tools.utils.is_admin", return_value=owner_is_admin):
+        yield
 
 
 def test_run_command_gate_off_returns_none():
     with patch("nymeria.config.get_settings",
                return_value=MagicMock(hooks_run_command_enabled=False)):
         assert run_command(_prompt(), {"command": "echo hi"}) is None
+
+
+def test_run_command_non_admin_owner_neutered():
+    # Gate-symmetry: the admin authoring gate is bypassable by a direct write to
+    # data/hooks/<user_id>.json, so run_command re-checks the owner's admin role
+    # at fire time. A non-admin owner neuters the hook (no-op), even with the
+    # deployment flag on.
+    with _patch_run_settings(owner_is_admin=False):
+        assert run_command(_prompt(), {"command": "printf 'hello'"}) is None
+
+
+def test_run_command_non_admin_owner_pre_tool_allows_not_denies():
+    # The neuter must ALLOW on pre_tool_use (return None), never deny: a
+    # non-admin's planted guardrail must not be able to block tool calls.
+    with _patch_run_settings(owner_is_admin=False):
+        out = run_command(
+            _pre(tool_name="bash"),
+            {"command": "echo 'blocked' 1>&2; exit 2"},
+        )
+    assert out is None
+
+
+def test_run_command_admin_owner_runs():
+    # Positive control: an admin owner still executes.
+    with _patch_run_settings(owner_is_admin=True):
+        out = run_command(_prompt(), {"command": "printf 'ok'"})
+    assert isinstance(out, PromptOutcome)
+    assert out.inject_context == "ok"
 
 
 def test_run_command_empty_command_is_noop():

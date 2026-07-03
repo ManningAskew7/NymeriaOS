@@ -205,25 +205,50 @@ class CustomToolLoader:
         )
 
     def _create_python_tool(self, definition: CustomToolDefinition) -> BaseTool:
-        """Create a subprocess-backed LangChain tool from Python source."""
-        config = definition.python_config
-        assert config is not None
+        """Create a subprocess-backed LangChain tool from Python source.
+
+        The closures capture only the tool id and re-fetch the definition from
+        this loader at call time, so the execution-time approval gate
+        (``python_execution_gate``) sees the current source and approval: an
+        edited or unapproved record fails closed on the next call with no
+        reload (mirrors ``_create_workflow_tool``). This is the sole
+        agent-facing execution surface; the admin test surfaces call the
+        executor directly and stay admin-gated at authoring.
+        """
+        assert definition.python_config is not None
+        tool_id = definition.id
+        loader = self
+
+        def _gated_config():
+            """Re-fetch + gate; return (config, None) or (None, error_text)."""
+            from .python_custom_tools import python_execution_gate
+
+            defn = loader.get_definition(tool_id)
+            if defn is None or defn.python_config is None:
+                return None, f"[Error]: python tool {tool_id!r} is no longer available"
+            gate_error = python_execution_gate(defn.python_config, defn.parameters)
+            if gate_error:
+                return None, f"[Error]: approval_required - {gate_error}"
+            return defn.python_config, None
 
         async def execute_python(**kwargs: Any) -> str:
             from .python_custom_tools import execute_python_tool
 
-            return await execute_python_tool(
-                config,
-                kwargs,
-                target_id=definition.id,
-            )
+            cfg, error = _gated_config()
+            if error is not None:
+                return error
+            assert cfg is not None
+            return await execute_python_tool(cfg, kwargs, target_id=tool_id)
+
+        def _run_sync(**kwargs: Any) -> str:
+            cfg, error = _gated_config()
+            if error is not None:
+                return error
+            assert cfg is not None
+            return _sync_execute_python(cfg, kwargs, target_id=tool_id)
 
         return StructuredTool.from_function(
-            func=lambda **kwargs: _sync_execute_python(
-                config,
-                kwargs,
-                target_id=definition.id,
-            ),
+            func=_run_sync,
             coroutine=execute_python,
             name=definition.id,
             description=definition.description,

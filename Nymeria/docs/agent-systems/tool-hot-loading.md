@@ -117,6 +117,23 @@ reloads the custom-tool registry, and enables the new tool on the publishing
 thread. HTTP tools are declarative definitions; Python tools are validated and
 then executed through a subprocess wrapper.
 
+Python tools additionally carry an **execution-time approval gate** (backlog
+#75 Gap 1). Authoring a Python tool is admin-only, but the generic file tools
+can write `data/custom_tools/<id>.json` directly, so the admin gate is enforced
+again at run time: the admin publish/create/update/import paths stamp a content
+hash over `{source_code, entrypoint, parameters}` into `approved_revision`, and
+the loader-bound tool recomputes that hash from live source on every call,
+refusing with `approval_required` unless it matches (mirrors the workflow gate).
+An unapproved planted definition, or an edit to an approved tool's source, fails
+closed on the next call with no reload. **Migration:** any Python custom tool
+that predates this gate (already on disk, or imported from a pre-gate export)
+must be re-published by an admin once, because a stamp cannot be safely
+auto-applied on load (that would re-open the bypass). The gate is
+tamper-evidence and fail-closed-by-default, not an unforgeable boundary: a
+writer who reads the (open) hash code could forge a matching approval, so the
+hard multi-user boundary (write confinement + subprocess env scrub) is tracked
+as a separate #75 slice.
+
 With dynamic binding enabled, publishing does not use the old graph
 rebuild/resume loop. The publish result includes the thread-binding result, the
 next model step sees the updated schema list from the live resolver, and

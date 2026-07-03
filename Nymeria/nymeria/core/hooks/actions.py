@@ -396,6 +396,21 @@ def run_command(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     if not getattr(get_settings(), "hooks_run_command_enabled", False):
         logger.warning("hook run_command skipped: HOOKS_RUN_COMMAND_ENABLED is off")
         return None
+    # Owner-admin re-check at fire time. The authoring gate's admin half is
+    # otherwise bypassable by a direct write to data/hooks/<user_id>.json; the
+    # owner is ctx.user_id (the turn's auth identity, not a file field), so this
+    # is unforgeable for a hook in its owner's own store. Action-local beside
+    # the flag re-check: run_command is the only GATED_ACTION, and fire-time
+    # resolution means an admin demotion neuters the hook on the next fire with
+    # no reload. Neuter = return None (a no-op; on pre_tool_use that ALLOWS,
+    # matching the flag-skip -- failing into deny would let a non-admin hook
+    # block tool calls). ``or "default"`` matches the authoring gate and the
+    # solo-install bootstrap admin.
+    from ...tools.utils import is_admin
+    owner = ctx.user_id or "default"
+    if not is_admin(owner):
+        logger.warning("hook run_command skipped: owner %r is not an admin", owner)
+        return None
     params = params or {}
     command = str(params.get("command") or "").strip()
     if not command:

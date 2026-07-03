@@ -281,3 +281,54 @@ def test_custom_tool_import_export_round_trip_for_mcp_config(
     assert tool["implementation_type"] == "mcp"
     assert tool["mcp_config"]["server_command"] == "npx"
     assert tool["mcp_config"]["tool_name"] == "read_file"
+
+
+def test_custom_tool_import_stamps_python_approval(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    # An imported python tool with no approval fields must be self-approved by
+    # the importing admin so it passes the execution gate; otherwise import
+    # reports success but the tool silently fails closed.
+    from nymeria.core.python_custom_tools import python_execution_gate
+
+    loader = FakeCustomToolLoader()
+    client, agent, token = _authenticated_client(
+        tmp_path,
+        api_client_builder,
+        monkeypatch,
+        loader=loader,
+    )
+    headers = api_client_builder.auth(token)
+
+    import_response = client.post(
+        "/tools/custom/import",
+        headers=headers,
+        json={
+            "tools": [
+                {
+                    "id": "imported_python",
+                    "name": "Imported Python",
+                    "description": "Planted via import without approval",
+                    "parameters": {
+                        "value": {"type": "string", "description": "v", "required": True}
+                    },
+                    "implementation_type": "python",
+                    "python_config": {
+                        "source_code": "def run(value: str) -> str:\n    return value\n",
+                        "entrypoint": "run",
+                    },
+                    "enabled": True,
+                    "tags": ["python"],
+                }
+            ]
+        },
+    )
+
+    assert import_response.status_code == 200
+    assert import_response.json()["imported"] == 1
+    saved = loader.definitions["imported_python"]
+    assert saved.python_config is not None
+    assert saved.python_config.approved_by is not None
+    assert python_execution_gate(saved.python_config, saved.parameters) is None

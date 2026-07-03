@@ -12,6 +12,9 @@ import pytest
 
 from nymeria.core.custom_tools import CustomToolLoader
 from nymeria.core.python_custom_tools import (
+    approve_python_revision,
+    config_python_revision_hash,
+    python_execution_gate,
     run_python_tool_subprocess,
     validate_python_tool_static,
 )
@@ -233,7 +236,14 @@ def test_python_tool_publish_can_validate_with_sample_params(tmp_path, monkeypat
     assert payload["ok"] is True
     assert payload["published"] is True
     assert payload["tool"]["implementation_type"] == "python"
-    assert loader.get_definition("python_publish_echo") is not None
+    published = loader.get_definition("python_publish_echo")
+    assert published is not None
+    assert published.python_config is not None
+    # Publish stamps admin approval, so the execution gate admits the revision.
+    assert published.python_config.approved_revision == config_python_revision_hash(
+        published.python_config, published.parameters
+    )
+    assert python_execution_gate(published.python_config, published.parameters) is None
     saved = store.get("user-1", "python_publish_echo")
     assert saved is not None
     assert saved.last_test_ok is True
@@ -351,24 +361,26 @@ def test_python_tool_subprocess_contains_process_exit():
 
 def test_custom_tool_loader_registers_python_wrapper_without_importing_user_code(tmp_path):
     loader = CustomToolLoader(tmp_path / "custom_tools")
+    parameters = {
+        "value": ToolParameter(type="string", description="Value to echo", required=True),
+    }
+    # The execution gate requires an admin-stamped approval, so a legitimately
+    # published tool carries one (mirrors what _publish_draft / the REST create
+    # paths stamp).
+    python_config = approve_python_revision(
+        PythonToolConfig(
+            source_code=("def run(value: str) -> str:\n    return value.upper()\n")
+        ),
+        parameters,
+        approved_by="admin-1",
+    )
     definition = CustomToolDefinition(
         id="python_echo",
         name="Python Echo",
         description="Echo a value through a subprocess-backed Python tool",
-        parameters={
-            "value": ToolParameter(
-                type="string",
-                description="Value to echo",
-                required=True,
-            )
-        },
+        parameters=parameters,
         implementation_type="python",
-        python_config=PythonToolConfig(
-            source_code=(
-                "def run(value: str) -> str:\n"
-                "    return value.upper()\n"
-            )
-        ),
+        python_config=python_config,
         enabled=True,
     )
 
@@ -376,3 +388,104 @@ def test_custom_tool_loader_registers_python_wrapper_without_importing_user_code
     tool_obj = loader._tools["python_echo"]
 
     assert tool_obj.invoke({"value": "nymeria"}) == "NYMERIA"
+
+
+# --- Execution-time approval gate for Python tools (backlog #75 Gap 1) --------
+
+
+def _py_params():
+    return {"value": ToolParameter(type="string", description="Value", required=True)}
+
+
+def _py_config(source="def run(value: str) -> str:\n    return value.upper()\n"):
+    return PythonToolConfig(source_code=source)
+
+
+def test_python_execution_gate_lifecycle():
+    # Fresh (unapproved) -> refused; approve -> allowed; edit source -> refused.
+    params = _py_params()
+    config = _py_config()
+    refusal = python_execution_gate(config, params)
+    assert refusal is not None and "not approved" in refusal
+
+    approved = approve_python_revision(config, params, approved_by="admin-1")
+    assert python_execution_gate(approved, params) is None
+    assert approved.approved_revision == config_python_revision_hash(approved, params)
+    assert approved.approved_by == "admin-1"
+
+    edited = approved.model_copy(
+        update={"source_code": "def run(value: str) -> str:\n    return value.lower()\n"}
+    )
+    changed = python_execution_gate(edited, params)
+    assert changed is not None and "changed since its approval" in changed
+
+
+def test_python_execution_gate_ignores_stale_stored_hash():
+    # A hand-set revision_hash must not satisfy the gate; only a recomputed
+    # match against approved_revision does.
+    params = _py_params()
+    config = _py_config().model_copy(update={"revision_hash": "stale"})
+    approved = approve_python_revision(config, params, approved_by="admin-1")
+    assert approved.revision_hash != "stale"
+    assert python_execution_gate(approved, params) is None
+
+
+def test_python_execution_gate_reflects_param_change():
+    # The hash covers parameters, so changing the schema without re-approving
+    # fails closed (this is why the REST update path re-stamps on a params edit).
+    params = _py_params()
+    approved = approve_python_revision(_py_config(), params, approved_by="admin-1")
+    assert python_execution_gate(approved, params) is None
+    more_params = dict(params)
+    more_params["extra"] = ToolParameter(type="string", description="x", required=False)
+    refusal = python_execution_gate(approved, more_params)
+    assert refusal is not None and "changed since its approval" in refusal
+
+
+def test_loader_python_tool_fails_closed_without_approval(tmp_path):
+    # The core bypass: a definition planted on disk without an admin approval
+    # must NOT execute; the loader binds the tool but the gate refuses (no
+    # subprocess is spawned).
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    params = _py_params()
+    definition = CustomToolDefinition(
+        id="planted",
+        name="Planted",
+        description="Unapproved python tool planted on disk",
+        parameters=params,
+        implementation_type="python",
+        python_config=_py_config(),  # no approval fields
+        enabled=True,
+    )
+    loader.save_definition(definition)
+    tool_obj = loader._tools["planted"]
+    result = tool_obj.invoke({"value": "nymeria"})
+    assert isinstance(result, str)
+    assert result.startswith("[Error]: approval_required")
+
+
+def test_loader_python_tool_revocation_takes_effect_next_call(tmp_path):
+    # Revoking approval on the loader's cached definition fails closed on the
+    # NEXT call with no reload (mirrors the workflow lifecycle test).
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    params = _py_params()
+    approved = approve_python_revision(_py_config(), params, approved_by="admin-1")
+    definition = CustomToolDefinition(
+        id="revocable",
+        name="Revocable",
+        description="Approved then revoked",
+        parameters=params,
+        implementation_type="python",
+        python_config=approved,
+        enabled=True,
+    )
+    loader.save_definition(definition)
+    tool_obj = loader._tools["revocable"]
+    assert tool_obj.invoke({"value": "nymeria"}) == "NYMERIA"
+
+    live = loader.get_definition("revocable")
+    assert live is not None and live.python_config is not None
+    live.python_config = live.python_config.model_copy(update={"approved_revision": None})
+    result = tool_obj.invoke({"value": "nymeria"})
+    assert isinstance(result, str)
+    assert result.startswith("[Error]: approval_required")

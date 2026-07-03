@@ -104,6 +104,27 @@ def create_custom_tools_router(
         for tool_data in tools_data:
             try:
                 definition = CustomToolDefinition(**tool_data)
+                if (
+                    definition.implementation_type == "python"
+                    and definition.python_config is not None
+                ):
+                    from ...core.python_custom_tools import (
+                        approve_python_revision,
+                        python_execution_gate,
+                    )
+
+                    # Import is an admin action (require_admin_user), so a python
+                    # tool the admin installs is self-approved -- unless the
+                    # imported config already carries a valid approval (a clean
+                    # round-trip), whose original provenance is preserved. Without
+                    # this, an imported python tool would report success but fail
+                    # the execution gate until re-published.
+                    if python_execution_gate(definition.python_config, definition.parameters):
+                        definition.python_config = approve_python_revision(
+                            definition.python_config,
+                            definition.parameters,
+                            approved_by=user.id,
+                        )
                 loader.save_definition(definition)
                 imported += 1
             except Exception as e:

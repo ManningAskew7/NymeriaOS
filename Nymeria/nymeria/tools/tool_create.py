@@ -31,6 +31,7 @@ from ..core.custom_tools import execute_http_tool, get_custom_tool_loader
 from ..core.http_policy import SECRET_PATTERNS, SENSITIVE_HEADER_NAMES
 from ..core.python_custom_tools import (
     DEFAULT_VALIDATION_TIMEOUT_SECONDS,
+    approve_python_revision,
     clamp_validation_timeout,
     validate_python_tool_runtime,
 )
@@ -647,6 +648,14 @@ def _publish_draft(
                     "message": validation.error_message or validation.public_text(),
                 },
             )
+        # Stamp admin approval on the validated revision so the execution-time
+        # gate (python_execution_gate) admits it. Admin is guaranteed upstream
+        # (the dispatch gate blocks non-admin python publish), so a direct file
+        # write of a definition cannot produce a valid approval without an admin.
+        draft.python_config = approve_python_revision(
+            draft.python_config, draft.parameters, approved_by=user_id
+        )
+        store.save(user_id, draft)
 
     if draft.implementation_type == "workflow":
         if draft.workflow_config is None:
