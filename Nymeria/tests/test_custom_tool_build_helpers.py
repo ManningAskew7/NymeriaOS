@@ -49,11 +49,23 @@ def test_build_python_definition():
         implementation_type="python",
         python_config={"source_code": "def run(value):\n    return value\n"},
     )
-    defn = build_custom_tool_definition(req)
+    defn = build_custom_tool_definition(req, actor_user_id="admin-1")
     assert defn.implementation_type == "python"
     assert defn.python_config is not None
     assert defn.python_config.entrypoint == "run"
     assert defn.http_config is None
+    # The admin actor's create self-approves the revision so the execution gate
+    # admits it (mirrors the workflow branch).
+    from nymeria.core.python_custom_tools import (
+        config_python_revision_hash,
+        python_execution_gate,
+    )
+
+    assert defn.python_config.approved_by == "admin-1"
+    assert defn.python_config.approved_revision == config_python_revision_hash(
+        defn.python_config, defn.parameters
+    )
+    assert python_execution_gate(defn.python_config, defn.parameters) is None
 
 
 @pytest.mark.parametrize(

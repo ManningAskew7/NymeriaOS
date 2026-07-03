@@ -59,8 +59,14 @@ the **SSRF-safe** `http_policy` egress helper (private/loopback/metadata targets
 mutate on `prompt_submit`/`pre_tool_use` (its output can steer the turn), observe on
 `post_tool_use`/`done` (fire-and-forget). It is the pathfinder for the `nym` subprocess
 substrate, so it is deliberately hardened and **double-gated** (admin account AND the
-`HOOKS_RUN_COMMAND_ENABLED` deployment flag, enforced both at authoring on every surface and
-again at execution). The command receives the full hook context as **JSON on stdin** (never
+`HOOKS_RUN_COMMAND_ENABLED` deployment flag). Both halves are enforced at authoring on every
+surface AND again at execution: at fire time the deployment flag is re-read and the hook
+**owner's** admin role is re-resolved from `ctx.user_id` (the turn's auth identity), so a
+`run_command` hook planted by a direct write to `data/hooks/<user_id>.json`, or one whose
+owner was later demoted, is neutered (returns a no-op; on `pre_tool_use` that ALLOWS, so a
+non-admin cannot plant a guardrail that blocks tool calls). The authoring-time admin gate
+alone is bypassable by a direct store-file edit, which is why the owner re-check exists. The
+command receives the full hook context as **JSON on stdin** (never
 argv) and runs with a **minimal environment** (`PATH`/`HOME`/`LANG`/`LC_ALL`/`TMPDIR` plus
 `NYMERIA_HOOK_EVENT`/`_THREAD_ID`/`_USER_ID`/`_TOOL_NAME`; no inherited process secrets), in
 its own process group (`start_new_session`), under the author-configured `timeout_seconds`

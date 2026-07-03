@@ -321,7 +321,14 @@ def build_custom_tool_definition(
                 status_code=400,
                 detail="python_config is required for Python tools",
             )
+        from ...core.python_custom_tools import approve_python_revision
+
         python_config = python_config_to_core(request.python_config)
+        # The (admin) actor's save self-approves the revision so the
+        # execution-time gate admits it (mirrors the workflow branch).
+        python_config = approve_python_revision(
+            python_config, parameters, approved_by=actor_user_id
+        )
     elif request.implementation_type == "workflow":
         if not request.workflow_config:
             raise HTTPException(
@@ -371,8 +378,10 @@ def apply_custom_tool_update(
     Workflow updates replace the whole workflow_config (re-validated,
     re-derived parameters, re-approved by the admin actor while preserving the
     original author); client-declared parameters for a workflow are a 400.
-    Name/enabled/tags edits never touch the revision hash, so they cannot
-    reset an approval.
+    Python updates re-approve the edited revision under the admin actor,
+    re-stamped even for a params-only edit (else the execution gate, which
+    hashes the parameters, would fail closed). Name/enabled/tags edits never
+    touch the revision hash, so they cannot reset an approval.
     """
     if request.name is not None:
         definition.name = request.name
@@ -392,8 +401,20 @@ def apply_custom_tool_update(
         definition.http_config = http_config_to_core(request.http_config)
     if request.mcp_config is not None and definition.implementation_type == "mcp":
         definition.mcp_config = mcp_config_to_core(request.mcp_config)
-    if request.python_config is not None and definition.implementation_type == "python":
-        definition.python_config = python_config_to_core(request.python_config)
+    if definition.implementation_type == "python" and (
+        request.python_config is not None or request.parameters is not None
+    ):
+        from ...core.python_custom_tools import approve_python_revision
+
+        if request.python_config is not None:
+            definition.python_config = python_config_to_core(request.python_config)
+        if definition.python_config is not None:
+            # Re-stamp against the FINAL parameters (applied above) so a
+            # params-only edit does not silently fail the execution gate; the
+            # admin actor's update re-approves the edited revision.
+            definition.python_config = approve_python_revision(
+                definition.python_config, definition.parameters, approved_by=actor_user_id
+            )
     if request.workflow_config is not None and definition.implementation_type == "workflow":
         created_by = (
             definition.workflow_config.created_by if definition.workflow_config else ""

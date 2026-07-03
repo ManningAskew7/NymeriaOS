@@ -108,7 +108,17 @@ class HTTPToolConfig(BaseModel):
 
 
 class PythonToolConfig(BaseModel):
-    """Configuration for subprocess-backed Python custom tools."""
+    """Configuration for subprocess-backed Python custom tools.
+
+    Authoring is admin-only (the subprocess runs with the API process's OS
+    user, environment, and network; it is not a sandbox). Because the generic
+    file tools can reach ``data/custom_tools/`` directly, the admin gate is
+    also enforced at execution time: ``revision_hash`` covers
+    {source_code, entrypoint, parameters} and execution requires
+    ``approved_revision`` to equal the recomputed hash (see
+    core/python_custom_tools.py::python_execution_gate). A source edit resets
+    the match, and an unapproved record fails closed.
+    """
 
     source_code: str = Field(
         ...,
@@ -124,6 +134,19 @@ class PythonToolConfig(BaseModel):
         default="subprocess",
         description="Execution runtime. Python custom tools run out-of-process.",
     )
+    revision_hash: str = Field(
+        default="",
+        description=(
+            "Content hash over {source_code, entrypoint, parameters}; "
+            "recomputed on every save"
+        ),
+    )
+    approved_revision: Optional[str] = Field(
+        default=None,
+        description="revision_hash an admin approved; execution requires a match",
+    )
+    approved_by: Optional[str] = Field(default=None, description="Approving admin user id")
+    approved_at: Optional[datetime] = Field(default=None, description="Approval timestamp")
 
 
 class WorkflowToolConfig(BaseModel):
