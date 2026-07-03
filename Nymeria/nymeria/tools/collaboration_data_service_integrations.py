@@ -10,6 +10,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -29,6 +34,61 @@ _SLACK_BASE_URL = "https://slack.com/api"
 _NOTION_BASE_URL = "https://api.notion.com/v1"
 _NOTION_VERSION = "2026-03-11"
 _AIRTABLE_BASE_URL = "https://api.airtable.com/v0"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_SLACK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="slack",
+        aliases=("slack_api", "slack_oauth2"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="token", names=("bot_token", "access_token", "token", "value")
+            ),
+        ),
+        hint_fields=("bot_token", "access_token", "token", "value"),
+        env_var="SLACK_BOT_TOKEN or SLACK_ACCESS_TOKEN",
+        display_name="Slack",
+    )
+)
+
+_NOTION = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="notion",
+        aliases=("notion_api", "notion_oauth2"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="token", names=("api_key", "access_token", "token", "value")
+            ),
+            CredentialFieldGroup(
+                role="version", names=("notion_version", "version"), required=False
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "token", "value"),
+        env_var="NOTION_API_KEY",
+        display_name="Notion",
+    )
+)
+
+_AIRTABLE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="airtable",
+        aliases=("airtable_api", "airtable_token_api", "airtable_oauth2"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="token", names=("access_token", "api_key", "token", "value")
+            ),
+        ),
+        hint_fields=("access_token", "api_key", "token", "value"),
+        env_var="AIRTABLE_ACCESS_TOKEN or AIRTABLE_API_KEY",
+        display_name="Airtable",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -98,9 +158,9 @@ def _slack_endpoint(base_url: str, method_name: str) -> str:
 def _slack_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="slack",
-            provider_aliases=("slack_api", "slack_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_SLACK.provider,
+            provider_aliases=_SLACK.aliases,
+            field_names=_SLACK.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -109,9 +169,9 @@ def _slack_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
     )
     token = (
         _credential_value(
-            provider="slack",
-            provider_aliases=("slack_api", "slack_oauth2"),
-            field_names=("bot_token", "access_token", "token", "value"),
+            provider=_SLACK.provider,
+            provider_aliases=_SLACK.aliases,
+            field_names=_SLACK.group("token"),
             tool_name=tool_name,
             config=config,
         )
@@ -120,11 +180,11 @@ def _slack_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
     )
     if not token:
         return _base_url(base), _setup_hint(
-            provider="slack",
-            field_names=("bot_token", "access_token", "token", "value"),
+            provider=_SLACK.provider,
+            field_names=_SLACK.hint_fields,
             tool_name=tool_name,
-            env_var="SLACK_BOT_TOKEN or SLACK_ACCESS_TOKEN",
-            display_name="Slack",
+            env_var=_SLACK.env_var,
+            display_name=_SLACK.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -137,9 +197,9 @@ def _slack_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _notion_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="notion",
-            provider_aliases=("notion_api", "notion_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_NOTION.provider,
+            provider_aliases=_NOTION.aliases,
+            field_names=_NOTION.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -147,17 +207,17 @@ def _notion_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _NOTION_BASE_URL
     )
     token = _credential_value(
-        provider="notion",
-        provider_aliases=("notion_api", "notion_oauth2"),
-        field_names=("api_key", "access_token", "token", "value"),
+        provider=_NOTION.provider,
+        provider_aliases=_NOTION.aliases,
+        field_names=_NOTION.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("notion_api_key")
     version = (
         _credential_value(
-            provider="notion",
-            provider_aliases=("notion_api", "notion_oauth2"),
-            field_names=("notion_version", "version"),
+            provider=_NOTION.provider,
+            provider_aliases=_NOTION.aliases,
+            field_names=_NOTION.group("version"),
             tool_name=tool_name,
             config=config,
         )
@@ -166,11 +226,11 @@ def _notion_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
     )
     if not token:
         return _base_url(base), _setup_hint(
-            provider="notion",
-            field_names=("api_key", "access_token", "token", "value"),
+            provider=_NOTION.provider,
+            field_names=_NOTION.hint_fields,
             tool_name=tool_name,
-            env_var="NOTION_API_KEY",
-            display_name="Notion",
+            env_var=_NOTION.env_var,
+            display_name=_NOTION.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -184,9 +244,9 @@ def _notion_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 def _airtable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="airtable",
-            provider_aliases=("airtable_api", "airtable_token_api", "airtable_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_AIRTABLE.provider,
+            provider_aliases=_AIRTABLE.aliases,
+            field_names=_AIRTABLE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -195,9 +255,9 @@ def _airtable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     )
     token = (
         _credential_value(
-            provider="airtable",
-            provider_aliases=("airtable_api", "airtable_token_api", "airtable_oauth2"),
-            field_names=("access_token", "api_key", "token", "value"),
+            provider=_AIRTABLE.provider,
+            provider_aliases=_AIRTABLE.aliases,
+            field_names=_AIRTABLE.group("token"),
             tool_name=tool_name,
             config=config,
         )
@@ -206,11 +266,11 @@ def _airtable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     )
     if not token:
         return _base_url(base), _setup_hint(
-            provider="airtable",
-            field_names=("access_token", "api_key", "token", "value"),
+            provider=_AIRTABLE.provider,
+            field_names=_AIRTABLE.hint_fields,
             tool_name=tool_name,
-            env_var="AIRTABLE_ACCESS_TOKEN or AIRTABLE_API_KEY",
-            display_name="Airtable",
+            env_var=_AIRTABLE.env_var,
+            display_name=_AIRTABLE.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",

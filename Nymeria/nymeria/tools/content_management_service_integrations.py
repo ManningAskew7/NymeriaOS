@@ -12,6 +12,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -33,6 +38,169 @@ _GHOST_API_VERSION = "v5.0"
 _STORYBLOK_CONTENT_BASE_URL = "https://api.storyblok.com/v2/cdn"
 _STORYBLOK_MANAGEMENT_BASE_URL = "https://mapi.storyblok.com/v1"
 _WEBFLOW_BASE_URL = "https://api.webflow.com/v2"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_WORDPRESS = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="wordpress",
+        aliases=("wordpress_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "url", "site_url", "wordpress_url"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="username", names=("username", "user", "email")),
+            CredentialFieldGroup(
+                role="password",
+                names=(
+                    "password",
+                    "application_password",
+                    "applicationPassword",
+                    "app_password",
+                    "appPassword",
+                ),
+            ),
+        ),
+        hint_fields=("username", "password", "application_password"),
+        env_var="WORDPRESS_USERNAME + WORDPRESS_PASSWORD",
+        display_name="WordPress",
+    )
+)
+
+_STRAPI = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="strapi",
+        aliases=("strapi_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="api_token",
+                names=("api_token", "apiToken", "jwt", "access_token", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="api_version", names=("api_version", "apiVersion", "version"), required=False
+            ),
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="email", names=("email", "identifier", "username"), required=False
+            ),
+            CredentialFieldGroup(role="password", names=("password",), required=False),
+        ),
+        hint_fields=("api_token", "jwt", "token", "value"),
+        env_var="STRAPI_API_TOKEN or STRAPI_EMAIL + STRAPI_PASSWORD",
+        display_name="Strapi",
+    )
+)
+
+# Contentful selects the delivery or preview token/base per branch; the setup
+# hint's env_var is set inline per branch (the spec carries the delivery value).
+_CONTENTFUL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="contentful",
+        aliases=("contentful_api",),
+        groups=(
+            CredentialFieldGroup(role="space_id", names=("space_id", "spaceId"), required=False),
+            CredentialFieldGroup(
+                role="delivery_token",
+                names=(
+                    "delivery_token",
+                    "ContentDeliveryaccessToken",
+                    "content_delivery_access_token",
+                    "token",
+                ),
+            ),
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="preview_token",
+                names=("preview_token", "ContentPreviewaccessToken", "content_preview_access_token"),
+            ),
+            CredentialFieldGroup(
+                role="preview_base_url", names=("preview_base_url",), required=False
+            ),
+        ),
+        hint_fields=("delivery_token", "preview_token", "token"),
+        env_var="CONTENTFUL_DELIVERY_TOKEN",
+        display_name="Contentful",
+    )
+)
+
+# Ghost splits into admin-api and content-api paths with distinct aliases and
+# two token/hint variants. The spec declares the union of aliases and both
+# token groups; call sites that use a single-path alias keep it inline, and the
+# content-path setup hint's field_names/env_var stay inline in that branch.
+_GHOST = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="ghost",
+        aliases=("ghost_admin_api", "ghost_content_api"),
+        groups=(
+            CredentialFieldGroup(role="url", names=("url", "base_url", "site_url"), required=False),
+            CredentialFieldGroup(
+                role="admin_api_key", names=("admin_api_key", "apiKey", "api_key", "key", "value")
+            ),
+            CredentialFieldGroup(
+                role="content_api_key",
+                names=("content_api_key", "contentApiKey", "api_key", "key", "token", "value"),
+            ),
+        ),
+        hint_fields=("admin_api_key", "api_key", "key", "value"),
+        env_var="GHOST_ADMIN_API_KEY",
+        display_name="Ghost",
+    )
+)
+
+# Storyblok splits into content-api and management-api paths with distinct
+# aliases and two token/hint variants (as Ghost above); the management setup
+# hint's field_names/env_var stay inline in that branch.
+_STORYBLOK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="storyblok",
+        aliases=("storyblok_content_api", "storyblok_management_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="content_base_url",
+                names=("base_url", "url", "content_base_url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="content_token",
+                names=("content_token", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="mgmt_base_url", names=("management_base_url", "base_url", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="mgmt_token",
+                names=("management_token", "accessToken", "access_token", "token", "value"),
+            ),
+            CredentialFieldGroup(role="space_id", names=("space_id", "spaceId"), required=False),
+        ),
+        hint_fields=("content_token", "api_key", "token", "value"),
+        env_var="STORYBLOK_CONTENT_TOKEN",
+        display_name="Storyblok",
+    )
+)
+
+_WEBFLOW = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="webflow",
+        aliases=("webflow_api", "webflow_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+        ),
+        hint_fields=("access_token", "value"),
+        env_var="WEBFLOW_ACCESS_TOKEN",
+        display_name="Webflow",
+    )
+)
 
 _WORDPRESS_RESOURCES = {
     "post": "posts",
@@ -121,25 +289,25 @@ def _auth_basic(username: str, password: str) -> str:
 def _wordpress_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="wordpress",
-            provider_aliases=("wordpress_api",),
-            field_names=("base_url", "url", "site_url", "wordpress_url"),
+            provider=_WORDPRESS.provider,
+            provider_aliases=_WORDPRESS.aliases,
+            field_names=_WORDPRESS.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("wordpress_url")
     )
     username = _credential_value(
-        provider="wordpress",
-        provider_aliases=("wordpress_api",),
-        field_names=("username", "user", "email"),
+        provider=_WORDPRESS.provider,
+        provider_aliases=_WORDPRESS.aliases,
+        field_names=_WORDPRESS.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("wordpress_username")
     password = _credential_value(
-        provider="wordpress",
-        provider_aliases=("wordpress_api",),
-        field_names=("password", "application_password", "applicationPassword", "app_password", "appPassword"),
+        provider=_WORDPRESS.provider,
+        provider_aliases=_WORDPRESS.aliases,
+        field_names=_WORDPRESS.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("wordpress_password")
@@ -153,11 +321,11 @@ def _wordpress_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         base = f"{base}/wp-json/wp/v2"
     if not username or not password:
         return base, _setup_hint(
-            provider="wordpress",
-            field_names=("username", "password", "application_password"),
+            provider=_WORDPRESS.provider,
+            field_names=_WORDPRESS.hint_fields,
             tool_name=tool_name,
-            env_var="WORDPRESS_USERNAME + WORDPRESS_PASSWORD",
-            display_name="WordPress",
+            env_var=_WORDPRESS.env_var,
+            display_name=_WORDPRESS.display_name,
         )
     return base, {
         "Accept": "application/json",
@@ -170,9 +338,9 @@ def _wordpress_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 def _strapi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="strapi",
-            provider_aliases=("strapi_api",),
-            field_names=("base_url", "url"),
+            provider=_STRAPI.provider,
+            provider_aliases=_STRAPI.aliases,
+            field_names=_STRAPI.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -180,9 +348,9 @@ def _strapi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
     )
     version = (
         _credential_value(
-            provider="strapi",
-            provider_aliases=("strapi_api",),
-            field_names=("api_version", "apiVersion", "version"),
+            provider=_STRAPI.provider,
+            provider_aliases=_STRAPI.aliases,
+            field_names=_STRAPI.group("api_version"),
             tool_name=tool_name,
             config=config,
         )
@@ -197,24 +365,24 @@ def _strapi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
     base = _base_url(base)
     api_root = base if version == "v3" else (base if base.endswith("/api") else f"{base}/api")
     token = _credential_value(
-        provider="strapi",
-        provider_aliases=("strapi_api",),
-        field_names=("api_token", "apiToken", "jwt", "access_token", "token", "value"),
+        provider=_STRAPI.provider,
+        provider_aliases=_STRAPI.aliases,
+        field_names=_STRAPI.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("strapi_api_token")
     if not token:
         email = _credential_value(
-            provider="strapi",
-            provider_aliases=("strapi_api",),
-            field_names=("email", "identifier", "username"),
+            provider=_STRAPI.provider,
+            provider_aliases=_STRAPI.aliases,
+            field_names=_STRAPI.group("email"),
             tool_name=tool_name,
             config=config,
         ) or _settings_value("strapi_email")
         password = _credential_value(
-            provider="strapi",
-            provider_aliases=("strapi_api",),
-            field_names=("password",),
+            provider=_STRAPI.provider,
+            provider_aliases=_STRAPI.aliases,
+            field_names=_STRAPI.group("password"),
             tool_name=tool_name,
             config=config,
         ) or _settings_value("strapi_password")
@@ -229,11 +397,11 @@ def _strapi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
             token = login_data.get("jwt") if isinstance(login_data, dict) else None
     if not token:
         return api_root, version, _setup_hint(
-            provider="strapi",
-            field_names=("api_token", "jwt", "token", "value"),
+            provider=_STRAPI.provider,
+            field_names=_STRAPI.hint_fields,
             tool_name=tool_name,
-            env_var="STRAPI_API_TOKEN or STRAPI_EMAIL + STRAPI_PASSWORD",
-            display_name="Strapi",
+            env_var=_STRAPI.env_var,
+            display_name=_STRAPI.display_name,
         )
     return api_root, version, {
         "Accept": "application/json",
@@ -253,45 +421,47 @@ def _contentful_config(
     source: str,
 ) -> tuple[str, str, dict[str, str] | str]:
     space_id = _credential_value(
-        provider="contentful",
-        provider_aliases=("contentful_api",),
-        field_names=("space_id", "spaceId"),
+        provider=_CONTENTFUL.provider,
+        provider_aliases=_CONTENTFUL.aliases,
+        field_names=_CONTENTFUL.group("space_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("contentful_space_id")
     if source == "preview":
         token = _credential_value(
-            provider="contentful",
-            provider_aliases=("contentful_api",),
-            field_names=("preview_token", "ContentPreviewaccessToken", "content_preview_access_token"),
+            provider=_CONTENTFUL.provider,
+            provider_aliases=_CONTENTFUL.aliases,
+            field_names=_CONTENTFUL.group("preview_token"),
             tool_name=tool_name,
             config=config,
         ) or _settings_value("contentful_preview_token")
         base = (
             _credential_value(
-                provider="contentful",
-                provider_aliases=("contentful_api",),
-                field_names=("preview_base_url",),
+                provider=_CONTENTFUL.provider,
+                provider_aliases=_CONTENTFUL.aliases,
+                field_names=_CONTENTFUL.group("preview_base_url"),
                 tool_name=tool_name,
                 config=config,
             )
             or _settings_value("contentful_preview_base_url")
             or _CONTENTFUL_PREVIEW_BASE_URL
         )
+        # Branch-variant env_var: preview vs delivery. Stays inline; the spec
+        # carries the delivery value for the shared setup hint below.
         env_var = "CONTENTFUL_PREVIEW_TOKEN"
     else:
         token = _credential_value(
-            provider="contentful",
-            provider_aliases=("contentful_api",),
-            field_names=("delivery_token", "ContentDeliveryaccessToken", "content_delivery_access_token", "token"),
+            provider=_CONTENTFUL.provider,
+            provider_aliases=_CONTENTFUL.aliases,
+            field_names=_CONTENTFUL.group("delivery_token"),
             tool_name=tool_name,
             config=config,
         ) or _settings_value("contentful_delivery_token")
         base = (
             _credential_value(
-                provider="contentful",
-                provider_aliases=("contentful_api",),
-                field_names=("base_url", "url"),
+                provider=_CONTENTFUL.provider,
+                provider_aliases=_CONTENTFUL.aliases,
+                field_names=_CONTENTFUL.group("base_url"),
                 tool_name=tool_name,
                 config=config,
             )
@@ -306,11 +476,11 @@ def _contentful_config(
         )
     if not token:
         return _base_url(base), space_id, _setup_hint(
-            provider="contentful",
-            field_names=("delivery_token", "preview_token", "token"),
+            provider=_CONTENTFUL.provider,
+            field_names=_CONTENTFUL.hint_fields,
             tool_name=tool_name,
             env_var=env_var,
-            display_name="Contentful",
+            display_name=_CONTENTFUL.display_name,
         )
     return _base_url(base), space_id, {
         "Accept": "application/json",
@@ -322,9 +492,9 @@ def _contentful_config(
 def _ghost_site_url(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
     value = (
         _credential_value(
-            provider="ghost",
-            provider_aliases=("ghost_admin_api", "ghost_content_api"),
-            field_names=("url", "base_url", "site_url"),
+            provider=_GHOST.provider,
+            provider_aliases=_GHOST.aliases,
+            field_names=_GHOST.group("url"),
             tool_name=tool_name,
             config=config,
         )
@@ -335,19 +505,19 @@ def _ghost_site_url(tool_name: str, config: Optional[RunnableConfig]) -> str | N
 
 def _ghost_admin_headers(tool_name: str, config: Optional[RunnableConfig]) -> dict[str, str] | str:
     admin_key = _credential_value(
-        provider="ghost",
-        provider_aliases=("ghost_admin_api",),
-        field_names=("admin_api_key", "apiKey", "api_key", "key", "value"),
+        provider=_GHOST.provider,
+        provider_aliases=("ghost_admin_api",),  # admin-path alias only (see _GHOST spec)
+        field_names=_GHOST.group("admin_api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("ghost_admin_api_key")
     if not admin_key:
         return _setup_hint(
-            provider="ghost",
-            field_names=("admin_api_key", "api_key", "key", "value"),
+            provider=_GHOST.provider,
+            field_names=_GHOST.hint_fields,
             tool_name=tool_name,
-            env_var="GHOST_ADMIN_API_KEY",
-            display_name="Ghost",
+            env_var=_GHOST.env_var,
+            display_name=_GHOST.display_name,
         )
     try:
         import jwt
@@ -373,9 +543,9 @@ def _ghost_admin_headers(tool_name: str, config: Optional[RunnableConfig]) -> di
 
 def _ghost_content_key(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
     return _credential_value(
-        provider="ghost",
-        provider_aliases=("ghost_content_api",),
-        field_names=("content_api_key", "contentApiKey", "api_key", "key", "token", "value"),
+        provider=_GHOST.provider,
+        provider_aliases=("ghost_content_api",),  # content-path alias only (see _GHOST spec)
+        field_names=_GHOST.group("content_api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("ghost_content_api_key")
@@ -384,9 +554,9 @@ def _ghost_content_key(tool_name: str, config: Optional[RunnableConfig]) -> str 
 def _storyblok_content_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | dict[str, str]]:
     base = (
         _credential_value(
-            provider="storyblok",
-            provider_aliases=("storyblok_content_api",),
-            field_names=("base_url", "url", "content_base_url"),
+            provider=_STORYBLOK.provider,
+            provider_aliases=("storyblok_content_api",),  # content-path alias only (see _STORYBLOK)
+            field_names=_STORYBLOK.group("content_base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -394,19 +564,19 @@ def _storyblok_content_config(tool_name: str, config: Optional[RunnableConfig]) 
         or _STORYBLOK_CONTENT_BASE_URL
     )
     token = _credential_value(
-        provider="storyblok",
-        provider_aliases=("storyblok_content_api",),
-        field_names=("content_token", "api_key", "apiKey", "token", "value"),
+        provider=_STORYBLOK.provider,
+        provider_aliases=("storyblok_content_api",),  # content-path alias only (see _STORYBLOK)
+        field_names=_STORYBLOK.group("content_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("storyblok_content_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="storyblok",
-            field_names=("content_token", "api_key", "token", "value"),
+            provider=_STORYBLOK.provider,
+            field_names=_STORYBLOK.hint_fields,
             tool_name=tool_name,
-            env_var="STORYBLOK_CONTENT_TOKEN",
-            display_name="Storyblok",
+            env_var=_STORYBLOK.env_var,
+            display_name=_STORYBLOK.display_name,
         )
     return _base_url(base), {"token": token}
 
@@ -417,9 +587,9 @@ def _storyblok_management_config(
 ) -> tuple[str, str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="storyblok",
-            provider_aliases=("storyblok_management_api",),
-            field_names=("management_base_url", "base_url", "url"),
+            provider=_STORYBLOK.provider,
+            provider_aliases=("storyblok_management_api",),  # management-path alias only
+            field_names=_STORYBLOK.group("mgmt_base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -427,16 +597,16 @@ def _storyblok_management_config(
         or _STORYBLOK_MANAGEMENT_BASE_URL
     )
     space_id = _credential_value(
-        provider="storyblok",
-        provider_aliases=("storyblok_management_api",),
-        field_names=("space_id", "spaceId"),
+        provider=_STORYBLOK.provider,
+        provider_aliases=("storyblok_management_api",),  # management-path alias only
+        field_names=_STORYBLOK.group("space_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("storyblok_space_id")
     token = _credential_value(
-        provider="storyblok",
-        provider_aliases=("storyblok_management_api",),
-        field_names=("management_token", "accessToken", "access_token", "token", "value"),
+        provider=_STORYBLOK.provider,
+        provider_aliases=("storyblok_management_api",),  # management-path alias only
+        field_names=_STORYBLOK.group("mgmt_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("storyblok_management_token")
@@ -446,12 +616,13 @@ def _storyblok_management_config(
             '"space_id" / "spaceId", or set STORYBLOK_SPACE_ID.'
         )
     if not token:
+        # Management-path hint variant: field_names/env_var inline (see _STORYBLOK).
         return _base_url(base), space_id, _setup_hint(
-            provider="storyblok",
+            provider=_STORYBLOK.provider,
             field_names=("management_token", "access_token", "accessToken", "token", "value"),
             tool_name=tool_name,
             env_var="STORYBLOK_MANAGEMENT_TOKEN",
-            display_name="Storyblok",
+            display_name=_STORYBLOK.display_name,
         )
     return _base_url(base), space_id, {
         "Accept": "application/json",
@@ -464,9 +635,9 @@ def _storyblok_management_config(
 def _webflow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="webflow",
-            provider_aliases=("webflow_api", "webflow_oauth2_api"),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_WEBFLOW.provider,
+            provider_aliases=_WEBFLOW.aliases,
+            field_names=_WEBFLOW.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -474,19 +645,19 @@ def _webflow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _WEBFLOW_BASE_URL
     )
     token = _credential_value(
-        provider="webflow",
-        provider_aliases=("webflow_api", "webflow_oauth2_api"),
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_WEBFLOW.provider,
+        provider_aliases=_WEBFLOW.aliases,
+        field_names=_WEBFLOW.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("webflow_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="webflow",
-            field_names=("access_token", "value"),
+            provider=_WEBFLOW.provider,
+            field_names=_WEBFLOW.hint_fields,
             tool_name=tool_name,
-            env_var="WEBFLOW_ACCESS_TOKEN",
-            display_name="Webflow",
+            env_var=_WEBFLOW.env_var,
+            display_name=_WEBFLOW.display_name,
         )
     base_url = _base_url(base)
     if not base_url.endswith("/v2"):
@@ -987,12 +1158,13 @@ def ghost_list_posts(
         else:
             key = _ghost_content_key("ghost_list_posts", config)
             if not key:
+                # Content-path hint variant: field_names/env_var inline (see _GHOST).
                 return _setup_hint(
-                    provider="ghost",
+                    provider=_GHOST.provider,
                     field_names=("content_api_key", "api_key", "key", "token", "value"),
                     tool_name="ghost_list_posts",
                     env_var="GHOST_CONTENT_API_KEY",
-                    display_name="Ghost",
+                    display_name=_GHOST.display_name,
                 )
             params["key"] = key
             data = _request_json("GET", f"{site}/ghost/api/content/posts/", params=params)
@@ -1035,12 +1207,13 @@ def ghost_get_post(
         else:
             key = _ghost_content_key("ghost_get_post", config)
             if not key:
+                # Content-path hint variant: field_names/env_var inline (see _GHOST).
                 return _setup_hint(
-                    provider="ghost",
+                    provider=_GHOST.provider,
                     field_names=("content_api_key", "api_key", "key", "token", "value"),
                     tool_name="ghost_get_post",
                     env_var="GHOST_CONTENT_API_KEY",
-                    display_name="Ghost",
+                    display_name=_GHOST.display_name,
                 )
             params["key"] = key
             data = _request_json("GET", f"{site}/ghost/api/content/posts/{suffix}", params=params)

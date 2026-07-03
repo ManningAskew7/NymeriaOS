@@ -11,6 +11,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     basic_auth as _basic_auth,
@@ -45,6 +50,354 @@ _EGOI_BASE_URL = "https://api.egoiapp.com"
 _VERO_BASE_URL = "https://api.getvero.com/api/v2"
 _LEMLIST_BASE_URL = "https://api.lemlist.com/api"
 _EMELIA_GRAPHQL_URL = "https://graphql.emelia.io/graphql"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered. The five
+# token-config providers (actionnetwork, autopilot, egoi, lemlist, vero) share
+# the base_url tuple that stays inline in _token_config; each spec still
+# declares that group.
+_ACTIONNETWORK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="actionnetwork",
+        aliases=("action_network", "actionnetwork_api", "action_network_api"),
+        groups=(
+            CredentialFieldGroup(role="token", names=("api_key", "apiKey", "token", "value")),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "apiKey", "token", "value"),
+        env_var="ACTIONNETWORK_API_KEY",
+        display_name="Action Network",
+    )
+)
+
+_ACTIVECAMPAIGN = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="activecampaign",
+        aliases=("active_campaign", "activecampaign_api", "active_campaign_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("api_url", "apiUrl", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "api_url"),
+        env_var="ACTIVECAMPAIGN_API_KEY and ACTIVECAMPAIGN_BASE_URL",
+        display_name="ActiveCampaign",
+    )
+)
+
+_AUTOPILOT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="autopilot",
+        aliases=("autopilot_api",),
+        groups=(
+            CredentialFieldGroup(role="token", names=("api_key", "apiKey", "token", "value")),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "apiKey", "token", "value"),
+        env_var="AUTOPILOT_API_KEY",
+        display_name="Autopilot",
+    )
+)
+
+_CONVERTKIT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="convertkit",
+        aliases=("convert_kit", "convertkit_api", "kit"),
+        groups=(
+            CredentialFieldGroup(
+                role="secret",
+                names=("api_secret", "apiSecret", "secret", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_secret", "value"),
+        env_var="CONVERTKIT_API_SECRET",
+        display_name="ConvertKit",
+    )
+)
+
+# Branch-variant provider: two credential kinds (app + tracking), each with its
+# own required fields, env var, and setup hint. The spec declares all six lookup
+# groups; hint_fields/env_var carry the tracking variant, and _customerio_auth_error
+# keeps the app-branch literals inline (see below).
+_CUSTOMERIO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="customerio",
+        aliases=("customer_io", "customerio_api", "customer_io_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="region",
+                names=("region", "tracking_region", "trackingRegion"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="tracking_base_url",
+                names=("tracking_base_url", "trackingBaseUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="app_base_url",
+                names=("app_base_url", "appBaseUrl", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="tracking_site_id",
+                names=("tracking_site_id", "trackingSiteId", "site_id", "siteId"),
+            ),
+            CredentialFieldGroup(
+                role="tracking_api_key",
+                names=("tracking_api_key", "trackingApiKey", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="app_api_key",
+                names=("app_api_key", "appApiKey", "access_token", "accessToken"),
+            ),
+        ),
+        hint_fields=("tracking_site_id", "tracking_api_key"),
+        env_var="CUSTOMERIO_TRACKING_SITE_ID and CUSTOMERIO_TRACKING_API_KEY",
+        display_name="Customer.io",
+    )
+)
+
+_EGOI = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="egoi",
+        aliases=("e_goi", "egoi_api", "e_goi_api"),
+        groups=(
+            CredentialFieldGroup(role="token", names=("api_key", "apiKey", "token", "value")),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "apiKey", "token", "value"),
+        env_var="EGOI_API_KEY",
+        display_name="E-goi",
+    )
+)
+
+_EMELIA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="emelia",
+        aliases=("emelia_api",),
+        groups=(
+            CredentialFieldGroup(role="token", names=("api_key", "apiKey", "token", "value")),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("graphql_url", "graphqlUrl", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="EMELIA_API_KEY",
+        display_name="Emelia",
+    )
+)
+
+_GETRESPONSE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="getresponse",
+        aliases=("get_response", "getresponse_api", "get_response_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "value"),
+        env_var="GETRESPONSE_API_KEY",
+        display_name="GetResponse",
+    )
+)
+
+_ITERABLE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="iterable",
+        aliases=("iterable_api",),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "region", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="ITERABLE_API_KEY",
+        display_name="Iterable",
+    )
+)
+
+_LEMLIST = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="lemlist",
+        aliases=("lemlist_api",),
+        groups=(
+            CredentialFieldGroup(role="token", names=("api_key", "apiKey", "token", "value")),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "apiKey", "token", "value"),
+        env_var="LEMLIST_API_KEY",
+        display_name="Lemlist",
+    )
+)
+
+_MAILERLITE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mailerlite",
+        aliases=("mailer_lite", "mailerlite_api", "mailer_lite_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="classic_api",
+                names=("classic_api", "classicApi"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="MAILERLITE_API_KEY",
+        display_name="MailerLite",
+    )
+)
+
+_MAUTIC = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mautic",
+        aliases=("mautic_api", "mautic_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="username", names=("username", "user", "email")),
+            CredentialFieldGroup(role="password", names=("password", "api_password", "apiPassword")),
+        ),
+        hint_fields=("access_token", "username", "password"),
+        env_var="MAUTIC_ACCESS_TOKEN or MAUTIC_USERNAME + MAUTIC_PASSWORD",
+        display_name="Mautic",
+    )
+)
+
+_POSTHOG = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="posthog",
+        aliases=("posthog_api", "post_hog"),
+        groups=(
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "project_api_key", "projectApiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "host"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "project_api_key", "value"),
+        env_var="POSTHOG_API_KEY",
+        display_name="PostHog",
+    )
+)
+
+_SEGMENT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="segment",
+        aliases=("segment_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="write_key",
+                names=("write_key", "writeKey", "writekey", "api_key", "apiKey", "value"),
+            ),
+        ),
+        hint_fields=("write_key", "value"),
+        env_var="SEGMENT_WRITE_KEY",
+        display_name="Segment",
+    )
+)
+
+_SENDY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="sendy",
+        aliases=("sendy_api",),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "key", "value")),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("url", "base_url", "baseUrl"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="SENDY_API_KEY",
+        display_name="Sendy",
+    )
+)
+
+_VERO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="vero",
+        aliases=("vero_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="token",
+                names=("auth_token", "authToken", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("auth_token", "authToken", "api_key", "apiKey", "token", "value"),
+        env_var="VERO_AUTH_TOKEN",
+        display_name="Vero",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -191,9 +544,9 @@ def _token_config(
 def _mautic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="mautic",
-            provider_aliases=("mautic_api", "mautic_oauth2"),
-            field_names=("base_url", "baseUrl", "url"),
+            provider=_MAUTIC.provider,
+            provider_aliases=_MAUTIC.aliases,
+            field_names=_MAUTIC.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -205,23 +558,23 @@ def _mautic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
             "or set MAUTIC_BASE_URL."
         )
     token = _credential_value(
-        provider="mautic",
-        provider_aliases=("mautic_api", "mautic_oauth2"),
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_MAUTIC.provider,
+        provider_aliases=_MAUTIC.aliases,
+        field_names=_MAUTIC.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mautic_access_token")
     username = _credential_value(
-        provider="mautic",
-        provider_aliases=("mautic_api", "mautic_oauth2"),
-        field_names=("username", "user", "email"),
+        provider=_MAUTIC.provider,
+        provider_aliases=_MAUTIC.aliases,
+        field_names=_MAUTIC.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mautic_username")
     password = _credential_value(
-        provider="mautic",
-        provider_aliases=("mautic_api", "mautic_oauth2"),
-        field_names=("password", "api_password", "apiPassword"),
+        provider=_MAUTIC.provider,
+        provider_aliases=_MAUTIC.aliases,
+        field_names=_MAUTIC.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mautic_password")
@@ -233,11 +586,11 @@ def _mautic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         headers["Authorization"] = f"Basic {_basic_auth(username, password)}"
         return _base_url(base), headers
     return _base_url(base), _setup_hint(
-        provider="mautic",
-        field_names=("access_token", "username", "password"),
+        provider=_MAUTIC.provider,
+        field_names=_MAUTIC.hint_fields,
         tool_name=tool_name,
-        env_var="MAUTIC_ACCESS_TOKEN or MAUTIC_USERNAME + MAUTIC_PASSWORD",
-        display_name="Mautic",
+        env_var=_MAUTIC.env_var,
+        display_name=_MAUTIC.display_name,
     )
 
 
@@ -283,14 +636,14 @@ def _mautic_entity(data: Any, key: str, *, simple: bool = True) -> Any:
 
 def _lemlist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base, token_or_error = _token_config(
-        provider="lemlist",
-        provider_aliases=("lemlist_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_LEMLIST.provider,
+        provider_aliases=_LEMLIST.aliases,
+        field_names=_LEMLIST.group("token"),
         settings_token_name="lemlist_api_key",
         settings_base_name="lemlist_base_url",
         default_base=_LEMLIST_BASE_URL,
-        env_var="LEMLIST_API_KEY",
-        display_name="Lemlist",
+        env_var=_LEMLIST.env_var,
+        display_name=_LEMLIST.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -307,9 +660,9 @@ def _lemlist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _sendy_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
     base = (
         _credential_value(
-            provider="sendy",
-            provider_aliases=("sendy_api",),
-            field_names=("url", "base_url", "baseUrl"),
+            provider=_SENDY.provider,
+            provider_aliases=_SENDY.aliases,
+            field_names=_SENDY.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -322,19 +675,19 @@ def _sendy_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
             '"url" / "base_url", or set SENDY_URL.'
         )
     api_key = _credential_value(
-        provider="sendy",
-        provider_aliases=("sendy_api",),
-        field_names=("api_key", "apiKey", "key", "value"),
+        provider=_SENDY.provider,
+        provider_aliases=_SENDY.aliases,
+        field_names=_SENDY.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("sendy_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="sendy",
-            field_names=("api_key", "value"),
+            provider=_SENDY.provider,
+            field_names=_SENDY.hint_fields,
             tool_name=tool_name,
-            env_var="SENDY_API_KEY",
-            display_name="Sendy",
+            env_var=_SENDY.env_var,
+            display_name=_SENDY.display_name,
         )
     return _base_url(base), str(api_key)
 
@@ -359,9 +712,9 @@ def _sendy_request(
 def _emelia_graphql_url(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     url = (
         _credential_value(
-            provider="emelia",
-            provider_aliases=("emelia_api",),
-            field_names=("graphql_url", "graphqlUrl", "base_url", "baseUrl", "url"),
+            provider=_EMELIA.provider,
+            provider_aliases=_EMELIA.aliases,
+            field_names=_EMELIA.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -369,19 +722,19 @@ def _emelia_graphql_url(tool_name: str, config: Optional[RunnableConfig]) -> tup
         or _EMELIA_GRAPHQL_URL
     )
     token = _credential_value(
-        provider="emelia",
-        provider_aliases=("emelia_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_EMELIA.provider,
+        provider_aliases=_EMELIA.aliases,
+        field_names=_EMELIA.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("emelia_api_key")
     if not token:
         return _absolute_url_or_base_graphql(url), _setup_hint(
-            provider="emelia",
-            field_names=("api_key", "value"),
+            provider=_EMELIA.provider,
+            field_names=_EMELIA.hint_fields,
             tool_name=tool_name,
-            env_var="EMELIA_API_KEY",
-            display_name="Emelia",
+            env_var=_EMELIA.env_var,
+            display_name=_EMELIA.display_name,
         )
     return _absolute_url_or_base_graphql(url), {
         "Accept": "application/json",
@@ -426,14 +779,14 @@ def _json_or_text(data: Any) -> str:
 
 def _actionnetwork_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base, token_or_error = _token_config(
-        provider="actionnetwork",
-        provider_aliases=("action_network", "actionnetwork_api", "action_network_api"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_ACTIONNETWORK.provider,
+        provider_aliases=_ACTIONNETWORK.aliases,
+        field_names=_ACTIONNETWORK.group("token"),
         settings_token_name="actionnetwork_api_key",
         settings_base_name="actionnetwork_base_url",
         default_base=_ACTIONNETWORK_BASE_URL,
-        env_var="ACTIONNETWORK_API_KEY",
-        display_name="Action Network",
+        env_var=_ACTIONNETWORK.env_var,
+        display_name=_ACTIONNETWORK.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -498,14 +851,14 @@ def _actionnetwork_list_items(data: Any, embedded_key: str) -> list[Any]:
 
 def _autopilot_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base, key_or_error = _token_config(
-        provider="autopilot",
-        provider_aliases=("autopilot_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_AUTOPILOT.provider,
+        provider_aliases=_AUTOPILOT.aliases,
+        field_names=_AUTOPILOT.group("token"),
         settings_token_name="autopilot_api_key",
         settings_base_name="autopilot_base_url",
         default_base=_AUTOPILOT_BASE_URL,
-        env_var="AUTOPILOT_API_KEY",
-        display_name="Autopilot",
+        env_var=_AUTOPILOT.env_var,
+        display_name=_AUTOPILOT.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -521,14 +874,14 @@ def _autopilot_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 
 def _egoi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base, key_or_error = _token_config(
-        provider="egoi",
-        provider_aliases=("e_goi", "egoi_api", "e_goi_api"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_EGOI.provider,
+        provider_aliases=_EGOI.aliases,
+        field_names=_EGOI.group("token"),
         settings_token_name="egoi_api_key",
         settings_base_name="egoi_base_url",
         default_base=_EGOI_BASE_URL,
-        env_var="EGOI_API_KEY",
-        display_name="E-goi",
+        env_var=_EGOI.env_var,
+        display_name=_EGOI.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -544,14 +897,14 @@ def _egoi_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
 
 def _vero_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
     return _token_config(
-        provider="vero",
-        provider_aliases=("vero_api",),
-        field_names=("auth_token", "authToken", "api_key", "apiKey", "token", "value"),
+        provider=_VERO.provider,
+        provider_aliases=_VERO.aliases,
+        field_names=_VERO.group("token"),
         settings_token_name="vero_auth_token",
         settings_base_name="vero_base_url",
         default_base=_VERO_BASE_URL,
-        env_var="VERO_AUTH_TOKEN",
-        display_name="Vero",
+        env_var=_VERO.env_var,
+        display_name=_VERO.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -579,9 +932,9 @@ def _vero_request(
 def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[dict[str, Any], str | None]:
     region = (
         _credential_value(
-            provider="customerio",
-            provider_aliases=("customer_io", "customerio_api", "customer_io_api"),
-            field_names=("region", "tracking_region", "trackingRegion"),
+            provider=_CUSTOMERIO.provider,
+            provider_aliases=_CUSTOMERIO.aliases,
+            field_names=_CUSTOMERIO.group("region"),
             tool_name=tool_name,
             config=config,
         )
@@ -591,9 +944,9 @@ def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
     region_key = str(region).lower()
     track_base = (
         _credential_value(
-            provider="customerio",
-            provider_aliases=("customer_io", "customerio_api", "customer_io_api"),
-            field_names=("tracking_base_url", "trackingBaseUrl"),
+            provider=_CUSTOMERIO.provider,
+            provider_aliases=_CUSTOMERIO.aliases,
+            field_names=_CUSTOMERIO.group("tracking_base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -602,9 +955,9 @@ def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
     )
     app_base = (
         _credential_value(
-            provider="customerio",
-            provider_aliases=("customer_io", "customerio_api", "customer_io_api"),
-            field_names=("app_base_url", "appBaseUrl", "base_url", "baseUrl", "url"),
+            provider=_CUSTOMERIO.provider,
+            provider_aliases=_CUSTOMERIO.aliases,
+            field_names=_CUSTOMERIO.group("app_base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -612,23 +965,23 @@ def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or (_CUSTOMERIO_APP_EU_BASE_URL if "eu" in region_key else _CUSTOMERIO_APP_BASE_URL)
     )
     site_id = _credential_value(
-        provider="customerio",
-        provider_aliases=("customer_io", "customerio_api", "customer_io_api"),
-        field_names=("tracking_site_id", "trackingSiteId", "site_id", "siteId"),
+        provider=_CUSTOMERIO.provider,
+        provider_aliases=_CUSTOMERIO.aliases,
+        field_names=_CUSTOMERIO.group("tracking_site_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("customerio_tracking_site_id")
     tracking_key = _credential_value(
-        provider="customerio",
-        provider_aliases=("customer_io", "customerio_api", "customer_io_api"),
-        field_names=("tracking_api_key", "trackingApiKey", "api_key", "apiKey", "token", "value"),
+        provider=_CUSTOMERIO.provider,
+        provider_aliases=_CUSTOMERIO.aliases,
+        field_names=_CUSTOMERIO.group("tracking_api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("customerio_tracking_api_key")
     app_key = _credential_value(
-        provider="customerio",
-        provider_aliases=("customer_io", "customerio_api", "customer_io_api"),
-        field_names=("app_api_key", "appApiKey", "access_token", "accessToken"),
+        provider=_CUSTOMERIO.provider,
+        provider_aliases=_CUSTOMERIO.aliases,
+        field_names=_CUSTOMERIO.group("app_api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("customerio_app_api_key")
@@ -660,23 +1013,25 @@ def _customerio_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 
 
 def _customerio_auth_error(tool_name: str, *, app: bool) -> str:
-    fields = ("app_api_key",) if app else ("tracking_site_id", "tracking_api_key")
-    env_var = "CUSTOMERIO_APP_API_KEY" if app else "CUSTOMERIO_TRACKING_SITE_ID and CUSTOMERIO_TRACKING_API_KEY"
+    # Branch-variant hint: the app branch keeps its own field/env literals inline;
+    # the tracking branch sources them from the spec (hint_fields/env_var).
+    fields = ("app_api_key",) if app else _CUSTOMERIO.hint_fields
+    env_var = "CUSTOMERIO_APP_API_KEY" if app else _CUSTOMERIO.env_var
     return _setup_hint(
-        provider="customerio",
+        provider=_CUSTOMERIO.provider,
         field_names=fields,
         tool_name=tool_name,
         env_var=env_var,
-        display_name="Customer.io",
+        display_name=_CUSTOMERIO.display_name,
     )
 
 
 def _iterable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="iterable",
-            provider_aliases=("iterable_api",),
-            field_names=("base_url", "baseUrl", "region", "url"),
+            provider=_ITERABLE.provider,
+            provider_aliases=_ITERABLE.aliases,
+            field_names=_ITERABLE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -684,9 +1039,9 @@ def _iterable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _ITERABLE_BASE_URL
     )
     api_key = _credential_value(
-        provider="iterable",
-        provider_aliases=("iterable_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_ITERABLE.provider,
+        provider_aliases=_ITERABLE.aliases,
+        field_names=_ITERABLE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("iterable_api_key")
@@ -695,11 +1050,11 @@ def _iterable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         base = f"{base}/api"
     if not api_key:
         return base, _setup_hint(
-            provider="iterable",
-            field_names=("api_key", "value"),
+            provider=_ITERABLE.provider,
+            field_names=_ITERABLE.hint_fields,
             tool_name=tool_name,
-            env_var="ITERABLE_API_KEY",
-            display_name="Iterable",
+            env_var=_ITERABLE.env_var,
+            display_name=_ITERABLE.display_name,
         )
     return base, {
         "Accept": "application/json",
@@ -712,9 +1067,9 @@ def _iterable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _posthog_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
     base = (
         _credential_value(
-            provider="posthog",
-            provider_aliases=("posthog_api", "post_hog"),
-            field_names=("base_url", "baseUrl", "url", "host"),
+            provider=_POSTHOG.provider,
+            provider_aliases=_POSTHOG.aliases,
+            field_names=_POSTHOG.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -722,19 +1077,19 @@ def _posthog_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _POSTHOG_BASE_URL
     )
     api_key = _credential_value(
-        provider="posthog",
-        provider_aliases=("posthog_api", "post_hog"),
-        field_names=("api_key", "apiKey", "project_api_key", "projectApiKey", "token", "value"),
+        provider=_POSTHOG.provider,
+        provider_aliases=_POSTHOG.aliases,
+        field_names=_POSTHOG.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("posthog_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="posthog",
-            field_names=("api_key", "project_api_key", "value"),
+            provider=_POSTHOG.provider,
+            field_names=_POSTHOG.hint_fields,
             tool_name=tool_name,
-            env_var="POSTHOG_API_KEY",
-            display_name="PostHog",
+            env_var=_POSTHOG.env_var,
+            display_name=_POSTHOG.display_name,
         )
     return _base_url(base), api_key
 
@@ -742,9 +1097,9 @@ def _posthog_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _segment_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="segment",
-            provider_aliases=("segment_api",),
-            field_names=("base_url", "baseUrl", "url"),
+            provider=_SEGMENT.provider,
+            provider_aliases=_SEGMENT.aliases,
+            field_names=_SEGMENT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -752,19 +1107,19 @@ def _segment_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _SEGMENT_BASE_URL
     )
     write_key = _credential_value(
-        provider="segment",
-        provider_aliases=("segment_api",),
-        field_names=("write_key", "writeKey", "writekey", "api_key", "apiKey", "value"),
+        provider=_SEGMENT.provider,
+        provider_aliases=_SEGMENT.aliases,
+        field_names=_SEGMENT.group("write_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("segment_write_key")
     if not write_key:
         return _base_url(base), _setup_hint(
-            provider="segment",
-            field_names=("write_key", "value"),
+            provider=_SEGMENT.provider,
+            field_names=_SEGMENT.hint_fields,
             tool_name=tool_name,
-            env_var="SEGMENT_WRITE_KEY",
-            display_name="Segment",
+            env_var=_SEGMENT.env_var,
+            display_name=_SEGMENT.display_name,
         )
     raw = f"{write_key}:".encode()
     return _base_url(base), {
@@ -1290,9 +1645,9 @@ def segment_group(
 def _activecampaign_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="activecampaign",
-            provider_aliases=("active_campaign", "activecampaign_api", "active_campaign_api"),
-            field_names=("api_url", "apiUrl", "base_url", "baseUrl", "url"),
+            provider=_ACTIVECAMPAIGN.provider,
+            provider_aliases=_ACTIVECAMPAIGN.aliases,
+            field_names=_ACTIVECAMPAIGN.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -1300,19 +1655,19 @@ def _activecampaign_config(tool_name: str, config: Optional[RunnableConfig]) -> 
         or _ACTIVECAMPAIGN_PLACEHOLDER_BASE_URL
     )
     api_key = _credential_value(
-        provider="activecampaign",
-        provider_aliases=("active_campaign", "activecampaign_api", "active_campaign_api"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_ACTIVECAMPAIGN.provider,
+        provider_aliases=_ACTIVECAMPAIGN.aliases,
+        field_names=_ACTIVECAMPAIGN.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("activecampaign_api_key")
     if not api_key or base == _ACTIVECAMPAIGN_PLACEHOLDER_BASE_URL:
         return _base_url(base), _setup_hint(
-            provider="activecampaign",
-            field_names=("api_key", "api_url"),
+            provider=_ACTIVECAMPAIGN.provider,
+            field_names=_ACTIVECAMPAIGN.hint_fields,
             tool_name=tool_name,
-            env_var="ACTIVECAMPAIGN_API_KEY and ACTIVECAMPAIGN_BASE_URL",
-            display_name="ActiveCampaign",
+            env_var=_ACTIVECAMPAIGN.env_var,
+            display_name=_ACTIVECAMPAIGN.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -1325,9 +1680,9 @@ def _activecampaign_config(tool_name: str, config: Optional[RunnableConfig]) -> 
 def _convertkit_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | str]:
     base = (
         _credential_value(
-            provider="convertkit",
-            provider_aliases=("convert_kit", "convertkit_api", "kit"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            provider=_CONVERTKIT.provider,
+            provider_aliases=_CONVERTKIT.aliases,
+            field_names=_CONVERTKIT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -1335,19 +1690,19 @@ def _convertkit_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or _CONVERTKIT_BASE_URL
     )
     secret = _credential_value(
-        provider="convertkit",
-        provider_aliases=("convert_kit", "convertkit_api", "kit"),
-        field_names=("api_secret", "apiSecret", "secret", "api_key", "apiKey", "token", "value"),
+        provider=_CONVERTKIT.provider,
+        provider_aliases=_CONVERTKIT.aliases,
+        field_names=_CONVERTKIT.group("secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("convertkit_api_secret")
     if not secret:
         return _base_url(base), _setup_hint(
-            provider="convertkit",
-            field_names=("api_secret", "value"),
+            provider=_CONVERTKIT.provider,
+            field_names=_CONVERTKIT.hint_fields,
             tool_name=tool_name,
-            env_var="CONVERTKIT_API_SECRET",
-            display_name="ConvertKit",
+            env_var=_CONVERTKIT.env_var,
+            display_name=_CONVERTKIT.display_name,
         )
     return _base_url(base), secret
 
@@ -1355,9 +1710,9 @@ def _convertkit_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 def _getresponse_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="getresponse",
-            provider_aliases=("get_response", "getresponse_api", "get_response_api"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            provider=_GETRESPONSE.provider,
+            provider_aliases=_GETRESPONSE.aliases,
+            field_names=_GETRESPONSE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -1365,19 +1720,19 @@ def _getresponse_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         or _GETRESPONSE_BASE_URL
     )
     api_key = _credential_value(
-        provider="getresponse",
-        provider_aliases=("get_response", "getresponse_api", "get_response_api"),
-        field_names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+        provider=_GETRESPONSE.provider,
+        provider_aliases=_GETRESPONSE.aliases,
+        field_names=_GETRESPONSE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("getresponse_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="getresponse",
-            field_names=("api_key", "access_token", "value"),
+            provider=_GETRESPONSE.provider,
+            field_names=_GETRESPONSE.hint_fields,
             tool_name=tool_name,
-            env_var="GETRESPONSE_API_KEY",
-            display_name="GetResponse",
+            env_var=_GETRESPONSE.env_var,
+            display_name=_GETRESPONSE.display_name,
         )
     prefix = "api-key " if not api_key.lower().startswith(("api-key ", "bearer ")) else ""
     return _base_url(base), {
@@ -1391,9 +1746,9 @@ def _getresponse_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 def _mailerlite_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     classic = (
         _credential_value(
-            provider="mailerlite",
-            provider_aliases=("mailer_lite", "mailerlite_api", "mailer_lite_api"),
-            field_names=("classic_api", "classicApi"),
+            provider=_MAILERLITE.provider,
+            provider_aliases=_MAILERLITE.aliases,
+            field_names=_MAILERLITE.group("classic_api"),
             tool_name=tool_name,
             config=config,
         )
@@ -1402,9 +1757,9 @@ def _mailerlite_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
     default_base = _MAILERLITE_CLASSIC_BASE_URL if str(classic).lower() in {"1", "true", "yes"} else _MAILERLITE_BASE_URL
     configured_base = (
         _credential_value(
-            provider="mailerlite",
-            provider_aliases=("mailer_lite", "mailerlite_api", "mailer_lite_api"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            provider=_MAILERLITE.provider,
+            provider_aliases=_MAILERLITE.aliases,
+            field_names=_MAILERLITE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -1414,19 +1769,19 @@ def _mailerlite_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         configured_base = None
     base = configured_base or default_base
     api_key = _credential_value(
-        provider="mailerlite",
-        provider_aliases=("mailer_lite", "mailerlite_api", "mailer_lite_api"),
-        field_names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+        provider=_MAILERLITE.provider,
+        provider_aliases=_MAILERLITE.aliases,
+        field_names=_MAILERLITE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mailerlite_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="mailerlite",
-            field_names=("api_key", "value"),
+            provider=_MAILERLITE.provider,
+            field_names=_MAILERLITE.hint_fields,
             tool_name=tool_name,
-            env_var="MAILERLITE_API_KEY",
-            display_name="MailerLite",
+            env_var=_MAILERLITE.env_var,
+            display_name=_MAILERLITE.display_name,
         )
     headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Nymeria"}
     if _base_url(base).endswith("/api/v2"):

@@ -18,9 +18,87 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .web_batch import parse_batch_queries, run_batched
 
 logger = logging.getLogger(__name__)
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The resolve helpers below source
+# their resolve_native_credential arguments from the specs. These providers use
+# resolve_native_credential's default field trio ("api_key", "token", "value"),
+# so the call sites omit field_names (SearXNG overrides it); the spec still
+# declares the group. Field-name tuple ORDER is behaviorally significant.
+_TAVILY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="tavily",
+        aliases=("tavily_api", "tvly"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),
+        ),
+        settings_attr="tavily_api_key",
+        env_vars=("TAVILY_API_KEY",),
+        tools=("web_search_tavily",),
+    )
+)
+
+_EXA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="exa",
+        aliases=("exa_ai", "exaai"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),
+        ),
+        settings_attr="exa_api_key",
+        env_vars=("EXA_API_KEY",),
+        tools=("web_search_exa_ai",),
+    )
+)
+
+_FIRECRAWL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="firecrawl",
+        aliases=("firecrawl_api", "fc"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),
+        ),
+        settings_attr="firecrawl_api_key",
+        env_vars=("FIRECRAWL_API_KEY",),
+        tools=("web_search_firecrawl",),
+    )
+)
+
+_BRAVE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="brave",
+        aliases=("brave_search", "brave_api"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),
+        ),
+        settings_attr="brave_api_key",
+        env_vars=("BRAVE_API_KEY",),
+        tools=("web_search_brave",),
+    )
+)
+
+_SEARXNG = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="searxng",
+        aliases=("searx", "searx_ng"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "value"), required=False
+            ),
+        ),
+        settings_attr="searxng_base_url",
+        env_vars=("SEARXNG_BASE_URL",),
+        tools=("web_search_searxng",),
+    )
+)
 
 _TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 _MAX_BATCH_QUERIES = 10
@@ -91,12 +169,12 @@ def _get_tavily_api_key(config: Optional[RunnableConfig] = None) -> Optional[str
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="tavily",
-        aliases=("tavily_api", "tvly"),
+        provider=_TAVILY.provider,
+        aliases=_TAVILY.aliases,
         tool_name="web_search_tavily",
         config=config,
-        settings_attr="tavily_api_key",
-        env_vars=("TAVILY_API_KEY",),
+        settings_attr=_TAVILY.settings_attr,
+        env_vars=_TAVILY.env_vars,
     )
 
 
@@ -259,12 +337,12 @@ def _get_exa_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="exa",
-        aliases=("exa_ai", "exaai"),
+        provider=_EXA.provider,
+        aliases=_EXA.aliases,
         tool_name="web_search_exa_ai",
         config=config,
-        settings_attr="exa_api_key",
-        env_vars=("EXA_API_KEY",),
+        settings_attr=_EXA.settings_attr,
+        env_vars=_EXA.env_vars,
     )
 
 
@@ -449,12 +527,12 @@ def _get_firecrawl_api_key(config: Optional[RunnableConfig] = None) -> Optional[
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="firecrawl",
-        aliases=("firecrawl_api", "fc"),
+        provider=_FIRECRAWL.provider,
+        aliases=_FIRECRAWL.aliases,
         tool_name="web_search_firecrawl",
         config=config,
-        settings_attr="firecrawl_api_key",
-        env_vars=("FIRECRAWL_API_KEY",),
+        settings_attr=_FIRECRAWL.settings_attr,
+        env_vars=_FIRECRAWL.env_vars,
     )
 
 
@@ -637,12 +715,12 @@ def _get_brave_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="brave",
-        aliases=("brave_search", "brave_api"),
+        provider=_BRAVE.provider,
+        aliases=_BRAVE.aliases,
         tool_name="web_search_brave",
         config=config,
-        settings_attr="brave_api_key",
-        env_vars=("BRAVE_API_KEY",),
+        settings_attr=_BRAVE.settings_attr,
+        env_vars=_BRAVE.env_vars,
     )
 
 
@@ -845,13 +923,13 @@ def _get_searxng_base_url(config: Optional[RunnableConfig] = None) -> Optional[s
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="searxng",
-        aliases=("searx", "searx_ng"),
+        provider=_SEARXNG.provider,
+        aliases=_SEARXNG.aliases,
         tool_name="web_search_searxng",
         config=config,
-        settings_attr="searxng_base_url",
-        env_vars=("SEARXNG_BASE_URL",),
-        field_names=("base_url", "url", "value"),
+        settings_attr=_SEARXNG.settings_attr,
+        env_vars=_SEARXNG.env_vars,
+        field_names=_SEARXNG.group("base_url"),
     )
 
 

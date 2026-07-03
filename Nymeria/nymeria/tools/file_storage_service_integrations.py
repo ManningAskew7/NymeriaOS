@@ -13,6 +13,11 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -30,6 +35,93 @@ _MAX_JSON_CHARS = 70_000
 _MAX_TEXT_DOWNLOAD_BYTES = 1_000_000
 _DROPBOX_API_BASE_URL = "https://api.dropboxapi.com/2"
 _DROPBOX_CONTENT_BASE_URL = "https://content.dropboxapi.com/2"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_DROPBOX = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="dropbox",
+        aliases=("dropbox_api", "dropbox_oauth2", "dropbox_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="api_base_url",
+                names=("api_base_url", "apiBaseUrl", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="content_base_url",
+                names=("content_base_url", "contentBaseUrl", "content_url", "contentUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "token", "api_key", "apiKey", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="DROPBOX_ACCESS_TOKEN",
+        display_name="Dropbox",
+    )
+)
+
+_NEXTCLOUD = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="nextcloud",
+        aliases=("next_cloud", "nextcloud_api", "nextCloudApi", "nextcloud_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="webdav_url",
+                names=("webdav_url", "webDavUrl", "web_dav_url", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="username", names=("username", "user", "login")),
+            CredentialFieldGroup(role="password", names=("password", "app_password", "appPassword")),
+            CredentialFieldGroup(
+                role="access_token", names=("access_token", "accessToken", "token", "value")
+            ),
+        ),
+        hint_fields=("username", "password", "access_token"),
+        env_var="NEXTCLOUD_USERNAME + NEXTCLOUD_PASSWORD or NEXTCLOUD_ACCESS_TOKEN",
+        display_name="Nextcloud",
+    )
+)
+
+_S3 = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="s3",
+        aliases=("aws", "aws_s3", "s3_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="access_key_id", names=("access_key_id", "accessKeyId", "aws_access_key_id")
+            ),
+            CredentialFieldGroup(
+                role="secret_access_key",
+                names=("secret_access_key", "secretAccessKey", "aws_secret_access_key"),
+            ),
+            CredentialFieldGroup(
+                role="session_token",
+                names=("session_token", "sessionToken", "aws_session_token"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="region", names=("region", "aws_region"), required=False),
+            CredentialFieldGroup(
+                role="endpoint_url",
+                names=("endpoint_url", "endpointUrl", "endpoint", "base_url", "baseUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="force_path_style",
+                names=("force_path_style", "forcePathStyle", "addressing_style"),
+                required=False,
+            ),
+        ),
+        hint_fields=("access_key_id", "secret_access_key"),
+        env_var="AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
+        display_name="S3",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -145,9 +237,9 @@ def _request_bytes(
 def _dropbox_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
     api_base = (
         _credential_value(
-            provider="dropbox",
-            provider_aliases=("dropbox_api", "dropbox_oauth2", "dropbox_oauth2_api"),
-            field_names=("api_base_url", "apiBaseUrl", "base_url", "baseUrl", "url"),
+            provider=_DROPBOX.provider,
+            provider_aliases=_DROPBOX.aliases,
+            field_names=_DROPBOX.group("api_base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -156,9 +248,9 @@ def _dropbox_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
     )
     content_base = (
         _credential_value(
-            provider="dropbox",
-            provider_aliases=("dropbox_api", "dropbox_oauth2", "dropbox_oauth2_api"),
-            field_names=("content_base_url", "contentBaseUrl", "content_url", "contentUrl"),
+            provider=_DROPBOX.provider,
+            provider_aliases=_DROPBOX.aliases,
+            field_names=_DROPBOX.group("content_base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -166,19 +258,19 @@ def _dropbox_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _DROPBOX_CONTENT_BASE_URL
     )
     token = _credential_value(
-        provider="dropbox",
-        provider_aliases=("dropbox_api", "dropbox_oauth2", "dropbox_oauth2_api"),
-        field_names=("access_token", "accessToken", "token", "api_key", "apiKey", "value"),
+        provider=_DROPBOX.provider,
+        provider_aliases=_DROPBOX.aliases,
+        field_names=_DROPBOX.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("dropbox_access_token")
     if not token:
         return _base_url(api_base), _base_url(content_base), _setup_hint(
-            provider="dropbox",
-            field_names=("access_token", "token", "value"),
+            provider=_DROPBOX.provider,
+            field_names=_DROPBOX.hint_fields,
             tool_name=tool_name,
-            env_var="DROPBOX_ACCESS_TOKEN",
-            display_name="Dropbox",
+            env_var=_DROPBOX.env_var,
+            display_name=_DROPBOX.display_name,
         )
     return _base_url(api_base), _base_url(content_base), {
         "Accept": "application/json",
@@ -191,32 +283,32 @@ def _dropbox_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _nextcloud_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, httpx.Auth | None, dict[str, str], str | None]:
     webdav_url = (
         _credential_value(
-            provider="nextcloud",
-            provider_aliases=("next_cloud", "nextcloud_api", "nextCloudApi", "nextcloud_oauth2"),
-            field_names=("webdav_url", "webDavUrl", "web_dav_url", "base_url", "baseUrl", "url"),
+            provider=_NEXTCLOUD.provider,
+            provider_aliases=_NEXTCLOUD.aliases,
+            field_names=_NEXTCLOUD.group("webdav_url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("nextcloud_webdav_url")
     )
     username = _credential_value(
-        provider="nextcloud",
-        provider_aliases=("next_cloud", "nextcloud_api", "nextCloudApi", "nextcloud_oauth2"),
-        field_names=("username", "user", "login"),
+        provider=_NEXTCLOUD.provider,
+        provider_aliases=_NEXTCLOUD.aliases,
+        field_names=_NEXTCLOUD.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("nextcloud_username")
     password = _credential_value(
-        provider="nextcloud",
-        provider_aliases=("next_cloud", "nextcloud_api", "nextCloudApi", "nextcloud_oauth2"),
-        field_names=("password", "app_password", "appPassword"),
+        provider=_NEXTCLOUD.provider,
+        provider_aliases=_NEXTCLOUD.aliases,
+        field_names=_NEXTCLOUD.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("nextcloud_password")
     access_token = _credential_value(
-        provider="nextcloud",
-        provider_aliases=("next_cloud", "nextcloud_api", "nextCloudApi", "nextcloud_oauth2"),
-        field_names=("access_token", "accessToken", "token", "value"),
+        provider=_NEXTCLOUD.provider,
+        provider_aliases=_NEXTCLOUD.aliases,
+        field_names=_NEXTCLOUD.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("nextcloud_access_token")
@@ -229,11 +321,11 @@ def _nextcloud_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
     if username and password:
         return _base_url(webdav_url), httpx.BasicAuth(username, password), headers, None
     return _base_url(webdav_url), None, headers, _setup_hint(
-        provider="nextcloud",
-        field_names=("username", "password", "access_token"),
+        provider=_NEXTCLOUD.provider,
+        field_names=_NEXTCLOUD.hint_fields,
         tool_name=tool_name,
-        env_var="NEXTCLOUD_USERNAME + NEXTCLOUD_PASSWORD or NEXTCLOUD_ACCESS_TOKEN",
-        display_name="Nextcloud",
+        env_var=_NEXTCLOUD.env_var,
+        display_name=_NEXTCLOUD.display_name,
     )
 
 
@@ -297,44 +389,44 @@ def _preview_bytes(content: bytes, headers: dict[str, str], *, max_bytes: int) -
 
 def _s3_client(tool_name: str, config: Optional[RunnableConfig]) -> tuple[Any, str | None]:
     access_key = _credential_value(
-        provider="s3",
-        provider_aliases=("aws", "aws_s3", "s3_api"),
-        field_names=("access_key_id", "accessKeyId", "aws_access_key_id"),
+        provider=_S3.provider,
+        provider_aliases=_S3.aliases,
+        field_names=_S3.group("access_key_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_access_key_id")
     secret_key = _credential_value(
-        provider="s3",
-        provider_aliases=("aws", "aws_s3", "s3_api"),
-        field_names=("secret_access_key", "secretAccessKey", "aws_secret_access_key"),
+        provider=_S3.provider,
+        provider_aliases=_S3.aliases,
+        field_names=_S3.group("secret_access_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_secret_access_key")
     session_token = _credential_value(
-        provider="s3",
-        provider_aliases=("aws", "aws_s3", "s3_api"),
-        field_names=("session_token", "sessionToken", "aws_session_token"),
+        provider=_S3.provider,
+        provider_aliases=_S3.aliases,
+        field_names=_S3.group("session_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_session_token")
     region = _credential_value(
-        provider="s3",
-        provider_aliases=("aws", "aws_s3", "s3_api"),
-        field_names=("region", "aws_region"),
+        provider=_S3.provider,
+        provider_aliases=_S3.aliases,
+        field_names=_S3.group("region"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_region")
     endpoint_url = _credential_value(
-        provider="s3",
-        provider_aliases=("aws", "aws_s3", "s3_api"),
-        field_names=("endpoint_url", "endpointUrl", "endpoint", "base_url", "baseUrl"),
+        provider=_S3.provider,
+        provider_aliases=_S3.aliases,
+        field_names=_S3.group("endpoint_url"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_endpoint_url")
     force_path_style = _credential_value(
-        provider="s3",
-        provider_aliases=("aws", "aws_s3", "s3_api"),
-        field_names=("force_path_style", "forcePathStyle", "addressing_style"),
+        provider=_S3.provider,
+        provider_aliases=_S3.aliases,
+        field_names=_S3.group("force_path_style"),
         tool_name=tool_name,
         config=config,
     )
@@ -342,11 +434,11 @@ def _s3_client(tool_name: str, config: Optional[RunnableConfig]) -> tuple[Any, s
         force_path_style = _settings_value("s3_force_path_style")
     if not access_key or not secret_key:
         return None, _setup_hint(
-            provider="s3",
-            field_names=("access_key_id", "secret_access_key"),
+            provider=_S3.provider,
+            field_names=_S3.hint_fields,
             tool_name=tool_name,
-            env_var="AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
-            display_name="S3",
+            env_var=_S3.env_var,
+            display_name=_S3.display_name,
         )
 
     import boto3

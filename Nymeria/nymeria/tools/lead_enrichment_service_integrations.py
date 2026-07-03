@@ -9,6 +9,11 @@ from typing import Annotated, Any, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     API_KEY_ALIAS_FIELDS,
     BASE_URL_ALIAS_FIELDS,
@@ -33,6 +38,118 @@ _DROPCONTACT_BASE_URL = "https://api.dropcontact.io"
 _HUMANTIC_BASE_URL = "https://api.humantic.ai/v1"
 _LONESCALE_BASE_URL = "https://public-api.lonescale.com"
 _UPROC_BASE_URL = "https://api.uproc.io/api/v2"
+
+# The api-key alias tuple the _api_key helper defaults to (a superset of
+# API_KEY_ALIAS_FIELDS that also accepts access_token).
+_API_KEY_WITH_ACCESS_TOKEN = ("api_key", "apiKey", "token", "access_token", "value")
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_UPLEAD = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="uplead",
+        aliases=("uplead_api", "upleadApi"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=_API_KEY_WITH_ACCESS_TOKEN),
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False),
+        ),
+        hint_fields=_API_KEY_WITH_ACCESS_TOKEN,
+        env_var="UPLEAD_API_KEY",
+        display_name="Uplead",
+    )
+)
+
+_DROPCONTACT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="dropcontact",
+        aliases=("dropcontact_api", "dropcontactApi"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=_API_KEY_WITH_ACCESS_TOKEN),
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False),
+        ),
+        hint_fields=_API_KEY_WITH_ACCESS_TOKEN,
+        env_var="DROPCONTACT_API_KEY",
+        display_name="Dropcontact",
+    )
+)
+
+_HUMANTIC = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="humantic",
+        aliases=("humantic_ai", "humantic_ai_api", "humanticAiApi"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=_API_KEY_WITH_ACCESS_TOKEN),
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False),
+        ),
+        hint_fields=_API_KEY_WITH_ACCESS_TOKEN,
+        env_var="HUMANTIC_API_KEY",
+        display_name="Humantic AI",
+    )
+)
+
+_LONESCALE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="lonescale",
+        aliases=("lone_scale", "lonescale_api", "loneScaleApi"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=_API_KEY_WITH_ACCESS_TOKEN),
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False),
+        ),
+        hint_fields=_API_KEY_WITH_ACCESS_TOKEN,
+        env_var="LONESCALE_API_KEY",
+        display_name="LoneScale",
+    )
+)
+
+# Clearbit resolves one of three per-kind base tuples in _clearbit_base; each is
+# a distinct group selected by role per branch.
+_CLEARBIT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="clearbit",
+        aliases=("clearbit_api", "clearbitApi"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=_API_KEY_WITH_ACCESS_TOKEN),
+            CredentialFieldGroup(
+                role="person_base_url",
+                names=("clearbit_person_base_url", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="autocomplete_base_url",
+                names=("clearbit_autocomplete_base_url", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="company_base_url",
+                names=("clearbit_company_base_url", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=_API_KEY_WITH_ACCESS_TOKEN,
+        env_var="CLEARBIT_API_KEY",
+        display_name="Clearbit",
+    )
+)
+
+# uProc needs both email and api_key; it has two setup-hint variants. The spec
+# carries the api_key variant and the email variant's field_names/env_var stay
+# inline in that branch.
+_UPROC = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="uproc",
+        aliases=("uproc_api", "uProcApi"),
+        groups=(
+            CredentialFieldGroup(role="email", names=("email", "username", "user")),
+            CredentialFieldGroup(role="api_key", names=API_KEY_ALIAS_FIELDS),
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False),
+        ),
+        hint_fields=("api_key", "token", "value"),
+        env_var="UPROC_API_KEY",
+        display_name="uProc",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -142,12 +259,12 @@ def _configured_base(
 
 def _clearbit_headers(tool_name: str, config: Optional[RunnableConfig]) -> dict[str, str] | str:
     api_key = _api_key(
-        provider="clearbit",
-        provider_aliases=("clearbit_api", "clearbitApi"),
+        provider=_CLEARBIT.provider,
+        provider_aliases=_CLEARBIT.aliases,
         settings_name="clearbit_api_key",
-        env_var="CLEARBIT_API_KEY",
+        env_var=_CLEARBIT.env_var,
         tool_name=tool_name,
-        display_name="Clearbit",
+        display_name=_CLEARBIT.display_name,
         config=config,
     )
     if api_key and api_key.startswith("[Error]:"):
@@ -164,16 +281,19 @@ def _clearbit_base(kind: str, tool_name: str, config: Optional[RunnableConfig]) 
     if kind == "person":
         settings_name = "clearbit_person_base_url"
         default = _CLEARBIT_PERSON_BASE_URL
+        field_names = _CLEARBIT.group("person_base_url")
     elif kind == "autocomplete":
         settings_name = "clearbit_autocomplete_base_url"
         default = _CLEARBIT_AUTOCOMPLETE_BASE_URL
+        field_names = _CLEARBIT.group("autocomplete_base_url")
     else:
         settings_name = "clearbit_company_base_url"
         default = _CLEARBIT_COMPANY_BASE_URL
+        field_names = _CLEARBIT.group("company_base_url")
     return _configured_base(
-        provider="clearbit",
-        provider_aliases=("clearbit_api", "clearbitApi"),
-        field_names=(settings_name, "base_url", "baseUrl", "url"),
+        provider=_CLEARBIT.provider,
+        provider_aliases=_CLEARBIT.aliases,
+        field_names=field_names,
         settings_name=settings_name,
         default_base=default,
         tool_name=tool_name,
@@ -183,18 +303,18 @@ def _clearbit_base(kind: str, tool_name: str, config: Optional[RunnableConfig]) 
 
 def _uplead_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     api_key = _api_key(
-        provider="uplead",
-        provider_aliases=("uplead_api", "upleadApi"),
+        provider=_UPLEAD.provider,
+        provider_aliases=_UPLEAD.aliases,
         settings_name="uplead_api_key",
-        env_var="UPLEAD_API_KEY",
+        env_var=_UPLEAD.env_var,
         tool_name=tool_name,
-        display_name="Uplead",
+        display_name=_UPLEAD.display_name,
         config=config,
     )
     base = _configured_base(
-        provider="uplead",
-        provider_aliases=("uplead_api", "upleadApi"),
-        field_names=BASE_URL_ALIAS_FIELDS,
+        provider=_UPLEAD.provider,
+        provider_aliases=_UPLEAD.aliases,
+        field_names=_UPLEAD.group("base_url"),
         settings_name="uplead_base_url",
         default_base=_UPLEAD_BASE_URL,
         tool_name=tool_name,
@@ -212,18 +332,18 @@ def _uplead_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 
 def _dropcontact_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     api_key = _api_key(
-        provider="dropcontact",
-        provider_aliases=("dropcontact_api", "dropcontactApi"),
+        provider=_DROPCONTACT.provider,
+        provider_aliases=_DROPCONTACT.aliases,
         settings_name="dropcontact_api_key",
-        env_var="DROPCONTACT_API_KEY",
+        env_var=_DROPCONTACT.env_var,
         tool_name=tool_name,
-        display_name="Dropcontact",
+        display_name=_DROPCONTACT.display_name,
         config=config,
     )
     base = _configured_base(
-        provider="dropcontact",
-        provider_aliases=("dropcontact_api", "dropcontactApi"),
-        field_names=BASE_URL_ALIAS_FIELDS,
+        provider=_DROPCONTACT.provider,
+        provider_aliases=_DROPCONTACT.aliases,
+        field_names=_DROPCONTACT.group("base_url"),
         settings_name="dropcontact_base_url",
         default_base=_DROPCONTACT_BASE_URL,
         tool_name=tool_name,
@@ -241,18 +361,18 @@ def _dropcontact_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 
 def _humantic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str, str | None]:
     api_key = _api_key(
-        provider="humantic",
-        provider_aliases=("humantic_ai", "humantic_ai_api", "humanticAiApi"),
+        provider=_HUMANTIC.provider,
+        provider_aliases=_HUMANTIC.aliases,
         settings_name="humantic_api_key",
-        env_var="HUMANTIC_API_KEY",
+        env_var=_HUMANTIC.env_var,
         tool_name=tool_name,
-        display_name="Humantic AI",
+        display_name=_HUMANTIC.display_name,
         config=config,
     )
     base = _configured_base(
-        provider="humantic",
-        provider_aliases=("humantic_ai", "humantic_ai_api", "humanticAiApi"),
-        field_names=BASE_URL_ALIAS_FIELDS,
+        provider=_HUMANTIC.provider,
+        provider_aliases=_HUMANTIC.aliases,
+        field_names=_HUMANTIC.group("base_url"),
         settings_name="humantic_base_url",
         default_base=_HUMANTIC_BASE_URL,
         tool_name=tool_name,
@@ -265,18 +385,18 @@ def _humantic_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 
 def _lonescale_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     api_key = _api_key(
-        provider="lonescale",
-        provider_aliases=("lone_scale", "lonescale_api", "loneScaleApi"),
+        provider=_LONESCALE.provider,
+        provider_aliases=_LONESCALE.aliases,
         settings_name="lonescale_api_key",
-        env_var="LONESCALE_API_KEY",
+        env_var=_LONESCALE.env_var,
         tool_name=tool_name,
-        display_name="LoneScale",
+        display_name=_LONESCALE.display_name,
         config=config,
     )
     base = _configured_base(
-        provider="lonescale",
-        provider_aliases=("lone_scale", "lonescale_api", "loneScaleApi"),
-        field_names=BASE_URL_ALIAS_FIELDS,
+        provider=_LONESCALE.provider,
+        provider_aliases=_LONESCALE.aliases,
+        field_names=_LONESCALE.group("base_url"),
         settings_name="lonescale_base_url",
         default_base=_LONESCALE_BASE_URL,
         tool_name=tool_name,
@@ -295,43 +415,45 @@ def _lonescale_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 
 def _uproc_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     email = _credential_value(
-        provider="uproc",
-        provider_aliases=("uproc_api", "uProcApi"),
-        field_names=("email", "username", "user"),
+        provider=_UPROC.provider,
+        provider_aliases=_UPROC.aliases,
+        field_names=_UPROC.group("email"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("uproc_email")
     api_key = _credential_value(
-        provider="uproc",
-        provider_aliases=("uproc_api", "uProcApi"),
-        field_names=API_KEY_ALIAS_FIELDS,
+        provider=_UPROC.provider,
+        provider_aliases=_UPROC.aliases,
+        field_names=_UPROC.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("uproc_api_key")
     base = _configured_base(
-        provider="uproc",
-        provider_aliases=("uproc_api", "uProcApi"),
-        field_names=BASE_URL_ALIAS_FIELDS,
+        provider=_UPROC.provider,
+        provider_aliases=_UPROC.aliases,
+        field_names=_UPROC.group("base_url"),
         settings_name="uproc_base_url",
         default_base=_UPROC_BASE_URL,
         tool_name=tool_name,
         config=config,
     )
     if not email:
+        # Email hint variant: field_names/env_var inline (the spec carries the
+        # api_key variant below).
         return base, _setup_hint(
-            provider="uproc",
+            provider=_UPROC.provider,
             field_names=("email",),
             tool_name=tool_name,
             env_var="UPROC_EMAIL",
-            display_name="uProc",
+            display_name=_UPROC.display_name,
         )
     if not api_key:
         return base, _setup_hint(
-            provider="uproc",
-            field_names=("api_key", "token", "value"),
+            provider=_UPROC.provider,
+            field_names=_UPROC.hint_fields,
             tool_name=tool_name,
-            env_var="UPROC_API_KEY",
-            display_name="uProc",
+            env_var=_UPROC.env_var,
+            display_name=_UPROC.display_name,
         )
     token = base64.b64encode(f"{email}:{api_key}".encode("utf-8")).decode("ascii")
     return base, {

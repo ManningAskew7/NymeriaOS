@@ -13,6 +13,11 @@ from urllib.parse import quote, urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -36,6 +41,193 @@ _LINKEDIN_BASE_URL = "https://api.linkedin.com"
 _TWITTER_BASE_URL = "https://api.twitter.com/2"
 _FACEBOOK_GRAPH_BASE_URL = "https://graph.facebook.com/v23.0"
 _REDDIT_TOKEN_CACHE: dict[tuple[str, str, str, str], tuple[str, float]] = {}
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_LINKEDIN = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="linkedin",
+        aliases=("linkedin_oauth2", "linkedin_oauth2_api", "linkedin_community_management"),
+        groups=(
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "bearer_token", "bearerToken", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("access_token", "accessToken", "bearer_token", "bearerToken", "token", "value"),
+        env_var="LINKEDIN_ACCESS_TOKEN",
+        display_name="LinkedIn",
+    )
+)
+
+_TWITTER = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="twitter",
+        aliases=("x", "x_twitter", "twitter_oauth2", "twitter_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "bearer_token",
+                    "bearerToken",
+                    "access_token",
+                    "accessToken",
+                    "api_key",
+                    "apiKey",
+                    "token",
+                    "value",
+                ),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=(
+            "bearer_token",
+            "bearerToken",
+            "access_token",
+            "accessToken",
+            "api_key",
+            "apiKey",
+            "token",
+            "value",
+        ),
+        env_var="TWITTER_BEARER_TOKEN",
+        display_name="X/Twitter",
+    )
+)
+
+_FACEBOOK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="facebook",
+        aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
+        groups=(
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "access_token",
+                    "accessToken",
+                    "page_access_token",
+                    "pageAccessToken",
+                    "token",
+                    "value",
+                ),
+            ),
+            CredentialFieldGroup(
+                role="app_secret",
+                names=("app_secret", "appSecret", "client_secret", "clientSecret"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="page_access_token",
+                names=("page_access_token", "pageAccessToken"),
+                required=False,
+            ),
+        ),
+        hint_fields=(
+            "access_token",
+            "accessToken",
+            "page_access_token",
+            "pageAccessToken",
+            "token",
+            "value",
+        ),
+        env_var="FACEBOOK_ACCESS_TOKEN",
+        display_name="Facebook Graph",
+    )
+)
+
+# Reddit selects the api or public base-URL tuple per branch in _reddit_base;
+# both variants are declared as distinct groups (base_url / public_base_url).
+_REDDIT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="reddit",
+        aliases=("reddit_api", "reddit_oauth2", "reddit_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "bearer_token", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="public_base_url",
+                names=("public_base_url", "publicBaseUrl", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="client_id", names=("client_id", "clientId", "id")),
+            CredentialFieldGroup(
+                role="client_secret", names=("client_secret", "clientSecret", "secret")
+            ),
+            CredentialFieldGroup(role="refresh_token", names=("refresh_token", "refreshToken")),
+            CredentialFieldGroup(
+                role="token_url",
+                names=("token_url", "tokenUrl", "auth_url", "authUrl"),
+                required=False,
+            ),
+        ),
+        hint_fields=("access_token", "refresh_token", "client_id", "client_secret", "value"),
+        env_var="REDDIT_ACCESS_TOKEN or REDDIT_REFRESH_TOKEN with REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET",
+        display_name="Reddit",
+    )
+)
+
+# Discourse has two setup-hint variants (missing-base-url vs missing-auth); the
+# spec carries the auth variant and the base-url variant's field_names/env_var
+# stay inline in that branch.
+_DISCOURSE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="discourse",
+        aliases=("discourse_api",),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "key", "token", "value")),
+            CredentialFieldGroup(
+                role="api_username", names=("api_username", "apiUsername", "username", "user")
+            ),
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "baseUrl", "url", "domain", "host")
+            ),
+        ),
+        hint_fields=("api_key", "api_username", "base_url"),
+        env_var="DISCOURSE_API_KEY and DISCOURSE_API_USERNAME",
+        display_name="Discourse",
+    )
+)
+
+_MEDIUM = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="medium",
+        aliases=("medium_api", "medium_oauth2", "medium_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="token", names=("access_token", "accessToken", "token", "value")),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="MEDIUM_ACCESS_TOKEN",
+        display_name="Medium",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -166,14 +358,14 @@ def _bearer_service_config(
 
 def _linkedin_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str]] | str:
     resolved = _bearer_service_config(
-        provider="linkedin",
-        provider_aliases=("linkedin_oauth2", "linkedin_oauth2_api", "linkedin_community_management"),
-        token_fields=("access_token", "accessToken", "bearer_token", "bearerToken", "token", "value"),
+        provider=_LINKEDIN.provider,
+        provider_aliases=_LINKEDIN.aliases,
+        token_fields=_LINKEDIN.group("token"),
         token_settings=("linkedin_access_token",),
         base_settings=("linkedin_base_url",),
         default_base_url=_LINKEDIN_BASE_URL,
-        env_var="LINKEDIN_ACCESS_TOKEN",
-        display_name="LinkedIn",
+        env_var=_LINKEDIN.env_var,
+        display_name=_LINKEDIN.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -187,23 +379,14 @@ def _linkedin_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 
 def _twitter_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str]] | str:
     return _bearer_service_config(
-        provider="twitter",
-        provider_aliases=("x", "x_twitter", "twitter_oauth2", "twitter_oauth2_api"),
-        token_fields=(
-            "bearer_token",
-            "bearerToken",
-            "access_token",
-            "accessToken",
-            "api_key",
-            "apiKey",
-            "token",
-            "value",
-        ),
+        provider=_TWITTER.provider,
+        provider_aliases=_TWITTER.aliases,
+        token_fields=_TWITTER.group("token"),
         token_settings=("twitter_bearer_token", "twitter_access_token"),
         base_settings=("twitter_api_base_url",),
         default_base_url=_TWITTER_BASE_URL,
-        env_var="TWITTER_BEARER_TOKEN",
-        display_name="X/Twitter",
+        env_var=_TWITTER.env_var,
+        display_name=_TWITTER.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -211,14 +394,14 @@ def _twitter_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 
 def _facebook_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str], dict[str, str]] | str:
     resolved = _bearer_service_config(
-        provider="facebook",
-        provider_aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
-        token_fields=("access_token", "accessToken", "page_access_token", "pageAccessToken", "token", "value"),
+        provider=_FACEBOOK.provider,
+        provider_aliases=_FACEBOOK.aliases,
+        token_fields=_FACEBOOK.group("token"),
         token_settings=("facebook_access_token",),
         base_settings=("facebook_graph_base_url",),
         default_base_url=_FACEBOOK_GRAPH_BASE_URL,
-        env_var="FACEBOOK_ACCESS_TOKEN",
-        display_name="Facebook Graph",
+        env_var=_FACEBOOK.env_var,
+        display_name=_FACEBOOK.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -226,9 +409,9 @@ def _facebook_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         return resolved
     base_url, headers = resolved
     app_secret = _credential_value(
-        provider="facebook",
-        provider_aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
-        field_names=("app_secret", "appSecret", "client_secret", "clientSecret"),
+        provider=_FACEBOOK.provider,
+        provider_aliases=_FACEBOOK.aliases,
+        field_names=_FACEBOOK.group("app_secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("facebook_app_secret")
@@ -246,9 +429,9 @@ def _facebook_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _reddit_token_url(tool_name: str, config: Optional[RunnableConfig]) -> str:
     return _base_url(
         _credential_value(
-            provider="reddit",
-            provider_aliases=("reddit_api", "reddit_oauth2", "reddit_oauth2_api"),
-            field_names=("token_url", "tokenUrl", "auth_url", "authUrl"),
+            provider=_REDDIT.provider,
+            provider_aliases=_REDDIT.aliases,
+            field_names=_REDDIT.group("token_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -258,19 +441,13 @@ def _reddit_token_url(tool_name: str, config: Optional[RunnableConfig]) -> str:
 
 
 def _reddit_base(tool_name: str, config: Optional[RunnableConfig], *, public: bool = False) -> str:
-    field_names = ("public_base_url", "publicBaseUrl", "base_url", "baseUrl", "url") if public else (
-        "base_url",
-        "baseUrl",
-        "api_url",
-        "apiUrl",
-        "url",
-    )
+    field_names = _REDDIT.group("public_base_url") if public else _REDDIT.group("base_url")
     settings_name = "reddit_public_base_url" if public else "reddit_base_url"
     default = _REDDIT_PUBLIC_BASE_URL if public else _REDDIT_BASE_URL
     return _base_url(
         _credential_value(
-            provider="reddit",
-            provider_aliases=("reddit_api", "reddit_oauth2", "reddit_oauth2_api"),
+            provider=_REDDIT.provider,
+            provider_aliases=_REDDIT.aliases,
             field_names=field_names,
             tool_name=tool_name,
             config=config,
@@ -282,16 +459,16 @@ def _reddit_base(tool_name: str, config: Optional[RunnableConfig], *, public: bo
 
 def _reddit_client_credentials(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str | None, str | None]:
     client_id = _credential_value(
-        provider="reddit",
-        provider_aliases=("reddit_api", "reddit_oauth2", "reddit_oauth2_api"),
-        field_names=("client_id", "clientId", "id"),
+        provider=_REDDIT.provider,
+        provider_aliases=_REDDIT.aliases,
+        field_names=_REDDIT.group("client_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("reddit_client_id")
     client_secret = _credential_value(
-        provider="reddit",
-        provider_aliases=("reddit_api", "reddit_oauth2", "reddit_oauth2_api"),
-        field_names=("client_secret", "clientSecret", "secret"),
+        provider=_REDDIT.provider,
+        provider_aliases=_REDDIT.aliases,
+        field_names=_REDDIT.group("client_secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("reddit_client_secret")
@@ -339,9 +516,9 @@ def _reddit_access_token(
     allow_client_credentials: bool,
 ) -> str | None:
     access_token = _credential_value(
-        provider="reddit",
-        provider_aliases=("reddit_api", "reddit_oauth2", "reddit_oauth2_api"),
-        field_names=("access_token", "accessToken", "bearer_token", "token", "value"),
+        provider=_REDDIT.provider,
+        provider_aliases=_REDDIT.aliases,
+        field_names=_REDDIT.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("reddit_access_token")
@@ -353,9 +530,9 @@ def _reddit_access_token(
         return None
     token_url = _reddit_token_url(tool_name, config)
     refresh_token = _credential_value(
-        provider="reddit",
-        provider_aliases=("reddit_api", "reddit_oauth2", "reddit_oauth2_api"),
-        field_names=("refresh_token", "refreshToken"),
+        provider=_REDDIT.provider,
+        provider_aliases=_REDDIT.aliases,
+        field_names=_REDDIT.group("refresh_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("reddit_refresh_token")
@@ -395,11 +572,11 @@ def _reddit_config(
         return _reddit_base(tool_name, config), headers, True
     if require_user_token:
         return _reddit_base(tool_name, config), _setup_hint(
-            provider="reddit",
-            field_names=("access_token", "refresh_token", "client_id", "client_secret", "value"),
+            provider=_REDDIT.provider,
+            field_names=_REDDIT.hint_fields,
             tool_name=tool_name,
-            env_var="REDDIT_ACCESS_TOKEN or REDDIT_REFRESH_TOKEN with REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET",
-            display_name="Reddit",
+            env_var=_REDDIT.env_var,
+            display_name=_REDDIT.display_name,
         ), False
     return _reddit_base(tool_name, config, public=True), _json_headers(), False
 
@@ -421,9 +598,9 @@ def _reddit_fullname(value: str, default_prefix: str) -> str:
 def _discourse_base(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
     return (
         _credential_value(
-            provider="discourse",
-            provider_aliases=("discourse_api",),
-            field_names=("base_url", "baseUrl", "url", "domain", "host"),
+            provider=_DISCOURSE.provider,
+            provider_aliases=_DISCOURSE.aliases,
+            field_names=_DISCOURSE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -433,16 +610,16 @@ def _discourse_base(tool_name: str, config: Optional[RunnableConfig]) -> str | N
 
 def _discourse_auth(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str | None, str | None]:
     api_key = _credential_value(
-        provider="discourse",
-        provider_aliases=("discourse_api",),
-        field_names=("api_key", "apiKey", "key", "token", "value"),
+        provider=_DISCOURSE.provider,
+        provider_aliases=_DISCOURSE.aliases,
+        field_names=_DISCOURSE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("discourse_api_key")
     username = _credential_value(
-        provider="discourse",
-        provider_aliases=("discourse_api",),
-        field_names=("api_username", "apiUsername", "username", "user"),
+        provider=_DISCOURSE.provider,
+        provider_aliases=_DISCOURSE.aliases,
+        field_names=_DISCOURSE.group("api_username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("discourse_api_username")
@@ -457,21 +634,23 @@ def _discourse_config(
 ) -> tuple[str, dict[str, str] | str]:
     base = _discourse_base(tool_name, config)
     if not base:
+        # Branch-variant hint: missing base_url. field_names/env_var stay inline;
+        # the spec's hint_fields/env_var carry the missing-auth variant below.
         return "", _setup_hint(
-            provider="discourse",
+            provider=_DISCOURSE.provider,
             field_names=("base_url", "url", "domain", "host"),
             tool_name=tool_name,
             env_var="DISCOURSE_BASE_URL",
-            display_name="Discourse",
+            display_name=_DISCOURSE.display_name,
         )
     api_key, username = _discourse_auth(tool_name, config)
     if require_auth and (not api_key or not username):
         return _base_url(base), _setup_hint(
-            provider="discourse",
-            field_names=("api_key", "api_username", "base_url"),
+            provider=_DISCOURSE.provider,
+            field_names=_DISCOURSE.hint_fields,
             tool_name=tool_name,
-            env_var="DISCOURSE_API_KEY and DISCOURSE_API_USERNAME",
-            display_name="Discourse",
+            env_var=_DISCOURSE.env_var,
+            display_name=_DISCOURSE.display_name,
         )
     headers = _json_headers()
     if api_key:
@@ -484,9 +663,9 @@ def _discourse_config(
 def _medium_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = _base_url(
         _credential_value(
-            provider="medium",
-            provider_aliases=("medium_api", "medium_oauth2", "medium_oauth2_api"),
-            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            provider=_MEDIUM.provider,
+            provider_aliases=_MEDIUM.aliases,
+            field_names=_MEDIUM.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -494,19 +673,19 @@ def _medium_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _MEDIUM_BASE_URL
     )
     token = _credential_value(
-        provider="medium",
-        provider_aliases=("medium_api", "medium_oauth2", "medium_oauth2_api"),
-        field_names=("access_token", "accessToken", "token", "value"),
+        provider=_MEDIUM.provider,
+        provider_aliases=_MEDIUM.aliases,
+        field_names=_MEDIUM.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("medium_access_token")
     if not token:
         return base, _setup_hint(
-            provider="medium",
-            field_names=("access_token", "token", "value"),
+            provider=_MEDIUM.provider,
+            field_names=_MEDIUM.hint_fields,
             tool_name=tool_name,
-            env_var="MEDIUM_ACCESS_TOKEN",
-            display_name="Medium",
+            env_var=_MEDIUM.env_var,
+            display_name=_MEDIUM.display_name,
         )
     headers = _json_headers()
     headers["Accept-Charset"] = "utf-8"
@@ -1693,18 +1872,18 @@ def facebook_page_create_post(
         request_headers = dict(headers)
         params = dict(auth_params)
         page_access_token = _credential_value(
-            provider="facebook",
-            provider_aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
-            field_names=("page_access_token", "pageAccessToken"),
+            provider=_FACEBOOK.provider,
+            provider_aliases=_FACEBOOK.aliases,
+            field_names=_FACEBOOK.group("page_access_token"),
             tool_name="facebook_page_create_post",
             config=config,
         )
         if page_access_token:
             request_headers["Authorization"] = f"Bearer {page_access_token}"
             app_secret = _credential_value(
-                provider="facebook",
-                provider_aliases=("facebook_graph", "facebook_graph_api", "meta_graph"),
-                field_names=("app_secret", "appSecret", "client_secret", "clientSecret"),
+                provider=_FACEBOOK.provider,
+                provider_aliases=_FACEBOOK.aliases,
+                field_names=_FACEBOOK.group("app_secret"),
                 tool_name="facebook_page_create_post",
                 config=config,
             ) or _settings_value("facebook_app_secret")

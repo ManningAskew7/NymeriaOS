@@ -17,6 +17,11 @@ from ..core.http_policy import (
     validate_http_egress_url,
 )
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     API_KEY_FIELDS,
     credential_value as _credential_value,
@@ -35,6 +40,48 @@ _OPENWEATHER_BASE_URL = "https://api.openweathermap.org/data/2.5"
 _OPENTHESAURUS_BASE_URL = "https://www.openthesaurus.de"
 _QUICKCHART_URL = "https://quickchart.io/chart"
 _MAX_JSON_CHARS = 60_000
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_NPM = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="npm",
+        groups=(
+            CredentialFieldGroup(
+                role="registry_url", names=("registry_url", "base_url"), required=False
+            ),
+            CredentialFieldGroup(role="token", names=("token", "api_key", "value")),
+        ),
+    )
+)
+
+_NASA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="nasa",
+        aliases=("nasa_api",),
+        groups=(CredentialFieldGroup(role="api_key", names=API_KEY_FIELDS),),
+        hint_fields=API_KEY_FIELDS,
+        env_var="NASA_API_KEY",
+        display_name="NASA",
+    )
+)
+
+# The lookup tuple and the setup-hint field list differ: the lookup accepts an
+# extra "access_token" alias while the hint advertises only API_KEY_FIELDS.
+_OPENWEATHERMAP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="openweathermap",
+        aliases=("openweather", "open_weather_map"),
+        groups=(
+            CredentialFieldGroup(role="api_key", names=("api_key", "access_token", "value")),
+        ),
+        hint_fields=API_KEY_FIELDS,
+        env_var="OPENWEATHERMAP_API_KEY",
+        display_name="OpenWeatherMap",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -139,8 +186,8 @@ def _npm_registry_and_headers(
 ) -> tuple[str, dict[str, str]]:
     registry = (
         _credential_value(
-            provider="npm",
-            field_names=("registry_url", "base_url"),
+            provider=_NPM.provider,
+            field_names=_NPM.group("registry_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -154,8 +201,8 @@ def _npm_registry_and_headers(
     ).rstrip("/")
     headers: dict[str, str] = {}
     token = _credential_value(
-        provider="npm",
-        field_names=("token", "api_key", "value"),
+        provider=_NPM.provider,
+        field_names=_NPM.group("token"),
         tool_name=tool_name,
         config=config,
     )
@@ -489,19 +536,19 @@ def nasa_apod(
         thumbs: Include video thumbnails when available.
     """
     api_key = _credential_value(
-        provider="nasa",
-        provider_aliases=("nasa_api",),
-        field_names=API_KEY_FIELDS,
+        provider=_NASA.provider,
+        provider_aliases=_NASA.aliases,
+        field_names=_NASA.group("api_key"),
         tool_name="nasa_apod",
         config=config,
     ) or _settings_value("nasa_api_key")
     if not api_key:
         return _setup_hint(
-            provider="nasa",
-            field_names=API_KEY_FIELDS,
+            provider=_NASA.provider,
+            field_names=_NASA.hint_fields,
             tool_name="nasa_apod",
-            env_var="NASA_API_KEY",
-            display_name="NASA",
+            env_var=_NASA.env_var,
+            display_name=_NASA.display_name,
         )
     if date and (start_date or end_date):
         return "[Error]: use either date or start_date/end_date, not both."
@@ -553,19 +600,19 @@ def _openweather_request(
     tool_name: str,
 ) -> str:
     api_key = _credential_value(
-        provider="openweathermap",
-        provider_aliases=("openweather", "open_weather_map"),
-        field_names=("api_key", "access_token", "value"),
+        provider=_OPENWEATHERMAP.provider,
+        provider_aliases=_OPENWEATHERMAP.aliases,
+        field_names=_OPENWEATHERMAP.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("openweathermap_api_key")
     if not api_key:
         return _setup_hint(
-            provider="openweathermap",
-            field_names=API_KEY_FIELDS,
+            provider=_OPENWEATHERMAP.provider,
+            field_names=_OPENWEATHERMAP.hint_fields,
             tool_name=tool_name,
-            env_var="OPENWEATHERMAP_API_KEY",
-            display_name="OpenWeatherMap",
+            env_var=_OPENWEATHERMAP.env_var,
+            display_name=_OPENWEATHERMAP.display_name,
         )
     try:
         params = {

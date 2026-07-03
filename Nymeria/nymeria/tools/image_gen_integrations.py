@@ -29,6 +29,11 @@ from typing import Annotated, Any, Callable, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .image_generation import (
     _generate_gemini,
     _generate_openai,
@@ -37,6 +42,66 @@ from .image_generation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). These providers resolve keys via
+# resolve_native_credential (vault, then settings, then env), so each spec
+# carries settings_attr + env_vars and the default ("api_key", "token", "value")
+# lookup trio; the resolve call sites source their args from the spec.
+_OPENAI = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="openai",
+        aliases=("openai_api", "gpt_image"),
+        groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
+        settings_attr="openai_api_key",
+        env_vars=("OPENAI_API_KEY",),
+        tools=("image_gen_openai",),
+    )
+)
+
+_GEMINI = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="gemini",
+        aliases=("google_gemini", "genai"),
+        groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
+        settings_attr="gemini_api_key",
+        env_vars=("GEMINI_API_KEY",),
+        tools=("image_gen_gemini",),
+    )
+)
+
+_BFL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="bfl",
+        aliases=("black_forest_labs", "flux"),
+        groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
+        settings_attr="bfl_api_key",
+        env_vars=("BFL_API_KEY",),
+        tools=("image_gen_flux",),
+    )
+)
+
+_REPLICATE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="replicate",
+        aliases=("replicate_api", "r8"),
+        groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
+        settings_attr="replicate_api_key",
+        env_vars=("REPLICATE_API_KEY", "REPLICATE_API_TOKEN"),
+        tools=("image_gen_replicate",),
+    )
+)
+
+_FAL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="fal",
+        aliases=("fal_ai", "falai"),
+        groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
+        settings_attr="fal_api_key",
+        env_vars=("FAL_API_KEY", "FAL_KEY"),
+        tools=("image_gen_fal",),
+    )
+)
 
 # Bounds the synchronous poll loop for async providers (~90s ceiling) so a slow
 # job returns "[Error]: ... timed out" rather than hanging the tool call.
@@ -163,12 +228,12 @@ def _get_openai_image_api_key(config: Optional[RunnableConfig] = None) -> Option
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="openai",
-        aliases=("openai_api", "gpt_image"),
+        provider=_OPENAI.provider,
+        aliases=_OPENAI.aliases,
         tool_name="image_gen_openai",
         config=config,
-        settings_attr="openai_api_key",
-        env_vars=("OPENAI_API_KEY",),
+        settings_attr=_OPENAI.settings_attr,
+        env_vars=_OPENAI.env_vars,
     )
 
 
@@ -233,12 +298,12 @@ def _get_gemini_image_api_key(config: Optional[RunnableConfig] = None) -> Option
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="gemini",
-        aliases=("google_gemini", "genai"),
+        provider=_GEMINI.provider,
+        aliases=_GEMINI.aliases,
         tool_name="image_gen_gemini",
         config=config,
-        settings_attr="gemini_api_key",
-        env_vars=("GEMINI_API_KEY",),
+        settings_attr=_GEMINI.settings_attr,
+        env_vars=_GEMINI.env_vars,
     )
 
 
@@ -300,12 +365,12 @@ def _get_bfl_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="bfl",
-        aliases=("black_forest_labs", "flux"),
+        provider=_BFL.provider,
+        aliases=_BFL.aliases,
         tool_name="image_gen_flux",
         config=config,
-        settings_attr="bfl_api_key",
-        env_vars=("BFL_API_KEY",),
+        settings_attr=_BFL.settings_attr,
+        env_vars=_BFL.env_vars,
     )
 
 
@@ -394,12 +459,12 @@ def _get_replicate_api_key(config: Optional[RunnableConfig] = None) -> Optional[
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="replicate",
-        aliases=("replicate_api", "r8"),
+        provider=_REPLICATE.provider,
+        aliases=_REPLICATE.aliases,
         tool_name="image_gen_replicate",
         config=config,
-        settings_attr="replicate_api_key",
-        env_vars=("REPLICATE_API_KEY", "REPLICATE_API_TOKEN"),
+        settings_attr=_REPLICATE.settings_attr,
+        env_vars=_REPLICATE.env_vars,
     )
 
 
@@ -509,12 +574,12 @@ def _get_fal_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="fal",
-        aliases=("fal_ai", "falai"),
+        provider=_FAL.provider,
+        aliases=_FAL.aliases,
         tool_name="image_gen_fal",
         config=config,
-        settings_attr="fal_api_key",
-        env_vars=("FAL_API_KEY", "FAL_KEY"),
+        settings_attr=_FAL.settings_attr,
+        env_vars=_FAL.env_vars,
     )
 
 

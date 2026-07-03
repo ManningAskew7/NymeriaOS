@@ -6,6 +6,11 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .web_batch import parse_batch_queries, run_batched
 
 logger = logging.getLogger(__name__)
@@ -19,18 +24,34 @@ SEARCH_DEPTH_MODELS = {
 
 _MAX_BATCH_QUERIES = 10
 
+# Provider credential spec: the single source of truth for the Perplexity
+# credential shape (see credential_registry). _get_perplexity_api_key sources its
+# resolve_native_credential arguments from this spec; the call omits field_names
+# and relies on the resolver's default ("api_key", "token", "value") trio, which
+# the spec declares explicitly as a group.
+_PERPLEXITY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="perplexity",
+        aliases=("perplexity_api", "pplx"),
+        groups=(CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),),
+        settings_attr="perplexity_api_key",
+        env_vars=("PERPLEXITY_API_KEY",),
+        tools=("web_search_perplexity",),
+    )
+)
+
 
 def _get_perplexity_api_key(config: Optional[RunnableConfig] = None) -> Optional[str]:
     """Resolve the Perplexity API key: credential vault, then settings, then env."""
     from .native_credentials import resolve_native_credential
 
     return resolve_native_credential(
-        provider="perplexity",
-        aliases=("perplexity_api", "pplx"),
+        provider=_PERPLEXITY.provider,
+        aliases=_PERPLEXITY.aliases,
         tool_name="web_search_perplexity",
         config=config,
-        settings_attr="perplexity_api_key",
-        env_vars=("PERPLEXITY_API_KEY",),
+        settings_attr=_PERPLEXITY.settings_attr,
+        env_vars=_PERPLEXITY.env_vars,
     )
 
 

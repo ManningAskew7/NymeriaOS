@@ -12,6 +12,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -32,6 +37,216 @@ _MATRIX_BASE_URL = "https://matrix-client.matrix.org/_matrix/client/v3"
 _TELEGRAM_BASE_URL = "https://api.telegram.org"
 _WEBEX_BASE_URL = "https://webexapis.com/v1"
 _WHATSAPP_BASE_URL = "https://graph.facebook.com/v19.0"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered. The shared
+# _api_token_config helper keeps its generic base-URL field-name tuple inline
+# (and Discord relies on its default token tuple), so the spec still declares
+# those tuples as groups even where no call site reads them back.
+_TELEGRAM = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="telegram",
+        aliases=("telegram_bot", "telegram_api", "telegramApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "homeserverUrl", "domain", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token", names=("bot_token", "botToken", "api_key", "apiKey", "token", "value")
+            ),
+        ),
+        hint_fields=("bot_token", "botToken", "api_key", "apiKey", "token", "value"),
+        env_var="TELEGRAM_BOT_TOKEN",
+        display_name="Telegram",
+    )
+)
+
+_WEBEX = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="webex",
+        aliases=("cisco_webex", "ciscoWebex", "webex_api", "cisco_webex_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "homeserverUrl", "domain", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        env_var="WEBEX_ACCESS_TOKEN",
+        display_name="Webex",
+    )
+)
+
+_WHATSAPP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="whatsapp",
+        aliases=("whats_app", "whatsapp_business", "whatsapp_api", "whatsAppApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="access_token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="business_account_id",
+                names=("business_account_id", "businessAccountId", "account_id", "accountId"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="phone_number_id",
+                names=(
+                    "phone_number_id",
+                    "phoneNumberId",
+                    "sender_phone_number_id",
+                    "senderPhoneNumberId",
+                ),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="WHATSAPP_ACCESS_TOKEN",
+        display_name="WhatsApp Business Cloud",
+    )
+)
+
+_DISCORD = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="discord",
+        aliases=("discord_bot", "discordBotApi", "discord_bot_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "homeserverUrl", "domain", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            # Discord uses the _api_token_config default token tuple (no
+            # field_names at the call site); declared here so the registry
+            # mirrors the lookup.
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "api_key",
+                    "apiKey",
+                    "api_token",
+                    "apiToken",
+                    "access_token",
+                    "accessToken",
+                    "token",
+                    "bot_token",
+                    "botToken",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=(
+            "api_key",
+            "apiKey",
+            "api_token",
+            "apiToken",
+            "access_token",
+            "accessToken",
+            "token",
+            "bot_token",
+            "botToken",
+            "value",
+        ),
+        env_var="DISCORD_BOT_TOKEN",
+        display_name="Discord",
+    )
+)
+
+_MATTERMOST = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mattermost",
+        aliases=("mattermost_api", "mattermostApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "homeserverUrl", "domain", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_token", "apiToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "accessToken", "api_token", "apiToken", "token", "value"),
+        env_var="MATTERMOST_ACCESS_TOKEN",
+        display_name="Mattermost",
+    )
+)
+
+_MATRIX = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="matrix",
+        aliases=("matrix_api", "matrixApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "homeserverUrl", "domain", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token", names=("access_token", "accessToken", "token", "value")
+            ),
+        ),
+        hint_fields=("access_token", "accessToken", "token", "value"),
+        env_var="MATRIX_ACCESS_TOKEN",
+        display_name="Matrix",
+    )
+)
+
+_ROCKETCHAT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="rocketchat",
+        aliases=("rocket_chat", "rocketchat_api", "rocketchatApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "domain", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="auth_token",
+                names=("auth_token", "authToken", "auth_key", "authKey", "token", "value"),
+            ),
+            CredentialFieldGroup(role="user_id", names=("user_id", "userId", "userid")),
+        ),
+        hint_fields=("auth_token", "auth_key", "token", "value"),
+        env_var="ROCKETCHAT_AUTH_TOKEN",
+        display_name="Rocket.Chat",
+    )
+)
+
+_ZULIP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="zulip",
+        aliases=("zulip_api", "zulipApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(role="email", names=("email", "username", "user")),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "apiKey", "token", "value"),
+        env_var="ZULIP_API_KEY",
+        display_name="Zulip",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -156,16 +371,16 @@ def _append_path(base: str, suffix: str) -> str:
 
 def _telegram_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
     base_url, token = _api_token_config(
-        provider="telegram",
-        provider_aliases=("telegram_bot", "telegram_api", "telegramApi"),
-        env_var="TELEGRAM_BOT_TOKEN",
+        provider=_TELEGRAM.provider,
+        provider_aliases=_TELEGRAM.aliases,
+        env_var=_TELEGRAM.env_var,
         settings_key_name="telegram_bot_token",
         settings_base_name="telegram_api_base_url",
         default_base=_TELEGRAM_BASE_URL,
         tool_name=tool_name,
-        display_name="Telegram",
+        display_name=_TELEGRAM.display_name,
         config=config,
-        field_names=("bot_token", "botToken", "api_key", "apiKey", "token", "value"),
+        field_names=_TELEGRAM.group("token"),
     )
     if not token or token.startswith("[Error]:"):
         return base_url, token or ""
@@ -178,16 +393,16 @@ def _telegram_url(base_url: str, token: str, method: str) -> str:
 
 def _webex_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, token = _api_token_config(
-        provider="webex",
-        provider_aliases=("cisco_webex", "ciscoWebex", "webex_api", "cisco_webex_api"),
-        env_var="WEBEX_ACCESS_TOKEN",
+        provider=_WEBEX.provider,
+        provider_aliases=_WEBEX.aliases,
+        env_var=_WEBEX.env_var,
         settings_key_name="webex_access_token",
         settings_base_name="webex_base_url",
         default_base=_WEBEX_BASE_URL,
         tool_name=tool_name,
-        display_name="Webex",
+        display_name=_WEBEX.display_name,
         config=config,
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        field_names=_WEBEX.group("token"),
     )
     if not token or token.startswith("[Error]:"):
         return base_url, token or ""
@@ -198,31 +413,31 @@ def _webex_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 
 def _whatsapp_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[dict[str, Any], str | None]:
     access_token = _credential_value(
-        provider="whatsapp",
-        provider_aliases=("whats_app", "whatsapp_business", "whatsapp_api", "whatsAppApi"),
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_WHATSAPP.provider,
+        provider_aliases=_WHATSAPP.aliases,
+        field_names=_WHATSAPP.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("whatsapp_access_token")
     business_account_id = _credential_value(
-        provider="whatsapp",
-        provider_aliases=("whats_app", "whatsapp_business", "whatsapp_api", "whatsAppApi"),
-        field_names=("business_account_id", "businessAccountId", "account_id", "accountId"),
+        provider=_WHATSAPP.provider,
+        provider_aliases=_WHATSAPP.aliases,
+        field_names=_WHATSAPP.group("business_account_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("whatsapp_business_account_id")
     phone_number_id = _credential_value(
-        provider="whatsapp",
-        provider_aliases=("whats_app", "whatsapp_business", "whatsapp_api", "whatsAppApi"),
-        field_names=("phone_number_id", "phoneNumberId", "sender_phone_number_id", "senderPhoneNumberId"),
+        provider=_WHATSAPP.provider,
+        provider_aliases=_WHATSAPP.aliases,
+        field_names=_WHATSAPP.group("phone_number_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("whatsapp_phone_number_id")
     base_url = (
         _credential_value(
-            provider="whatsapp",
-            provider_aliases=("whats_app", "whatsapp_business", "whatsapp_api", "whatsAppApi"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+            provider=_WHATSAPP.provider,
+            provider_aliases=_WHATSAPP.aliases,
+            field_names=_WHATSAPP.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -231,11 +446,11 @@ def _whatsapp_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     )
     if not access_token:
         return {}, _setup_hint(
-            provider="whatsapp",
-            field_names=("access_token", "token", "value"),
+            provider=_WHATSAPP.provider,
+            field_names=_WHATSAPP.hint_fields,
             tool_name=tool_name,
-            env_var="WHATSAPP_ACCESS_TOKEN",
-            display_name="WhatsApp Business Cloud",
+            env_var=_WHATSAPP.env_var,
+            display_name=_WHATSAPP.display_name,
         )
     headers = _json_headers()
     headers["Authorization"] = f"Bearer {access_token}"
@@ -625,14 +840,14 @@ def whatsapp_delete_media(
 
 def _discord_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, token = _api_token_config(
-        provider="discord",
-        provider_aliases=("discord_bot", "discordBotApi", "discord_bot_api"),
-        env_var="DISCORD_BOT_TOKEN",
+        provider=_DISCORD.provider,
+        provider_aliases=_DISCORD.aliases,
+        env_var=_DISCORD.env_var,
         settings_key_name="discord_bot_token",
         settings_base_name="discord_base_url",
         default_base=_DISCORD_BASE_URL,
         tool_name=tool_name,
-        display_name="Discord",
+        display_name=_DISCORD.display_name,
         config=config,
     )
     if not token or token.startswith("[Error]:"):
@@ -644,16 +859,16 @@ def _discord_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 
 def _mattermost_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, token = _api_token_config(
-        provider="mattermost",
-        provider_aliases=("mattermost_api", "mattermostApi"),
-        env_var="MATTERMOST_ACCESS_TOKEN",
+        provider=_MATTERMOST.provider,
+        provider_aliases=_MATTERMOST.aliases,
+        env_var=_MATTERMOST.env_var,
         settings_key_name="mattermost_access_token",
         settings_base_name="mattermost_base_url",
         default_base="",
         tool_name=tool_name,
-        display_name="Mattermost",
+        display_name=_MATTERMOST.display_name,
         config=config,
-        field_names=("access_token", "accessToken", "api_token", "apiToken", "token", "value"),
+        field_names=_MATTERMOST.group("token"),
     )
     if not token or token.startswith("[Error]:"):
         return base_url, token or ""
@@ -664,16 +879,16 @@ def _mattermost_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 
 def _matrix_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, token = _api_token_config(
-        provider="matrix",
-        provider_aliases=("matrix_api", "matrixApi"),
-        env_var="MATRIX_ACCESS_TOKEN",
+        provider=_MATRIX.provider,
+        provider_aliases=_MATRIX.aliases,
+        env_var=_MATRIX.env_var,
         settings_key_name="matrix_access_token",
         settings_base_name="matrix_base_url",
         default_base=_MATRIX_BASE_URL,
         tool_name=tool_name,
-        display_name="Matrix",
+        display_name=_MATRIX.display_name,
         config=config,
-        field_names=("access_token", "accessToken", "token", "value"),
+        field_names=_MATRIX.group("token"),
     )
     if not token or token.startswith("[Error]:"):
         return base_url, token or ""
@@ -685,9 +900,9 @@ def _matrix_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 def _rocketchat_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url = (
         _credential_value(
-            provider="rocketchat",
-            provider_aliases=("rocket_chat", "rocketchat_api", "rocketchatApi"),
-            field_names=("base_url", "domain", "url", "api_url", "apiUrl"),
+            provider=_ROCKETCHAT.provider,
+            provider_aliases=_ROCKETCHAT.aliases,
+            field_names=_ROCKETCHAT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -695,26 +910,26 @@ def _rocketchat_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or ""
     )
     auth_token = _credential_value(
-        provider="rocketchat",
-        provider_aliases=("rocket_chat", "rocketchat_api", "rocketchatApi"),
-        field_names=("auth_token", "authToken", "auth_key", "authKey", "token", "value"),
+        provider=_ROCKETCHAT.provider,
+        provider_aliases=_ROCKETCHAT.aliases,
+        field_names=_ROCKETCHAT.group("auth_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("rocketchat_auth_token")
     user_id = _credential_value(
-        provider="rocketchat",
-        provider_aliases=("rocket_chat", "rocketchat_api", "rocketchatApi"),
-        field_names=("user_id", "userId", "userid"),
+        provider=_ROCKETCHAT.provider,
+        provider_aliases=_ROCKETCHAT.aliases,
+        field_names=_ROCKETCHAT.group("user_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("rocketchat_user_id")
     if not auth_token:
         return "", _setup_hint(
-            provider="rocketchat",
-            field_names=("auth_token", "auth_key", "token", "value"),
+            provider=_ROCKETCHAT.provider,
+            field_names=_ROCKETCHAT.hint_fields,
             tool_name=tool_name,
-            env_var="ROCKETCHAT_AUTH_TOKEN",
-            display_name="Rocket.Chat",
+            env_var=_ROCKETCHAT.env_var,
+            display_name=_ROCKETCHAT.display_name,
         )
     if not user_id:
         return "", "[Error]: No Rocket.Chat user ID found. Save user_id in the credential or set ROCKETCHAT_USER_ID."
@@ -729,9 +944,9 @@ def _rocketchat_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 def _zulip_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url = (
         _credential_value(
-            provider="zulip",
-            provider_aliases=("zulip_api", "zulipApi"),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_ZULIP.provider,
+            provider_aliases=_ZULIP.aliases,
+            field_names=_ZULIP.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -739,26 +954,26 @@ def _zulip_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or ""
     )
     email = _credential_value(
-        provider="zulip",
-        provider_aliases=("zulip_api", "zulipApi"),
-        field_names=("email", "username", "user"),
+        provider=_ZULIP.provider,
+        provider_aliases=_ZULIP.aliases,
+        field_names=_ZULIP.group("email"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zulip_email")
     api_key = _credential_value(
-        provider="zulip",
-        provider_aliases=("zulip_api", "zulipApi"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_ZULIP.provider,
+        provider_aliases=_ZULIP.aliases,
+        field_names=_ZULIP.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zulip_api_key")
     if not api_key:
         return "", _setup_hint(
-            provider="zulip",
-            field_names=("api_key", "apiKey", "token", "value"),
+            provider=_ZULIP.provider,
+            field_names=_ZULIP.hint_fields,
             tool_name=tool_name,
-            env_var="ZULIP_API_KEY",
-            display_name="Zulip",
+            env_var=_ZULIP.env_var,
+            display_name=_ZULIP.display_name,
         )
     if not email:
         return "", "[Error]: No Zulip email found. Save email in the credential or set ZULIP_EMAIL."

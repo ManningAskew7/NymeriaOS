@@ -11,6 +11,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -28,6 +33,75 @@ _MAX_JSON_CHARS = 60_000
 _DEMIO_BASE_URL = "https://my.demio.com/api/v1"
 _ZOOM_BASE_URL = "https://api.zoom.us/v2"
 _GOTOWEBINAR_BASE_URL = "https://api.getgo.com/G2W/rest/v2"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_DEMIO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="demio",
+        aliases=("demio_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "api_url", "url"), required=False
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "key")),
+            CredentialFieldGroup(
+                role="api_secret", names=("api_secret", "apiSecret", "secret")
+            ),
+        ),
+        hint_fields=("api_key", "api_secret"),
+        env_var="DEMIO_API_KEY and DEMIO_API_SECRET",
+        display_name="Demio",
+    )
+)
+
+_ZOOM = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="zoom",
+        aliases=("zoom_api", "zoom_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "api_url", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "bearer_token", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token",),
+        env_var="ZOOM_ACCESS_TOKEN",
+        display_name="Zoom",
+    )
+)
+
+# Branch variant: three setup-hint field/env sets (access_token, account_key,
+# organizer_key). spec.hint_fields and spec.env_var carry the access_token
+# variant; the account_key/organizer_key branches keep their per-branch field and
+# env_var literals inline at the _missing_gotowebinar_key call sites.
+_GOTOWEBINAR = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="gotowebinar",
+        aliases=("go_to_webinar", "gotowebinar_oauth2", "go_to_webinar_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "api_url", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "bearer_token", "token", "value"),
+            ),
+            CredentialFieldGroup(role="account_key", names=("account_key", "accountKey")),
+            CredentialFieldGroup(
+                role="organizer_key", names=("organizer_key", "organizerKey")
+            ),
+        ),
+        hint_fields=("access_token",),
+        env_var="GOTOWEBINAR_ACCESS_TOKEN",
+        display_name="GoToWebinar",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -144,9 +218,9 @@ def _bearer_header_value(token: str) -> str:
 def _demio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="demio",
-            provider_aliases=("demio_api",),
-            field_names=("base_url", "api_url", "url"),
+            provider=_DEMIO.provider,
+            provider_aliases=_DEMIO.aliases,
+            field_names=_DEMIO.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -154,26 +228,26 @@ def _demio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or _DEMIO_BASE_URL
     )
     api_key = _credential_value(
-        provider="demio",
-        provider_aliases=("demio_api",),
-        field_names=("api_key", "apiKey", "key"),
+        provider=_DEMIO.provider,
+        provider_aliases=_DEMIO.aliases,
+        field_names=_DEMIO.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("demio_api_key")
     api_secret = _credential_value(
-        provider="demio",
-        provider_aliases=("demio_api",),
-        field_names=("api_secret", "apiSecret", "secret"),
+        provider=_DEMIO.provider,
+        provider_aliases=_DEMIO.aliases,
+        field_names=_DEMIO.group("api_secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("demio_api_secret")
     if not api_key or not api_secret:
         return _base_url(base), _setup_hint(
-            provider="demio",
-            field_names=("api_key", "api_secret"),
+            provider=_DEMIO.provider,
+            field_names=_DEMIO.hint_fields,
             tool_name=tool_name,
-            env_var="DEMIO_API_KEY and DEMIO_API_SECRET",
-            display_name="Demio",
+            env_var=_DEMIO.env_var,
+            display_name=_DEMIO.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -187,9 +261,9 @@ def _demio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _zoom_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="zoom",
-            provider_aliases=("zoom_api", "zoom_oauth2"),
-            field_names=("base_url", "api_url", "url"),
+            provider=_ZOOM.provider,
+            provider_aliases=_ZOOM.aliases,
+            field_names=_ZOOM.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -197,19 +271,19 @@ def _zoom_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         or _ZOOM_BASE_URL
     )
     token = _credential_value(
-        provider="zoom",
-        provider_aliases=("zoom_api", "zoom_oauth2"),
-        field_names=("access_token", "accessToken", "bearer_token", "token", "value"),
+        provider=_ZOOM.provider,
+        provider_aliases=_ZOOM.aliases,
+        field_names=_ZOOM.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zoom_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="zoom",
-            field_names=("access_token",),
+            provider=_ZOOM.provider,
+            field_names=_ZOOM.hint_fields,
             tool_name=tool_name,
-            env_var="ZOOM_ACCESS_TOKEN",
-            display_name="Zoom",
+            env_var=_ZOOM.env_var,
+            display_name=_ZOOM.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -223,12 +297,12 @@ def _gotowebinar_config(
     tool_name: str,
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, Optional[str], Optional[str]]:
-    aliases = ("go_to_webinar", "gotowebinar_oauth2", "go_to_webinar_oauth2")
+    aliases = _GOTOWEBINAR.aliases
     base = (
         _credential_value(
-            provider="gotowebinar",
+            provider=_GOTOWEBINAR.provider,
             provider_aliases=aliases,
-            field_names=("base_url", "api_url", "url"),
+            field_names=_GOTOWEBINAR.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -236,33 +310,33 @@ def _gotowebinar_config(
         or _GOTOWEBINAR_BASE_URL
     )
     token = _credential_value(
-        provider="gotowebinar",
+        provider=_GOTOWEBINAR.provider,
         provider_aliases=aliases,
-        field_names=("access_token", "accessToken", "bearer_token", "token", "value"),
+        field_names=_GOTOWEBINAR.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("gotowebinar_access_token")
     account_key = _credential_value(
-        provider="gotowebinar",
+        provider=_GOTOWEBINAR.provider,
         provider_aliases=aliases,
-        field_names=("account_key", "accountKey"),
+        field_names=_GOTOWEBINAR.group("account_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("gotowebinar_account_key")
     organizer_key = _credential_value(
-        provider="gotowebinar",
+        provider=_GOTOWEBINAR.provider,
         provider_aliases=aliases,
-        field_names=("organizer_key", "organizerKey"),
+        field_names=_GOTOWEBINAR.group("organizer_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("gotowebinar_organizer_key")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="gotowebinar",
-            field_names=("access_token",),
+            provider=_GOTOWEBINAR.provider,
+            field_names=_GOTOWEBINAR.hint_fields,
             tool_name=tool_name,
-            env_var="GOTOWEBINAR_ACCESS_TOKEN",
-            display_name="GoToWebinar",
+            env_var=_GOTOWEBINAR.env_var,
+            display_name=_GOTOWEBINAR.display_name,
         ), account_key, organizer_key
     return _base_url(base), {
         "Accept": "application/json",
@@ -273,12 +347,14 @@ def _gotowebinar_config(
 
 
 def _missing_gotowebinar_key(tool_name: str, field_name: str, env_var: str) -> str:
+    # field_name/env_var are per-branch variants (account_key / organizer_key),
+    # passed by callers and kept inline; provider/display_name come from the spec.
     return _setup_hint(
-        provider="gotowebinar",
+        provider=_GOTOWEBINAR.provider,
         field_names=(field_name,),
         tool_name=tool_name,
         env_var=env_var,
-        display_name="GoToWebinar",
+        display_name=_GOTOWEBINAR.display_name,
     )
 
 

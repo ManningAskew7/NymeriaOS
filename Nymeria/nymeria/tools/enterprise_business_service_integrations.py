@@ -11,6 +11,11 @@ from urllib.parse import quote, urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     BASE_URL_FIELDS,
     base_url as _base_url,
@@ -28,6 +33,69 @@ _HTTP_TIMEOUT = 30.0
 _MAX_JSON_CHARS = 60_000
 _INVOICENINJA_V4_BASE_URL = "https://app.invoiceninja.com"
 _INVOICENINJA_V5_BASE_URL = "https://invoicing.co"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_ERPNEXT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="erpnext",
+        aliases=("erp_next", "erpnext_api", "frappe"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "domain"), required=False
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "key")),
+            CredentialFieldGroup(role="api_secret", names=("api_secret", "apiSecret", "secret")),
+            CredentialFieldGroup(role="subdomain", names=("subdomain",), required=False),
+            CredentialFieldGroup(
+                role="cloud_domain", names=("cloud_domain", "cloudDomain"), required=False
+            ),
+        ),
+        hint_fields=("api_key", "api_secret"),
+        env_var="ERPNEXT_API_KEY and ERPNEXT_API_SECRET",
+        display_name="ERPNext",
+    )
+)
+
+_ODOO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="odoo",
+        aliases=("odoo_api",),
+        groups=(
+            CredentialFieldGroup(role="url", names=("url", "base_url", "site_url")),
+            CredentialFieldGroup(role="username", names=("username", "email", "user")),
+            CredentialFieldGroup(role="password", names=("password", "api_key", "apiKey")),
+            CredentialFieldGroup(role="database", names=("database", "db")),
+        ),
+        hint_fields=("url", "username", "password", "database"),
+        env_var="ODOO_URL, ODOO_USERNAME, ODOO_PASSWORD, and ODOO_DATABASE",
+        display_name="Odoo",
+    )
+)
+
+_INVOICENINJA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="invoiceninja",
+        aliases=("invoice_ninja", "invoice_ninja_api", "invoiceninja_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="api_version", names=("api_version", "version"), required=False
+            ),
+            CredentialFieldGroup(role="base_url", names=BASE_URL_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="api_token", names=("api_token", "apiToken", "token", "value")
+            ),
+            CredentialFieldGroup(
+                role="secret", names=("secret", "api_secret", "apiSecret"), required=False
+            ),
+        ),
+        hint_fields=("api_token", "apiToken", "token", "value"),
+        env_var="INVOICENINJA_API_TOKEN",
+        display_name="Invoice Ninja",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -111,40 +179,40 @@ def _request_json(
 def _erpnext_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="erpnext",
-            provider_aliases=("erp_next", "erpnext_api", "frappe"),
-            field_names=("base_url", "url", "domain"),
+            provider=_ERPNEXT.provider,
+            provider_aliases=_ERPNEXT.aliases,
+            field_names=_ERPNEXT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("erpnext_base_url")
     )
     api_key = _credential_value(
-        provider="erpnext",
-        provider_aliases=("erp_next", "erpnext_api", "frappe"),
-        field_names=("api_key", "apiKey", "key"),
+        provider=_ERPNEXT.provider,
+        provider_aliases=_ERPNEXT.aliases,
+        field_names=_ERPNEXT.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("erpnext_api_key")
     api_secret = _credential_value(
-        provider="erpnext",
-        provider_aliases=("erp_next", "erpnext_api", "frappe"),
-        field_names=("api_secret", "apiSecret", "secret"),
+        provider=_ERPNEXT.provider,
+        provider_aliases=_ERPNEXT.aliases,
+        field_names=_ERPNEXT.group("api_secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("erpnext_api_secret")
     if not base:
         subdomain = _credential_value(
-            provider="erpnext",
-            provider_aliases=("erp_next", "erpnext_api", "frappe"),
-            field_names=("subdomain",),
+            provider=_ERPNEXT.provider,
+            provider_aliases=_ERPNEXT.aliases,
+            field_names=_ERPNEXT.group("subdomain"),
             tool_name=tool_name,
             config=config,
         ) or _settings_value("erpnext_subdomain")
         domain = _credential_value(
-            provider="erpnext",
-            provider_aliases=("erp_next", "erpnext_api", "frappe"),
-            field_names=("cloud_domain", "cloudDomain"),
+            provider=_ERPNEXT.provider,
+            provider_aliases=_ERPNEXT.aliases,
+            field_names=_ERPNEXT.group("cloud_domain"),
             tool_name=tool_name,
             config=config,
         ) or _settings_value("erpnext_cloud_domain")
@@ -157,11 +225,11 @@ def _erpnext_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         )
     if not api_key or not api_secret:
         return _base_url(base), _setup_hint(
-            provider="erpnext",
-            field_names=("api_key", "api_secret"),
+            provider=_ERPNEXT.provider,
+            field_names=_ERPNEXT.hint_fields,
             tool_name=tool_name,
-            env_var="ERPNEXT_API_KEY and ERPNEXT_API_SECRET",
-            display_name="ERPNext",
+            env_var=_ERPNEXT.env_var,
+            display_name=_ERPNEXT.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -207,32 +275,32 @@ def _odoo_database_from_url(url: str) -> str:
 def _odoo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, str, str, str | None]:
     url = (
         _credential_value(
-            provider="odoo",
-            provider_aliases=("odoo_api",),
-            field_names=("url", "base_url", "site_url"),
+            provider=_ODOO.provider,
+            provider_aliases=_ODOO.aliases,
+            field_names=_ODOO.group("url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("odoo_url")
     )
     username = _credential_value(
-        provider="odoo",
-        provider_aliases=("odoo_api",),
-        field_names=("username", "email", "user"),
+        provider=_ODOO.provider,
+        provider_aliases=_ODOO.aliases,
+        field_names=_ODOO.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("odoo_username")
     password = _credential_value(
-        provider="odoo",
-        provider_aliases=("odoo_api",),
-        field_names=("password", "api_key", "apiKey"),
+        provider=_ODOO.provider,
+        provider_aliases=_ODOO.aliases,
+        field_names=_ODOO.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("odoo_password")
     database = _credential_value(
-        provider="odoo",
-        provider_aliases=("odoo_api",),
-        field_names=("database", "db"),
+        provider=_ODOO.provider,
+        provider_aliases=_ODOO.aliases,
+        field_names=_ODOO.group("database"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("odoo_database")
@@ -245,11 +313,11 @@ def _odoo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
     database = database or _odoo_database_from_url(base)
     if not username or not password or not database:
         return base, database, username or "", password or "", _setup_hint(
-            provider="odoo",
-            field_names=("url", "username", "password", "database"),
+            provider=_ODOO.provider,
+            field_names=_ODOO.hint_fields,
             tool_name=tool_name,
-            env_var="ODOO_URL, ODOO_USERNAME, ODOO_PASSWORD, and ODOO_DATABASE",
-            display_name="Odoo",
+            env_var=_ODOO.env_var,
+            display_name=_ODOO.display_name,
         )
     return base, database, username, password, None
 
@@ -341,9 +409,9 @@ def _invoiceninja_resource(resource: str) -> str:
 def _invoiceninja_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
     version = (
         _credential_value(
-            provider="invoiceninja",
-            provider_aliases=("invoice_ninja", "invoice_ninja_api", "invoiceninja_api"),
-            field_names=("api_version", "version"),
+            provider=_INVOICENINJA.provider,
+            provider_aliases=_INVOICENINJA.aliases,
+            field_names=_INVOICENINJA.group("api_version"),
             tool_name=tool_name,
             config=config,
         )
@@ -353,9 +421,9 @@ def _invoiceninja_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
     default_base = _INVOICENINJA_V4_BASE_URL if version == "v4" else _INVOICENINJA_V5_BASE_URL
     base = (
         _credential_value(
-            provider="invoiceninja",
-            provider_aliases=("invoice_ninja", "invoice_ninja_api", "invoiceninja_api"),
-            field_names=BASE_URL_FIELDS,
+            provider=_INVOICENINJA.provider,
+            provider_aliases=_INVOICENINJA.aliases,
+            field_names=_INVOICENINJA.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -363,26 +431,26 @@ def _invoiceninja_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
         or default_base
     )
     token = _credential_value(
-        provider="invoiceninja",
-        provider_aliases=("invoice_ninja", "invoice_ninja_api", "invoiceninja_api"),
-        field_names=("api_token", "apiToken", "token", "value"),
+        provider=_INVOICENINJA.provider,
+        provider_aliases=_INVOICENINJA.aliases,
+        field_names=_INVOICENINJA.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("invoiceninja_api_token")
     secret = _credential_value(
-        provider="invoiceninja",
-        provider_aliases=("invoice_ninja", "invoice_ninja_api", "invoiceninja_api"),
-        field_names=("secret", "api_secret", "apiSecret"),
+        provider=_INVOICENINJA.provider,
+        provider_aliases=_INVOICENINJA.aliases,
+        field_names=_INVOICENINJA.group("secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("invoiceninja_secret")
     if not token:
         return _base_url(base), version, _setup_hint(
-            provider="invoiceninja",
-            field_names=("api_token", "apiToken", "token", "value"),
+            provider=_INVOICENINJA.provider,
+            field_names=_INVOICENINJA.hint_fields,
             tool_name=tool_name,
-            env_var="INVOICENINJA_API_TOKEN",
-            display_name="Invoice Ninja",
+            env_var=_INVOICENINJA.env_var,
+            display_name=_INVOICENINJA.display_name,
         )
     headers = {"Accept": "application/json", "User-Agent": "Nymeria"}
     if len(token) < 64:

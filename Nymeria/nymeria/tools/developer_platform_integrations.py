@@ -17,6 +17,11 @@ from ..core.http_policy import (
     validate_http_egress_url,
 )
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     clamp_limit,
     credential_value as _credential_value,
@@ -30,6 +35,71 @@ _HTTP_TIMEOUT = 30.0
 _MAX_JSON_CHARS = 60_000
 _GITHUB_DEFAULT_BASE_URL = "https://api.github.com"
 _GITLAB_DEFAULT_BASE_URL = "https://gitlab.com/api/v4"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value arguments from the specs; these providers surface no
+# setup hint. Field-name tuple ORDER is behaviorally significant.
+_GITHUB = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="github",
+        aliases=("github_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "api_base_url", "server", "url"), required=False
+            ),
+            CredentialFieldGroup(role="token", names=("access_token", "token", "api_key", "value")),
+        ),
+    )
+)
+
+_GITLAB = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="gitlab",
+        aliases=("gitlab_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "server", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token", names=("access_token", "private_token", "token", "api_key", "value")
+            ),
+        ),
+    )
+)
+
+# Generic GraphQL connector: endpoint plus several alternative, all-optional
+# auth mechanisms, so every group is required=False.
+_GRAPHQL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="graphql",
+        aliases=("graphql_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="endpoint",
+                names=("endpoint", "graphql_url", "api_url", "base_url", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="headers", names=("headers_json", "headersJson", "headers"), required=False
+            ),
+            CredentialFieldGroup(
+                role="authorization",
+                names=("authorization", "auth_header", "authHeader"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="bearer_token",
+                names=("bearer_token", "bearerToken", "access_token", "accessToken", "token", "value"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey"), required=False),
+            CredentialFieldGroup(
+                role="api_key_header", names=("api_key_header", "apiKeyHeader"), required=False
+            ),
+        ),
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -85,9 +155,9 @@ def _gitlab_api_base_url(base_url: str) -> str:
 def _github_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str]]:
     base_url = (
         _credential_value(
-            provider="github",
-            provider_aliases=("github_api",),
-            field_names=("base_url", "api_base_url", "server", "url"),
+            provider=_GITHUB.provider,
+            provider_aliases=_GITHUB.aliases,
+            field_names=_GITHUB.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -95,9 +165,9 @@ def _github_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _GITHUB_DEFAULT_BASE_URL
     )
     token = _credential_value(
-        provider="github",
-        provider_aliases=("github_api",),
-        field_names=("access_token", "token", "api_key", "value"),
+        provider=_GITHUB.provider,
+        provider_aliases=_GITHUB.aliases,
+        field_names=_GITHUB.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("github_token")
@@ -114,9 +184,9 @@ def _github_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 def _gitlab_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str]]:
     base_url = (
         _credential_value(
-            provider="gitlab",
-            provider_aliases=("gitlab_api",),
-            field_names=("base_url", "server", "url"),
+            provider=_GITLAB.provider,
+            provider_aliases=_GITLAB.aliases,
+            field_names=_GITLAB.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -124,9 +194,9 @@ def _gitlab_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _GITLAB_DEFAULT_BASE_URL
     )
     token = _credential_value(
-        provider="gitlab",
-        provider_aliases=("gitlab_api",),
-        field_names=("access_token", "private_token", "token", "api_key", "value"),
+        provider=_GITLAB.provider,
+        provider_aliases=_GITLAB.aliases,
+        field_names=_GITLAB.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("gitlab_token")
@@ -144,9 +214,9 @@ def _graphql_endpoint(
     return (
         endpoint.strip()
         or _credential_value(
-            provider="graphql",
-            provider_aliases=("graphql_api",),
-            field_names=("endpoint", "graphql_url", "api_url", "base_url", "url"),
+            provider=_GRAPHQL.provider,
+            provider_aliases=_GRAPHQL.aliases,
+            field_names=_GRAPHQL.group("endpoint"),
             tool_name=tool_name,
             config=config,
         )
@@ -167,9 +237,9 @@ def _graphql_headers(
     }
     stored_headers = (
         _credential_value(
-            provider="graphql",
-            provider_aliases=("graphql_api",),
-            field_names=("headers_json", "headersJson", "headers"),
+            provider=_GRAPHQL.provider,
+            provider_aliases=_GRAPHQL.aliases,
+            field_names=_GRAPHQL.group("headers"),
             tool_name=tool_name,
             config=config,
         )
@@ -182,34 +252,34 @@ def _graphql_headers(
     headers.update({str(key): str(value) for key, value in request_headers.items() if value is not None})
 
     authorization = _credential_value(
-        provider="graphql",
-        provider_aliases=("graphql_api",),
-        field_names=("authorization", "auth_header", "authHeader"),
+        provider=_GRAPHQL.provider,
+        provider_aliases=_GRAPHQL.aliases,
+        field_names=_GRAPHQL.group("authorization"),
         tool_name=tool_name,
         config=config,
     )
     bearer_token = (
         _credential_value(
-            provider="graphql",
-            provider_aliases=("graphql_api",),
-            field_names=("bearer_token", "bearerToken", "access_token", "accessToken", "token", "value"),
+            provider=_GRAPHQL.provider,
+            provider_aliases=_GRAPHQL.aliases,
+            field_names=_GRAPHQL.group("bearer_token"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("graphql_bearer_token")
     )
     api_key = _credential_value(
-        provider="graphql",
-        provider_aliases=("graphql_api",),
-        field_names=("api_key", "apiKey"),
+        provider=_GRAPHQL.provider,
+        provider_aliases=_GRAPHQL.aliases,
+        field_names=_GRAPHQL.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("graphql_api_key")
     api_key_header = (
         _credential_value(
-            provider="graphql",
-            provider_aliases=("graphql_api",),
-            field_names=("api_key_header", "apiKeyHeader"),
+            provider=_GRAPHQL.provider,
+            provider_aliases=_GRAPHQL.aliases,
+            field_names=_GRAPHQL.group("api_key_header"),
             tool_name=tool_name,
             config=config,
         )

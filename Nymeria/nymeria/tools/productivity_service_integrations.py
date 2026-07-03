@@ -9,6 +9,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     BASE_URL_FIELDS,
     base_url as _base_url,
@@ -25,6 +30,41 @@ _HTTP_TIMEOUT = 30.0
 _MAX_JSON_CHARS = 60_000
 _TODOIST_BASE_URL = "https://api.todoist.com/api/v1"
 _TRELLO_BASE_URL = "https://api.trello.com/1"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_TODOIST = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="todoist",
+        aliases=("todoist_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="token", names=("api_key", "access_token", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "value"),
+        env_var="TODOIST_API_KEY",
+        display_name="Todoist",
+    )
+)
+
+_TRELLO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="trello",
+        aliases=("trello_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_FIELDS, required=False),
+            CredentialFieldGroup(role="api_key", names=("api_key", "key")),
+            CredentialFieldGroup(role="api_token", names=("api_token", "token", "value")),
+        ),
+        hint_fields=("api_key", "api_token"),
+        env_var="TRELLO_API_KEY and TRELLO_API_TOKEN",
+        display_name="Trello",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -92,9 +132,9 @@ def _request_json(
 def _todoist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="todoist",
-            provider_aliases=("todoist_api",),
-            field_names=BASE_URL_FIELDS,
+            provider=_TODOIST.provider,
+            provider_aliases=_TODOIST.aliases,
+            field_names=_TODOIST.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -102,19 +142,19 @@ def _todoist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _TODOIST_BASE_URL
     )
     token = _credential_value(
-        provider="todoist",
-        provider_aliases=("todoist_api",),
-        field_names=("api_key", "access_token", "token", "value"),
+        provider=_TODOIST.provider,
+        provider_aliases=_TODOIST.aliases,
+        field_names=_TODOIST.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("todoist_api_key")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="todoist",
-            field_names=("api_key", "access_token", "value"),
+            provider=_TODOIST.provider,
+            field_names=_TODOIST.hint_fields,
             tool_name=tool_name,
-            env_var="TODOIST_API_KEY",
-            display_name="Todoist",
+            env_var=_TODOIST.env_var,
+            display_name=_TODOIST.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -126,9 +166,9 @@ def _todoist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _trello_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="trello",
-            provider_aliases=("trello_api",),
-            field_names=BASE_URL_FIELDS,
+            provider=_TRELLO.provider,
+            provider_aliases=_TRELLO.aliases,
+            field_names=_TRELLO.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -136,26 +176,26 @@ def _trello_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _TRELLO_BASE_URL
     )
     key = _credential_value(
-        provider="trello",
-        provider_aliases=("trello_api",),
-        field_names=("api_key", "key"),
+        provider=_TRELLO.provider,
+        provider_aliases=_TRELLO.aliases,
+        field_names=_TRELLO.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("trello_api_key")
     token = _credential_value(
-        provider="trello",
-        provider_aliases=("trello_api",),
-        field_names=("api_token", "token", "value"),
+        provider=_TRELLO.provider,
+        provider_aliases=_TRELLO.aliases,
+        field_names=_TRELLO.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("trello_api_token")
     if not key or not token:
         return _base_url(base), _setup_hint(
-            provider="trello",
-            field_names=("api_key", "api_token"),
+            provider=_TRELLO.provider,
+            field_names=_TRELLO.hint_fields,
             tool_name=tool_name,
-            env_var="TRELLO_API_KEY and TRELLO_API_TOKEN",
-            display_name="Trello",
+            env_var=_TRELLO.env_var,
+            display_name=_TRELLO.display_name,
         )
     return _base_url(base), {"key": key, "token": token}
 

@@ -12,6 +12,11 @@ from urllib.parse import quote, urlencode, urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     basic_auth as _auth_basic,
@@ -147,6 +152,277 @@ _XERO_RESOURCES = {
     "invoices": ("Invoices", "InvoiceID"),
 }
 
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_STRIPE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="stripe",
+        aliases=("stripe_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="secret_key",
+                names=("secret_key", "secretKey", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("secret_key", "api_key", "token", "value"),
+        env_var="STRIPE_SECRET_KEY",
+        display_name="Stripe",
+    )
+)
+
+_SHOPIFY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="shopify",
+        aliases=("shopify_api", "shopify_access_token"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "admin_url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="shop", names=("shop_subdomain", "shopSubdomain", "shop", "domain")
+            ),
+            CredentialFieldGroup(
+                role="api_version",
+                names=("api_version", "apiVersion", "version"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="access_token", names=("access_token", "accessToken", "token", "value")
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "username")),
+            CredentialFieldGroup(
+                role="password", names=("password", "api_password", "apiPassword", "secret")
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="SHOPIFY_ACCESS_TOKEN or SHOPIFY_API_KEY + SHOPIFY_PASSWORD",
+        display_name="Shopify",
+    )
+)
+
+_WOOCOMMERCE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="woocommerce",
+        aliases=("woo_commerce", "woocommerce_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "site_url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="consumer_key",
+                names=("consumer_key", "consumerKey", "api_key", "apiKey", "username"),
+            ),
+            CredentialFieldGroup(
+                role="consumer_secret",
+                names=("consumer_secret", "consumerSecret", "api_secret", "apiSecret", "password"),
+            ),
+        ),
+        hint_fields=("consumer_key", "consumer_secret"),
+        env_var="WOOCOMMERCE_CONSUMER_KEY + WOOCOMMERCE_CONSUMER_SECRET",
+        display_name="WooCommerce",
+    )
+)
+
+_CHARGEBEE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="chargebee",
+        aliases=("chargebee_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="site",
+                names=("site", "account_name", "accountName", "subdomain"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "token", "value"),
+        env_var="CHARGEBEE_API_KEY",
+        display_name="Chargebee",
+    )
+)
+
+_PADDLE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="paddle",
+        aliases=("paddle_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="sandbox",
+                names=("sandbox", "use_sandbox", "useSandbox"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="vendor_id", names=("vendor_id", "vendorId")),
+            CredentialFieldGroup(
+                role="vendor_auth_code",
+                names=(
+                    "vendor_auth_code",
+                    "vendorAuthCode",
+                    "auth_code",
+                    "authCode",
+                    "api_key",
+                    "apiKey",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=("vendor_id", "vendor_auth_code"),
+        env_var="PADDLE_VENDOR_ID + PADDLE_VENDOR_AUTH_CODE",
+        display_name="Paddle",
+    )
+)
+
+_PROFITWELL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="profitwell",
+        aliases=("profitwell_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="access_token",
+                names=("access_token", "accessToken", "api_token", "apiToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="PROFITWELL_API_TOKEN",
+        display_name="ProfitWell",
+    )
+)
+
+_TAPFILIATE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="tapfiliate",
+        aliases=("tapfiliate_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="TAPFILIATE_API_KEY",
+        display_name="Tapfiliate",
+    )
+)
+
+_MAGENTO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="magento",
+        aliases=("magento2", "magento2_api", "magento_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("host", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="access_token", names=("access_token", "accessToken", "token", "value")
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="MAGENTO_ACCESS_TOKEN",
+        display_name="Magento",
+    )
+)
+
+_UNLEASHED = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="unleashed",
+        aliases=("unleashed_software", "unleashed_software_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_id", names=("api_id", "apiId", "id")),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "key", "value")),
+        ),
+        hint_fields=("api_id", "api_key"),
+        env_var="UNLEASHED_API_ID + UNLEASHED_API_KEY",
+        display_name="Unleashed",
+    )
+)
+
+_QUICKBOOKS = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="quickbooks",
+        aliases=(
+            "quickbooks_online",
+            "quickbooks_oauth2",
+            "quick_books_oauth2_api",
+            "quickbooks_api",
+        ),
+        groups=(
+            CredentialFieldGroup(
+                role="environment",
+                names=("environment", "env", "sandbox"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="realm_id",
+                names=("realm_id", "realmId", "company_id", "companyId"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="access_token", names=("access_token", "accessToken", "token", "value")
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="QUICKBOOKS_ACCESS_TOKEN",
+        display_name="QuickBooks Online",
+    )
+)
+
+_XERO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="xero",
+        aliases=("xero_oauth2", "xero_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="tenant_id",
+                names=("tenant_id", "tenantId", "organization_id", "organizationId"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="access_token", names=("access_token", "accessToken", "token", "value")
+            ),
+            CredentialFieldGroup(
+                role="connections_url",
+                names=("connections_url", "connectionsUrl"),
+                required=False,
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="XERO_ACCESS_TOKEN",
+        display_name="Xero",
+    )
+)
+
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
     return dump_json(data, max_chars=max_chars)
@@ -265,9 +541,9 @@ def _truthy(value: Optional[str]) -> bool:
 def _stripe_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="stripe",
-            provider_aliases=("stripe_api",),
-            field_names=("base_url", "url"),
+            provider=_STRIPE.provider,
+            provider_aliases=_STRIPE.aliases,
+            field_names=_STRIPE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -275,19 +551,19 @@ def _stripe_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _STRIPE_BASE_URL
     )
     secret_key = _credential_value(
-        provider="stripe",
-        provider_aliases=("stripe_api",),
-        field_names=("secret_key", "secretKey", "api_key", "apiKey", "token", "value"),
+        provider=_STRIPE.provider,
+        provider_aliases=_STRIPE.aliases,
+        field_names=_STRIPE.group("secret_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("stripe_secret_key")
     if not secret_key:
         return _base_url(base), _setup_hint(
-            provider="stripe",
-            field_names=("secret_key", "api_key", "token", "value"),
+            provider=_STRIPE.provider,
+            field_names=_STRIPE.hint_fields,
             tool_name=tool_name,
-            env_var="STRIPE_SECRET_KEY",
-            display_name="Stripe",
+            env_var=_STRIPE.env_var,
+            display_name=_STRIPE.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -297,26 +573,26 @@ def _stripe_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 
 
 def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    provider_aliases = ("shopify_api", "shopify_access_token")
+    provider_aliases = _SHOPIFY.aliases
     base = _credential_value(
-        provider="shopify",
+        provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
-        field_names=("base_url", "url", "admin_url"),
+        field_names=_SHOPIFY.group("base_url"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("shopify_base_url")
     shop = _credential_value(
-        provider="shopify",
+        provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
-        field_names=("shop_subdomain", "shopSubdomain", "shop", "domain"),
+        field_names=_SHOPIFY.group("shop"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("shopify_shop")
     api_version = (
         _credential_value(
-            provider="shopify",
+            provider=_SHOPIFY.provider,
             provider_aliases=provider_aliases,
-            field_names=("api_version", "apiVersion", "version"),
+            field_names=_SHOPIFY.group("api_version"),
             tool_name=tool_name,
             config=config,
         )
@@ -331,9 +607,9 @@ def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
             )
         base = f"https://{_shopify_host_from_shop(shop)}/admin/api/{api_version.strip()}"
     access_token = _credential_value(
-        provider="shopify",
+        provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
-        field_names=("access_token", "accessToken", "token", "value"),
+        field_names=_SHOPIFY.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("shopify_access_token")
@@ -345,26 +621,26 @@ def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
             "X-Shopify-Access-Token": access_token,
         }
     api_key = _credential_value(
-        provider="shopify",
+        provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
-        field_names=("api_key", "apiKey", "username"),
+        field_names=_SHOPIFY.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("shopify_api_key")
     password = _credential_value(
-        provider="shopify",
+        provider=_SHOPIFY.provider,
         provider_aliases=provider_aliases,
-        field_names=("password", "api_password", "apiPassword", "secret"),
+        field_names=_SHOPIFY.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("shopify_password")
     if not api_key or not password:
         return _base_url(base), _setup_hint(
-            provider="shopify",
-            field_names=("access_token", "token", "value"),
+            provider=_SHOPIFY.provider,
+            field_names=_SHOPIFY.hint_fields,
             tool_name=tool_name,
-            env_var="SHOPIFY_ACCESS_TOKEN or SHOPIFY_API_KEY + SHOPIFY_PASSWORD",
-            display_name="Shopify",
+            env_var=_SHOPIFY.env_var,
+            display_name=_SHOPIFY.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -377,9 +653,9 @@ def _shopify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _woocommerce_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="woocommerce",
-            provider_aliases=("woo_commerce", "woocommerce_api"),
-            field_names=("base_url", "url", "site_url"),
+            provider=_WOOCOMMERCE.provider,
+            provider_aliases=_WOOCOMMERCE.aliases,
+            field_names=_WOOCOMMERCE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -387,16 +663,16 @@ def _woocommerce_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         or _settings_value("woocommerce_url")
     )
     consumer_key = _credential_value(
-        provider="woocommerce",
-        provider_aliases=("woo_commerce", "woocommerce_api"),
-        field_names=("consumer_key", "consumerKey", "api_key", "apiKey", "username"),
+        provider=_WOOCOMMERCE.provider,
+        provider_aliases=_WOOCOMMERCE.aliases,
+        field_names=_WOOCOMMERCE.group("consumer_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("woocommerce_consumer_key")
     consumer_secret = _credential_value(
-        provider="woocommerce",
-        provider_aliases=("woo_commerce", "woocommerce_api"),
-        field_names=("consumer_secret", "consumerSecret", "api_secret", "apiSecret", "password"),
+        provider=_WOOCOMMERCE.provider,
+        provider_aliases=_WOOCOMMERCE.aliases,
+        field_names=_WOOCOMMERCE.group("consumer_secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("woocommerce_consumer_secret")
@@ -410,11 +686,11 @@ def _woocommerce_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         base = base.rstrip("/") + "/wp-json/wc/v3"
     if not consumer_key or not consumer_secret:
         return base, _setup_hint(
-            provider="woocommerce",
-            field_names=("consumer_key", "consumer_secret"),
+            provider=_WOOCOMMERCE.provider,
+            field_names=_WOOCOMMERCE.hint_fields,
             tool_name=tool_name,
-            env_var="WOOCOMMERCE_CONSUMER_KEY + WOOCOMMERCE_CONSUMER_SECRET",
-            display_name="WooCommerce",
+            env_var=_WOOCOMMERCE.env_var,
+            display_name=_WOOCOMMERCE.display_name,
         )
     return base, {
         "Accept": "application/json",
@@ -426,16 +702,16 @@ def _woocommerce_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 
 def _chargebee_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = _credential_value(
-        provider="chargebee",
-        provider_aliases=("chargebee_api",),
-        field_names=("base_url", "url"),
+        provider=_CHARGEBEE.provider,
+        provider_aliases=_CHARGEBEE.aliases,
+        field_names=_CHARGEBEE.group("base_url"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("chargebee_base_url")
     site = _credential_value(
-        provider="chargebee",
-        provider_aliases=("chargebee_api",),
-        field_names=("site", "account_name", "accountName", "subdomain"),
+        provider=_CHARGEBEE.provider,
+        provider_aliases=_CHARGEBEE.aliases,
+        field_names=_CHARGEBEE.group("site"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("chargebee_site")
@@ -447,19 +723,19 @@ def _chargebee_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
             )
         base = f"https://{site.strip().removesuffix('.chargebee.com')}.chargebee.com/api/{_CHARGEBEE_API_VERSION}"
     api_key = _credential_value(
-        provider="chargebee",
-        provider_aliases=("chargebee_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_CHARGEBEE.provider,
+        provider_aliases=_CHARGEBEE.aliases,
+        field_names=_CHARGEBEE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("chargebee_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="chargebee",
-            field_names=("api_key", "token", "value"),
+            provider=_CHARGEBEE.provider,
+            field_names=_CHARGEBEE.hint_fields,
             tool_name=tool_name,
-            env_var="CHARGEBEE_API_KEY",
-            display_name="Chargebee",
+            env_var=_CHARGEBEE.env_var,
+            display_name=_CHARGEBEE.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -470,20 +746,20 @@ def _chargebee_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 
 
 def _paddle_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    provider_aliases = ("paddle_api",)
+    provider_aliases = _PADDLE.aliases
     sandbox_value = _credential_value(
-        provider="paddle",
+        provider=_PADDLE.provider,
         provider_aliases=provider_aliases,
-        field_names=("sandbox", "use_sandbox", "useSandbox"),
+        field_names=_PADDLE.group("sandbox"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("paddle_sandbox")
     default_base = _PADDLE_SANDBOX_BASE_URL if _truthy(str(sandbox_value)) else _PADDLE_BASE_URL
     base = (
         _credential_value(
-            provider="paddle",
+            provider=_PADDLE.provider,
             provider_aliases=provider_aliases,
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            field_names=_PADDLE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -491,26 +767,26 @@ def _paddle_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or default_base
     )
     vendor_id = _credential_value(
-        provider="paddle",
+        provider=_PADDLE.provider,
         provider_aliases=provider_aliases,
-        field_names=("vendor_id", "vendorId"),
+        field_names=_PADDLE.group("vendor_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("paddle_vendor_id")
     auth_code = _credential_value(
-        provider="paddle",
+        provider=_PADDLE.provider,
         provider_aliases=provider_aliases,
-        field_names=("vendor_auth_code", "vendorAuthCode", "auth_code", "authCode", "api_key", "apiKey", "value"),
+        field_names=_PADDLE.group("vendor_auth_code"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("paddle_vendor_auth_code")
     if not vendor_id or not auth_code:
         return _base_url(base), _setup_hint(
-            provider="paddle",
-            field_names=("vendor_id", "vendor_auth_code"),
+            provider=_PADDLE.provider,
+            field_names=_PADDLE.hint_fields,
             tool_name=tool_name,
-            env_var="PADDLE_VENDOR_ID + PADDLE_VENDOR_AUTH_CODE",
-            display_name="Paddle",
+            env_var=_PADDLE.env_var,
+            display_name=_PADDLE.display_name,
         )
     return _base_url(base), {
         "vendor_id": str(vendor_id),
@@ -555,9 +831,9 @@ def _paddle_response(data: Any, path: str = "response") -> Any:
 def _profitwell_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="profitwell",
-            provider_aliases=("profitwell_api",),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_PROFITWELL.provider,
+            provider_aliases=_PROFITWELL.aliases,
+            field_names=_PROFITWELL.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -565,19 +841,19 @@ def _profitwell_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or _PROFITWELL_BASE_URL
     )
     token = _credential_value(
-        provider="profitwell",
-        provider_aliases=("profitwell_api",),
-        field_names=("access_token", "accessToken", "api_token", "apiToken", "token", "value"),
+        provider=_PROFITWELL.provider,
+        provider_aliases=_PROFITWELL.aliases,
+        field_names=_PROFITWELL.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("profitwell_api_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="profitwell",
-            field_names=("access_token", "token", "value"),
+            provider=_PROFITWELL.provider,
+            field_names=_PROFITWELL.hint_fields,
             tool_name=tool_name,
-            env_var="PROFITWELL_API_TOKEN",
-            display_name="ProfitWell",
+            env_var=_PROFITWELL.env_var,
+            display_name=_PROFITWELL.display_name,
         )
     return _base_url(base), {"Accept": "application/json", "Authorization": token, "User-Agent": "Nymeria"}
 
@@ -609,9 +885,9 @@ def _profitwell_simplify_metrics(data: Any, metric_type: str) -> Any:
 def _tapfiliate_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="tapfiliate",
-            provider_aliases=("tapfiliate_api",),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_TAPFILIATE.provider,
+            provider_aliases=_TAPFILIATE.aliases,
+            field_names=_TAPFILIATE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -619,19 +895,19 @@ def _tapfiliate_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or _TAPFILIATE_BASE_URL
     )
     key = _credential_value(
-        provider="tapfiliate",
-        provider_aliases=("tapfiliate_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_TAPFILIATE.provider,
+        provider_aliases=_TAPFILIATE.aliases,
+        field_names=_TAPFILIATE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("tapfiliate_api_key")
     if not key:
         return _base_url(base), _setup_hint(
-            provider="tapfiliate",
-            field_names=("api_key", "value"),
+            provider=_TAPFILIATE.provider,
+            field_names=_TAPFILIATE.hint_fields,
             tool_name=tool_name,
-            env_var="TAPFILIATE_API_KEY",
-            display_name="Tapfiliate",
+            env_var=_TAPFILIATE.env_var,
+            display_name=_TAPFILIATE.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -644,9 +920,9 @@ def _tapfiliate_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 def _magento_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="magento",
-            provider_aliases=("magento2", "magento2_api", "magento_api"),
-            field_names=("host", "base_url", "baseUrl", "url"),
+            provider=_MAGENTO.provider,
+            provider_aliases=_MAGENTO.aliases,
+            field_names=_MAGENTO.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -654,9 +930,9 @@ def _magento_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _settings_value("magento_host")
     )
     access_token = _credential_value(
-        provider="magento",
-        provider_aliases=("magento2", "magento2_api", "magento_api"),
-        field_names=("access_token", "accessToken", "token", "value"),
+        provider=_MAGENTO.provider,
+        provider_aliases=_MAGENTO.aliases,
+        field_names=_MAGENTO.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("magento_access_token")
@@ -667,11 +943,11 @@ def _magento_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         )
     if not access_token:
         return _base_url(base), _setup_hint(
-            provider="magento",
-            field_names=("access_token", "token", "value"),
+            provider=_MAGENTO.provider,
+            field_names=_MAGENTO.hint_fields,
             tool_name=tool_name,
-            env_var="MAGENTO_ACCESS_TOKEN",
-            display_name="Magento",
+            env_var=_MAGENTO.env_var,
+            display_name=_MAGENTO.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -705,9 +981,9 @@ def _magento_search_params(search_criteria_json: str, *, limit: int, current_pag
 def _unleashed_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="unleashed",
-            provider_aliases=("unleashed_software", "unleashed_software_api"),
-            field_names=("base_url", "baseUrl", "url"),
+            provider=_UNLEASHED.provider,
+            provider_aliases=_UNLEASHED.aliases,
+            field_names=_UNLEASHED.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -715,26 +991,26 @@ def _unleashed_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         or _UNLEASHED_BASE_URL
     )
     api_id = _credential_value(
-        provider="unleashed",
-        provider_aliases=("unleashed_software", "unleashed_software_api"),
-        field_names=("api_id", "apiId", "id"),
+        provider=_UNLEASHED.provider,
+        provider_aliases=_UNLEASHED.aliases,
+        field_names=_UNLEASHED.group("api_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("unleashed_api_id")
     api_key = _credential_value(
-        provider="unleashed",
-        provider_aliases=("unleashed_software", "unleashed_software_api"),
-        field_names=("api_key", "apiKey", "key", "value"),
+        provider=_UNLEASHED.provider,
+        provider_aliases=_UNLEASHED.aliases,
+        field_names=_UNLEASHED.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("unleashed_api_key")
     if not api_id or not api_key:
         return _base_url(base), _setup_hint(
-            provider="unleashed",
-            field_names=("api_id", "api_key"),
+            provider=_UNLEASHED.provider,
+            field_names=_UNLEASHED.hint_fields,
             tool_name=tool_name,
-            env_var="UNLEASHED_API_ID + UNLEASHED_API_KEY",
-            display_name="Unleashed",
+            env_var=_UNLEASHED.env_var,
+            display_name=_UNLEASHED.display_name,
         )
     return _base_url(base), {"api_id": api_id, "api_key": api_key}
 
@@ -792,12 +1068,12 @@ def _xero_resource(resource: str) -> tuple[str, str]:
 
 
 def _quickbooks_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    provider_aliases = ("quickbooks_online", "quickbooks_oauth2", "quick_books_oauth2_api", "quickbooks_api")
+    provider_aliases = _QUICKBOOKS.aliases
     environment = (
         _credential_value(
-            provider="quickbooks",
+            provider=_QUICKBOOKS.provider,
             provider_aliases=provider_aliases,
-            field_names=("environment", "env", "sandbox"),
+            field_names=_QUICKBOOKS.group("environment"),
             tool_name=tool_name,
             config=config,
         )
@@ -807,9 +1083,9 @@ def _quickbooks_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
     default_base = _QUICKBOOKS_SANDBOX_BASE_URL if _truthy(str(environment)) else _QUICKBOOKS_PROD_BASE_URL
     base = (
         _credential_value(
-            provider="quickbooks",
+            provider=_QUICKBOOKS.provider,
             provider_aliases=provider_aliases,
-            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            field_names=_QUICKBOOKS.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -817,9 +1093,9 @@ def _quickbooks_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or default_base
     )
     realm_id = _credential_value(
-        provider="quickbooks",
+        provider=_QUICKBOOKS.provider,
         provider_aliases=provider_aliases,
-        field_names=("realm_id", "realmId", "company_id", "companyId"),
+        field_names=_QUICKBOOKS.group("realm_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("quickbooks_realm_id")
@@ -829,19 +1105,19 @@ def _quickbooks_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
             '"realm_id" / "company_id", or set QUICKBOOKS_REALM_ID.'
         )
     access_token = _credential_value(
-        provider="quickbooks",
+        provider=_QUICKBOOKS.provider,
         provider_aliases=provider_aliases,
-        field_names=("access_token", "accessToken", "token", "value"),
+        field_names=_QUICKBOOKS.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("quickbooks_access_token")
     if not access_token:
         return _base_url(base), _setup_hint(
-            provider="quickbooks",
-            field_names=("access_token", "token", "value"),
+            provider=_QUICKBOOKS.provider,
+            field_names=_QUICKBOOKS.hint_fields,
             tool_name=tool_name,
-            env_var="QUICKBOOKS_ACCESS_TOKEN",
-            display_name="QuickBooks Online",
+            env_var=_QUICKBOOKS.env_var,
+            display_name=_QUICKBOOKS.display_name,
         )
     base_url = _base_url(base)
     if "/v3/company/" not in base_url:
@@ -920,12 +1196,12 @@ def _xero_config(
     tenant_id: str = "",
     require_tenant: bool = True,
 ) -> tuple[str, dict[str, str] | str]:
-    provider_aliases = ("xero_oauth2", "xero_api")
+    provider_aliases = _XERO.aliases
     base = (
         _credential_value(
-            provider="xero",
+            provider=_XERO.provider,
             provider_aliases=provider_aliases,
-            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            field_names=_XERO.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -934,9 +1210,9 @@ def _xero_config(
     )
     resolved_tenant = tenant_id.strip() or (
         _credential_value(
-            provider="xero",
+            provider=_XERO.provider,
             provider_aliases=provider_aliases,
-            field_names=("tenant_id", "tenantId", "organization_id", "organizationId"),
+            field_names=_XERO.group("tenant_id"),
             tool_name=tool_name,
             config=config,
         )
@@ -949,19 +1225,19 @@ def _xero_config(
             '"tenant_id" / "organization_id", pass tenant_id, or set XERO_TENANT_ID.'
         )
     access_token = _credential_value(
-        provider="xero",
+        provider=_XERO.provider,
         provider_aliases=provider_aliases,
-        field_names=("access_token", "accessToken", "token", "value"),
+        field_names=_XERO.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("xero_access_token")
     if not access_token:
         return _base_url(base), _setup_hint(
-            provider="xero",
-            field_names=("access_token", "token", "value"),
+            provider=_XERO.provider,
+            field_names=_XERO.hint_fields,
             tool_name=tool_name,
-            env_var="XERO_ACCESS_TOKEN",
-            display_name="Xero",
+            env_var=_XERO.env_var,
+            display_name=_XERO.display_name,
         )
     headers = {
         "Accept": "application/json",
@@ -996,9 +1272,9 @@ def _xero_request(
     if use_connections:
         url = (
             _credential_value(
-                provider="xero",
-                provider_aliases=("xero_oauth2", "xero_api"),
-                field_names=("connections_url", "connectionsUrl"),
+                provider=_XERO.provider,
+                provider_aliases=_XERO.aliases,
+                field_names=_XERO.group("connections_url"),
                 tool_name=tool_name,
                 config=config,
             )

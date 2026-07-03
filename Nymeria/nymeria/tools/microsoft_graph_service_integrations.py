@@ -9,6 +9,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -42,6 +47,32 @@ _GRAPH_ALIASES = (
 )
 _TOKEN_FIELDS = ("access_token", "accessToken", "token", "bearer_token", "bearerToken", "value")
 _BASE_FIELDS = ("base_url", "baseUrl", "url", "api_url", "apiUrl")
+
+# Provider credential spec: the single source of truth for the Microsoft Graph
+# credential shape (see credential_registry). It reuses the field constants above
+# so the ordered tuples stay defined once; _graph_config sources its
+# _credential_value / _setup_hint arguments from this spec.
+_GRAPH = register_provider_spec(
+    ProviderCredentialSpec(
+        provider=_GRAPH_PROVIDER,
+        aliases=_GRAPH_ALIASES,
+        groups=(
+            CredentialFieldGroup(role="token", names=_TOKEN_FIELDS),
+            CredentialFieldGroup(role="base_url", names=_BASE_FIELDS, required=False),
+        ),
+        hint_fields=_TOKEN_FIELDS,
+        env_var="MICROSOFT_GRAPH_ACCESS_TOKEN",
+        display_name="Microsoft Graph",
+        services=(
+            "microsoft_excel",
+            "microsoft_onedrive",
+            "microsoft_sharepoint",
+            "microsoft_teams",
+            "microsoft_todo",
+        ),
+    )
+)
+
 _TASK_STATUS_VALUES = {
     "notstarted": "notStarted",
     "not_started": "notStarted",
@@ -118,9 +149,9 @@ def _request_json(
 def _graph_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider=_GRAPH_PROVIDER,
-            provider_aliases=_GRAPH_ALIASES,
-            field_names=_BASE_FIELDS,
+            provider=_GRAPH.provider,
+            provider_aliases=_GRAPH.aliases,
+            field_names=_GRAPH.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -128,19 +159,19 @@ def _graph_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or _GRAPH_BASE_URL
     )
     token = _credential_value(
-        provider=_GRAPH_PROVIDER,
-        provider_aliases=_GRAPH_ALIASES,
-        field_names=_TOKEN_FIELDS,
+        provider=_GRAPH.provider,
+        provider_aliases=_GRAPH.aliases,
+        field_names=_GRAPH.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("microsoft_graph_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider=_GRAPH_PROVIDER,
-            field_names=_TOKEN_FIELDS,
+            provider=_GRAPH.provider,
+            field_names=_GRAPH.hint_fields,
             tool_name=tool_name,
-            env_var="MICROSOFT_GRAPH_ACCESS_TOKEN",
-            display_name="Microsoft Graph",
+            env_var=_GRAPH.env_var,
+            display_name=_GRAPH.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
