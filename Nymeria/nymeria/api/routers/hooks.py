@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
 HookActionName = Literal[
-    "inject_context", "block_if_matches", "rewrite_arg", "notify", "create_todo",
-    "webhook", "run_command",
+    "inject_context", "block_if_matches", "rewrite_arg", "require_approval",
+    "notify", "create_todo", "webhook", "run_command",
 ]
 
 
@@ -40,10 +40,12 @@ class HookCreateRequest(BaseModel):
     action: HookActionName = Field(default="inject_context")  # type: ignore[bad-assignment]
     # Per-action params (flat; only the fields for `action` are read).
     text: Optional[str] = Field(
-        default=None, max_length=10_000, description="inject_context/notify/create_todo/webhook body"
+        default=None, max_length=10_000,
+        description="inject_context/notify/create_todo/webhook body; require_approval prompt",
     )
     conditions: Optional[List[HookCondition]] = Field(
-        default=None, description="block_if_matches / rewrite_arg gate (matches tool args)"
+        default=None,
+        description="block_if_matches / rewrite_arg / require_approval gate (matches tool args)",
     )
     reason: Optional[str] = Field(default=None, max_length=500, description="block_if_matches")
     updates: Optional[Dict[str, str]] = Field(default=None, description="rewrite_arg")
@@ -52,7 +54,11 @@ class HookCreateRequest(BaseModel):
         default=None, max_length=4_000, description="run_command shell command (admin + flag gated)"
     )
     timeout_seconds: Optional[float] = Field(
-        default=None, ge=1.0, le=300.0, description="run_command subprocess budget"
+        default=None, ge=1.0, le=600.0,
+        description=(
+            "run_command subprocess budget (1..300) or require_approval window "
+            "(10..600); each action's logic model enforces its own bounds"
+        ),
     )
     matcher: Optional[str] = Field(default=None, description="Tool-name filter (tool events)")
     scope: Literal["global", "thread"] = Field(default="thread")
@@ -77,6 +83,13 @@ class HookUpdateRequest(BaseModel):
     # thread_id (and its access gate), which a partial PATCH cannot supply
     # without silently binding to "" (an inert orphan); a re-scope is a
     # delete + create.
+
+
+class HookApprovalResolveRequest(BaseModel):
+    """Approve or deny a held tool call (require_approval hook)."""
+
+    approved: bool
+    note: Optional[str] = Field(default=None, max_length=500)
 
 
 class HookResponse(BaseModel):
@@ -271,6 +284,71 @@ def create_hook_router(
             "max_hooks": HookStore.model_fields["MAX_HOOKS"].default,
         }
 
+    @router.get("/approvals")
+    async def list_hook_approvals(
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
+    ):
+        """Pending ``require_approval`` holds (admins all, others own-only).
+
+        Each entry is a held tool call awaiting the user's decision; resolve
+        with ``POST /hooks/approvals/{record_id}/resolve`` before its
+        ``expires_at`` (no answer within the window denies the call).
+        """
+        from ...core.hook_approvals import list_pending, public_entry
+
+        records = await run_in_threadpool(
+            list_pending, None if user.role == "admin" else user.id
+        )
+        return {"approvals": [public_entry(r) for r in records]}
+
+    @router.post("/approvals/{record_id}/resolve")
+    async def resolve_hook_approval(
+        record_id: str,
+        body: HookApprovalResolveRequest,
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
+    ):
+        """Approve or deny a held tool call (owner or admin).
+
+        404 covers both a missing record and another user's record (existence
+        is not leaked). 409 means the hold is already over: the decision lost
+        a race, the window expired, or the waiter is gone (restart/abort);
+        stale records are cleaned up on the spot.
+        """
+        from ...core.hook_approvals import (
+            delete_record,
+            get_hook_approval_coordinator,
+            load_record,
+            publish_resolved_event,
+        )
+
+        record = await run_in_threadpool(load_record, record_id)
+        if record is None or (
+            user.role != "admin" and record.get("user_id") != user.id
+        ):
+            raise HTTPException(status_code=404, detail="Approval not found")
+        woke = get_hook_approval_coordinator().resolve(
+            record_id,
+            approved=body.approved,
+            resolved_by=user.id,
+            note=body.note or "",
+        )
+        if not woke:
+            # Nothing is waiting: the hold already ended (timeout/abort race)
+            # or the waiter died with the record behind (restart). Clean up so
+            # the stale row disappears from every surface.
+            await run_in_threadpool(delete_record, record_id)
+            publish_resolved_event(record, outcome="stale", resolved_by=user.id)
+            raise HTTPException(
+                status_code=409,
+                detail="This approval is no longer pending (it timed out, was "
+                "resolved elsewhere, or its turn ended).",
+            )
+        return {
+            "ok": True,
+            "record_id": record_id,
+            "decision": "approved" if body.approved else "denied",
+        }
+
     @router.get("/executions")
     async def list_hook_executions(
         hook_id: Optional[str] = Query(default=None),
@@ -409,6 +487,19 @@ def create_hook_router(
         elif logic.action == "rewrite_arg":
             result["rendered"] = (
                 f"Rewrites {list(logic.updates.keys())} on {hook.matcher or 'any tool'}"
+            )
+        elif logic.action == "require_approval":
+            gate = (
+                " AND ".join(f"{c.field} {c.operator} {c.value!r}" for c in logic.conditions)
+                if logic.conditions else "always"
+            )
+            prompt = safe_format(
+                logic.prompt or "Approve tool call {tool_name}?", sample
+            )
+            result["rendered"] = (
+                f"Holds {hook.matcher or 'any tool'} ({gate}) and asks: {prompt!r} "
+                f"(window {logic.timeout_seconds:.0f}s; no answer = deny). "
+                "No call is held by this preview."
             )
         elif logic.action == "run_command":
             from ...core.hook_spec import plane_for

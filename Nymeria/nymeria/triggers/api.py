@@ -785,6 +785,7 @@ def create_api_app(
 
     app.router.add_event_handler("shutdown", _close_provider_http_pools)
     app.router.add_event_handler("shutdown", _stop_agent_ticker)
+    app.router.add_event_handler("shutdown", _drain_observe_hooks)
 
     @app.middleware("http")
     async def _request_id_context(request: Request, call_next):
@@ -1058,6 +1059,7 @@ def create_api_app(
     # reason as the warm loop: workflows execute in the API process in both
     # shapes, so the expiry (which runs the declined continuation) must too.
     _register_workflow_approval_sweep_lifecycle(app)
+    _register_hook_approval_sweep_lifecycle(app)
 
     # ========================================================================
     # Slim-mode wiring (embedded MCP + in-process watchdog)
@@ -1422,6 +1424,66 @@ def _register_workflow_approval_sweep_lifecycle(app: FastAPI) -> None:
         start_log="Workflow approval sweep task started",
         error_label="Workflow approval sweep",
     )
+
+
+def _register_hook_approval_sweep_lifecycle(app: FastAPI) -> None:
+    """Purge crash-orphaned hook-approval records (hygiene only).
+
+    The ``require_approval`` hold enforces its own timeout in-band and deletes
+    its record on every exit shape; this sweep only removes records whose
+    waiter died without cleanup (process crash mid-hold), so stale rows do
+    not linger on the resolve surfaces.
+    """
+
+    async def _run_pass() -> None:
+        import asyncio as _asyncio
+
+        from ..core.hook_approvals import sweep_stale_records
+
+        removed = await _asyncio.to_thread(sweep_stale_records)
+        if removed:
+            logger.info("Hook approval sweep removed %d stale record(s)", removed)
+
+    from ..core.workflows.approvals import APPROVAL_SWEEP_INTERVAL_SECONDS
+
+    _register_periodic_task(
+        app,
+        state_prefix="hook_approval_sweep",
+        run_pass=_run_pass,
+        interval_seconds=APPROVAL_SWEEP_INTERVAL_SECONDS,
+        startup_delay_seconds=180,
+        start_log="Hook approval sweep task started",
+        error_label="Hook approval sweep",
+    )
+
+
+# Observe-hook drain: per-barrier bound for the graceful-shutdown flush.
+OBSERVE_DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+async def _drain_observe_hooks() -> None:
+    """Flush pending observe-plane hook side effects on graceful shutdown.
+
+    Observe hooks (notify/webhook/create_todo) are scheduled off-turn, so
+    a restart could otherwise drop work already accepted (backlog #74B).
+    Bounded: a hung hook must not stall shutdown past a few seconds. Both
+    barriers run: loop-scheduled tasks (async seam) and pool-scheduled
+    futures (sync seam; blocking, so off-loop via to_thread).
+    """
+    import asyncio as _asyncio
+
+    from ..core.hooks.dispatch import adrain_observe, drain_observe
+
+    try:
+        await _asyncio.wait_for(
+            adrain_observe(), timeout=OBSERVE_DRAIN_TIMEOUT_SECONDS
+        )
+    except Exception:  # noqa: BLE001 - shutdown is best-effort
+        logger.warning("observe-hook task drain did not finish cleanly")
+    try:
+        await _asyncio.to_thread(drain_observe, OBSERVE_DRAIN_TIMEOUT_SECONDS)
+    except Exception:  # noqa: BLE001 - shutdown is best-effort
+        logger.warning("observe-hook pool drain did not finish cleanly")
 
 
 # Tool-index warm: startup delay (let app boot settle) and the heartbeat that

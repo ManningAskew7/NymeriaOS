@@ -116,6 +116,17 @@ def abort_with_cascade(agent: "NymeriaAgent", thread_id: str) -> None:
         logger.warning(
             f"Failed to abort pending browser commands on abort for {thread_id}: {e}"
         )
+    try:
+        from .hook_approvals import get_hook_approval_coordinator
+        held = get_hook_approval_coordinator().abort_thread(thread_id)
+        if held:
+            logger.info(
+                f"Abort on thread {thread_id} aborted {held} held hook approval(s)"
+            )
+    except Exception as e:
+        logger.warning(
+            f"Failed to abort held hook approvals on abort for {thread_id}: {e}"
+        )
     with agent._invocations_lock:
         children = set(agent._active_callable_invocations.get(thread_id, ()))
     for child_id in children:

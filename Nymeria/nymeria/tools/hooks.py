@@ -86,6 +86,13 @@ def _logic_preview(logic) -> str:
         return f"deny if {cond}" + (f" (reason: {logic.reason})" if logic.reason else "")
     if action == "rewrite_arg":
         return f"rewrite args {list(logic.updates.keys())}"
+    if action == "require_approval":
+        n = len(logic.conditions)
+        cond = "always" if n == 0 else f"if {n} condition(s)"
+        return (
+            f"hold for approval {cond} "
+            f"(window {logic.timeout_seconds:.0f}s, timeout = deny)"
+        )
     if action == "webhook":
         return f"POST webhook {logic.url}"
     if action == "run_command":
@@ -143,6 +150,40 @@ def _merge_run_command_params(
         out = {}
     if command is not None:
         out["command"] = command
+    if timeout_seconds is not None:
+        out["timeout_seconds"] = timeout_seconds
+    return out or None
+
+
+def _merge_require_approval_params(
+    hook_action: Optional[str],
+    params: Optional[dict],
+    text: Optional[str],
+    timeout_seconds: Optional[float],
+    *,
+    existing_logic=None,
+) -> Optional[dict]:
+    """Fold the flat require_approval fields into a params dict.
+
+    Mirrors ``_merge_run_command_params``: explicit ``params`` wins; a partial
+    edit merges onto the stored params. ``text`` authors the approval
+    ``prompt`` (the same alias every surface uses), and it must fold in HERE
+    when a sibling flat field is also given, because the manager's bare-text
+    alias only applies when ``params`` is None.
+    """
+    if params is not None or (text is None and timeout_seconds is None):
+        return params
+    action = hook_action
+    if action is None and existing_logic is not None:
+        action = getattr(existing_logic, "action", None)
+    if action != "require_approval":
+        return params
+    if existing_logic is not None and getattr(existing_logic, "action", None) == "require_approval":
+        out: dict = existing_logic.model_dump(exclude={"action"})
+    else:
+        out = {}
+    if text is not None:
+        out["prompt"] = text
     if timeout_seconds is not None:
         out["timeout_seconds"] = timeout_seconds
     return out or None
@@ -288,6 +329,10 @@ def render_hook_detail(hook: HookDefinition) -> str:
     elif logic.action == "rewrite_arg":
         lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
         lines.append(f"  updates: {logic.updates}")
+    elif logic.action == "require_approval":
+        lines.append(f"  conditions: {[c.model_dump() for c in logic.conditions] or '(always)'}")
+        lines.append(f"  prompt: {logic.prompt or '(default)'}")
+        lines.append(f"  timeout_seconds: {logic.timeout_seconds} (no answer = deny)")
     elif logic.action == "webhook":
         lines.append(f"  url: {logic.url}")
         lines.append(f"  text: {logic.text!r}")
@@ -339,6 +384,20 @@ def render_hook_test(hook: HookDefinition) -> str:
         return (
             f"[Info]: Hook {hook.id} (rewrite_arg) on {tool} (gate: {cond}) rewrites args: "
             f"{logic.updates}."
+        )
+    if logic.action == "require_approval":
+        cond = "always" if not logic.conditions else (
+            " AND ".join(f"{c.field} {c.operator} {c.value!r}" for c in logic.conditions)
+        )
+        tool = hook.matcher or "any tool"
+        prompt = safe_format(
+            logic.prompt or "Approve tool call {tool_name}?", _SAMPLE_VARS
+        )
+        return (
+            f"[Info]: Hook {hook.id} (require_approval) holds {tool} (gate: {cond}) "
+            f"and asks the user: {prompt!r}. No answer within "
+            f"{logic.timeout_seconds:.0f}s denies the call. No call is held by "
+            "this dry run."
         )
     if logic.action == "run_command":
         from ..core.hook_spec import plane_for
@@ -421,20 +480,26 @@ def hook_config(
         hook_id: Required for update/delete.
         name: Hook display name (create; optional on update).
         event: The lifecycle event. "pre_tool_use" takes block_if_matches/
-            rewrite_arg; "prompt_submit" takes inject_context; "post_tool_use"/
-            "done" take inject_context/notify/create_todo/webhook. run_command
-            attaches to all four (admin + HOOKS_RUN_COMMAND_ENABLED only).
+            rewrite_arg/require_approval; "prompt_submit" takes inject_context;
+            "post_tool_use"/"done" take inject_context/notify/create_todo/
+            webhook. run_command attaches to all four (admin +
+            HOOKS_RUN_COMMAND_ENABLED only).
         hook_action: The hook's action. "inject_context" (default) injects text;
-            "block_if_matches"/"rewrite_arg" guard a tool call; "notify" sends a
-            notification; "create_todo" adds a TODO; "webhook" POSTs to a URL;
-            "run_command" runs a shell command (admin-gated).
+            "block_if_matches"/"rewrite_arg" guard a tool call;
+            "require_approval" HOLDS a matched tool call until the user
+            approves or denies it (no answer within the window = deny); "notify"
+            sends a notification; "create_todo" adds a TODO; "webhook" POSTs to
+            a URL; "run_command" runs a shell command (admin-gated).
         text: For the text actions (inject_context/notify/create_todo, and the
-            webhook body): the text. Supports {placeholder} interpolation
+            webhook body): the text. For require_approval: the approval prompt
+            shown to the user. Supports {placeholder} interpolation
             ({tool_name}, {tool_result}, {prompt}, {final_text}, {thread_id}).
             Static text is used verbatim.
         params: For the structured actions, the action params. block_if_matches:
             {"conditions": [{"field","operator","value","case_sensitive"}], "reason": "..."}.
             rewrite_arg: {"conditions": [...], "updates": {"arg_name": "new value"}}.
+            require_approval: {"conditions": [...], "prompt": "...",
+            "timeout_seconds": 180} (all optional; empty conditions = always ask).
             webhook: {"url": "https://...", "text": "..."}.
             Operators: equals, not_equals, contains, starts_with, matches_regex.
             Conditions match the tool call's ARGS (field is an arg name).
@@ -448,7 +513,10 @@ def hook_config(
             the reason) or stdout JSON {"decision","reason","updated_args"};
             on prompt_submit, stdout is injected.
         timeout_seconds: For run_command: subprocess budget (1..300; in-band
-            events clamped to 60). Defaults to 10.
+            events clamped to 60; defaults to 10). For require_approval: the
+            approval window in seconds (10..600; defaults to 180). The user
+            decides via the /hook approve|deny command, the tool-call card, or
+            a push notification; you never resolve your own approvals.
     """
     action_key = (action or "").strip().lower()
     hook_action_key = (hook_action or "inject_context").strip().lower()
@@ -468,13 +536,16 @@ def hook_config(
         if gate is not None:
             return gate
         params = _merge_run_command_params(hook_action_key, params, command, timeout_seconds)
+        params = _merge_require_approval_params(hook_action_key, params, text, timeout_seconds)
         if hook_action_key == "run_command":
             if not (params and params.get("command")):
                 return "[Error]: run_command requires command."
         elif hook_action_key in _TEXT_ACTIONS:
             if not text and not params:
                 return f"[Error]: {hook_action_key} requires text."
-        elif not params:
+        elif hook_action_key != "require_approval" and not params:
+            # require_approval is legal bare: empty conditions = always ask,
+            # default prompt and window.
             return f"[Error]: {hook_action_key} requires params."
         return _hook_create(
             name=name, event=event, action=hook_action_key, text=text, params=params,
@@ -515,6 +586,11 @@ def hook_config(
         params = _merge_run_command_params(
             hook_action_key if hook_action is not None else None,
             params, command, timeout_seconds,
+            existing_logic=(existing.logic if existing is not None else None),
+        )
+        params = _merge_require_approval_params(
+            hook_action_key if hook_action is not None else None,
+            params, text, timeout_seconds,
             existing_logic=(existing.logic if existing is not None else None),
         )
         return _hook_update(

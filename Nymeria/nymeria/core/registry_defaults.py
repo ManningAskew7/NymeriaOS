@@ -422,9 +422,12 @@ def register_default_commands(service: "CommandService") -> None:
     _hook_sub_surfaces = ("desktop", "mobile", "cli", "api", "agent")
     service.register(
         "hook",
-        description="Lifecycle-hook authoring commands",
+        description="Lifecycle-hook authoring and approval commands",
         category="Automation",
-        usage="/hook list|create|show|edit|enable|disable|delete|test|log [...]",
+        usage=(
+            "/hook list|create|show|edit|enable|disable|delete|test|log"
+            "|approvals|approve|deny [...]"
+        ),
         aliases=("hooks",),
     )
     service.register(
@@ -516,6 +519,42 @@ def register_default_commands(service: "CommandService") -> None:
         usage="/hook log [id] [--limit N]",
         aliases=("hook_log",),
         surfaces=_hook_sub_surfaces,
+    )
+    # Hook approvals: the human resolve surface for require_approval holds.
+    # agent_allowed=False is load-bearing on approve/deny (the agent must not
+    # approve its own held tool calls); like the other subcommands they stay
+    # out of chat menus but still execute when a bot forwards them. This flag
+    # only gates the direct "/hook <sub>" parse path; the plural "/hooks <sub>"
+    # alias resolves to the parent handler, so _cmd_hook re-checks the actor
+    # before re-dispatching these three (keep both gates).
+    service.register(
+        "hook approvals",
+        description="List tool calls held awaiting your approval",
+        category="Automation",
+        usage="/hook approvals",
+        aliases=("hook_approvals",),
+        surfaces=_hook_sub_surfaces,
+        agent_allowed=False,
+    )
+    service.register(
+        "hook approve",
+        description="Approve a held tool call (require_approval hook)",
+        category="Automation",
+        usage="/hook approve <approval-id> [note]",
+        aliases=("hook_approve",),
+        surfaces=_hook_sub_surfaces,
+        mutates_state=True,
+        agent_allowed=False,
+    )
+    service.register(
+        "hook deny",
+        description="Deny a held tool call (require_approval hook)",
+        category="Automation",
+        usage="/hook deny <approval-id> [note]",
+        aliases=("hook_deny",),
+        surfaces=_hook_sub_surfaces,
+        mutates_state=True,
+        agent_allowed=False,
     )
     service.register(
         "account",

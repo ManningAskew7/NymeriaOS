@@ -125,6 +125,23 @@ def test_records_illegal_outcome_dropped():
     assert "PreToolOutcome" in rec.calls[0]["detail"]
 
 
+def test_allow_note_detail_carries_note():
+    # Backlog #74C / #77: an allow WITH a note (failed-open guardrail script,
+    # approval grant) is a story worth logging; a bare allow stays bare.
+    rec = Recorder()
+    reg = _registry(rec)
+    reg.register(
+        HookEvent.PRE_TOOL_USE,
+        lambda c: PreToolOutcome(decision="allow", note="guardrail exited 1"),
+        name="buggy-guard",
+    )
+    dmod.dispatch(
+        HookEvent.PRE_TOOL_USE, ctx(HookEvent.PRE_TOOL_USE, tool_name="bash"), registry=reg
+    )
+    assert rec.calls[0]["status"] == "ok"
+    assert rec.calls[0]["detail"] == "allow: guardrail exited 1"
+
+
 def test_deny_detail_carries_reason():
     rec = Recorder()
     reg = _registry(rec)

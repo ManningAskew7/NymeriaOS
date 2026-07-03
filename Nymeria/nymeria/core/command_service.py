@@ -1907,7 +1907,9 @@ class CommandService:
                 except RuntimeError as exc:
                     return CommandResult(False, f"**Error:** {exc}", command_label, level="error")
 
-        executor = _CommandExecutor(api=client, thread_id=ctx.thread_id, user_id=ctx.user_id)
+        executor = _CommandExecutor(
+            api=client, thread_id=ctx.thread_id, user_id=ctx.user_id, actor=actor
+        )
 
         method_name = "_cmd_" + "_".join(definition.path)
         method = getattr(executor, method_name, None)
@@ -2245,10 +2247,11 @@ def prepare_skill_slash_command(
 class _CommandExecutor:
     """Per-request command executor with the migrated command bodies."""
 
-    def __init__(self, api: Any, thread_id: str | None, user_id: str):
+    def __init__(self, api: Any, thread_id: str | None, user_id: str, actor: str = "user"):
         self.api = api
         self.thread_id = thread_id or ""
         self.user_id = user_id
+        self.actor = actor
 
     def _require_thread(self) -> str | None:
         if self.thread_id:
@@ -2909,12 +2912,23 @@ class _CommandExecutor:
             "delete": self._cmd_hook_delete,
             "test": self._cmd_hook_test,
             "log": self._cmd_hook_log,
+            "approvals": self._cmd_hook_approvals,
+            "approve": self._cmd_hook_approve,
+            "deny": self._cmd_hook_deny,
         }
         handler = sub_handlers.get(args[0])
         if handler is not None:
+            # The registry gate (agent_allowed=False on hook approvals/approve/
+            # deny) only fires when the parser resolves the SUBCOMMAND path.
+            # The plural "/hooks <sub>" alias resolves to this parent handler
+            # (agent_allowed=True), so the agent-actor gate must be re-checked
+            # here or the agent could approve its own held tool calls.
+            if self.actor == "agent" and args[0] in ("approvals", "approve", "deny"):
+                return f"[Error]: Command `/hook {args[0]}` is not available to the agent."
             return await handler(args[1:], rest)
         return (
-            "[Error]: Usage: /hook list|create|show|edit|enable|disable|delete|test|log [...]"
+            "[Error]: Usage: /hook list|create|show|edit|enable|disable|delete"
+            "|test|log|approvals|approve|deny [...]"
         )
 
     async def _cmd_hook_list(self, args: list[str], rest: str) -> str:
@@ -3113,6 +3127,90 @@ class _CommandExecutor:
                 f"| {e.get('status', '?')} | {detail} |"
             )
         return "[Info]: " + "\n".join(lines)
+
+    # ── Hook approvals (require_approval holds) ────────────────────────────
+
+    def _visible_hook_approvals(self) -> list[dict]:
+        """Pending approval records this caller may see (admins see all)."""
+        from ..tools.utils import is_admin
+        from .hook_approvals import list_pending
+
+        if is_admin(self.user_id, agent=self._agent()):
+            return list_pending()
+        return list_pending(self.user_id)
+
+    async def _cmd_hook_approvals(self, args: list[str], rest: str) -> str:
+        records = self._visible_hook_approvals()
+        if not records:
+            return "[Info]: No pending hook approvals."
+        lines = [
+            f"Pending hook approvals: {len(records)}",
+            "",
+            "| ID | Tool | Prompt | Expires | Thread |",
+            "|---|---|---|---|---|",
+        ]
+        for r in records:
+            prompt = str(r.get("prompt") or "").replace("|", "\\|")[:60]
+            lines.append(
+                f"| `{r.get('record_id')}` | {r.get('tool_name') or '?'} "
+                f"| {prompt} | {r.get('expires_at') or '?'} "
+                f"| {r.get('thread_id') or '?'} |"
+            )
+        lines.append("")
+        lines.append("Resolve with /hook approve <id> [note] or /hook deny <id> [note].")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_hook_approve(self, args: list[str], rest: str) -> str:
+        return await self._resolve_hook_approval(args, approved=True)
+
+    async def _cmd_hook_deny(self, args: list[str], rest: str) -> str:
+        return await self._resolve_hook_approval(args, approved=False)
+
+    async def _resolve_hook_approval(self, args: list[str], *, approved: bool) -> str:
+        """Shared approve/deny path: prefix-resolve, authorize, wake the hold.
+
+        Mirrors the REST endpoint's semantics (owner-or-admin; a resolve with
+        no live waiter cleans the stale record). Runs in the API process, the
+        single agent runtime, so the coordinator wake always lands in-process.
+        """
+        verb = "approve" if approved else "deny"
+        if not args:
+            return f"[Error]: Usage: /hook {verb} <approval-id> [note]"
+        from .hook_approvals import (
+            delete_record,
+            get_hook_approval_coordinator,
+            publish_resolved_event,
+        )
+
+        prefix = args[0]
+        note = " ".join(args[1:]).strip()
+        visible = self._visible_hook_approvals()
+        matches = [r for r in visible if str(r.get("record_id") or "").startswith(prefix)]
+        if not matches:
+            return f"[Error]: No pending approval matching '{prefix}'."
+        if len(matches) > 1:
+            ids = ", ".join(sorted(str(r.get("record_id")) for r in matches))
+            return (
+                f"[Error]: '{prefix}' matches multiple approvals: {ids}. "
+                "Use a longer id."
+            )
+        record = matches[0]
+        record_id = str(record.get("record_id") or "")
+        woke = get_hook_approval_coordinator().resolve(
+            record_id, approved=approved, resolved_by=self.user_id, note=note
+        )
+        if not woke:
+            delete_record(record_id)
+            publish_resolved_event(record, outcome="stale", resolved_by=self.user_id)
+            return (
+                f"[Error]: Approval `{record_id}` is no longer pending (it timed "
+                "out, was resolved elsewhere, or its turn ended)."
+            )
+        decision = "Approved" if approved else "Denied"
+        return (
+            f"[Success]: {decision} `{record.get('tool_name') or 'tool call'}` "
+            f"({record_id})."
+        )
 
     async def _cmd_hook_enable(self, args: list[str], rest: str) -> str:
         return await self._set_hook_enabled(args, enabled=True)
