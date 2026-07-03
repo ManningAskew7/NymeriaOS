@@ -1586,6 +1586,19 @@ class Settings(BaseSettings):
         le=2000000,
         description="Maximum characters stored for a single tool result; oversized results keep head and tail with a truncation marker"
     )
+    bash_env_passthrough: str = Field(
+        default="",
+        description=(
+            "Comma-separated extra environment variable NAMES to expose to the "
+            "bash_execute tool beyond its base allowlist (PATH, HOME, LANG, "
+            "LC_ALL, TMPDIR). bash_execute otherwise runs with a scrubbed "
+            "environment so the API process's secrets (DB/Redis passwords, "
+            "provider API keys, service tokens) never leak into command output "
+            "or LLM context. Add names here (e.g. 'GH_TOKEN,AWS_PROFILE') only "
+            "if a command genuinely needs them. Names are case-sensitive and "
+            "matched exactly; unknown names are ignored."
+        ),
+    )
 
     # Claude Code bridge (the claude_code tool). When NYMERIA_CLAUDE_CODE_URL is
     # set the tool relays runs to a host-side runner service (where the repo and

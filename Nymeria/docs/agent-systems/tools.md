@@ -177,14 +177,36 @@ At runtime, Nymeria detects the backend platform, available shells, container st
 **Parameters:**
 - `command` (`str`): Shell command to execute
 - `working_directory` (`Optional[str]`, default `None`): Directory to run the command in. Relative paths resolve from the detected default tool cwd.
-- `timeout_seconds` (`int`, default `120`): Maximum execution time in seconds
+- `timeout_seconds` (`int`, default `120`): Maximum foreground execution time in seconds, clamped to a 1s minimum. Values over the deployment's foreground cap are rejected with guidance to use `run_in_background` instead of blocking a turn for many minutes. The cap is `TOOL_TIMEOUT` minus a 10s teardown margin, at most 600s (290s under the default 300s tool timeout): bash's own deadline must fire before the tool-node timeout so the process group is torn down and clean output returned.
 - `run_in_background` (`bool`, default `False`): Launch as a detached background process and return immediately.
 
-**Returns:** Command output (stdout + stderr combined) or error message. Non-zero exit codes are appended. Output truncated at 50,000 characters.
+**Returns:** Command output (stdout and stderr interleaved in emission order) or an error/blocked message. A non-zero exit appends an `[exit code: N]` line, annotated when the code has a known benign meaning (`grep`/`rg`/`diff` exit 1, timeout 124, SIGINT 130, killed-by-signal) so the model does not treat expected codes as failures. ANSI/OSC escape sequences and control characters are stripped from the output.
 
-When `run_in_background=True` is called from an agent thread, stdout and stderr are captured to secure temp files and the return value includes `job_id`, `pid`, and both file paths. When the process exits, Nymeria submits a completion prompt to the same thread with the exit code and the last 4KB of stdout/stderr. If that thread is busy, the prompt is queued and absorbed at the next sub-turn boundary. If the thread is idle, the prompt runs as an autonomous turn and streams through the normal autonomous event path. Temp files persist until manually removed. The watcher is process-local; if the backend restarts before the process exits, no completion notification is sent. Calls without agent thread/user context keep the legacy PID-only fire-and-forget behavior.
+**Hardline command guard:** every call is first checked against a small always-on blocklist (`tools/command_guard.py`) of catastrophic commands: `rm -rf` against a filesystem or home root, host shutdown/reboot, `mkfs`/`wipefs`, fork bombs, `dd` or redirects onto raw block devices, and killing Nymeria's own process/containers. Matching is quote-aware and segment-anchored (with `sudo`/`nohup`/`env`-style wrapper stripping), so `echo "rm -rf /"` and `git commit -m "reboot"` pass while `sudo reboot` blocks. It is an accident-and-naive-injection guard with near-zero false positives, not a security boundary; the deployment container remains the real isolation. For softer, user-defined policies (block or rewrite specific commands per thread), use `pre_tool_use` lifecycle hooks (see `hooks.md`).
+
+**Process-group teardown:** foreground commands run in their own process group (POSIX session). On timeout or user Stop the whole group is SIGTERM'd, then SIGKILL'd after a grace period; on normal exit the group is also killed so a grandchild the command backgrounded (`server &`) can neither hold the output pipe open (the classic hang) nor linger after the tool returns. Anything meant to outlive the call must use `run_in_background=True`. A user Stop on the thread (`POST /threads/{id}/stop`) terminates a running foreground command the same way, via the thread's abort event.
+
+**Output capture:** output is drained on a reader thread into a bounded-memory ingestor (rolling tail plus lazy spill), so a flooding command cannot balloon the API process. Results over ~50,000 characters are truncated to their tail (where errors and summaries live) and the complete output is spilled to a file the agent can `file_read` or grep: preferring the per-thread `commands/` sandbox dir (cleaned up with the thread, like `fetched/` for web_fetch), falling back to a `nymeria-bash-*` system temp file swept after 7 days. The spill file itself is capped at 100MB (disk use is bounded the way the rolling tail bounds memory; the result notice says when the cap was hit). Small outputs never touch disk.
+
+**Environment scrubbing:** commands run under a minimal allowlisted environment (`PATH, HOME, LANG, LC_ALL, TMPDIR`), the same deny-by-default convention as the workflow runner and the hooks `run_command` action, so backend secrets (DB/Redis passwords, provider keys, the service token) never leak into command output or LLM context. Extra variable names can be opted back in with the `BASH_ENV_PASSTHROUGH` setting (comma-separated names).
+
+When `run_in_background=True` is called from an agent thread, stdout and stderr are captured to secure temp files and the return value includes `job_id`, `pid`, and both file paths. When the process exits, Nymeria submits a completion prompt to the same thread with the exit code and the last 4KB of stdout/stderr. If that thread is busy, the prompt is queued and absorbed at the next sub-turn boundary. If the thread is idle, the prompt runs as an autonomous turn and streams through the normal autonomous event path. Temp files are age-swept (7 days) opportunistically when new background jobs start. The watcher is process-local; if the backend restarts before the process exits, no completion notification is sent. Calls without agent thread/user context keep the legacy PID-only fire-and-forget behavior. Background processes also run detached in their own session with the scrubbed environment.
 
 **Security:** MODERATE  -  runs commands without an in-process sandbox. Use deployment-level containment for untrusted workloads.
+
+---
+
+### bash_job
+
+Optional catalog companion to `bash_execute(run_in_background=True)` for tending a background job while it runs. Not seeded; bind it per-thread (the background-launch message points the agent at it). Convenience, not a dependency: the agent can always fall back to `kill` and `file_read` on the job's output paths.
+
+```python
+bash_job(action: str, job_id: str = "", lines: int = 50)
+```
+
+**Actions:** `list` (your recent jobs), `status` (state, exit code, runtime, output paths), `log` (tail of stdout/stderr, `lines` per stream), `kill` (SIGTERM then SIGKILL of the job's whole process group; the normal completion notification still follows when it exits). All actions are scoped to the calling user: another user's jobs are never listed, shown, or killable. The registry is process-local and in-memory, matching the background watcher's lifetime.
+
+**Security:** MODERATE  -  can terminate processes started by the same user's background jobs.
 
 ---
 

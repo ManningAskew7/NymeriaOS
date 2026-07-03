@@ -140,6 +140,43 @@ edits, tests, and toggles hooks; a per-thread **Hooks** tab drives the enable mo
 below. The action families are category-coded (Guardrails / Context / Reactions) so the
 feed and form read as three families rather than one flat list.
 
+### Recipes: bash guardrails
+
+`bash_execute` ships with a small always-on hardline guard against catastrophic
+commands (see `tools.md`); everything softer is user policy, authored as
+`pre_tool_use` hooks. Conditions match the call's args, so `field` is `command`
+(dotted paths reach nested args on other tools). Canned examples, in `/hook`
+grammar (the tool/REST/GUI express the same fields):
+
+```
+# Deny sudo in this thread
+/hook create no-sudo --event pre_tool_use --action block_if_matches \
+  --matcher bash_execute --cond "command contains sudo" \
+  --reason "sudo is not allowed in this thread; ask the user to run it"
+
+# Deny git push (review-before-push policy)
+/hook create no-git-push --event pre_tool_use --action block_if_matches \
+  --matcher bash_execute --cond "command matches_regex (^|[;&|]\s*)git\s+push" \
+  --reason "Pushing is manual in this project: show the user the diff instead"
+
+# Deny package installs globally
+/hook create no-installs --event pre_tool_use --action block_if_matches \
+  --matcher bash_execute --scope global \
+  --cond "command matches_regex (pip3?|npm|apt(-get)?|uv)\s+(install|add)" \
+  --reason "Installs are admin-only; ask the user"
+
+# Pin risky commands to a scratch directory
+/hook create pin-cwd --event pre_tool_use --action rewrite_arg \
+  --matcher bash_execute --cond "command contains rm -r" \
+  --set working_directory=/tmp/agent-scratch
+```
+
+Layering: the hardline guard is the non-negotiable baseline (cannot be disabled),
+`block_if_matches`/`rewrite_arg` hooks are per-user/per-thread policy on top, and
+an admin `run_command` hook can implement arbitrary allow/deny logic (exit 2 =
+deny). An interactive approve/deny action (hold the tool call, prompt the user,
+deny on timeout) is planned but not shipped; see "What is deferred" below.
+
 ### Enable model
 
 A hook is active on a turn only if every layer says so, resolved by
@@ -331,6 +368,13 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   observe fire points.
 - In-chat activity lines for the `done` event and for the mobile client, and the presets
   library.
+- An interactive **approve/deny** `pre_tool_use` action: hold the tool call, surface an
+  approval prompt to the user (in-app + push), and resolve allow/deny from their answer,
+  with **deny-on-timeout** semantics: if the user does not respond within the configured
+  window, the call is denied with a reason telling the agent NOT to retry the same
+  command, and to notify the user and wait for explicit approval if it matters. Turns a
+  guardrail false-positive from a hard stop into a review. Needs a durable pending-decision
+  record and a frontend resolve surface, like the workflow `nym.approve` flow.
 
 ## Package
 
