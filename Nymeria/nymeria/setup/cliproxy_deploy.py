@@ -87,12 +87,22 @@ def generate_cliproxy_deployment(
     management_secret: str,
     gatekeeper_key: str,
     join_network: str | None = None,
+    loopback_only: bool = True,
 ) -> CLIProxyDeployment:
     """Write the deployment files (idempotent; existing auths/ are kept).
 
     `join_network` attaches the container to an external Docker network with
     the `cli-proxy-api` alias so a full-stack backend can reach it by name;
     pass the stack's edge network (e.g. `nymeria_edge`) when relevant.
+
+    `loopback_only` (the default) publishes the host port on 127.0.0.1.
+    Docker-published ports insert iptables rules AHEAD of UFW, so a bare
+    publish is internet-reachable on a public-IP host regardless of the
+    firewall; the proxy fronts OAuth subscriptions and its management API,
+    so it must never be internet-facing. Pass False only for the
+    single-container backend shape, which reaches the proxy through
+    `host.docker.internal` (traffic arrives on the Docker bridge, not
+    loopback, so a loopback bind would be unreachable from the container).
     """
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "auths").mkdir(exist_ok=True)
@@ -141,6 +151,27 @@ def generate_cliproxy_deployment(
             f"  {join_network}:",
             "    external: true",
         ]
+    if loopback_only:
+        port_lines = [
+            "    ports:",
+            "      # Loopback-bound on purpose: Docker-published ports insert",
+            "      # iptables rules ahead of UFW, so a bare publish would be",
+            "      # internet-reachable on a public-IP host despite the firewall.",
+            "      # Containers on a joined network reach the proxy by the",
+            "      # cli-proxy-api alias on 8317 instead.",
+            f'      - "127.0.0.1:{CLIPROXY_HOST_PORT}:8317"',
+        ]
+    else:
+        port_lines = [
+            "    ports:",
+            "      # Published on ALL interfaces: the single-container backend",
+            "      # reaches the proxy via host.docker.internal, which arrives on",
+            "      # the Docker bridge, not loopback. Docker-published ports",
+            "      # bypass UFW (iptables precedence), so on a public-IP host",
+            "      # restrict this port at the network edge or via the",
+            "      # DOCKER-USER iptables chain.",
+            f'      - "{CLIPROXY_HOST_PORT}:8317"',
+        ]
     compose_lines = [
         "services:",
         "  cli-proxy-api:",
@@ -149,8 +180,7 @@ def generate_cliproxy_deployment(
         f"    image: {CLIPROXY_PINNED_IMAGE}",
         "    pull_policy: missing",
         "    container_name: nymeria-cliproxy",
-        "    ports:",
-        f'      - "{CLIPROXY_HOST_PORT}:8317"',
+        *port_lines,
         "    volumes:",
         "      - ./config.yaml:/CLIProxyAPI/config.yaml",
         "      - ./auths:/root/.cli-proxy-api",
