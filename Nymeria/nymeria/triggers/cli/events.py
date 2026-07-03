@@ -24,6 +24,8 @@ KnownEventType: TypeAlias = Literal[
     "iteration_limit",
     "task_started",
     "task_completed",
+    "hook_approval",
+    "hook_approval_resolved",
     "error",
     "done",
 ]
@@ -188,6 +190,33 @@ class TaskCompletedEvent(CLIStreamEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class HookApprovalEvent(CLIStreamEvent):
+    """A require_approval hook is holding a tool call for a user decision."""
+
+    type: Literal["hook_approval"] = "hook_approval"
+    record_id: str = ""
+    tool_call_id: str = ""
+    tool_name: str = ""
+    prompt: str = ""
+    tool_args_preview: str = ""
+    created_at: str = ""
+    expires_at: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HookApprovalResolvedEvent(CLIStreamEvent):
+    """A held tool call was resolved (any surface, any outcome)."""
+
+    type: Literal["hook_approval_resolved"] = "hook_approval_resolved"
+    record_id: str = ""
+    tool_call_id: str = ""
+    tool_name: str = ""
+    outcome: str = ""
+    resolved_by: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ErrorEvent(CLIStreamEvent):
     type: Literal["error"] = "error"
     content: str = ""
@@ -232,6 +261,8 @@ NormalizedEvent: TypeAlias = (
     | IterationLimitEvent
     | TaskStartedEvent
     | TaskCompletedEvent
+    | HookApprovalEvent
+    | HookApprovalResolvedEvent
     | ErrorEvent
     | DoneEvent
     | DiagnosticEvent
@@ -456,6 +487,43 @@ def normalize_stream_event(
             raw=raw,
         )
 
+    if event_type == "hook_approval":
+        return HookApprovalEvent(
+            thread_id=thread_id,
+            record_id=_text(_first(payload, "record_id", "recordId"), default=""),
+            tool_call_id=_text(
+                _first(payload, "tool_call_id", "toolCallId"),
+                default="",
+            ),
+            tool_name=_text(_first(payload, "tool_name", "toolName"), default=""),
+            prompt=_text(_first(payload, "prompt"), default=""),
+            tool_args_preview=_text(
+                _first(payload, "tool_args_preview", "toolArgsPreview"),
+                default="",
+            ),
+            created_at=_text(_first(payload, "created_at", "createdAt"), default=""),
+            expires_at=_text(_first(payload, "expires_at", "expiresAt"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "hook_approval_resolved":
+        return HookApprovalResolvedEvent(
+            thread_id=thread_id,
+            record_id=_text(_first(payload, "record_id", "recordId"), default=""),
+            tool_call_id=_text(
+                _first(payload, "tool_call_id", "toolCallId"),
+                default="",
+            ),
+            tool_name=_text(_first(payload, "tool_name", "toolName"), default=""),
+            outcome=_text(_first(payload, "outcome"), default=""),
+            resolved_by=_text(
+                _first(payload, "resolved_by", "resolvedBy"),
+                default="",
+            ),
+            note=_text(_first(payload, "note"), default=""),
+            raw=raw,
+        )
+
     if event_type == "error":
         return ErrorEvent(
             thread_id=thread_id,
@@ -656,6 +724,8 @@ __all__ = [
     "IterationLimitEvent",
     "TaskStartedEvent",
     "TaskCompletedEvent",
+    "HookApprovalEvent",
+    "HookApprovalResolvedEvent",
     "ErrorEvent",
     "DoneEvent",
     "DiagnosticEvent",

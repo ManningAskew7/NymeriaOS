@@ -50,6 +50,7 @@ from .sse_consumer import (
     consume_sse_stream,
     dispatch_event,
     format_auth_prompt_message,
+    format_hook_approval_message,
 )
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
@@ -129,6 +130,10 @@ TELEGRAM_SAFE_CHUNK_LENGTH = 3500
 THREAD_PICKER_CACHE_TTL_SECONDS = 10 * 60
 THREAD_PICKER_LIMIT = 15
 STOP_BUTTON_TOKEN_TTL_SECONDS = 60 * 60
+# Hook-approval buttons outlive the backend hold by a margin so a click on a
+# just-expired message still gets a clean "no longer pending" answer instead
+# of "expired button". The backend window ceiling is 600s.
+HOOK_APPROVAL_TOKEN_TTL_SECONDS = 30 * 60
 
 COMMAND_ACCESS_PUBLIC = "public"
 COMMAND_ACCESS_LINKED = "linked"
@@ -245,6 +250,22 @@ class _StopButtonToken:
     thread_id: str
     nymeria_user_id: str
     telegram_user_id: Optional[int]
+    expires_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class _HookApprovalToken:
+    """Server-side state behind an approve/deny inline-keyboard token.
+
+    Telegram callback data is client-visible and capped at 64 bytes, so the
+    button carries only an opaque token; the record id and ownership live
+    here. ``message_id`` lets the resolved-event handler edit the original
+    prompt message (drop the keyboard, show the outcome)."""
+
+    record_id: str
+    chat_id: int
+    nymeria_user_id: str
+    message_id: Optional[int]
     expires_at: float
 
 
@@ -388,6 +409,10 @@ class NymeriaTelegramBot:
         # Opaque stop-button callback tokens. Telegram callback data is visible
         # to clients, so store thread/user authorization server-side.
         self._stop_button_tokens: Dict[str, _StopButtonToken] = {}
+        # Hook-approval buttons: token -> record state, plus a record_id index
+        # so hook_approval_resolved events can edit the original message.
+        self._hook_approval_tokens: Dict[str, _HookApprovalToken] = {}
+        self._hook_approval_by_record: Dict[str, str] = {}
         # Shared-bot only: subordinate user-owned bots, keyed by row id.
         # Always empty on user-owned bot instances.
         self._user_bots: Dict[int, "NymeriaTelegramBot"] = {}
@@ -782,6 +807,24 @@ class NymeriaTelegramBot:
         )
         return token
 
+    def _prune_hook_approval_tokens(self) -> None:
+        now = time.monotonic()
+        expired = [
+            token
+            for token, record in self._hook_approval_tokens.items()
+            if record.expires_at <= now
+        ]
+        for token in expired:
+            record = self._hook_approval_tokens.pop(token, None)
+            if record is not None:
+                self._hook_approval_by_record.pop(record.record_id, None)
+
+    def _pop_hook_approval_token(self, token: str) -> Optional[_HookApprovalToken]:
+        record = self._hook_approval_tokens.pop(token, None)
+        if record is not None:
+            self._hook_approval_by_record.pop(record.record_id, None)
+        return record
+
     def run(self) -> None:
         """Build the Application, register handlers, and start polling."""
         app = (
@@ -924,8 +967,11 @@ class NymeriaTelegramBot:
         command("new", self._cmd_new)
         command("unbind", self._cmd_unbind)
 
-        # Callback query handler (stop button)
+        # Callback query handlers (stop button, hook-approval buttons)
         app.add_handler(CallbackQueryHandler(self._on_stop_button, pattern=r"^stop:"))
+        app.add_handler(
+            CallbackQueryHandler(self._on_hook_approval_button, pattern=r"^hkap:")
+        )
 
         # Plain text messages, photos, document uploads, voice notes, and
         # audio files (DMs and replies-to-bot in groups). Captions on
@@ -2921,6 +2967,162 @@ class NymeriaTelegramBot:
         async def on_stream_end(self, tool_call_count: int) -> None:
             pass  # autonomous stream is event-by-event, not consumed as a stream
 
+    async def _on_hook_approval_event(
+        self, chat_id: int, event: Dict[str, Any]
+    ) -> None:
+        """Post an approval prompt with inline Approve/Deny buttons.
+
+        The message body is the shared text fallback (it carries the
+        ``/hook approve <id>`` commands, so the hold stays resolvable even if
+        the buttons fail). Authorization state lives server-side behind an
+        opaque token (Telegram callback data is client-visible, 64-byte cap).
+        """
+        record_id = str(event.get("record_id") or "")
+        owner = str(event.get("user_id") or "")
+        if not record_id:
+            return
+        self._prune_hook_approval_tokens()
+        token = secrets.token_urlsafe(16)
+        reply_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Approve", callback_data=f"hkap:a:{token}"),
+            InlineKeyboardButton("\U0001f6ab Deny", callback_data=f"hkap:d:{token}"),
+        ]])
+        text = escape_html(format_hook_approval_message(event))
+        message = None
+        try:
+            message = await self._send_html(chat_id, text, reply_markup=reply_markup)
+        except Exception as e:
+            logger.warning(f"Failed to send hook approval prompt: {e}")
+        message_id = getattr(message, "message_id", None)
+        self._hook_approval_tokens[token] = _HookApprovalToken(
+            record_id=record_id,
+            chat_id=int(chat_id),
+            nymeria_user_id=owner,
+            message_id=int(message_id) if message_id is not None else None,
+            expires_at=time.monotonic() + HOOK_APPROVAL_TOKEN_TTL_SECONDS,
+        )
+        self._hook_approval_by_record[record_id] = token
+
+    async def _on_hook_approval_resolved_event(self, event: Dict[str, Any]) -> None:
+        """Edit the original prompt on resolution: outcome line, no keyboard.
+
+        Fires for every resolution shape (button, /hook command, REST,
+        desktop, timeout, abort), so the buttons are always retracted no
+        matter where the decision came from.
+        """
+        record_id = str(event.get("record_id") or "")
+        token = self._hook_approval_by_record.get(record_id)
+        if token is None:
+            return
+        record = self._pop_hook_approval_token(token)
+        if record is None or record.message_id is None:
+            return
+        outcome = str(event.get("outcome") or "")
+        resolved_by = str(event.get("resolved_by") or "").strip()
+        note = str(event.get("note") or "").strip()
+        if outcome == "approved":
+            line = "✅ Approved" + (f" by {resolved_by}" if resolved_by else "")
+        elif outcome == "denied":
+            line = "\U0001f6ab Denied" + (f" by {resolved_by}" if resolved_by else "")
+        elif outcome == "timeout":
+            line = "⏰ No answer in time; the tool call was denied."
+        elif outcome == "aborted":
+            line = "Turn cancelled; the tool call was denied."
+        else:
+            line = "No longer pending."
+        if note:
+            line += f": {escape_html(note)}"
+        tool_name = str(event.get("tool_name") or "tool call")
+        application = self._application
+        if application is None:
+            return
+        try:
+            await application.bot.edit_message_text(
+                chat_id=record.chat_id,
+                message_id=record.message_id,
+                text=f"Approval request for {escape_html(tool_name)}.\n\n{line}",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.debug(f"Failed to edit hook approval message: {e}")
+
+    async def _on_hook_approval_button(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle an Approve/Deny button press.
+
+        The backend is the authorization authority (owner-or-admin via
+        Act-As): a 404 means this clicker may not resolve the hold, a 409
+        means it is no longer pending. The message edit happens via the
+        ``hook_approval_resolved`` firehose event, not here, so every
+        resolution surface shares one edit path.
+        """
+        query = update.callback_query
+        if query is None or not isinstance(query.data, str):
+            return
+        parts = query.data.split(":", 2)
+        if len(parts) != 3:
+            return
+        _, verdict, token = parts
+        approved = verdict == "a"
+        self._prune_hook_approval_tokens()
+        record = self._hook_approval_tokens.get(token)
+        if record is None:
+            await query.answer("That approval request expired.", show_alert=True)
+            return
+
+        callback_chat_id = None
+        if query.message is not None and query.message.chat is not None:
+            callback_chat_id = int(query.message.chat.id)
+        elif update.effective_chat is not None:
+            callback_chat_id = int(update.effective_chat.id)
+        if callback_chat_id != record.chat_id:
+            await query.answer(
+                "That approval belongs to another chat.", show_alert=True
+            )
+            return
+
+        tg_user = update.effective_user
+        if tg_user is None:
+            await query.answer(
+                "Couldn't verify who pressed the button.", show_alert=True
+            )
+            return
+        user_id = await self.resolve_user_id(int(tg_user.id))
+        if user_id is None:
+            await query.answer(
+                "Link your Nymeria account first (/bind).", show_alert=True
+            )
+            return
+
+        try:
+            await self.api.resolve_hook_approval(
+                record.record_id, approved, user_id=user_id
+            )
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status == 404:
+                await query.answer(
+                    "Only the requester or an admin can resolve this.",
+                    show_alert=True,
+                )
+            elif status == 409:
+                self._pop_hook_approval_token(token)
+                await query.answer("No longer pending.", show_alert=True)
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            else:
+                logger.warning(f"Hook approval resolve failed: {e}")
+                await query.answer("Couldn't resolve the approval.", show_alert=True)
+            return
+        except Exception as e:
+            logger.warning(f"Hook approval resolve failed: {e}")
+            await query.answer("Couldn't resolve the approval.", show_alert=True)
+            return
+        await query.answer("Approved." if approved else "Denied.")
+
     async def _handle_sse_event(self, event: Dict[str, Any]) -> None:
         """Stream an autonomous-task event to the matching Telegram chat.
 
@@ -2953,6 +3155,16 @@ class NymeriaTelegramBot:
             chat_id = self.resolve_chat_id_for_thread(thread_id)
             if chat_id is None:
                 return
+
+        # Approval holds are time-critical and user-authored, so they bypass
+        # the autonomous delivery-mode gate: dropping one silently would
+        # guarantee a deny-on-timeout.
+        if event_type == "hook_approval":
+            await self._on_hook_approval_event(chat_id, event)
+            return
+        if event_type == "hook_approval_resolved":
+            await self._on_hook_approval_resolved_event(event)
+            return
 
         delivery_mode = await self._get_telegram_autonomous_delivery(thread_id)
 

@@ -172,6 +172,8 @@ class _RichReplRuntime:
         self._slash_panel_selected_index = 0
         self._active_form: form_panel.FormSpec | None = None
         self._form_state: form_panel.FormState | None = None
+        # record_id of the require_approval hold whose decision form is open.
+        self._pending_hook_approval_record: str | None = None
         self._autonomous_monitor = AutonomousStreamMonitor(
             client_getter=lambda: self.app._client,
             user_id_getter=lambda: self.app.state.user_id,
@@ -1322,8 +1324,124 @@ class _RichReplRuntime:
         await self._autonomous_monitor.consume_once()
 
     async def _apply_autonomous_event(self, normalized: Any) -> bool:
+        event_type = getattr(normalized, "type", "")
+        if event_type == "hook_approval":
+            await self._on_hook_approval_event(normalized)
+            return True
+        if event_type == "hook_approval_resolved":
+            await self._on_hook_approval_resolved_event(normalized)
+            return True
         await self.render_event_above_prompt(normalized)
         return True
+
+    # -- require_approval holds (backlog #77) --------------------------------
+    #
+    # These two events never reach the transcript reducer: the hold is a live
+    # decision, not turn output. The prompt renders as a dim note above the
+    # prompt, the decision surface is the form panel (Approve/Deny radio,
+    # Enter confirms, Esc leaves it for `/hook approvals`), and the resolved
+    # event closes a stale form + notes the outcome from any surface.
+
+    async def _on_hook_approval_event(self, event: Any) -> None:
+        record_id = str(getattr(event, "record_id", "") or "")
+        if not record_id:
+            return
+        tool_name = str(getattr(event, "tool_name", "") or "a tool")
+        prompt = str(getattr(event, "prompt", "") or "").strip()
+        preview = str(getattr(event, "tool_args_preview", "") or "").strip()
+        note = f"Approval needed: {tool_name}"
+        if prompt:
+            note += f" ({prompt})"
+        await self._render_form_note(note)
+        self._pending_hook_approval_record = record_id
+        self.open_form(self._hook_approval_form_spec(
+            record_id=record_id,
+            tool_name=tool_name,
+            prompt=prompt,
+            preview=preview,
+        ))
+
+    def _hook_approval_form_spec(
+        self,
+        *,
+        record_id: str,
+        tool_name: str,
+        prompt: str,
+        preview: str,
+    ) -> form_panel.FormSpec:
+        from .rendering.markdown import truncate_cell_width
+
+        title = prompt or f"Approve tool call {tool_name}?"
+        meta = truncate_cell_width(preview, 60) if preview else ""
+
+        async def _confirm(result: form_panel.FormResult) -> Any:
+            from .commands import CommandResult
+
+            verdict = (result.radio_value or "").strip()
+            if verdict not in ("approve", "deny"):
+                return CommandResult.completed()
+            self._pending_hook_approval_record = None
+            await self.app._dispatch_command_async(  # noqa: SLF001 - runtime helper
+                f"/hook {verdict} {record_id}",
+                self.capabilities,
+                self.renderer,
+                runtime=self,
+            )
+            return CommandResult.completed()
+
+        return form_panel.FormSpec(
+            title=title,
+            tabs=(
+                form_panel.FormTab(
+                    label="Approval",
+                    fields=(
+                        form_panel.FormField(
+                            kind="radio",
+                            key="decision",
+                            options=(
+                                form_panel.FormOption(
+                                    id="approve",
+                                    label=f"Approve {tool_name}",
+                                    meta=meta,
+                                ),
+                                form_panel.FormOption(
+                                    id="deny",
+                                    label="Deny",
+                                    description="The agent is told not to retry.",
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            on_confirm=_confirm,
+            footer_hint=(
+                "Enter decide · Esc later (/hook approvals) · no answer = deny"
+            ),
+        )
+
+    async def _on_hook_approval_resolved_event(self, event: Any) -> None:
+        record_id = str(getattr(event, "record_id", "") or "")
+        if record_id and self._pending_hook_approval_record == record_id:
+            self._pending_hook_approval_record = None
+            if self._active_form is not None:
+                self.close_form()
+                self._reset_composer_buffer()
+                self.invalidate()
+        outcome = str(getattr(event, "outcome", "") or "")
+        tool_name = str(getattr(event, "tool_name", "") or "tool call")
+        resolved_by = str(getattr(event, "resolved_by", "") or "").strip()
+        if outcome == "approved":
+            line = f"Approved {tool_name}" + (f" ({resolved_by})" if resolved_by else "")
+        elif outcome == "denied":
+            line = f"Denied {tool_name}" + (f" ({resolved_by})" if resolved_by else "")
+        elif outcome == "timeout":
+            line = f"Approval timed out; {tool_name} was denied."
+        elif outcome == "aborted":
+            line = f"Turn cancelled; {tool_name} was denied."
+        else:
+            line = f"Approval for {tool_name} is no longer pending."
+        await self._render_form_note(line)
 
 
 class _RichReplPromptToolkitShell:

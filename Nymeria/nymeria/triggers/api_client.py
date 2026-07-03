@@ -943,6 +943,35 @@ class NymeriaAPIClient:
         )
         return data if isinstance(data, list) else data.get("commands", [])
 
+    # ── Hook approvals ────────────────────────────────────────────────────
+
+    async def get_hook_approvals(self, user_id: Optional[str] = None) -> List[dict]:
+        """List pending require_approval hook holds visible to the caller."""
+        data = await self._get("/hooks/approvals", act_as=user_id)
+        return data if isinstance(data, list) else data.get("approvals", [])
+
+    async def resolve_hook_approval(
+        self,
+        record_id: str,
+        approved: bool,
+        *,
+        note: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Approve or deny a pending hook-approval hold.
+
+        404 = unknown or not visible to the caller; 409 = no longer pending
+        (already resolved, timed out, or the waiting turn died).
+        """
+        payload: Dict[str, Any] = {"approved": approved}
+        if note:
+            payload["note"] = note
+        return await self._post(
+            f"/hooks/approvals/{_path_param(record_id)}/resolve",
+            json=payload,
+            act_as=user_id,
+        )
+
     # ── Settings ──────────────────────────────────────────────────────────
 
     async def get_settings(self, user_id: Optional[str] = None) -> dict:

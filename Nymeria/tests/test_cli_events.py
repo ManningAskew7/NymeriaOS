@@ -11,6 +11,8 @@ from nymeria.triggers.cli.events import (
     DispatchedEvent,
     DoneEvent,
     ErrorEvent,
+    HookApprovalEvent,
+    HookApprovalResolvedEvent,
     IterationLimitEvent,
     QueuedEvent,
     ResponseEvent,
@@ -26,6 +28,52 @@ from nymeria.triggers.cli.events import (
     normalize_stream_event,
     normalize_stream_events,
 )
+
+
+def test_normalizes_hook_approval_events() -> None:
+    held = normalize_stream_event(
+        {
+            "type": "hook_approval",
+            "thread_id": "thread-a",
+            "record_id": "rec-1",
+            "tool_call_id": "call-1",
+            "tool_name": "bash_execute",
+            "prompt": "Approve tool call bash_execute?",
+            "tool_args_preview": '{"command": "rm -rf build"}',
+            "created_at": "2026-07-03T10:00:00+00:00",
+            "expires_at": "2026-07-03T10:03:00+00:00",
+        }
+    )
+    assert held == HookApprovalEvent(
+        thread_id="thread-a",
+        record_id="rec-1",
+        tool_call_id="call-1",
+        tool_name="bash_execute",
+        prompt="Approve tool call bash_execute?",
+        tool_args_preview='{"command": "rm -rf build"}',
+        created_at="2026-07-03T10:00:00+00:00",
+        expires_at="2026-07-03T10:03:00+00:00",
+    )
+
+    resolved = normalize_stream_event(
+        {
+            "type": "hook_approval_resolved",
+            "thread_id": "thread-a",
+            "record_id": "rec-1",
+            "tool_call_id": "call-1",
+            "tool_name": "bash_execute",
+            "outcome": "timeout",
+            "resolved_by": "",
+            "note": "",
+        }
+    )
+    assert resolved == HookApprovalResolvedEvent(
+        thread_id="thread-a",
+        record_id="rec-1",
+        tool_call_id="call-1",
+        tool_name="bash_execute",
+        outcome="timeout",
+    )
 
 
 def test_normalizes_all_known_stream_event_types() -> None:

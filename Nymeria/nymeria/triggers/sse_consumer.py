@@ -203,6 +203,53 @@ def _expiry_minutes(value: Any) -> int:
     return max(1, seconds // 60)
 
 
+_MAX_ARGS_PREVIEW_RENDER_CHARS = 300
+"""Cap on the tool-args preview in bot-rendered approval prompts. The full
+preview (up to 2000 chars) stays available on the REST surface; chat bubbles
+only need enough to recognise the call."""
+
+
+def format_hook_approval_message(event: Dict[str, Any]) -> str:
+    """Render a default approval-request prompt for text chat surfaces.
+
+    Used for the ``hook_approval`` autonomous event (a ``require_approval``
+    hook holding a tool call). Surfaces with native buttons (Telegram inline
+    keyboard, Discord view) render their own message and skip this; everything
+    else falls back to this text plus the ``/hook approve|deny`` commands.
+    """
+    tool_name = str(event.get("tool_name") or "a tool")
+    record_id = str(event.get("record_id") or "")
+    prompt = str(event.get("prompt") or "").strip()
+    preview = str(event.get("tool_args_preview") or "").strip()
+    if len(preview) > _MAX_ARGS_PREVIEW_RENDER_CHARS:
+        preview = preview[:_MAX_ARGS_PREVIEW_RENDER_CHARS].rstrip() + "..."
+    lines = [f"Approval needed: the agent wants to run {tool_name}."]
+    if prompt:
+        lines.append(prompt)
+    if preview:
+        lines.append(f"Args: {preview}")
+    window = _approval_window_seconds(event)
+    deadline = f" within {window} seconds" if window else ""
+    lines.append(
+        f"Reply /hook approve {record_id} or /hook deny {record_id}"
+        f"{deadline}. No answer means the call is denied."
+    )
+    return "\n\n".join(lines)
+
+
+def _approval_window_seconds(event: Dict[str, Any]) -> int:
+    """Best-effort window length from the record's created/expires stamps."""
+    from datetime import datetime
+
+    try:
+        created = datetime.fromisoformat(str(event.get("created_at")))
+        expires = datetime.fromisoformat(str(event.get("expires_at")))
+        seconds = int((expires - created).total_seconds())
+        return seconds if seconds > 0 else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Handler protocol
 # ---------------------------------------------------------------------------
@@ -303,6 +350,26 @@ async def dispatch_event(
         else:
             await handler.on_response_chunk(format_auth_prompt_message(event))
             await handler.flush_text(final=True)
+
+    elif etype == "hook_approval":
+        await handler.flush_text(final=True)
+        callback = getattr(handler, "on_hook_approval", None)
+        if callable(callback):
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
+        else:
+            await handler.on_response_chunk(format_hook_approval_message(event))
+            await handler.flush_text(final=True)
+
+    elif etype == "hook_approval_resolved":
+        # Surfaces with a live approval UI (buttons, form) drop it here; text
+        # surfaces have nothing to retract, so the default is silence.
+        callback = getattr(handler, "on_hook_approval_resolved", None)
+        if callable(callback):
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
 
     elif etype == "compacting":
         await handler.flush_text(final=True)
