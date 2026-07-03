@@ -11,6 +11,7 @@ from nymeria.triggers.sse_consumer import (
     consume_sse_stream,
     dispatch_event,
     format_auth_prompt_message,
+    format_hook_approval_message,
     parse_attach_paths,
     parse_sse_data_line,
 )
@@ -259,6 +260,100 @@ def test_dispatch_auth_prompt_renders_default_message_and_flushes():
     assert h.calls[1][0] == "on_response_chunk"
     assert "GitHub" in h.calls[1][1]["content"]
     assert h.calls[2] == ("flush_text", {"final": True})
+
+
+def _hook_approval_event(**overrides) -> Dict[str, Any]:
+    event = {
+        "type": "hook_approval",
+        "record_id": "rec-abc123",
+        "user_id": "u1",
+        "thread_id": "t1",
+        "tool_name": "bash_execute",
+        "tool_args_preview": '{"command": "rm -rf build"}',
+        "prompt": "Approve tool call bash_execute?",
+        "created_at": "2026-07-03T10:00:00+00:00",
+        "expires_at": "2026-07-03T10:03:00+00:00",
+    }
+    event.update(overrides)
+    return event
+
+
+def test_format_hook_approval_message_full():
+    message = format_hook_approval_message(_hook_approval_event())
+    assert "bash_execute" in message
+    assert "rm -rf build" in message
+    assert "/hook approve rec-abc123" in message
+    assert "/hook deny rec-abc123" in message
+    assert "within 180 seconds" in message
+    assert "denied" in message  # silence-is-denial is stated up front
+
+
+def test_format_hook_approval_message_caps_args_preview():
+    message = format_hook_approval_message(
+        _hook_approval_event(tool_args_preview="x" * 2000)
+    )
+    assert "x" * 301 not in message
+    assert "..." in message
+
+
+def test_format_hook_approval_message_tolerates_missing_fields():
+    message = format_hook_approval_message({"type": "hook_approval"})
+    assert "a tool" in message
+    assert "/hook approve" in message
+    assert "within" not in message  # no stamps, no window claim
+
+
+def test_dispatch_hook_approval_renders_default_message_and_flushes():
+    h = RecordingHandler()
+    asyncio.run(dispatch_event(_hook_approval_event(), h, 0))
+    assert h.calls[0] == ("flush_text", {"final": True})
+    assert h.calls[1][0] == "on_response_chunk"
+    assert "bash_execute" in h.calls[1][1]["content"]
+    assert h.calls[2] == ("flush_text", {"final": True})
+
+
+def test_dispatch_hook_approval_prefers_handler_callback():
+    h = RecordingHandler()
+    seen = {}
+
+    async def on_hook_approval(event):
+        seen["event"] = event
+
+    h.on_hook_approval = on_hook_approval
+    asyncio.run(dispatch_event(_hook_approval_event(), h, 0))
+    assert seen["event"]["record_id"] == "rec-abc123"
+    # Default text must NOT also render when the surface has its own UI.
+    assert all(name != "on_response_chunk" for name, _ in h.calls)
+
+
+def test_dispatch_hook_approval_resolved_is_silent_by_default():
+    h = RecordingHandler()
+    asyncio.run(
+        dispatch_event(
+            {"type": "hook_approval_resolved", "record_id": "r", "outcome": "approved"},
+            h,
+            0,
+        )
+    )
+    assert h.calls == []
+
+
+def test_dispatch_hook_approval_resolved_calls_handler_callback():
+    h = RecordingHandler()
+    seen = {}
+
+    async def on_hook_approval_resolved(event):
+        seen["outcome"] = event.get("outcome")
+
+    h.on_hook_approval_resolved = on_hook_approval_resolved
+    asyncio.run(
+        dispatch_event(
+            {"type": "hook_approval_resolved", "record_id": "r", "outcome": "timeout"},
+            h,
+            0,
+        )
+    )
+    assert seen["outcome"] == "timeout"
 
 
 def test_dispatch_dispatched_emits_response_reference_line():

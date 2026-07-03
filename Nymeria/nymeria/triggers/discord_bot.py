@@ -32,6 +32,7 @@ from .sse_consumer import (
     consume_autonomous_firehose,
     consume_sse_stream,
     dispatch_event,
+    format_hook_approval_message,
     parse_attach_paths,
 )
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -65,6 +66,12 @@ def make_thread_id(guild_id: Optional[int], channel_id: int) -> str:
 
 
 CONTEXT_MESSAGE_COUNT = 10
+
+# Approve/Deny views outlive the backend hold (window ceiling 600s) by a
+# margin, so a click on a just-expired prompt gets a clean "no longer
+# pending" answer; on view timeout the buttons are dropped as a fallback if
+# the resolved event never reached this process.
+HOOK_APPROVAL_VIEW_TIMEOUT_SECONDS = 30 * 60
 
 
 async def fetch_channel_context(
@@ -161,6 +168,9 @@ class NymeriaDiscordBot(_BotBase):
         self._context_enabled: Dict[int, bool] = {}
         self._show_tool_calls: Dict[int, bool] = {}
         self._autonomous_state: Dict[str, Dict[str, Any]] = {}
+        # record_id -> (message, view, monotonic deadline) for pending
+        # hook-approval prompts, so the resolved event can edit the message.
+        self._hook_approval_messages: Dict[str, tuple[Any, Any, float]] = {}
         self._user_resolver = UserResolver(self.api, "discord", logger=logger)
         self._health_task: Optional[asyncio.Task] = None
 
@@ -1015,6 +1025,179 @@ class NymeriaDiscordBot(_BotBase):
         async def on_stream_end(self, tool_call_count: int) -> None:
             pass  # autonomous stream is event-by-event, not consumed as stream
 
+    def _make_hook_approval_view(self, record_id: str) -> Any:
+        """Build an Approve/Deny button view for a hook-approval hold.
+
+        Defined lazily (inside the method) so the module still imports on a
+        lean install without discord.py. The backend is the authorization
+        authority: the click resolves via the REST endpoint under the
+        clicker's identity, so owner-or-admin is enforced server-side (404 =
+        not yours, 409 = no longer pending). The public message edit happens
+        via the ``hook_approval_resolved`` firehose event, giving every
+        resolution surface one shared edit path; the click itself only gets
+        an ephemeral acknowledgement.
+        """
+        bot = self
+
+        class _HookApprovalView(discord.ui.View):
+            def __init__(self) -> None:
+                super().__init__(timeout=HOOK_APPROVAL_VIEW_TIMEOUT_SECONDS)
+                self.resolved = False
+                self._message: Any = None
+
+            async def on_timeout(self) -> None:
+                # Fallback only: the resolved event normally retracts the
+                # buttons long before the view times out.
+                message = self._message
+                if message is None:
+                    return
+                try:
+                    await message.edit(view=None)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            async def _resolve(
+                self, interaction: "discord.Interaction", approved: bool
+            ) -> None:
+                if self.resolved:
+                    await interaction.response.send_message(
+                        "Already resolved.", ephemeral=True
+                    )
+                    return
+                user_id = await bot.resolve_user_id(interaction.user.id)
+                if user_id is None:
+                    await interaction.response.send_message(
+                        "This Discord account isn't linked to a Nymeria user "
+                        "yet, so it can't resolve approvals.",
+                        ephemeral=True,
+                    )
+                    return
+                try:
+                    await bot.api.resolve_hook_approval(
+                        record_id, approved, user_id=user_id
+                    )
+                except httpx.HTTPStatusError as e:
+                    status = e.response.status_code
+                    if status == 404:
+                        await interaction.response.send_message(
+                            "Only the requester or an admin can resolve this.",
+                            ephemeral=True,
+                        )
+                    elif status == 409:
+                        self.resolved = True
+                        await interaction.response.send_message(
+                            "No longer pending.", ephemeral=True
+                        )
+                        try:
+                            if interaction.message is not None:
+                                await interaction.message.edit(view=None)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    else:
+                        logger.warning("Hook approval resolve failed: %s", e)
+                        await interaction.response.send_message(
+                            "Couldn't resolve the approval.", ephemeral=True
+                        )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Hook approval resolve failed: %s", e)
+                    await interaction.response.send_message(
+                        "Couldn't resolve the approval.", ephemeral=True
+                    )
+                    return
+                self.resolved = True
+                await interaction.response.send_message(
+                    "Approved." if approved else "Denied.", ephemeral=True
+                )
+
+            @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+            async def approve(
+                self, interaction: "discord.Interaction", button: "discord.ui.Button"
+            ) -> None:
+                await self._resolve(interaction, True)
+
+            @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+            async def deny(
+                self, interaction: "discord.Interaction", button: "discord.ui.Button"
+            ) -> None:
+                await self._resolve(interaction, False)
+
+        return _HookApprovalView()
+
+    def _prune_hook_approval_messages(self) -> None:
+        now = time.monotonic()
+        expired = [
+            record_id
+            for record_id, (_, _, deadline) in self._hook_approval_messages.items()
+            if deadline <= now
+        ]
+        for record_id in expired:
+            self._hook_approval_messages.pop(record_id, None)
+
+    async def _on_hook_approval_event(self, channel: Any, event: Dict[str, Any]) -> None:
+        """Post an approval prompt with Approve/Deny buttons.
+
+        The body is the shared text fallback (it carries the ``/hook approve
+        <id>`` commands, so the hold stays resolvable even if buttons fail).
+        """
+        record_id = str(event.get("record_id") or "")
+        if not record_id:
+            return
+        self._prune_hook_approval_messages()
+        view = self._make_hook_approval_view(record_id)
+        text = format_hook_approval_message(event)
+        try:
+            message = await channel.send(text[:2000], view=view)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to send hook approval prompt: %s", e)
+            return
+        view._message = message
+        self._hook_approval_messages[record_id] = (
+            message,
+            view,
+            time.monotonic() + HOOK_APPROVAL_VIEW_TIMEOUT_SECONDS,
+        )
+
+    async def _on_hook_approval_resolved_event(self, event: Dict[str, Any]) -> None:
+        """Edit the original prompt on resolution: outcome line, no buttons.
+
+        Fires for every resolution shape (button, /hook command, REST,
+        desktop, timeout, abort), so the buttons are always retracted no
+        matter where the decision came from.
+        """
+        record_id = str(event.get("record_id") or "")
+        entry = self._hook_approval_messages.pop(record_id, None)
+        if entry is None:
+            return
+        message, view, _ = entry
+        outcome = str(event.get("outcome") or "")
+        resolved_by = str(event.get("resolved_by") or "").strip()
+        note = str(event.get("note") or "").strip()
+        if outcome == "approved":
+            line = "✅ Approved" + (f" by {resolved_by}" if resolved_by else "")
+        elif outcome == "denied":
+            line = "\U0001f6ab Denied" + (f" by {resolved_by}" if resolved_by else "")
+        elif outcome == "timeout":
+            line = "⏰ No answer in time; the tool call was denied."
+        elif outcome == "aborted":
+            line = "Turn cancelled; the tool call was denied."
+        else:
+            line = "No longer pending."
+        if note:
+            line += f": {note}"
+        tool_name = str(event.get("tool_name") or "tool call")
+        try:
+            view.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await message.edit(
+                content=f"Approval request for {tool_name}.\n\n{line}"[:2000],
+                view=None,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Failed to edit hook approval message: %s", e)
+
     async def _handle_sse_event(self, event: Dict[str, Any]) -> None:
         """Process a single event from the API SSE autonomous stream.
 
@@ -1041,6 +1224,15 @@ class NymeriaDiscordBot(_BotBase):
                 channel = await self.fetch_channel(channel_id)
 
             if not channel or not hasattr(channel, "send"):
+                return
+
+            # Approval holds are time-critical and independent of the
+            # autonomous handler state, so route them before it.
+            if event_type == "hook_approval":
+                await self._on_hook_approval_event(channel, event)
+                return
+            if event_type == "hook_approval_resolved":
+                await self._on_hook_approval_resolved_event(event)
                 return
 
             # Get or create handler for this thread
