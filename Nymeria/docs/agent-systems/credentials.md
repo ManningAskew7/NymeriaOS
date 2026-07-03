@@ -186,10 +186,17 @@ resolves by canonical key, alias, or dash/underscore variant;
 no associated provider mean "no credential required");
 `provider_credential_status(spec, user_id)` reports
 `connected` / `pending` / `needs_setup` / `optional` from vault metadata
-without touching secret values. Consumers: the `auth_test` tool today; auth
-status in tool_search and the enable-time credential nudge are planned on the
-same helpers. Note the status reflects the vault only: a provider satisfied
-purely by a settings/env fallback still reports `needs_setup`.
+without touching secret values, and the batch variants
+`provider_credential_status_map(specs, user_id)` and
+`auth_status_for_tools(tool_names, user_id)` answer many tools with a single
+vault read. Consumers: the `auth_test` tool; the auth axis on tool_search
+results (agent text plus `auth_status`/`auth_provider` fields on the search,
+`/tools/defaults`, and unified-tools REST payloads, surfaced as badges in the
+desktop and mobile tool menus); the enable-time credential nudge in
+`tool_manage`; and the `[Auth check]` guidance block appended to auth-shaped
+tool failures in the agent runtime. Note the status reflects the vault only: a
+provider satisfied purely by a settings/env fallback still reports
+`needs_setup`.
 
 Cross-provider alias overlap is legitimate data and tolerated (aws and s3
 mutually alias each other; freshdesk, freshservice, and freshworks_crm all

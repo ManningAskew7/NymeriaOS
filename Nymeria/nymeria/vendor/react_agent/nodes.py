@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -1553,6 +1554,67 @@ def create_tools_node(
     )
 
 
+# Auth-failure detection for the structured [Auth check] signal (dev-todo #44).
+# Matched only against error-shaped results of tools that map to a provider in
+# the credential-spec registry, so ordinary page/content text cannot trigger it.
+# Bare "forbidden" is deliberately NOT an alternative (it appears in ordinary
+# error prose, e.g. plan-restriction messages or echoed user data); forbidden
+# only counts next to a 403 or an access/permission phrase.
+_AUTH_FAILURE_RE = re.compile(
+    r"(?i)("
+    r"\bHTTP[ /]?40[13]\b"
+    r"|\b40[13]\s+(?:unauthorized|forbidden|client error)"
+    r"|\bunauthorized\b"
+    r"|\b(?:access|permission|request) (?:is )?(?:denied|forbidden)\b"
+    r"|\bauthentication (?:failed|error|required)\b"
+    r"|\bnot authenticated\b"
+    r"|\binvalid (?:api[ _-]?key|token|credentials?)\b"
+    r"|\bapi[ _-]?key (?:is )?(?:invalid|missing|required|expired)\b"
+    r"|\b(?:token|credential) (?:is |has )?expired\b"
+    r"|\bno [\w .-]{1,40} credential found\b"
+    r"|\bcredential not found\b"
+    r")"
+)
+
+
+def _auth_failure_guidance(tool_name: str, provider: str, status: str) -> str:
+    """The [Auth check] block appended to an auth-shaped tool failure.
+
+    Status-tailored next step consuming the credential-spec registry; the
+    retry rides the model loop (no silent re-execution).
+    """
+    if status == "needs_setup":
+        step = (
+            f'no credential is saved for "{provider}". Ask the user, then use '
+            f'request_credential(provider="{provider}") for a hosted form, or '
+            'auth_write(operation="create", ...) if they paste a key in chat'
+        )
+    elif status == "pending":
+        step = (
+            f'a "{provider}" credential setup is pending; the user has not '
+            "finished saving it. Ask them to complete it, or re-request with "
+            "request_credential"
+        )
+    elif status == "optional":
+        step = (
+            f'"{provider}" works without a credential, but this failure '
+            "suggests one may be needed. Ask the user, then use "
+            f'request_credential(provider="{provider}") or '
+            'auth_write(operation="create", ...) with a user-pasted key'
+        )
+    else:  # connected: something is saved but the call still failed
+        step = (
+            f'run auth_test(tool_name="{tool_name}") to verify the saved '
+            f'credential; if it is invalid, request_credential(provider="{provider}") '
+            'or auth_write(operation="replace_secret", ...) with a user-pasted key'
+        )
+    return (
+        "\n\n[Auth check]: This looks like an authentication failure. "
+        f'Provider "{provider}", credential status: {status}. Next: {step}. '
+        'Skill(name="credential-management") has the full flow.'
+    )
+
+
 class SafeToolNode(ToolNode):
     """
     A ToolNode wrapper that catches exceptions and returns them as tool results,
@@ -1601,7 +1663,9 @@ class SafeToolNode(ToolNode):
         config = tool_runtime.config
         registry = self._hook_registry(config)
         if not hooks.tool_hooks_active(registry):
-            return super()._run_one(call, input_type, tool_runtime)
+            return self._augment_auth_failure(
+                super()._run_one(call, input_type, tool_runtime), call, config
+            )
         from langgraph.prebuilt.tool_node import ToolCallRequest
 
         pre_activity: list = []
@@ -1636,14 +1700,16 @@ class SafeToolNode(ToolNode):
         # original result; scheduled off-turn, so they neither delay the tool
         # return nor count against the tool timeout budget.
         hooks.schedule_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
-        return final
+        return self._augment_auth_failure(final, call, config)
 
     async def _arun_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
         from ...core import hooks
         config = tool_runtime.config
         registry = self._hook_registry(config)
         if not hooks.tool_hooks_active(registry):
-            return await super()._arun_one(call, input_type, tool_runtime)
+            return await self._a_augment_auth_failure(
+                await super()._arun_one(call, input_type, tool_runtime), call, config
+            )
         from langgraph.prebuilt.tool_node import ToolCallRequest
 
         pre_activity: list = []
@@ -1678,7 +1744,72 @@ class SafeToolNode(ToolNode):
         # original result; scheduled off-turn (a loop task), so they neither
         # delay the tool return nor count against the tool timeout budget.
         hooks.schedule_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
-        return final
+        return await self._a_augment_auth_failure(final, call, config)
+
+    @staticmethod
+    def _auth_failure_candidate(result) -> bool:
+        """Cheap in-memory gate: is this result an auth-shaped tool failure?
+
+        No registry or vault access; safe to call inline on any path. Best
+        effort: any failure reads as "not a candidate".
+        """
+        try:
+            if not isinstance(result, ToolMessage) or not isinstance(result.content, str):
+                return False
+            content = result.content
+            if "[Auth check]:" in content:
+                return False
+            stripped = content.lstrip()
+            error_shaped = (
+                getattr(result, "status", None) == "error"
+                or stripped[:8].lower().startswith("[error]")
+                or stripped.startswith("Error")
+            )
+            return bool(error_shaped and _AUTH_FAILURE_RE.search(content[:4000]))
+        except Exception:
+            return False
+
+    def _augment_auth_failure(self, result, call, config):
+        """Append the structured [Auth check] block to auth-shaped failures.
+
+        Runs AFTER post-tool hooks (hooks match the raw tool result, never the
+        synthetic guidance). Fires only when the result is error-shaped, the
+        text matches the auth-failure patterns, and the tool maps to a provider
+        in the credential-spec registry; everything else passes through
+        untouched. Best-effort: any failure returns the original result.
+
+        The vault status lookup is a synchronous DB read; async callers gate on
+        ``_auth_failure_candidate`` and run this in a thread so the event loop
+        never blocks (the candidate gate makes that a rare, error-only hop).
+        """
+        try:
+            if not self._auth_failure_candidate(result):
+                return result
+            tool_name = str(call.get("name") or "") if isinstance(call, dict) else ""
+            from ...tools.credential_registry import (
+                provider_credential_status,
+                spec_for_tool,
+            )
+
+            spec = spec_for_tool(tool_name)
+            if spec is None:
+                return result
+            configurable = (
+                config.get("configurable") or {} if isinstance(config, dict) else {}
+            )
+            user_id = str(configurable.get("user_id") or "default")
+            status = provider_credential_status(spec, user_id)
+            guidance = _auth_failure_guidance(tool_name, spec.provider, status)
+            return result.model_copy(update={"content": result.content + guidance})
+        except Exception:
+            logger.debug("auth-failure augmentation skipped", exc_info=True)
+            return result
+
+    async def _a_augment_auth_failure(self, result, call, config):
+        """Async wrapper: thread-offload the vault read for candidates only."""
+        if not self._auth_failure_candidate(result):
+            return result
+        return await asyncio.to_thread(self._augment_auth_failure, result, call, config)
 
     @staticmethod
     def _hook_registry(config):

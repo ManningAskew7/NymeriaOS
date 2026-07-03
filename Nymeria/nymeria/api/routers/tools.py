@@ -1,5 +1,6 @@
 """Classic tool discovery and default-tool routes."""
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -7,6 +8,33 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.accounts import AuthenticatedUser
 from ..schemas.tools import DefaultToolsUpdateRequest
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_auth_status_fields(tools_out: list, user_id: str) -> None:
+    """Stamp the credential axis onto serialized tool dicts, in place.
+
+    ``auth_status``/``auth_provider`` for tools that map to a provider in the
+    credential-spec registry (dev-todo #7); everything else gets None (= no
+    credential required). One batched vault metadata read for the whole list.
+    Best-effort and understating: a registry failure leaves the fields None,
+    while a vault read failure inside the batch helper reads as "no records"
+    (statuses degrade to needs_setup/optional, never a false "connected").
+    """
+    for item in tools_out:
+        item.setdefault("auth_status", None)
+        item.setdefault("auth_provider", None)
+    try:
+        from ...tools.credential_registry import auth_status_for_tools
+
+        pairs = auth_status_for_tools((item["name"] for item in tools_out), user_id)
+        for item in tools_out:
+            pair = pairs.get(item["name"])
+            if pair is not None:
+                item["auth_provider"], item["auth_status"] = pair
+    except Exception:
+        logger.debug("auth-status stamping failed for tool list", exc_info=True)
 
 
 def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
@@ -81,6 +109,8 @@ def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
                 "is_default": name in default_set,
             })
             seen.add(name)
+
+    _apply_auth_status_fields(tools_out, user_id)
 
     owned = set(agent.accounts_repo.list_threads_for_user(user_id))
     callable_count = len(

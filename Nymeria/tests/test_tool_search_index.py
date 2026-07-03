@@ -384,3 +384,173 @@ def test_thread_status_no_warning_on_empty_short_circuit(caplog):
         assert index._thread_status(None, "t1") == (set(), {}, set())
         assert index._thread_status(_BrokenConfigAgent(), "") == (set(), {}, set())
     assert "thread-status lookup failed" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Credential (auth) axis on search results (dev-todo #7).
+#
+# Reuses the tmp-vault fixture pattern from tests/test_credential_registry.py:
+# NYMERIA_SECRETS_KEY set, config.get_settings monkeypatched to a data_dir
+# dataclass, an AccountsRepo user "alice" created FIRST (FK requirement), then a
+# CredentialVaultRepo on the same db bound onto credential_vault._vault_repo.
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass  # noqa: E402
+
+from cryptography.fernet import Fernet  # noqa: E402
+
+from nymeria.core.tool_search_index import ToolSearchDocument, ToolSearchResult  # noqa: E402
+
+
+@dataclass
+class _AuthSettings:
+    data_dir: Path
+
+
+def _auth_vault(tmp_path, monkeypatch):
+    from nymeria.core.accounts import AccountsRepo
+    from nymeria.core.credential_vault import CredentialVaultRepo
+
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
+    settings = _AuthSettings(data_dir=tmp_path)
+
+    import nymeria.config as config_mod
+
+    monkeypatch.setattr(config_mod, "get_settings", lambda: settings)
+
+    db_path = tmp_path / "accounts.db"
+    accounts = AccountsRepo(db_path)
+    accounts.create_user("alice", "alice@example.com", "Alice")
+
+    import nymeria.core.credential_vault as vault_mod
+
+    repo = CredentialVaultRepo(db_path)
+    monkeypatch.setattr(vault_mod, "_vault_repo", repo)
+    return repo
+
+
+def _find(results, name):
+    return next((r for r in results if r.name == name), None)
+
+
+def test_search_results_carry_needs_setup_then_connected(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+
+    repo = _auth_vault(tmp_path, monkeypatch)
+    index = ToolSearchIndex(openai_api_key=None)
+
+    response = index.search("todoist", agent=None, user_id="alice", include_status=True)
+    hit = _find(response.results, "todoist_list_tasks")
+    assert hit is not None
+    assert hit.auth_provider == "todoist"
+    assert hit.auth_status == "needs_setup"
+
+    repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="todoist key",
+        provider="todoist",
+        kind="api_key",
+        secret_fields={"api_key": "sk-x"},
+    )
+    response2 = index.search("todoist", agent=None, user_id="alice", include_status=True)
+    hit2 = _find(response2.results, "todoist_list_tasks")
+    assert hit2 is not None
+    assert hit2.auth_provider == "todoist"
+    assert hit2.auth_status == "connected"
+
+
+def test_non_integration_result_has_no_auth_axis(tmp_path, monkeypatch):
+    from nymeria.tools.credential_registry import spec_for_tool
+
+    _auth_vault(tmp_path, monkeypatch)
+    index = ToolSearchIndex(openai_api_key=None)
+
+    response = index.search("browser", agent=None, user_id="alice", include_status=True)
+    # Any result the credential registry has no provider spec for = no
+    # credential required, so its auth axis must be absent.
+    plain = next(r for r in response.results if spec_for_tool(r.name) is None)
+    assert plain.auth_status is None
+    assert plain.auth_provider is None
+
+
+def test_include_status_false_suppresses_auth_axis(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+
+    _auth_vault(tmp_path, monkeypatch)
+    index = ToolSearchIndex(openai_api_key=None)
+
+    response = index.search("todoist", agent=None, user_id="alice", include_status=False)
+    hit = _find(response.results, "todoist_list_tasks")
+    assert hit is not None
+    assert hit.auth_status is None
+    assert hit.auth_provider is None
+
+
+def test_to_json_includes_auth_keys():
+    result = ToolSearchResult(
+        name="todoist_list_tasks",
+        description="d",
+        category="integrations",
+        security_level="moderate",
+        tool_type="builtin",
+        is_default=False,
+        status="available",
+        score=0.0,
+        enable_hint="hint",
+        auth_status="needs_setup",
+        auth_provider="todoist",
+    )
+    payload = result.to_json()
+    assert payload["auth_status"] == "needs_setup"
+    assert payload["auth_provider"] == "todoist"
+
+
+def test_auth_status_map_reads_vault_once_per_page(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+
+    repo = _auth_vault(tmp_path, monkeypatch)
+
+    # _auth_status_map now delegates to the batch helper auth_status_for_tools,
+    # which performs one vault metadata read for the whole result page. Spy on
+    # the vault repo's list_credentials to assert that single read.
+    calls = {"count": 0}
+    real_list = repo.list_credentials
+
+    def counting(*args, **kwargs):
+        calls["count"] += 1
+        return real_list(*args, **kwargs)
+
+    monkeypatch.setattr(repo, "list_credentials", counting)
+
+    def _doc(name):
+        return ToolSearchDocument(
+            name=name,
+            description="",
+            category="integrations",
+            security_level="moderate",
+            tool_type="builtin",
+        )
+
+    ranked = [(1.0, _doc("todoist_list_tasks")), (0.9, _doc("todoist_create_task"))]
+    auth_map = ToolSearchIndex._auth_status_map(ranked, "alice", True)
+
+    # Two todoist tools (one distinct provider) -> exactly one vault read.
+    assert calls["count"] == 1
+    assert auth_map["todoist_list_tasks"] == ("todoist", "needs_setup")
+    assert auth_map["todoist_create_task"] == ("todoist", "needs_setup")
+
+
+def test_auth_status_map_empty_when_status_excluded():
+    def _doc(name):
+        return ToolSearchDocument(
+            name=name,
+            description="",
+            category="integrations",
+            security_level="moderate",
+            tool_type="builtin",
+        )
+
+    ranked = [(1.0, _doc("todoist_list_tasks"))]
+    assert ToolSearchIndex._auth_status_map(ranked, "alice", False) == {}
+    assert ToolSearchIndex._auth_status_map([], "alice", True) == {}

@@ -27,6 +27,10 @@ class ToolSearchResultResponse(BaseModel):
     group_label: Optional[str] = None
     service: Optional[str] = None
     service_label: Optional[str] = None
+    # Credential axis (provider-mapped tools only; None = no credential
+    # required): connected / pending / needs_setup / optional.
+    auth_status: Optional[str] = None
+    auth_provider: Optional[str] = None
 
 
 class ToolSearchResponse(BaseModel):

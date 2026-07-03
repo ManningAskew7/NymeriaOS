@@ -347,3 +347,83 @@ def test_unified_custom_tool_crud_is_admin_only_and_preserves_reload_side_effect
     assert delete_response.json() == {"status": "ok", "deleted": "price_lookup"}
     assert loader.get_definition("price_lookup") is None
     assert reload_custom_calls == ["called"]
+
+
+def _seed_vault(tmp_path: Path, monkeypatch, *, connected_user: str | None = None):
+    """Bind a tmp CredentialVaultRepo onto get_credential_vault_repo.
+
+    The owning user must already exist in tmp_path/accounts.db (FK requirement).
+    """
+    from cryptography.fernet import Fernet
+
+    import nymeria.core.credential_vault as vault_mod
+
+    monkeypatch.setenv("NYMERIA_SECRETS_KEY", Fernet.generate_key().decode())
+    repo = vault_mod.CredentialVaultRepo(tmp_path / "accounts.db")
+    monkeypatch.setattr(vault_mod, "get_credential_vault_repo", lambda *a, **k: repo)
+    if connected_user is not None:
+        repo.create_credential(
+            owner_type="user",
+            owner_user_id=connected_user,
+            name="todoist key",
+            provider="todoist",
+            kind="api_key",
+            secret_fields={"api_key": "sk-x"},
+        )
+    return repo
+
+
+def test_unified_tools_carry_credential_auth_axis(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+    from nymeria.tools.credential_registry import spec_for_tool
+
+    client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
+    token = _create_user(agent, "owner")
+    _seed_vault(tmp_path, monkeypatch, connected_user="owner")
+
+    response = client.get(
+        "/users/owner/tools/unified",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    tools = {tool["id"]: tool for tool in response.json()["tools"]}
+
+    # Provider-mapped builtin tool returns real (non-None) auth fields.
+    assert tools["todoist_list_tasks"]["auth_provider"] == "todoist"
+    assert tools["todoist_list_tasks"]["auth_status"] == "connected"
+
+    # A spec-less builtin returns None for both.
+    plain_id = next(
+        tool_id
+        for tool_id in tools
+        if spec_for_tool(tool_id) is None
+    )
+    assert tools[plain_id]["auth_status"] is None
+    assert tools[plain_id]["auth_provider"] is None
+
+
+def test_unified_tool_response_schema_accepts_auth_fields():
+    # Schema-level guard: UnifiedToolResponse round-trips the optional axis.
+    from nymeria.api.schemas.unified_tools import UnifiedToolResponse
+
+    resp = UnifiedToolResponse(
+        id="todoist_list_tasks",
+        name="todoist_list_tasks",
+        description="d",
+        default_description="d",
+        category="integrations",
+        security_level="moderate",
+        enabled=True,
+        enabled_reason="default_thread_tools",
+        tool_type="builtin",
+        auth_status="needs_setup",
+        auth_provider="todoist",
+    )
+    dumped = resp.model_dump()
+    assert dumped["auth_status"] == "needs_setup"
+    assert dumped["auth_provider"] == "todoist"

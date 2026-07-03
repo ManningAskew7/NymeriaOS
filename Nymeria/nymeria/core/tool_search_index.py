@@ -102,6 +102,13 @@ class ToolSearchResult:
     group_label: Optional[str] = None
     service: Optional[str] = None
     service_label: Optional[str] = None
+    # Credential axis (provider-mapped tools only; None = no credential
+    # required). auth_status is provider_credential_status's vocabulary:
+    # connected / pending / needs_setup / optional. User-scoped and mutable,
+    # so it is computed at result time like `status`, never baked into the
+    # catalog document. dev-todo #7.
+    auth_status: Optional[str] = None
+    auth_provider: Optional[str] = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -118,6 +125,8 @@ class ToolSearchResult:
             "group_label": self.group_label,
             "service": self.service,
             "service_label": self.service_label,
+            "auth_status": self.auth_status,
+            "auth_provider": self.auth_provider,
         }
 
 
@@ -293,6 +302,7 @@ class ToolSearchIndex:
 
             default_set = self._default_tool_set(agent, user_id)
             enabled_perm, temp_map, disabled = self._thread_status(agent, thread_id)
+            auth_map = self._auth_status_map(ranked, user_id, include_status)
 
             return ToolSearchResponse(
                 query=query,
@@ -308,10 +318,37 @@ class ToolSearchIndex:
                         disabled=disabled,
                         include_status=include_status,
                         user_role=user_role,
+                        auth=auth_map.get(doc.name),
                     )
                     for score, doc in ranked
                 ],
             )
+
+    @staticmethod
+    def _auth_status_map(
+        ranked: list[tuple[float, "ToolSearchDocument"]],
+        user_id: str,
+        include_status: bool,
+    ) -> dict[str, tuple[str, str]]:
+        """Per-result credential axis: tool name -> (provider, auth status).
+
+        One batched vault metadata read for the whole result page regardless
+        of provider count, and only for the page that is actually returned.
+        Tools with no provider spec are absent (= "no credential required").
+        Best-effort and understating: a registry failure yields an empty map,
+        while a vault read failure inside the batch helper reads as "no
+        records" (statuses degrade to needs_setup/optional, never a false
+        "connected").
+        """
+        if not include_status or not ranked:
+            return {}
+        try:
+            from ..tools.credential_registry import auth_status_for_tools
+
+            return auth_status_for_tools((doc.name for _, doc in ranked), user_id)
+        except Exception:
+            logger.debug("tool search auth-status overlay failed", exc_info=True)
+            return {}
 
     def _ensure_catalog(
         self,
@@ -852,6 +889,7 @@ class ToolSearchIndex:
         disabled: set[str],
         include_status: bool,
         user_role: str,
+        auth: Optional[tuple[str, str]] = None,
     ) -> ToolSearchResult:
         is_default = doc.name in default_set
         status: Optional[str] = None
@@ -887,6 +925,8 @@ class ToolSearchIndex:
             group_label=grouping["group_label"] if grouping else None,
             service=grouping["service"] if grouping else None,
             service_label=grouping["service_label"] if grouping else None,
+            auth_provider=auth[0] if auth else None,
+            auth_status=auth[1] if auth else None,
         )
 
 

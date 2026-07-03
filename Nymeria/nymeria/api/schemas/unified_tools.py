@@ -44,6 +44,10 @@ class UnifiedToolResponse(BaseModel):
     group_label: str | None = None
     service: str | None = None
     service_label: str | None = None
+    # Credential axis (provider-mapped tools only; None = no credential
+    # required): connected / pending / needs_setup / optional.
+    auth_status: str | None = None
+    auth_provider: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

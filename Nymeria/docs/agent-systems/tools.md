@@ -918,6 +918,20 @@ service falls back to BM25, then fuzzy matching, then substring matching. Each
 result includes status and an exact enable/disable hint such as
 `/tools enable browser_open`.
 
+Results also carry a credential axis for provider-mapped tools (via the
+provider credential-spec registry, see
+[credentials.md](./credentials.md)): an `Auth:` line in the agent-facing
+text and `auth_status`/`auth_provider` fields on the REST payload, with
+status `connected` / `pending` / `needs_setup` / `optional`. Tools with no
+provider spec need no credential and carry no auth annotation (`null`
+fields). The same fields ride `GET /tools/defaults` and
+`GET /users/{user_id}/tools/unified`, where the desktop and mobile tool
+menus render them as badges. One batched vault-metadata read serves each
+request; secret values are never touched. When `tool_manage` enables a
+provider-mapped tool whose credential is not connected, the result appends a
+per-provider `[Credential]:` nudge pointing at the credential-management
+kit.
+
 The same backend ranking is used by one-shot command searches:
 - CLI/plain slash: `/tools <query>` and `/tools search <query>`
 - Discord: `/tools search query:<text>`
