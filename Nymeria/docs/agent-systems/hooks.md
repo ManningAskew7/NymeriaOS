@@ -24,6 +24,7 @@ actions that ship today, and the events they attach to (`EVENT_ACTIONS` in
 | `inject_context` | mutate | `prompt_submit`, `post_tool_use`, `done` | inject a string into the model's context |
 | `block_if_matches` | mutate | `pre_tool_use` | **deny** a tool call when conditions match its args |
 | `rewrite_arg` | mutate | `pre_tool_use` | **modify** a tool call's args when conditions match |
+| `require_approval` | mutate | `pre_tool_use` | **hold** a tool call until the user approves or denies it; no answer = deny |
 | `notify` | observe | `post_tool_use`, `done` | send an in-app + push notification |
 | `create_todo` | observe | `post_tool_use`, `done` | add a user TODO |
 | `webhook` | observe | `post_tool_use`, `done` | POST a JSON payload to a URL |
@@ -47,6 +48,32 @@ for nested args, e.g. `input.command`). `block_if_matches` returns a deny with a
 templated `reason`; `rewrite_arg` returns the changed args only (`updates`, templated),
 which the seam shallow-merges over the call. Empty `conditions` = always fire.
 
+**`require_approval`** is the interactive `pre_tool_use` guardrail (backlog #77): when its
+`conditions` (and the shared `matcher`) match, the tool call **pauses in-band** while every
+surface is asked for a decision, then resolves from the first answer. The hold is an
+awaitable future keyed by a durable pending record (`core/hook_approvals.py`, records under
+`data_dir/hooks/approvals/`, capped at 20 pending per user); minting the record publishes a
+`hook_approval` autonomous SSE event, an in-app notification, and a push (FCM), and every
+resolution (any outcome, any surface) publishes `hook_approval_resolved` so all surfaces
+retract their prompt. Resolve surfaces: desktop/mobile **Approve/Deny buttons on the
+tool-call card** itself, `GET /hooks/approvals` + `POST /hooks/approvals/{record_id}/resolve`
+(owner-or-admin; 404 for a record the caller may not resolve, 409 when no longer pending),
+the `/hook approvals` / `/hook approve <id> [note]` / `/hook deny <id> [note]` commands
+(`agent_allowed=False`: the agent can never approve its own calls), Telegram/Discord inline
+buttons, and a Rich-CLI decision form. Params: `prompt` (templated, default
+`"Approve tool call {tool_name}?"`), `conditions`, and the author-side `timeout_seconds`
+window (10..600, default 180; the author picks it, never the agent). Outcomes: approved →
+allow (logged as `allow: approved by <user>`); denied → deny, with the resolver's note and a
+hard no-retry tail; **timeout → deny** with the hardened message ("the user did not approve
+this tool call within N seconds... do not retry the same command; if it matters, notify the
+user and wait for their explicit approval. Silence is not consent."); turn abort → deny; a
+mint failure fails closed. The waiting action deletes its record on every exit shape; an
+hourly API sweep purges crash-orphaned records, and a resolve that finds no live waiter
+(restart, lost race) cleans up and answers 409. The action is `async def`, awaited on the
+loop (sync fire points run it via `asyncio.run` on the calling thread), so a minutes-long
+hold never occupies a dispatch-pool worker; the bridge derives the per-registration budget
+from `timeout_seconds`, so the dispatcher never times the hold out before its own window.
+
 **`notify`** / **`create_todo`** / **`webhook`** are the observe-plane side effects on the
 "after something happened" events (`post_tool_use`/`done`). They run fire-and-forget: the
 fire point ignores their return, and each wraps its side effect so a failure is logged, not
@@ -54,6 +81,10 @@ raised. `notify` delivers an in-app + push notification (bypassing the autonomou
 gate, since a user-authored hook should always deliver); `create_todo` adds a user TODO;
 `webhook` POSTs `{"text", "thread_id", "user_id"}` to a `{placeholder}`-templated URL through
 the **SSRF-safe** `http_policy` egress helper (private/loopback/metadata targets are refused).
+On graceful API shutdown a bounded drain (`triggers/api.py::_drain_observe_hooks`, 5s per
+barrier: loop tasks via `adrain_observe`, pool futures via `drain_observe` off-loop) flushes
+observe work the turn already accepted, so a restart does not silently drop a queued side
+effect; a hung hook cannot stall shutdown past the bound.
 
 **`run_command`** runs a shell command and is the **one action whose plane flips per event**:
 mutate on `prompt_submit`/`pre_tool_use` (its output can steer the turn), observe on
@@ -74,9 +105,16 @@ its own process group (`start_new_session`), under the author-configured `timeou
 On timeout the whole process group is `SIGKILL`ed. The contract by event: on `prompt_submit`,
 exit 0 stdout is injected as context (**fail-open**: a spawn error or non-zero exit injects
 nothing); on `pre_tool_use`, exit 2 is a **deny** (stderr is the reason), exit 0 with empty
-stdout is allow, exit 0 with a JSON decision object is that decision, any other failure or a
-timeout is a **fail-closed deny**; on `post_tool_use`/`done` it is observe (output ignored).
-Output is read-capped (50 KB captured, 10 KB injected).
+stdout is allow, exit 0 with a JSON decision object is that decision, any other non-zero exit
+is a script bug and allows WITH a diagnostic note (visible in `/hook log` as
+`allow: guardrail exited N...` and as an activity line, instead of an indistinguishable bare
+no-op), and a spawn failure or timeout is a **fail-closed deny**; on `post_tool_use`/`done`
+it is observe (output ignored). Output is read-capped (50 KB retained per stream, 10 KB
+injected) by an incremental bounded pump: one stdin-writer thread plus one capped
+reader-drainer per pipe, so parent memory never scales with the child's output volume and a
+two-pipe flood cannot deadlock; the wall clock still bounds pipe EOF, so a backgrounded
+grandchild holding the pipes open past the deadline is a timeout (group-killed), exactly as
+before.
 
 Actions are store-agnostic: `core/hooks/actions.py` maps each action to its outcome/side
 effect via `ACTIONS`/`ACTION_PLANES`, and `core/hooks/bridge.py::build_registry` turns a
@@ -101,7 +139,10 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   (a re-scope is a delete + create: an update cannot supply the access-gated
   thread binding).
 - **Slash command** `/hook` (`core/command_service.py`, catalog in `core/registry_defaults.py`):
-  `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test` / `log`, reaching
+  `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test` / `log`, plus the
+  resolve surface `approvals` / `approve <record_id> [note]` / `deny <record_id> [note]`
+  (record-id prefix match; owner-or-admin; `agent_allowed=False` so the agent cannot
+  approve its own held calls), reaching
   the same store through `POST /commands/execute` (so it works in the desktop/mobile command
   bar, the terminal CLI, and any chat bot wired to forward it: Telegram forwards the raw
   `/hook ...` line verbatim, Discord's `hook` slash-command group assembles the flag grammar
@@ -119,7 +160,9 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   `--` (e.g. a `--text` starting with two dashes) cannot be expressed on the command line
   (shared arg-parser behavior); use the tool, REST, or GUI for such content.
 - **REST** (`api/routers/hooks.py`, mounted at `/hooks`): pure CRUD plus
-  `POST /hooks/{id}/test`, `GET /hooks/executions` (the execution log, below), and
+  `POST /hooks/{id}/test`, `GET /hooks/executions` (the execution log, below),
+  `GET /hooks/approvals` + `POST /hooks/approvals/{record_id}/resolve` (the
+  `require_approval` resolve surface), and
   `GET /hooks/schema` (the machine-readable taxonomy: per-event legal actions,
   per-action plane/events/params JSON schema, condition operators, the cap; derived
   from `core/hook_spec.py` so clients can render authoring forms from data). The
@@ -171,11 +214,18 @@ grammar (the tool/REST/GUI express the same fields):
   --set working_directory=/tmp/agent-scratch
 ```
 
+```
+# Hold rm -r for a human decision instead of hard-denying it
+/hook create approve-rm --event pre_tool_use --action require_approval \
+  --matcher bash_execute --cond "command contains rm -r" \
+  --text "The agent wants to delete files. Allow it?" --timeout 300
+```
+
 Layering: the hardline guard is the non-negotiable baseline (cannot be disabled),
-`block_if_matches`/`rewrite_arg` hooks are per-user/per-thread policy on top, and
-an admin `run_command` hook can implement arbitrary allow/deny logic (exit 2 =
-deny). An interactive approve/deny action (hold the tool call, prompt the user,
-deny on timeout) is planned but not shipped; see "What is deferred" below.
+`block_if_matches`/`rewrite_arg` hooks are per-user/per-thread policy on top,
+`require_approval` turns a would-be hard deny into a human review (no answer still
+denies), and an admin `run_command` hook can implement arbitrary allow/deny logic
+(exit 2 = deny).
 
 ### Enable model
 
@@ -361,20 +411,14 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
 ## What is deferred (not yet shipped)
 
 - The `nym` **workflow** logic substrate (sandboxed, out-of-process). `run_command` is the
-  shipped subprocess pathfinder for it. The seven canned actions (`inject_context`,
-  `block_if_matches`, `rewrite_arg`, `notify`, `create_todo`, `webhook`, `run_command`) all ship.
+  shipped subprocess pathfinder for it. The eight canned actions (`inject_context`,
+  `block_if_matches`, `rewrite_arg`, `require_approval`, `notify`, `create_todo`, `webhook`,
+  `run_command`) all ship.
 - Observe fire points for `PROMPT_SUBMIT` / `PRE_TOOL_USE` (a registration on those
   events is inert; no product action needs them yet). `POST_TOOL_USE` and `DONE` have
   observe fire points.
 - In-chat activity lines for the `done` event and for the mobile client, and the presets
   library.
-- An interactive **approve/deny** `pre_tool_use` action: hold the tool call, surface an
-  approval prompt to the user (in-app + push), and resolve allow/deny from their answer,
-  with **deny-on-timeout** semantics: if the user does not respond within the configured
-  window, the call is denied with a reason telling the agent NOT to retry the same
-  command, and to notify the user and wait for explicit approval if it matters. Turns a
-  guardrail false-positive from a hard stop into a review. Needs a durable pending-decision
-  record and a frontend resolve surface, like the workflow `nym.approve` flow.
 
 ## Package
 
@@ -384,7 +428,7 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `_mutate_pool`/`_observe_pool` + the off-turn `schedule_observe` on its own
   `_observe_dispatch_pool` + the queue-wait-vs-execution timeout split; reports each run to
   the recorder and, on the mutate plane, to an optional `emit` sink for in-chat lines),
-  `actions.py` (the seven actions incl. `run_command`; per-event planes via the spec's
+  `actions.py` (the eight actions incl. `require_approval` + `run_command`; per-event planes via the spec's
   `plane_for`/`plane_by_event`), `bridge.py` (definitions → per-turn registry, registering
   each on its per-event plane with its `definition_id`, a per-registration timeout, + the
   recorder).
@@ -394,7 +438,7 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `GET /hooks/schema` exposes it (including `plane_by_event` and a `gated` flag);
   `tests/test_hook_spec.py` pins the independent copies (the engine `ACTIONS` table,
   the logic variants, the frontend `HOOK_EVENT_ACTIONS`) in lockstep.
-- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (seven
+- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (eight
   variants) + `HookStore` records + the per-user `HookManager` (store-only, no engine
   import; a corrupt store file is quarantined to `<user>.corrupt-*.json`, never
   silently overwritten), plus the execution log (`HookExecution`,
@@ -406,6 +450,12 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   then admin) at create AND on any behavior update of a gated hook (the shared
   `gated_update_action` rule; enabled/name-only edits are exempt), on all three
   authoring surfaces; execution re-checks the deployment flag (not role).
+- `core/hook_approvals.py`: the `require_approval` hold machinery: durable pending
+  records under `data_dir/hooks/approvals/` (mint/list/load/delete, 20-per-user cap,
+  stale sweep on an hourly API heartbeat), the `HookApprovalCoordinator`
+  (`FutureRendezvous` keyed by record id; `resolve` wakes the waiting action,
+  `abort_thread` is wired into the turn-abort cascade), and the `hook_approval` /
+  `hook_approval_resolved` autonomous-event + notification + push announcers.
 - `core/conditions.py`: `HookCondition` + `evaluate_conditions` (shared with triggers,
   which re-export `TriggerCondition`).
 - `core/text_format.py`: `safe_format` template substitution (shared with triggers).
