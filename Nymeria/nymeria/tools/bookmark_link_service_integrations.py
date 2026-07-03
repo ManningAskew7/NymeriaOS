@@ -10,6 +10,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     BASE_URL_ALIAS_FIELDS,
     USERNAME_FIELDS,
@@ -28,6 +33,50 @@ logger = logging.getLogger(__name__)
 _HTTP_TIMEOUT = 30.0
 _MAX_JSON_CHARS = 60_000
 _RAINDROP_BASE_URL = "https://api.raindrop.io/rest/v1"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_RAINDROP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="raindrop",
+        aliases=("raindrop_api", "raindrop_oauth2", "raindrop_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="RAINDROP_ACCESS_TOKEN",
+        display_name="Raindrop",
+    )
+)
+
+_YOURLS = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="yourls",
+        aliases=("yourls_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("api_url", "apiUrl", "base_url", "baseUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="signature",
+                names=("signature", "api_signature", "apiSignature", "token", "value"),
+            ),
+            CredentialFieldGroup(role="username", names=USERNAME_FIELDS),
+            CredentialFieldGroup(role="password", names=("password", "api_password", "apiPassword")),
+        ),
+        hint_fields=("signature", "username", "password"),
+        env_var="YOURLS_SIGNATURE or YOURLS_USERNAME + YOURLS_PASSWORD",
+        display_name="YOURLS",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -92,9 +141,9 @@ def _request_json(
 def _raindrop_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="raindrop",
-            provider_aliases=("raindrop_api", "raindrop_oauth2", "raindrop_oauth2_api"),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_RAINDROP.provider,
+            provider_aliases=_RAINDROP.aliases,
+            field_names=_RAINDROP.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -102,19 +151,19 @@ def _raindrop_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _RAINDROP_BASE_URL
     )
     token = _credential_value(
-        provider="raindrop",
-        provider_aliases=("raindrop_api", "raindrop_oauth2", "raindrop_oauth2_api"),
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_RAINDROP.provider,
+        provider_aliases=_RAINDROP.aliases,
+        field_names=_RAINDROP.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("raindrop_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="raindrop",
-            field_names=("access_token", "token", "value"),
+            provider=_RAINDROP.provider,
+            field_names=_RAINDROP.hint_fields,
             tool_name=tool_name,
-            env_var="RAINDROP_ACCESS_TOKEN",
-            display_name="Raindrop",
+            env_var=_RAINDROP.env_var,
+            display_name=_RAINDROP.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -127,32 +176,32 @@ def _raindrop_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _yourls_endpoint(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     raw_url = (
         _credential_value(
-            provider="yourls",
-            provider_aliases=("yourls_api",),
-            field_names=("api_url", "apiUrl", "base_url", "baseUrl", "url"),
+            provider=_YOURLS.provider,
+            provider_aliases=_YOURLS.aliases,
+            field_names=_YOURLS.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("yourls_url")
     )
     signature = _credential_value(
-        provider="yourls",
-        provider_aliases=("yourls_api",),
-        field_names=("signature", "api_signature", "apiSignature", "token", "value"),
+        provider=_YOURLS.provider,
+        provider_aliases=_YOURLS.aliases,
+        field_names=_YOURLS.group("signature"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("yourls_signature")
     username = _credential_value(
-        provider="yourls",
-        provider_aliases=("yourls_api",),
-        field_names=USERNAME_FIELDS,
+        provider=_YOURLS.provider,
+        provider_aliases=_YOURLS.aliases,
+        field_names=_YOURLS.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("yourls_username")
     password = _credential_value(
-        provider="yourls",
-        provider_aliases=("yourls_api",),
-        field_names=("password", "api_password", "apiPassword"),
+        provider=_YOURLS.provider,
+        provider_aliases=_YOURLS.aliases,
+        field_names=_YOURLS.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("yourls_password")
@@ -166,11 +215,11 @@ def _yourls_endpoint(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     if username and password:
         return endpoint, {"username": username, "password": password}
     return endpoint, _setup_hint(
-        provider="yourls",
-        field_names=("signature", "username", "password"),
+        provider=_YOURLS.provider,
+        field_names=_YOURLS.hint_fields,
         tool_name=tool_name,
-        env_var="YOURLS_SIGNATURE or YOURLS_USERNAME + YOURLS_PASSWORD",
-        display_name="YOURLS",
+        env_var=_YOURLS.env_var,
+        display_name=_YOURLS.display_name,
     )
 
 

@@ -23,8 +23,16 @@ class NativeCredentialValue:
     field_name: str
 
 
-def _provider_candidates(provider: str, aliases: Iterable[str]) -> set[str]:
+def provider_candidates(provider: str, aliases: Iterable[str]) -> set[str]:
+    """Names a vault record's ``provider`` may carry and still match ``provider``.
+
+    Public because ``credential_registry`` reuses the same matching semantics;
+    the private name below is kept for existing callers/tests.
+    """
     return {provider, *aliases, provider.replace("-", "_"), provider.replace("_", "-")}
+
+
+_provider_candidates = provider_candidates
 
 
 def _target_score(record: Any, tool_name: str, bound_ids: set[str]) -> int:

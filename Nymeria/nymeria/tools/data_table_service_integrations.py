@@ -11,6 +11,11 @@ from urllib.parse import parse_qsl, quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -38,6 +43,328 @@ _KOBO_BASE_URL = "https://kf.kobotoolbox.org"
 _BUBBLE_LIVE_SEGMENT = "/api/1.1"
 _BUBBLE_DEV_SEGMENT = "/version-test/api/1.1"
 _SEATABLE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_ -]{1,128}$")
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered. The
+# _api_key_config providers (baserow, coda, grist, kobotoolbox, nocodb, stackby)
+# share the base_url tuple that stays inline in _api_key_config, and grist and
+# stackby rely on that helper's default token tuple (call sites omit
+# field_names); each spec still declares those groups.
+_ADALO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="adalo",
+        aliases=("adalo_api", "adaloApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="app_id", names=("app_id", "appId")),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "app_id"),
+        env_var="ADALO_API_KEY + ADALO_APP_ID",
+        display_name="Adalo",
+    )
+)
+
+_BASEROW = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="baserow",
+        aliases=("baserow_api", "baserowApi", "baserow_token_api", "baserowTokenApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "host", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "token",
+                    "api_token",
+                    "apiToken",
+                    "api_key",
+                    "apiKey",
+                    "database_token",
+                    "databaseToken",
+                ),
+            ),
+        ),
+        hint_fields=(
+            "token",
+            "api_token",
+            "apiToken",
+            "api_key",
+            "apiKey",
+            "database_token",
+            "databaseToken",
+        ),
+        env_var="BASEROW_API_TOKEN",
+        display_name="Baserow",
+    )
+)
+
+_BUBBLE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="bubble",
+        aliases=("bubble_api", "bubbleApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="app_name", names=("app_name", "appName")),
+            CredentialFieldGroup(role="domain", names=("domain", "host"), required=False),
+            CredentialFieldGroup(role="environment", names=("environment", "env"), required=False),
+            CredentialFieldGroup(
+                role="api_token",
+                names=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_token", "app_name"),
+        env_var="BUBBLE_API_TOKEN + BUBBLE_APP_NAME",
+        display_name="Bubble",
+    )
+)
+
+_COCKPIT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="cockpit",
+        aliases=("cockpit_api", "cockpitApi"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "baseUrl", "url", "api_url", "apiUrl")),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("url", "access_token"),
+        env_var="COCKPIT_BASE_URL + COCKPIT_ACCESS_TOKEN",
+        display_name="Cockpit",
+    )
+)
+
+_CODA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="coda",
+        aliases=("coda_api", "codaApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "host", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "access_token",
+                    "accessToken",
+                    "api_token",
+                    "apiToken",
+                    "api_key",
+                    "apiKey",
+                    "token",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=(
+            "access_token",
+            "accessToken",
+            "api_token",
+            "apiToken",
+            "api_key",
+            "apiKey",
+            "token",
+            "value",
+        ),
+        env_var="CODA_API_TOKEN",
+        display_name="Coda",
+    )
+)
+
+# grist and stackby omit field_names at their _api_key_config call sites and use
+# the helper's default token tuple; the specs declare it explicitly here.
+_API_KEY_DEFAULT_TOKEN_FIELDS = (
+    "api_key",
+    "apiKey",
+    "api_token",
+    "apiToken",
+    "access_token",
+    "accessToken",
+    "token",
+    "value",
+)
+
+_GRIST = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="grist",
+        aliases=("grist_api", "gristApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "host", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="token", names=_API_KEY_DEFAULT_TOKEN_FIELDS),
+        ),
+        hint_fields=_API_KEY_DEFAULT_TOKEN_FIELDS,
+        env_var="GRIST_API_KEY",
+        display_name="Grist",
+    )
+)
+
+_KOBOTOOLBOX = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="kobotoolbox",
+        aliases=("kobo", "kobo_toolbox", "kobo_toolbox_api", "kobokit"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "host", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="token", names=("api_token", "apiToken", "token", "value")),
+        ),
+        hint_fields=("api_token", "apiToken", "token", "value"),
+        env_var="KOBOTOOLBOX_API_TOKEN",
+        display_name="KoBoToolbox",
+    )
+)
+
+_NOCODB = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="nocodb",
+        aliases=("noco_db", "nocoDb", "nocodb_api_token", "noco_db_api_token", "nocoDbApiToken"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "host", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "api_token",
+                    "apiToken",
+                    "token",
+                    "access_token",
+                    "accessToken",
+                    "api_key",
+                    "apiKey",
+                    "value",
+                ),
+            ),
+            CredentialFieldGroup(
+                role="auth_header",
+                names=("auth_header", "authHeader", "header_name", "headerName"),
+                required=False,
+            ),
+        ),
+        hint_fields=(
+            "api_token",
+            "apiToken",
+            "token",
+            "access_token",
+            "accessToken",
+            "api_key",
+            "apiKey",
+            "value",
+        ),
+        env_var="NOCODB_API_TOKEN",
+        display_name="NocoDB",
+    )
+)
+
+_QUICKBASE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="quickbase",
+        aliases=("quick_base", "quickbase_api", "quickbaseApi"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="hostname",
+                names=("hostname", "realm_hostname", "realmHostname", "realm"),
+            ),
+            CredentialFieldGroup(
+                role="user_token",
+                names=("user_token", "userToken", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("user_token", "hostname"),
+        env_var="QUICKBASE_USER_TOKEN",
+        display_name="Quickbase",
+    )
+)
+
+_SEATABLE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="seatable",
+        aliases=("sea_table", "seatable_api", "seaTableApi"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "domain", "url"), required=False),
+            CredentialFieldGroup(role="token", names=("api_token", "apiToken", "token", "value")),
+        ),
+        hint_fields=("api_token", "token"),
+        env_var="SEATABLE_API_TOKEN",
+        display_name="SeaTable",
+    )
+)
+
+_STACKBY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="stackby",
+        aliases=("stackby_api", "stackbyApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "host", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="token", names=_API_KEY_DEFAULT_TOKEN_FIELDS),
+        ),
+        hint_fields=_API_KEY_DEFAULT_TOKEN_FIELDS,
+        env_var="STACKBY_API_KEY",
+        display_name="Stackby",
+    )
+)
+
+_SUPABASE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="supabase",
+        aliases=("supabase_api", "supabaseApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "host", "url", "project_url", "projectUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="key",
+                names=(
+                    "service_role",
+                    "serviceRole",
+                    "service_role_key",
+                    "serviceRoleKey",
+                    "api_key",
+                    "apiKey",
+                    "anon_key",
+                    "anonKey",
+                    "token",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=("service_role", "api_key"),
+        env_var="SUPABASE_SERVICE_ROLE_KEY or SUPABASE_API_KEY",
+        display_name="Supabase",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -152,16 +479,16 @@ def _api_key_config(
 
 def _kobo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base, token_or_error = _api_key_config(
-        provider="kobotoolbox",
-        provider_aliases=("kobo", "kobo_toolbox", "kobo_toolbox_api", "kobokit"),
-        env_var="KOBOTOOLBOX_API_TOKEN",
+        provider=_KOBOTOOLBOX.provider,
+        provider_aliases=_KOBOTOOLBOX.aliases,
+        env_var=_KOBOTOOLBOX.env_var,
         settings_key_name="kobotoolbox_api_token",
         settings_base_name="kobotoolbox_base_url",
         default_base=_KOBO_BASE_URL,
         tool_name=tool_name,
-        display_name="KoBoToolbox",
+        display_name=_KOBOTOOLBOX.display_name,
         config=config,
-        field_names=("api_token", "apiToken", "token", "value"),
+        field_names=_KOBOTOOLBOX.group("token"),
     )
     if not token_or_error or token_or_error.startswith("[Error]:"):
         return base, token_or_error or ""
@@ -235,68 +562,68 @@ def _bearer_headers(api_key: str) -> dict[str, str]:
 
 
 def _adalo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    provider_aliases = ("adalo_api", "adaloApi")
+    provider_aliases = _ADALO.aliases
     base = _credential_value(
-        provider="adalo",
+        provider=_ADALO.provider,
         provider_aliases=provider_aliases,
-        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        field_names=_ADALO.group("base_url"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("adalo_base_url")
     app_id = _credential_value(
-        provider="adalo",
+        provider=_ADALO.provider,
         provider_aliases=provider_aliases,
-        field_names=("app_id", "appId"),
+        field_names=_ADALO.group("app_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("adalo_app_id")
     api_key = _credential_value(
-        provider="adalo",
+        provider=_ADALO.provider,
         provider_aliases=provider_aliases,
-        field_names=("api_key", "apiKey", "token", "value"),
+        field_names=_ADALO.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("adalo_api_key")
     if not api_key or not (base or app_id):
         return _base_url(base or _ADALO_BASE_URL), _setup_hint(
-            provider="adalo",
-            field_names=("api_key", "app_id"),
+            provider=_ADALO.provider,
+            field_names=_ADALO.hint_fields,
             tool_name=tool_name,
-            env_var="ADALO_API_KEY + ADALO_APP_ID",
-            display_name="Adalo",
+            env_var=_ADALO.env_var,
+            display_name=_ADALO.display_name,
         )
     api_base = base or f"{_ADALO_BASE_URL}/apps/{app_id}"
     return _base_url(api_base), _bearer_headers(api_key)
 
 
 def _bubble_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
-    provider_aliases = ("bubble_api", "bubbleApi")
+    provider_aliases = _BUBBLE.aliases
     base = _credential_value(
-        provider="bubble",
+        provider=_BUBBLE.provider,
         provider_aliases=provider_aliases,
-        field_names=("base_url", "baseUrl", "api_url", "apiUrl", "url"),
+        field_names=_BUBBLE.group("base_url"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("bubble_base_url")
     app_name = _credential_value(
-        provider="bubble",
+        provider=_BUBBLE.provider,
         provider_aliases=provider_aliases,
-        field_names=("app_name", "appName"),
+        field_names=_BUBBLE.group("app_name"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("bubble_app_name")
     domain = _credential_value(
-        provider="bubble",
+        provider=_BUBBLE.provider,
         provider_aliases=provider_aliases,
-        field_names=("domain", "host"),
+        field_names=_BUBBLE.group("domain"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("bubble_domain")
     environment = (
         _credential_value(
-            provider="bubble",
+            provider=_BUBBLE.provider,
             provider_aliases=provider_aliases,
-            field_names=("environment", "env"),
+            field_names=_BUBBLE.group("environment"),
             tool_name=tool_name,
             config=config,
         )
@@ -304,19 +631,19 @@ def _bubble_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or "live"
     )
     api_token = _credential_value(
-        provider="bubble",
+        provider=_BUBBLE.provider,
         provider_aliases=provider_aliases,
-        field_names=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
+        field_names=_BUBBLE.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("bubble_api_token")
     if not api_token or not (base or app_name or domain):
         return _base_url(base or "https://example.bubbleapps.io/api/1.1"), _setup_hint(
-            provider="bubble",
-            field_names=("api_token", "app_name"),
+            provider=_BUBBLE.provider,
+            field_names=_BUBBLE.hint_fields,
             tool_name=tool_name,
-            env_var="BUBBLE_API_TOKEN + BUBBLE_APP_NAME",
-            display_name="Bubble",
+            env_var=_BUBBLE.env_var,
+            display_name=_BUBBLE.display_name,
         )
     if base:
         api_base = base
@@ -328,28 +655,28 @@ def _bubble_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 
 
 def _cockpit_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, Any] | str]:
-    provider_aliases = ("cockpit_api", "cockpitApi")
+    provider_aliases = _COCKPIT.aliases
     base = _credential_value(
-        provider="cockpit",
+        provider=_COCKPIT.provider,
         provider_aliases=provider_aliases,
-        field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+        field_names=_COCKPIT.group("base_url"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("cockpit_base_url")
     token = _credential_value(
-        provider="cockpit",
+        provider=_COCKPIT.provider,
         provider_aliases=provider_aliases,
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        field_names=_COCKPIT.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("cockpit_access_token")
     if not base or not token:
         return _base_url(base or "https://example.com/api"), _setup_hint(
-            provider="cockpit",
-            field_names=("url", "access_token"),
+            provider=_COCKPIT.provider,
+            field_names=_COCKPIT.hint_fields,
             tool_name=tool_name,
-            env_var="COCKPIT_BASE_URL + COCKPIT_ACCESS_TOKEN",
-            display_name="Cockpit",
+            env_var=_COCKPIT.env_var,
+            display_name=_COCKPIT.display_name,
         )
     api_base = _base_url(base)
     if not api_base.endswith("/api"):
@@ -366,16 +693,16 @@ def _bubble_type_name(value: str) -> str:
 
 def _baserow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="baserow",
-        provider_aliases=("baserow_api", "baserowApi", "baserow_token_api", "baserowTokenApi"),
-        env_var="BASEROW_API_TOKEN",
+        provider=_BASEROW.provider,
+        provider_aliases=_BASEROW.aliases,
+        env_var=_BASEROW.env_var,
         settings_key_name="baserow_api_token",
         settings_base_name="baserow_base_url",
         default_base=_BASEROW_BASE_URL,
         tool_name=tool_name,
-        display_name="Baserow",
+        display_name=_BASEROW.display_name,
         config=config,
-        field_names=("token", "api_token", "apiToken", "api_key", "apiKey", "database_token", "databaseToken"),
+        field_names=_BASEROW.group("token"),
     )
     if not api_key or api_key.startswith("[Error]:"):
         return base_url, api_key or ""
@@ -386,24 +713,24 @@ def _baserow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 
 def _nocodb_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="nocodb",
-        provider_aliases=("noco_db", "nocoDb", "nocodb_api_token", "noco_db_api_token", "nocoDbApiToken"),
-        env_var="NOCODB_API_TOKEN",
+        provider=_NOCODB.provider,
+        provider_aliases=_NOCODB.aliases,
+        env_var=_NOCODB.env_var,
         settings_key_name="nocodb_api_token",
         settings_base_name="nocodb_base_url",
         default_base=_NOCODB_BASE_URL,
         tool_name=tool_name,
-        display_name="NocoDB",
+        display_name=_NOCODB.display_name,
         config=config,
-        field_names=("api_token", "apiToken", "token", "access_token", "accessToken", "api_key", "apiKey", "value"),
+        field_names=_NOCODB.group("token"),
     )
     if not api_key or api_key.startswith("[Error]:"):
         return base_url, api_key or ""
     header_name = (
         _credential_value(
-            provider="nocodb",
-            provider_aliases=("noco_db", "nocoDb", "nocodb_api_token", "noco_db_api_token", "nocoDbApiToken"),
-            field_names=("auth_header", "authHeader", "header_name", "headerName"),
+            provider=_NOCODB.provider,
+            provider_aliases=_NOCODB.aliases,
+            field_names=_NOCODB.group("auth_header"),
             tool_name=tool_name,
             config=config,
         )
@@ -419,16 +746,16 @@ def _nocodb_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 
 def _coda_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="coda",
-        provider_aliases=("coda_api", "codaApi"),
-        env_var="CODA_API_TOKEN",
+        provider=_CODA.provider,
+        provider_aliases=_CODA.aliases,
+        env_var=_CODA.env_var,
         settings_key_name="coda_api_token",
         settings_base_name="coda_base_url",
         default_base=_CODA_BASE_URL,
         tool_name=tool_name,
-        display_name="Coda",
+        display_name=_CODA.display_name,
         config=config,
-        field_names=("access_token", "accessToken", "api_token", "apiToken", "api_key", "apiKey", "token", "value"),
+        field_names=_CODA.group("token"),
     )
     if not api_key or api_key.startswith("[Error]:"):
         return base_url, api_key or ""
@@ -437,14 +764,14 @@ def _coda_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
 
 def _grist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="grist",
-        provider_aliases=("grist_api", "gristApi"),
-        env_var="GRIST_API_KEY",
+        provider=_GRIST.provider,
+        provider_aliases=_GRIST.aliases,
+        env_var=_GRIST.env_var,
         settings_key_name="grist_api_key",
         settings_base_name="grist_base_url",
         default_base=_GRIST_BASE_URL,
         tool_name=tool_name,
-        display_name="Grist",
+        display_name=_GRIST.display_name,
         config=config,
     )
     if not api_key or api_key.startswith("[Error]:"):
@@ -455,9 +782,9 @@ def _grist_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _supabase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="supabase",
-            provider_aliases=("supabase_api", "supabaseApi"),
-            field_names=("base_url", "host", "url", "project_url", "projectUrl"),
+            provider=_SUPABASE.provider,
+            provider_aliases=_SUPABASE.aliases,
+            field_names=_SUPABASE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -466,20 +793,9 @@ def _supabase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     )
     key = (
         _credential_value(
-            provider="supabase",
-            provider_aliases=("supabase_api", "supabaseApi"),
-            field_names=(
-                "service_role",
-                "serviceRole",
-                "service_role_key",
-                "serviceRoleKey",
-                "api_key",
-                "apiKey",
-                "anon_key",
-                "anonKey",
-                "token",
-                "value",
-            ),
+            provider=_SUPABASE.provider,
+            provider_aliases=_SUPABASE.aliases,
+            field_names=_SUPABASE.group("key"),
             tool_name=tool_name,
             config=config,
         )
@@ -496,11 +812,11 @@ def _supabase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         base = f"{base}/rest/v1"
     if not key:
         return base, _setup_hint(
-            provider="supabase",
-            field_names=("service_role", "api_key"),
+            provider=_SUPABASE.provider,
+            field_names=_SUPABASE.hint_fields,
             tool_name=tool_name,
-            env_var="SUPABASE_SERVICE_ROLE_KEY or SUPABASE_API_KEY",
-            display_name="Supabase",
+            env_var=_SUPABASE.env_var,
+            display_name=_SUPABASE.display_name,
         )
     headers = _bearer_headers(key)
     headers["apikey"] = key
@@ -511,9 +827,9 @@ def _supabase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _quickbase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="quickbase",
-            provider_aliases=("quick_base", "quickbase_api", "quickbaseApi"),
-            field_names=("base_url", "url"),
+            provider=_QUICKBASE.provider,
+            provider_aliases=_QUICKBASE.aliases,
+            field_names=_QUICKBASE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -521,16 +837,16 @@ def _quickbase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         or _QUICKBASE_BASE_URL
     )
     hostname = _credential_value(
-        provider="quickbase",
-        provider_aliases=("quick_base", "quickbase_api", "quickbaseApi"),
-        field_names=("hostname", "realm_hostname", "realmHostname", "realm"),
+        provider=_QUICKBASE.provider,
+        provider_aliases=_QUICKBASE.aliases,
+        field_names=_QUICKBASE.group("hostname"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("quickbase_hostname")
     token = _credential_value(
-        provider="quickbase",
-        provider_aliases=("quick_base", "quickbase_api", "quickbaseApi"),
-        field_names=("user_token", "userToken", "api_key", "apiKey", "token", "value"),
+        provider=_QUICKBASE.provider,
+        provider_aliases=_QUICKBASE.aliases,
+        field_names=_QUICKBASE.group("user_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("quickbase_user_token")
@@ -541,11 +857,11 @@ def _quickbase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         )
     if not token:
         return _base_url(base), _setup_hint(
-            provider="quickbase",
-            field_names=("user_token", "hostname"),
+            provider=_QUICKBASE.provider,
+            field_names=_QUICKBASE.hint_fields,
             tool_name=tool_name,
-            env_var="QUICKBASE_USER_TOKEN",
-            display_name="Quickbase",
+            env_var=_QUICKBASE.env_var,
+            display_name=_QUICKBASE.display_name,
         )
     headers = _json_headers()
     headers["QB-Realm-Hostname"] = hostname.strip()
@@ -556,9 +872,9 @@ def _quickbase_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 def _seatable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
     base = (
         _credential_value(
-            provider="seatable",
-            provider_aliases=("sea_table", "seatable_api", "seaTableApi"),
-            field_names=("base_url", "domain", "url"),
+            provider=_SEATABLE.provider,
+            provider_aliases=_SEATABLE.aliases,
+            field_names=_SEATABLE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -566,33 +882,33 @@ def _seatable_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _SEATABLE_BASE_URL
     )
     token = _credential_value(
-        provider="seatable",
-        provider_aliases=("sea_table", "seatable_api", "seaTableApi"),
-        field_names=("api_token", "apiToken", "token", "value"),
+        provider=_SEATABLE.provider,
+        provider_aliases=_SEATABLE.aliases,
+        field_names=_SEATABLE.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("seatable_api_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="seatable",
-            field_names=("api_token", "token"),
+            provider=_SEATABLE.provider,
+            field_names=_SEATABLE.hint_fields,
             tool_name=tool_name,
-            env_var="SEATABLE_API_TOKEN",
-            display_name="SeaTable",
+            env_var=_SEATABLE.env_var,
+            display_name=_SEATABLE.display_name,
         )
     return _base_url(base), token
 
 
 def _stackby_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="stackby",
-        provider_aliases=("stackby_api", "stackbyApi"),
-        env_var="STACKBY_API_KEY",
+        provider=_STACKBY.provider,
+        provider_aliases=_STACKBY.aliases,
+        env_var=_STACKBY.env_var,
         settings_key_name="stackby_api_key",
         settings_base_name="stackby_base_url",
         default_base=_STACKBY_BASE_URL,
         tool_name=tool_name,
-        display_name="Stackby",
+        display_name=_STACKBY.display_name,
         config=config,
     )
     if not api_key or api_key.startswith("[Error]:"):

@@ -10,6 +10,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -35,6 +40,248 @@ _JINA_DEEPSEARCH_BASE_URL = "https://deepsearch.jina.ai/v1"
 _SECURITYSCORECARD_BASE_URL = "https://api.securityscorecard.io"
 _API_SUFFIX = "/api"
 _OKTA_DEFAULT_DOMAIN_SUFFIX = ".okta.com"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered. The shared
+# _service_base / _api_key_config / _jina_base helpers keep their generic (and
+# for jina, dynamic) field-name tuples inline, so the spec still declares those
+# tuples as groups even where no call site reads them back. Providers with two
+# setup-hint variants (base URL vs token) carry the token variant in the spec
+# and keep the base-URL branch's env_var inline.
+_URLSCAN = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="urlscan",
+        aliases=("urlscan_io", "urlscanio", "urlscan_io_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "token", "value"),
+        env_var="URLSCAN_API_KEY",
+        display_name="urlscan.io",
+    )
+)
+
+_HUNTER = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="hunter",
+        aliases=("hunter_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "token", "value"),
+        env_var="HUNTER_API_KEY",
+        display_name="Hunter",
+    )
+)
+
+_MAILCHECK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mailcheck",
+        aliases=("mailcheck_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "token", "value"),
+        env_var="MAILCHECK_API_KEY",
+        display_name="Mailcheck",
+    )
+)
+
+_PEEKALINK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="peekalink",
+        aliases=("peekalink_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "token", "value"),
+        env_var="PEEKALINK_API_KEY",
+        display_name="Peekalink",
+    )
+)
+
+_SECURITYSCORECARD = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="securityscorecard",
+        aliases=("security_scorecard", "securityscorecard_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "token", "value"),
+        env_var="SECURITYSCORECARD_API_KEY",
+        display_name="SecurityScorecard",
+    )
+)
+
+_JINA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="jina",
+        aliases=("jina_ai", "jinaai", "jina_ai_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+            # Three per-service base URL variants built inline in _jina_base
+            # (first element varies by settings_name); declared here so the
+            # registry mirrors every lookup tuple.
+            CredentialFieldGroup(
+                role="reader_base_url",
+                names=("jina_reader_base_url", "base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="search_base_url",
+                names=("jina_search_base_url", "base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="deepsearch_base_url",
+                names=("jina_deepsearch_base_url", "base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "token", "value"),
+        env_var="JINA_API_KEY",
+        display_name="Jina AI",
+    )
+)
+
+_MISP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="misp",
+        aliases=("misp_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "apiKey", "auth_key", "authKey", "token", "value")
+            ),
+        ),
+        # Two hint variants (api key vs base URL); spec carries the api-key one,
+        # the base-URL branch keeps its "MISP_BASE_URL" env_var inline.
+        hint_fields=("api_key", "auth_key", "token", "value"),
+        env_var="MISP_API_KEY",
+        display_name="MISP",
+    )
+)
+
+_THEHIVE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="thehive",
+        aliases=("the_hive", "thehive_api", "thehive_project"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "ApiKey", "apiKey", "access_token", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="api_version", names=("api_version", "apiVersion"), required=False
+            ),
+        ),
+        # Two hint variants (api key vs base URL); spec carries the api-key one,
+        # the base-URL branch keeps its "THEHIVE_BASE_URL" env_var inline.
+        hint_fields=("api_key", "ApiKey", "access_token", "token", "value"),
+        env_var="THEHIVE_API_KEY",
+        display_name="TheHive",
+    )
+)
+
+_OKTA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="okta",
+        aliases=("okta_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "org_url", "orgUrl", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="domain",
+                names=("domain", "subdomain", "org_domain", "orgDomain"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "access_token",
+                    "accessToken",
+                    "api_token",
+                    "apiToken",
+                    "ssws_token",
+                    "token",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=("access_token", "accessToken", "api_token", "ssws_token", "token", "value"),
+        env_var="OKTA_ACCESS_TOKEN",
+        display_name="Okta",
+    )
+)
+
+_ELASTIC_SECURITY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="elastic_security",
+        aliases=("elasticsecurity", "elastic_security_api", "kibana"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+            CredentialFieldGroup(role="username", names=("username", "user")),
+            CredentialFieldGroup(role="password", names=("password",)),
+        ),
+        # Two hint variants (api key vs base URL); spec carries the api-key one,
+        # the base-URL branch keeps its "ELASTIC_SECURITY_BASE_URL" env_var inline.
+        hint_fields=("api_key", "username", "password"),
+        env_var="ELASTIC_SECURITY_API_KEY or ELASTIC_SECURITY_USERNAME + ELASTIC_SECURITY_PASSWORD",
+        display_name="Elastic Security",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -219,31 +466,31 @@ def _misp_config(
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, bool]:
     base_or_error = _service_base(
-        provider="misp",
-        provider_aliases=("misp_api",),
+        provider=_MISP.provider,
+        provider_aliases=_MISP.aliases,
         settings_base_name="misp_base_url",
         tool_name=tool_name,
-        display_name="MISP",
+        display_name=_MISP.display_name,
         env_var="MISP_BASE_URL",
         config=config,
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: MISP base URL is required.", True
     api_key = _credential_value(
-        provider="misp",
-        provider_aliases=("misp_api",),
-        field_names=("api_key", "apiKey", "auth_key", "authKey", "token", "value"),
+        provider=_MISP.provider,
+        provider_aliases=_MISP.aliases,
+        field_names=_MISP.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("misp_api_key")
     verify = True
     if not api_key:
         return "", _setup_hint(
-            provider="misp",
-            field_names=("api_key", "auth_key", "token", "value"),
+            provider=_MISP.provider,
+            field_names=_MISP.hint_fields,
             tool_name=tool_name,
-            env_var="MISP_API_KEY",
-            display_name="MISP",
+            env_var=_MISP.env_var,
+            display_name=_MISP.display_name,
         ), verify
     return base_or_error, {
         "Accept": "application/json",
@@ -257,28 +504,28 @@ def _thehive_config(
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, bool, str]:
     base_or_error = _service_base(
-        provider="thehive",
-        provider_aliases=("the_hive", "thehive_api", "thehive_project"),
+        provider=_THEHIVE.provider,
+        provider_aliases=_THEHIVE.aliases,
         settings_base_name="thehive_base_url",
         tool_name=tool_name,
-        display_name="TheHive",
+        display_name=_THEHIVE.display_name,
         env_var="THEHIVE_BASE_URL",
         config=config,
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: TheHive base URL is required.", True, "v1"
     api_key = _credential_value(
-        provider="thehive",
-        provider_aliases=("the_hive", "thehive_api", "thehive_project"),
-        field_names=("api_key", "ApiKey", "apiKey", "access_token", "token", "value"),
+        provider=_THEHIVE.provider,
+        provider_aliases=_THEHIVE.aliases,
+        field_names=_THEHIVE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("thehive_api_key")
     api_version = (
         _credential_value(
-            provider="thehive",
-            provider_aliases=("the_hive", "thehive_api", "thehive_project"),
-            field_names=("api_version", "apiVersion"),
+            provider=_THEHIVE.provider,
+            provider_aliases=_THEHIVE.aliases,
+            field_names=_THEHIVE.group("api_version"),
             tool_name=tool_name,
             config=config,
         )
@@ -288,11 +535,11 @@ def _thehive_config(
     verify = True
     if not api_key:
         return "", _setup_hint(
-            provider="thehive",
-            field_names=("api_key", "ApiKey", "access_token", "token", "value"),
+            provider=_THEHIVE.provider,
+            field_names=_THEHIVE.hint_fields,
             tool_name=tool_name,
-            env_var="THEHIVE_API_KEY",
-            display_name="TheHive",
+            env_var=_THEHIVE.env_var,
+            display_name=_THEHIVE.display_name,
         ), verify, str(api_version)
     return _rooted_api_base(base_or_error), {
         "Accept": "application/json",
@@ -306,14 +553,14 @@ def _securityscorecard_config(
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="securityscorecard",
-        provider_aliases=("security_scorecard", "securityscorecard_api"),
-        env_var="SECURITYSCORECARD_API_KEY",
+        provider=_SECURITYSCORECARD.provider,
+        provider_aliases=_SECURITYSCORECARD.aliases,
+        env_var=_SECURITYSCORECARD.env_var,
         settings_key_name="securityscorecard_api_key",
         settings_base_name="securityscorecard_base_url",
         default_base=_SECURITYSCORECARD_BASE_URL,
         tool_name=tool_name,
-        display_name="SecurityScorecard",
+        display_name=_SECURITYSCORECARD.display_name,
         config=config,
     )
     if api_key and api_key.startswith("[Error]:"):
@@ -337,9 +584,9 @@ def _okta_root(value: str) -> str:
 def _okta_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="okta",
-            provider_aliases=("okta_api",),
-            field_names=("base_url", "baseUrl", "org_url", "orgUrl", "url"),
+            provider=_OKTA.provider,
+            provider_aliases=_OKTA.aliases,
+            field_names=_OKTA.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -347,9 +594,9 @@ def _okta_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
     )
     domain = (
         _credential_value(
-            provider="okta",
-            provider_aliases=("okta_api",),
-            field_names=("domain", "subdomain", "org_domain", "orgDomain"),
+            provider=_OKTA.provider,
+            provider_aliases=_OKTA.aliases,
+            field_names=_OKTA.group("domain"),
             tool_name=tool_name,
             config=config,
         )
@@ -366,19 +613,19 @@ def _okta_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
             '"domain", or set OKTA_BASE_URL or OKTA_DOMAIN.'
         )
     token = _credential_value(
-        provider="okta",
-        provider_aliases=("okta_api",),
-        field_names=("access_token", "accessToken", "api_token", "apiToken", "ssws_token", "token", "value"),
+        provider=_OKTA.provider,
+        provider_aliases=_OKTA.aliases,
+        field_names=_OKTA.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("okta_access_token")
     if not token:
         return _okta_root(base), _setup_hint(
-            provider="okta",
-            field_names=("access_token", "accessToken", "api_token", "ssws_token", "token", "value"),
+            provider=_OKTA.provider,
+            field_names=_OKTA.hint_fields,
             tool_name=tool_name,
-            env_var="OKTA_ACCESS_TOKEN",
-            display_name="Okta",
+            env_var=_OKTA.env_var,
+            display_name=_OKTA.display_name,
         )
     return _okta_root(base), {
         "Accept": "application/json",
@@ -438,34 +685,34 @@ def _elastic_security_config(
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, Any]:
     base_or_error = _service_base(
-        provider="elastic_security",
-        provider_aliases=("elasticsecurity", "elastic_security_api", "kibana"),
+        provider=_ELASTIC_SECURITY.provider,
+        provider_aliases=_ELASTIC_SECURITY.aliases,
         settings_base_name="elastic_security_base_url",
         tool_name=tool_name,
-        display_name="Elastic Security",
+        display_name=_ELASTIC_SECURITY.display_name,
         env_var="ELASTIC_SECURITY_BASE_URL",
         config=config,
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Elastic Security base URL is required.", None
     api_key = _credential_value(
-        provider="elastic_security",
-        provider_aliases=("elasticsecurity", "elastic_security_api", "kibana"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_ELASTIC_SECURITY.provider,
+        provider_aliases=_ELASTIC_SECURITY.aliases,
+        field_names=_ELASTIC_SECURITY.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("elastic_security_api_key")
     username = _credential_value(
-        provider="elastic_security",
-        provider_aliases=("elasticsecurity", "elastic_security_api", "kibana"),
-        field_names=("username", "user"),
+        provider=_ELASTIC_SECURITY.provider,
+        provider_aliases=_ELASTIC_SECURITY.aliases,
+        field_names=_ELASTIC_SECURITY.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("elastic_security_username")
     password = _credential_value(
-        provider="elastic_security",
-        provider_aliases=("elasticsecurity", "elastic_security_api", "kibana"),
-        field_names=("password",),
+        provider=_ELASTIC_SECURITY.provider,
+        provider_aliases=_ELASTIC_SECURITY.aliases,
+        field_names=_ELASTIC_SECURITY.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("elastic_security_password")
@@ -477,25 +724,25 @@ def _elastic_security_config(
         auth = (username, password)
     else:
         return "", _setup_hint(
-            provider="elastic_security",
-            field_names=("api_key", "username", "password"),
+            provider=_ELASTIC_SECURITY.provider,
+            field_names=_ELASTIC_SECURITY.hint_fields,
             tool_name=tool_name,
-            env_var="ELASTIC_SECURITY_API_KEY or ELASTIC_SECURITY_USERNAME + ELASTIC_SECURITY_PASSWORD",
-            display_name="Elastic Security",
+            env_var=_ELASTIC_SECURITY.env_var,
+            display_name=_ELASTIC_SECURITY.display_name,
         ), None
     return _rooted_api_base(base_or_error), headers, auth
 
 
 def _urlscan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="urlscan",
-        provider_aliases=("urlscan_io", "urlscanio", "urlscan_io_api"),
-        env_var="URLSCAN_API_KEY",
+        provider=_URLSCAN.provider,
+        provider_aliases=_URLSCAN.aliases,
+        env_var=_URLSCAN.env_var,
         settings_key_name="urlscan_api_key",
         settings_base_name="urlscan_base_url",
         default_base=_URLSCAN_BASE_URL,
         tool_name=tool_name,
-        display_name="urlscan.io",
+        display_name=_URLSCAN.display_name,
         config=config,
     )
     if not api_key:
@@ -512,28 +759,28 @@ def _urlscan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 
 def _hunter_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
     return _api_key_config(
-        provider="hunter",
-        provider_aliases=("hunter_api",),
-        env_var="HUNTER_API_KEY",
+        provider=_HUNTER.provider,
+        provider_aliases=_HUNTER.aliases,
+        env_var=_HUNTER.env_var,
         settings_key_name="hunter_api_key",
         settings_base_name="hunter_base_url",
         default_base=_HUNTER_BASE_URL,
         tool_name=tool_name,
-        display_name="Hunter",
+        display_name=_HUNTER.display_name,
         config=config,
     )
 
 
 def _mailcheck_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="mailcheck",
-        provider_aliases=("mailcheck_api",),
-        env_var="MAILCHECK_API_KEY",
+        provider=_MAILCHECK.provider,
+        provider_aliases=_MAILCHECK.aliases,
+        env_var=_MAILCHECK.env_var,
         settings_key_name="mailcheck_api_key",
         settings_base_name="mailcheck_base_url",
         default_base=_MAILCHECK_BASE_URL,
         tool_name=tool_name,
-        display_name="Mailcheck",
+        display_name=_MAILCHECK.display_name,
         config=config,
     )
     if not api_key or api_key.startswith("[Error]:"):
@@ -543,14 +790,14 @@ def _mailcheck_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 
 def _peekalink_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base_url, api_key = _api_key_config(
-        provider="peekalink",
-        provider_aliases=("peekalink_api",),
-        env_var="PEEKALINK_API_KEY",
+        provider=_PEEKALINK.provider,
+        provider_aliases=_PEEKALINK.aliases,
+        env_var=_PEEKALINK.env_var,
         settings_key_name="peekalink_api_key",
         settings_base_name="peekalink_base_url",
         default_base=_PEEKALINK_BASE_URL,
         tool_name=tool_name,
-        display_name="Peekalink",
+        display_name=_PEEKALINK.display_name,
         config=config,
     )
     if not api_key or api_key.startswith("[Error]:"):
@@ -560,19 +807,22 @@ def _peekalink_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 
 def _jina_key(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
     return _credential_value(
-        provider="jina",
-        provider_aliases=("jina_ai", "jinaai", "jina_ai_api"),
-        field_names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+        provider=_JINA.provider,
+        provider_aliases=_JINA.aliases,
+        field_names=_JINA.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("jina_api_key")
 
 
 def _jina_base(tool_name: str, config: Optional[RunnableConfig], settings_name: str, default: str) -> str:
+    # The per-service base URL tuple is built inline because its first element
+    # (settings_name) varies per caller; the reader/search/deepsearch variants
+    # are declared as groups on _JINA.
     base = (
         _credential_value(
-            provider="jina",
-            provider_aliases=("jina_ai", "jinaai", "jina_ai_api"),
+            provider=_JINA.provider,
+            provider_aliases=_JINA.aliases,
             field_names=(settings_name, "base_url", "url", "api_url", "apiUrl"),
             tool_name=tool_name,
             config=config,
@@ -932,11 +1182,11 @@ def jina_deep_research(
         api_key = _jina_key("jina_deep_research", config)
         if not api_key:
             return _setup_hint(
-                provider="jina",
-                field_names=("api_key", "access_token", "token", "value"),
+                provider=_JINA.provider,
+                field_names=_JINA.hint_fields,
                 tool_name="jina_deep_research",
-                env_var="JINA_API_KEY",
-                display_name="Jina AI",
+                env_var=_JINA.env_var,
+                display_name=_JINA.display_name,
             )
         base_url = _jina_base("jina_deep_research", config, "jina_deepsearch_base_url", _JINA_DEEPSEARCH_BASE_URL)
         body: dict[str, Any] = {

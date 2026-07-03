@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..core.credential_vault import get_credential_vault_repo
-from .utils import get_user_id
+from .utils import get_user_id, is_admin
 
 
 def _json(data: dict[str, Any]) -> str:
@@ -545,4 +545,182 @@ def auth_bindings(
     return _json({"ok": False, "error": "unknown operation", "operations": ["bind", "unbind"]})
 
 
-AUTH_MANAGER_TOOLS = [auth_inspect, auth_cleanup, auth_bindings]
+@tool
+async def auth_test(
+    credential_id: str = "",
+    provider: str = "",
+    tool_name: str = "",
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
+) -> str:
+    """Test whether a saved credential is usable, without exposing secret values.
+
+    Resolution precedence: credential_id > provider > tool_name (the tool's
+    provider is looked up in the credential-spec registry; tools that need no
+    credential return auth "not_required").
+
+    Two checks run on the resolved credential:
+    - a presence check against the provider spec's required fields, and
+    - a live verification probe where the provider has one registered
+      (no_tester providers report verified=false, presence-only).
+
+    A successful probe marks the credential active; a failed probe marks it
+    invalid (matching the Settings > Connections test button). System-owned
+    credentials are probed by admins only (non-admins get a presence check,
+    matching the REST test route's gate) and never have their status changed
+    by this tool. Secret values are never returned.
+    """
+    from .credential_registry import get_provider_spec, spec_for_tool
+    from .native_credentials import provider_candidates
+
+    user_id = get_user_id(config)
+    repo = get_credential_vault_repo()
+    provider_norm = (provider or "").strip().lower()
+    tool_name_norm = (tool_name or "").strip()
+    credential_id = (credential_id or "").strip()
+
+    spec = None
+    record = None
+    other_matches = 0
+
+    if credential_id:
+        record = repo.get_credential(credential_id)
+        if not record or (record.owner_type == "user" and record.owner_user_id != user_id):
+            return _json({"ok": False, "error": "credential not found"})
+        spec = get_provider_spec(record.provider)
+    elif provider_norm or tool_name_norm:
+        if not provider_norm:
+            spec = spec_for_tool(tool_name_norm)
+            if spec is None:
+                return _json(
+                    {
+                        "ok": True,
+                        "tool": tool_name_norm,
+                        "auth": "not_required",
+                        "note": "No provider credential is associated with this tool.",
+                    }
+                )
+            provider_norm = spec.provider
+        else:
+            spec = get_provider_spec(provider_norm)
+        candidates = (
+            provider_candidates(spec.provider, spec.aliases)
+            if spec
+            else provider_candidates(provider_norm, ())
+        )
+        matches = [
+            rec
+            for rec in repo.list_credentials(owner_user_id=user_id, include_system=True)
+            if rec.provider in candidates
+        ]
+        actives = sorted(
+            (rec for rec in matches if rec.status == "active"),
+            key=lambda rec: (
+                0 if rec.owner_type == "user" else 1,
+                -_iso_epoch(rec.updated_at),
+            ),
+        )
+        if not actives:
+            pending = [rec for rec in matches if rec.status == "pending_setup"]
+            payload: dict[str, Any] = {
+                "ok": False,
+                "provider": provider_norm,
+                "error": "no active credential found",
+                "pending_setup": len(pending),
+            }
+            if spec is not None:
+                from .credential_registry import tools_hint_for_spec
+
+                payload["setup_hint"] = tools_hint_for_spec(spec)
+            return _json(payload)
+        record = actives[0]
+        other_matches = len(actives) - 1
+    else:
+        return _json(
+            {"ok": False, "error": "provide credential_id, provider, or tool_name"}
+        )
+
+    saved_fields = set(record.secret_fields or ())
+    missing_fields: list[dict[str, Any]] = []
+    if spec is not None:
+        for group in spec.required_groups:
+            if not any(name in saved_fields for name in group.names):
+                missing_fields.append({"role": group.role, "accepted_names": list(group.names)})
+
+    probe: dict[str, Any]
+    status_updated = False
+    if record.owner_type != "user" and not is_admin(user_id):
+        # Parity with the REST test route: non-admins cannot live-probe
+        # system-owned credentials (no key-validity disclosure, no probe
+        # traffic on shared keys). Presence check only.
+        probe = {
+            "ok": None,
+            "verified": False,
+            "code": "admin_only",
+            "message": "Live probes of system-owned credentials are admin-only; "
+            "presence check only. Tools that use this credential still "
+            "resolve it automatically.",
+        }
+    else:
+        try:
+            secret_fields = repo.get_secret_fields_for_test(record.id, actor_user_id=user_id)
+        except Exception:
+            probe = {
+                "ok": None,
+                "verified": False,
+                "code": "secrets_unavailable",
+                "message": "Secret fields are not accessible for this credential "
+                "(the secrets key may be unavailable); presence check only.",
+            }
+        else:
+            from ..config import get_settings
+            from ..core.credential_tests import test_credential_fields
+
+            result = await test_credential_fields(
+                provider=record.provider,
+                kind=record.kind,
+                metadata=record.metadata,
+                secret_fields=secret_fields,
+                settings=get_settings(),
+            )
+            probe = {
+                "ok": result.ok,
+                "verified": result.verified,
+                "code": result.code,
+                "message": result.message,
+            }
+            if _can_manage(user_id, record):
+                status = "active" if result.ok else "invalid"
+                repo.mark_tested(
+                    record.id,
+                    status=status,
+                    actor_user_id=user_id,
+                    details={
+                        "status": status,
+                        "ok": result.ok,
+                        "verified": result.verified,
+                        "code": result.code,
+                        "message": result.message,
+                        **(result.metadata or {}),
+                    },
+                )
+                status_updated = True
+                record = repo.get_credential(record.id) or record
+
+    payload = {
+        "ok": bool(probe.get("ok")) and not missing_fields,
+        "credential": _public(record),
+        "provider": record.provider,
+        "fields_ok": not missing_fields,
+        "missing_fields": missing_fields,
+        "probe": probe,
+        "status_updated": status_updated,
+        "other_matches": other_matches,
+    }
+    if tool_name_norm:
+        payload["tool"] = tool_name_norm
+    if spec is not None:
+        payload["spec_provider"] = spec.provider
+    return _json(payload)
+
+
+AUTH_MANAGER_TOOLS = [auth_inspect, auth_cleanup, auth_bindings, auth_test]

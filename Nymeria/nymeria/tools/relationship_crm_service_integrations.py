@@ -12,6 +12,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     API_KEY_ALIAS_FIELDS,
     API_KEY_FIELDS,
@@ -35,6 +40,127 @@ _AGILE_PLACEHOLDER_BASE_URL = "https://example.agilecrm.com/dev"
 _MONICA_BASE_URL = "https://app.monicahq.com/api"
 _AFFINITY_BASE_URL = "https://api.affinity.co"
 _KEAP_BASE_URL = "https://api.infusionsoft.com/crm/rest/v1"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_COPPER = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="copper",
+        aliases=("copper_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=(
+                    "api_key",
+                    "apiKey",
+                    "access_token",
+                    "accessToken",
+                    "token",
+                    "value",
+                ),
+            ),
+            CredentialFieldGroup(
+                role="email", names=("email", "user_email", "userEmail")
+            ),
+        ),
+        hint_fields=("api_key", "email"),
+        env_var="COPPER_API_KEY and COPPER_EMAIL",
+        display_name="Copper",
+    )
+)
+
+_AGILECRM = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="agilecrm",
+        aliases=("agile_crm", "agilecrm_api", "agile_crm_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(role="api_key", names=API_KEY_ALIAS_FIELDS),
+            CredentialFieldGroup(role="email", names=("email", "username")),
+            CredentialFieldGroup(role="subdomain", names=("subdomain", "domain")),
+        ),
+        hint_fields=("email", "api_key", "subdomain"),
+        env_var="AGILECRM_EMAIL, AGILECRM_API_KEY, and AGILECRM_SUBDOMAIN",
+        display_name="Agile CRM",
+    )
+)
+
+_MONICA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="monica",
+        aliases=("monica_crm", "monicacrm", "monica_crm_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "api_url", "apiUrl", "domain", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "api_token",
+                    "apiToken",
+                    "access_token",
+                    "accessToken",
+                    "token",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=("api_token", "access_token", "value"),
+        env_var="MONICA_ACCESS_TOKEN",
+        display_name="Monica CRM",
+    )
+)
+
+_AFFINITY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="affinity",
+        aliases=("affinity_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(role="api_key", names=API_KEY_ALIAS_FIELDS),
+        ),
+        hint_fields=API_KEY_FIELDS,
+        env_var="AFFINITY_API_KEY",
+        display_name="Affinity",
+    )
+)
+
+_KEAP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="keap",
+        aliases=("keap_oauth2", "keap_oauth2_api", "infusionsoft"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(
+                role="access_token",
+                names=(
+                    "access_token",
+                    "accessToken",
+                    "bearer_token",
+                    "bearerToken",
+                    "token",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=("access_token", "value"),
+        env_var="KEAP_ACCESS_TOKEN",
+        display_name="Keap",
+    )
+)
 
 _COPPER_RESOURCES = {
     "companies": "companies",
@@ -232,9 +358,9 @@ def _resource(name: str, resources: dict[str, str], label: str) -> str:
 def _copper_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="copper",
-            provider_aliases=("copper_api",),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_COPPER.provider,
+            provider_aliases=_COPPER.aliases,
+            field_names=_COPPER.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -242,26 +368,26 @@ def _copper_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _COPPER_BASE_URL
     )
     api_key = _credential_value(
-        provider="copper",
-        provider_aliases=("copper_api",),
-        field_names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+        provider=_COPPER.provider,
+        provider_aliases=_COPPER.aliases,
+        field_names=_COPPER.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("copper_api_key")
     email = _credential_value(
-        provider="copper",
-        provider_aliases=("copper_api",),
-        field_names=("email", "user_email", "userEmail"),
+        provider=_COPPER.provider,
+        provider_aliases=_COPPER.aliases,
+        field_names=_COPPER.group("email"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("copper_email")
     if not api_key or not email:
         return _base_url(base), _setup_hint(
-            provider="copper",
-            field_names=("api_key", "email"),
+            provider=_COPPER.provider,
+            field_names=_COPPER.hint_fields,
             tool_name=tool_name,
-            env_var="COPPER_API_KEY and COPPER_EMAIL",
-            display_name="Copper",
+            env_var=_COPPER.env_var,
+            display_name=_COPPER.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -275,17 +401,17 @@ def _copper_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 
 def _agile_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     subdomain = _credential_value(
-        provider="agilecrm",
-        provider_aliases=("agile_crm", "agilecrm_api", "agile_crm_api"),
-        field_names=("subdomain", "domain"),
+        provider=_AGILECRM.provider,
+        provider_aliases=_AGILECRM.aliases,
+        field_names=_AGILECRM.group("subdomain"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("agilecrm_subdomain")
     base = (
         _credential_value(
-            provider="agilecrm",
-            provider_aliases=("agile_crm", "agilecrm_api", "agile_crm_api"),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_AGILECRM.provider,
+            provider_aliases=_AGILECRM.aliases,
+            field_names=_AGILECRM.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -293,26 +419,26 @@ def _agile_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or (f"https://{subdomain}.agilecrm.com/dev" if subdomain else _AGILE_PLACEHOLDER_BASE_URL)
     )
     email = _credential_value(
-        provider="agilecrm",
-        provider_aliases=("agile_crm", "agilecrm_api", "agile_crm_api"),
-        field_names=("email", "username"),
+        provider=_AGILECRM.provider,
+        provider_aliases=_AGILECRM.aliases,
+        field_names=_AGILECRM.group("email"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("agilecrm_email")
     api_key = _credential_value(
-        provider="agilecrm",
-        provider_aliases=("agile_crm", "agilecrm_api", "agile_crm_api"),
-        field_names=API_KEY_ALIAS_FIELDS,
+        provider=_AGILECRM.provider,
+        provider_aliases=_AGILECRM.aliases,
+        field_names=_AGILECRM.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("agilecrm_api_key")
     if not email or not api_key or base == _AGILE_PLACEHOLDER_BASE_URL:
         return _base_url(base), _setup_hint(
-            provider="agilecrm",
-            field_names=("email", "api_key", "subdomain"),
+            provider=_AGILECRM.provider,
+            field_names=_AGILECRM.hint_fields,
             tool_name=tool_name,
-            env_var="AGILECRM_EMAIL, AGILECRM_API_KEY, and AGILECRM_SUBDOMAIN",
-            display_name="Agile CRM",
+            env_var=_AGILECRM.env_var,
+            display_name=_AGILECRM.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -325,9 +451,9 @@ def _agile_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _monica_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="monica",
-            provider_aliases=("monica_crm", "monicacrm", "monica_crm_api"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "domain", "url"),
+            provider=_MONICA.provider,
+            provider_aliases=_MONICA.aliases,
+            field_names=_MONICA.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -335,19 +461,19 @@ def _monica_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _MONICA_BASE_URL
     )
     token = _credential_value(
-        provider="monica",
-        provider_aliases=("monica_crm", "monicacrm", "monica_crm_api"),
-        field_names=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
+        provider=_MONICA.provider,
+        provider_aliases=_MONICA.aliases,
+        field_names=_MONICA.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("monica_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="monica",
-            field_names=("api_token", "access_token", "value"),
+            provider=_MONICA.provider,
+            field_names=_MONICA.hint_fields,
             tool_name=tool_name,
-            env_var="MONICA_ACCESS_TOKEN",
-            display_name="Monica CRM",
+            env_var=_MONICA.env_var,
+            display_name=_MONICA.display_name,
         )
     clean = _base_url(base)
     if not clean.endswith("/api"):
@@ -363,9 +489,9 @@ def _monica_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 def _affinity_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="affinity",
-            provider_aliases=("affinity_api",),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_AFFINITY.provider,
+            provider_aliases=_AFFINITY.aliases,
+            field_names=_AFFINITY.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -373,19 +499,19 @@ def _affinity_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _AFFINITY_BASE_URL
     )
     api_key = _credential_value(
-        provider="affinity",
-        provider_aliases=("affinity_api",),
-        field_names=API_KEY_ALIAS_FIELDS,
+        provider=_AFFINITY.provider,
+        provider_aliases=_AFFINITY.aliases,
+        field_names=_AFFINITY.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("affinity_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="affinity",
-            field_names=API_KEY_FIELDS,
+            provider=_AFFINITY.provider,
+            field_names=_AFFINITY.hint_fields,
             tool_name=tool_name,
-            env_var="AFFINITY_API_KEY",
-            display_name="Affinity",
+            env_var=_AFFINITY.env_var,
+            display_name=_AFFINITY.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -398,9 +524,9 @@ def _affinity_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _keap_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="keap",
-            provider_aliases=("keap_oauth2", "keap_oauth2_api", "infusionsoft"),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_KEAP.provider,
+            provider_aliases=_KEAP.aliases,
+            field_names=_KEAP.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -408,19 +534,19 @@ def _keap_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         or _KEAP_BASE_URL
     )
     access_token = _credential_value(
-        provider="keap",
-        provider_aliases=("keap_oauth2", "keap_oauth2_api", "infusionsoft"),
-        field_names=("access_token", "accessToken", "bearer_token", "bearerToken", "token", "value"),
+        provider=_KEAP.provider,
+        provider_aliases=_KEAP.aliases,
+        field_names=_KEAP.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("keap_access_token")
     if not access_token:
         return _base_url(base), _setup_hint(
-            provider="keap",
-            field_names=("access_token", "value"),
+            provider=_KEAP.provider,
+            field_names=_KEAP.hint_fields,
             tool_name=tool_name,
-            env_var="KEAP_ACCESS_TOKEN",
-            display_name="Keap",
+            env_var=_KEAP.env_var,
+            display_name=_KEAP.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",

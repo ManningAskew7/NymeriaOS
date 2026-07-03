@@ -10,6 +10,11 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     BASE_URL_ALIAS_FIELDS,
     USERNAME_FIELDS,
@@ -29,6 +34,68 @@ _HTTP_TIMEOUT = 45.0
 _MAX_JSON_CHARS = 70_000
 _CIRCLECI_BASE_URL = "https://circleci.com/api/v2"
 _TRAVISCI_BASE_URL = "https://api.travis-ci.com"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_CIRCLECI = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="circleci",
+        aliases=("circle_ci", "circleci_api", "circleCiApi"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="token",
+                names=("api_key", "apiKey", "api_token", "apiToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "api_token", "token", "value"),
+        env_var="CIRCLECI_API_TOKEN",
+        display_name="CircleCI",
+    )
+)
+
+_TRAVISCI = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="travisci",
+        aliases=("travis_ci", "travisci_api", "travisCiApi"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="token",
+                names=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_token", "access_token", "token", "value"),
+        env_var="TRAVISCI_API_TOKEN",
+        display_name="Travis CI",
+    )
+)
+
+# Branch-variant provider: setup hints differ by which credential is missing
+# (username vs token), each with its own env_var. The spec's hint_fields holds
+# the token variant; the username hint reuses the username group and keeps its
+# own env_var inline.
+_JENKINS = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="jenkins",
+        aliases=("jenkins_api", "jenkinsApi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "baseUrl", "url", "host"), required=False
+            ),
+            CredentialFieldGroup(role="username", names=USERNAME_FIELDS),
+            CredentialFieldGroup(
+                role="token",
+                names=("api_key", "apiKey", "api_token", "apiToken", "token", "password", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "api_token", "token", "password", "value"),
+        env_var="JENKINS_API_TOKEN",
+        display_name="Jenkins",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -94,9 +161,9 @@ def _request_json(
 def _circleci_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="circleci",
-            provider_aliases=("circle_ci", "circleci_api", "circleCiApi"),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_CIRCLECI.provider,
+            provider_aliases=_CIRCLECI.aliases,
+            field_names=_CIRCLECI.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -104,19 +171,19 @@ def _circleci_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _CIRCLECI_BASE_URL
     )
     token = _credential_value(
-        provider="circleci",
-        provider_aliases=("circle_ci", "circleci_api", "circleCiApi"),
-        field_names=("api_key", "apiKey", "api_token", "apiToken", "token", "value"),
+        provider=_CIRCLECI.provider,
+        provider_aliases=_CIRCLECI.aliases,
+        field_names=_CIRCLECI.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("circleci_api_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="circleci",
-            field_names=("api_key", "api_token", "token", "value"),
+            provider=_CIRCLECI.provider,
+            field_names=_CIRCLECI.hint_fields,
             tool_name=tool_name,
-            env_var="CIRCLECI_API_TOKEN",
-            display_name="CircleCI",
+            env_var=_CIRCLECI.env_var,
+            display_name=_CIRCLECI.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -129,9 +196,9 @@ def _circleci_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _travisci_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="travisci",
-            provider_aliases=("travis_ci", "travisci_api", "travisCiApi"),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_TRAVISCI.provider,
+            provider_aliases=_TRAVISCI.aliases,
+            field_names=_TRAVISCI.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -139,19 +206,19 @@ def _travisci_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _TRAVISCI_BASE_URL
     )
     token = _credential_value(
-        provider="travisci",
-        provider_aliases=("travis_ci", "travisci_api", "travisCiApi"),
-        field_names=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
+        provider=_TRAVISCI.provider,
+        provider_aliases=_TRAVISCI.aliases,
+        field_names=_TRAVISCI.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("travisci_api_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="travisci",
-            field_names=("api_token", "access_token", "token", "value"),
+            provider=_TRAVISCI.provider,
+            field_names=_TRAVISCI.hint_fields,
             tool_name=tool_name,
-            env_var="TRAVISCI_API_TOKEN",
-            display_name="Travis CI",
+            env_var=_TRAVISCI.env_var,
+            display_name=_TRAVISCI.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -165,25 +232,25 @@ def _travisci_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _jenkins_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, httpx.BasicAuth | None, str | None]:
     base = (
         _credential_value(
-            provider="jenkins",
-            provider_aliases=("jenkins_api", "jenkinsApi"),
-            field_names=("base_url", "baseUrl", "url", "host"),
+            provider=_JENKINS.provider,
+            provider_aliases=_JENKINS.aliases,
+            field_names=_JENKINS.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("jenkins_base_url")
     )
     username = _credential_value(
-        provider="jenkins",
-        provider_aliases=("jenkins_api", "jenkinsApi"),
-        field_names=USERNAME_FIELDS,
+        provider=_JENKINS.provider,
+        provider_aliases=_JENKINS.aliases,
+        field_names=_JENKINS.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("jenkins_username")
     api_token = _credential_value(
-        provider="jenkins",
-        provider_aliases=("jenkins_api", "jenkinsApi"),
-        field_names=("api_key", "apiKey", "api_token", "apiToken", "token", "password", "value"),
+        provider=_JENKINS.provider,
+        provider_aliases=_JENKINS.aliases,
+        field_names=_JENKINS.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("jenkins_api_token")
@@ -191,19 +258,19 @@ def _jenkins_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         return "", None, "[Error]: No Jenkins base URL found. Save a Jenkins credential with base_url, or set JENKINS_BASE_URL."
     if not username:
         return _base_url(base), None, _setup_hint(
-            provider="jenkins",
-            field_names=USERNAME_FIELDS,
+            provider=_JENKINS.provider,
+            field_names=_JENKINS.group("username"),
             tool_name=tool_name,
             env_var="JENKINS_USERNAME",
-            display_name="Jenkins",
+            display_name=_JENKINS.display_name,
         )
     if not api_token:
         return _base_url(base), None, _setup_hint(
-            provider="jenkins",
-            field_names=("api_key", "api_token", "token", "password", "value"),
+            provider=_JENKINS.provider,
+            field_names=_JENKINS.hint_fields,
             tool_name=tool_name,
-            env_var="JENKINS_API_TOKEN",
-            display_name="Jenkins",
+            env_var=_JENKINS.env_var,
+            display_name=_JENKINS.display_name,
         )
     return _base_url(base), httpx.BasicAuth(username, api_token), None
 

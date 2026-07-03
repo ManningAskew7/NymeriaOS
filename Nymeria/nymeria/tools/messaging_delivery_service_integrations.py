@@ -11,6 +11,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -38,6 +43,247 @@ _MSG91_BASE_URL = "https://api.msg91.com/api"
 _PLIVO_BASE_URL = "https://api.plivo.com/v1"
 _VONAGE_BASE_URL = "https://rest.nexmo.com"
 _SEVEN_BASE_URL = "https://gateway.seven.io/api"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_TWILIO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="twilio",
+        aliases=("twilio_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="account_sid",
+                names=("account_sid", "accountSid", "sid"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="auth_token",
+                names=("auth_token", "authToken", "api_key_secret", "apiKeySecret", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="api_key_sid",
+                names=("api_key_sid", "apiKeySid"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+        ),
+        hint_fields=("auth_token", "api_key_secret", "token", "value"),
+        env_var="TWILIO_AUTH_TOKEN",
+        display_name="Twilio",
+    )
+)
+
+_SENDGRID = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="sendgrid",
+        aliases=("sendgrid_api", "twilio_sendgrid"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "token", "value"),
+        env_var="SENDGRID_API_KEY",
+        display_name="SendGrid",
+    )
+)
+
+_MAILGUN = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mailgun",
+        aliases=("mailgun_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "api_domain", "apiDomain", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="domain",
+                names=("domain", "email_domain", "emailDomain"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "token", "value"),
+        env_var="MAILGUN_API_KEY",
+        display_name="Mailgun",
+    )
+)
+
+_BREVO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="brevo",
+        aliases=("brevo_api", "sendinblue", "send_in_blue", "sendInBlueApi"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "token", "value"),
+        env_var="BREVO_API_KEY",
+        display_name="Brevo",
+    )
+)
+
+# Branch-variant provider: separate email/SMS config helpers pass their own
+# alias subsets and (for SMS) their own hint literals. The spec carries the
+# alias union and the email hint variant; the SMS branch keeps its hint inline.
+_MAILJET = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mailjet",
+        aliases=("mailjet_email", "mailjet_email_api", "mailjet_sms", "mailjet_sms_api"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="email_api_key",
+                names=("api_key", "apiKey", "public_key", "publicKey", "username"),
+            ),
+            CredentialFieldGroup(
+                role="secret_key",
+                names=(
+                    "secret_key",
+                    "secretKey",
+                    "api_secret",
+                    "apiSecret",
+                    "private_key",
+                    "privateKey",
+                    "password",
+                ),
+            ),
+            CredentialFieldGroup(
+                role="sms_token",
+                names=("sms_token", "token", "api_key", "apiKey", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "secret_key"),
+        env_var="MAILJET_API_KEY + MAILJET_SECRET_KEY",
+        display_name="Mailjet",
+    )
+)
+
+_MANDRILL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mandrill",
+        aliases=("mandrill_api", "mailchimp_transactional"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "apiKey", "key", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "key", "token", "value"),
+        env_var="MANDRILL_API_KEY",
+        display_name="Mandrill",
+    )
+)
+
+_MESSAGEBIRD = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="messagebird",
+        aliases=("message_bird", "messagebird_api"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="access_key",
+                names=("access_key", "accessKey", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_key", "api_key", "token", "value"),
+        env_var="MESSAGEBIRD_ACCESS_KEY",
+        display_name="MessageBird",
+    )
+)
+
+_MOCEAN = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mocean",
+        aliases=("mocean_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "mocean-api-key", "key", "value"),
+            ),
+            CredentialFieldGroup(
+                role="api_secret",
+                names=("api_secret", "apiSecret", "mocean-api-secret", "secret"),
+            ),
+        ),
+        hint_fields=("api_key", "api_secret"),
+        env_var="MOCEAN_API_KEY + MOCEAN_API_SECRET",
+        display_name="Mocean",
+    )
+)
+
+_MSG91 = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="msg91",
+        aliases=("msg91_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="auth_key",
+                names=("auth_key", "authkey", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("auth_key", "authkey", "api_key", "token", "value"),
+        env_var="MSG91_AUTH_KEY",
+        display_name="MSG91",
+    )
+)
+
+_PLIVO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="plivo",
+        aliases=("plivo_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="auth_id",
+                names=("auth_id", "authId", "account_id", "accountId", "username"),
+            ),
+            CredentialFieldGroup(
+                role="auth_token",
+                names=("auth_token", "authToken", "api_secret", "apiSecret", "token", "value"),
+            ),
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+        ),
+        hint_fields=("auth_id", "auth_token"),
+        env_var="PLIVO_AUTH_ID + PLIVO_AUTH_TOKEN",
+        display_name="Plivo",
+    )
+)
+
+_VONAGE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="vonage",
+        aliases=("vonage_api", "nexmo", "nexmo_api"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "key", "value")),
+            CredentialFieldGroup(
+                role="api_secret", names=("api_secret", "apiSecret", "secret")
+            ),
+        ),
+        hint_fields=("api_key", "api_secret"),
+        env_var="VONAGE_API_KEY + VONAGE_API_SECRET",
+        display_name="Vonage",
+    )
+)
+
+_SEVEN = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="seven",
+        aliases=("seven_io", "seven_api", "sms77"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "token", "value"),
+        env_var="SEVEN_API_KEY",
+        display_name="seven.io",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -109,31 +355,31 @@ def _request_json(
 
 def _twilio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
     account_sid = _credential_value(
-        provider="twilio",
-        provider_aliases=("twilio_api",),
-        field_names=("account_sid", "accountSid", "sid"),
+        provider=_TWILIO.provider,
+        provider_aliases=_TWILIO.aliases,
+        field_names=_TWILIO.group("account_sid"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("twilio_account_sid")
     auth_token = _credential_value(
-        provider="twilio",
-        provider_aliases=("twilio_api",),
-        field_names=("auth_token", "authToken", "api_key_secret", "apiKeySecret", "token", "value"),
+        provider=_TWILIO.provider,
+        provider_aliases=_TWILIO.aliases,
+        field_names=_TWILIO.group("auth_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("twilio_auth_token")
     api_key_sid = _credential_value(
-        provider="twilio",
-        provider_aliases=("twilio_api",),
-        field_names=("api_key_sid", "apiKeySid"),
+        provider=_TWILIO.provider,
+        provider_aliases=_TWILIO.aliases,
+        field_names=_TWILIO.group("api_key_sid"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("twilio_api_key_sid")
     base = (
         _credential_value(
-            provider="twilio",
-            provider_aliases=("twilio_api",),
-            field_names=("base_url", "url"),
+            provider=_TWILIO.provider,
+            provider_aliases=_TWILIO.aliases,
+            field_names=_TWILIO.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -147,11 +393,11 @@ def _twilio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         )
     if not auth_token:
         return _base_url(base), account_sid, _setup_hint(
-            provider="twilio",
-            field_names=("auth_token", "api_key_secret", "token", "value"),
+            provider=_TWILIO.provider,
+            field_names=_TWILIO.hint_fields,
             tool_name=tool_name,
-            env_var="TWILIO_AUTH_TOKEN",
-            display_name="Twilio",
+            env_var=_TWILIO.env_var,
+            display_name=_TWILIO.display_name,
         )
     username = api_key_sid or account_sid
     auth = base64.b64encode(f"{username}:{auth_token}".encode()).decode()
@@ -166,9 +412,9 @@ def _twilio_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 def _sendgrid_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="sendgrid",
-            provider_aliases=("sendgrid_api", "twilio_sendgrid"),
-            field_names=("base_url", "url"),
+            provider=_SENDGRID.provider,
+            provider_aliases=_SENDGRID.aliases,
+            field_names=_SENDGRID.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -176,19 +422,19 @@ def _sendgrid_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _SENDGRID_BASE_URL
     )
     api_key = _credential_value(
-        provider="sendgrid",
-        provider_aliases=("sendgrid_api", "twilio_sendgrid"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_SENDGRID.provider,
+        provider_aliases=_SENDGRID.aliases,
+        field_names=_SENDGRID.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("sendgrid_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="sendgrid",
-            field_names=("api_key", "token", "value"),
+            provider=_SENDGRID.provider,
+            field_names=_SENDGRID.hint_fields,
             tool_name=tool_name,
-            env_var="SENDGRID_API_KEY",
-            display_name="SendGrid",
+            env_var=_SENDGRID.env_var,
+            display_name=_SENDGRID.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -201,9 +447,9 @@ def _sendgrid_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _mailgun_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="mailgun",
-            provider_aliases=("mailgun_api",),
-            field_names=("base_url", "api_domain", "apiDomain", "url"),
+            provider=_MAILGUN.provider,
+            provider_aliases=_MAILGUN.aliases,
+            field_names=_MAILGUN.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -211,16 +457,16 @@ def _mailgun_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _MAILGUN_BASE_URL
     )
     domain = _credential_value(
-        provider="mailgun",
-        provider_aliases=("mailgun_api",),
-        field_names=("domain", "email_domain", "emailDomain"),
+        provider=_MAILGUN.provider,
+        provider_aliases=_MAILGUN.aliases,
+        field_names=_MAILGUN.group("domain"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mailgun_domain")
     api_key = _credential_value(
-        provider="mailgun",
-        provider_aliases=("mailgun_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_MAILGUN.provider,
+        provider_aliases=_MAILGUN.aliases,
+        field_names=_MAILGUN.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mailgun_api_key")
@@ -231,11 +477,11 @@ def _mailgun_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         )
     if not api_key:
         return _base_url(base), domain, _setup_hint(
-            provider="mailgun",
-            field_names=("api_key", "token", "value"),
+            provider=_MAILGUN.provider,
+            field_names=_MAILGUN.hint_fields,
             tool_name=tool_name,
-            env_var="MAILGUN_API_KEY",
-            display_name="Mailgun",
+            env_var=_MAILGUN.env_var,
+            display_name=_MAILGUN.display_name,
         )
     auth = base64.b64encode(f"api:{api_key}".encode()).decode()
     return _base_url(base), domain, {
@@ -252,9 +498,9 @@ def _email_objects(value: str, *, key: str = "email") -> list[dict[str, str]]:
 def _brevo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="brevo",
-            provider_aliases=("brevo_api", "sendinblue", "send_in_blue", "sendInBlueApi"),
-            field_names=("base_url", "url"),
+            provider=_BREVO.provider,
+            provider_aliases=_BREVO.aliases,
+            field_names=_BREVO.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -262,19 +508,19 @@ def _brevo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or _BREVO_BASE_URL
     )
     api_key = _credential_value(
-        provider="brevo",
-        provider_aliases=("brevo_api", "sendinblue", "send_in_blue", "sendInBlueApi"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_BREVO.provider,
+        provider_aliases=_BREVO.aliases,
+        field_names=_BREVO.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("brevo_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="brevo",
-            field_names=("api_key", "token", "value"),
+            provider=_BREVO.provider,
+            field_names=_BREVO.hint_fields,
             tool_name=tool_name,
-            env_var="BREVO_API_KEY",
-            display_name="Brevo",
+            env_var=_BREVO.env_var,
+            display_name=_BREVO.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -285,11 +531,13 @@ def _brevo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 
 
 def _mailjet_email_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    # Email branch: uses the mailjet_email alias subset (kept inline; the spec
+    # carries the alias union).
     base = (
         _credential_value(
-            provider="mailjet",
+            provider=_MAILJET.provider,
             provider_aliases=("mailjet_email", "mailjet_email_api"),
-            field_names=("base_url", "url"),
+            field_names=_MAILJET.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -297,26 +545,26 @@ def _mailjet_email_config(tool_name: str, config: Optional[RunnableConfig]) -> t
         or _MAILJET_BASE_URL
     )
     api_key = _credential_value(
-        provider="mailjet",
+        provider=_MAILJET.provider,
         provider_aliases=("mailjet_email", "mailjet_email_api"),
-        field_names=("api_key", "apiKey", "public_key", "publicKey", "username"),
+        field_names=_MAILJET.group("email_api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mailjet_api_key")
     secret_key = _credential_value(
-        provider="mailjet",
+        provider=_MAILJET.provider,
         provider_aliases=("mailjet_email", "mailjet_email_api"),
-        field_names=("secret_key", "secretKey", "api_secret", "apiSecret", "private_key", "privateKey", "password"),
+        field_names=_MAILJET.group("secret_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mailjet_secret_key")
     if not api_key or not secret_key:
         return _base_url(base), _setup_hint(
-            provider="mailjet",
-            field_names=("api_key", "secret_key"),
+            provider=_MAILJET.provider,
+            field_names=_MAILJET.hint_fields,
             tool_name=tool_name,
-            env_var="MAILJET_API_KEY + MAILJET_SECRET_KEY",
-            display_name="Mailjet",
+            env_var=_MAILJET.env_var,
+            display_name=_MAILJET.display_name,
         )
     auth = base64.b64encode(f"{api_key}:{secret_key}".encode()).decode()
     return _base_url(base), {
@@ -328,11 +576,13 @@ def _mailjet_email_config(tool_name: str, config: Optional[RunnableConfig]) -> t
 
 
 def _mailjet_sms_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
+    # SMS branch: uses the mailjet_sms alias subset and the SMS hint variant;
+    # both are kept inline since the spec pins the email hint variant.
     base = (
         _credential_value(
-            provider="mailjet",
+            provider=_MAILJET.provider,
             provider_aliases=("mailjet_sms", "mailjet_sms_api"),
-            field_names=("base_url", "url"),
+            field_names=_MAILJET.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -340,15 +590,15 @@ def _mailjet_sms_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         or _MAILJET_BASE_URL
     )
     token = _credential_value(
-        provider="mailjet",
+        provider=_MAILJET.provider,
         provider_aliases=("mailjet_sms", "mailjet_sms_api"),
-        field_names=("sms_token", "token", "api_key", "apiKey", "value"),
+        field_names=_MAILJET.group("sms_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mailjet_sms_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="mailjet",
+            provider=_MAILJET.provider,
             field_names=("sms_token", "token", "value"),
             tool_name=tool_name,
             env_var="MAILJET_SMS_TOKEN",
@@ -365,9 +615,9 @@ def _mailjet_sms_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 def _mandrill_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None, str | None]:
     base = (
         _credential_value(
-            provider="mandrill",
-            provider_aliases=("mandrill_api", "mailchimp_transactional"),
-            field_names=("base_url", "url"),
+            provider=_MANDRILL.provider,
+            provider_aliases=_MANDRILL.aliases,
+            field_names=_MANDRILL.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -375,19 +625,19 @@ def _mandrill_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _MANDRILL_BASE_URL
     )
     api_key = _credential_value(
-        provider="mandrill",
-        provider_aliases=("mandrill_api", "mailchimp_transactional"),
-        field_names=("api_key", "apiKey", "key", "token", "value"),
+        provider=_MANDRILL.provider,
+        provider_aliases=_MANDRILL.aliases,
+        field_names=_MANDRILL.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mandrill_api_key")
     if not api_key:
         return _base_url(base), None, _setup_hint(
-            provider="mandrill",
-            field_names=("api_key", "key", "token", "value"),
+            provider=_MANDRILL.provider,
+            field_names=_MANDRILL.hint_fields,
             tool_name=tool_name,
-            env_var="MANDRILL_API_KEY",
-            display_name="Mandrill",
+            env_var=_MANDRILL.env_var,
+            display_name=_MANDRILL.display_name,
         )
     return _base_url(base), api_key, None
 
@@ -395,9 +645,9 @@ def _mandrill_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _messagebird_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="messagebird",
-            provider_aliases=("message_bird", "messagebird_api"),
-            field_names=("base_url", "url"),
+            provider=_MESSAGEBIRD.provider,
+            provider_aliases=_MESSAGEBIRD.aliases,
+            field_names=_MESSAGEBIRD.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -405,19 +655,19 @@ def _messagebird_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         or _MESSAGEBIRD_BASE_URL
     )
     access_key = _credential_value(
-        provider="messagebird",
-        provider_aliases=("message_bird", "messagebird_api"),
-        field_names=("access_key", "accessKey", "api_key", "apiKey", "token", "value"),
+        provider=_MESSAGEBIRD.provider,
+        provider_aliases=_MESSAGEBIRD.aliases,
+        field_names=_MESSAGEBIRD.group("access_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("messagebird_access_key")
     if not access_key:
         return _base_url(base), _setup_hint(
-            provider="messagebird",
-            field_names=("access_key", "api_key", "token", "value"),
+            provider=_MESSAGEBIRD.provider,
+            field_names=_MESSAGEBIRD.hint_fields,
             tool_name=tool_name,
-            env_var="MESSAGEBIRD_ACCESS_KEY",
-            display_name="MessageBird",
+            env_var=_MESSAGEBIRD.env_var,
+            display_name=_MESSAGEBIRD.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -430,9 +680,9 @@ def _messagebird_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 def _mocean_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, str, str | None]:
     base = (
         _credential_value(
-            provider="mocean",
-            provider_aliases=("mocean_api",),
-            field_names=("base_url", "url"),
+            provider=_MOCEAN.provider,
+            provider_aliases=_MOCEAN.aliases,
+            field_names=_MOCEAN.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -440,26 +690,26 @@ def _mocean_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _MOCEAN_BASE_URL
     )
     api_key = _credential_value(
-        provider="mocean",
-        provider_aliases=("mocean_api",),
-        field_names=("api_key", "apiKey", "mocean-api-key", "key", "value"),
+        provider=_MOCEAN.provider,
+        provider_aliases=_MOCEAN.aliases,
+        field_names=_MOCEAN.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mocean_api_key")
     api_secret = _credential_value(
-        provider="mocean",
-        provider_aliases=("mocean_api",),
-        field_names=("api_secret", "apiSecret", "mocean-api-secret", "secret"),
+        provider=_MOCEAN.provider,
+        provider_aliases=_MOCEAN.aliases,
+        field_names=_MOCEAN.group("api_secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mocean_api_secret")
     if not api_key or not api_secret:
         return _base_url(base), "", "", _setup_hint(
-            provider="mocean",
-            field_names=("api_key", "api_secret"),
+            provider=_MOCEAN.provider,
+            field_names=_MOCEAN.hint_fields,
             tool_name=tool_name,
-            env_var="MOCEAN_API_KEY + MOCEAN_API_SECRET",
-            display_name="Mocean",
+            env_var=_MOCEAN.env_var,
+            display_name=_MOCEAN.display_name,
         )
     return _base_url(base), api_key, api_secret, None
 
@@ -467,9 +717,9 @@ def _mocean_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 def _msg91_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None, str | None]:
     base = (
         _credential_value(
-            provider="msg91",
-            provider_aliases=("msg91_api",),
-            field_names=("base_url", "url"),
+            provider=_MSG91.provider,
+            provider_aliases=_MSG91.aliases,
+            field_names=_MSG91.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -477,43 +727,43 @@ def _msg91_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or _MSG91_BASE_URL
     )
     auth_key = _credential_value(
-        provider="msg91",
-        provider_aliases=("msg91_api",),
-        field_names=("auth_key", "authkey", "api_key", "apiKey", "token", "value"),
+        provider=_MSG91.provider,
+        provider_aliases=_MSG91.aliases,
+        field_names=_MSG91.group("auth_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("msg91_auth_key")
     if not auth_key:
         return _base_url(base), None, _setup_hint(
-            provider="msg91",
-            field_names=("auth_key", "authkey", "api_key", "token", "value"),
+            provider=_MSG91.provider,
+            field_names=_MSG91.hint_fields,
             tool_name=tool_name,
-            env_var="MSG91_AUTH_KEY",
-            display_name="MSG91",
+            env_var=_MSG91.env_var,
+            display_name=_MSG91.display_name,
         )
     return _base_url(base), auth_key, None
 
 
 def _plivo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str] | str]:
     auth_id = _credential_value(
-        provider="plivo",
-        provider_aliases=("plivo_api",),
-        field_names=("auth_id", "authId", "account_id", "accountId", "username"),
+        provider=_PLIVO.provider,
+        provider_aliases=_PLIVO.aliases,
+        field_names=_PLIVO.group("auth_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("plivo_auth_id")
     auth_token = _credential_value(
-        provider="plivo",
-        provider_aliases=("plivo_api",),
-        field_names=("auth_token", "authToken", "api_secret", "apiSecret", "token", "value"),
+        provider=_PLIVO.provider,
+        provider_aliases=_PLIVO.aliases,
+        field_names=_PLIVO.group("auth_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("plivo_auth_token")
     base = (
         _credential_value(
-            provider="plivo",
-            provider_aliases=("plivo_api",),
-            field_names=("base_url", "url"),
+            provider=_PLIVO.provider,
+            provider_aliases=_PLIVO.aliases,
+            field_names=_PLIVO.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -522,11 +772,11 @@ def _plivo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
     )
     if not auth_id or not auth_token:
         return _base_url(base), "", _setup_hint(
-            provider="plivo",
-            field_names=("auth_id", "auth_token"),
+            provider=_PLIVO.provider,
+            field_names=_PLIVO.hint_fields,
             tool_name=tool_name,
-            env_var="PLIVO_AUTH_ID + PLIVO_AUTH_TOKEN",
-            display_name="Plivo",
+            env_var=_PLIVO.env_var,
+            display_name=_PLIVO.display_name,
         )
     token = base64.b64encode(f"{auth_id}:{auth_token}".encode("utf-8")).decode("ascii")
     return _base_url(base), auth_id, {
@@ -540,9 +790,9 @@ def _plivo_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _vonage_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, str, str | None]:
     base = (
         _credential_value(
-            provider="vonage",
-            provider_aliases=("vonage_api", "nexmo", "nexmo_api"),
-            field_names=("base_url", "url"),
+            provider=_VONAGE.provider,
+            provider_aliases=_VONAGE.aliases,
+            field_names=_VONAGE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -550,26 +800,26 @@ def _vonage_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _VONAGE_BASE_URL
     )
     api_key = _credential_value(
-        provider="vonage",
-        provider_aliases=("vonage_api", "nexmo", "nexmo_api"),
-        field_names=("api_key", "apiKey", "key", "value"),
+        provider=_VONAGE.provider,
+        provider_aliases=_VONAGE.aliases,
+        field_names=_VONAGE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("vonage_api_key")
     api_secret = _credential_value(
-        provider="vonage",
-        provider_aliases=("vonage_api", "nexmo", "nexmo_api"),
-        field_names=("api_secret", "apiSecret", "secret"),
+        provider=_VONAGE.provider,
+        provider_aliases=_VONAGE.aliases,
+        field_names=_VONAGE.group("api_secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("vonage_api_secret")
     if not api_key or not api_secret:
         return _base_url(base), "", "", _setup_hint(
-            provider="vonage",
-            field_names=("api_key", "api_secret"),
+            provider=_VONAGE.provider,
+            field_names=_VONAGE.hint_fields,
             tool_name=tool_name,
-            env_var="VONAGE_API_KEY + VONAGE_API_SECRET",
-            display_name="Vonage",
+            env_var=_VONAGE.env_var,
+            display_name=_VONAGE.display_name,
         )
     return _base_url(base), api_key, api_secret, None
 
@@ -577,9 +827,9 @@ def _vonage_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
 def _seven_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="seven",
-            provider_aliases=("seven_io", "seven_api", "sms77"),
-            field_names=("base_url", "url"),
+            provider=_SEVEN.provider,
+            provider_aliases=_SEVEN.aliases,
+            field_names=_SEVEN.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -587,19 +837,19 @@ def _seven_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or _SEVEN_BASE_URL
     )
     api_key = _credential_value(
-        provider="seven",
-        provider_aliases=("seven_io", "seven_api", "sms77"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_SEVEN.provider,
+        provider_aliases=_SEVEN.aliases,
+        field_names=_SEVEN.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("seven_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="seven",
-            field_names=("api_key", "token", "value"),
+            provider=_SEVEN.provider,
+            field_names=_SEVEN.hint_fields,
             tool_name=tool_name,
-            env_var="SEVEN_API_KEY",
-            display_name="seven.io",
+            env_var=_SEVEN.env_var,
+            display_name=_SEVEN.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",

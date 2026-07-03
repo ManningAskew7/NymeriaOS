@@ -9,6 +9,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -24,6 +29,44 @@ _HTTP_TIMEOUT = 30.0
 _MAX_JSON_CHARS = 60_000
 _ASANA_BASE_URL = "https://app.asana.com/api/1.0"
 _LINEAR_API_URL = "https://api.linear.app/graphql"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_ASANA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="asana",
+        aliases=("asana_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="token", names=("access_token", "api_key", "token", "value")
+            ),
+        ),
+        hint_fields=("access_token", "api_key", "value"),
+        env_var="ASANA_ACCESS_TOKEN",
+        display_name="Asana",
+    )
+)
+
+_LINEAR = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="linear",
+        aliases=("linear_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="api_url", names=("api_url", "graphql_url", "base_url", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "access_token", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "value"),
+        env_var="LINEAR_API_KEY",
+        display_name="Linear",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -93,9 +136,9 @@ def _request_json(
 def _asana_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="asana",
-            provider_aliases=("asana_api",),
-            field_names=("base_url", "url"),
+            provider=_ASANA.provider,
+            provider_aliases=_ASANA.aliases,
+            field_names=_ASANA.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -103,19 +146,19 @@ def _asana_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or _ASANA_BASE_URL
     )
     token = _credential_value(
-        provider="asana",
-        provider_aliases=("asana_api",),
-        field_names=("access_token", "api_key", "token", "value"),
+        provider=_ASANA.provider,
+        provider_aliases=_ASANA.aliases,
+        field_names=_ASANA.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("asana_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="asana",
-            field_names=("access_token", "api_key", "value"),
+            provider=_ASANA.provider,
+            field_names=_ASANA.hint_fields,
             tool_name=tool_name,
-            env_var="ASANA_ACCESS_TOKEN",
-            display_name="Asana",
+            env_var=_ASANA.env_var,
+            display_name=_ASANA.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -128,9 +171,9 @@ def _asana_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _linear_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     api_url = (
         _credential_value(
-            provider="linear",
-            provider_aliases=("linear_api",),
-            field_names=("api_url", "graphql_url", "base_url", "url"),
+            provider=_LINEAR.provider,
+            provider_aliases=_LINEAR.aliases,
+            field_names=_LINEAR.group("api_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -138,19 +181,19 @@ def _linear_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _LINEAR_API_URL
     )
     api_key = _credential_value(
-        provider="linear",
-        provider_aliases=("linear_api",),
-        field_names=("api_key", "access_token", "token", "value"),
+        provider=_LINEAR.provider,
+        provider_aliases=_LINEAR.aliases,
+        field_names=_LINEAR.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("linear_api_key")
     if not api_key:
         return _base_url(api_url), _setup_hint(
-            provider="linear",
-            field_names=("api_key", "access_token", "value"),
+            provider=_LINEAR.provider,
+            field_names=_LINEAR.hint_fields,
             tool_name=tool_name,
-            env_var="LINEAR_API_KEY",
-            display_name="Linear",
+            env_var=_LINEAR.env_var,
+            display_name=_LINEAR.display_name,
         )
     return _base_url(api_url), {
         "Accept": "application/json",

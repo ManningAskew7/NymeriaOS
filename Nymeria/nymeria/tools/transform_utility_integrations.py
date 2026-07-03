@@ -22,6 +22,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     credential_value as _credential_value,
     settings_value as _settings_value,
@@ -50,6 +55,74 @@ _HASH_ALIASES = {
     "sha3-512": "sha3_512",
     "sha3_512": "sha3_512",
 }
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The helpers below source their
+# _credential_value / _setup_hint arguments from the specs; field-name tuple
+# ORDER is behaviorally significant and must not be reordered.
+# Branch-variant provider: HMAC vs signing use different secrets, each with its
+# own hint variant and env_var. hint_fields holds the HMAC variant; the signing
+# branch reuses its group and keeps its own env_var inline.
+_CRYPTO = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="crypto",
+        aliases=("crypto_credentials",),
+        groups=(
+            CredentialFieldGroup(
+                role="hmac_secret", names=("hmac_secret", "hmacSecret", "secret", "value")
+            ),
+            CredentialFieldGroup(
+                role="sign_private_key",
+                names=("sign_private_key", "signPrivateKey", "private_key", "privateKey"),
+            ),
+            CredentialFieldGroup(
+                role="passphrase",
+                names=("passphrase", "private_key_passphrase", "privateKeyPassphrase"),
+                required=False,
+            ),
+        ),
+        hint_fields=("hmac_secret", "hmacSecret", "secret", "value"),
+        env_var="CRYPTO_HMAC_SECRET",
+        display_name="Crypto",
+    )
+)
+
+# Branch-variant provider: HS secret, signing private key, and verifying public
+# key each have their own hint variant and env_var. hint_fields holds the HS
+# secret variant; the signing/verifying branches reuse their groups and keep
+# their own env_vars inline. The algorithm field is a non-secret selector.
+_JWT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="jwt",
+        aliases=("jwt_auth", "jwtAuth"),
+        groups=(
+            CredentialFieldGroup(role="algorithm", names=("algorithm", "alg"), required=False),
+            CredentialFieldGroup(role="secret", names=("secret", "key", "value")),
+            CredentialFieldGroup(role="private_key", names=("private_key", "privateKey")),
+            CredentialFieldGroup(
+                role="public_key", names=("public_key", "publicKey", "private_key", "privateKey")
+            ),
+        ),
+        hint_fields=("secret", "key", "value"),
+        env_var="JWT_SECRET",
+        display_name="JWT",
+    )
+)
+
+_TOTP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="totp",
+        aliases=("totp_api", "otp"),
+        groups=(
+            CredentialFieldGroup(
+                role="secret", names=("secret", "totp_secret", "totpSecret", "value")
+            ),
+        ),
+        hint_fields=("secret", "totp_secret", "totpSecret", "value"),
+        env_var="TOTP_SECRET",
+        display_name="TOTP",
+    )
+)
 
 
 def _dump_json(data: Any) -> str:
@@ -97,13 +170,13 @@ def _secret_value(
 
 def _totp_secret(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
     return _secret_value(
-        provider="totp",
-        provider_aliases=("totp_api", "otp"),
-        field_names=("secret", "totp_secret", "totpSecret", "value"),
+        provider=_TOTP.provider,
+        provider_aliases=_TOTP.aliases,
+        field_names=_TOTP.group("secret"),
         settings_name="totp_secret",
-        env_var="TOTP_SECRET",
+        env_var=_TOTP.env_var,
         tool_name=tool_name,
-        display_name="TOTP",
+        display_name=_TOTP.display_name,
         config=config,
     )
 
@@ -265,21 +338,21 @@ def _private_key(tool_name: str, config: Optional[RunnableConfig]) -> tuple[Any,
     from cryptography.hazmat.primitives import serialization
 
     key_value = _secret_value(
-        provider="crypto",
-        provider_aliases=("crypto_credentials",),
-        field_names=("sign_private_key", "signPrivateKey", "private_key", "privateKey"),
+        provider=_CRYPTO.provider,
+        provider_aliases=_CRYPTO.aliases,
+        field_names=_CRYPTO.group("sign_private_key"),
         settings_name="crypto_sign_private_key",
         env_var="CRYPTO_SIGN_PRIVATE_KEY",
         tool_name=tool_name,
-        display_name="Crypto",
+        display_name=_CRYPTO.display_name,
         config=config,
     )
     if key_value and key_value.startswith("[Error]:"):
         return None, key_value
     passphrase = _credential_value(
-        provider="crypto",
-        provider_aliases=("crypto_credentials",),
-        field_names=("passphrase", "private_key_passphrase", "privateKeyPassphrase"),
+        provider=_CRYPTO.provider,
+        provider_aliases=_CRYPTO.aliases,
+        field_names=_CRYPTO.group("passphrase"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("crypto_sign_private_key_passphrase")
@@ -321,9 +394,9 @@ def _jwt_algorithm(
     value = (
         requested.strip()
         or _credential_value(
-            provider="jwt",
-            provider_aliases=("jwt_auth", "jwtAuth"),
-            field_names=("algorithm", "alg"),
+            provider=_JWT.provider,
+            provider_aliases=_JWT.aliases,
+            field_names=_JWT.group("algorithm"),
             tool_name=tool_name,
             config=config,
         )
@@ -342,34 +415,34 @@ def _jwt_key(
 ) -> str | None:
     if algorithm.startswith("HS"):
         return _secret_value(
-            provider="jwt",
-            provider_aliases=("jwt_auth", "jwtAuth"),
-            field_names=("secret", "key", "value"),
+            provider=_JWT.provider,
+            provider_aliases=_JWT.aliases,
+            field_names=_JWT.group("secret"),
             settings_name="jwt_secret",
-            env_var="JWT_SECRET",
+            env_var=_JWT.env_var,
             tool_name=tool_name,
-            display_name="JWT",
+            display_name=_JWT.display_name,
             config=config,
         )
     if purpose == "sign":
         return _secret_value(
-            provider="jwt",
-            provider_aliases=("jwt_auth", "jwtAuth"),
-            field_names=("private_key", "privateKey"),
+            provider=_JWT.provider,
+            provider_aliases=_JWT.aliases,
+            field_names=_JWT.group("private_key"),
             settings_name="jwt_private_key",
             env_var="JWT_PRIVATE_KEY",
             tool_name=tool_name,
-            display_name="JWT",
+            display_name=_JWT.display_name,
             config=config,
         )
     return _secret_value(
-        provider="jwt",
-        provider_aliases=("jwt_auth", "jwtAuth"),
-        field_names=("public_key", "publicKey", "private_key", "privateKey"),
+        provider=_JWT.provider,
+        provider_aliases=_JWT.aliases,
+        field_names=_JWT.group("public_key"),
         settings_name="jwt_public_key",
         env_var="JWT_PUBLIC_KEY",
         tool_name=tool_name,
-        display_name="JWT",
+        display_name=_JWT.display_name,
         config=config,
     )
 
@@ -628,13 +701,13 @@ def crypto_hmac_text(
         return f"[Error]: text is too long; max {_MAX_TEXT_CHARS} characters."
     try:
         secret = _secret_value(
-            provider="crypto",
-            provider_aliases=("crypto_credentials",),
-            field_names=("hmac_secret", "hmacSecret", "secret", "value"),
+            provider=_CRYPTO.provider,
+            provider_aliases=_CRYPTO.aliases,
+            field_names=_CRYPTO.group("hmac_secret"),
             settings_name="crypto_hmac_secret",
-            env_var="CRYPTO_HMAC_SECRET",
+            env_var=_CRYPTO.env_var,
             tool_name="crypto_hmac_text",
-            display_name="Crypto",
+            display_name=_CRYPTO.display_name,
             config=config,
         )
         if secret and secret.startswith("[Error]:"):

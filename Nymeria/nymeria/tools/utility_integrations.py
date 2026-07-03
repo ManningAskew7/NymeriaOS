@@ -16,11 +16,32 @@ from typing import Annotated, Any, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
+
 logger = logging.getLogger(__name__)
 
 _MAX_EXPRESSION_CHARS = 500
 _MAX_POWER_ABS_EXPONENT = 100
 _MAX_POWER_ABS_BASE = 1_000_000
+
+# Provider credential spec: the single source of truth for the Wolfram|Alpha
+# credential shape (see credential_registry). wolfram_alpha_query sources its
+# get_native_credential_value / native_credential_setup_hint arguments from this
+# spec; field-name tuple ORDER is behaviorally significant.
+_WOLFRAM_ALPHA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="wolfram_alpha",
+        aliases=("wolfram", "wolframalpha"),
+        groups=(CredentialFieldGroup(role="app_id", names=("app_id", "appid", "value")),),
+        hint_fields=("app_id", "value"),
+        env_var="WOLFRAM_ALPHA_APP_ID",
+        display_name="Wolfram|Alpha",
+    )
+)
 
 _BINARY_OPERATORS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
     ast.Add: operator.add,
@@ -218,20 +239,20 @@ def wolfram_alpha_query(
     from .native_credentials import get_native_credential_value, native_credential_setup_hint
 
     app_id_credential = get_native_credential_value(
-        provider="wolfram_alpha",
-        provider_aliases=("wolfram", "wolframalpha"),
-        field_names=("app_id", "appid", "value"),
+        provider=_WOLFRAM_ALPHA.provider,
+        provider_aliases=_WOLFRAM_ALPHA.aliases,
+        field_names=_WOLFRAM_ALPHA.group("app_id"),
         tool_name="wolfram_alpha_query",
         config=config,
     )
     app_id = app_id_credential.value if app_id_credential else get_settings().wolfram_alpha_app_id
     if not app_id:
         return native_credential_setup_hint(
-            provider="wolfram_alpha",
-            field_names=("app_id", "value"),
+            provider=_WOLFRAM_ALPHA.provider,
+            field_names=_WOLFRAM_ALPHA.hint_fields,
             tool_name="wolfram_alpha_query",
-            env_var="WOLFRAM_ALPHA_APP_ID",
-            display_name="Wolfram|Alpha",
+            env_var=_WOLFRAM_ALPHA.env_var,
+            display_name=_WOLFRAM_ALPHA.display_name,
         )
 
     missing = _require_langchain_community("wolfram_alpha_query", "wolframalpha")

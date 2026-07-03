@@ -10,6 +10,11 @@ from urllib.parse import quote, urlparse
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     basic_auth as _basic_auth,
@@ -35,6 +40,180 @@ _ONESIMPLE_BASE_URL = "https://onesimpleapi.com/api"
 _DHL_BASE_URL = "https://api-eu.dhl.com"
 _ONFLEET_BASE_URL = "https://onfleet.com/api/v2"
 _PHANTOMBUSTER_BASE_URL = "https://api.phantombuster.com/api/v2"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_BITLY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="bitly",
+        aliases=("bitly_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="access_token", names=("access_token", "token", "api_key", "value")
+            ),
+        ),
+        hint_fields=("access_token", "value"),
+        env_var="BITLY_TOKEN",
+        display_name="Bitly",
+    )
+)
+
+_BRANDFETCH = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="brandfetch",
+        aliases=("brandfetch_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="api_key", names=("api_key", "token", "value")),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="BRANDFETCH_API_KEY",
+        display_name="Brandfetch",
+    )
+)
+
+_MARKETSTACK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="marketstack",
+        aliases=("marketstack_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "access_key", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="MARKETSTACK_API_KEY",
+        display_name="Marketstack",
+    )
+)
+
+_DEEPL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="deepl",
+        aliases=("deepl_api",),
+        groups=(
+            CredentialFieldGroup(role="api_plan", names=("api_plan", "plan"), required=False),
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "auth_key", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="DEEPL_API_KEY",
+        display_name="DeepL",
+    )
+)
+
+_APITEMPLATE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="apitemplate",
+        aliases=("apitemplate_io", "api_template", "api_template_io"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="APITEMPLATE_API_KEY",
+        display_name="APITemplate",
+    )
+)
+
+# lingvanex resolves through the shared _bearer_config helper: the helper keeps
+# the base_url tuple and the default field_names tuple inline, so those groups
+# are declared here for the registry but referenced inline in the helper body.
+_LINGVANEX = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="lingvanex",
+        aliases=("lingvanex_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_key", "apiKey", "access_token", "accessToken", "token", "value"),
+        env_var="LINGVANEX_API_KEY",
+        display_name="LingvaNex",
+    )
+)
+
+_ONESIMPLE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="onesimple",
+        aliases=("one_simple_api", "onesimpleapi"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="api_token",
+                names=("api_token", "apiToken", "token", "api_key", "apiKey", "value"),
+            ),
+        ),
+        hint_fields=("api_token", "value"),
+        env_var="ONESIMPLE_API_TOKEN",
+        display_name="One Simple API",
+    )
+)
+
+_DHL = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="dhl",
+        aliases=("dhl_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "apiKey", "key", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="DHL_API_KEY",
+        display_name="DHL",
+    )
+)
+
+_ONFLEET = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="onfleet",
+        aliases=("onfleet_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="ONFLEET_API_KEY",
+        display_name="Onfleet",
+    )
+)
+
+_PHANTOMBUSTER = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="phantombuster",
+        aliases=("phantombuster_api", "phantom_buster"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "value"),
+        env_var="PHANTOMBUSTER_API_KEY",
+        display_name="Phantombuster",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -138,9 +317,9 @@ def _request_json(
 def _bitly_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="bitly",
-            provider_aliases=("bitly_api",),
-            field_names=("base_url", "url"),
+            provider=_BITLY.provider,
+            provider_aliases=_BITLY.aliases,
+            field_names=_BITLY.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -148,19 +327,19 @@ def _bitly_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or _BITLY_BASE_URL
     )
     token = _credential_value(
-        provider="bitly",
-        provider_aliases=("bitly_api",),
-        field_names=("access_token", "token", "api_key", "value"),
+        provider=_BITLY.provider,
+        provider_aliases=_BITLY.aliases,
+        field_names=_BITLY.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("bitly_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="bitly",
-            field_names=("access_token", "value"),
+            provider=_BITLY.provider,
+            field_names=_BITLY.hint_fields,
             tool_name=tool_name,
-            env_var="BITLY_TOKEN",
-            display_name="Bitly",
+            env_var=_BITLY.env_var,
+            display_name=_BITLY.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -172,9 +351,9 @@ def _bitly_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _brandfetch_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="brandfetch",
-            provider_aliases=("brandfetch_api",),
-            field_names=("base_url", "url"),
+            provider=_BRANDFETCH.provider,
+            provider_aliases=_BRANDFETCH.aliases,
+            field_names=_BRANDFETCH.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -182,19 +361,19 @@ def _brandfetch_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or _BRANDFETCH_BASE_URL
     )
     token = _credential_value(
-        provider="brandfetch",
-        provider_aliases=("brandfetch_api",),
-        field_names=("api_key", "token", "value"),
+        provider=_BRANDFETCH.provider,
+        provider_aliases=_BRANDFETCH.aliases,
+        field_names=_BRANDFETCH.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("brandfetch_api_key")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="brandfetch",
-            field_names=("api_key", "value"),
+            provider=_BRANDFETCH.provider,
+            field_names=_BRANDFETCH.hint_fields,
             tool_name=tool_name,
-            env_var="BRANDFETCH_API_KEY",
-            display_name="Brandfetch",
+            env_var=_BRANDFETCH.env_var,
+            display_name=_BRANDFETCH.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -206,9 +385,9 @@ def _brandfetch_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 def _marketstack_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str]:
     base = (
         _credential_value(
-            provider="marketstack",
-            provider_aliases=("marketstack_api",),
-            field_names=("base_url", "url"),
+            provider=_MARKETSTACK.provider,
+            provider_aliases=_MARKETSTACK.aliases,
+            field_names=_MARKETSTACK.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -216,19 +395,19 @@ def _marketstack_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         or _MARKETSTACK_BASE_URL
     )
     key = _credential_value(
-        provider="marketstack",
-        provider_aliases=("marketstack_api",),
-        field_names=("api_key", "access_key", "token", "value"),
+        provider=_MARKETSTACK.provider,
+        provider_aliases=_MARKETSTACK.aliases,
+        field_names=_MARKETSTACK.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("marketstack_api_key")
     if not key:
         return _base_url(base), _setup_hint(
-            provider="marketstack",
-            field_names=("api_key", "value"),
+            provider=_MARKETSTACK.provider,
+            field_names=_MARKETSTACK.hint_fields,
             tool_name=tool_name,
-            env_var="MARKETSTACK_API_KEY",
-            display_name="Marketstack",
+            env_var=_MARKETSTACK.env_var,
+            display_name=_MARKETSTACK.display_name,
         )
     return _base_url(base), key
 
@@ -236,9 +415,9 @@ def _marketstack_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 def _deepl_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     plan = (
         _credential_value(
-            provider="deepl",
-            provider_aliases=("deepl_api",),
-            field_names=("api_plan", "plan"),
+            provider=_DEEPL.provider,
+            provider_aliases=_DEEPL.aliases,
+            field_names=_DEEPL.group("api_plan"),
             tool_name=tool_name,
             config=config,
         )
@@ -248,9 +427,9 @@ def _deepl_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
     default_base = _DEEPL_FREE_BASE_URL if plan == "free" else _DEEPL_PRO_BASE_URL
     base = (
         _credential_value(
-            provider="deepl",
-            provider_aliases=("deepl_api",),
-            field_names=("base_url", "url"),
+            provider=_DEEPL.provider,
+            provider_aliases=_DEEPL.aliases,
+            field_names=_DEEPL.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -258,19 +437,19 @@ def _deepl_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or default_base
     )
     key = _credential_value(
-        provider="deepl",
-        provider_aliases=("deepl_api",),
-        field_names=("api_key", "auth_key", "token", "value"),
+        provider=_DEEPL.provider,
+        provider_aliases=_DEEPL.aliases,
+        field_names=_DEEPL.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("deepl_api_key")
     if not key:
         return _base_url(base), _setup_hint(
-            provider="deepl",
-            field_names=("api_key", "value"),
+            provider=_DEEPL.provider,
+            field_names=_DEEPL.hint_fields,
             tool_name=tool_name,
-            env_var="DEEPL_API_KEY",
-            display_name="DeepL",
+            env_var=_DEEPL.env_var,
+            display_name=_DEEPL.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -328,9 +507,9 @@ def _bearer_config(
 def _apitemplate_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="apitemplate",
-            provider_aliases=("apitemplate_io", "api_template", "api_template_io"),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_APITEMPLATE.provider,
+            provider_aliases=_APITEMPLATE.aliases,
+            field_names=_APITEMPLATE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -338,19 +517,19 @@ def _apitemplate_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         or _APITEMPLATE_BASE_URL
     )
     key = _credential_value(
-        provider="apitemplate",
-        provider_aliases=("apitemplate_io", "api_template", "api_template_io"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_APITEMPLATE.provider,
+        provider_aliases=_APITEMPLATE.aliases,
+        field_names=_APITEMPLATE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("apitemplate_api_key")
     if not key:
         return _base_url(base), _setup_hint(
-            provider="apitemplate",
-            field_names=("api_key", "value"),
+            provider=_APITEMPLATE.provider,
+            field_names=_APITEMPLATE.hint_fields,
             tool_name=tool_name,
-            env_var="APITEMPLATE_API_KEY",
-            display_name="APITemplate",
+            env_var=_APITEMPLATE.env_var,
+            display_name=_APITEMPLATE.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -362,13 +541,13 @@ def _apitemplate_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
 
 def _lingvanex_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     return _bearer_config(
-        provider="lingvanex",
-        provider_aliases=("lingvanex_api",),
+        provider=_LINGVANEX.provider,
+        provider_aliases=_LINGVANEX.aliases,
         settings_key_name="lingvanex_api_key",
         settings_base_name="lingvanex_base_url",
         default_base=_LINGVANEX_BASE_URL,
-        env_var="LINGVANEX_API_KEY",
-        display_name="LingvaNex",
+        env_var=_LINGVANEX.env_var,
+        display_name=_LINGVANEX.display_name,
         tool_name=tool_name,
         config=config,
     )
@@ -377,9 +556,9 @@ def _lingvanex_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 def _onesimple_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str]:
     base = (
         _credential_value(
-            provider="onesimple",
-            provider_aliases=("one_simple_api", "onesimpleapi"),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_ONESIMPLE.provider,
+            provider_aliases=_ONESIMPLE.aliases,
+            field_names=_ONESIMPLE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -387,19 +566,19 @@ def _onesimple_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         or _ONESIMPLE_BASE_URL
     )
     token = _credential_value(
-        provider="onesimple",
-        provider_aliases=("one_simple_api", "onesimpleapi"),
-        field_names=("api_token", "apiToken", "token", "api_key", "apiKey", "value"),
+        provider=_ONESIMPLE.provider,
+        provider_aliases=_ONESIMPLE.aliases,
+        field_names=_ONESIMPLE.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("onesimple_api_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="onesimple",
-            field_names=("api_token", "value"),
+            provider=_ONESIMPLE.provider,
+            field_names=_ONESIMPLE.hint_fields,
             tool_name=tool_name,
-            env_var="ONESIMPLE_API_TOKEN",
-            display_name="One Simple API",
+            env_var=_ONESIMPLE.env_var,
+            display_name=_ONESIMPLE.display_name,
         )
     return _base_url(base), token
 
@@ -425,9 +604,9 @@ def _onesimple_get(
 def _dhl_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="dhl",
-            provider_aliases=("dhl_api",),
-            field_names=("base_url", "url"),
+            provider=_DHL.provider,
+            provider_aliases=_DHL.aliases,
+            field_names=_DHL.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -435,19 +614,19 @@ def _dhl_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, 
         or _DHL_BASE_URL
     )
     api_key = _credential_value(
-        provider="dhl",
-        provider_aliases=("dhl_api",),
-        field_names=("api_key", "apiKey", "key", "token", "value"),
+        provider=_DHL.provider,
+        provider_aliases=_DHL.aliases,
+        field_names=_DHL.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("dhl_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="dhl",
-            field_names=("api_key", "value"),
+            provider=_DHL.provider,
+            field_names=_DHL.hint_fields,
             tool_name=tool_name,
-            env_var="DHL_API_KEY",
-            display_name="DHL",
+            env_var=_DHL.env_var,
+            display_name=_DHL.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -459,9 +638,9 @@ def _dhl_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, 
 def _onfleet_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="onfleet",
-            provider_aliases=("onfleet_api",),
-            field_names=("base_url", "url"),
+            provider=_ONFLEET.provider,
+            provider_aliases=_ONFLEET.aliases,
+            field_names=_ONFLEET.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -469,19 +648,19 @@ def _onfleet_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _ONFLEET_BASE_URL
     )
     api_key = _credential_value(
-        provider="onfleet",
-        provider_aliases=("onfleet_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_ONFLEET.provider,
+        provider_aliases=_ONFLEET.aliases,
+        field_names=_ONFLEET.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("onfleet_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="onfleet",
-            field_names=("api_key", "value"),
+            provider=_ONFLEET.provider,
+            field_names=_ONFLEET.hint_fields,
             tool_name=tool_name,
-            env_var="ONFLEET_API_KEY",
-            display_name="Onfleet",
+            env_var=_ONFLEET.env_var,
+            display_name=_ONFLEET.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -494,9 +673,9 @@ def _onfleet_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _phantombuster_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="phantombuster",
-            provider_aliases=("phantombuster_api", "phantom_buster"),
-            field_names=("base_url", "url"),
+            provider=_PHANTOMBUSTER.provider,
+            provider_aliases=_PHANTOMBUSTER.aliases,
+            field_names=_PHANTOMBUSTER.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -504,19 +683,19 @@ def _phantombuster_config(tool_name: str, config: Optional[RunnableConfig]) -> t
         or _PHANTOMBUSTER_BASE_URL
     )
     api_key = _credential_value(
-        provider="phantombuster",
-        provider_aliases=("phantombuster_api", "phantom_buster"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_PHANTOMBUSTER.provider,
+        provider_aliases=_PHANTOMBUSTER.aliases,
+        field_names=_PHANTOMBUSTER.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("phantombuster_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="phantombuster",
-            field_names=("api_key", "value"),
+            provider=_PHANTOMBUSTER.provider,
+            field_names=_PHANTOMBUSTER.hint_fields,
             tool_name=tool_name,
-            env_var="PHANTOMBUSTER_API_KEY",
-            display_name="Phantombuster",
+            env_var=_PHANTOMBUSTER.env_var,
+            display_name=_PHANTOMBUSTER.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",

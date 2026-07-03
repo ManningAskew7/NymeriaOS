@@ -12,6 +12,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -29,6 +34,121 @@ _MAX_JSON_CHARS = 60_000
 _CLICKUP_BASE_URL = "https://api.clickup.com/api/v2"
 _MONDAY_API_URL = "https://api.monday.com/v2"
 _TAIGA_BASE_URL = "https://api.taiga.io/api/v1"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_JIRA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="jira",
+        aliases=("atlassian", "jira_api", "jira_software_cloud_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "domain", "url", "site_url")
+            ),
+            CredentialFieldGroup(
+                role="access_token",
+                names=("access_token", "bearer_token", "token", "value"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="email", names=("email", "username", "user")),
+            CredentialFieldGroup(
+                role="api_token", names=("api_token", "apiToken", "password")
+            ),
+        ),
+        hint_fields=("email", "api_token", "base_url"),
+        env_var="JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_BASE_URL",
+        display_name="Jira",
+    )
+)
+
+_CLICKUP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="clickup",
+        aliases=("click_up", "clickup_api", "click_up_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token", names=("access_token", "api_key", "token", "value")
+            ),
+        ),
+        hint_fields=("access_token", "api_key", "value"),
+        env_var="CLICKUP_ACCESS_TOKEN",
+        display_name="ClickUp",
+    )
+)
+
+_MONDAY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="monday",
+        aliases=("monday_com", "mondaycom", "monday_api", "mondaycom_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("api_url", "graphql_url", "base_url", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("api_token", "apiToken", "access_token", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_token", "apiToken", "access_token", "value"),
+        env_var="MONDAY_API_TOKEN",
+        display_name="Monday",
+    )
+)
+
+_TAIGA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="taiga",
+        aliases=("taiga_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("api_url", "base_url", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("auth_token", "access_token", "bearer_token", "token", "value"),
+            ),
+            CredentialFieldGroup(role="username", names=("username", "email", "user")),
+            CredentialFieldGroup(role="password", names=("password",)),
+        ),
+        hint_fields=("auth_token", "username", "password", "value"),
+        env_var="TAIGA_AUTH_TOKEN or TAIGA_USERNAME and TAIGA_PASSWORD",
+        display_name="Taiga",
+    )
+)
+
+_WEKAN = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="wekan",
+        aliases=("wekan_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "session_token",
+                    "token",
+                    "access_token",
+                    "bearer_token",
+                    "value",
+                ),
+            ),
+            CredentialFieldGroup(role="username", names=("username", "email", "user")),
+            CredentialFieldGroup(role="password", names=("password",)),
+        ),
+        hint_fields=("token", "session_token", "username", "password", "value"),
+        env_var="WEKAN_TOKEN or WEKAN_USERNAME and WEKAN_PASSWORD",
+        display_name="Wekan",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -125,32 +245,32 @@ def _request_json(
 def _jira_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="jira",
-            provider_aliases=("atlassian", "jira_api", "jira_software_cloud_api"),
-            field_names=("base_url", "domain", "url", "site_url"),
+            provider=_JIRA.provider,
+            provider_aliases=_JIRA.aliases,
+            field_names=_JIRA.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("jira_base_url")
     )
     access_token = _credential_value(
-        provider="jira",
-        provider_aliases=("atlassian", "jira_api", "jira_software_cloud_api"),
-        field_names=("access_token", "bearer_token", "token", "value"),
+        provider=_JIRA.provider,
+        provider_aliases=_JIRA.aliases,
+        field_names=_JIRA.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("jira_access_token")
     email = _credential_value(
-        provider="jira",
-        provider_aliases=("atlassian", "jira_api", "jira_software_cloud_api"),
-        field_names=("email", "username", "user"),
+        provider=_JIRA.provider,
+        provider_aliases=_JIRA.aliases,
+        field_names=_JIRA.group("email"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("jira_email")
     api_token = _credential_value(
-        provider="jira",
-        provider_aliases=("atlassian", "jira_api", "jira_software_cloud_api"),
-        field_names=("api_token", "apiToken", "password"),
+        provider=_JIRA.provider,
+        provider_aliases=_JIRA.aliases,
+        field_names=_JIRA.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("jira_api_token")
@@ -173,20 +293,20 @@ def _jira_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         headers["Authorization"] = f"Basic {base64.b64encode(raw).decode()}"
         return _base_url(base), headers
     return _base_url(base), _setup_hint(
-        provider="jira",
-        field_names=("email", "api_token", "base_url"),
+        provider=_JIRA.provider,
+        field_names=_JIRA.hint_fields,
         tool_name=tool_name,
-        env_var="JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_BASE_URL",
-        display_name="Jira",
+        env_var=_JIRA.env_var,
+        display_name=_JIRA.display_name,
     )
 
 
 def _clickup_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="clickup",
-            provider_aliases=("click_up", "clickup_api", "click_up_api"),
-            field_names=("base_url", "url"),
+            provider=_CLICKUP.provider,
+            provider_aliases=_CLICKUP.aliases,
+            field_names=_CLICKUP.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -194,19 +314,19 @@ def _clickup_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _CLICKUP_BASE_URL
     )
     token = _credential_value(
-        provider="clickup",
-        provider_aliases=("click_up", "clickup_api", "click_up_api"),
-        field_names=("access_token", "api_key", "token", "value"),
+        provider=_CLICKUP.provider,
+        provider_aliases=_CLICKUP.aliases,
+        field_names=_CLICKUP.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("clickup_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="clickup",
-            field_names=("access_token", "api_key", "value"),
+            provider=_CLICKUP.provider,
+            field_names=_CLICKUP.hint_fields,
             tool_name=tool_name,
-            env_var="CLICKUP_ACCESS_TOKEN",
-            display_name="ClickUp",
+            env_var=_CLICKUP.env_var,
+            display_name=_CLICKUP.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -219,9 +339,9 @@ def _clickup_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _monday_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     api_url = (
         _credential_value(
-            provider="monday",
-            provider_aliases=("monday_com", "mondaycom", "monday_api", "mondaycom_api"),
-            field_names=("api_url", "graphql_url", "base_url", "url"),
+            provider=_MONDAY.provider,
+            provider_aliases=_MONDAY.aliases,
+            field_names=_MONDAY.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -229,19 +349,19 @@ def _monday_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         or _MONDAY_API_URL
     )
     token = _credential_value(
-        provider="monday",
-        provider_aliases=("monday_com", "mondaycom", "monday_api", "mondaycom_api"),
-        field_names=("api_token", "apiToken", "access_token", "token", "value"),
+        provider=_MONDAY.provider,
+        provider_aliases=_MONDAY.aliases,
+        field_names=_MONDAY.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("monday_api_token")
     if not token:
         return _base_url(api_url), _setup_hint(
-            provider="monday",
-            field_names=("api_token", "apiToken", "access_token", "value"),
+            provider=_MONDAY.provider,
+            field_names=_MONDAY.hint_fields,
             tool_name=tool_name,
-            env_var="MONDAY_API_TOKEN",
-            display_name="Monday",
+            env_var=_MONDAY.env_var,
+            display_name=_MONDAY.display_name,
         )
     return _base_url(api_url), {
         "Accept": "application/json",
@@ -260,9 +380,9 @@ def _taiga_api_base(value: str) -> str:
 def _taiga_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     raw_base = (
         _credential_value(
-            provider="taiga",
-            provider_aliases=("taiga_api",),
-            field_names=("api_url", "base_url", "url"),
+            provider=_TAIGA.provider,
+            provider_aliases=_TAIGA.aliases,
+            field_names=_TAIGA.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -271,23 +391,23 @@ def _taiga_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
     )
     base = _taiga_api_base(raw_base)
     token = _credential_value(
-        provider="taiga",
-        provider_aliases=("taiga_api",),
-        field_names=("auth_token", "access_token", "bearer_token", "token", "value"),
+        provider=_TAIGA.provider,
+        provider_aliases=_TAIGA.aliases,
+        field_names=_TAIGA.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("taiga_auth_token")
     username = _credential_value(
-        provider="taiga",
-        provider_aliases=("taiga_api",),
-        field_names=("username", "email", "user"),
+        provider=_TAIGA.provider,
+        provider_aliases=_TAIGA.aliases,
+        field_names=_TAIGA.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("taiga_username")
     password = _credential_value(
-        provider="taiga",
-        provider_aliases=("taiga_api",),
-        field_names=("password",),
+        provider=_TAIGA.provider,
+        provider_aliases=_TAIGA.aliases,
+        field_names=_TAIGA.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("taiga_password")
@@ -302,11 +422,11 @@ def _taiga_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         token = data.get("auth_token") if isinstance(data, dict) else None
     if not token:
         return base, _setup_hint(
-            provider="taiga",
-            field_names=("auth_token", "username", "password", "value"),
+            provider=_TAIGA.provider,
+            field_names=_TAIGA.hint_fields,
             tool_name=tool_name,
-            env_var="TAIGA_AUTH_TOKEN or TAIGA_USERNAME and TAIGA_PASSWORD",
-            display_name="Taiga",
+            env_var=_TAIGA.env_var,
+            display_name=_TAIGA.display_name,
         )
     return base, {
         "Accept": "application/json",
@@ -319,9 +439,9 @@ def _taiga_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
 def _wekan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     raw_base = (
         _credential_value(
-            provider="wekan",
-            provider_aliases=("wekan_api",),
-            field_names=("base_url", "url"),
+            provider=_WEKAN.provider,
+            provider_aliases=_WEKAN.aliases,
+            field_names=_WEKAN.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -334,23 +454,23 @@ def _wekan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         )
     base = _base_url(raw_base)
     token = _credential_value(
-        provider="wekan",
-        provider_aliases=("wekan_api",),
-        field_names=("session_token", "token", "access_token", "bearer_token", "value"),
+        provider=_WEKAN.provider,
+        provider_aliases=_WEKAN.aliases,
+        field_names=_WEKAN.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("wekan_token")
     username = _credential_value(
-        provider="wekan",
-        provider_aliases=("wekan_api",),
-        field_names=("username", "email", "user"),
+        provider=_WEKAN.provider,
+        provider_aliases=_WEKAN.aliases,
+        field_names=_WEKAN.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("wekan_username")
     password = _credential_value(
-        provider="wekan",
-        provider_aliases=("wekan_api",),
-        field_names=("password",),
+        provider=_WEKAN.provider,
+        provider_aliases=_WEKAN.aliases,
+        field_names=_WEKAN.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("wekan_password")
@@ -365,11 +485,11 @@ def _wekan_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         token = data.get("token") if isinstance(data, dict) else None
     if not token:
         return base, _setup_hint(
-            provider="wekan",
-            field_names=("token", "session_token", "username", "password", "value"),
+            provider=_WEKAN.provider,
+            field_names=_WEKAN.hint_fields,
             tool_name=tool_name,
-            env_var="WEKAN_TOKEN or WEKAN_USERNAME and WEKAN_PASSWORD",
-            display_name="Wekan",
+            env_var=_WEKAN.env_var,
+            display_name=_WEKAN.display_name,
         )
     return base, {
         "Accept": "application/json",

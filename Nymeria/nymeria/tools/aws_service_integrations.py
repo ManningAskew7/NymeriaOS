@@ -10,10 +10,51 @@ from typing import Annotated, Any, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
+
 logger = logging.getLogger(__name__)
 
 _MAX_JSON_CHARS = 70_000
 _MAX_DOCUMENT_BYTES = 8_000_000
+
+# Provider credential spec: the single source of truth for AWS credential shape
+# (see credential_registry). The local _credential_value / _setup_hint wrappers
+# and their call sites source their arguments from this spec; field-name tuple
+# ORDER is behaviorally significant and must not be reordered.
+_AWS = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="aws",
+        aliases=("amazon_web_services", "s3", "aws_s3", "aws_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="access_key", names=("access_key_id", "accessKeyId", "aws_access_key_id")
+            ),
+            CredentialFieldGroup(
+                role="secret_key",
+                names=("secret_access_key", "secretAccessKey", "aws_secret_access_key"),
+            ),
+            CredentialFieldGroup(
+                role="session_token",
+                names=("session_token", "sessionToken", "aws_session_token"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="region", names=("region", "aws_region"), required=False),
+            CredentialFieldGroup(
+                role="endpoint_url",
+                names=("endpoint_url", "endpointUrl", "endpoint", "base_url", "baseUrl"),
+                required=False,
+            ),
+        ),
+        hint_fields=("access_key_id", "secret_access_key"),
+        env_var="AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
+        display_name="AWS",
+        services=("aws_lambda", "aws_ses", "aws_sns", "aws_textract", "aws_transcribe"),
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -54,8 +95,8 @@ def _credential_value(
     from .native_credentials import get_native_credential_value
 
     credential = get_native_credential_value(
-        provider="aws",
-        provider_aliases=("amazon_web_services", "s3", "aws_s3", "aws_api"),
+        provider=_AWS.provider,
+        provider_aliases=_AWS.aliases,
         field_names=field_names,
         tool_name=tool_name,
         config=config,
@@ -67,11 +108,11 @@ def _setup_hint(tool_name: str) -> str:
     from .native_credentials import native_credential_setup_hint
 
     return native_credential_setup_hint(
-        provider="aws",
-        field_names=("access_key_id", "secret_access_key"),
+        provider=_AWS.provider,
+        field_names=_AWS.hint_fields,
         tool_name=tool_name,
-        env_var="AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
-        display_name="AWS",
+        env_var=_AWS.env_var,
+        display_name=_AWS.display_name,
     )
 
 
@@ -83,28 +124,28 @@ def _aws_client(
     region_name: str = "",
 ) -> tuple[Any, str | None]:
     access_key = _credential_value(
-        field_names=("access_key_id", "accessKeyId", "aws_access_key_id"),
+        field_names=_AWS.group("access_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_access_key_id")
     secret_key = _credential_value(
-        field_names=("secret_access_key", "secretAccessKey", "aws_secret_access_key"),
+        field_names=_AWS.group("secret_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_secret_access_key")
     session_token = _credential_value(
-        field_names=("session_token", "sessionToken", "aws_session_token"),
+        field_names=_AWS.group("session_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_session_token")
     region = (
         region_name.strip()
-        or _credential_value(field_names=("region", "aws_region"), tool_name=tool_name, config=config)
+        or _credential_value(field_names=_AWS.group("region"), tool_name=tool_name, config=config)
         or _settings_value("s3_region")
         or "us-east-1"
     )
     endpoint_url = _credential_value(
-        field_names=("endpoint_url", "endpointUrl", "endpoint", "base_url", "baseUrl"),
+        field_names=_AWS.group("endpoint_url"),
         tool_name=tool_name,
         config=config,
     )

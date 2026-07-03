@@ -11,6 +11,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -30,6 +35,73 @@ _YOUTUBE_BASE_URL = "https://www.googleapis.com/youtube/v3"
 _SPOTIFY_BASE_URL = "https://api.spotify.com/v1"
 _SPOTIFY_ACCOUNTS_BASE_URL = "https://accounts.spotify.com"
 _SPOTIFY_TOKEN_CACHE: dict[tuple[str, str, str], tuple[str, float]] = {}
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_GOOGLE_BOOKS = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="google_books",
+        aliases=("googlebooks", "google_books_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "key", "token", "value")),
+        ),
+    )
+)
+
+_YOUTUBE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="youtube",
+        aliases=("youtube_data", "youtube_data_api", "google_youtube"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "key", "token", "value")),
+        ),
+        hint_fields=("api_key", "key", "value"),
+        env_var="YOUTUBE_API_KEY",
+        display_name="YouTube Data API",
+    )
+)
+
+_SPOTIFY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="spotify",
+        aliases=("spotify_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="accounts_base_url",
+                names=("accounts_base_url", "auth_base_url", "token_base_url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="access_token",
+                names=("access_token", "accessToken", "bearer_token", "token", "value"),
+            ),
+            CredentialFieldGroup(role="client_id", names=("client_id", "clientId", "id")),
+            CredentialFieldGroup(
+                role="client_secret", names=("client_secret", "clientSecret", "secret")
+            ),
+        ),
+        hint_fields=("access_token", "client_id", "client_secret", "value"),
+        env_var="SPOTIFY_ACCESS_TOKEN or SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET",
+        display_name="Spotify",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -105,9 +177,9 @@ def _is_setup_hint(value: str) -> bool:
 def _google_books_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | None]:
     base = (
         _credential_value(
-            provider="google_books",
-            provider_aliases=("googlebooks", "google_books_api"),
-            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            provider=_GOOGLE_BOOKS.provider,
+            provider_aliases=_GOOGLE_BOOKS.aliases,
+            field_names=_GOOGLE_BOOKS.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -115,9 +187,9 @@ def _google_books_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
         or _GOOGLE_BOOKS_BASE_URL
     )
     api_key = _credential_value(
-        provider="google_books",
-        provider_aliases=("googlebooks", "google_books_api"),
-        field_names=("api_key", "apiKey", "key", "token", "value"),
+        provider=_GOOGLE_BOOKS.provider,
+        provider_aliases=_GOOGLE_BOOKS.aliases,
+        field_names=_GOOGLE_BOOKS.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("google_books_api_key")
@@ -127,9 +199,9 @@ def _google_books_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
 def _youtube_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | dict[str, str]]:
     base = (
         _credential_value(
-            provider="youtube",
-            provider_aliases=("youtube_data", "youtube_data_api", "google_youtube"),
-            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            provider=_YOUTUBE.provider,
+            provider_aliases=_YOUTUBE.aliases,
+            field_names=_YOUTUBE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -137,19 +209,19 @@ def _youtube_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _YOUTUBE_BASE_URL
     )
     api_key = _credential_value(
-        provider="youtube",
-        provider_aliases=("youtube_data", "youtube_data_api", "google_youtube"),
-        field_names=("api_key", "apiKey", "key", "token", "value"),
+        provider=_YOUTUBE.provider,
+        provider_aliases=_YOUTUBE.aliases,
+        field_names=_YOUTUBE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("youtube_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="youtube",
-            field_names=("api_key", "key", "value"),
+            provider=_YOUTUBE.provider,
+            field_names=_YOUTUBE.hint_fields,
             tool_name=tool_name,
-            env_var="YOUTUBE_API_KEY",
-            display_name="YouTube Data API",
+            env_var=_YOUTUBE.env_var,
+            display_name=_YOUTUBE.display_name,
         )
     return _base_url(base), api_key
 
@@ -157,9 +229,9 @@ def _youtube_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _spotify_base(tool_name: str, config: Optional[RunnableConfig]) -> str:
     base = (
         _credential_value(
-            provider="spotify",
-            provider_aliases=("spotify_api",),
-            field_names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+            provider=_SPOTIFY.provider,
+            provider_aliases=_SPOTIFY.aliases,
+            field_names=_SPOTIFY.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -172,9 +244,9 @@ def _spotify_base(tool_name: str, config: Optional[RunnableConfig]) -> str:
 def _spotify_accounts_base(tool_name: str, config: Optional[RunnableConfig]) -> str:
     base = (
         _credential_value(
-            provider="spotify",
-            provider_aliases=("spotify_api",),
-            field_names=("accounts_base_url", "auth_base_url", "token_base_url"),
+            provider=_SPOTIFY.provider,
+            provider_aliases=_SPOTIFY.aliases,
+            field_names=_SPOTIFY.group("accounts_base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -219,34 +291,34 @@ def _spotify_token_from_client_credentials(
 def _spotify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = _spotify_base(tool_name, config)
     access_token = _credential_value(
-        provider="spotify",
-        provider_aliases=("spotify_api",),
-        field_names=("access_token", "accessToken", "bearer_token", "token", "value"),
+        provider=_SPOTIFY.provider,
+        provider_aliases=_SPOTIFY.aliases,
+        field_names=_SPOTIFY.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("spotify_access_token")
     if not access_token:
         client_id = _credential_value(
-            provider="spotify",
-            provider_aliases=("spotify_api",),
-            field_names=("client_id", "clientId", "id"),
+            provider=_SPOTIFY.provider,
+            provider_aliases=_SPOTIFY.aliases,
+            field_names=_SPOTIFY.group("client_id"),
             tool_name=tool_name,
             config=config,
         ) or _settings_value("spotify_client_id")
         client_secret = _credential_value(
-            provider="spotify",
-            provider_aliases=("spotify_api",),
-            field_names=("client_secret", "clientSecret", "secret"),
+            provider=_SPOTIFY.provider,
+            provider_aliases=_SPOTIFY.aliases,
+            field_names=_SPOTIFY.group("client_secret"),
             tool_name=tool_name,
             config=config,
         ) or _settings_value("spotify_client_secret")
         if not client_id or not client_secret:
             return base, _setup_hint(
-                provider="spotify",
-                field_names=("access_token", "client_id", "client_secret", "value"),
+                provider=_SPOTIFY.provider,
+                field_names=_SPOTIFY.hint_fields,
                 tool_name=tool_name,
-                env_var="SPOTIFY_ACCESS_TOKEN or SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET",
-                display_name="Spotify",
+                env_var=_SPOTIFY.env_var,
+                display_name=_SPOTIFY.display_name,
             )
         access_token = _spotify_token_from_client_credentials(
             client_id=client_id,

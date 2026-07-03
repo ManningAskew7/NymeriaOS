@@ -11,6 +11,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -28,6 +33,64 @@ _HTTP_TIMEOUT = 30.0
 _MAX_JSON_CHARS = 60_000
 _HUBSPOT_BASE_URL = "https://api.hubapi.com"
 _MAILCHIMP_ROOT = "https://api.mailchimp.com/3.0"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_HUBSPOT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="hubspot",
+        aliases=("hubspot_api", "hubspot_app_token", "hubspot_oauth2"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="token",
+                names=("private_app_token", "app_token", "access_token", "token", "api_key", "value"),
+            ),
+        ),
+        hint_fields=("private_app_token", "app_token", "access_token", "token", "value"),
+        env_var="HUBSPOT_ACCESS_TOKEN",
+        display_name="HubSpot",
+    )
+)
+
+_ZENDESK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="zendesk",
+        aliases=("zendesk_api", "zendesk_oauth2"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="subdomain", names=("subdomain", "domain")),
+            CredentialFieldGroup(
+                role="access_token", names=("access_token", "token", "value"), required=False
+            ),
+            CredentialFieldGroup(role="email", names=("email", "username", "user")),
+            CredentialFieldGroup(role="api_token", names=("api_token", "apiToken", "password")),
+        ),
+        hint_fields=("email", "api_token", "subdomain"),
+        env_var="ZENDESK_EMAIL, ZENDESK_API_TOKEN, and ZENDESK_SUBDOMAIN",
+        display_name="Zendesk",
+    )
+)
+
+_MAILCHIMP = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="mailchimp",
+        aliases=("mailchimp_api", "mailchimp_oauth2"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="server_prefix", names=("server_prefix", "dc", "data_center"), required=False
+            ),
+            CredentialFieldGroup(role="access_token", names=("access_token", "token")),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apikey", "value")),
+        ),
+        hint_fields=("api_key", "access_token", "value"),
+        env_var="MAILCHIMP_API_KEY or MAILCHIMP_ACCESS_TOKEN",
+        display_name="Mailchimp",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -87,9 +150,9 @@ def _request_json(
 def _hubspot_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="hubspot",
-            provider_aliases=("hubspot_api", "hubspot_app_token", "hubspot_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_HUBSPOT.provider,
+            provider_aliases=_HUBSPOT.aliases,
+            field_names=_HUBSPOT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -97,19 +160,19 @@ def _hubspot_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _HUBSPOT_BASE_URL
     )
     token = _credential_value(
-        provider="hubspot",
-        provider_aliases=("hubspot_api", "hubspot_app_token", "hubspot_oauth2"),
-        field_names=("private_app_token", "app_token", "access_token", "token", "api_key", "value"),
+        provider=_HUBSPOT.provider,
+        provider_aliases=_HUBSPOT.aliases,
+        field_names=_HUBSPOT.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("hubspot_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="hubspot",
-            field_names=("private_app_token", "app_token", "access_token", "token", "value"),
+            provider=_HUBSPOT.provider,
+            field_names=_HUBSPOT.hint_fields,
             tool_name=tool_name,
-            env_var="HUBSPOT_ACCESS_TOKEN",
-            display_name="HubSpot",
+            env_var=_HUBSPOT.env_var,
+            display_name=_HUBSPOT.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -126,9 +189,9 @@ def _zendesk_base(
 ) -> Optional[str]:
     base = (
         _credential_value(
-            provider="zendesk",
-            provider_aliases=("zendesk_api", "zendesk_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_ZENDESK.provider,
+            provider_aliases=_ZENDESK.aliases,
+            field_names=_ZENDESK.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -139,9 +202,9 @@ def _zendesk_base(
         return clean if clean.endswith("/api/v2") else f"{clean}/api/v2"
     subdomain = (
         _credential_value(
-            provider="zendesk",
-            provider_aliases=("zendesk_api", "zendesk_oauth2"),
-            field_names=("subdomain", "domain"),
+            provider=_ZENDESK.provider,
+            provider_aliases=_ZENDESK.aliases,
+            field_names=_ZENDESK.group("subdomain"),
             tool_name=tool_name,
             config=config,
         )
@@ -161,23 +224,23 @@ def _zendesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
             '"base_url" or "subdomain", or set ZENDESK_BASE_URL or ZENDESK_SUBDOMAIN.'
         )
     access_token = _credential_value(
-        provider="zendesk",
-        provider_aliases=("zendesk_api", "zendesk_oauth2"),
-        field_names=("access_token", "token", "value"),
+        provider=_ZENDESK.provider,
+        provider_aliases=_ZENDESK.aliases,
+        field_names=_ZENDESK.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zendesk_access_token")
     email = _credential_value(
-        provider="zendesk",
-        provider_aliases=("zendesk_api", "zendesk_oauth2"),
-        field_names=("email", "username", "user"),
+        provider=_ZENDESK.provider,
+        provider_aliases=_ZENDESK.aliases,
+        field_names=_ZENDESK.group("email"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zendesk_email")
     api_token = _credential_value(
-        provider="zendesk",
-        provider_aliases=("zendesk_api", "zendesk_oauth2"),
-        field_names=("api_token", "apiToken", "password"),
+        provider=_ZENDESK.provider,
+        provider_aliases=_ZENDESK.aliases,
+        field_names=_ZENDESK.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zendesk_api_token")
@@ -194,11 +257,11 @@ def _zendesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         headers["Authorization"] = f"Basic {base64.b64encode(raw).decode()}"
         return base, headers
     return base, _setup_hint(
-        provider="zendesk",
-        field_names=("email", "api_token", "subdomain"),
+        provider=_ZENDESK.provider,
+        field_names=_ZENDESK.hint_fields,
         tool_name=tool_name,
-        env_var="ZENDESK_EMAIL, ZENDESK_API_TOKEN, and ZENDESK_SUBDOMAIN",
-        display_name="Zendesk",
+        env_var=_ZENDESK.env_var,
+        display_name=_ZENDESK.display_name,
     )
 
 
@@ -210,9 +273,9 @@ def _mailchimp_base(
 ) -> Optional[str]:
     base = (
         _credential_value(
-            provider="mailchimp",
-            provider_aliases=("mailchimp_api", "mailchimp_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_MAILCHIMP.provider,
+            provider_aliases=_MAILCHIMP.aliases,
+            field_names=_MAILCHIMP.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -222,9 +285,9 @@ def _mailchimp_base(
         return _base_url(base)
     server_prefix = (
         _credential_value(
-            provider="mailchimp",
-            provider_aliases=("mailchimp_api", "mailchimp_oauth2"),
-            field_names=("server_prefix", "dc", "data_center"),
+            provider=_MAILCHIMP.provider,
+            provider_aliases=_MAILCHIMP.aliases,
+            field_names=_MAILCHIMP.group("server_prefix"),
             tool_name=tool_name,
             config=config,
         )
@@ -239,16 +302,16 @@ def _mailchimp_base(
 
 def _mailchimp_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     access_token = _credential_value(
-        provider="mailchimp",
-        provider_aliases=("mailchimp_api", "mailchimp_oauth2"),
-        field_names=("access_token", "token"),
+        provider=_MAILCHIMP.provider,
+        provider_aliases=_MAILCHIMP.aliases,
+        field_names=_MAILCHIMP.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mailchimp_access_token")
     api_key = _credential_value(
-        provider="mailchimp",
-        provider_aliases=("mailchimp_api", "mailchimp_oauth2"),
-        field_names=("api_key", "apikey", "value"),
+        provider=_MAILCHIMP.provider,
+        provider_aliases=_MAILCHIMP.aliases,
+        field_names=_MAILCHIMP.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("mailchimp_api_key")
@@ -266,11 +329,11 @@ def _mailchimp_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         auth = f"apikey {api_key}"
     else:
         return base, _setup_hint(
-            provider="mailchimp",
-            field_names=("api_key", "access_token", "value"),
+            provider=_MAILCHIMP.provider,
+            field_names=_MAILCHIMP.hint_fields,
             tool_name=tool_name,
-            env_var="MAILCHIMP_API_KEY or MAILCHIMP_ACCESS_TOKEN",
-            display_name="Mailchimp",
+            env_var=_MAILCHIMP.env_var,
+            display_name=_MAILCHIMP.display_name,
         )
     return base, {
         "Accept": "application/json",

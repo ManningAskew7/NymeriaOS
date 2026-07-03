@@ -10,6 +10,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     BASE_URL_ALIAS_FIELDS,
     base_url as _base_url,
@@ -28,6 +33,107 @@ _MAX_JSON_CHARS = 80_000
 _OURA_BASE_URL = "https://api.ouraring.com/v2"
 _STRAVA_BASE_URL = "https://www.strava.com/api/v3"
 _PHILIPS_HUE_BASE_URL = "https://api.meethue.com/route"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered. Oura,
+# Strava, and Philips Hue reach _credential_value / _setup_hint through the
+# shared _bearer_config helper, whose base-URL lookup keeps BASE_URL_ALIAS_FIELDS
+# inline; each spec still declares that base_url group.
+_OURA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="oura",
+        aliases=("oura_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "access_token",
+                    "accessToken",
+                    "api_key",
+                    "apiKey",
+                    "token",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=(
+            "access_token",
+            "accessToken",
+            "api_key",
+            "apiKey",
+            "token",
+            "value",
+        ),
+        env_var="OURA_ACCESS_TOKEN",
+        display_name="Oura",
+    )
+)
+
+_STRAVA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="strava",
+        aliases=("strava_oauth2", "strava_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(
+                role="token", names=("access_token", "accessToken", "token", "value")
+            ),
+        ),
+        hint_fields=("access_token", "accessToken", "token", "value"),
+        env_var="STRAVA_ACCESS_TOKEN",
+        display_name="Strava",
+    )
+)
+
+_HOMEASSISTANT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="homeassistant",
+        aliases=("home_assistant", "homeassistant_api"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_ALIAS_FIELDS),
+            CredentialFieldGroup(
+                role="token", names=("access_token", "accessToken", "token", "value")
+            ),
+        ),
+        hint_fields=("base_url", "access_token"),
+        env_var="HOMEASSISTANT_BASE_URL and HOMEASSISTANT_ACCESS_TOKEN",
+        display_name="Home Assistant",
+    )
+)
+
+# Branch variant: two setup-hint field sets. The access_token group tuple is
+# also the first hint variant (used inline via _bearer_config's setup_hint);
+# spec.hint_fields carries the second variant ("access_token", "username"),
+# used when a username is missing.
+_PHILIPS_HUE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="philips_hue",
+        aliases=("philips_hue_oauth2", "philips_hue_api", "hue"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(
+                role="access_token",
+                names=("access_token", "accessToken", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="username",
+                names=("username", "user", "bridge_username", "bridgeUsername"),
+            ),
+        ),
+        hint_fields=("access_token", "username"),
+        env_var="PHILIPS_HUE_ACCESS_TOKEN and PHILIPS_HUE_USERNAME",
+        display_name="Philips Hue",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -148,40 +254,40 @@ def _bearer_config(
 
 def _oura_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     return _bearer_config(
-        provider="oura",
-        provider_aliases=("oura_api",),
-        token_fields=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_OURA.provider,
+        provider_aliases=_OURA.aliases,
+        token_fields=_OURA.group("token"),
         token_setting="oura_access_token",
         base_setting="oura_base_url",
         default_base=_OURA_BASE_URL,
         tool_name=tool_name,
         config=config,
-        display_name="Oura",
-        env_var="OURA_ACCESS_TOKEN",
+        display_name=_OURA.display_name,
+        env_var=_OURA.env_var,
     )
 
 
 def _strava_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     return _bearer_config(
-        provider="strava",
-        provider_aliases=("strava_oauth2", "strava_oauth2_api"),
-        token_fields=("access_token", "accessToken", "token", "value"),
+        provider=_STRAVA.provider,
+        provider_aliases=_STRAVA.aliases,
+        token_fields=_STRAVA.group("token"),
         token_setting="strava_access_token",
         base_setting="strava_base_url",
         default_base=_STRAVA_BASE_URL,
         tool_name=tool_name,
         config=config,
-        display_name="Strava",
-        env_var="STRAVA_ACCESS_TOKEN",
+        display_name=_STRAVA.display_name,
+        env_var=_STRAVA.env_var,
     )
 
 
 def _homeassistant_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="homeassistant",
-            provider_aliases=("home_assistant", "homeassistant_api"),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_HOMEASSISTANT.provider,
+            provider_aliases=_HOMEASSISTANT.aliases,
+            field_names=_HOMEASSISTANT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -189,20 +295,20 @@ def _homeassistant_config(tool_name: str, config: Optional[RunnableConfig]) -> t
         or ""
     )
     token = _credential_value(
-        provider="homeassistant",
-        provider_aliases=("home_assistant", "homeassistant_api"),
-        field_names=("access_token", "accessToken", "token", "value"),
+        provider=_HOMEASSISTANT.provider,
+        provider_aliases=_HOMEASSISTANT.aliases,
+        field_names=_HOMEASSISTANT.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("homeassistant_access_token")
     if not base or not token:
         base = base or "http://homeassistant.local:8123/api"
         return _base_url(base), _setup_hint(
-            provider="homeassistant",
-            field_names=("base_url", "access_token"),
+            provider=_HOMEASSISTANT.provider,
+            field_names=_HOMEASSISTANT.hint_fields,
             tool_name=tool_name,
-            env_var="HOMEASSISTANT_BASE_URL and HOMEASSISTANT_ACCESS_TOKEN",
-            display_name="Home Assistant",
+            env_var=_HOMEASSISTANT.env_var,
+            display_name=_HOMEASSISTANT.display_name,
         )
     clean = _base_url(base)
     if not clean.endswith("/api"):
@@ -217,33 +323,33 @@ def _homeassistant_config(tool_name: str, config: Optional[RunnableConfig]) -> t
 
 def _philips_hue_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str]] | str:
     base, headers_or_hint = _bearer_config(
-        provider="philips_hue",
-        provider_aliases=("philips_hue_oauth2", "philips_hue_api", "hue"),
-        token_fields=("access_token", "accessToken", "token", "value"),
+        provider=_PHILIPS_HUE.provider,
+        provider_aliases=_PHILIPS_HUE.aliases,
+        token_fields=_PHILIPS_HUE.group("access_token"),
         token_setting="philips_hue_access_token",
         base_setting="philips_hue_base_url",
         default_base=_PHILIPS_HUE_BASE_URL,
         tool_name=tool_name,
         config=config,
-        display_name="Philips Hue",
-        env_var="PHILIPS_HUE_ACCESS_TOKEN and PHILIPS_HUE_USERNAME",
+        display_name=_PHILIPS_HUE.display_name,
+        env_var=_PHILIPS_HUE.env_var,
     )
     if isinstance(headers_or_hint, str):
         return headers_or_hint
     username = _credential_value(
-        provider="philips_hue",
-        provider_aliases=("philips_hue_oauth2", "philips_hue_api", "hue"),
-        field_names=("username", "user", "bridge_username", "bridgeUsername"),
+        provider=_PHILIPS_HUE.provider,
+        provider_aliases=_PHILIPS_HUE.aliases,
+        field_names=_PHILIPS_HUE.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("philips_hue_username")
     if not username:
         return _setup_hint(
-            provider="philips_hue",
-            field_names=("access_token", "username"),
+            provider=_PHILIPS_HUE.provider,
+            field_names=_PHILIPS_HUE.hint_fields,
             tool_name=tool_name,
-            env_var="PHILIPS_HUE_ACCESS_TOKEN and PHILIPS_HUE_USERNAME",
-            display_name="Philips Hue",
+            env_var=_PHILIPS_HUE.env_var,
+            display_name=_PHILIPS_HUE.display_name,
         )
     return base, username, {**headers_or_hint, "Content-Type": "application/json"}
 

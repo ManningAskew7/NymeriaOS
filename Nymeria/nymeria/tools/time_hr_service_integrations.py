@@ -11,6 +11,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     API_KEY_FIELDS,
     BASE_URL_ALIAS_FIELDS,
@@ -31,6 +36,116 @@ _BAMBOOHR_GATEWAY_BASE_URL = "https://api.bamboohr.com/api/gateway.php"
 _BEEMINDER_BASE_URL = "https://www.beeminder.com/api/v1"
 _CLOCKIFY_BASE_URL = "https://api.clockify.me/api/v1"
 _HARVEST_BASE_URL = "https://api.harvestapp.com/v2"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_BAMBOOHR = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="bamboohr",
+        aliases=("bamboo_hr", "bamboohr_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=(
+                    "base_url",
+                    "baseUrl",
+                    "api_url",
+                    "apiUrl",
+                    "gateway_url",
+                    "gatewayUrl",
+                ),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "access_token", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="subdomain", names=("subdomain", "company_domain", "companyDomain")
+            ),
+        ),
+        hint_fields=("api_key", "subdomain"),
+        env_var="BAMBOOHR_API_KEY and BAMBOOHR_SUBDOMAIN",
+        display_name="BambooHR",
+    )
+)
+
+_BEEMINDER = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="beeminder",
+        aliases=("beeminder_api", "beeminder_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "auth_token",
+                    "authToken",
+                    "access_token",
+                    "accessToken",
+                    "api_key",
+                    "apiKey",
+                    "token",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=("auth_token", "access_token", "api_key", "value"),
+        env_var="BEEMINDER_ACCESS_TOKEN",
+        display_name="Beeminder",
+    )
+)
+
+_CLOCKIFY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="clockify",
+        aliases=("clockify_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key",
+                names=("api_key", "apiKey", "x_api_key", "xApiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=API_KEY_FIELDS,
+        env_var="CLOCKIFY_API_KEY",
+        display_name="Clockify",
+    )
+)
+
+_HARVEST = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="harvest",
+        aliases=("harvest_api", "harvest_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=BASE_URL_ALIAS_FIELDS, required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="account_id",
+                names=(
+                    "account_id",
+                    "accountId",
+                    "harvest_account_id",
+                    "harvestAccountId",
+                ),
+            ),
+        ),
+        hint_fields=("access_token", "account_id"),
+        env_var="HARVEST_ACCESS_TOKEN and HARVEST_ACCOUNT_ID",
+        display_name="Harvest",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -124,9 +239,9 @@ def _auth_header_basic(username: str, password: str = "x") -> str:
 def _bamboohr_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="bamboohr",
-            provider_aliases=("bamboo_hr", "bamboohr_api"),
-            field_names=("base_url", "baseUrl", "api_url", "apiUrl", "gateway_url", "gatewayUrl"),
+            provider=_BAMBOOHR.provider,
+            provider_aliases=_BAMBOOHR.aliases,
+            field_names=_BAMBOOHR.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -134,26 +249,26 @@ def _bamboohr_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _BAMBOOHR_GATEWAY_BASE_URL
     )
     subdomain = _credential_value(
-        provider="bamboohr",
-        provider_aliases=("bamboo_hr", "bamboohr_api"),
-        field_names=("subdomain", "company_domain", "companyDomain"),
+        provider=_BAMBOOHR.provider,
+        provider_aliases=_BAMBOOHR.aliases,
+        field_names=_BAMBOOHR.group("subdomain"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("bamboohr_subdomain")
     api_key = _credential_value(
-        provider="bamboohr",
-        provider_aliases=("bamboo_hr", "bamboohr_api"),
-        field_names=("api_key", "apiKey", "access_token", "token", "value"),
+        provider=_BAMBOOHR.provider,
+        provider_aliases=_BAMBOOHR.aliases,
+        field_names=_BAMBOOHR.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("bamboohr_api_key")
     if not subdomain or not api_key:
         return _base_url(base), _setup_hint(
-            provider="bamboohr",
-            field_names=("api_key", "subdomain"),
+            provider=_BAMBOOHR.provider,
+            field_names=_BAMBOOHR.hint_fields,
             tool_name=tool_name,
-            env_var="BAMBOOHR_API_KEY and BAMBOOHR_SUBDOMAIN",
-            display_name="BambooHR",
+            env_var=_BAMBOOHR.env_var,
+            display_name=_BAMBOOHR.display_name,
         )
     root = f"{_base_url(base)}/{quote(subdomain.strip(), safe='')}/v1"
     return root, {
@@ -167,9 +282,9 @@ def _bamboohr_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _beeminder_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | str]:
     base = (
         _credential_value(
-            provider="beeminder",
-            provider_aliases=("beeminder_api", "beeminder_oauth2"),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_BEEMINDER.provider,
+            provider_aliases=_BEEMINDER.aliases,
+            field_names=_BEEMINDER.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -177,19 +292,19 @@ def _beeminder_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         or _BEEMINDER_BASE_URL
     )
     token = _credential_value(
-        provider="beeminder",
-        provider_aliases=("beeminder_api", "beeminder_oauth2"),
-        field_names=("auth_token", "authToken", "access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_BEEMINDER.provider,
+        provider_aliases=_BEEMINDER.aliases,
+        field_names=_BEEMINDER.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("beeminder_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="beeminder",
-            field_names=("auth_token", "access_token", "api_key", "value"),
+            provider=_BEEMINDER.provider,
+            field_names=_BEEMINDER.hint_fields,
             tool_name=tool_name,
-            env_var="BEEMINDER_ACCESS_TOKEN",
-            display_name="Beeminder",
+            env_var=_BEEMINDER.env_var,
+            display_name=_BEEMINDER.display_name,
         )
     return _base_url(base), token
 
@@ -197,9 +312,9 @@ def _beeminder_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 def _clockify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="clockify",
-            provider_aliases=("clockify_api",),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_CLOCKIFY.provider,
+            provider_aliases=_CLOCKIFY.aliases,
+            field_names=_CLOCKIFY.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -207,19 +322,19 @@ def _clockify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _CLOCKIFY_BASE_URL
     )
     api_key = _credential_value(
-        provider="clockify",
-        provider_aliases=("clockify_api",),
-        field_names=("api_key", "apiKey", "x_api_key", "xApiKey", "token", "value"),
+        provider=_CLOCKIFY.provider,
+        provider_aliases=_CLOCKIFY.aliases,
+        field_names=_CLOCKIFY.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("clockify_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="clockify",
-            field_names=API_KEY_FIELDS,
+            provider=_CLOCKIFY.provider,
+            field_names=_CLOCKIFY.hint_fields,
             tool_name=tool_name,
-            env_var="CLOCKIFY_API_KEY",
-            display_name="Clockify",
+            env_var=_CLOCKIFY.env_var,
+            display_name=_CLOCKIFY.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -232,9 +347,9 @@ def _clockify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _harvest_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="harvest",
-            provider_aliases=("harvest_api", "harvest_oauth2"),
-            field_names=BASE_URL_ALIAS_FIELDS,
+            provider=_HARVEST.provider,
+            provider_aliases=_HARVEST.aliases,
+            field_names=_HARVEST.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -242,26 +357,26 @@ def _harvest_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _HARVEST_BASE_URL
     )
     token = _credential_value(
-        provider="harvest",
-        provider_aliases=("harvest_api", "harvest_oauth2"),
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_HARVEST.provider,
+        provider_aliases=_HARVEST.aliases,
+        field_names=_HARVEST.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("harvest_access_token")
     account_id = _credential_value(
-        provider="harvest",
-        provider_aliases=("harvest_api", "harvest_oauth2"),
-        field_names=("account_id", "accountId", "harvest_account_id", "harvestAccountId"),
+        provider=_HARVEST.provider,
+        provider_aliases=_HARVEST.aliases,
+        field_names=_HARVEST.group("account_id"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("harvest_account_id")
     if not token or not account_id:
         return _base_url(base), _setup_hint(
-            provider="harvest",
-            field_names=("access_token", "account_id"),
+            provider=_HARVEST.provider,
+            field_names=_HARVEST.hint_fields,
             tool_name=tool_name,
-            env_var="HARVEST_ACCESS_TOKEN and HARVEST_ACCOUNT_ID",
-            display_name="Harvest",
+            env_var=_HARVEST.env_var,
+            display_name=_HARVEST.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",

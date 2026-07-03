@@ -11,6 +11,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -32,6 +37,247 @@ _PAGERDUTY_BASE_URL = "https://api.pagerduty.com"
 _SENTRY_BASE_URL = "https://sentry.io"
 _CLOUDFLARE_BASE_URL = "https://api.cloudflare.com/client/v4"
 _GRAFANA_API_SUFFIX = "/api"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered. The shared
+# _service_base / _bearer_config helpers keep their generic base-URL field-name
+# tuple inline, so the spec still declares it as a group even where no call site
+# reads it back. Providers with two setup-hint variants (base URL vs token)
+# carry the token variant in the spec and keep the base-URL branch's env_var
+# inline. PagerDuty resolves different alias subsets per call site, so those
+# per-branch provider_aliases stay inline.
+_GRAFANA = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="grafana",
+        aliases=("grafana_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token", names=("api_key", "apiKey", "access_token", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "access_token", "token", "value"),
+        env_var="GRAFANA_API_TOKEN",
+        display_name="Grafana",
+    )
+)
+
+_METABASE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="metabase",
+        aliases=("metabase_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="session_token", names=("session_token", "sessionToken")),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+            CredentialFieldGroup(role="username", names=("username", "email")),
+            CredentialFieldGroup(role="password", names=("password",)),
+        ),
+        hint_fields=("session_token", "api_key", "username", "password"),
+        env_var="METABASE_SESSION_TOKEN or METABASE_API_KEY",
+        display_name="Metabase",
+    )
+)
+
+_ELASTICSEARCH = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="elasticsearch",
+        aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "apiKey", "encoded_api_key", "token", "value")
+            ),
+            CredentialFieldGroup(
+                role="bearer_token",
+                names=("access_token", "bearer_token", "bearerToken"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="username", names=("username", "user")),
+            CredentialFieldGroup(role="password", names=("password",)),
+            CredentialFieldGroup(
+                role="ignore_ssl",
+                names=("ignore_ssl_issues", "ignoreSSLIssues", "allow_insecure"),
+                required=False,
+            ),
+        ),
+        hint_fields=("api_key", "username", "password"),
+        env_var="ELASTICSEARCH_API_KEY or ELASTICSEARCH_USERNAME + ELASTICSEARCH_PASSWORD",
+        display_name="Elasticsearch",
+    )
+)
+
+_SPLUNK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="splunk",
+        aliases=("splunk_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "baseUrl", "url", "api_url", "apiUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="token", names=("auth_token", "authToken", "access_token", "token", "value")
+            ),
+            CredentialFieldGroup(
+                role="allow_insecure",
+                names=("allow_unauthorized_certs", "allowUnauthorizedCerts", "allow_insecure"),
+                required=False,
+            ),
+        ),
+        hint_fields=("auth_token", "access_token", "token", "value"),
+        env_var="SPLUNK_AUTH_TOKEN",
+        display_name="Splunk",
+    )
+)
+
+_RUNDECK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="rundeck",
+        aliases=("rundeck_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="token", names=("token", "api_token", "apiToken", "access_token", "value")
+            ),
+        ),
+        hint_fields=("token", "api_token", "value"),
+        env_var="RUNDECK_TOKEN",
+        display_name="Rundeck",
+    )
+)
+
+_NETLIFY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="netlify",
+        aliases=("netlify_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        env_var="NETLIFY_ACCESS_TOKEN",
+        display_name="Netlify",
+    )
+)
+
+_UPTIMEROBOT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="uptimerobot",
+        aliases=("uptime_robot", "uptimerobot_api", "uptime_robot_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "apiKey", "key", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "token", "value"),
+        env_var="UPTIMEROBOT_API_KEY",
+        display_name="UptimeRobot",
+    )
+)
+
+_PAGERDUTY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="pagerduty",
+        aliases=("pagerduty_api", "pagerduty_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="access_token",
+                names=("access_token", "accessToken", "bearer_token", "bearerToken"),
+            ),
+            CredentialFieldGroup(
+                role="api_token",
+                names=("api_token", "apiToken", "api_key", "apiKey", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="from_email", names=("from_email", "fromEmail", "email"), required=False
+            ),
+        ),
+        hint_fields=("api_token", "access_token", "token", "value"),
+        env_var="PAGERDUTY_API_TOKEN",
+        display_name="PagerDuty",
+    )
+)
+
+_SENTRY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="sentry",
+        aliases=("sentry_io", "sentryio", "sentry_io_api", "sentry_io_server_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=(
+                    "auth_token",
+                    "authToken",
+                    "access_token",
+                    "accessToken",
+                    "api_key",
+                    "token",
+                    "value",
+                ),
+            ),
+        ),
+        hint_fields=(
+            "auth_token",
+            "authToken",
+            "access_token",
+            "accessToken",
+            "api_key",
+            "token",
+            "value",
+        ),
+        env_var="SENTRY_AUTH_TOKEN",
+        display_name="Sentry",
+    )
+)
+
+_CLOUDFLARE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="cloudflare",
+        aliases=("cloudflare_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
+        env_var="CLOUDFLARE_API_TOKEN",
+        display_name="Cloudflare",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -200,30 +446,30 @@ def _grafana_config(
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str]:
     base_or_error = _service_base(
-        provider="grafana",
-        provider_aliases=("grafana_api",),
+        provider=_GRAFANA.provider,
+        provider_aliases=_GRAFANA.aliases,
         settings_base_name="grafana_base_url",
         tool_name=tool_name,
-        display_name="Grafana",
+        display_name=_GRAFANA.display_name,
         env_var="GRAFANA_BASE_URL",
         config=config,
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Grafana base URL is required."
     token = _credential_value(
-        provider="grafana",
-        provider_aliases=("grafana_api",),
-        field_names=("api_key", "apiKey", "access_token", "token", "value"),
+        provider=_GRAFANA.provider,
+        provider_aliases=_GRAFANA.aliases,
+        field_names=_GRAFANA.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("grafana_api_token")
     if not token:
         return "", _setup_hint(
-            provider="grafana",
-            field_names=("api_key", "access_token", "token", "value"),
+            provider=_GRAFANA.provider,
+            field_names=_GRAFANA.hint_fields,
             tool_name=tool_name,
-            env_var="GRAFANA_API_TOKEN",
-            display_name="Grafana",
+            env_var=_GRAFANA.env_var,
+            display_name=_GRAFANA.display_name,
         )
     return _rooted_api_base(base_or_error, _GRAFANA_API_SUFFIX), {
         "Accept": "application/json",
@@ -237,27 +483,27 @@ def _metabase_config(
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str]:
     base_or_error = _service_base(
-        provider="metabase",
-        provider_aliases=("metabase_api",),
+        provider=_METABASE.provider,
+        provider_aliases=_METABASE.aliases,
         settings_base_name="metabase_base_url",
         tool_name=tool_name,
-        display_name="Metabase",
+        display_name=_METABASE.display_name,
         env_var="METABASE_BASE_URL",
         config=config,
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Metabase base URL is required."
     session_token = _credential_value(
-        provider="metabase",
-        provider_aliases=("metabase_api",),
-        field_names=("session_token", "sessionToken"),
+        provider=_METABASE.provider,
+        provider_aliases=_METABASE.aliases,
+        field_names=_METABASE.group("session_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("metabase_session_token")
     api_key = _credential_value(
-        provider="metabase",
-        provider_aliases=("metabase_api",),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_METABASE.provider,
+        provider_aliases=_METABASE.aliases,
+        field_names=_METABASE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("metabase_api_key")
@@ -267,16 +513,16 @@ def _metabase_config(
         return base_or_error, {"Accept": "application/json", "x-api-key": api_key}
 
     username = _credential_value(
-        provider="metabase",
-        provider_aliases=("metabase_api",),
-        field_names=("username", "email"),
+        provider=_METABASE.provider,
+        provider_aliases=_METABASE.aliases,
+        field_names=_METABASE.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("metabase_username")
     password = _credential_value(
-        provider="metabase",
-        provider_aliases=("metabase_api",),
-        field_names=("password",),
+        provider=_METABASE.provider,
+        provider_aliases=_METABASE.aliases,
+        field_names=_METABASE.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("metabase_password")
@@ -292,11 +538,11 @@ def _metabase_config(
             return base_or_error, {"Accept": "application/json", "X-Metabase-Session": token}
 
     return "", _setup_hint(
-        provider="metabase",
-        field_names=("session_token", "api_key", "username", "password"),
+        provider=_METABASE.provider,
+        field_names=_METABASE.hint_fields,
         tool_name=tool_name,
-        env_var="METABASE_SESSION_TOKEN or METABASE_API_KEY",
-        display_name="Metabase",
+        env_var=_METABASE.env_var,
+        display_name=_METABASE.display_name,
     )
 
 
@@ -305,49 +551,49 @@ def _elasticsearch_config(
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, Any, bool]:
     base_or_error = _service_base(
-        provider="elasticsearch",
-        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
+        provider=_ELASTICSEARCH.provider,
+        provider_aliases=_ELASTICSEARCH.aliases,
         settings_base_name="elasticsearch_base_url",
         tool_name=tool_name,
-        display_name="Elasticsearch",
+        display_name=_ELASTICSEARCH.display_name,
         env_var="ELASTICSEARCH_BASE_URL",
         config=config,
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Elasticsearch base URL is required.", None, True
     api_key = _credential_value(
-        provider="elasticsearch",
-        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
-        field_names=("api_key", "apiKey", "encoded_api_key", "token", "value"),
+        provider=_ELASTICSEARCH.provider,
+        provider_aliases=_ELASTICSEARCH.aliases,
+        field_names=_ELASTICSEARCH.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("elasticsearch_api_key")
     bearer_token = _credential_value(
-        provider="elasticsearch",
-        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
-        field_names=("access_token", "bearer_token", "bearerToken"),
+        provider=_ELASTICSEARCH.provider,
+        provider_aliases=_ELASTICSEARCH.aliases,
+        field_names=_ELASTICSEARCH.group("bearer_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("elasticsearch_bearer_token")
     username = _credential_value(
-        provider="elasticsearch",
-        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
-        field_names=("username", "user"),
+        provider=_ELASTICSEARCH.provider,
+        provider_aliases=_ELASTICSEARCH.aliases,
+        field_names=_ELASTICSEARCH.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("elasticsearch_username")
     password = _credential_value(
-        provider="elasticsearch",
-        provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
-        field_names=("password",),
+        provider=_ELASTICSEARCH.provider,
+        provider_aliases=_ELASTICSEARCH.aliases,
+        field_names=_ELASTICSEARCH.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("elasticsearch_password")
     verify = not _truthy(
         _credential_value(
-            provider="elasticsearch",
-            provider_aliases=("elastic", "elastic_cloud", "elasticsearch_api"),
-            field_names=("ignore_ssl_issues", "ignoreSSLIssues", "allow_insecure"),
+            provider=_ELASTICSEARCH.provider,
+            provider_aliases=_ELASTICSEARCH.aliases,
+            field_names=_ELASTICSEARCH.group("ignore_ssl"),
             tool_name=tool_name,
             config=config,
         )
@@ -363,11 +609,11 @@ def _elasticsearch_config(
         auth = (username, password)
     else:
         return "", _setup_hint(
-            provider="elasticsearch",
-            field_names=("api_key", "username", "password"),
+            provider=_ELASTICSEARCH.provider,
+            field_names=_ELASTICSEARCH.hint_fields,
             tool_name=tool_name,
-            env_var="ELASTICSEARCH_API_KEY or ELASTICSEARCH_USERNAME + ELASTICSEARCH_PASSWORD",
-            display_name="Elasticsearch",
+            env_var=_ELASTICSEARCH.env_var,
+            display_name=_ELASTICSEARCH.display_name,
         ), None, verify
     return base_or_error, headers, auth, verify
 
@@ -377,28 +623,28 @@ def _splunk_config(
     config: Optional[RunnableConfig],
 ) -> tuple[str, dict[str, str] | str, bool]:
     base_or_error = _service_base(
-        provider="splunk",
-        provider_aliases=("splunk_api",),
+        provider=_SPLUNK.provider,
+        provider_aliases=_SPLUNK.aliases,
         settings_base_name="splunk_base_url",
         tool_name=tool_name,
-        display_name="Splunk",
+        display_name=_SPLUNK.display_name,
         env_var="SPLUNK_BASE_URL",
         config=config,
     )
     if base_or_error is None or base_or_error.startswith("[Error]:"):
         return "", base_or_error or "[Error]: Splunk base URL is required.", True
     token = _credential_value(
-        provider="splunk",
-        provider_aliases=("splunk_api",),
-        field_names=("auth_token", "authToken", "access_token", "token", "value"),
+        provider=_SPLUNK.provider,
+        provider_aliases=_SPLUNK.aliases,
+        field_names=_SPLUNK.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("splunk_auth_token")
     verify = not _truthy(
         _credential_value(
-            provider="splunk",
-            provider_aliases=("splunk_api",),
-            field_names=("allow_unauthorized_certs", "allowUnauthorizedCerts", "allow_insecure"),
+            provider=_SPLUNK.provider,
+            provider_aliases=_SPLUNK.aliases,
+            field_names=_SPLUNK.group("allow_insecure"),
             tool_name=tool_name,
             config=config,
         )
@@ -406,11 +652,11 @@ def _splunk_config(
     )
     if not token:
         return "", _setup_hint(
-            provider="splunk",
-            field_names=("auth_token", "access_token", "token", "value"),
+            provider=_SPLUNK.provider,
+            field_names=_SPLUNK.hint_fields,
             tool_name=tool_name,
-            env_var="SPLUNK_AUTH_TOKEN",
-            display_name="Splunk",
+            env_var=_SPLUNK.env_var,
+            display_name=_SPLUNK.display_name,
         ), verify
     return base_or_error, {
         "Accept": "application/json",
@@ -422,9 +668,9 @@ def _splunk_config(
 def _rundeck_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="rundeck",
-            provider_aliases=("rundeck_api",),
-            field_names=("base_url", "url"),
+            provider=_RUNDECK.provider,
+            provider_aliases=_RUNDECK.aliases,
+            field_names=_RUNDECK.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -436,19 +682,19 @@ def _rundeck_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
             "or set RUNDECK_BASE_URL."
         )
     token = _credential_value(
-        provider="rundeck",
-        provider_aliases=("rundeck_api",),
-        field_names=("token", "api_token", "apiToken", "access_token", "value"),
+        provider=_RUNDECK.provider,
+        provider_aliases=_RUNDECK.aliases,
+        field_names=_RUNDECK.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("rundeck_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="rundeck",
-            field_names=("token", "api_token", "value"),
+            provider=_RUNDECK.provider,
+            field_names=_RUNDECK.hint_fields,
             tool_name=tool_name,
-            env_var="RUNDECK_TOKEN",
-            display_name="Rundeck",
+            env_var=_RUNDECK.env_var,
+            display_name=_RUNDECK.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -488,15 +734,15 @@ def _rundeck_arg_string(arguments_json: str) -> str:
 
 def _netlify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     return _bearer_config(
-        provider="netlify",
-        provider_aliases=("netlify_api",),
-        token_fields=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
-        env_token="NETLIFY_ACCESS_TOKEN",
+        provider=_NETLIFY.provider,
+        provider_aliases=_NETLIFY.aliases,
+        token_fields=_NETLIFY.group("token"),
+        env_token=_NETLIFY.env_var,
         settings_token_name="netlify_access_token",
         settings_base_name="netlify_base_url",
         default_base=_NETLIFY_BASE_URL,
         tool_name=tool_name,
-        display_name="Netlify",
+        display_name=_NETLIFY.display_name,
         config=config,
     )
 
@@ -504,9 +750,9 @@ def _netlify_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _uptimerobot_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str | dict[str, str]]:
     base = (
         _credential_value(
-            provider="uptimerobot",
-            provider_aliases=("uptime_robot", "uptimerobot_api", "uptime_robot_api"),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_UPTIMEROBOT.provider,
+            provider_aliases=_UPTIMEROBOT.aliases,
+            field_names=_UPTIMEROBOT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -514,19 +760,19 @@ def _uptimerobot_config(tool_name: str, config: Optional[RunnableConfig]) -> tup
         or _UPTIMEROBOT_BASE_URL
     )
     api_key = _credential_value(
-        provider="uptimerobot",
-        provider_aliases=("uptime_robot", "uptimerobot_api", "uptime_robot_api"),
-        field_names=("api_key", "apiKey", "key", "token", "value"),
+        provider=_UPTIMEROBOT.provider,
+        provider_aliases=_UPTIMEROBOT.aliases,
+        field_names=_UPTIMEROBOT.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("uptimerobot_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="uptimerobot",
-            field_names=("api_key", "token", "value"),
+            provider=_UPTIMEROBOT.provider,
+            field_names=_UPTIMEROBOT.hint_fields,
             tool_name=tool_name,
-            env_var="UPTIMEROBOT_API_KEY",
-            display_name="UptimeRobot",
+            env_var=_UPTIMEROBOT.env_var,
+            display_name=_UPTIMEROBOT.display_name,
         )
     return _base_url(base), api_key
 
@@ -560,28 +806,31 @@ def _uptimerobot_request(
 def _pagerduty_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="pagerduty",
-            provider_aliases=("pagerduty_api", "pagerduty_oauth2_api"),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_PAGERDUTY.provider,
+            provider_aliases=_PAGERDUTY.aliases,
+            field_names=_PAGERDUTY.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("pagerduty_base_url")
         or _PAGERDUTY_BASE_URL
     )
+    # The access-token and api-token lookups scope to different alias subsets
+    # per branch, so those provider_aliases stay inline while the field tuples
+    # come from the spec.
     access_token = _credential_value(
-        provider="pagerduty",
+        provider=_PAGERDUTY.provider,
         provider_aliases=("pagerduty_oauth2_api",),
-        field_names=("access_token", "accessToken", "bearer_token", "bearerToken"),
+        field_names=_PAGERDUTY.group("access_token"),
         tool_name=tool_name,
         config=config,
     )
     api_token = (
         access_token
         or _credential_value(
-            provider="pagerduty",
+            provider=_PAGERDUTY.provider,
             provider_aliases=("pagerduty_api",),
-            field_names=("api_token", "apiToken", "api_key", "apiKey", "token", "value"),
+            field_names=_PAGERDUTY.group("api_token"),
             tool_name=tool_name,
             config=config,
         )
@@ -589,11 +838,11 @@ def _pagerduty_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
     )
     if not api_token:
         return _base_url(base), _setup_hint(
-            provider="pagerduty",
-            field_names=("api_token", "access_token", "token", "value"),
+            provider=_PAGERDUTY.provider,
+            field_names=_PAGERDUTY.hint_fields,
             tool_name=tool_name,
-            env_var="PAGERDUTY_API_TOKEN",
-            display_name="PagerDuty",
+            env_var=_PAGERDUTY.env_var,
+            display_name=_PAGERDUTY.display_name,
         )
     auth_value = f"Bearer {access_token}" if access_token else f"Token token={api_token}"
     return _base_url(base), {
@@ -613,9 +862,9 @@ def _pagerduty_from_email(
     return (
         explicit.strip()
         or _credential_value(
-            provider="pagerduty",
+            provider=_PAGERDUTY.provider,
             provider_aliases=("pagerduty_api",),
-            field_names=("from_email", "fromEmail", "email"),
+            field_names=_PAGERDUTY.group("from_email"),
             tool_name=tool_name,
             config=config,
         )
@@ -625,30 +874,30 @@ def _pagerduty_from_email(
 
 def _sentry_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     return _bearer_config(
-        provider="sentry",
-        provider_aliases=("sentry_io", "sentryio", "sentry_io_api", "sentry_io_server_api"),
-        token_fields=("auth_token", "authToken", "access_token", "accessToken", "api_key", "token", "value"),
-        env_token="SENTRY_AUTH_TOKEN",
+        provider=_SENTRY.provider,
+        provider_aliases=_SENTRY.aliases,
+        token_fields=_SENTRY.group("token"),
+        env_token=_SENTRY.env_var,
         settings_token_name="sentry_auth_token",
         settings_base_name="sentry_base_url",
         default_base=_SENTRY_BASE_URL,
         tool_name=tool_name,
-        display_name="Sentry",
+        display_name=_SENTRY.display_name,
         config=config,
     )
 
 
 def _cloudflare_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     return _bearer_config(
-        provider="cloudflare",
-        provider_aliases=("cloudflare_api",),
-        token_fields=("api_token", "apiToken", "access_token", "accessToken", "token", "value"),
-        env_token="CLOUDFLARE_API_TOKEN",
+        provider=_CLOUDFLARE.provider,
+        provider_aliases=_CLOUDFLARE.aliases,
+        token_fields=_CLOUDFLARE.group("token"),
+        env_token=_CLOUDFLARE.env_var,
         settings_token_name="cloudflare_api_token",
         settings_base_name="cloudflare_base_url",
         default_base=_CLOUDFLARE_BASE_URL,
         tool_name=tool_name,
-        display_name="Cloudflare",
+        display_name=_CLOUDFLARE.display_name,
         config=config,
     )
 

@@ -10,6 +10,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -31,6 +36,116 @@ _SALESFORCE_API_VERSION = "v59.0"
 _ZOHO_CRM_BASE_URL = "https://www.zohoapis.com/crm/v2"
 _FRESHWORKS_CRM_BASE_URL = "https://{domain}.myfreshworks.com/crm/sales/api"
 _SALESMATE_BASE_URL = "https://apis.salesmate.io"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_PIPEDRIVE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="pipedrive",
+        aliases=("pipedrive_api", "pipedrive_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="api_token", names=("api_token", "apiToken", "token", "value")
+            ),
+            CredentialFieldGroup(
+                role="access_token", names=("access_token", "bearer_token")
+            ),
+        ),
+        hint_fields=("api_token", "access_token", "token", "value"),
+        env_var="PIPEDRIVE_API_TOKEN or PIPEDRIVE_ACCESS_TOKEN",
+        display_name="Pipedrive",
+    )
+)
+
+_SALESFORCE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="salesforce",
+        aliases=("salesforce_oauth2", "salesforce_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="instance_url",
+                names=("instance_url", "instanceUrl", "base_url", "url"),
+            ),
+            CredentialFieldGroup(
+                role="access_token",
+                names=("access_token", "accessToken", "bearer_token", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="api_version", names=("api_version", "apiVersion"), required=False
+            ),
+        ),
+        hint_fields=("access_token", "instance_url"),
+        env_var="SALESFORCE_ACCESS_TOKEN",
+        display_name="Salesforce",
+    )
+)
+
+_ZOHO_CRM = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="zoho_crm",
+        aliases=("zoho", "zoho_oauth2", "zoho_crm_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "api_domain", "apiDomain", "url"),
+                required=False,
+            ),
+            CredentialFieldGroup(
+                role="access_token",
+                names=("access_token", "accessToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="ZOHO_CRM_ACCESS_TOKEN",
+        display_name="Zoho CRM",
+    )
+)
+
+_FRESHWORKS_CRM = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="freshworks_crm",
+        aliases=("freshworks", "freshsales", "freshworks_crm_api"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url"), required=False
+            ),
+            CredentialFieldGroup(role="domain", names=("domain", "subdomain")),
+            CredentialFieldGroup(
+                role="api_key", names=("api_key", "apiKey", "token", "value")
+            ),
+        ),
+        hint_fields=("api_key", "domain"),
+        env_var="FRESHWORKS_CRM_API_KEY",
+        display_name="Freshworks CRM",
+    )
+)
+
+_SALESMATE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="salesmate",
+        aliases=("salesmate_api",),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url_base", "api_url"), required=False
+            ),
+            CredentialFieldGroup(
+                role="link_name", names=("link_name", "linkName", "url", "domain")
+            ),
+            CredentialFieldGroup(
+                role="session_token",
+                names=("session_token", "sessionToken", "token", "value"),
+            ),
+        ),
+        hint_fields=("session_token", "link_name"),
+        env_var="SALESMATE_SESSION_TOKEN",
+        display_name="Salesmate",
+    )
+)
 
 _V2_RESOURCES = {
     "activities": "activities",
@@ -217,9 +332,9 @@ def _pipedrive_search_resource(resource: str) -> str:
 def _pipedrive_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, dict[str, str], dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="pipedrive",
-            provider_aliases=("pipedrive_api", "pipedrive_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_PIPEDRIVE.provider,
+            provider_aliases=_PIPEDRIVE.aliases,
+            field_names=_PIPEDRIVE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -227,16 +342,16 @@ def _pipedrive_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         or _PIPEDRIVE_V2_BASE_URL
     )
     api_token = _credential_value(
-        provider="pipedrive",
-        provider_aliases=("pipedrive_api", "pipedrive_oauth2"),
-        field_names=("api_token", "apiToken", "token", "value"),
+        provider=_PIPEDRIVE.provider,
+        provider_aliases=_PIPEDRIVE.aliases,
+        field_names=_PIPEDRIVE.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("pipedrive_api_token")
     access_token = _credential_value(
-        provider="pipedrive",
-        provider_aliases=("pipedrive_api", "pipedrive_oauth2"),
-        field_names=("access_token", "bearer_token"),
+        provider=_PIPEDRIVE.provider,
+        provider_aliases=_PIPEDRIVE.aliases,
+        field_names=_PIPEDRIVE.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("pipedrive_access_token")
@@ -252,11 +367,11 @@ def _pipedrive_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         auth_params["api_token"] = api_token
     else:
         return _base_url(base), _PIPEDRIVE_V1_BASE_URL, headers, _setup_hint(
-            provider="pipedrive",
-            field_names=("api_token", "access_token", "token", "value"),
+            provider=_PIPEDRIVE.provider,
+            field_names=_PIPEDRIVE.hint_fields,
             tool_name=tool_name,
-            env_var="PIPEDRIVE_API_TOKEN or PIPEDRIVE_ACCESS_TOKEN",
-            display_name="Pipedrive",
+            env_var=_PIPEDRIVE.env_var,
+            display_name=_PIPEDRIVE.display_name,
         )
 
     base_v2 = _base_url(base)
@@ -273,9 +388,9 @@ def _pipedrive_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 def _salesforce_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     instance_url = (
         _credential_value(
-            provider="salesforce",
-            provider_aliases=("salesforce_oauth2", "salesforce_api"),
-            field_names=("instance_url", "instanceUrl", "base_url", "url"),
+            provider=_SALESFORCE.provider,
+            provider_aliases=_SALESFORCE.aliases,
+            field_names=_SALESFORCE.group("instance_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -283,9 +398,9 @@ def _salesforce_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or _settings_value("salesforce_base_url")
     )
     token = _credential_value(
-        provider="salesforce",
-        provider_aliases=("salesforce_oauth2", "salesforce_api"),
-        field_names=("access_token", "accessToken", "bearer_token", "token", "value"),
+        provider=_SALESFORCE.provider,
+        provider_aliases=_SALESFORCE.aliases,
+        field_names=_SALESFORCE.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("salesforce_access_token")
@@ -296,17 +411,17 @@ def _salesforce_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         )
     if not token:
         return _base_url(instance_url), _setup_hint(
-            provider="salesforce",
-            field_names=("access_token", "instance_url"),
+            provider=_SALESFORCE.provider,
+            field_names=_SALESFORCE.hint_fields,
             tool_name=tool_name,
-            env_var="SALESFORCE_ACCESS_TOKEN",
-            display_name="Salesforce",
+            env_var=_SALESFORCE.env_var,
+            display_name=_SALESFORCE.display_name,
         )
     api_version = (
         _credential_value(
-            provider="salesforce",
-            provider_aliases=("salesforce_oauth2", "salesforce_api"),
-            field_names=("api_version", "apiVersion"),
+            provider=_SALESFORCE.provider,
+            provider_aliases=_SALESFORCE.aliases,
+            field_names=_SALESFORCE.group("api_version"),
             tool_name=tool_name,
             config=config,
         )
@@ -327,9 +442,9 @@ def _salesforce_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 def _zoho_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="zoho_crm",
-            provider_aliases=("zoho", "zoho_oauth2", "zoho_crm_oauth2"),
-            field_names=("base_url", "api_domain", "apiDomain", "url"),
+            provider=_ZOHO_CRM.provider,
+            provider_aliases=_ZOHO_CRM.aliases,
+            field_names=_ZOHO_CRM.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -338,9 +453,9 @@ def _zoho_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         or _ZOHO_CRM_BASE_URL
     )
     token = _credential_value(
-        provider="zoho_crm",
-        provider_aliases=("zoho", "zoho_oauth2", "zoho_crm_oauth2"),
-        field_names=("access_token", "accessToken", "token", "value"),
+        provider=_ZOHO_CRM.provider,
+        provider_aliases=_ZOHO_CRM.aliases,
+        field_names=_ZOHO_CRM.group("access_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zoho_crm_access_token")
@@ -349,11 +464,11 @@ def _zoho_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
         base = f"{base}/crm/v2"
     if not token:
         return base, _setup_hint(
-            provider="zoho_crm",
-            field_names=("access_token", "token", "value"),
+            provider=_ZOHO_CRM.provider,
+            field_names=_ZOHO_CRM.hint_fields,
             tool_name=tool_name,
-            env_var="ZOHO_CRM_ACCESS_TOKEN",
-            display_name="Zoho CRM",
+            env_var=_ZOHO_CRM.env_var,
+            display_name=_ZOHO_CRM.display_name,
         )
     return base, {
         "Accept": "application/json",
@@ -366,9 +481,9 @@ def _zoho_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str,
 def _freshworks_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="freshworks_crm",
-            provider_aliases=("freshworks", "freshsales", "freshworks_crm_api"),
-            field_names=("base_url", "url"),
+            provider=_FRESHWORKS_CRM.provider,
+            provider_aliases=_FRESHWORKS_CRM.aliases,
+            field_names=_FRESHWORKS_CRM.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -376,18 +491,18 @@ def _freshworks_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
     )
     domain = (
         _credential_value(
-            provider="freshworks_crm",
-            provider_aliases=("freshworks", "freshsales", "freshworks_crm_api"),
-            field_names=("domain", "subdomain"),
+            provider=_FRESHWORKS_CRM.provider,
+            provider_aliases=_FRESHWORKS_CRM.aliases,
+            field_names=_FRESHWORKS_CRM.group("domain"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("freshworks_crm_domain")
     )
     api_key = _credential_value(
-        provider="freshworks_crm",
-        provider_aliases=("freshworks", "freshsales", "freshworks_crm_api"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_FRESHWORKS_CRM.provider,
+        provider_aliases=_FRESHWORKS_CRM.aliases,
+        field_names=_FRESHWORKS_CRM.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("freshworks_crm_api_key")
@@ -400,11 +515,11 @@ def _freshworks_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         base = _FRESHWORKS_CRM_BASE_URL.format(domain=domain.strip().replace(".myfreshworks.com", ""))
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="freshworks_crm",
-            field_names=("api_key", "domain"),
+            provider=_FRESHWORKS_CRM.provider,
+            field_names=_FRESHWORKS_CRM.hint_fields,
             tool_name=tool_name,
-            env_var="FRESHWORKS_CRM_API_KEY",
-            display_name="Freshworks CRM",
+            env_var=_FRESHWORKS_CRM.env_var,
+            display_name=_FRESHWORKS_CRM.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -417,9 +532,9 @@ def _freshworks_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 def _salesmate_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="salesmate",
-            provider_aliases=("salesmate_api",),
-            field_names=("base_url", "url_base", "api_url"),
+            provider=_SALESMATE.provider,
+            provider_aliases=_SALESMATE.aliases,
+            field_names=_SALESMATE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -428,18 +543,18 @@ def _salesmate_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
     )
     link_name = (
         _credential_value(
-            provider="salesmate",
-            provider_aliases=("salesmate_api",),
-            field_names=("link_name", "linkName", "url", "domain"),
+            provider=_SALESMATE.provider,
+            provider_aliases=_SALESMATE.aliases,
+            field_names=_SALESMATE.group("link_name"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("salesmate_link_name")
     )
     token = _credential_value(
-        provider="salesmate",
-        provider_aliases=("salesmate_api",),
-        field_names=("session_token", "sessionToken", "token", "value"),
+        provider=_SALESMATE.provider,
+        provider_aliases=_SALESMATE.aliases,
+        field_names=_SALESMATE.group("session_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("salesmate_session_token")
@@ -450,11 +565,11 @@ def _salesmate_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         )
     if not token:
         return _base_url(base), _setup_hint(
-            provider="salesmate",
-            field_names=("session_token", "link_name"),
+            provider=_SALESMATE.provider,
+            field_names=_SALESMATE.hint_fields,
             tool_name=tool_name,
-            env_var="SALESMATE_SESSION_TOKEN",
-            display_name="Salesmate",
+            env_var=_SALESMATE.env_var,
+            display_name=_SALESMATE.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",

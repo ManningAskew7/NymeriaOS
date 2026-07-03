@@ -169,7 +169,7 @@ from .tool_search import tool_manage, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
 from .workflow_info import workflow_info, WORKFLOW_INFO_TOOLS
-from .auth_manager import auth_inspect, auth_cleanup, auth_bindings, AUTH_MANAGER_TOOLS
+from .auth_manager import auth_inspect, auth_cleanup, auth_bindings, auth_test, AUTH_MANAGER_TOOLS
 from .credential_prompt import request_credential, REQUEST_CREDENTIAL_TOOLS
 from .skill_config import (
     skill_edit,
@@ -2872,6 +2872,7 @@ __all__ = [
     "auth_inspect",
     "auth_cleanup",
     "auth_bindings",
+    "auth_test",
     "AUTH_MANAGER_TOOLS",
     "request_credential",
     "REQUEST_CREDENTIAL_TOOLS",

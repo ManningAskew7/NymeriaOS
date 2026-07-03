@@ -11,6 +11,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     base_url as _base_url,
     clamp_limit,
@@ -30,6 +35,141 @@ _HELPSCOUT_BASE_URL = "https://api.helpscout.net/v2"
 _INTERCOM_BASE_URL = "https://api.intercom.io"
 _INTERCOM_VERSION = "2.11"
 _DRIFT_BASE_URL = "https://driftapi.com"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+#
+# The "freshworks" alias is shared by freshdesk, freshservice, and
+# freshworks_crm (sales_crm module); the registry tolerates the cross-provider
+# alias overlap (canonical owner wins the name index).
+_FRESHDESK = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="freshdesk",
+        aliases=("freshdesk_api", "freshworks"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="domain", names=("domain", "subdomain")),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "domain"),
+        env_var="FRESHDESK_API_KEY",
+        display_name="Freshdesk",
+    )
+)
+
+_FRESHSERVICE = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="freshservice",
+        aliases=("freshservice_api", "freshworks"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="domain", names=("domain", "subdomain")),
+            CredentialFieldGroup(role="api_key", names=("api_key", "apiKey", "token", "value")),
+        ),
+        hint_fields=("api_key", "domain"),
+        env_var="FRESHSERVICE_API_KEY",
+        display_name="Freshservice",
+    )
+)
+
+_SERVICENOW = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="servicenow",
+        aliases=("service_now", "service_now_basic", "service_now_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url",
+                names=("base_url", "url", "instance_url", "instanceUrl"),
+                required=False,
+            ),
+            CredentialFieldGroup(role="instance", names=("instance", "subdomain"), required=False),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "bearer_token", "token", "value"),
+            ),
+            CredentialFieldGroup(role="username", names=("username", "user"), required=False),
+            CredentialFieldGroup(
+                role="password", names=("password", "api_password", "apiPassword"), required=False
+            ),
+        ),
+        hint_fields=("access_token", "base_url"),
+        env_var="SERVICENOW_ACCESS_TOKEN or SERVICENOW_USERNAME + SERVICENOW_PASSWORD",
+        display_name="ServiceNow",
+    )
+)
+
+_ZAMMAD = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="zammad",
+        aliases=("zammad_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url")),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "api_token", "apiToken", "token", "value"),
+            ),
+            CredentialFieldGroup(role="username", names=("username", "email"), required=False),
+            CredentialFieldGroup(
+                role="password", names=("password", "api_password", "apiPassword"), required=False
+            ),
+        ),
+        hint_fields=("token", "base_url"),
+        env_var="ZAMMAD_TOKEN or ZAMMAD_USERNAME + ZAMMAD_PASSWORD",
+        display_name="Zammad",
+    )
+)
+
+_HELPSCOUT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="helpscout",
+        aliases=("help_scout", "helpscout_oauth2"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(role="token", names=("access_token", "token", "value")),
+        ),
+        hint_fields=("access_token", "token", "value"),
+        env_var="HELPSCOUT_ACCESS_TOKEN",
+        display_name="Help Scout",
+    )
+)
+
+_INTERCOM = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="intercom",
+        aliases=("intercom_api", "intercom_oauth2"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=("base_url", "url"), required=False),
+            CredentialFieldGroup(
+                role="version", names=("intercom_version", "version"), required=False
+            ),
+            CredentialFieldGroup(role="token", names=("access_token", "api_key", "token", "value")),
+        ),
+        hint_fields=("access_token", "api_key", "token", "value"),
+        env_var="INTERCOM_ACCESS_TOKEN",
+        display_name="Intercom",
+    )
+)
+
+_DRIFT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="drift",
+        aliases=("drift_api", "drift_oauth2"),
+        groups=(
+            CredentialFieldGroup(
+                role="base_url", names=("base_url", "url", "api_url", "apiUrl"), required=False
+            ),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "accessToken", "api_key", "token", "value"),
+        env_var="DRIFT_ACCESS_TOKEN",
+        display_name="Drift",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -91,9 +231,9 @@ def _request_json(
 def _freshdesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="freshdesk",
-            provider_aliases=("freshdesk_api", "freshworks"),
-            field_names=("base_url", "url"),
+            provider=_FRESHDESK.provider,
+            provider_aliases=_FRESHDESK.aliases,
+            field_names=_FRESHDESK.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -101,18 +241,18 @@ def _freshdesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
     )
     domain = (
         _credential_value(
-            provider="freshdesk",
-            provider_aliases=("freshdesk_api", "freshworks"),
-            field_names=("domain", "subdomain"),
+            provider=_FRESHDESK.provider,
+            provider_aliases=_FRESHDESK.aliases,
+            field_names=_FRESHDESK.group("domain"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("freshdesk_domain")
     )
     api_key = _credential_value(
-        provider="freshdesk",
-        provider_aliases=("freshdesk_api", "freshworks"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_FRESHDESK.provider,
+        provider_aliases=_FRESHDESK.aliases,
+        field_names=_FRESHDESK.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("freshdesk_api_key")
@@ -126,11 +266,11 @@ def _freshdesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         )
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="freshdesk",
-            field_names=("api_key", "domain"),
+            provider=_FRESHDESK.provider,
+            field_names=_FRESHDESK.hint_fields,
             tool_name=tool_name,
-            env_var="FRESHDESK_API_KEY",
-            display_name="Freshdesk",
+            env_var=_FRESHDESK.env_var,
+            display_name=_FRESHDESK.display_name,
         )
     auth = base64.b64encode(f"{api_key}:X".encode()).decode()
     return _base_url(base), {
@@ -144,9 +284,9 @@ def _freshdesk_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 def _freshservice_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="freshservice",
-            provider_aliases=("freshservice_api", "freshworks"),
-            field_names=("base_url", "url"),
+            provider=_FRESHSERVICE.provider,
+            provider_aliases=_FRESHSERVICE.aliases,
+            field_names=_FRESHSERVICE.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -154,18 +294,18 @@ def _freshservice_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
     )
     domain = (
         _credential_value(
-            provider="freshservice",
-            provider_aliases=("freshservice_api", "freshworks"),
-            field_names=("domain", "subdomain"),
+            provider=_FRESHSERVICE.provider,
+            provider_aliases=_FRESHSERVICE.aliases,
+            field_names=_FRESHSERVICE.group("domain"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("freshservice_domain")
     )
     api_key = _credential_value(
-        provider="freshservice",
-        provider_aliases=("freshservice_api", "freshworks"),
-        field_names=("api_key", "apiKey", "token", "value"),
+        provider=_FRESHSERVICE.provider,
+        provider_aliases=_FRESHSERVICE.aliases,
+        field_names=_FRESHSERVICE.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("freshservice_api_key")
@@ -179,11 +319,11 @@ def _freshservice_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
         )
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="freshservice",
-            field_names=("api_key", "domain"),
+            provider=_FRESHSERVICE.provider,
+            field_names=_FRESHSERVICE.hint_fields,
             tool_name=tool_name,
-            env_var="FRESHSERVICE_API_KEY",
-            display_name="Freshservice",
+            env_var=_FRESHSERVICE.env_var,
+            display_name=_FRESHSERVICE.display_name,
         )
     auth = base64.b64encode(f"{api_key}:X".encode()).decode()
     return _base_url(base), {
@@ -197,9 +337,9 @@ def _freshservice_config(tool_name: str, config: Optional[RunnableConfig]) -> tu
 def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="servicenow",
-            provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
-            field_names=("base_url", "url", "instance_url", "instanceUrl"),
+            provider=_SERVICENOW.provider,
+            provider_aliases=_SERVICENOW.aliases,
+            field_names=_SERVICENOW.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -207,32 +347,32 @@ def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
     )
     instance = (
         _credential_value(
-            provider="servicenow",
-            provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
-            field_names=("instance", "subdomain"),
+            provider=_SERVICENOW.provider,
+            provider_aliases=_SERVICENOW.aliases,
+            field_names=_SERVICENOW.group("instance"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("servicenow_instance")
     )
     token = _credential_value(
-        provider="servicenow",
-        provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
-        field_names=("access_token", "accessToken", "bearer_token", "token", "value"),
+        provider=_SERVICENOW.provider,
+        provider_aliases=_SERVICENOW.aliases,
+        field_names=_SERVICENOW.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("servicenow_access_token")
     username = _credential_value(
-        provider="servicenow",
-        provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
-        field_names=("username", "user"),
+        provider=_SERVICENOW.provider,
+        provider_aliases=_SERVICENOW.aliases,
+        field_names=_SERVICENOW.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("servicenow_username")
     password = _credential_value(
-        provider="servicenow",
-        provider_aliases=("service_now", "service_now_basic", "service_now_oauth2"),
-        field_names=("password", "api_password", "apiPassword"),
+        provider=_SERVICENOW.provider,
+        provider_aliases=_SERVICENOW.aliases,
+        field_names=_SERVICENOW.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("servicenow_password")
@@ -260,43 +400,43 @@ def _servicenow_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         headers["Authorization"] = f"Basic {auth}"
         return base, headers
     return base, _setup_hint(
-        provider="servicenow",
-        field_names=("access_token", "base_url"),
+        provider=_SERVICENOW.provider,
+        field_names=_SERVICENOW.hint_fields,
         tool_name=tool_name,
-        env_var="SERVICENOW_ACCESS_TOKEN or SERVICENOW_USERNAME + SERVICENOW_PASSWORD",
-        display_name="ServiceNow",
+        env_var=_SERVICENOW.env_var,
+        display_name=_SERVICENOW.display_name,
     )
 
 
 def _zammad_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="zammad",
-            provider_aliases=("zammad_api",),
-            field_names=("base_url", "url"),
+            provider=_ZAMMAD.provider,
+            provider_aliases=_ZAMMAD.aliases,
+            field_names=_ZAMMAD.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
         or _settings_value("zammad_base_url")
     )
     token = _credential_value(
-        provider="zammad",
-        provider_aliases=("zammad_api",),
-        field_names=("access_token", "api_token", "apiToken", "token", "value"),
+        provider=_ZAMMAD.provider,
+        provider_aliases=_ZAMMAD.aliases,
+        field_names=_ZAMMAD.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zammad_token")
     username = _credential_value(
-        provider="zammad",
-        provider_aliases=("zammad_api",),
-        field_names=("username", "email"),
+        provider=_ZAMMAD.provider,
+        provider_aliases=_ZAMMAD.aliases,
+        field_names=_ZAMMAD.group("username"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zammad_username")
     password = _credential_value(
-        provider="zammad",
-        provider_aliases=("zammad_api",),
-        field_names=("password", "api_password", "apiPassword"),
+        provider=_ZAMMAD.provider,
+        provider_aliases=_ZAMMAD.aliases,
+        field_names=_ZAMMAD.group("password"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("zammad_password")
@@ -321,11 +461,11 @@ def _zammad_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[st
         headers["Authorization"] = f"Basic {auth}"
         return base, headers
     return base, _setup_hint(
-        provider="zammad",
-        field_names=("token", "base_url"),
+        provider=_ZAMMAD.provider,
+        field_names=_ZAMMAD.hint_fields,
         tool_name=tool_name,
-        env_var="ZAMMAD_TOKEN or ZAMMAD_USERNAME + ZAMMAD_PASSWORD",
-        display_name="Zammad",
+        env_var=_ZAMMAD.env_var,
+        display_name=_ZAMMAD.display_name,
     )
 
 
@@ -356,9 +496,9 @@ def _zammad_collection(resource: str) -> str:
 def _helpscout_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="helpscout",
-            provider_aliases=("help_scout", "helpscout_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_HELPSCOUT.provider,
+            provider_aliases=_HELPSCOUT.aliases,
+            field_names=_HELPSCOUT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -366,19 +506,19 @@ def _helpscout_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
         or _HELPSCOUT_BASE_URL
     )
     token = _credential_value(
-        provider="helpscout",
-        provider_aliases=("help_scout", "helpscout_oauth2"),
-        field_names=("access_token", "token", "value"),
+        provider=_HELPSCOUT.provider,
+        provider_aliases=_HELPSCOUT.aliases,
+        field_names=_HELPSCOUT.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("helpscout_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="helpscout",
-            field_names=("access_token", "token", "value"),
+            provider=_HELPSCOUT.provider,
+            field_names=_HELPSCOUT.hint_fields,
             tool_name=tool_name,
-            env_var="HELPSCOUT_ACCESS_TOKEN",
-            display_name="Help Scout",
+            env_var=_HELPSCOUT.env_var,
+            display_name=_HELPSCOUT.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -391,9 +531,9 @@ def _helpscout_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple
 def _intercom_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="intercom",
-            provider_aliases=("intercom_api", "intercom_oauth2"),
-            field_names=("base_url", "url"),
+            provider=_INTERCOM.provider,
+            provider_aliases=_INTERCOM.aliases,
+            field_names=_INTERCOM.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -402,9 +542,9 @@ def _intercom_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
     )
     version = (
         _credential_value(
-            provider="intercom",
-            provider_aliases=("intercom_api", "intercom_oauth2"),
-            field_names=("intercom_version", "version"),
+            provider=_INTERCOM.provider,
+            provider_aliases=_INTERCOM.aliases,
+            field_names=_INTERCOM.group("version"),
             tool_name=tool_name,
             config=config,
         )
@@ -412,19 +552,19 @@ def _intercom_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _INTERCOM_VERSION
     )
     token = _credential_value(
-        provider="intercom",
-        provider_aliases=("intercom_api", "intercom_oauth2"),
-        field_names=("access_token", "api_key", "token", "value"),
+        provider=_INTERCOM.provider,
+        provider_aliases=_INTERCOM.aliases,
+        field_names=_INTERCOM.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("intercom_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="intercom",
-            field_names=("access_token", "api_key", "token", "value"),
+            provider=_INTERCOM.provider,
+            field_names=_INTERCOM.hint_fields,
             tool_name=tool_name,
-            env_var="INTERCOM_ACCESS_TOKEN",
-            display_name="Intercom",
+            env_var=_INTERCOM.env_var,
+            display_name=_INTERCOM.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -438,9 +578,9 @@ def _intercom_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _drift_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="drift",
-            provider_aliases=("drift_api", "drift_oauth2"),
-            field_names=("base_url", "url", "api_url", "apiUrl"),
+            provider=_DRIFT.provider,
+            provider_aliases=_DRIFT.aliases,
+            field_names=_DRIFT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -448,19 +588,19 @@ def _drift_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str
         or _DRIFT_BASE_URL
     )
     token = _credential_value(
-        provider="drift",
-        provider_aliases=("drift_api", "drift_oauth2"),
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_DRIFT.provider,
+        provider_aliases=_DRIFT.aliases,
+        field_names=_DRIFT.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("drift_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="drift",
-            field_names=("access_token", "accessToken", "api_key", "token", "value"),
+            provider=_DRIFT.provider,
+            field_names=_DRIFT.hint_fields,
             tool_name=tool_name,
-            env_var="DRIFT_ACCESS_TOKEN",
-            display_name="Drift",
+            env_var=_DRIFT.env_var,
+            display_name=_DRIFT.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",

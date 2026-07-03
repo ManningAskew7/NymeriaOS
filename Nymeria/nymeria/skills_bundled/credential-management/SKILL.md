@@ -13,13 +13,14 @@ metadata:
     - auth_inspect
     - auth_cleanup
     - auth_bindings
+    - auth_test
     - request_credential
     tool_ttl: 2h
 ---
 
 # Credential Management
 
-This skill teaches you how to use the four auth tools (`request_credential`, `auth_inspect`, `auth_cleanup`, `auth_bindings`) to manage the user's credentials vault. You never see secret values directly; all operations work through metadata and encrypted storage.
+This skill teaches you how to use the five auth tools (`request_credential`, `auth_inspect`, `auth_cleanup`, `auth_bindings`, `auth_test`) to manage the user's credentials vault. You never see secret values directly; all operations work through metadata and encrypted storage.
 
 ## Quick Decision Tree
 
@@ -32,6 +33,9 @@ Need a credential?
 │
 Need to see credential details/bindings?
 └─ auth_inspect(view="status", credential_id="...")
+│
+A tool failed with an auth error, or you want to verify a saved credential works?
+└─ auth_test(provider="...") or auth_test(tool_name="...") or auth_test(credential_id="...")
 │
 Stale/duplicate credentials cluttering things up?
 └─ auth_cleanup(operation="stale_oauth") or auth_cleanup(operation="disable_matching", ...)
@@ -249,6 +253,38 @@ Use `auth_inspect(view="status", credential_id="...")` to see the `bindings[]` a
 
 ---
 
+## Tool 5: `auth_test` — Verify a Saved Credential Works
+
+Tests a credential without exposing its secret values: a presence check against
+the provider's required fields, plus a live verification probe where the
+provider has one registered. Target it three ways:
+
+```
+auth_test(credential_id="cred_abc123")   # test one specific credential
+auth_test(provider="todoist")            # test the best saved credential for a provider
+auth_test(tool_name="todoist_add_task")  # resolve the tool's provider, then test
+```
+
+Reading the result:
+- `fields_ok: false` with `missing_fields[]`: the record lacks a required field
+  (each entry lists the accepted field names); the user needs to complete it.
+- `probe.code: "verified"` / `"http_error"`: a real probe ran; `probe.ok` is the
+  verdict. A successful probe marks the credential `active`; a failed probe
+  marks it `invalid` (same as the Settings test button).
+- `probe.code: "no_tester"` with `verified: false`: no live probe exists for
+  this provider; only the presence check ran.
+- `probe.code: "admin_only"`: the record is system-owned and the caller is not
+  an admin; only the presence check ran (the credential still resolves
+  automatically for tools).
+- `auth: "not_required"`: the tool needs no provider credential.
+- System-owned credentials never have their status changed by this tool.
+
+Use it after the user saves a credential (confirm it works before relying on
+it), and FIRST when a tool fails with an auth-shaped error (401/403/"No X
+credential found") to tell a bad key apart from a missing one.
+
+---
+
 ## Credential Lifecycle
 
 ```
@@ -268,11 +304,12 @@ request_credential(kind="oauth")
 
 ## Common Patterns
 
-### Pattern: Tool fails, need to request credentials
-1. `auth_inspect(view="list", provider="the_service")` to check for existing credentials
-2. If none found: `request_credential(provider="the_service", kind="api_key", ...)` with helpful `description` and `instructions`
-3. Tell the user the prompt appeared and to let you know when done
-4. When user confirms: retry the original operation
+### Pattern: Tool fails with an auth error
+1. `auth_test(tool_name="the_failing_tool")` to learn which provider it needs and whether a saved credential exists and works
+2. If a credential exists but the probe fails: the key is bad; ask the user to update it (`request_credential` with the same provider)
+3. If none found: `request_credential(provider="the_service", kind="api_key", ...)` with helpful `description` and `instructions`
+4. Tell the user the prompt appeared and to let you know when done
+5. When user confirms: `auth_test(provider="the_service")` to verify, then retry the original operation
 
 ### Pattern: Connect an MCP server
 1. `request_credential(provider="the_api", kind="api_key", bind_target="mcp_server:server-id", ...)`

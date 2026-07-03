@@ -9,6 +9,11 @@ from urllib.parse import quote
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from .credential_registry import (
+    CredentialFieldGroup,
+    ProviderCredentialSpec,
+    register_provider_spec,
+)
 from .service_integration_base import (
     API_KEY_ALIAS_FIELDS,
     BASE_URL_FIELDS,
@@ -30,6 +35,101 @@ _PUSHBULLET_BASE_URL = "https://api.pushbullet.com/v2"
 _PUSHCUT_BASE_URL = "https://api.pushcut.io/v1"
 _PUSHOVER_BASE_URL = "https://api.pushover.net/1"
 _SIGNL4_BASE_URL = "https://connect.signl4.com/webhook"
+
+# Provider credential specs: the single source of truth for these providers'
+# credential shapes (see credential_registry). The config helpers below source
+# their _credential_value / _setup_hint arguments from the specs; field-name
+# tuple ORDER is behaviorally significant and must not be reordered.
+_PUSHBULLET = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="pushbullet",
+        aliases=("pushbullet_oauth2", "pushbullet_oauth2_api"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="token",
+                names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+            ),
+        ),
+        hint_fields=("access_token", "api_key", "token", "value"),
+        env_var="PUSHBULLET_ACCESS_TOKEN",
+        display_name="Pushbullet",
+    )
+)
+
+_PUSHCUT = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="pushcut",
+        aliases=("pushcut_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_FIELDS, required=False),
+            CredentialFieldGroup(role="api_key", names=API_KEY_ALIAS_FIELDS),
+        ),
+        hint_fields=("api_key", "token", "value"),
+        env_var="PUSHCUT_API_KEY",
+        display_name="Pushcut",
+    )
+)
+
+# Gotify uses two token kinds (app vs client) chosen per branch, each a distinct
+# group. The per-branch field_names/env_var stay inline; the spec's hint_fields
+# and env_var carry exactly the app-token variant.
+_GOTIFY = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="gotify",
+        aliases=("gotify_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="app_token",
+                names=("app_token", "appApiToken", "app_api_token", "token", "value"),
+            ),
+            CredentialFieldGroup(
+                role="client_token",
+                names=("client_token", "clientApiToken", "client_api_token", "token", "value"),
+            ),
+        ),
+        hint_fields=("app_token", "appApiToken", "app_api_token", "token", "value"),
+        env_var="GOTIFY_APP_TOKEN",
+        display_name="Gotify",
+    )
+)
+
+_PUSHOVER = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="pushover",
+        aliases=("pushover_api",),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="api_token", names=("api_token", "api_key", "apiKey", "token", "value")
+            ),
+            CredentialFieldGroup(
+                role="user_key", names=("user_key", "userKey", "user", "group_key", "groupKey")
+            ),
+        ),
+        hint_fields=("api_token", "api_key", "token", "value"),
+        env_var="PUSHOVER_API_TOKEN",
+        display_name="Pushover",
+    )
+)
+
+_SIGNL4 = register_provider_spec(
+    ProviderCredentialSpec(
+        provider="signl4",
+        aliases=("signl4_api", "signl4_webhook"),
+        groups=(
+            CredentialFieldGroup(role="base_url", names=BASE_URL_FIELDS, required=False),
+            CredentialFieldGroup(
+                role="team_secret", names=("team_secret", "teamSecret", "secret", "value")
+            ),
+            CredentialFieldGroup(role="webhook_url", names=("webhook_url", "webhookUrl")),
+        ),
+        hint_fields=("team_secret", "teamSecret", "secret", "webhook_url", "value"),
+        env_var="SIGNL4_TEAM_SECRET or SIGNL4_WEBHOOK_URL",
+        display_name="SIGNL4",
+    )
+)
 
 
 def _dump_json(data: Any, *, max_chars: int = _MAX_JSON_CHARS) -> str:
@@ -87,9 +187,9 @@ def _request_json(
 def _pushbullet_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="pushbullet",
-            provider_aliases=("pushbullet_oauth2", "pushbullet_oauth2_api"),
-            field_names=BASE_URL_FIELDS,
+            provider=_PUSHBULLET.provider,
+            provider_aliases=_PUSHBULLET.aliases,
+            field_names=_PUSHBULLET.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -97,19 +197,19 @@ def _pushbullet_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
         or _PUSHBULLET_BASE_URL
     )
     token = _credential_value(
-        provider="pushbullet",
-        provider_aliases=("pushbullet_oauth2", "pushbullet_oauth2_api"),
-        field_names=("access_token", "accessToken", "api_key", "apiKey", "token", "value"),
+        provider=_PUSHBULLET.provider,
+        provider_aliases=_PUSHBULLET.aliases,
+        field_names=_PUSHBULLET.group("token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("pushbullet_access_token")
     if not token:
         return _base_url(base), _setup_hint(
-            provider="pushbullet",
-            field_names=("access_token", "api_key", "token", "value"),
+            provider=_PUSHBULLET.provider,
+            field_names=_PUSHBULLET.hint_fields,
             tool_name=tool_name,
-            env_var="PUSHBULLET_ACCESS_TOKEN",
-            display_name="Pushbullet",
+            env_var=_PUSHBULLET.env_var,
+            display_name=_PUSHBULLET.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -122,9 +222,9 @@ def _pushbullet_config(tool_name: str, config: Optional[RunnableConfig]) -> tupl
 def _pushcut_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="pushcut",
-            provider_aliases=("pushcut_api",),
-            field_names=BASE_URL_FIELDS,
+            provider=_PUSHCUT.provider,
+            provider_aliases=_PUSHCUT.aliases,
+            field_names=_PUSHCUT.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -132,19 +232,19 @@ def _pushcut_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
         or _PUSHCUT_BASE_URL
     )
     api_key = _credential_value(
-        provider="pushcut",
-        provider_aliases=("pushcut_api",),
-        field_names=API_KEY_ALIAS_FIELDS,
+        provider=_PUSHCUT.provider,
+        provider_aliases=_PUSHCUT.aliases,
+        field_names=_PUSHCUT.group("api_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("pushcut_api_key")
     if not api_key:
         return _base_url(base), _setup_hint(
-            provider="pushcut",
-            field_names=("api_key", "token", "value"),
+            provider=_PUSHCUT.provider,
+            field_names=_PUSHCUT.hint_fields,
             tool_name=tool_name,
-            env_var="PUSHCUT_API_KEY",
-            display_name="Pushcut",
+            env_var=_PUSHCUT.env_var,
+            display_name=_PUSHCUT.display_name,
         )
     return _base_url(base), {
         "Accept": "application/json",
@@ -157,9 +257,9 @@ def _pushcut_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[s
 def _gotify_base(tool_name: str, config: Optional[RunnableConfig]) -> str | None:
     base = (
         _credential_value(
-            provider="gotify",
-            provider_aliases=("gotify_api",),
-            field_names=BASE_URL_FIELDS,
+            provider=_GOTIFY.provider,
+            provider_aliases=_GOTIFY.aliases,
+            field_names=_GOTIFY.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -180,33 +280,36 @@ def _gotify_config(
             "[Error]: No Gotify base URL found. Save a Gotify credential with "
             '"base_url" / "url", or set GOTIFY_BASE_URL.'
         )
+    # Branch-variant: app vs client token kind. field_names comes from the
+    # matching spec group; env_var stays inline per branch (the spec carries the
+    # app-token env_var for the registry).
     if token_kind == "app":
-        field_names = ("app_token", "appApiToken", "app_api_token", "token", "value")
+        field_names = _GOTIFY.group("app_token")
         env_var = "GOTIFY_APP_TOKEN"
         token = _credential_value(
-            provider="gotify",
-            provider_aliases=("gotify_api",),
+            provider=_GOTIFY.provider,
+            provider_aliases=_GOTIFY.aliases,
             field_names=field_names,
             tool_name=tool_name,
             config=config,
         ) or _settings_value("gotify_app_token")
     else:
-        field_names = ("client_token", "clientApiToken", "client_api_token", "token", "value")
+        field_names = _GOTIFY.group("client_token")
         env_var = "GOTIFY_CLIENT_TOKEN"
         token = _credential_value(
-            provider="gotify",
-            provider_aliases=("gotify_api",),
+            provider=_GOTIFY.provider,
+            provider_aliases=_GOTIFY.aliases,
             field_names=field_names,
             tool_name=tool_name,
             config=config,
         ) or _settings_value("gotify_client_token")
     if not token:
         return base, _setup_hint(
-            provider="gotify",
+            provider=_GOTIFY.provider,
             field_names=field_names,
             tool_name=tool_name,
             env_var=env_var,
-            display_name="Gotify",
+            display_name=_GOTIFY.display_name,
         )
     return base, {
         "Accept": "application/json",
@@ -219,9 +322,9 @@ def _gotify_config(
 def _pushover_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[str, str, str, dict[str, str] | str]:
     base = (
         _credential_value(
-            provider="pushover",
-            provider_aliases=("pushover_api",),
-            field_names=BASE_URL_FIELDS,
+            provider=_PUSHOVER.provider,
+            provider_aliases=_PUSHOVER.aliases,
+            field_names=_PUSHOVER.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -229,26 +332,26 @@ def _pushover_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
         or _PUSHOVER_BASE_URL
     )
     token = _credential_value(
-        provider="pushover",
-        provider_aliases=("pushover_api",),
-        field_names=("api_token", "api_key", "apiKey", "token", "value"),
+        provider=_PUSHOVER.provider,
+        provider_aliases=_PUSHOVER.aliases,
+        field_names=_PUSHOVER.group("api_token"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("pushover_api_token")
     user_key = _credential_value(
-        provider="pushover",
-        provider_aliases=("pushover_api",),
-        field_names=("user_key", "userKey", "user", "group_key", "groupKey"),
+        provider=_PUSHOVER.provider,
+        provider_aliases=_PUSHOVER.aliases,
+        field_names=_PUSHOVER.group("user_key"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("pushover_user_key")
     if not token:
         return _base_url(base), "", "", _setup_hint(
-            provider="pushover",
-            field_names=("api_token", "api_key", "token", "value"),
+            provider=_PUSHOVER.provider,
+            field_names=_PUSHOVER.hint_fields,
             tool_name=tool_name,
-            env_var="PUSHOVER_API_TOKEN",
-            display_name="Pushover",
+            env_var=_PUSHOVER.env_var,
+            display_name=_PUSHOVER.display_name,
         )
     if not user_key:
         return _base_url(base), token, "", (
@@ -265,9 +368,9 @@ def _pushover_config(tool_name: str, config: Optional[RunnableConfig]) -> tuple[
 def _signl4_webhook(tool_name: str, config: Optional[RunnableConfig]) -> str | tuple[str, str]:
     webhook_url = (
         _credential_value(
-            provider="signl4",
-            provider_aliases=("signl4_api", "signl4_webhook"),
-            field_names=("webhook_url", "webhookUrl"),
+            provider=_SIGNL4.provider,
+            provider_aliases=_SIGNL4.aliases,
+            field_names=_SIGNL4.group("webhook_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -277,9 +380,9 @@ def _signl4_webhook(tool_name: str, config: Optional[RunnableConfig]) -> str | t
         return _base_url(webhook_url)
     base = (
         _credential_value(
-            provider="signl4",
-            provider_aliases=("signl4_api", "signl4_webhook"),
-            field_names=BASE_URL_FIELDS,
+            provider=_SIGNL4.provider,
+            provider_aliases=_SIGNL4.aliases,
+            field_names=_SIGNL4.group("base_url"),
             tool_name=tool_name,
             config=config,
         )
@@ -287,19 +390,19 @@ def _signl4_webhook(tool_name: str, config: Optional[RunnableConfig]) -> str | t
         or _SIGNL4_BASE_URL
     )
     team_secret = _credential_value(
-        provider="signl4",
-        provider_aliases=("signl4_api", "signl4_webhook"),
-        field_names=("team_secret", "teamSecret", "secret", "value"),
+        provider=_SIGNL4.provider,
+        provider_aliases=_SIGNL4.aliases,
+        field_names=_SIGNL4.group("team_secret"),
         tool_name=tool_name,
         config=config,
     ) or _settings_value("signl4_team_secret")
     if not team_secret:
         return "", _setup_hint(
-            provider="signl4",
-            field_names=("team_secret", "teamSecret", "secret", "webhook_url", "value"),
+            provider=_SIGNL4.provider,
+            field_names=_SIGNL4.hint_fields,
             tool_name=tool_name,
-            env_var="SIGNL4_TEAM_SECRET or SIGNL4_WEBHOOK_URL",
-            display_name="SIGNL4",
+            env_var=_SIGNL4.env_var,
+            display_name=_SIGNL4.display_name,
         )
     return f"{_base_url(base)}/{quote(team_secret.strip(), safe='')}"
 

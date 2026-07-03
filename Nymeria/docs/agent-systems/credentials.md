@@ -167,6 +167,47 @@ If no credential matches, the tool returns a human-readable setup hint:
 > provider "todoist", required field(s) "api_key", and allowed target
 > "native_tool:todoist_tasks" or "native_tool:*".
 
+#### The provider credential-spec registry
+
+Each integration module declares a `ProviderCredentialSpec` per provider and
+registers it at import (`nymeria/tools/credential_registry.py`). The spec is
+the single source of truth for that provider's credential shape: canonical
+provider key, accepted aliases, the ordered field-name tuples the module's
+config helpers pass to the resolver (tuple order is behaviorally significant:
+first vault match wins), the human-facing required-field list used in setup
+hints, and env/settings fallbacks. The config helpers source their resolver
+arguments from the spec, so the registry can never drift from runtime
+behavior.
+
+The registry makes credential needs queryable: `get_provider_spec(name)`
+resolves by canonical key, alias, or dash/underscore variant;
+`spec_for_tool(tool_name)` maps a tool to its provider, first via an explicit
+`tools=(...)` claim on the spec, then via the integration taxonomy (tools with
+no associated provider mean "no credential required");
+`provider_credential_status(spec, user_id)` reports
+`connected` / `pending` / `needs_setup` / `optional` from vault metadata
+without touching secret values. Consumers: the `auth_test` tool today; auth
+status in tool_search and the enable-time credential nudge are planned on the
+same helpers. Note the status reflects the vault only: a provider satisfied
+purely by a settings/env fallback still reports `needs_setup`.
+
+Cross-provider alias overlap is legitimate data and tolerated (aws and s3
+mutually alias each other; freshdesk, freshservice, and freshworks_crm all
+accept "freshworks"): a contested name resolves to its canonical owner if one
+exists, else to the first-registered claimant, while each spec's own aliases
+tuple stays verbatim for the runtime vault lookup. Only colliding canonical
+provider names raise. When one taxonomy service covers tools from several
+providers (all `web_search_*` tools share the service `web`, all `image_gen_*`
+tools share `image`), each spec claims its exact tool names via `tools=`;
+when one provider backs several services (aws, microsoft_graph), the spec
+lists them via `services=`.
+
+When adding a new integration module, declare one spec per provider next to
+the module's config helpers and source the helper arguments from it (see
+`productivity_service_integrations.py` for the reference shape). Registering
+the same provider twice with different content is an import-time error; share
+one spec object across modules instead.
+
 ### Path 2: Custom HTTP Tools
 
 When a custom tool's URL, headers, or body contains `${credential:my_cred.api_key}`,
@@ -315,8 +356,10 @@ provide metadata-only credential management from within chat.
 | `auth_cleanup` | `disable` | Disable one credential by ID |
 | `auth_bindings` | `bind` | Bind a credential to a target (e.g. `mcp_server:my-server`) and update allowed targets |
 | `auth_bindings` | `unbind` | Remove a binding by binding ID and revoke that runtime allowed target when no same-target binding remains |
+| `auth_test` | by `credential_id`, `provider`, or `tool_name` | Presence check against the provider spec's required fields plus a live verification probe where one is registered. A successful probe marks the credential `active`, a failed one `invalid` (mirroring the REST test route); system-owned credentials are probed by admins only (non-admins get a presence check) and never have their status changed. `tool_name` resolves the tool's provider via the spec registry; unmapped tools report `auth: "not_required"` |
 
-The agent cannot manage system credentials or retrieve plaintext secrets.
+The agent cannot manage system credentials or retrieve plaintext secrets;
+`auth_test` sees only the redacted probe result, never the submitted values.
 
 ## REST API
 
@@ -357,13 +400,15 @@ Provider testers receive provider/kind/metadata plus the submitted plaintext
 fields inside the API process and return a redacted status object:
 `ok`, `message`, `code`, and `verified`.
 
-The initial registry includes probes for GitHub, Todoist, Anthropic, and known
-OpenAI-compatible LLM providers. If a provider has no tester, the test result is
-`ok=true`, `verified=false`, `code="no_tester"`, with an explicit "no
-verification probe yet" message rather than pretending the provider accepted
-the key. Prompt submit responses expose this as `tested=false` and
-`test_status="not_verified"`; direct credential responses expose only the
-credential metadata plus `last_tested_at`.
+The registry includes probes for GitHub, Todoist, Anthropic, Tavily, Exa,
+Firecrawl, Brave, SearXNG, and known OpenAI-compatible LLM providers. If a
+provider has no tester, the test result is `ok=true`, `verified=false`,
+`code="no_tester"`, with an explicit "no verification probe yet" message
+rather than pretending the provider accepted the key. Prompt submit responses
+expose this as `tested=false` and `test_status="not_verified"`; direct
+credential responses expose only the credential metadata plus
+`last_tested_at`. The agent-facing surface over the same probe machinery is
+the `auth_test` tool (see Agent Access above).
 
 The desktop prompt has separate **Test** and **Save** actions. Save re-runs the
 provider test before resolving the prompt; failed tests keep the prompt open so
@@ -432,7 +477,8 @@ Full details in [`accounts.md`](accounts.md).
 | `nymeria/core/mcp_auth_bridge.py` | Gmail MCP OAuth-token export and cleanup bridge |
 | `nymeria/core/mcp_runtime.py` | Managed MCP install credential-reference creation |
 | `nymeria/tools/native_credentials.py` | Native tool credential resolution |
-| `nymeria/tools/auth_manager.py` | Agent-facing metadata-only tool |
+| `nymeria/tools/credential_registry.py` | Provider credential-spec registry (per-module specs, tool association, status helper) |
+| `nymeria/tools/auth_manager.py` | Agent-facing tools: metadata management plus `auth_test` verification |
 | `nymeria/tools/credential_prompt.py` | Agent-facing `request_credential` tool |
 | `nymeria/config/oauth_providers.py` | OAuth provider descriptor registry (URIs, scopes, supported flows) |
 | `nymeria/core/oauth_start.py` | Start-side: resolve flow, build auth URL or device-code request |
@@ -453,3 +499,5 @@ Full details in [`accounts.md`](accounts.md).
 | `tests/test_credential_vault.py` | Vault unit tests |
 | `tests/test_credential_prompt_flow.py` | Prompt flow integration tests |
 | `tests/test_credential_tests.py` | Provider test registry tests |
+| `tests/test_credential_registry.py` | Spec-registry integrity and status-helper tests |
+| `tests/test_auth_manager.py` | Agent tool tests including `auth_test` |
