@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1257 tools found.**
+**1258 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -74,6 +74,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `auth_cleanup` | `nymeria/tools/auth_manager.py` | Disable stale or unwanted user-owned credentials without exposing secrets. |
 | `auth_inspect` | `nymeria/tools/auth_manager.py` | Inspect Nymeria credential metadata without exposing secret values. |
 | `auth_test` | `nymeria/tools/auth_manager.py` | Test whether a saved credential is usable, without exposing secret values. |
+| `auth_write` | `nymeria/tools/auth_manager.py` | Write credentials into the vault, without ever reading secrets back. |
 | `autopilot_add_contact_to_journey` | `nymeria/tools/marketing_contact_service_integrations.py` | Add an Autopilot contact to a journey trigger. |
 | `autopilot_create_list` | `nymeria/tools/marketing_contact_service_integrations.py` | Create an Autopilot list. |
 | `autopilot_delete_contact` | `nymeria/tools/marketing_contact_service_integrations.py` | Delete an Autopilot contact. |

@@ -14,6 +14,7 @@ CREDENTIAL_TOOL_NAMES = (
     "auth_cleanup",
     "auth_bindings",
     "auth_test",
+    "auth_write",
     "request_credential",
 )
 

@@ -357,9 +357,34 @@ provide metadata-only credential management from within chat.
 | `auth_bindings` | `bind` | Bind a credential to a target (e.g. `mcp_server:my-server`) and update allowed targets |
 | `auth_bindings` | `unbind` | Remove a binding by binding ID and revoke that runtime allowed target when no same-target binding remains |
 | `auth_test` | by `credential_id`, `provider`, or `tool_name` | Presence check against the provider spec's required fields plus a live verification probe where one is registered. A successful probe marks the credential `active`, a failed one `invalid` (mirroring the REST test route); system-owned credentials are probed by admins only (non-admins get a presence check) and never have their status changed. `tool_name` resolves the tool's provider via the spec registry; unmapped tools report `auth: "not_required"` |
+| `auth_write` | `create` | Save a new user-owned credential from secrets the user pasted in chat. Unknown provider keys save anyway with a warning naming the closest known providers; `bind_target` wires a binding like `auth_bindings`; `run_test` (default) probes immediately and marks the record |
+| `auth_write` | `update` | Non-secret fields only (provider rename, name, kind, metadata merge with null-removal) on records the caller owns; secret fields are rejected (use `replace_secret`) |
+| `auth_write` | `replace_secret` | Never overwrites in place: creates a successor record copying metadata, allowed targets, and bindings, then disables the old record and returns both ids (audit trail; revert = re-enable the old record) |
 
 The agent cannot manage system credentials or retrieve plaintext secrets;
 `auth_test` sees only the redacted probe result, never the submitted values.
+
+### Agent vault writes (`auth_write`) and the posture
+
+`request_credential` remains the preferred path: the user enters the secret in
+a hosted form and the agent never handles the value. `auth_write` is the
+sanctioned exception for secrets the user pastes directly in chat: the agent
+is instructed to warn (the pasted value persists in conversation history and
+checkpoints; suggest rotating the key later and using the hosted form next
+time) and then comply, never refuse. It must never write values sourced from
+tool outputs, fetched pages, or files (the injection channel); operators who
+want to hard-enforce that can add a `pre_tool_use` hook guardrail on
+`auth_write`. The accepted residual behind that guardrail suggestion: a
+prompt-injected agent could plant an attacker-supplied credential and route a
+tool to it (`bind_target` outranks unscoped credentials in the runtime lookup;
+a provider rename repoints lookups), so the containment is that every such
+write is user-scoped, fully audited, visible, and reversible in Settings >
+Connections, and a rename response carries `previous_provider`. The tool is write-only by construction: no operation returns a
+secret value, there is no read API anywhere in the agent surface, and
+`replace_secret`'s disable-and-replace shape means a substituted secret always
+leaves an audit trail (the old record survives, disabled, under its own id).
+Writes are contained to the acting user's own records; system credentials stay
+on the REST/admin surfaces.
 
 ## REST API
 

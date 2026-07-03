@@ -17,6 +17,7 @@ from nymeria.tools.auth_manager import (
     auth_cleanup,
     auth_inspect,
     auth_test,
+    auth_write,
 )
 
 
@@ -471,3 +472,388 @@ def test_auth_test_pending_only_reports_pending(tmp_path, monkeypatch):
     body = _test({"provider": "todoist"})
     assert body["ok"] is False
     assert body["pending_setup"] == 1
+
+
+# ---------------------------------------------------------------------------
+# auth_write
+# ---------------------------------------------------------------------------
+
+
+def _write(args: dict, user_id: str = "alice") -> dict:
+    return json.loads(asyncio.run(auth_write.ainvoke(args, config=_config(user_id))))
+
+
+def test_auth_write_create_saves_probes_and_never_echoes_secrets(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401  (registers specs)
+
+    repo = _setup(tmp_path, monkeypatch)
+    calls: list = []
+    _patch_probe(monkeypatch, ok=True, calls=calls)
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "todoist",
+            "secret_fields": json.dumps({"api_key": "sk-pasted-in-chat"}),
+        }
+    )
+    assert body["ok"] is True
+    assert body["operation"] == "create"
+    assert body["credential"]["provider"] == "todoist"
+    # Field NAMES only, never values, anywhere in the response.
+    assert body["credential"]["secret_fields"] == ["api_key"]
+    assert "sk-pasted-in-chat" not in json.dumps(body)
+    assert body["warnings"] == []
+    assert "reminder" in body
+    # Auto-test ran against the stored ciphertext and marked the record.
+    assert calls and calls[0]["secret_fields"] == {"api_key": "sk-pasted-in-chat"}
+    assert body["probe"]["ok"] is True
+    assert body["status_updated"] is True
+    stored = repo.get_credential(body["credential"]["id"])
+    assert stored is not None
+    assert stored.status == "active"
+    assert stored.last_tested_at
+
+
+def test_auth_write_create_unknown_provider_warns_with_nearest_known(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+
+    _setup(tmp_path, monkeypatch)
+    _patch_probe(monkeypatch, ok=True)
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "todist",
+            "secret_fields": json.dumps({"api_key": "sk-x"}),
+        }
+    )
+    assert body["ok"] is True  # saved anyway: warning, not refusal
+    assert any("not a known provider" in w for w in body["warnings"])
+    assert any("todoist" in w for w in body["warnings"])
+
+
+def test_auth_write_create_known_provider_missing_required_field_warns(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+
+    _setup(tmp_path, monkeypatch)
+    _patch_probe(monkeypatch, ok=True)
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "trello",
+            "secret_fields": json.dumps({"api_key": "key-only"}),
+        }
+    )
+    assert body["ok"] is True
+    assert any("api_token" in w for w in body["warnings"])
+
+
+def test_auth_write_create_with_bind_target_binds_and_allows(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    _patch_probe(monkeypatch, ok=True)
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "example",
+            "secret_fields": json.dumps({"value": "sk-x"}),
+            "bind_target": "native_tool:example_tool",
+        }
+    )
+    assert body["ok"] is True
+    assert body["binding_id"]
+    stored = repo.get_credential(body["credential"]["id"])
+    assert "native_tool:example_tool" in stored.allowed_targets
+    bindings = repo.list_bindings(stored.id)
+    assert bindings and bindings[0]["target_type"] == "native_tool"
+
+
+def test_auth_write_create_run_test_false_skips_probe(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    calls: list = []
+    _patch_probe(monkeypatch, ok=True, calls=calls)
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "example",
+            "secret_fields": json.dumps({"value": "sk-x"}),
+            "run_test": False,
+        }
+    )
+    assert body["ok"] is True
+    assert calls == []
+    assert "probe" not in body
+
+
+def test_auth_write_update_renames_provider_and_keeps_secrets(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="my todoist",
+        provider="todoist-personal",
+        kind="api_key",
+        secret_fields={"api_key": "sk-keepme"},
+        metadata={"note": "old", "stale": "yes"},
+        scopes=["tasks:read"],
+        allowed_targets=["native_tool:todoist_list_tasks"],
+        account_label="personal",
+        expires_at="2027-01-01T00:00:00+00:00",
+    )
+    body = _write(
+        {
+            "operation": "update",
+            "credential_id": record.id,
+            "provider": "todoist",
+            "metadata": json.dumps({"note": "new", "stale": None}),
+        }
+    )
+    assert body["ok"] is True
+    updated = repo.get_credential(record.id)
+    assert updated.provider == "todoist"
+    assert updated.secret_fields == ["api_key"]  # secrets untouched
+    assert updated.metadata == {"note": "new"}  # merge + null removal
+    # Fields the tool must re-thread through upsert_credential survive.
+    assert updated.scopes == ["tasks:read"]
+    assert updated.allowed_targets == ["native_tool:todoist_list_tasks"]
+    assert updated.account_label == "personal"
+    assert updated.expires_at == "2027-01-01T00:00:00+00:00"
+    # The runtime lookup now finds it under the canonical provider key.
+    from nymeria.tools.native_credentials import get_native_credential_value
+
+    value = get_native_credential_value(
+        provider="todoist",
+        field_names=("api_key",),
+        tool_name="todoist_list_tasks",
+        config=_config("alice"),
+    )
+    assert value is not None and value.value == "sk-keepme"
+    assert "sk-keepme" not in json.dumps(body)
+
+
+def test_auth_write_update_canonicalizes_alias_provider_rename(tmp_path, monkeypatch):
+    import nymeria.tools.productivity_service_integrations  # noqa: F401
+
+    repo = _setup(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="x",
+        provider="todoist-personal",
+        kind="api_key",
+        secret_fields={"api_key": "sk-x"},
+    )
+    body = _write({"operation": "update", "credential_id": record.id, "provider": "todoist_api"})
+    assert body["ok"] is True
+    # Renaming to a known alias stores the canonical provider key.
+    assert repo.get_credential(record.id).provider == "todoist"
+
+
+def test_auth_write_replace_secret_failing_probe_marks_successor_invalid(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    _patch_probe(monkeypatch, ok=False)
+    old = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="x",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "sk-old"},
+    )
+    body = _write(
+        {
+            "operation": "replace_secret",
+            "credential_id": old.id,
+            "secret_fields": json.dumps({"value": "sk-bad"}),
+        }
+    )
+    # Documented tradeoff: the old record is disabled regardless; a failing
+    # probe leaves the successor marked invalid and the response says so.
+    assert body["probe"]["ok"] is False
+    assert repo.get_credential(old.id).status == "disabled"
+    assert repo.get_credential(body["credential"]["id"]).status == "invalid"
+
+
+def test_auth_write_create_bind_without_test_returns_fresh_snapshot(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "example",
+            "secret_fields": json.dumps({"value": "sk-x"}),
+            "bind_target": "native_tool:example_tool",
+            "run_test": False,
+        }
+    )
+    assert body["ok"] is True
+    # The returned snapshot reflects the bind even with the probe skipped.
+    assert body["credential"]["allowed_targets"] == ["native_tool:example_tool"]
+
+
+def test_auth_write_update_rejects_secret_fields(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="x",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "sk-x"},
+    )
+    body = _write(
+        {
+            "operation": "update",
+            "credential_id": record.id,
+            "secret_fields": json.dumps({"value": "sk-new"}),
+        }
+    )
+    assert body["ok"] is False
+    assert "replace_secret" in body["error"]
+
+
+def test_auth_write_cross_user_and_system_records_denied(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    accounts = AccountsRepo(tmp_path / "accounts.db")
+    accounts.create_user("bob", "bob@example.com", "Bob")
+    bobs = repo.create_credential(
+        owner_type="user",
+        owner_user_id="bob",
+        name="bobs",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "bob-secret"},
+    )
+    system = repo.create_credential(
+        owner_type="system",
+        owner_user_id=None,
+        name="ops",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "system-secret"},
+    )
+    for cid in (bobs.id, system.id):
+        for op in ("update", "replace_secret"):
+            body = _write(
+                {
+                    "operation": op,
+                    "credential_id": cid,
+                    "provider": "renamed",
+                    "secret_fields": json.dumps({"value": "sk-evil"}) if op == "replace_secret" else "",
+                }
+            )
+            assert body["ok"] is False
+            assert body["error"] == "credential not found"
+
+
+def test_auth_write_replace_secret_disables_old_and_copies_everything(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    calls: list = []
+    _patch_probe(monkeypatch, ok=True, calls=calls)
+    old = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="rotating key",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "sk-old"},
+        metadata={"env": "prod"},
+        allowed_targets=["native_tool:example_tool"],
+    )
+    repo.bind_credential(
+        old.id,
+        target_type="native_tool",
+        target_id="example_tool",
+        actor_user_id="alice",
+    )
+    body = _write(
+        {
+            "operation": "replace_secret",
+            "credential_id": old.id,
+            "secret_fields": json.dumps({"value": "sk-new"}),
+        }
+    )
+    assert body["ok"] is True
+    assert body["replaced_credential_id"] == old.id
+    assert body["replaced_status"] == "disabled"
+    successor_id = body["credential"]["id"]
+    assert successor_id != old.id
+    # Old disabled, successor carries metadata/targets/bindings.
+    assert repo.get_credential(old.id).status == "disabled"
+    successor = repo.get_credential(successor_id)
+    assert successor.status == "active"
+    assert successor.metadata == {"env": "prod"}
+    assert successor.allowed_targets == ["native_tool:example_tool"]
+    assert body["copied_bindings"] == 1
+    bindings = repo.list_bindings(successor_id)
+    assert bindings and bindings[0]["target_id"] == "example_tool"
+    # The probe ran against the NEW secret; neither value leaks.
+    assert calls and calls[-1]["secret_fields"] == {"value": "sk-new"}
+    assert "sk-new" not in json.dumps(body) and "sk-old" not in json.dumps(body)
+
+
+def test_auth_write_invalid_json_and_bind_target_are_loud(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    body = _write({"operation": "create", "provider": "x", "secret_fields": "not json"})
+    assert body["ok"] is False and "not valid JSON" in body["error"]
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "x",
+            "secret_fields": json.dumps({"value": "sk"}),
+            "bind_target": "missing-colon",
+        }
+    )
+    assert body["ok"] is False and "target_type:target_id" in body["error"]
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "x",
+            "secret_fields": json.dumps({"value": ""}),
+        }
+    )
+    assert body["ok"] is False and "non-empty" in body["error"]
+    body = _write(
+        {
+            "operation": "create",
+            "provider": "x",
+            "secret_fields": json.dumps({"value": "   "}),  # whitespace-only
+        }
+    )
+    assert body["ok"] is False and "non-empty" in body["error"]
+
+
+def test_auth_write_bind_target_rejected_outside_create(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="x",
+        provider="example",
+        kind="api_key",
+        secret_fields={"value": "sk-x"},
+    )
+    body = _write(
+        {
+            "operation": "update",
+            "credential_id": record.id,
+            "name": "renamed",
+            "bind_target": "native_tool:example_tool",
+        }
+    )
+    assert body["ok"] is False and "auth_bindings" in body["error"]
+
+
+def test_auth_write_update_reports_previous_provider_on_rename(tmp_path, monkeypatch):
+    repo = _setup(tmp_path, monkeypatch)
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="x",
+        provider="old-key",
+        kind="api_key",
+        secret_fields={"value": "sk-x"},
+    )
+    body = _write({"operation": "update", "credential_id": record.id, "provider": "new-key"})
+    assert body["ok"] is True
+    assert body["previous_provider"] == "old-key"
+    body = _write({"operation": "update", "credential_id": record.id, "name": "just a rename"})
+    assert body["ok"] is True
+    assert "previous_provider" not in body
