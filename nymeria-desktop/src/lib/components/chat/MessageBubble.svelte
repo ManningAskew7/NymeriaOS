@@ -490,7 +490,9 @@
             />
           {:else if step.type === 'tool_call'}
             <div class="tool-calls">
-              {#if step.name === 'Skill'}
+              <!-- A held Skill call renders as ToolCallCard: SkillCard has no
+                   approval bar, and the hold is time-boxed (deny-on-timeout). -->
+              {#if step.name === 'Skill' && !step.pendingApproval}
                 <SkillCard toolCall={{
                   id: step.id || '',
                   name: step.name || '',
@@ -499,7 +501,8 @@
                   artifacts: step.artifacts,
                   status: step.status || 'pending',
                   startTime: step.startTime,
-                  endTime: step.endTime
+                  endTime: step.endTime,
+                  pendingApproval: step.pendingApproval
                 }} />
               {:else}
                 <ToolCallCard toolCall={{
@@ -510,7 +513,8 @@
                   artifacts: step.artifacts,
                   status: step.status || 'pending',
                   startTime: step.startTime,
-                  endTime: step.endTime
+                  endTime: step.endTime,
+                  pendingApproval: step.pendingApproval
                 }} />
               {/if}
             </div>

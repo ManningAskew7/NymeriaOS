@@ -43,6 +43,15 @@ export interface AttachmentLimitsResponse {
 // Tool call types (defined early so MessageStep can reference ToolCallStatus)
 export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error' | 'cancelled';
 
+// A require_approval hook hold on a tool call (backlog #77). Present on the
+// tool-call step while the backend waits for the user's decision; cleared by
+// the hook_approval_resolved event. Transient (not persisted with history).
+export interface ToolApprovalRequest {
+  recordId: string;
+  prompt: string;
+  expiresAt: string;
+}
+
 // Step in a message - either thinking content or a tool call
 // Steps are ordered by arrival time to preserve interleaving
 export interface MessageStep {
@@ -75,6 +84,7 @@ export interface MessageStep {
   status?: ToolCallStatus;
   startTime?: Date;
   endTime?: Date;
+  pendingApproval?: ToolApprovalRequest | null;
 }
 
 export interface ToolReloadInfo {
@@ -151,6 +161,7 @@ export interface ToolCall {
   status: ToolCallStatus;
   startTime?: Date;
   endTime?: Date;
+  pendingApproval?: ToolApprovalRequest | null;
 }
 
 // Thread types
@@ -2201,6 +2212,7 @@ export type HookAction =
   | 'inject_context'
   | 'block_if_matches'
   | 'rewrite_arg'
+  | 'require_approval'
   | 'notify'
   | 'create_todo'
   | 'webhook'
@@ -2272,6 +2284,26 @@ export interface HookTestResult {
   action: string;
   /** Rendered dry-run preview (template render or guardrail description). */
   rendered?: string;
+}
+
+/**
+ * One pending require_approval hold (`GET /hooks/approvals`): a tool call the
+ * hook engine paused until the user approves or denies it. No answer by
+ * `expires_at` denies the call.
+ */
+export interface HookApproval {
+  record_id: string;
+  user_id: string;
+  thread_id: string;
+  hook_id: string;
+  hook_name: string;
+  tool_name: string;
+  tool_call_id: string;
+  tool_args_preview: string;
+  prompt: string;
+  is_autonomous: boolean;
+  created_at: string;
+  expires_at: string;
 }
 
 // ---------------------------------------------------------------------------

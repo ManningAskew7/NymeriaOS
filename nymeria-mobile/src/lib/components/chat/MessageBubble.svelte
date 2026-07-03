@@ -422,7 +422,8 @@
                 artifacts: step.artifacts,
                 status: step.status || 'pending',
                 startTime: step.startTime,
-                endTime: step.endTime
+                endTime: step.endTime,
+                pendingApproval: step.pendingApproval
               }} />
             </div>
           {:else if step.type === 'provider_status'}

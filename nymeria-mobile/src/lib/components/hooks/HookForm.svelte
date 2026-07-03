@@ -60,7 +60,17 @@
       url: String(logic.url ?? ''),
       reason: String(logic.reason ?? ''),
       command: String(logic.command ?? ''),
-      timeoutSeconds: typeof logic.timeout_seconds === 'number' ? logic.timeout_seconds : 10,
+      timeoutSeconds:
+        h?.action !== 'require_approval' && typeof logic.timeout_seconds === 'number'
+          ? logic.timeout_seconds
+          : 10,
+      // require_approval keeps its own window so switching actions never
+      // drags run_command's 10s default into a 10..600s approval hold.
+      approvalWindowSeconds:
+        h?.action === 'require_approval' && typeof logic.timeout_seconds === 'number'
+          ? logic.timeout_seconds
+          : 180,
+      prompt: String(logic.prompt ?? ''),
       conditions: Array.isArray(logic.conditions)
         ? (logic.conditions as HookCondition[]).map((c) => ({ ...c }))
         : [],
@@ -86,6 +96,8 @@
   let reason = $state(init.reason);
   let command = $state(init.command);
   let timeoutSeconds = $state(init.timeoutSeconds);
+  let approvalWindowSeconds = $state(init.approvalWindowSeconds);
+  let approvalPrompt = $state(init.prompt);
   let conditions = $state<HookCondition[]>(init.conditions);
   let updateRows = $state<UpdateRow[]>(init.updateRows);
   let enabled = $state(init.enabled);
@@ -158,6 +170,10 @@
       if (!(timeoutSeconds >= 1 && timeoutSeconds <= 300))
         return 'Timeout must be between 1 and 300 seconds.';
     }
+    if (action === 'require_approval') {
+      if (!(approvalWindowSeconds >= 10 && approvalWindowSeconds <= 600))
+        return 'Approval window must be between 10 and 600 seconds.';
+    }
     return null;
   }
 
@@ -210,6 +226,13 @@
           req.command = command.trim();
           req.timeout_seconds = timeoutSeconds;
         }
+        if (action === 'require_approval') {
+          // "" clears back to the default prompt (the backend aliases the
+          // flat text field to the prompt param for this action).
+          req.text = approvalPrompt.trim();
+          req.conditions = cleanConditions;
+          req.timeout_seconds = approvalWindowSeconds;
+        }
         await hooksStore.updateHook(editHook.id, req);
       } else {
         const req: HookCreateRequest = {
@@ -234,6 +257,11 @@
         if (action === 'run_command') {
           req.command = command.trim();
           req.timeout_seconds = timeoutSeconds;
+        }
+        if (action === 'require_approval') {
+          if (approvalPrompt.trim()) req.text = approvalPrompt.trim();
+          req.conditions = cleanConditions;
+          req.timeout_seconds = approvalWindowSeconds;
         }
         const created = await hooksStore.createHook(req);
         onCreated?.(created);
@@ -399,11 +427,11 @@
         </div>
       {/if}
 
-      {#if action === 'block_if_matches' || action === 'rewrite_arg'}
+      {#if action === 'block_if_matches' || action === 'rewrite_arg' || action === 'require_approval'}
         <div class="field-row">
           <span class="field-label">
             Conditions
-            <span class="optional-badge">{action === 'block_if_matches' ? 'blank = always' : 'optional'}</span>
+            <span class="optional-badge">{action === 'rewrite_arg' ? 'optional' : 'blank = always'}</span>
           </span>
           {#each conditions as condition, i (i)}
             <div class="condition-row">
@@ -452,6 +480,37 @@
             bind:value={reason}
             maxlength={500}
           />
+        </div>
+      {/if}
+
+      {#if action === 'require_approval'}
+        <div class="field-row">
+          <label class="field-label" for="hook-approval-prompt">Approval prompt</label>
+          <input
+            id="hook-approval-prompt"
+            class="field-input"
+            type="text"
+            placeholder={'Blank = "Approve tool call {tool_name}?"'}
+            bind:value={approvalPrompt}
+            maxlength={500}
+          />
+          <span class="field-hint">
+            Shown with the Approve/Deny buttons. Placeholders like <code>{'{tool_name}'}</code> are filled at fire time.
+          </span>
+        </div>
+        <div class="field-row">
+          <label class="field-label" for="hook-approval-window">Approval window (seconds)</label>
+          <input
+            id="hook-approval-window"
+            class="field-input"
+            type="number"
+            min={10}
+            max={600}
+            bind:value={approvalWindowSeconds}
+          />
+          <span class="field-hint">
+            10 to 600. The tool call waits this long for your decision; no answer denies it.
+          </span>
         </div>
       {/if}
 

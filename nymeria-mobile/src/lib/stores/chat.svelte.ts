@@ -525,6 +525,57 @@ function createChatStore() {
       });
     },
 
+    /**
+     * Mark a tool-call step as held by a require_approval hook (backlog #77).
+     * The step is matched by the tool-call id the backend threads end to end;
+     * a step that has not arrived yet is a no-op (the REST list and /hook
+     * commands stay available as resolve surfaces).
+     */
+    markToolCallPendingApproval(
+      toolCallId: string,
+      approval: { recordId: string; prompt: string; expiresAt: string }
+    ) {
+      if (!toolCallId) return;
+      this._forceFlush();
+      messages = messages.map((msg) => {
+        if (msg.role !== 'assistant' || !msg.steps) return msg;
+        let touched = false;
+        const updatedSteps = msg.steps.map((step) => {
+          if (step.type === 'tool_call' && step.id === toolCallId) {
+            touched = true;
+            return { ...step, pendingApproval: approval };
+          }
+          return step;
+        });
+        if (!touched) return msg;
+        return { ...msg, steps: updatedSteps };
+      });
+    },
+
+    /**
+     * Drop the approval hold from whichever tool-call step carries it.
+     * Fired by hook_approval_resolved for every outcome (approved, denied,
+     * timeout, aborted, stale), so the buttons always retract.
+     */
+    clearToolCallPendingApproval(recordId: string, toolCallId?: string) {
+      if (!recordId && !toolCallId) return;
+      messages = messages.map((msg) => {
+        if (msg.role !== 'assistant' || !msg.steps) return msg;
+        let touched = false;
+        const updatedSteps = msg.steps.map((step) => {
+          if (step.type !== 'tool_call' || !step.pendingApproval) return step;
+          const matches =
+            step.pendingApproval.recordId === recordId ||
+            (!!toolCallId && step.id === toolCallId);
+          if (!matches) return step;
+          touched = true;
+          return { ...step, pendingApproval: null };
+        });
+        if (!touched) return msg;
+        return { ...msg, steps: updatedSteps };
+      });
+    },
+
     addToolCallArtifacts(id: string, artifacts: WorkspaceArtifact[]) {
       if (!artifacts.length) return;
 

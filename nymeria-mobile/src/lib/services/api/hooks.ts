@@ -1,5 +1,6 @@
 import type {
   Hook,
+  HookApproval,
   HookCreatedBy,
   HookCreateRequest,
   HookScope,
@@ -110,5 +111,47 @@ export class HooksApi extends TriggersApi {
     }
 
     return await response.json();
+  }
+
+  /**
+   * Pending require_approval holds visible to the caller (admins see all,
+   * everyone else their own). Identity comes from the auth headers.
+   */
+  async getHookApprovals(): Promise<HookApproval[]> {
+    const response = await fetch(`${this.getBaseUrl()}/hooks/approvals`, {
+      headers: this.getHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return (data?.approvals || []) as HookApproval[];
+  }
+
+  /**
+   * Approve or deny a held tool call. Backend returns 404 for a record the
+   * caller may not resolve (owner-or-admin) and 409 when the hold already
+   * ended (timed out, resolved elsewhere, or its turn died).
+   */
+  async resolveHookApproval(
+    recordId: string,
+    approved: boolean,
+    note?: string
+  ): Promise<void> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/hooks/approvals/${encodeURIComponent(recordId)}/resolve`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(note ? { approved, note } : { approved })
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
   }
 }
