@@ -98,6 +98,11 @@ class PreToolOutcome:
     reason: Optional[str] = None          # shown to the model on deny
     updated_args: Optional[dict] = None   # on modify
     scratch_patch: Optional[dict] = None
+    # Diagnostic context for the execution log / live activity line, never
+    # shown to the model. Lets an ALLOW carry its story: "approved by <user>"
+    # (require_approval) or a guardrail script-bug warning (run_command exit
+    # !=0/2 fails open but should be visible; backlog #74C).
+    note: Optional[str] = None
 
 
 @dataclass

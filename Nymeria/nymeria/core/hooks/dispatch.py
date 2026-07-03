@@ -257,7 +257,11 @@ def _outcome_detail(outcome: Optional[HookOutcome]) -> str:
                 else []
             )
             return f"modify: {', '.join(keys)}" if keys else "modify"
-        return "allow"
+        # An allow with a note is a story worth logging (an approval grant, a
+        # failed-open guardrail script); a bare allow stays inert (see
+        # _ACTIVITY_INERT_DETAILS).
+        note = getattr(outcome, "note", None)
+        return f"allow: {note}" if note else "allow"
     if isinstance(outcome, PromptOutcome):
         return f"inject {len(outcome.inject_context or '')} chars"
     if isinstance(outcome, PostToolOutcome):

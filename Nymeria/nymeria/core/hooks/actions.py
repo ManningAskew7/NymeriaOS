@@ -26,12 +26,15 @@ condition/params makes the hook a no-op (allow), not a block-everything.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import signal
 import subprocess
-from typing import Any, Callable, Dict, Optional
+import threading
+import time
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from ..conditions import HookCondition, evaluate_conditions
 from ..hook_spec import action_planes
@@ -168,6 +171,126 @@ def rewrite_arg(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     if not updates:
         return None
     return PreToolOutcome(decision="modify", updated_args=updates)
+
+
+def _approval_denial_tail() -> str:
+    """The hardened no-consent tail appended to every approval denial.
+
+    Explicit so the model cannot route around the gate (retry, rephrase, or
+    reach the same effect another way); mirrors the strongest wording found
+    in the field for human-in-the-loop denials.
+    """
+    return (
+        " Do not retry the same call and do not attempt the action another "
+        "way without the user's explicit approval."
+    )
+
+
+async def require_approval(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
+    """Hold the tool call until the user approves/denies; timeout = deny.
+
+    Mutate plane, ``pre_tool_use`` only, and deliberately ``async``: on the
+    async dispatch path a coroutine hook is awaited on the event loop
+    (occupying NO mutate-pool worker), and on the sync bridge it runs under
+    ``asyncio.run`` on the calling thread, so a minutes-long hold can never
+    starve other guardrails. The dispatcher budget comes from the author's
+    ``timeout_seconds`` via the bridge (+0.5s slack), so the action's own
+    wait always resolves first with a clean outcome.
+
+    Flow: conditions gate (same idiom as ``block_if_matches``) -> mint the
+    durable pending record + rendezvous future (``core/hook_approvals.py``)
+    -> announce (SSE event with ``tool_call_id`` for the tool-call-card UI,
+    in-app notification, FCM push) -> await the future for the window.
+    Approved -> allow (note: "approved by <resolver>"); denied/timeout/abort
+    -> deny with an explicit no-consent reason. Fail-closed end to end: if
+    the request cannot even be minted, the call is denied, consistent with
+    the dispatcher's PRE fault policy. Cleanup runs in ``finally`` (also on
+    turn cancellation): the waiter owns the record's lifetime.
+    """
+    params = params or {}
+    conds = _coerce_conditions(params.get("conditions"))
+    if conds is None:
+        return None  # malformed conditions -> no-op (authoring bug, not a veto)
+    if not evaluate_conditions(ctx.tool_args or {}, conds):
+        return None  # conditions not met -> allow without asking
+    from ..hook_approvals import (
+        announce_request,
+        clamp_window,
+        create_pending_approval,
+        delete_record,
+        get_hook_approval_coordinator,
+        publish_resolved_event,
+    )
+    window = clamp_window(params.get("timeout_seconds"))
+    prompt_template = str(params.get("prompt") or "").strip() or "Approve tool call {tool_name}?"
+    prompt = safe_format(prompt_template, _template_vars(ctx)).strip()
+    try:
+        record, future = create_pending_approval(
+            user_id=ctx.user_id or "default",
+            thread_id=ctx.thread_id or "",
+            hook_id=str(params.get("__definition_id") or ""),
+            hook_name=str(params.get("__definition_name") or ""),
+            tool_name=ctx.tool_name or "",
+            tool_call_id=ctx.tool_call_id or "",
+            tool_args=ctx.tool_args,
+            prompt=prompt,
+            window_seconds=window,
+            is_autonomous=bool(ctx.is_autonomous),
+            holder_kind=ctx.holder_kind,
+            trigger_label=ctx.trigger_label,
+        )
+    except Exception as e:  # noqa: BLE001 - a gate that cannot ask must not pass
+        logger.warning("hook require_approval could not mint a request", exc_info=True)
+        return PreToolOutcome(
+            decision="deny",
+            reason=f"approval request could not be created ({e}); denying (fail closed)",
+        )
+    record_id = str(record.get("record_id") or "")
+    outcome_label, resolved_by, note_text = "aborted", "", ""
+    announce_request(record)
+    try:
+        try:
+            result = await asyncio.wait_for(future, timeout=window)
+        except asyncio.TimeoutError:
+            outcome_label = "timeout"
+            return PreToolOutcome(
+                decision="deny",
+                reason=(
+                    f"Denied: the user did not approve this tool call within "
+                    f"{int(window)} seconds."
+                    + _approval_denial_tail()
+                    + " Silence is not consent."
+                ),
+            )
+        status = str((result or {}).get("status") or "") if isinstance(result, dict) else ""
+        if status == "aborted":
+            outcome_label = "aborted"
+            return PreToolOutcome(
+                decision="deny", reason="turn cancelled while awaiting approval"
+            )
+        approved = bool((result or {}).get("approved"))
+        resolved_by = str((result or {}).get("resolved_by") or "user")
+        note_text = str((result or {}).get("note") or "")
+        if approved:
+            outcome_label = "approved"
+            return PreToolOutcome(decision="allow", note=f"approved by {resolved_by}")
+        outcome_label = "denied"
+        reason = f"Denied by {resolved_by}"
+        if note_text:
+            reason += f": {note_text}"
+        return PreToolOutcome(decision="deny", reason=reason + "." + _approval_denial_tail())
+    finally:
+        # The waiter owns cleanup, on every exit shape including cancellation:
+        # drop the rendezvous entry (no-op if a resolver already popped it),
+        # delete the durable record, and tell every surface the hold ended.
+        try:
+            get_hook_approval_coordinator().discard(record_id)
+            delete_record(record_id)
+            publish_resolved_event(
+                record, outcome=outcome_label, resolved_by=resolved_by, note=note_text
+            )
+        except Exception:  # noqa: BLE001 - cleanup must never mask the outcome
+            logger.warning("hook approval cleanup failed for %s", record_id, exc_info=True)
 
 
 # Webhook wall-clock budget. Kept under the dispatcher's per-hook timeout
@@ -309,18 +432,61 @@ class _CommandResult:
         self.spawn_failed = spawn_failed
 
 
+_RUN_COMMAND_CHUNK = 8192
+
+
+def _capped_reader(stream, cap: int, parts: list) -> None:
+    """Drain ``stream`` to EOF, retaining at most ``cap`` characters.
+
+    Parent memory stays O(cap + chunk) no matter how much the child emits:
+    past the cap the loop keeps READING (so the child never blocks on a full
+    pipe, the two-pipe deadlock ``communicate()`` existed to avoid) but drops
+    the chunks. Never raises; a closed/broken pipe just ends the drain.
+    """
+    retained = 0
+    try:
+        while True:
+            chunk = stream.read(_RUN_COMMAND_CHUNK)
+            if not chunk:
+                return
+            if retained < cap:
+                keep = chunk[: cap - retained]
+                parts.append(keep)
+                retained += len(keep)
+    except Exception:  # noqa: BLE001 - draining must never raise
+        return
+
+
+def _feed_stdin(proc, payload: str) -> None:
+    """Write the JSON context to the child's stdin and close it; never raises.
+
+    A child that exits without reading (or never reads) makes the write fail
+    with a broken pipe; that is the child's business, not an error here.
+    """
+    try:
+        proc.stdin.write(payload)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        proc.stdin.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _execute_command(ctx: HookContext, command: str, timeout: float) -> _CommandResult:
     """Run ``command`` with the context on stdin; never raises.
 
     Own process group + SIGKILL of the whole group on timeout (mirrors
-    ``claude_code_bridge``), minimal env. Working dir is the data dir (a stable,
-    writable location; not the repo root). The read cap bounds what we RETAIN,
-    not peak memory: ``communicate`` buffers the child's full output in THIS
-    process first, so a fast stdout emitter grows the parent's heap and the
-    child-biased OOM score does not protect against that (it only covers
-    child-side memory hogs). The effective bound is the wall-clock ``timeout``;
-    accepted under the admin + deployment-flag gate, with a bounded incremental
-    reader noted as a backlog follow-up.
+    ``claude_code_bridge``), minimal env. Working dir is the data dir (a
+    stable, writable location; not the repo root).
+
+    I/O is a bounded incremental pump (backlog #74A), not ``communicate()``:
+    one stdin-writer thread and one capped reader-drainer per output pipe, so
+    the parent retains at most ``_RUN_COMMAND_READ_CAP`` chars per stream and
+    peak memory no longer scales with the child's output volume. Semantics
+    match the old ``communicate(timeout=...)`` behavior: the wall clock also
+    bounds pipe EOF, so a backgrounded grandchild that keeps the pipes open
+    past the deadline is a timeout (group-killed), exactly as before.
     """
     from ...config import get_settings
     from ...oom import oom_score_preexec
@@ -339,35 +505,78 @@ def _execute_command(ctx: HookContext, command: str, timeout: float) -> _Command
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            errors="replace",  # invalid bytes must not abort the drain (fail-open risk)
             start_new_session=True,  # own process group, so we can kill children
             preexec_fn=oom_score_preexec(),
         )
-        stdout, stderr = proc.communicate(input=_run_command_payload(ctx), timeout=timeout)
-        return _CommandResult(
-            returncode=proc.returncode,
-            stdout=(stdout or "")[:_RUN_COMMAND_READ_CAP],
-            stderr=(stderr or "")[:_RUN_COMMAND_READ_CAP],
-        )
-    except subprocess.TimeoutExpired:
-        _kill_process_group(proc)
-        return _CommandResult(timed_out=True)
     except Exception:  # noqa: BLE001 - spawn failure (bad cwd, fork limit, etc.)
         logger.warning("hook run_command failed to execute", exc_info=True)
+        _kill_process_group(proc)
+        return _CommandResult(spawn_failed=True)
+    stdout_parts: list = []
+    stderr_parts: list = []
+    pumps = [
+        threading.Thread(
+            target=_feed_stdin, args=(proc, _run_command_payload(ctx)), daemon=True
+        ),
+        threading.Thread(
+            target=_capped_reader,
+            args=(proc.stdout, _RUN_COMMAND_READ_CAP, stdout_parts),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_capped_reader,
+            args=(proc.stderr, _RUN_COMMAND_READ_CAP, stderr_parts),
+            daemon=True,
+        ),
+    ]
+    deadline = time.monotonic() + timeout
+    try:
+        for t in pumps:
+            t.start()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            return _CommandResult(timed_out=True)
+        # The process exited; the pipes must EOF within what is left of the
+        # budget. Still-open pipes past the deadline mean a surviving
+        # grandchild: the same condition communicate() surfaced as a timeout.
+        readers = pumps[1:]
+        for t in readers:
+            t.join(timeout=max(0.1, deadline - time.monotonic()))
+        if any(t.is_alive() for t in readers):
+            _kill_process_group(proc)
+            return _CommandResult(timed_out=True)
+        return _CommandResult(
+            returncode=proc.returncode,
+            stdout="".join(stdout_parts),
+            stderr="".join(stderr_parts),
+        )
+    except Exception:  # noqa: BLE001 - pump wiring failure; fail like a spawn error
+        logger.warning("hook run_command I/O pump failed", exc_info=True)
         _kill_process_group(proc)
         return _CommandResult(spawn_failed=True)
 
 
 def _kill_process_group(proc) -> None:
-    """Best-effort SIGKILL of a subprocess's whole group (POSIX); never raises."""
+    """Best-effort SIGKILL of a subprocess's whole group (POSIX); never raises.
+
+    The child is spawned with ``start_new_session=True``, so its pid IS the
+    process-group id. Signal that directly: ``os.getpgid(proc.pid)`` would
+    raise once the leader has been reaped (the grandchild-holds-pipes branch
+    calls this AFTER ``proc.wait()`` returned), silently leaving the group's
+    survivors unkilled.
+    """
     if proc is None:
         return
     try:
         if hasattr(os, "killpg"):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(proc.pid, signal.SIGKILL)
         else:
             proc.kill()
         proc.wait(timeout=5)
-    except Exception:  # noqa: BLE001 - the process may already be gone
+    except Exception:  # noqa: BLE001 - the whole group may already be gone
         pass
 
 
@@ -385,9 +594,10 @@ def run_command(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     - ``pre_tool_use`` (mutate, guardrail): exit 0 + empty stdout -> allow; exit
       0 + JSON ``{"decision","reason","updated_args"}`` -> that outcome; exit 2
       -> deny (reason = stderr tail, Claude Code convention); other nonzero exit
-      -> None (script bug, non-blocking); timeout / spawn failure -> DENY. A
-      guardrail that could not be evaluated must not silently pass, so this fails
-      CLOSED (consistent with the dispatcher's PRE fault policy).
+      -> allow with a diagnostic note (script bug, non-blocking, but visible in
+      the execution log and as an activity line); timeout / spawn failure ->
+      DENY. A guardrail that could not be evaluated must not silently pass, so
+      this fails CLOSED (consistent with the dispatcher's PRE fault policy).
     - ``post_tool_use`` / ``done`` (observe): run for side effects, return None.
 
     Never raises: every failure mode maps to an explicit outcome or None.
@@ -445,11 +655,18 @@ def run_command(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
                 return None  # allow
             return _pre_outcome_from_json(out)
         # Other nonzero exit: a script bug, non-blocking (mirrors Claude Code).
+        # Returned as an allow WITH a note (not None) so the failure is
+        # visible in /hook log and as a live activity line instead of an
+        # indistinguishable bare no_op (backlog #74C).
+        stderr_tail = (result.stderr or "").strip()[:200]
         logger.warning(
             "hook run_command (pre_tool_use) exited %s (non-blocking); stderr: %s",
-            result.returncode, (result.stderr or "")[:200],
+            result.returncode, stderr_tail,
         )
-        return None
+        note = f"guardrail exited {result.returncode} (non-blocking, script bug?)"
+        if stderr_tail:
+            note += f"; stderr: {stderr_tail}"
+        return PreToolOutcome(decision="allow", note=note)
 
     # post_tool_use / done: observe plane. Run for side effects; return nothing.
     if result.timed_out or result.spawn_failed:
@@ -480,12 +697,18 @@ def _pre_outcome_from_json(out: str) -> Optional[HookOutcome]:
 # The action table. The bridge looks actions up by name. Adding an action:
 # the function + an entry here, an ``ActionSpec`` in ``core/hook_spec.py`` (the
 # taxonomy single source), and a logic variant in ``core/hook_manager.py``;
-# ``tests/test_hook_spec.py`` pins the three in lockstep.
-ActionFn = Callable[[HookContext, dict], Optional[HookOutcome]]
+# ``tests/test_hook_spec.py`` pins the three in lockstep. An action may be a
+# coroutine function (``require_approval``); the bridge preserves its
+# coroutine-ness so the dispatcher awaits it on the loop instead of a pool.
+ActionFn = Callable[
+    [HookContext, dict],
+    "Optional[HookOutcome] | Awaitable[Optional[HookOutcome]]",
+]
 ACTIONS: Dict[str, ActionFn] = {
     "inject_context": inject_context,
     "block_if_matches": block_if_matches,
     "rewrite_arg": rewrite_arg,
+    "require_approval": require_approval,
     "notify": notify,
     "create_todo": create_todo,
     "webhook": webhook,

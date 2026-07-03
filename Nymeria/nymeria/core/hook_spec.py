@@ -59,6 +59,7 @@ ACTION_SPECS: Dict[str, ActionSpec] = {
         ),
         ActionSpec("block_if_matches", "mutate", ("pre_tool_use",)),
         ActionSpec("rewrite_arg", "mutate", ("pre_tool_use",)),
+        ActionSpec("require_approval", "mutate", ("pre_tool_use",)),
         ActionSpec("notify", "observe", ("post_tool_use", "done"), text_action=True),
         ActionSpec("create_todo", "observe", ("post_tool_use", "done"), text_action=True),
         ActionSpec("webhook", "observe", ("post_tool_use", "done")),

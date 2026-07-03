@@ -463,10 +463,28 @@ def test_run_command_pre_json_modify():
     assert out.updated_args == {"command": "ls -la"}
 
 
-def test_run_command_pre_other_nonzero_is_nonblocking():
+def test_run_command_pre_other_nonzero_is_nonblocking_with_note():
+    # Backlog #74C: a script bug (exit != 0/2) still allows, but as an explicit
+    # allow-with-note so the failure shows in /hook log and the activity line
+    # instead of an indistinguishable bare no_op.
     with _patch_run_settings():
         out = run_command(_pre(tool_name="bash"), {"command": "exit 1"})
-    assert out is None  # a script bug is non-blocking (mirrors Claude Code)
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "allow"
+    assert out.note is not None and "exited 1" in out.note
+
+
+def test_run_command_pre_nonzero_note_carries_stderr_tail():
+    with _patch_run_settings():
+        out = run_command(
+            _pre(tool_name="bash"),
+            {"command": "echo 'oops bad grep' 1>&2; exit 3"},
+        )
+    assert isinstance(out, PreToolOutcome)
+    assert out.decision == "allow"
+    assert out.note is not None
+    assert "exited 3" in out.note
+    assert "oops bad grep" in out.note
 
 
 def test_run_command_pre_timeout_fails_closed():
@@ -483,3 +501,108 @@ def test_run_command_pre_timeout_fails_closed():
 def test_run_command_observe_returns_none():
     with _patch_run_settings():
         assert run_command(_post(tool_name="bash"), {"command": "echo side effect"}) is None
+
+
+# --- _execute_command bounded I/O pump (backlog #74A) ------------------------
+
+import time as _time  # noqa: E402
+
+from nymeria.core.hooks.actions import (  # noqa: E402
+    _RUN_COMMAND_READ_CAP,
+    _execute_command,
+)
+
+
+def test_execute_command_stdout_retained_is_bounded():
+    # A child that emits 10x the cap must complete cleanly with parent-side
+    # retention capped (communicate() would have buffered all of it).
+    emit = _RUN_COMMAND_READ_CAP * 10
+    script = f"{sys.executable} -c \"import sys; sys.stdout.write('x' * {emit})\""
+    with _patch_run_settings():
+        result = _execute_command(_pre(tool_name="bash"), script, timeout=15.0)
+    assert not result.timed_out and not result.spawn_failed
+    assert result.returncode == 0
+    assert len(result.stdout) == _RUN_COMMAND_READ_CAP
+    assert set(result.stdout) == {"x"}
+
+
+def test_execute_command_no_two_pipe_deadlock():
+    # The classic deadlock communicate() existed to avoid: the child fills BOTH
+    # pipes well past the OS buffer. The capped readers must keep draining so
+    # the child can exit; both retained streams stay bounded.
+    emit = 200_000
+    script = (
+        f"{sys.executable} -c \"import sys; "
+        f"sys.stdout.write('o' * {emit}); sys.stderr.write('e' * {emit})\""
+    )
+    with _patch_run_settings():
+        result = _execute_command(_pre(tool_name="bash"), script, timeout=15.0)
+    assert not result.timed_out and not result.spawn_failed
+    assert result.returncode == 0
+    assert len(result.stdout) == _RUN_COMMAND_READ_CAP
+    assert len(result.stderr) == _RUN_COMMAND_READ_CAP
+
+
+def test_execute_command_timeout_kills_spamming_child():
+    # A child that never stops emitting must still hit the wall clock and be
+    # group-killed promptly (the pump must not extend its life).
+    script = (
+        f"{sys.executable} -c \"import sys\nwhile True: sys.stdout.write('x' * 8192)\""
+    )
+    started = _time.monotonic()
+    with _patch_run_settings():
+        result = _execute_command(_pre(tool_name="bash"), script, timeout=1.0)
+    elapsed = _time.monotonic() - started
+    assert result.timed_out
+    assert elapsed < 8.0  # 1s budget + kill/join slack, not the spam duration
+
+
+def test_execute_command_grandchild_holding_pipes_is_timeout(tmp_path):
+    # communicate() parity: the shell exits immediately but a backgrounded
+    # grandchild inherits (and holds open) the output pipes past the deadline.
+    # That surfaced as a timeout before #74A and must still surface as one,
+    # AND the grandchild must actually die: the shell (group leader) is
+    # already reaped by proc.wait() at kill time, so the kill path must
+    # signal the group id (== the leader pid) directly; os.getpgid() on the
+    # reaped pid raises and silently leaked the group.
+    import os as _os
+
+    pid_file = tmp_path / "grandchild.pid"
+    started = _time.monotonic()
+    with _patch_run_settings():
+        result = _execute_command(
+            _pre(tool_name="bash"),
+            f"sleep 30 & echo $! > {pid_file}; exit 0",
+            timeout=1.0,
+        )
+    elapsed = _time.monotonic() - started
+    assert result.timed_out
+    assert elapsed < 8.0  # bounded by the budget + kill slack, not sleep 30
+    grandchild_pid = int(pid_file.read_text().strip())
+    deadline = _time.monotonic() + 3.0
+    while _time.monotonic() < deadline:
+        try:
+            _os.kill(grandchild_pid, 0)  # probe only
+        except ProcessLookupError:
+            break  # dead, as required
+        _time.sleep(0.05)
+    else:
+        _os.kill(grandchild_pid, 9)  # do not leak it out of the test
+        raise AssertionError("backgrounded grandchild survived the group kill")
+
+
+def test_execute_command_invalid_bytes_do_not_abort_the_drain():
+    # A guardrail emitting non-UTF-8 must not break the capped readers: a
+    # decode error mid-drain would end the pump early and (worse) turn an
+    # exit-0 guardrail's partial output into whatever the caller infers.
+    # errors="replace" keeps the drain alive; the exit code stays authoritative.
+    script = (
+        f"{sys.executable} -c \"import sys; "
+        f"sys.stdout.buffer.write(b'ok\\\\xff\\\\xfe after'); sys.exit(0)\""
+    )
+    with _patch_run_settings():
+        result = _execute_command(_pre(tool_name="bash"), script, timeout=10.0)
+    assert not result.timed_out and not result.spawn_failed
+    assert result.returncode == 0
+    assert result.stdout.startswith("ok")
+    assert "after" in result.stdout

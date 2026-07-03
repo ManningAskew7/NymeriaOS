@@ -517,3 +517,172 @@ def test_run_command_edit_enabled_allowed_for_non_admin(
     updated = manager.get_hooks("alice")[0]
     assert updated.enabled is False
     assert updated.logic.command == "echo hi"
+
+
+# --- require_approval authoring + the approvals resolve surface ---------------
+
+
+@pytest.fixture
+def approvals_store(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Isolated approval store + fresh coordinator + a live waiter loop."""
+    import asyncio
+    from types import SimpleNamespace as NS
+
+    import nymeria.core.hook_approvals as ha
+
+    settings = NS(data_dir=tmp_path, fcm_enabled=False)
+    monkeypatch.setattr("nymeria.config.get_settings", lambda: settings)
+    monkeypatch.setattr(ha, "_coordinator", None)
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+def _mint(loop, user_id="alice", **kw):
+    from nymeria.core.hook_approvals import create_pending_approval
+
+    async def _do():
+        return create_pending_approval(
+            user_id=user_id,
+            thread_id=kw.get("thread_id", "thread-1"),
+            hook_id="h1",
+            hook_name="guard",
+            tool_name=kw.get("tool_name", "bash_execute"),
+            tool_call_id=kw.get("tool_call_id", "call-1"),
+            tool_args={"command": "ls"},
+            prompt="Approve?",
+            window_seconds=60.0,
+        )
+
+    return loop.run_until_complete(_do())
+
+
+def test_create_require_approval(manager: HookManager) -> None:
+    result = _run(
+        '/hook create Approve bash --event pre_tool_use --action require_approval '
+        '--matcher bash_execute --cond "command contains sudo" '
+        '--text "Run {tool_name}?" --timeout 240'
+    )
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.logic.action == "require_approval"
+    assert hook.matcher == "bash_execute"
+    assert hook.logic.prompt == "Run {tool_name}?"
+    assert hook.logic.timeout_seconds == 240.0
+    assert len(hook.logic.conditions) == 1
+
+
+def test_create_require_approval_bare_is_legal(manager: HookManager) -> None:
+    result = _run(
+        "/hook create Ask first --event pre_tool_use --action require_approval"
+    )
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.logic.action == "require_approval"
+    assert hook.logic.conditions == []
+    assert hook.logic.timeout_seconds == 180.0
+
+
+def test_hook_approvals_lists_pending(manager: HookManager, approvals_store) -> None:
+    record, _ = _mint(approvals_store)
+    result = _run("/hook approvals")
+    assert result.success is True, result.markdown
+    assert record["record_id"] in result.markdown
+    assert "bash_execute" in result.markdown
+
+
+def test_hook_approve_wakes_waiter(manager: HookManager, approvals_store) -> None:
+    import asyncio
+
+    record, future = _mint(approvals_store)
+    result = _run(f"/hook approve {record['record_id'][:6]} looks fine")
+    assert result.success is True, result.markdown
+    resolved = approvals_store.run_until_complete(asyncio.wait_for(future, 2))
+    assert resolved["approved"] is True
+    assert resolved["resolved_by"] == "alice"
+    assert resolved["note"] == "looks fine"
+
+
+def test_hook_deny_wakes_waiter_with_note(manager: HookManager, approvals_store) -> None:
+    import asyncio
+
+    record, future = _mint(approvals_store)
+    result = _run(f"/hook deny {record['record_id']} not now")
+    assert result.success is True, result.markdown
+    resolved = approvals_store.run_until_complete(asyncio.wait_for(future, 2))
+    assert resolved["approved"] is False
+    assert resolved["note"] == "not now"
+
+
+def test_hook_approve_stale_record_reports_and_cleans(
+    manager: HookManager, approvals_store
+) -> None:
+    from nymeria.core.hook_approvals import (
+        get_hook_approval_coordinator,
+        load_record,
+    )
+
+    record, _ = _mint(approvals_store)
+    get_hook_approval_coordinator().discard(record["record_id"])
+    result = _run(f"/hook approve {record['record_id']}")
+    assert result.success is False
+    assert "no longer pending" in result.markdown
+    assert load_record(record["record_id"]) is None
+
+
+def test_hook_approvals_blocked_for_agent_actor_on_both_parse_paths(
+    manager: HookManager, approvals_store
+) -> None:
+    """The agent must never resolve its own held tool calls, on ANY route.
+
+    agent_allowed=False on the subcommand definitions only gates the direct
+    "/hook <sub>" parse path; the plural "/hooks <sub>" alias resolves to the
+    parent handler (agent_allowed=True) and re-dispatches internally, so the
+    executor re-checks the actor. Both gates are load-bearing.
+    """
+    from nymeria.core.hook_approvals import get_hook_approval_coordinator
+
+    record, _future = _mint(approvals_store)
+    agent_ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="agent",
+        surface="api",
+        is_admin=True,
+    )
+    for cmd in (
+        f"/hook approve {record['record_id']}",
+        f"/hook deny {record['record_id']}",
+        "/hook approvals",
+        f"/hooks approve {record['record_id']}",
+        f"/hooks deny {record['record_id']}",
+        "/hooks approvals",
+    ):
+        result = run(CommandService().execute(agent_ctx, cmd))
+        assert result.success is False, (cmd, result.markdown)
+        assert "not available to the agent" in result.markdown, (cmd, result.markdown)
+    # The hold is still pending: nothing was popped from the rendezvous.
+    assert get_hook_approval_coordinator().pending_count() == 1
+
+
+def test_hook_approve_scopes_to_owner_for_non_admin(
+    manager: HookManager, approvals_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Demote alice: a non-admin must not see or resolve another user's hold.
+    class _UserRepo:
+        def get_user_by_id(self, user_id: str):
+            return SimpleNamespace(
+                id=user_id, email="x@example.test", display_name=user_id, role="user"
+            )
+
+    monkeypatch.setattr(
+        agent_module,
+        "get_current_agent",
+        lambda: SimpleNamespace(accounts_repo=_UserRepo()),
+    )
+    foreign, _ = _mint(approvals_store, user_id="bob")
+    listing = _run("/hook approvals")
+    assert "No pending hook approvals" in listing.markdown
+    result = _run(f"/hook approve {foreign['record_id']}")
+    assert result.success is False
+    assert "No pending approval" in result.markdown

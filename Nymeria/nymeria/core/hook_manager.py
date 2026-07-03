@@ -167,6 +167,35 @@ class RewriteArgLogic(BaseModel):
     )
 
 
+class RequireApprovalLogic(BaseModel):
+    """Hold a tool call (pre_tool_use) until the user approves or denies it.
+
+    The matched call blocks in-band for up to ``timeout_seconds`` (the
+    approval window, an author-side field, never agent-chosen); no answer
+    within the window is a DENY with a hardened no-consent message to the
+    model. Resolve surfaces: REST, the ``/hook approve|deny`` command, the
+    desktop/mobile tool-call card, chat-platform buttons, and the CLI form.
+    Not admin-gated: an approval hook only holds its owner's own tool calls.
+    """
+
+    action: Literal["require_approval"] = "require_approval"
+    conditions: List[HookCondition] = Field(
+        default_factory=list,
+        description="AND-ed gate against the tool args; empty = always ask",
+    )
+    prompt: str = Field(
+        default="",
+        max_length=500,
+        description="Approval prompt shown to the user ({placeholder} templated)",
+    )
+    timeout_seconds: float = Field(
+        default=180.0,
+        ge=10.0,
+        le=600.0,
+        description="Approval window; no answer within it denies the call",
+    )
+
+
 class NotifyLogic(BaseModel):
     """Deliver an in-app + push notification (observe plane)."""
 
@@ -239,6 +268,7 @@ class RunCommandLogic(BaseModel):
 HookLogic = Annotated[
     Union[
         InjectContextLogic, BlockIfMatchesLogic, RewriteArgLogic,
+        RequireApprovalLogic,
         NotifyLogic, CreateTodoLogic, WebhookLogic, RunCommandLogic,
     ],
     Field(discriminator="action"),
@@ -249,6 +279,7 @@ HOOK_LOGIC_BY_ACTION: Dict[str, type[BaseModel]] = {
     "inject_context": InjectContextLogic,
     "block_if_matches": BlockIfMatchesLogic,
     "rewrite_arg": RewriteArgLogic,
+    "require_approval": RequireApprovalLogic,
     "notify": NotifyLogic,
     "create_todo": CreateTodoLogic,
     "webhook": WebhookLogic,
@@ -344,6 +375,18 @@ def params_from_fields(
     """
     if action in TEXT_ACTIONS:
         return {"text": text or ""} if text is not None else None
+    if action == "require_approval":
+        # Reuses the existing flat fields: ``text`` authors the approval
+        # ``prompt`` (no surface needs a new parameter), ``conditions`` and
+        # ``timeout_seconds`` map directly.
+        params = {}
+        if text is not None:
+            params["prompt"] = text
+        if conditions is not None:
+            params["conditions"] = [c.model_dump() for c in conditions]
+        if timeout_seconds is not None:
+            params["timeout_seconds"] = timeout_seconds
+        return params or None
     if action == "webhook":
         params: dict = {}
         if url is not None:
@@ -629,10 +672,12 @@ class HookManager:
 
         ``action`` + ``params`` build the logic variant. ``text`` is a
         convenience alias: when given (and ``params`` is not), it becomes
-        ``{"text": text}`` for the text actions.
+        ``{"text": text}`` for the text actions and ``{"prompt": text}`` for
+        ``require_approval`` (matching ``params_from_fields``, so every
+        surface's bare-text authoring lands on the right field).
         """
         if params is None and text is not None:
-            params = {"text": text}
+            params = {"prompt": text} if action == "require_approval" else {"text": text}
         logic = build_logic(action, params)  # ValueError on bad action/params
         # Construct first so validation (event/action legality, matcher
         # normalization) runs before we touch the store.
@@ -684,7 +729,9 @@ class HookManager:
                     # text-only edit overlays onto them.
                     params = {k: v for k, v in data["logic"].items() if k != "action"}
                 if new_text is not None:
-                    params["text"] = new_text
+                    # Same action-aware alias as add_hook: bare text authors the
+                    # approval prompt on require_approval hooks.
+                    params["prompt" if action == "require_approval" else "text"] = new_text
                 # Validate the variant now (clear error) before re-validating the
                 # whole definition below.
                 build_logic(action, params)

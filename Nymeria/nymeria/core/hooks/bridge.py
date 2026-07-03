@@ -13,8 +13,9 @@ Definitions are duck-typed: each needs ``event`` (str), ``matcher``, a
 
 from __future__ import annotations
 
+import inspect
 import logging
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional, cast
 
 from ..hook_spec import plane_for
 from .actions import ACTIONS
@@ -29,8 +30,15 @@ def _make_action_fn(definition):
 
     A dedicated function (not an inline loop closure) so each callable binds its
     own ``definition``/``params`` rather than the loop variable. The action's
-    params are the logic variant's fields minus the ``action`` discriminator, so
-    each action function receives exactly its own params.
+    params are the logic variant's fields minus the ``action`` discriminator,
+    plus bridge-injected ``__definition_id``/``__definition_name`` metadata
+    (never persisted; actions that surface their hook's identity, e.g.
+    ``require_approval``'s pending record, read them, others ignore them).
+
+    A coroutine action gets an ``async`` wrapper so the dispatcher still sees
+    a coroutine function (a sync wrapper would hide it from
+    ``inspect.iscoroutinefunction`` and the pool offload would mis-treat the
+    returned coroutine object as an outcome).
     """
     action = ACTIONS.get(definition.logic.action)
     if action is None:
@@ -39,9 +47,20 @@ def _make_action_fn(definition):
         params = definition.logic.model_dump(exclude={"action"})
     except Exception:  # noqa: BLE001 - a malformed logic must not crash the build
         params = {}
+    params["__definition_id"] = definition.id
+    params["__definition_name"] = definition.name or definition.id
+
+    if inspect.iscoroutinefunction(action):
+        async def _afn(ctx: HookContext) -> Optional[HookOutcome]:
+            return await action(ctx, params)
+
+        _afn.__name__ = f"{definition.logic.action}[{definition.name or definition.id}]"
+        return _afn
 
     def _fn(ctx: HookContext) -> Optional[HookOutcome]:
-        return action(ctx, params)
+        # Sync branch: the coroutine case returned above, so this cannot be
+        # an awaitable at runtime.
+        return cast(Optional[HookOutcome], action(ctx, params))
 
     _fn.__name__ = f"{definition.logic.action}[{definition.name or definition.id}]"
     return _fn

@@ -559,3 +559,173 @@ def test_update_run_command_enabled_toggle_allowed_for_non_admin(
     assert body["enabled"] is False
     assert body["name"] == "rc-off"
     assert body["logic"]["command"] == "echo hi"
+
+
+# --- hook approvals (require_approval resolve surface) ------------------------
+
+
+@pytest.fixture
+def approvals_env(tmp_path, api_client_builder, monkeypatch):
+    """Client + isolated approval store + reset coordinator.
+
+    The approval store resolves its dir via ``nymeria.config.get_settings``
+    (not the router module's), so both are pointed at tmp_path.
+    """
+    import nymeria.core.hook_approvals as ha
+
+    settings = api_client_builder.settings(tmp_path)
+    agent = FakeAgent(tmp_path)
+    client, token = api_client_builder.authenticated_client(
+        agent, settings, user_id="owner", email="owner@example.com"
+    )
+    monkeypatch.setattr(hooks_router_module, "get_settings", lambda: settings)
+    monkeypatch.setattr("nymeria.config.get_settings", lambda: settings)
+    monkeypatch.setattr(ha, "_coordinator", None)
+    headers = api_client_builder.auth(token)
+    return client, agent, headers, api_client_builder
+
+
+@pytest.fixture
+def waiter_loop():
+    """A live event loop standing in for the held tool call's loop.
+
+    ``asyncio.run`` would close the loop right after minting, and resolving a
+    future on a closed loop is the waiter-gone (409) path, not the happy path.
+    """
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+def _mint_pending(loop, user_id="owner", **kw):
+    from nymeria.core.hook_approvals import create_pending_approval
+
+    async def _mint():
+        return create_pending_approval(
+            user_id=user_id,
+            thread_id=kw.get("thread_id", "t1"),
+            hook_id="h1",
+            hook_name="guard",
+            tool_name=kw.get("tool_name", "bash_execute"),
+            tool_call_id=kw.get("tool_call_id", "call-1"),
+            tool_args={"command": "ls"},
+            prompt="Approve?",
+            window_seconds=60.0,
+        )
+
+    return loop.run_until_complete(_mint())
+
+
+def _await_result(loop, future, timeout=2.0):
+    import asyncio
+
+    return loop.run_until_complete(asyncio.wait_for(future, timeout))
+
+
+def test_approvals_list_scopes_to_owner(approvals_env, waiter_loop):
+    client, agent, headers, builder = approvals_env
+    record, _ = _mint_pending(waiter_loop, user_id="owner")
+    _mint_pending(waiter_loop, user_id="somebody-else", tool_call_id="call-2")
+
+    resp = client.get("/hooks/approvals", headers=headers)
+    assert resp.status_code == 200
+    entries = resp.json()["approvals"]
+    assert [e["record_id"] for e in entries] == [record["record_id"]]
+    assert entries[0]["tool_call_id"] == "call-1"
+
+    # An admin sees every user's pending approvals.
+    agent.accounts_repo.create_user("boss", "boss@example.com", "Boss", role="admin")
+    admin_headers = builder.auth(agent.accounts_repo.issue_token("boss"))
+    all_entries = client.get("/hooks/approvals", headers=admin_headers).json()["approvals"]
+    assert len(all_entries) == 2
+
+
+def test_resolve_approval_wakes_waiter(approvals_env, waiter_loop):
+    client, _agent, headers, _b = approvals_env
+    record, future = _mint_pending(waiter_loop)
+    resp = client.post(
+        f"/hooks/approvals/{record['record_id']}/resolve",
+        headers=headers,
+        json={"approved": True, "note": "go ahead"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["decision"] == "approved"
+    result = _await_result(waiter_loop, future)
+    assert result["approved"] is True
+    assert result["resolved_by"] == "owner"
+    assert result["note"] == "go ahead"
+
+
+def test_resolve_approval_404_for_missing_and_foreign(approvals_env, waiter_loop):
+    client, _agent, headers, _b = approvals_env
+    assert (
+        client.post(
+            "/hooks/approvals/nope/resolve", headers=headers, json={"approved": True}
+        ).status_code
+        == 404
+    )
+    foreign, _ = _mint_pending(waiter_loop, user_id="somebody-else", tool_call_id="call-9")
+    resp = client.post(
+        f"/hooks/approvals/{foreign['record_id']}/resolve",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 404  # existence not leaked
+
+
+def test_resolve_approval_409_when_no_waiter_and_cleans_record(approvals_env, waiter_loop):
+    from nymeria.core.hook_approvals import (
+        get_hook_approval_coordinator,
+        load_record,
+    )
+
+    client, _agent, headers, _b = approvals_env
+    record, _future = _mint_pending(waiter_loop)
+    # Simulate the waiter ending (timeout/abort) with the record left behind.
+    get_hook_approval_coordinator().discard(record["record_id"])
+    resp = client.post(
+        f"/hooks/approvals/{record['record_id']}/resolve",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 409
+    assert load_record(record["record_id"]) is None
+
+
+def test_resolve_approval_409_when_waiter_loop_died(approvals_env):
+    """A future orphaned by a dead loop is waiter-gone: 409 + cleanup, not 500."""
+    import asyncio
+
+    from nymeria.core.hook_approvals import load_record
+
+    client, _agent, headers, _b = approvals_env
+    dead_loop = asyncio.new_event_loop()
+    record, _future = _mint_pending(dead_loop)
+    dead_loop.close()
+    resp = client.post(
+        f"/hooks/approvals/{record['record_id']}/resolve",
+        headers=headers,
+        json={"approved": True},
+    )
+    assert resp.status_code == 409
+    assert load_record(record["record_id"]) is None
+
+
+def test_admin_may_resolve_another_users_approval(approvals_env, waiter_loop):
+    client, agent, _headers, builder = approvals_env
+    record, future = _mint_pending(waiter_loop, user_id="somebody-else")
+    agent.accounts_repo.create_user("boss", "boss@example.com", "Boss", role="admin")
+    admin_headers = builder.auth(agent.accounts_repo.issue_token("boss"))
+    resp = client.post(
+        f"/hooks/approvals/{record['record_id']}/resolve",
+        headers=admin_headers,
+        json={"approved": False, "note": "not now"},
+    )
+    assert resp.status_code == 200
+    result = _await_result(waiter_loop, future)
+    assert result["approved"] is False
+    assert result["resolved_by"] == "boss"
