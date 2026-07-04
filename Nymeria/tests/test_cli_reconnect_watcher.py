@@ -12,7 +12,7 @@ import asyncio
 
 from cli_fixtures import FakeTerminalCapabilities
 
-from nymeria.triggers.cli import app as app_module
+from nymeria.triggers.cli import repl_runtime as repl_runtime_module
 from nymeria.triggers.cli.app import CLIApp, _RichReplRuntime, _disconnected_notice_text
 from nymeria.triggers.cli.rendering.rich_repl import RichReplRenderer
 from nymeria.triggers.cli.transport import api as transport_api
@@ -77,7 +77,7 @@ def test_reconnect_watcher_applies_client_when_backend_recovers(monkeypatch) -> 
         cli_app._client = client  # now connected -> loop must not re-enter
 
     monkeypatch.setattr(cli_app, "_apply_reconnected_client", fake_apply)
-    monkeypatch.setattr(app_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(repl_runtime_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
 
     async def fake_attempt(client, **kwargs):
         return live
@@ -101,7 +101,7 @@ def test_reconnect_watcher_retries_until_backend_is_up(monkeypatch) -> None:
         cli_app._client = client
 
     monkeypatch.setattr(cli_app, "_apply_reconnected_client", fake_apply)
-    monkeypatch.setattr(app_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(repl_runtime_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
 
     async def fake_attempt(client, **kwargs):
         attempts["n"] += 1
@@ -128,7 +128,7 @@ def test_reconnect_watcher_does_not_clobber_a_concurrent_connection_change(
         applied.append(client)
 
     monkeypatch.setattr(cli_app, "_apply_reconnected_client", fake_apply)
-    monkeypatch.setattr(app_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(repl_runtime_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
 
     async def fake_attempt(client, **kwargs):
         # Simulate the user changing the active connection while the probe awaits
@@ -151,7 +151,7 @@ def test_reconnect_watcher_stops_and_warns_on_auth_error(monkeypatch) -> None:
     cli_app, runtime = _make_app_and_runtime()
     placeholder = _reconnectable_placeholder()
     cli_app._client = placeholder
-    monkeypatch.setattr(app_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(repl_runtime_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
 
     async def fake_attempt(client, **kwargs):
         raise APITransportStartupError(
@@ -175,7 +175,7 @@ def test_reconnect_watcher_stops_and_warns_on_auth_error(monkeypatch) -> None:
 def test_reconnect_watcher_is_noop_for_plain_disconnected(monkeypatch) -> None:
     cli_app, runtime = _make_app_and_runtime()
     cli_app._client = DisconnectedAgentClient(default_user_id="alice")
-    monkeypatch.setattr(app_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(repl_runtime_module, "_RECONNECT_POLL_INTERVAL_SECONDS", 0)
     called: list[object] = []
 
     async def fake_attempt(client, **kwargs):
