@@ -476,7 +476,14 @@ def test_rich_repl_application_keeps_status_above_multiline_chat_input(
     input_area = children[3]
     assert isinstance(input_area, HSplit)
 
-    slash_panel = children[4]
+    under_status_bar = children[4]
+    assert isinstance(under_status_bar, ConditionalContainer)
+    assert isinstance(under_status_bar.content, Window)
+    assert under_status_bar.content.style == "class:status"
+    # Hidden until a /statusbar layout configures under-prompt segments.
+    assert not under_status_bar.filter()
+
+    slash_panel = children[5]
     assert isinstance(slash_panel, ConditionalContainer)
     assert isinstance(slash_panel.content, Window)
     assert slash_panel.content.style == "class:slash-panel"
@@ -628,13 +635,14 @@ def test_rich_repl_scroll_region_uses_footer_only_layout(tmp_path: Path) -> None
     shell.composer_controller.text_area.buffer.text = "abcdefghij " * 6
 
     assert runtime.scroll_region_enabled() is True
-    assert len(children) == 6
+    assert len(children) == 7
     assert isinstance(children[0], ConditionalContainer)
     assert isinstance(children[1], ConditionalContainer)
     assert isinstance(children[2], HSplit)
-    assert isinstance(children[3], ConditionalContainer)  # slash panel, below input
-    assert isinstance(children[4], ConditionalContainer)  # form panel, below slash panel
-    assert isinstance(children[5], ConditionalContainer)  # queued panel, bottommost
+    assert isinstance(children[3], ConditionalContainer)  # under-prompt status bar
+    assert isinstance(children[4], ConditionalContainer)  # slash panel, below input
+    assert isinstance(children[5], ConditionalContainer)  # form panel, below slash panel
+    assert isinstance(children[6], ConditionalContainer)  # queued panel, bottommost
     assert runtime.composer_input_height() > 1
     # Composer text does not start with "/", no form is open, and nothing is
     # queued, so all three panels are hidden and contribute zero footer height.
