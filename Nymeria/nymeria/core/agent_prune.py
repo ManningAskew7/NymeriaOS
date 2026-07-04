@@ -215,10 +215,13 @@ class PruneManager:
         try:
             post_state = await graph.aget_state(config)
             post_messages = post_state.values.get("messages", [])
+            prune_model = agent._compaction._model_for(thread_id)
             estimate = agent._compaction._estimate_messages_tokens(
-                post_messages, agent._compaction._model_for(thread_id)
+                post_messages, prune_model
             )
-            agent._token_tracker.set_context_estimate(thread_id, estimate)
+            agent._token_tracker.set_context_estimate(
+                thread_id, estimate, context_model=prune_model
+            )
         except Exception as e:
             logger.debug(
                 "Thread %s: post-prune context re-estimate failed: %s", thread_id, e

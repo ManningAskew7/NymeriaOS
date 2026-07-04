@@ -827,10 +827,12 @@ class CompactionManager:
             logger.error(f"Thread {thread_id}: Retained-tail rebuild failed: {e}", exc_info=True)
             return {"success": False, "reason": str(e)}
 
+        compact_model = self._model_for(thread_id)
         agent._token_tracker.reset_after_compact(
             thread_id,
-            self._estimate_messages_tokens(tail, self._model_for(thread_id)),
+            self._estimate_messages_tokens(tail, compact_model),
             remaining_message_count=len(tail),
+            context_model=compact_model,
         )
         logger.info(
             f"Thread {thread_id}: Compaction complete, summarized "
@@ -908,10 +910,12 @@ class CompactionManager:
             logger.error(f"Thread {thread_id}: Sync retained-tail rebuild failed: {e}", exc_info=True)
             return {"success": False, "reason": str(e)}
 
+        compact_model = self._model_for(thread_id)
         agent._token_tracker.reset_after_compact(
             thread_id,
-            self._estimate_messages_tokens(tail, self._model_for(thread_id)),
+            self._estimate_messages_tokens(tail, compact_model),
             remaining_message_count=len(tail),
+            context_model=compact_model,
         )
         logger.info(
             f"Thread {thread_id}: Sync compaction complete, summarized "

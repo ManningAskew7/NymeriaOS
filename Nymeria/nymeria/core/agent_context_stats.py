@@ -59,12 +59,20 @@ def rehydrate_token_usage(agent: "NymeriaAgent", thread_id: str) -> None:
             # is set past the history so new turns post-restart only count
             # messages added from this point forward. Turn fields stay zeroed
             # with turn_recorded=False (the last turn is unknowable here).
+            # The occupancy stamp uses the thread's current effective model:
+            # history does not say which model measured the final call, and
+            # the current model is the one the estimate will be read against.
+            try:
+                context_model = agent._get_llm_config_for_thread(thread_id).model
+            except Exception:  # noqa: BLE001 - stamp is best-effort.
+                context_model = None
             agent._token_tracker.seed_rehydrated(
                 thread_id,
                 total_input_tokens=total_input,
                 total_output_tokens=total_output,
                 context_tokens=last_input,
                 message_index=len(messages),
+                context_model=context_model,
             )
             logger.debug(
                 f"Rehydrated token usage for thread {thread_id}: "
@@ -170,6 +178,7 @@ def record_turn_usage(
         cost_usd=cost_usd,
         cost_unavailable=cost_unavailable,
         turn_llm_seconds=turn_llm_seconds,
+        context_model=getattr(llm_config_for_cost, "model", None),
     )
     agent._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
     return turn_input, turn_output, recorded
@@ -199,6 +208,37 @@ def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
     llm_config = agent._get_llm_config_for_thread(thread_id)
     effective_model = llm_config.model
     model_limit = get_context_limit(effective_model)
+
+    # Token-audit defect #11: after a mid-thread model switch the stored
+    # occupancy was measured under the prior model, so dividing it by the
+    # new model's limit mixes the two. Re-estimate occupancy once from the
+    # checkpoint (the same chars-based estimator /prune and compaction use)
+    # and re-stamp; the next real turn replaces the estimate with measured
+    # usage. Best-effort: on failure the stale value keeps rendering and the
+    # stamp is left unchanged so a later poll retries.
+    if (
+        usage.context_tokens > 0
+        and usage.context_model
+        and usage.context_model != effective_model
+    ):
+        try:
+            config = {"configurable": {"thread_id": thread_id}}
+            messages = agent._default_graph.get_state(config).values.get("messages", [])
+            estimate = agent._compaction._estimate_messages_tokens(
+                messages, effective_model
+            )
+            if estimate > 0:
+                agent._token_tracker.set_context_estimate(
+                    thread_id, estimate, context_model=effective_model
+                )
+                usage = agent._token_tracker.get_usage(thread_id)
+        except Exception as exc:  # noqa: BLE001 - display-only refinement.
+            logger.debug(
+                "Thread %s: model-switch context re-estimate failed: %s",
+                thread_id,
+                exc,
+            )
+
     context_used = usage.context_tokens  # Last call's prompt_tokens = actual window usage
 
     # Resolved auto-compact trigger (per-thread threshold overrides included)

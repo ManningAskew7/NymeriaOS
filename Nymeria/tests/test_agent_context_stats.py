@@ -33,6 +33,7 @@ def _fake_usage(
     total_cost_usd: float = 0.0,
     cost_unavailable: bool = False,
     last_recorded_message_index: int = 0,
+    context_model: str | None = None,
 ) -> Any:
     """SimpleNamespace stand-in for ThreadTokenUsage.
 
@@ -56,6 +57,7 @@ def _fake_usage(
         total_cost_usd=total_cost_usd,
         cost_unavailable=cost_unavailable,
         last_recorded_message_index=last_recorded_message_index,
+        context_model=context_model,
     )
 
 
@@ -138,6 +140,7 @@ def test_rehydrate_seeds_cumulative_occupancy_and_index(monkeypatch: pytest.Monk
                 "total_output_tokens": 40,
                 "context_tokens": 10,
                 "message_index": 2,
+                "context_model": "gpt-4o",
             },
         )
     ]
@@ -199,6 +202,7 @@ def test_record_turn_usage_records_summed_turn_and_occupancy():
                 "cost_usd": 0.0021,
                 "cost_unavailable": False,
                 "turn_llm_seconds": None,
+                "context_model": "gpt-4o",
             },
         )
     ]
@@ -224,6 +228,7 @@ def test_record_turn_usage_empty_extraction_still_updates_tracker():
                 "cost_usd": None,
                 "cost_unavailable": False,
                 "turn_llm_seconds": None,
+                "context_model": "gpt-4o",
             },
         )
     ]
@@ -448,6 +453,162 @@ def test_get_stats_usage_percentage_zero_when_no_limit(monkeypatch: pytest.Monke
     # No ZeroDivisionError; percentage falls back to 0.
     assert stats["context_limit"] == 0
     assert stats["usage_percentage"] == 0
+
+
+# ----- model-switch occupancy re-estimate (token-audit defect #11) -----------
+
+
+def _wire_reestimate(
+    agent: Any,
+    usage: Any,
+    *,
+    estimate: int,
+    raises: bool = False,
+) -> list[tuple]:
+    """Attach a recording set_context_estimate + estimator to a fake agent.
+
+    ``set_context_estimate`` mutates the shared usage namespace exactly like
+    the real tracker so the follow-up ``get_usage`` read sees fresh values.
+    """
+    set_calls: list[tuple] = []
+
+    def _set_estimate(tid, tokens, context_model=None):
+        set_calls.append((tid, tokens, context_model))
+        usage.last_input_tokens = tokens
+        usage.context_tokens = tokens
+        usage.context_model = context_model
+
+    agent._token_tracker.set_context_estimate = _set_estimate
+
+    def _estimate(_messages, _model):
+        if raises:
+            raise RuntimeError("estimator boom")
+        return estimate
+
+    agent._compaction._estimate_messages_tokens = _estimate
+    return set_calls
+
+
+def test_get_stats_reestimates_occupancy_after_model_switch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(last_input=150_000, context_model="claude-old")
+    agent = _fake_agent(usage=usage, model="gpt-new")
+    set_calls = _wire_reestimate(agent, usage, estimate=40_000)
+
+    stats = get_context_stats(cast(Any, agent), "t1")
+
+    assert set_calls == [("t1", 40_000, "gpt-new")]
+    assert stats["total_tokens"] == 40_000
+    assert stats["usage_percentage"] == 40.0
+
+
+def test_get_stats_skips_reestimate_when_model_matches(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(last_input=50_000, context_model="gpt-4o")
+    agent = _fake_agent(usage=usage, model="gpt-4o")
+    set_calls = _wire_reestimate(agent, usage, estimate=40_000)
+
+    stats = get_context_stats(cast(Any, agent), "t1")
+
+    assert set_calls == []
+    assert stats["total_tokens"] == 50_000
+
+
+def test_get_stats_skips_reestimate_without_a_stamp(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Legacy rows (stamp None) keep the old forward-looking division."""
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(last_input=50_000, context_model=None)
+    agent = _fake_agent(usage=usage, model="gpt-new")
+    set_calls = _wire_reestimate(agent, usage, estimate=40_000)
+
+    get_context_stats(cast(Any, agent), "t1")
+
+    assert set_calls == []
+
+
+def test_get_stats_reestimate_failure_keeps_stale_value(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(last_input=150_000, context_model="claude-old")
+    agent = _fake_agent(usage=usage, model="gpt-new")
+    set_calls = _wire_reestimate(agent, usage, estimate=40_000, raises=True)
+
+    stats = get_context_stats(cast(Any, agent), "t1")
+
+    # Stale value keeps rendering; the stamp is untouched so a later poll
+    # retries the re-estimate.
+    assert set_calls == []
+    assert stats["total_tokens"] == 150_000
+    assert usage.context_model == "claude-old"
+
+
+def test_get_stats_zero_estimate_does_not_zero_the_bar(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(last_input=150_000, context_model="claude-old")
+    agent = _fake_agent(usage=usage, model="gpt-new")
+    set_calls = _wire_reestimate(agent, usage, estimate=0)
+
+    stats = get_context_stats(cast(Any, agent), "t1")
+
+    assert set_calls == []
+    assert stats["total_tokens"] == 150_000
+
+
+def test_tracker_stamps_context_model_only_with_fresh_occupancy():
+    from nymeria.core.token_tracker import TokenTracker
+
+    tracker = TokenTracker()
+    tracker.record_turn(
+        "t1",
+        turn_input_tokens=100,
+        turn_output_tokens=10,
+        context_tokens=100,
+        context_model="model-a",
+    )
+    assert tracker.get_usage("t1").context_model == "model-a"
+
+    # A turn with no fresh occupancy keeps the previous stamp.
+    tracker.record_turn(
+        "t1",
+        turn_input_tokens=50,
+        turn_output_tokens=5,
+        context_tokens=None,
+        context_model="model-b",
+    )
+    assert tracker.get_usage("t1").context_model == "model-a"
+    assert tracker.get_usage("t1").context_tokens == 100
+
+    tracker.set_context_estimate("t1", 40, context_model="model-b")
+    usage = tracker.get_usage("t1")
+    assert (usage.context_tokens, usage.context_model) == (40, "model-b")
+
+    tracker.reset_after_compact("t1", 10, context_model="model-c")
+    usage = tracker.get_usage("t1")
+    assert (usage.context_tokens, usage.context_model) == (10, "model-c")
 
 
 def test_get_stats_compact_trigger_none_when_auto_compact_disabled(
