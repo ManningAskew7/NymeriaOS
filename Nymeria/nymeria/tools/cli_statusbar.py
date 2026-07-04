@@ -69,18 +69,24 @@ async def _dispatch(
         command_type=command_type,
         metadata=args,
     )
-    publish_autonomous_event(
-        event_type="cli_config",
-        thread_id=thread_id,
-        user_id=user_id,
-        task_id="",
-        data={
-            "command_id": command_id,
-            "command_type": command_type,
-            "args": args,
-            "timeout_seconds": _TIMEOUT_SECONDS,
-        },
-    )
+    try:
+        publish_autonomous_event(
+            event_type="cli_config",
+            thread_id=thread_id,
+            user_id=user_id,
+            task_id="",
+            data={
+                "command_id": command_id,
+                "command_type": command_type,
+                "args": args,
+                "timeout_seconds": _TIMEOUT_SECONDS,
+            },
+        )
+    except Exception:
+        # No event means no CLI will ever answer; do not leave the future
+        # pending until the orphan sweep.
+        coord.discard(command_id)
+        raise
     try:
         result = await asyncio.wait_for(future, timeout=_TIMEOUT_SECONDS + 1)
     except asyncio.TimeoutError:
@@ -125,11 +131,14 @@ async def cli_statusbar_set(
     the composer, hidden by default).
     segments: ordered segment refs. Each ref is a built-in segment key
     (brand, activity, notice, connection, model, fast, reasoning, thread,
-    context, tps, queued, cwd), "text:<literal>" for a static label, or
-    "script:<command>" for a script segment (runs on the user's machine;
-    JSON state snapshot on stdin, its first stdout line is shown). An EMPTY
-    list resets the bar: top returns to the built-in default order, under
-    becomes hidden.
+    context, tps, queued, cwd) or "text:<literal>" for a static label. An
+    EMPTY list resets the bar: top returns to the built-in default order,
+    under becomes hidden.
+
+    "script:<command>" segments (commands executed periodically on the
+    user's machine) can NOT be pushed from here: they are user-installed
+    only, via the local /statusbar command. To offer one, tell the user
+    the exact /statusbar command to run instead.
 
     The change applies live in every connected CLI and persists in the
     user's cli.json. Returns the applied layout as JSON, or an error when
@@ -144,13 +153,23 @@ async def cli_statusbar_set(
         return "[Error]: segments must be a list of non-empty strings."
     for ref in segments:
         text = ref.strip()
-        if text.startswith(("text:", "script:")):
+        if text.startswith("script:"):
+            # Security boundary: an agent-pushed script would execute
+            # periodically on the user's local machine. The CLI apply
+            # branch rejects these too (defense in depth).
+            return (
+                "[Error]: script: segments cannot be set by the agent; "
+                "they run commands on the user's machine, so the user must "
+                "add them locally. Tell the user to run: /statusbar set "
+                f"{normalized_bar} ... {text} ..."
+            )
+        if text.startswith("text:"):
             continue
         if text.casefold() not in _BUILTIN_SEGMENTS:
             return (
                 f"[Error]: Unknown segment ref: {ref}. Built-in segments: "
                 f"{', '.join(_BUILTIN_SEGMENTS)}; custom refs: "
-                "text:<literal>, script:<command>."
+                "text:<literal>."
             )
     return await _dispatch(
         command_type="statusbar_set",

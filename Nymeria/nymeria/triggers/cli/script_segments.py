@@ -7,15 +7,25 @@ becomes the segment text. The renderer only ever reads the cached
 ``(value, fetched_at)`` result via :meth:`ScriptSegmentRunner.lookup`, so a
 slow or hung script can never block a frame.
 
+Script segments are USER-INSTALLED ONLY (the local ``/statusbar`` command or
+a hand edit of ``cli.json``); the agent-pushed ``cli_config`` path rejects
+``script:`` refs on both the backend tool and the client apply branch, so a
+prompt-injected agent cannot plant a periodically-executing command here.
+
 Failure posture: a failing or timed-out run keeps the previous cached value
 (stale text beats flicker); a command that has never succeeded renders
-nothing. The subprocess is killed on timeout and on runner shutdown.
+nothing. stdout is read with a hard byte bound (never buffered unbounded),
+each script runs in its own process group (POSIX) so a backgrounded
+grandchild dies with it, and the group is killed on timeout and shutdown.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
+import sys
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -150,36 +160,26 @@ class ScriptSegmentRunner:
         except (TypeError, ValueError):
             payload = b"{}"
 
+        kwargs: dict[str, Any] = {}
+        if sys.platform != "win32":
+            kwargs["start_new_session"] = True  # own group for group-kill
         process = await asyncio.create_subprocess_shell(
             command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            **kwargs,
         )
         try:
-            stdout, _ = await asyncio.wait_for(
-                process.communicate(payload),
+            stdout, returncode = await asyncio.wait_for(
+                self._communicate_bounded(process, payload),
                 timeout=self.timeout_seconds,
             )
         except (asyncio.TimeoutError, asyncio.CancelledError):
-            with suppress(ProcessLookupError):
-                process.kill()
-            # Do NOT await process.wait() here: on CPython 3.12 a cancelled
-            # communicate() leaves the transport's wait() hung forever even
-            # after the child is reaped. The child watcher still reaps the
-            # kill; poll returncode with a bounded budget instead.
-            for _ in range(20):
-                if process.returncode is not None:
-                    break
-                await asyncio.sleep(0.05)
-            # Close the pipe transport now, while the loop is alive, instead
-            # of leaving it to GC (which warns if the loop closed first).
-            transport = getattr(process, "_transport", None)
-            if transport is not None:
-                with suppress(Exception):
-                    transport.close()
+            self._kill_process_group(process)
+            await self._reap(process)
             raise
-        if process.returncode != 0:
+        if returncode != 0:
             return False
 
         text = self._first_line(stdout)
@@ -188,6 +188,73 @@ class ScriptSegmentRunner:
         previous = self._cache.get(command)
         self._cache[command] = _CachedResult(text=text, fetched_at=time.monotonic())
         return previous is None or previous.text != text
+
+    @staticmethod
+    async def _communicate_bounded(
+        process: Any,
+        payload: bytes,
+    ) -> tuple[bytes, int | None]:
+        """Feed stdin and read AT MOST the output bound, then await exit.
+
+        Deliberately not ``process.communicate()``: that buffers the entire
+        stdout in memory, so a chatty script would spike RSS every sweep.
+        A script that emits more than the bound blocks on the full pipe,
+        fails the outer timeout, and is group-killed.
+        """
+
+        stdin = process.stdin
+        if stdin is not None:
+            try:
+                stdin.write(payload)
+                await stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass  # script exited early or never read stdin; fine
+            with suppress(Exception):
+                stdin.close()
+        # Read until the first newline, EOF, or the byte bound; only the
+        # first line is ever shown, so anything past it stays in the OS
+        # pipe buffer (a script spewing far beyond it blocks, fails the
+        # outer timeout, and is group-killed).
+        buffer = bytearray()
+        if process.stdout is not None:
+            while len(buffer) < _MAX_OUTPUT_BYTES and b"\n" not in buffer:
+                chunk = await process.stdout.read(4096)
+                if not chunk:
+                    break
+                buffer.extend(chunk)
+        returncode = await process.wait()
+        return bytes(buffer[:_MAX_OUTPUT_BYTES]), returncode
+
+    @staticmethod
+    def _kill_process_group(process: Any) -> None:
+        """SIGKILL the script's whole group (falls back to the child)."""
+
+        try:
+            if sys.platform != "win32" and hasattr(os, "killpg"):
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass  # already gone
+
+    @staticmethod
+    async def _reap(process: Any) -> None:
+        """Bounded post-kill cleanup that never awaits ``process.wait()``.
+
+        On CPython 3.12 a cancelled in-flight read/communicate can leave the
+        transport's ``wait()`` hung forever even after the child is reaped;
+        poll ``returncode`` instead, then close the pipe transport while the
+        loop is alive (GC-time close warns if the loop closed first).
+        """
+
+        for _ in range(20):
+            if process.returncode is not None:
+                break
+            await asyncio.sleep(0.05)
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            with suppress(Exception):
+                transport.close()
 
     @staticmethod
     def _first_line(stdout: bytes | None) -> str:

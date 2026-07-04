@@ -162,7 +162,15 @@ def load_statusbar_layout(
     if not isinstance(section, Mapping):
         return DEFAULT_STATUSBAR_LAYOUT
 
-    top = _normalized_ref_list(section.get("top")) if "top" in section else None
+    top: tuple[str, ...] | None = None
+    if "top" in section:
+        raw_top = section.get("top")
+        top = _normalized_ref_list(raw_top)
+        if not top and isinstance(raw_top, Sequence) and len(raw_top) > 0:
+            # Every stored ref was dropped as malformed or unknown (hand
+            # edit, or a downgrade that no longer knows a newer built-in):
+            # fall back to the default order instead of pinning a blank bar.
+            top = None
     under = _normalized_ref_list(section.get("under_prompt")) or ()
     return StatusBarLayout(top=top, under_prompt=under)
 
