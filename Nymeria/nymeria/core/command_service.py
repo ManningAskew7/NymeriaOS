@@ -1175,8 +1175,14 @@ class CommandBackendClient:
         from_message_index: Optional[int] = None,
     ) -> dict:
         # Mirrors POST /threads/{id}/branch (thread_branch.branch_thread run off
-        # the event loop).
+        # the event loop), including the route's mid-turn guard: branching a
+        # processing thread would copy the last committed checkpoint and drop
+        # the in-flight turn.
         self._require_thread_access(thread_id)
+        from ..api.thread_overview import is_thread_processing
+
+        if is_thread_processing(self.agent, thread_id):
+            _raise_http_status(409, "Cannot branch while the source thread is processing")
         from .thread_branch import ThreadBranchError, branch_thread
 
         try:

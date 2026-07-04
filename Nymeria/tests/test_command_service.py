@@ -2027,3 +2027,29 @@ def test_thread_list_formats_backend_teams_before_ungrouped_threads() -> None:
     assert team_index < pinned_index < recent_index
     assert any("team-a" in line and "Team A" in line for line in lines)
     assert any("pinned" in line and "Pinned ungrouped" in line for line in lines)
+
+
+def test_in_process_branch_thread_refuses_while_processing() -> None:
+    """CommandBackendClient.branch_thread mirrors the route's mid-turn 409.
+
+    POST /threads/{id}/branch rejects branching a processing thread (the
+    branch would copy the last committed checkpoint and drop the in-flight
+    turn); the in-process slash-command client must keep the same guard now
+    that /thread branch and /branch run through it on every frontend.
+    """
+
+    class _Locks:
+        def get_lock_info(self, thread_id: str):
+            return {"holder": "turn"}
+
+    agent = SimpleNamespace(
+        _thread_locks=_Locks(),
+        accounts_repo=SimpleNamespace(claim_thread=lambda tid, uid: uid),
+    )
+    user = _CommandBackendUser(id="alice", role="admin")
+    client = CommandBackendClient(agent, user=user)
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(client.branch_thread("thread-1", title="fork"))
+    assert excinfo.value.response.status_code == 409
+    assert "processing" in excinfo.value.response.text.lower()

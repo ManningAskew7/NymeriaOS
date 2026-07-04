@@ -20,14 +20,16 @@ async def _handle_model_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    """Forward /model to the backend registry; offline falls back to show.
+    """Forward /model to the backend registry; fall back to show without one.
 
     The backend root returns the declarative model-picker form on rich
     renderers (adapted and opened by the form contract in
     ``backend._execute_backend_command``) plus a markdown fallback for
-    everything else. This local root is only reachable when no backend
-    catalog registered (disconnected transport), where bare ``/model``
-    degrades to the show output.
+    everything else. The backend proxy root shadows this local root in every
+    mode (``backend.register()`` builds the catalog in-process, and the
+    disconnected transport answers ``execute_command`` with its notice), so
+    this handler is a defensive fallback that only runs if catalog
+    registration itself fails; bare ``/model`` then degrades to show.
     """
 
     if args:

@@ -34,12 +34,13 @@ async def _handle_artifacts_root(
 ) -> CommandResult:
     """Forward /artifacts to the backend registry (recent listing).
 
-    The backend ``/artifacts`` root and ``/artifacts recent`` win over this
-    local root when the backend catalog is registered, so this handler is only
-    reached on a disconnected transport, where it degrades to the backend
-    proxy's unsupported-transport message. The client-side ``open`` and
-    ``download`` subcommands are merged under the backend root and keep running
-    locally.
+    The backend ``/artifacts`` root shadows this local root in every mode
+    (``backend.register()`` builds the catalog in-process, and the
+    disconnected transport answers ``execute_command`` with its notice), so
+    this handler is a defensive fallback that only runs if catalog
+    registration itself fails; it forwards the same way. The client-side
+    ``open`` and ``download`` subcommands are merged under the backend root
+    and keep running locally.
     """
     from .backend import _execute_backend_command
 

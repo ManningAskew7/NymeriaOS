@@ -270,3 +270,35 @@ def test_execute_backend_command_applies_state_hints() -> None:
     assert [message.content for message in result.messages] == [
         "Model for this thread set to gpt-next."
     ]
+
+
+def test_substitute_template_is_single_pass_and_quotes_whitespace() -> None:
+    """A value containing another field's placeholder is not re-expanded,
+    and multi-word values arrive shell-quoted so the backend's shlex split
+    keeps them as one argument."""
+
+    # Single pass: the {b} inside a's value is left alone.
+    assert (
+        substitute_template("cmd {a} {b}", {"a": "{b}", "b": "x"}) == "cmd {b} x"
+    )
+
+    client = _RecordingClient()
+    context, _dispatched = _context(client)
+    payload = _form_payload()
+    payload["tabs"][0]["fields"][1]["options"] = [
+        {"id": "my local model", "label": "my local model"},
+    ]
+    spec = form_spec_from_payload(payload, context=context)
+    assert spec is not None
+
+    run(
+        spec.on_confirm(
+            FormResult(
+                spec_title="Select model",
+                tab_label="Models",
+                radio_value="my local model",
+            )
+        )
+    )
+
+    assert client.calls == ["/model 'my local model' thread"]
