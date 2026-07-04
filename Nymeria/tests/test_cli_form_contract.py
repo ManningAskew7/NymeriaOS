@@ -169,6 +169,47 @@ def test_apply_state_hints_dispatches_model_sync() -> None:
     assert dispatched == [{"type": "set_model", "model": "gpt-next"}]
 
 
+def test_apply_state_hints_dispatches_thread_switch() -> None:
+    context, dispatched = _context(_RecordingClient())
+
+    run(
+        apply_state_hints(
+            {"switch_thread": {"thread_id": "thread-2", "thread_label": "Next"}},
+            context,
+        )
+    )
+    # A blank thread_id is ignored, not dispatched as an empty switch.
+    run(apply_state_hints({"switch_thread": {"thread_id": ""}}, context))
+
+    assert dispatched == [
+        {"type": "switch_thread", "thread_id": "thread-2", "thread_label": "Next"}
+    ]
+
+
+def test_apply_state_hints_dispatches_thread_switch_without_label() -> None:
+    context, dispatched = _context(_RecordingClient())
+
+    run(apply_state_hints({"switch_thread": {"thread_id": "thread-9"}}, context))
+
+    assert dispatched == [{"type": "switch_thread", "thread_id": "thread-9"}]
+
+
+def test_apply_state_hints_dispatches_label_and_refresh_actions() -> None:
+    context, dispatched = _context(_RecordingClient())
+
+    run(apply_state_hints({"thread_label": "Renamed"}, context))
+    run(apply_state_hints({"thread_metadata_updated": True}, context))
+    run(apply_state_hints({"thread_context_updated": True}, context))
+    # Falsy refresh flags dispatch nothing.
+    run(apply_state_hints({"thread_metadata_updated": False}, context))
+
+    assert dispatched == [
+        {"type": "set_thread_label", "thread_label": "Renamed"},
+        {"type": "thread_metadata_updated"},
+        {"type": "thread_context_updated"},
+    ]
+
+
 def test_execute_backend_command_opens_declared_form() -> None:
     client = _RecordingClient(
         response={

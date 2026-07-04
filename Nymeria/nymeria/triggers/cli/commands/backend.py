@@ -205,10 +205,13 @@ async def _execute_backend_command(
     message = CommandMessage(markdown, level=level)
     if success:
         data = payload.get("data")
+        thread_switched = False
         if isinstance(data, Mapping):
             from .form_contract import apply_state_hints, form_spec_from_payload
 
-            await apply_state_hints(data.get("state"), context)
+            state = data.get("state")
+            await apply_state_hints(state, context)
+            thread_switched = _state_switches_thread(state)
             if context.supports_forms():
                 spec = form_spec_from_payload(data.get("form"), context=context)
                 if spec is not None:
@@ -222,10 +225,17 @@ async def _execute_backend_command(
                         },
                         json_payload=payload,
                     )
+        # A switch_thread hint means the active thread changed server-side; flag
+        # it so the REPL loads the new thread's history (the local /thread switch
+        # handler set the same payload flag before the migration).
         return CommandResult.completed(
             message,
             command_path=path,
-            payload={"backend_command": True, "command": payload.get("command")},
+            payload={
+                "backend_command": True,
+                "command": payload.get("command"),
+                "thread_switched": thread_switched,
+            },
             json_payload=payload,
         )
     return CommandResult.failed(
@@ -235,6 +245,14 @@ async def _execute_backend_command(
         payload={"backend_command": True, "command": payload.get("command")},
         json_payload=payload,
     )
+
+
+def _state_switches_thread(state: Any) -> bool:
+    """Whether a ``data["state"]`` hint asks the REPL to switch threads."""
+    if not isinstance(state, Mapping):
+        return False
+    switch = state.get("switch_thread")
+    return isinstance(switch, Mapping) and bool(str(switch.get("thread_id") or "").strip())
 
 
 def _path(info: Mapping[str, Any]) -> tuple[str, ...]:

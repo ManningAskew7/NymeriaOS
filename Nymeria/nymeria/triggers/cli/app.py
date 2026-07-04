@@ -171,7 +171,6 @@ class CLIApp:
             skills,
             system,
             theme,
-            threads,
             todos,
             tools,
             triggers,
@@ -187,7 +186,6 @@ class CLIApp:
         system.register(self.registry)
         connection.register(self.registry)
         context.register(self.registry)
-        threads.register(self.registry)
         model.register(self.registry)
         tools.register(self.registry)
         skills.register(self.registry)
@@ -527,7 +525,11 @@ class CLIApp:
         return [thread for thread in raw_threads if isinstance(thread, Mapping)]
 
     async def _resolve_startup_thread_ref(self, ref: str) -> dict[str, str] | None:
-        from .commands.threads import (
+        # Startup `--resume <ref>` resolution runs before the REPL and command
+        # loop exist, so it uses the shared resolver directly rather than a
+        # slash command. The backend module is the single source of the
+        # reference-matching logic (also used by /thread switch|delete|pin).
+        from ...core.command_executor_threads import (
             _format_thread_resolution_ambiguity,
             resolve_thread_reference,
         )

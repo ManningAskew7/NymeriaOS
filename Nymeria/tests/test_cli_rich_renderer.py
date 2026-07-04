@@ -5,6 +5,7 @@ import io
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 from cli_fixtures import CapturedRenderOutput, FakeAgentClient, FakeTerminalCapabilities
@@ -1919,9 +1920,60 @@ def test_history_payload_converts_to_ordered_cli_state_and_renders_divider() -> 
     assert "Context compacted." in output.stdout_text
 
 
+class _ThreadSwitchBackendClient(FakeAgentClient):
+    """FakeAgentClient that emulates the backend ``/thread switch`` handler.
+
+    Since the /thread tree migrated to the backend command registry, the CLI
+    forwards ``/thread switch <ref>`` to ``execute_command`` and applies the
+    returned ``switch_thread`` state hint (see form_contract.apply_state_hints).
+    This mirrors the fake-execute_command pattern in test_cli_model_form.py.
+    """
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: str | None = None,
+        source: str = "cli",
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        from nymeria.core.command_executor_threads import resolve_thread_reference
+
+        tokens = command.lstrip("/").split()
+        if len(tokens) >= 3 and tokens[0] == "thread" and tokens[1] in {"switch", "s"}:
+            resolution = resolve_thread_reference(self.threads, " ".join(tokens[2:]))
+            if resolution.matched and resolution.thread is not None:
+                tid = str(
+                    resolution.thread.get("thread_id")
+                    or resolution.thread.get("id")
+                    or ""
+                )
+                title = str(resolution.thread.get("title") or "").strip() or "New Chat"
+                return {
+                    "success": True,
+                    "markdown": f"**Done.** Switched to {tid[:8]} {title}",
+                    "command": "thread switch",
+                    "level": "success",
+                    "data": {
+                        "state": {
+                            "switch_thread": {"thread_id": tid, "thread_label": title}
+                        }
+                    },
+                }
+            return {
+                "success": False,
+                "markdown": f"No thread matching '{' '.join(tokens[2:])}'.",
+                "command": "thread switch",
+                "level": "error",
+            }
+        return {"success": True, "markdown": "Done.", "command": tokens[0] if tokens else "", "level": "success"}
+
+
 def test_rich_thread_switch_resets_transcript_and_loads_selected_history() -> None:
     async def exercise() -> tuple[CLIApp, RichReplRenderer, FakeAgentClient, str]:
-        client = FakeAgentClient(
+        client = _ThreadSwitchBackendClient(
             threads=[
                 {"thread_id": "thread-1", "title": "Old"},
                 {"thread_id": "thread-2", "title": "Loaded Thread"},

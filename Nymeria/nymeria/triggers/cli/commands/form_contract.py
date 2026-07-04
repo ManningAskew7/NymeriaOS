@@ -65,13 +65,39 @@ def form_spec_from_payload(
 
 
 async def apply_state_hints(state: Any, context: CommandContext) -> None:
-    """Apply known ``data["state"]`` sync hints; unknown keys are ignored."""
+    """Apply known ``data["state"]`` sync hints; unknown keys are ignored.
+
+    Each hint reconstructs the exact CLI dispatch action the retired local
+    handler fired, so the forwarder path is lossless: ``model`` -> ``set_model``,
+    ``switch_thread`` -> ``switch_thread``, ``thread_label`` ->
+    ``set_thread_label``, and the two header-refresh flags map to the existing
+    ``thread_metadata_updated`` / ``thread_context_updated`` actions.
+    """
 
     if not isinstance(state, Mapping):
         return
     model = state.get("model")
     if isinstance(model, str) and model.strip():
         await context.dispatch({"type": "set_model", "model": model.strip()})
+
+    switch = state.get("switch_thread")
+    if isinstance(switch, Mapping):
+        thread_id = str(switch.get("thread_id") or "").strip()
+        if thread_id:
+            action: dict[str, Any] = {"type": "switch_thread", "thread_id": thread_id}
+            label = switch.get("thread_label")
+            if isinstance(label, str) and label.strip():
+                action["thread_label"] = label.strip()
+            await context.dispatch(action)
+
+    label = state.get("thread_label")
+    if isinstance(label, str) and label.strip():
+        await context.dispatch({"type": "set_thread_label", "thread_label": label.strip()})
+
+    if state.get("thread_metadata_updated"):
+        await context.dispatch({"type": "thread_metadata_updated"})
+    if state.get("thread_context_updated"):
+        await context.dispatch({"type": "thread_context_updated"})
 
 
 def substitute_template(

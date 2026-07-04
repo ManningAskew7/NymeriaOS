@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import shlex
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ import httpx
 
 from ..config import get_settings
 from .command_executor_context import ContextCommandsMixin
+from .command_executor_threads import ThreadCommandsMixin
 from .command_forms import (
     CommandOutput,
     command_data,
@@ -648,6 +650,89 @@ class CommandHttpClient:
                 return None
             raise
 
+    async def list_threads(self, user_id: Optional[str] = None) -> list[dict]:
+        # owned_only mirrors CommandBackendClient.list_threads so the two
+        # TurnExecutor shapes cannot drift.
+        data = await self._get("/threads", params={"owned_only": "true"}, act_as=user_id)
+        if isinstance(data, dict):
+            threads = data.get("threads", [])
+            return [thread for thread in threads if isinstance(thread, dict)]
+        return []
+
+    async def list_thread_teams(self, user_id: Optional[str] = None) -> list[dict]:
+        data = await self._get("/thread-teams", act_as=user_id)
+        if isinstance(data, dict):
+            teams = data.get("teams", [])
+            return [team for team in teams if isinstance(team, dict)]
+        return []
+
+    async def create_thread(
+        self,
+        user_id: Optional[str] = None,
+        *,
+        thread_id: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> dict:
+        selected_thread_id = thread_id or uuid.uuid4().hex[:8]
+        claimed = await self._post(
+            f"/threads/{_path_param(selected_thread_id)}/claim",
+            json=_clean_params(title=title, platform="cli"),
+            act_as=user_id,
+        )
+        payload: dict[str, Any] = {
+            "thread_id": selected_thread_id,
+            "title": title or "New Chat",
+            "title_source": "user" if title else "default",
+            "platform": "cli",
+        }
+        if isinstance(claimed, dict):
+            payload.update(claimed)
+        return payload
+
+    async def update_thread_metadata(
+        self,
+        thread_id: str,
+        user_id: Optional[str] = None,
+        *,
+        title: Optional[str] = None,
+        pinned: Optional[bool] = None,
+    ) -> dict:
+        body: dict[str, Any] = {}
+        if title is not None:
+            body["title"] = title
+        if pinned is not None:
+            body["pinned"] = pinned
+        return await self._patch(
+            f"/threads/{_path_param(thread_id)}/metadata", json=body, act_as=user_id
+        )
+
+    async def delete_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
+        return await self._delete(f"/threads/{_path_param(thread_id)}", act_as=user_id)
+
+    async def branch_thread(
+        self,
+        thread_id: str,
+        user_id: Optional[str] = None,
+        *,
+        title: Optional[str] = None,
+        from_message_index: Optional[int] = None,
+    ) -> dict:
+        body: dict[str, Any] = {}
+        if title is not None:
+            body["title"] = title
+        if from_message_index is not None:
+            body["from_message_index"] = from_message_index
+        return await self._post(
+            f"/threads/{_path_param(thread_id)}/branch", json=body, act_as=user_id
+        )
+
+    async def compact_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
+        return await self._post(
+            f"/threads/{_path_param(thread_id)}/compact",
+            params={"user_id": user_id} if user_id else None,
+            act_as=user_id,
+        )
+
     async def get_settings(self, user_id: Optional[str] = None) -> dict:
         return await self._get("/settings", act_as=user_id)
 
@@ -985,6 +1070,131 @@ class CommandBackendClient:
         if tc:
             return _config_response(tc)
         return _default_thread_config_response(thread_id)
+
+    async def list_threads(self, user_id: Optional[str] = None) -> list[dict]:
+        # Mirrors GET /threads?owned_only=true: only threads recorded in
+        # thread_owners for the acting user, skipping the checkpoint/resource
+        # recovery enrichment (the safe default the route documents).
+        from ..api.routers.threads import _thread_list_payload
+
+        target_user_id = self._checked_user_id(user_id or self.user.id)
+        agent = self.agent
+        owned_ids = set(agent.accounts_repo.list_threads_for_user(target_user_id))
+        store = agent.thread_metadata_manager.get_store(target_user_id)
+        return [
+            _thread_list_payload(agent, tid, store.threads.get(tid))
+            for tid in sorted(owned_ids)
+        ]
+
+    async def list_thread_teams(self, user_id: Optional[str] = None) -> list[dict]:
+        # Callable visibility teams grouped from thread configs, mirroring
+        # GET /thread-teams (thread_config._serialize_thread_teams).
+        target_user_id = self._checked_user_id(user_id or self.user.id)
+        manager = getattr(self.agent, "thread_config_manager", None)
+        teams: dict[str, dict[str, Any]] = {}
+        for thread in await self.list_threads(target_user_id):
+            thread_id = str(thread.get("thread_id") or thread.get("id") or "")
+            if not thread_id:
+                continue
+            config = manager.get_config(thread_id) if manager is not None else None
+            team_id = str(getattr(config, "callable_team_id", "") or "")
+            if not team_id:
+                continue
+            team_name = str(getattr(config, "callable_team_name", "") or team_id)
+            team = teams.setdefault(
+                team_id,
+                {"id": team_id, "name": team_name, "thread_ids": []},
+            )
+            team["name"] = team_name
+            team["thread_ids"].append(thread_id)
+        return sorted(teams.values(), key=lambda item: str(item["name"]).casefold())
+
+    async def create_thread(
+        self,
+        user_id: Optional[str] = None,
+        *,
+        thread_id: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> dict:
+        # Mirrors POST /threads/{id}/claim: upsert cli-platform metadata and
+        # claim ownership so the thread appears in owned listings.
+        from ..api.routers.threads import _thread_list_payload
+
+        target_user_id = self._checked_user_id(user_id or self.user.id)
+        selected_thread_id = thread_id or uuid.uuid4().hex[:8]
+        fields: dict[str, Any] = {"platform": "cli"}
+        if title:
+            fields["title"] = title
+            fields["title_source"] = "user"
+        meta = self.agent.thread_metadata_manager.upsert_thread(
+            target_user_id, selected_thread_id, **fields
+        )
+        self.agent.accounts_repo.claim_thread(selected_thread_id, target_user_id)
+        return _thread_list_payload(self.agent, selected_thread_id, meta)
+
+    async def update_thread_metadata(
+        self,
+        thread_id: str,
+        user_id: Optional[str] = None,
+        *,
+        title: Optional[str] = None,
+        pinned: Optional[bool] = None,
+    ) -> dict:
+        self._require_thread_access(thread_id)
+        fields: dict[str, Any] = {}
+        if title is not None:
+            fields["title"] = title.strip()
+            fields["title_source"] = "user"
+        if pinned is not None:
+            fields["pinned"] = pinned
+        meta = self.agent.thread_metadata_manager.upsert_thread(
+            self.user.id, thread_id, **fields
+        )
+        return meta.model_dump(mode="json")
+
+    async def delete_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
+        # Mirrors DELETE /threads/{id}: full cascade delete of every resource
+        # that could recreate the thread.
+        self._require_thread_access(thread_id)
+        from .thread_deletion import ThreadDeletionBusy, cascade_delete_thread
+
+        try:
+            deletion = cascade_delete_thread(
+                self.agent, self._settings(), self.user.id, thread_id
+            )
+        except ThreadDeletionBusy as e:
+            _raise_http_status(409, str(e))
+        return deletion.model_dump()
+
+    async def branch_thread(
+        self,
+        thread_id: str,
+        user_id: Optional[str] = None,
+        *,
+        title: Optional[str] = None,
+        from_message_index: Optional[int] = None,
+    ) -> dict:
+        # Mirrors POST /threads/{id}/branch (thread_branch.branch_thread run off
+        # the event loop).
+        self._require_thread_access(thread_id)
+        from .thread_branch import ThreadBranchError, branch_thread
+
+        try:
+            return await asyncio.to_thread(
+                branch_thread,
+                agent=self.agent,
+                settings=self._settings(),
+                user_id=self.user.id,
+                source_thread_id=thread_id,
+                title=title,
+                from_message_index=from_message_index,
+            )
+        except ThreadBranchError as e:
+            _raise_http_status(400, str(e))
+
+    async def compact_thread(self, thread_id: str, user_id: Optional[str] = None) -> dict:
+        self._require_thread_access(thread_id)
+        return await self.agent.compact_now(thread_id, self.user.id)
 
     async def get_settings(self, user_id: Optional[str] = None) -> dict:
         from ..api.routers.settings import serialize_server_settings
@@ -2298,7 +2508,7 @@ def prepare_skill_slash_command(
     )
 
 
-class _CommandExecutor(ContextCommandsMixin):
+class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin):
     """Per-request command executor with the migrated command bodies."""
 
     def __init__(self, api: Any, thread_id: str | None, user_id: str, actor: str = "user"):
