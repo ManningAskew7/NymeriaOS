@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1259 tools found.**
+**1261 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -184,6 +184,8 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `clearbit_autocomplete_company` | `nymeria/tools/lead_enrichment_service_integrations.py` | Autocomplete company names and return likely domains/logos. |
 | `clearbit_enrich_company` | `nymeria/tools/lead_enrichment_service_integrations.py` | Enrich company data from a domain and optional social/company hints. |
 | `clearbit_enrich_person` | `nymeria/tools/lead_enrichment_service_integrations.py` | Enrich person and company data from an email address and optional hints. |
+| `cli_statusbar_get` | `nymeria/tools/cli_statusbar.py` | Read the user's current CLI status-bar layout. |
+| `cli_statusbar_set` | `nymeria/tools/cli_statusbar.py` | Reconfigure one of the user's CLI status bars. |
 | `clickup_add_task_comment` | `nymeria/tools/project_management_service_integrations.py` | Add a comment to a ClickUp task. |
 | `clickup_create_task` | `nymeria/tools/project_management_service_integrations.py` | Create a ClickUp task. |
 | `clickup_get_task` | `nymeria/tools/project_management_service_integrations.py` | Get a ClickUp task by ID. |

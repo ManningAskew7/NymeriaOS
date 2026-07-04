@@ -742,6 +742,10 @@ Get context window usage statistics for a thread.
   "total_tokens": 45000,
   "input_tokens": 30000,
   "output_tokens": 15000,
+  "turn_recorded": true,
+  "turn_llm_seconds": 7.125,
+  "tokens_per_second": 70.2,
+  "cumulative_tokens": 512000,
   "context_limit": 200000,
   "usage_percentage": 22.5,
   "compaction_count": 1,
@@ -753,6 +757,21 @@ Get context window usage statistics for a thread.
   "cost_unavailable": false
 }
 ```
+
+Token-field semantics (2026-07-04 repair pass):
+
+- `total_tokens` is context occupancy: the final model call's prompt tokens,
+  i.e. how full the window is. Compaction resets it; it is NOT a sum.
+- `input_tokens` / `output_tokens` are the LAST TURN's consumption, summed
+  across all of that turn's model calls (a multi-step tool turn counts every
+  step). `turn_recorded: false` means usage extraction found nothing for the
+  turn (the zeros are placeholders, clients must not accumulate them).
+- `turn_llm_seconds` is the turn's LLM streaming wall time (excludes tool
+  execution and retry backoff); `tokens_per_second` is
+  `output_tokens / turn_llm_seconds` for the turn. Both are `null` when
+  timing or tokens are unknown (e.g. right after a restart).
+- `cumulative_tokens` is lifetime consumption (sum of turn input+output);
+  it survives compaction.
 
 `compact_trigger_tokens` is the resolved auto-compact trigger with per-thread
 threshold overrides applied; it is `null` when `context_management` is not
@@ -1106,6 +1125,7 @@ Returns the callable thread tools actually available from that caller thread aft
 | `workflow_approval_resolved` | A suspended workflow run was approved, declined, or expired; the continuation ran (or was refused) | `record_id`, `workflow_id`, `approved`, `note`, `run_id` |
 | `workflow_step` | One completed `nym.*` verb dispatch in a running workflow (live progress; best-effort and unordered, sort by `step`). Lean by design: args/result summaries live in the persisted run record, not on the wire | `workflow_id`, `run_id`, `step`, `verb`, `status`, `duration_ms`, optional `error_kind` |
 | `workflow_run_finished` | A workflow run ended (fires for every run, including adhoc test runs that persist nothing) | `workflow_id`, `run_id`, `status` |
+| `cli_config` | Agent-pushed CLI configuration command (`cli_statusbar_*` tools). User-scoped: every connected terminal CLI applies and persists it locally, then POSTs its outcome to `POST /cli-config/{command_id}/result`; the first ack resolves the awaiting tool. Non-CLI clients ignore it. | `command_id`, `command_type` (`statusbar_get`/`statusbar_set`), `args`, `timeout_seconds` |
 | `dispatched` | Leading `@thread` mention routed the turn to another thread | `target_thread_id`, `title`, `matched_ref`, `dispatched_to` |
 | `response` | Visible assistant text chunk. May appear before a `tool_call` as preamble/commentary, or after tools as the final answer. | `content` |
 | `context_attached` | Previous context summary attached to this message | `summary` |
@@ -1119,7 +1139,7 @@ Returns the callable thread tools actually available from that caller thread aft
 | `fanout_dropped` | The queuer's fanout mailbox overflowed its bound (slow consumer); some events were dropped from this queuer's mirror. | `dropped_count` |
 | `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection | `content`, `reason`, `max_iterations`, `tool_call_count`, optional `repeated_tool_name`, `repeated_count` |
 | `error` | Error message | `content`, optional `code` (e.g. `aborted`, `queue_attachments_unsupported`, `cross_user_queue_unsupported`, `queue_overflow`) |
-| `done` | Stream complete | `context_stats`, `model` (when available) |
+| `done` | Stream complete | `context_stats` (same shape as `GET /threads/{id}/context`, including the per-turn `input_tokens`/`output_tokens`/`turn_recorded`/`turn_llm_seconds`/`tokens_per_second` fields), `model` (when available) |
 
 All events include `thread_id` for correlation.
 
