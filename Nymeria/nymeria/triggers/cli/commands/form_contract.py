@@ -17,6 +17,8 @@ the backend always includes.
 
 from __future__ import annotations
 
+import re
+import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -104,12 +106,18 @@ def substitute_template(
     template: str,
     values: Mapping[str, str],
 ) -> str:
-    """Replace ``{key}`` placeholders; only known keys are touched."""
+    """Replace ``{key}`` placeholders in one pass; only known keys are touched.
 
-    command = template
-    for key, value in values.items():
-        command = command.replace("{" + key + "}", value)
-    return command
+    Single-pass regex substitution, so a substituted value that itself
+    contains another field's ``{key}`` text is never re-expanded.
+    """
+
+    if not values:
+        return template
+    pattern = re.compile(
+        "|".join(re.escape("{" + key + "}") for key in values)
+    )
+    return pattern.sub(lambda match: values[match.group(0)[1:-1]], template)
 
 
 async def _confirm(
@@ -141,7 +149,13 @@ def _result_values(
     tabs: tuple[FormTab, ...],
     result: FormResult,
 ) -> dict[str, str]:
-    """Map field keys of the submitted tab to their selected values."""
+    """Map field keys of the submitted tab to their selected values.
+
+    Values containing whitespace are shell-quoted so the backend's posix
+    shlex tokenizer keeps them as one argument after the forwarder rejoins
+    the command string (checkbox ids are quoted individually, staying
+    separate arguments).
+    """
 
     active = next((tab for tab in tabs if tab.label == result.tab_label), None)
     if active is None and tabs:
@@ -149,12 +163,23 @@ def _result_values(
     values: dict[str, str] = {}
     for field in active.fields if active is not None else ():
         if field.kind == "radio":
-            values[field.key] = (result.radio_value or "").strip()
+            values[field.key] = _quote_value(result.radio_value or "")
         elif field.kind == "checkbox":
-            values[field.key] = " ".join(result.checkbox_values)
+            values[field.key] = " ".join(
+                _quote_value(value) for value in result.checkbox_values
+            )
         elif field.kind == "search":
-            values[field.key] = result.filter_text.strip()
+            values[field.key] = _quote_value(result.filter_text)
     return values
+
+
+def _quote_value(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    if any(ch.isspace() for ch in stripped):
+        return shlex.quote(stripped)
+    return stripped
 
 
 def _tab_from_payload(raw_tab: Any) -> FormTab | None:
