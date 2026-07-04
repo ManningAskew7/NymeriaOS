@@ -1391,11 +1391,19 @@ class NymeriaAgent:
         from .agent_context_stats import get_context_stats as _get_context_stats
         return _get_context_stats(self, thread_id)
 
-    def _record_turn_usage(self, thread_id: str, user_id: str, messages: List) -> tuple:
+    def _record_turn_usage(
+        self,
+        thread_id: str,
+        user_id: str,
+        messages: List,
+        turn_llm_seconds: Optional[float] = None,
+    ) -> tuple:
         """Record a finished turn's token usage + USD cost. Returns
-        (input_tokens, output_tokens, recorded)."""
+        (turn_input_tokens, turn_output_tokens, recorded)."""
         from .agent_context_stats import record_turn_usage
-        return record_turn_usage(self, thread_id, user_id, messages)
+        return record_turn_usage(
+            self, thread_id, user_id, messages, turn_llm_seconds=turn_llm_seconds
+        )
 
     def _get_llm_config_for_thread(
         self, thread_id: str = "", acting_user_id: str | None = None
@@ -2137,6 +2145,10 @@ class NymeriaAgent:
                 hook_trigger_label=_trigger_override,
             )
 
+            # Per-turn LLM-time accumulator, mirroring astream (see there).
+            _llm_timing: Dict[str, Any] = {}
+            config["configurable"]["llm_timing"] = _llm_timing
+
             # Fresh-thread memory init (sync path: MCP, bots, triggers, CLI).
             self._seed_memory_init_if_empty_sync(graph, config, thread_id, user_id)
 
@@ -2303,7 +2315,12 @@ class NymeriaAgent:
                 )
 
                 # Track token usage + USD cost.
-                self._record_turn_usage(thread_id, user_id, messages)
+                self._record_turn_usage(
+                    thread_id,
+                    user_id,
+                    messages,
+                    turn_llm_seconds=float(_llm_timing.get("seconds", 0.0)) or None,
+                )
 
                 # Detect if the agent was stopped by a turn safety guard.
                 max_iterations = self._max_iterations_for_thread(thread_id)
@@ -2778,6 +2795,10 @@ class NymeriaAgent:
             # path already recorded (compaction/RAG/observe can raise after
             # the record, landing in the outer except).
             turn_usage_recorded = False
+            # Per-turn LLM-time accumulator (tokens/s), injected into the
+            # drive config below; initialized here so the error path can read
+            # it even when the turn failed before the config was built.
+            _llm_timing: Dict[str, Any] = {}
             logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}, holder={holder}")
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
@@ -2937,6 +2958,12 @@ class NymeriaAgent:
                 hook_holder_kind=source,
                 hook_trigger_label=_trigger_override,
             )
+
+            # The model node adds each successful call's streaming duration
+            # to the turn accumulator. Scoped to this config, so compaction
+            # summaries / nym.llm / dream seeding (which build their own
+            # configs) are excluded by construction.
+            config["configurable"]["llm_timing"] = _llm_timing
 
             # Track final response for RAG indexing.
             # Mutated by GraphStreamProcessor across every graph invocation
@@ -3281,7 +3308,10 @@ class NymeriaAgent:
                     state = await graph.aget_state(config)
                     result_messages = state.values.get("messages", [])
                     input_tok, output_tok, recorded = self._record_turn_usage(
-                        thread_id, user_id, result_messages
+                        thread_id,
+                        user_id,
+                        result_messages,
+                        turn_llm_seconds=float(_llm_timing.get("seconds", 0.0)) or None,
                     )
                     turn_usage_recorded = True
                     if recorded:
@@ -3413,7 +3443,14 @@ class NymeriaAgent:
                     try:
                         state = await graph.aget_state(config)
                         result_messages = state.values.get("messages", [])
-                        self._record_turn_usage(thread_id, user_id, result_messages)
+                        self._record_turn_usage(
+                            thread_id,
+                            user_id,
+                            result_messages,
+                            turn_llm_seconds=(
+                                float(_llm_timing.get("seconds", 0.0)) or None
+                            ),
+                        )
                     except Exception:
                         logger.debug("Failed to extract token usage after stream error")
 

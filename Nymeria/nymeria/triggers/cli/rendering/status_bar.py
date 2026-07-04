@@ -426,6 +426,31 @@ def _context_usage_provider(
     )
 
 
+def _tokens_per_second_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    """Last turn's output rate (output tokens / LLM-stream seconds).
+
+    Server-computed on the done event's ``context_stats``
+    (``tokens_per_second``); a post-turn average that excludes tool
+    execution. Hidden until the first recorded turn supplies a rate.
+    """
+    stats = state.context_stats or {}
+    rate = stats.get("tokens_per_second")
+    if not isinstance(rate, (int, float)) or isinstance(rate, bool) or rate <= 0:
+        return None
+    label = f"{rate:.0f}" if rate >= 10 else f"{rate:.1f}"
+    return StatusSegment(
+        text=f"{label} tok/s",
+        priority=2,
+        min_width=7,
+    )
+
+
 def _queued_provider(
     renderer: StatusBarRenderer,
     state: CLIUIState,
@@ -465,6 +490,7 @@ _DEFAULT_SEGMENT_PROVIDERS: dict[str, SegmentProvider] = {
     "reasoning": _reasoning_provider,
     "thread": _thread_provider,
     "context": _context_usage_provider,
+    "tps": _tokens_per_second_provider,
     "queued": _queued_provider,
     "cwd": _cwd_provider,
 }

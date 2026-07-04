@@ -40,6 +40,10 @@ class ThreadTokenUsage:
     turn_input_tokens: int = 0
     turn_output_tokens: int = 0
     turn_recorded: bool = False
+    # Wall-clock seconds the turn spent consuming model streams (excludes
+    # tool execution and retry backoff). ``None`` when unknown, e.g. a turn
+    # whose usage extraction found nothing, or history seeded post-restart.
+    turn_llm_seconds: Optional[float] = None
     last_compaction_at: Optional[datetime] = None
     compaction_count: int = 0
     # USD cost accounting. ``None`` for ``last_cost_usd`` distinguishes
@@ -106,6 +110,7 @@ class TokenTracker:
         context_tokens: Optional[int] = None,
         cost_usd: Optional[float] = None,
         cost_unavailable: bool = False,
+        turn_llm_seconds: Optional[float] = None,
     ) -> None:
         """
         Record a finished turn.
@@ -127,6 +132,9 @@ class TokenTracker:
                 OAuth-subscription or local endpoint where pay-per-token
                 cost is not meaningful. Sets the latest-call flag and skips
                 accumulation, even if ``cost_usd`` happens to be set.
+            turn_llm_seconds: Wall-clock seconds spent consuming the turn's
+                model streams. Stored only for a recorded turn with a
+                positive duration; a tokens/s rate needs both sides.
         """
         with self._lock:
             usage = self._row(thread_id)
@@ -134,6 +142,11 @@ class TokenTracker:
             usage.turn_input_tokens = turn_input_tokens if found else 0
             usage.turn_output_tokens = turn_output_tokens if found else 0
             usage.turn_recorded = found
+            usage.turn_llm_seconds = (
+                float(turn_llm_seconds)
+                if found and turn_llm_seconds is not None and turn_llm_seconds > 0
+                else None
+            )
             if found:
                 usage.total_input_tokens += turn_input_tokens
                 usage.total_output_tokens += turn_output_tokens

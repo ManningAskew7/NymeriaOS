@@ -470,6 +470,7 @@ def test_status_segments_come_from_keyed_registry_in_default_order() -> None:
         "reasoning",
         "thread",
         "context",
+        "tps",
         "queued",
         "cwd",
     )
@@ -482,24 +483,24 @@ def test_register_segment_supports_append_anchor_override_and_remove() -> None:
     caps = FakeTerminalCapabilities(width=200)
     state = create_initial_state(thread_id="thread-1", now=0.0)
 
-    def tps_provider(r, s, capabilities, context, now):
-        return StatusSegment(text="42 tok/s", priority=1, min_width=6)
+    def latency_provider(r, s, capabilities, context, now):
+        return StatusSegment(text="42 ms", priority=1, min_width=5)
 
     # Append by default.
-    renderer.register_segment("tps", tps_provider)
-    assert renderer.segment_keys[-1] == "tps"
+    renderer.register_segment("latency", latency_provider)
+    assert renderer.segment_keys[-1] == "latency"
     render = renderer.render(state, capabilities=caps, width=200, now=5.0)
-    assert "42 tok/s" in render.segments
+    assert "42 ms" in render.segments
 
     # Re-register in place: order is unchanged.
-    def tps_provider_v2(r, s, capabilities, context, now):
-        return StatusSegment(text="99 tok/s", priority=1, min_width=6)
+    def latency_provider_v2(r, s, capabilities, context, now):
+        return StatusSegment(text="99 ms", priority=1, min_width=5)
 
     keys_before = renderer.segment_keys
-    renderer.register_segment("tps", tps_provider_v2)
+    renderer.register_segment("latency", latency_provider_v2)
     assert renderer.segment_keys == keys_before
     render = renderer.render(state, capabilities=caps, width=200, now=5.0)
-    assert "99 tok/s" in render.segments
+    assert "99 ms" in render.segments
 
     # Anchored insertion.
     def flag_provider(r, s, capabilities, context, now):
@@ -510,7 +511,57 @@ def test_register_segment_supports_append_anchor_override_and_remove() -> None:
     assert keys.index("flag") == keys.index("thread") - 1
 
     # Removal by key.
-    assert renderer.remove_segment("tps") is True
-    assert renderer.remove_segment("tps") is False
+    assert renderer.remove_segment("latency") is True
+    assert renderer.remove_segment("latency") is False
     render = renderer.render(state, capabilities=caps, width=200, now=5.0)
+    assert not any("ms" in segment for segment in render.segments)
+
+
+def test_tokens_per_second_segment_shows_after_recorded_turn() -> None:
+    """The built-in tps segment renders the server-computed rate from the
+    done event's context_stats and hides when no rate is known (#63)."""
+    renderer = StatusBarRenderer()
+    caps = FakeTerminalCapabilities(width=200)
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+
+    # No rate yet: segment hidden.
+    render = renderer.render(state, capabilities=caps, width=200, now=1.0)
     assert not any("tok/s" in segment for segment in render.segments)
+
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "model": "claude-test-model",
+            "context_stats": {
+                "used_tokens": 410,
+                "max_tokens": 1000,
+                "output_tokens": 300,
+                "turn_recorded": True,
+                "turn_llm_seconds": 7.1,
+                "tokens_per_second": 42.3,
+            },
+        },
+        now=2.0,
+    )
+    render = renderer.render(state, capabilities=caps, width=200, now=3.0)
+    assert "42 tok/s" in render.segments
+
+    # Sub-10 rates keep one decimal.
+    state = start_turn(state, "again", now=4.0)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "model": "claude-test-model",
+            "context_stats": {
+                "output_tokens": 30,
+                "turn_recorded": True,
+                "tokens_per_second": 6.4,
+            },
+        },
+        now=5.0,
+    )
+    render = renderer.render(state, capabilities=caps, width=200, now=6.0)
+    assert "6.4 tok/s" in render.segments
