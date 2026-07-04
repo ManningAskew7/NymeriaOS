@@ -559,7 +559,9 @@ def test_account_trigger_activity_artifact_details_and_doctor_commands() -> None
     assert run(registry.dispatch_async(confirmed, "/triggers delete trig-1")).ok is True
     assert run(registry.dispatch_async(confirmed, "/activity recent 5 --thread current")).ok is True
     assert run(registry.dispatch_async(confirmed, "/activity notifications")).ok is True
-    assert run(registry.dispatch_async(confirmed, "/artifacts recent")).ok is True
+    # `/artifacts recent` is now a backend command (server-state listing); the
+    # client-side `open`/`download` halves stay local and resolve against the
+    # terminal's own recent list.
     assert run(registry.dispatch_async(confirmed, "/artifacts open 1")).ok is True
     assert run(registry.dispatch_async(confirmed, "/artifacts download 1")).ok is True
     assert run(registry.dispatch_async(confirmed, "/details tool tool-1")).ok is True

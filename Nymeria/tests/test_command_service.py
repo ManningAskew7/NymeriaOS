@@ -84,6 +84,38 @@ class FakeCommandApi:
             "cumulative_tokens": 2400,
         }
 
+    async def get_history(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        include_internal: bool = False,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            ("get_history", (thread_id,), {"user_id": user_id, "include_internal": include_internal})
+        )
+        return {
+            "thread_id": thread_id,
+            "messages": [
+                {"role": "human", "content": "make a report"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "name": "file_write",
+                            "artifacts": [
+                                {"path": "/workspace/report.txt", "name": "report.txt", "size_bytes": 2048},
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "artifacts": [{"path": "/workspace/data.csv", "sizeBytes": 1500000}],
+                },
+            ],
+        }
+
     async def get_tool_categories(self) -> dict[str, Any]:
         self.calls.append(("get_tool_categories", (), {}))
         return {"categories": {"general": ["bash_execute"], "web": ["browser"]}}
@@ -1406,8 +1438,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 103
-    assert sum(cmd.executable for cmd in service._commands.values()) == 89
+    assert len(service._commands) == 107
+    assert sum(cmd.executable for cmd in service._commands.values()) == 93
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -1530,3 +1562,130 @@ def test_model_set_thread_scope_returns_state_hint() -> None:
     global_result = run(service.execute(_cli_ctx(), "/model gpt-next", api=api))
     assert global_result.success is True
     assert global_result.data is None
+
+
+# ── Context-domain commands (/usage, /artifacts) migrated from the CLI ────────
+
+
+class _UsageStatsCommandApi(FakeCommandApi):
+    async def get_context_stats(self, thread_id: str) -> dict[str, Any]:
+        self.calls.append(("get_context_stats", (thread_id,), {}))
+        return {
+            "model": "gpt-thread",
+            "input_tokens": 80,
+            "output_tokens": 40,
+            "total_tokens": 120_000,
+            "context_limit": 400_000,
+            "usage_percentage": 30,
+            "compact_trigger_tokens": 200_000,
+            "cumulative_tokens": 240_000,
+            "compaction_count": 2,
+        }
+
+
+def test_usage_command_renders_compact_marker_from_context_stats() -> None:
+    """Migrated /usage sources the 'until compact' trigger from context stats."""
+    service = CommandService()
+    api = _UsageStatsCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/usage", api=api))
+
+    assert result.success is True
+    assert "Until compact" in result.markdown
+    assert "of 200.0k" in result.markdown
+    assert ("get_context_stats", ("thread-1",), {}) in api.calls
+
+
+def test_usage_aliases_tokens_and_cost_resolve_to_usage() -> None:
+    service = CommandService()
+
+    for alias in ("/tokens", "/cost"):
+        result = run(service.execute(_cli_ctx(), alias, api=_UsageStatsCommandApi()))
+        assert result.success is True
+        assert "Token Usage" in result.markdown
+
+
+def test_usage_rejects_stray_argument() -> None:
+    service = CommandService()
+
+    result = run(service.execute(_cli_ctx(), "/usage bogus", api=_UsageStatsCommandApi()))
+
+    assert result.success is False
+    assert "Usage: /usage" in result.markdown
+
+
+def test_format_thread_usage_compact_cap_honors_trigger_tokens() -> None:
+    from nymeria.core.command_executor_context import _format_thread_usage
+
+    stats = {
+        "model": "gpt-thread",
+        "input_tokens": 80,
+        "output_tokens": 40,
+        "total_tokens": 120_000,
+        "context_limit": 400_000,
+        "usage_percentage": 30,
+    }
+
+    tokens_view = _format_thread_usage(stats, compact_trigger=200_000)
+    unscaled_view = _format_thread_usage(stats, compact_trigger=400_000)
+
+    assert "Until compact" in tokens_view
+    assert "of 200.0k" in tokens_view
+    assert "Until compact" not in unscaled_view
+
+
+def test_usage_session_shows_cumulative_and_rejects_extra_args() -> None:
+    service = CommandService()
+    api = _UsageStatsCommandApi()
+
+    ok = run(service.execute(_cli_ctx(), "/usage session", api=api))
+    assert ok.success is True
+    assert "Session Usage" in ok.markdown
+    assert "240.0k" in ok.markdown
+
+    extra = run(service.execute(_cli_ctx(), "/usage session extra", api=_UsageStatsCommandApi()))
+    assert extra.success is False
+    assert "Usage: /usage session" in extra.markdown
+
+
+def test_artifacts_recent_lists_from_thread_history() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/artifacts recent", api=api))
+
+    assert result.success is True
+    assert "Recent Artifacts" in result.markdown
+    assert "report.txt" in result.markdown
+    assert "/workspace/data.csv" in result.markdown
+    history_calls = [call for call in api.calls if call[0] == "get_history"]
+    assert history_calls and history_calls[0][2]["include_internal"] is True
+
+
+def test_artifacts_bare_root_forwards_to_recent_listing() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/artifacts", api=api))
+
+    assert result.success is True
+    assert "Recent Artifacts" in result.markdown
+
+
+def test_artifacts_recent_reports_empty_history() -> None:
+    class _EmptyHistoryApi(FakeCommandApi):
+        async def get_history(
+            self,
+            thread_id: str,
+            user_id: str | None = None,
+            *,
+            include_internal: bool = False,
+        ) -> dict[str, Any]:
+            return {"thread_id": thread_id, "messages": []}
+
+    service = CommandService()
+
+    result = run(service.execute(_cli_ctx(), "/artifacts recent", api=_EmptyHistoryApi()))
+
+    assert result.success is True
+    assert "No recent workspace artifacts" in result.markdown

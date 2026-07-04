@@ -163,21 +163,18 @@ class CLIApp:
             doctor,
             export,
             fallback,
-            fast,
             reasoning,
             mcp,
             memory,
             model,
             provider,
             skills,
-            smart,
             system,
             theme,
             threads,
             todos,
             tools,
             triggers,
-            usage,
         )
 
         # Backend commands register first so they always win at the root
@@ -205,13 +202,10 @@ class CLIApp:
         theme.register(self.registry)
         export.register(self.registry)
         fallback.register(self.registry)
-        fast.register(self.registry)
-        smart.register(self.registry)
         provider.register(self.registry)
         clipboard.register(self.registry)
         conversation.register(self.registry)
         reasoning.register(self.registry)
-        usage.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""
@@ -1667,9 +1661,21 @@ class CLIApp:
 
 
 def _fast_prompt_from_result(result: Any) -> tuple[str, str] | None:
-    from .commands.fast import fast_prompt_payload
+    """Extract a one-shot (prompt, model) payload from a command result.
 
-    return fast_prompt_payload(result)
+    The ``fast_prompt``/``fast_model`` payload keys were produced by the old
+    local ``/fast`` and ``/smart`` one-shot handlers (now backend commands).
+    This inline reader replaces the deleted ``commands.fast.fast_prompt_payload``
+    helper so the CLI one-shot fast-turn plumbing keeps its import surface.
+    """
+    payload = getattr(result, "payload", None)
+    if not isinstance(payload, Mapping):
+        return None
+    prompt = str(payload.get("fast_prompt") or "").strip()
+    model = str(payload.get("fast_model") or "").strip()
+    if not prompt or not model:
+        return None
+    return prompt, model
 
 
 def _set_renderer_active_model(renderer: Any, model: str) -> None:
