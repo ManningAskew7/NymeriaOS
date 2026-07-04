@@ -88,7 +88,7 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_FREQUENCY_PENALTY` | (provider default) | -2.0 - 2.0 | Reduce repetition of token sequences |
 | `LLM_PRESENCE_PENALTY` | (provider default) | -2.0 - 2.0 | Encourage new topics |
 | `LLM_REASONING_EFFORT` | (none) | off/low/medium/high/xhigh/max | Reasoning effort for compatible models. `off` explicitly disables thinking; unset inherits provider behavior. Levels a model does not support are adjusted onto its supported range before the request is sent (over-asks drop to the model's ceiling; an unsupported `off` rises to its lowest level); invalid values fail settings validation |
-| `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models. CLI shortcut: `/reasoning on\|off\|low\|medium\|high\|xhigh\|max` (alias `/thinking`) sets both fields in one command. `/fast` toggles the active thread between `LLM_MODEL` and `LLM_FAST_MODEL`; `/fast <prompt>` uses the fast model for that turn only. `/smart` does the same with `LLM_SMART_MODEL`. Both are also in the central command registry (available on desktop and bots), and `fast`/`smart`/`default` work as `llm_model` aliases in `spawn_thread`. |
+| `LLM_EXTENDED_THINKING` | `false` | true/false | Enable extended thinking/reasoning for compatible models. Command shortcut on every surface: `/think on\|off\|low\|medium\|high\|xhigh\|max [global\|thread]` (aliases `/reasoning`, `/thinking`) sets both fields in one command, thread-scoped when a thread is active. `/fast` toggles the active thread between `LLM_MODEL` and `LLM_FAST_MODEL`; `/fast <prompt>` uses the fast model for that turn only. `/smart` does the same with `LLM_SMART_MODEL`. Both are also in the central command registry (available on desktop and bots), and `fast`/`smart`/`default` work as `llm_model` aliases in `spawn_thread`. |
 | `LLM_USE_MODEL_DEFAULTS` | `false` | true/false | Use model-specific defaults for temperature, top_p, and frequency penalty instead of global values. When enabled, these params are not sent to the API  -  the provider applies the model's own optimal defaults. |
 | `LLM_BASE_URL` | (provider default) | URL | Override API endpoint for native Anthropic or OpenAI-compatible providers. For `anthropic` CLIProxy, use the root URL with no `/v1` suffix because `ChatAnthropic` appends `/v1/messages`; for OpenAI-compatible endpoints, use the provider's documented base URL, usually ending in `/v1`. Leave unset to use the registry default or a credential-vault base URL. |
 | `LLM_CONTEXT_LENGTH` | auto | 1,000 - 2,000,000 | Manual context-window override for local endpoints or proxies that do not report context metadata. Also available per thread as `context_length`. |
@@ -846,14 +846,15 @@ keys with `PATCH /settings` using explicit write-only fields such as
 `perplexity_api_key`. These keys remain absent from `GET /settings`; the admin
 environment listing masks secret values.
 
-The CLI exposes the LLM provider flow through `/provider`. `/provider set
-<provider> api_key=<key>` stores a local copy in `~/.nymeria/credentials.json`
-with private file permissions, then applies the mapped write-only backend
-setting when the active API token has admin access. `/provider test [provider]`
-uses the local credential, or an admin-only unmasked backend env lookup when no
-local key is stored, and calls the same `/settings/llm/test` probe. `/provider
-switch <provider>` patches `llm_provider` and reapplies any locally stored
-credential for that provider.
+The `/provider` slash command (central command registry, so it works from the
+CLI, desktop, and bots) exposes the LLM provider flow. `/provider set
+<provider> api_key=<key>` applies the mapped write-only backend settings
+(admin only; no client-side copy is kept since the 2026-07 config-group
+migration retired the CLI-local `~/.nymeria/credentials.json` store).
+`/provider test [provider]` calls the same probe as `POST /settings/llm/test`,
+resolving the credential server-side from the vault, settings, and environment
+in that order. `/provider switch <provider>` patches `llm_provider` and warns
+when no server credential exists for the target provider.
 
 The desktop app exposes this flow in Settings > Provider > Open Wizard for admin
 accounts. The wizard can save direct provider keys or configure the backend to
