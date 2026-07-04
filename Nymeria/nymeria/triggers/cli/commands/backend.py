@@ -17,16 +17,6 @@ _CLI_CATEGORY_MAP = {
     "TODOs": "Personal",
 }
 
-# Roots whose local CLI implementation keeps the root handler because it opens
-# an interactive form the backend text proxy cannot provide. Only the
-# root-level backend proxy is skipped; backend subcommands still merge under
-# the local root via _register_path, and the skip is order-independent (the
-# local root simply never meets a competing backend root). Interim measure
-# until backend-declared form payloads ship
-# (docs/private/plans/cli-modernization.md, Phase 3).
-_LOCAL_ROOT_WINS = frozenset({"model"})
-
-
 class BackendCommandProvider:
     """Registers backend global commands as CLI proxy handlers."""
 
@@ -81,8 +71,6 @@ class BackendCommandProvider:
                 continue
             path = _path(info)
             if not path:
-                continue
-            if len(path) == 1 and path[0] in _LOCAL_ROOT_WINS:
                 continue
             self._register_path(registry, info, path)
 
@@ -216,6 +204,24 @@ async def _execute_backend_command(
 
     message = CommandMessage(markdown, level=level)
     if success:
+        data = payload.get("data")
+        if isinstance(data, Mapping):
+            from .form_contract import apply_state_hints, form_spec_from_payload
+
+            await apply_state_hints(data.get("state"), context)
+            if context.supports_forms():
+                spec = form_spec_from_payload(data.get("form"), context=context)
+                if spec is not None:
+                    await context.dispatch({"type": "open_form", "spec": spec})
+                    return CommandResult.completed(
+                        command_path=path,
+                        payload={
+                            "suppress_transcript": True,
+                            "backend_command": True,
+                            "command": payload.get("command"),
+                        },
+                        json_payload=payload,
+                    )
         return CommandResult.completed(
             message,
             command_path=path,
