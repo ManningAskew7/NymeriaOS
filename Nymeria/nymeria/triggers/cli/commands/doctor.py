@@ -62,9 +62,7 @@ async def _handle_doctor_terminal(
         ("CI", format_bool(data.get("ci"))),
         ("Color", f"{format_bool(data.get('color_enabled'))} depth={data.get('color_depth')}"),
         ("Unicode", format_bool(data.get("unicode_enabled"))),
-        ("Alt screen", format_bool(data.get("alt_screen_enabled"))),
         ("Animation", format_bool(data.get("animation_enabled"))),
-        ("Mouse", format_bool(data.get("mouse_enabled"))),
         ("Size", f"{data.get('width')}x{data.get('height')}"),
     ]
     return CommandResult.completed(CommandMessage(_rows("Terminal", rows), title="Doctor"))

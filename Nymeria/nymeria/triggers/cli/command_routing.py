@@ -1,10 +1,8 @@
-"""Shared CLI command-routing helpers used by both shell implementations.
+"""CLI command-routing helpers for the Rich REPL shell.
 
-The Rich REPL (``app.py``) and the legacy full-screen shell
-(``rendering/full_screen_legacy.py``) both need to classify ``/``-prefixed
-chat-stream commands and render the queued-message notice. Keeping these here
-(rather than copied per shell) ensures the two shells classify commands
-identically. This is a dependency-free leaf module to avoid import cycles.
+Classifies ``/``-prefixed chat-stream commands and renders the queued-message
+notice for ``app.py``. This is a dependency-free leaf module to avoid import
+cycles.
 """
 
 from __future__ import annotations

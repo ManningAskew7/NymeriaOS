@@ -32,7 +32,6 @@ from nymeria.triggers.cli.input import (
     ComposerController,
     ComposerSubmission,
     SlashUsageHintProcessor,
-    create_full_screen_composer,
     create_rich_repl_composer,
     create_session,
     get_prompt,
@@ -41,10 +40,6 @@ from nymeria.triggers.cli.input import (
 )
 from nymeria.triggers.cli.rendering.rich_repl import RichReplRenderer
 from nymeria.triggers.cli.state import CLIState
-from nymeria.triggers.cli.rendering.full_screen_legacy import (
-    LegacyFullScreenPromptToolkitShell,
-    LegacyFullScreenShellConfig,
-)
 
 
 def _slash_registry() -> CommandRegistry:
@@ -334,25 +329,17 @@ def test_slash_usage_hint_processor_truncates_and_replaces_history_hint() -> Non
     assert cell_len("".join(fragment[1] for fragment in fragments)) <= 16
 
 
-def test_inline_slash_usage_hints_are_rich_repl_only(tmp_path: Path) -> None:
+def test_inline_slash_usage_hints_present_in_rich_composer(tmp_path: Path) -> None:
     registry = _usage_registry()
 
     rich = create_rich_repl_composer(
         command_registry=registry,
         history_path=tmp_path / "rich_history",
     )
-    full_screen = create_full_screen_composer(
-        command_registry=registry,
-        history_path=tmp_path / "full_history",
-    )
 
     assert any(
         isinstance(processor, SlashUsageHintProcessor)
         for processor in (rich.text_area.control.input_processors or [])
-    )
-    assert not any(
-        isinstance(processor, SlashUsageHintProcessor)
-        for processor in (full_screen.text_area.control.input_processors or [])
     )
 
 
@@ -756,58 +743,3 @@ def test_rich_repl_queued_submissions_run_in_order() -> None:
     assert [request.message for request in client.chat_requests] == ["first", "second"]
 
 
-def make_shell(client: FakeAgentClient) -> LegacyFullScreenPromptToolkitShell:
-    return LegacyFullScreenPromptToolkitShell(
-        client=client,
-        capabilities=FakeTerminalCapabilities(width=100),
-        config=LegacyFullScreenShellConfig(
-            thread_id="thread-1",
-            user_id="alice",
-            model="test-model",
-            thread_label="Fixture thread",
-        ),
-    )
-
-
-def test_full_screen_composer_queues_submissions_while_busy() -> None:
-    async def exercise() -> FakeAgentClient:
-        client = FakeAgentClient(
-            streams={
-                "first": [
-                    DelayedEvent(
-                        0.01,
-                        {"type": "response", "content": "One", "thread_id": "thread-1"},
-                    ),
-                    {"type": "done", "thread_id": "thread-1", "tool_call_count": 0},
-                ],
-                "second": simple_response_events(("Two",)),
-            },
-            real_sleep=True,
-        )
-        shell = make_shell(client)
-
-        assert shell._handle_composer_submission(ComposerSubmission("first")) is True
-        await asyncio.sleep(0)
-        assert shell._busy is True
-        assert shell._handle_composer_submission(ComposerSubmission("second")) is True
-        assert "queued 1" in shell._status_text()
-
-        assert shell._current_turn_task is not None
-        await shell._current_turn_task
-        return client
-
-    client = run(exercise())
-
-    assert [request.message for request in client.chat_requests] == ["first", "second"]
-
-
-def test_full_screen_stop_preserves_current_composer_input() -> None:
-    client = FakeAgentClient()
-    shell = make_shell(client)
-    shell._busy = True
-    shell.composer.buffer.text = "do not clear this"
-
-    assert run(shell.stop_current_turn()) is True
-
-    assert client.stop_count == 1
-    assert shell.composer.buffer.text == "do not clear this"

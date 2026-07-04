@@ -1,4 +1,12 @@
-"""Lifecycle helpers for CLI/TUI turn cancellation and shutdown."""
+"""Lifecycle helpers for CLI/TUI turn cancellation and shutdown.
+
+NOTE: since the legacy full-screen shell retirement (2026-07-04) this module
+has no production consumers: the Rich REPL wires stop/cancel directly
+(app._stop_current_turn_async) and the API transport converts stream
+exceptions itself (transport/api.py::_error_event_from_exception). Kept, with
+its unit tests, for the Phase 2 runtime decomposition, which should either
+re-wire or delete it. See docs/private/plans/cli-modernization.md.
+"""
 
 from __future__ import annotations
 

@@ -115,7 +115,7 @@ def test_fake_terminal_capabilities_capture_common_fallbacks() -> None:
     assert dumb.prefers_plain_renderer is True
     assert forced.color_enabled is True
     assert default.with_overrides(no_color=True).color_enabled is False
-    assert default.with_overrides(stdin_isatty=False).alt_screen_enabled is False
+    assert default.with_overrides(stdin_isatty=False).animation_enabled is False
 
 
 def test_captured_render_output_keeps_stdout_and_stderr_separate() -> None:

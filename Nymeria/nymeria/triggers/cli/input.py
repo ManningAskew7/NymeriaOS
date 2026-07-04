@@ -569,31 +569,6 @@ def create_session(
     )
 
 
-def create_full_screen_composer(
-    *,
-    command_registry: "CommandRegistry | None" = None,
-    history_path: Path | None = None,
-    cwd: Path | None = None,
-    on_submit: SubmitHandler | None = None,
-    on_error: ErrorHandler | None = None,
-    on_stop: StopHandler | None = None,
-    is_busy: StateGetter | None = None,
-    queued_count: CountGetter | None = None,
-) -> ComposerController:
-    """Create the full-screen composer controller."""
-
-    return ComposerController(
-        command_registry=command_registry,
-        history_path=history_path,
-        cwd=cwd,
-        on_submit=on_submit,
-        on_error=on_error,
-        on_stop=on_stop,
-        is_busy=is_busy,
-        queued_count=queued_count,
-    )
-
-
 def create_rich_repl_composer(
     *,
     command_registry: "CommandRegistry | None" = None,
@@ -837,7 +812,6 @@ __all__ = [
     "ComposerPromptState",
     "ComposerSubmission",
     "SlashUsageHintProcessor",
-    "create_full_screen_composer",
     "create_rich_repl_composer",
     "create_session",
     "get_prompt",

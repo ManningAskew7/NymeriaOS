@@ -79,9 +79,7 @@ class FakeTerminalCapabilities:
     supports_color: bool = True
     color_depth: int = 256
     supports_unicode: bool = True
-    supports_alt_screen: bool = True
     supports_animation: bool = True
-    supports_mouse: bool = True
     width: int = 80
     height: int = 24
     renderer: str = "rich"
@@ -105,16 +103,8 @@ class FakeTerminalCapabilities:
         return self.supports_unicode
 
     @property
-    def alt_screen_enabled(self) -> bool:
-        return self.is_interactive and self.supports_alt_screen
-
-    @property
     def animation_enabled(self) -> bool:
         return self.is_interactive and self.supports_animation
-
-    @property
-    def mouse_enabled(self) -> bool:
-        return self.is_interactive and self.supports_mouse
 
     def with_overrides(self, **overrides: Any) -> "FakeTerminalCapabilities":
         return replace(self, **overrides)
