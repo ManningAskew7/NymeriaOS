@@ -1,7 +1,7 @@
 """Integration tests for the agent's cost-recording facades.
 
-Exercises ``NymeriaAgent._compute_turn_cost``, ``_record_turn_cost``, and
-``_is_cost_unavailable_for_thread`` against a stub agent built from the
+Exercises ``NymeriaAgent._compute_turn_usage_and_cost``, ``_record_turn_cost``,
+and ``_is_cost_unavailable_for_thread`` against a stub agent built from the
 unbound methods. Avoids the cost of constructing a full ``NymeriaAgent``.
 """
 
@@ -80,7 +80,7 @@ class TestIsCostUnavailable:
         assert NymeriaAgent._is_cost_unavailable_for_thread(stub_agent, cfg) is True
 
 
-class TestComputeTurnCost:
+class TestComputeTurnUsageAndCost:
     def test_sums_across_ai_messages_in_turn(self, stub_agent):
         cfg = _llm_config(provider="openai", model="gpt-4o")
         msgs = [
@@ -89,46 +89,100 @@ class TestComputeTurnCost:
             _ai(50, 30),
             _ai(20, 10),
         ]
-        cost, na = NymeriaAgent._compute_turn_cost(stub_agent, "thread-1", msgs, cfg)
+        turn_in, turn_out, cost, na = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", msgs, cfg
+        )
         assert na is False
+        assert (turn_in, turn_out) == (170, 90)  # summed across all 3 calls
         assert cost is not None
         assert cost > 0
 
-    def test_unknown_model_returns_none(self, stub_agent):
+    def test_unknown_model_returns_none_cost_but_sums_tokens(self, stub_agent):
         cfg = _llm_config(provider="openai", model="unknown-xyz-model")
         msgs = [HumanMessage(content="hi"), _ai(100, 50)]
-        cost, na = NymeriaAgent._compute_turn_cost(stub_agent, "thread-1", msgs, cfg)
+        turn_in, turn_out, cost, na = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", msgs, cfg
+        )
         assert na is False
         assert cost is None
+        assert (turn_in, turn_out) == (100, 50)
 
-    def test_oauth_subscription_returns_na(self, stub_agent):
+    def test_oauth_subscription_returns_na_with_token_sums(self, stub_agent):
+        """Subscription threads get no dollar figure but DO get per-turn token
+        sums (the pre-repair code skipped the slice entirely for them)."""
         cfg = _llm_config(
             provider="openai",
             model="claude-opus-4-7",
             base_url="http://cli-proxy-api:8317/v1",
         )
         msgs = [HumanMessage(content="hi"), _ai(100, 50)]
-        cost, na = NymeriaAgent._compute_turn_cost(stub_agent, "thread-1", msgs, cfg)
+        turn_in, turn_out, cost, na = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", msgs, cfg
+        )
         assert na is True
         assert cost is None
+        assert (turn_in, turn_out) == (100, 50)
+
+    def test_subscription_thread_advances_high_water_index(self, stub_agent):
+        """The index must advance for subscription threads too, so per-turn
+        sums stay per-turn instead of re-summing the whole history."""
+        cfg = _llm_config(
+            provider="openai",
+            model="claude-opus-4-7",
+            base_url="http://cli-proxy-api:8317/v1",
+        )
+        msgs = [HumanMessage(content="hi"), _ai(100, 50)]
+        NymeriaAgent._compute_turn_usage_and_cost(stub_agent, "thread-1", msgs, cfg)
+        turn_in, turn_out, _cost, _na = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", msgs, cfg
+        )
+        assert (turn_in, turn_out) == (0, 0)  # no NEW messages
 
     def test_no_double_counting_across_turns(self, stub_agent):
         cfg = _llm_config(provider="openai", model="gpt-4o")
         msgs = [HumanMessage(content="hi"), _ai(100, 50)]
-        cost1, _ = NymeriaAgent._compute_turn_cost(stub_agent, "thread-1", msgs, cfg)
+        _in1, _out1, cost1, _ = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", msgs, cfg
+        )
         assert cost1 is not None and cost1 > 0
         # Same message list re-passed: should now find no NEW AIMessages.
-        cost2, _ = NymeriaAgent._compute_turn_cost(stub_agent, "thread-1", msgs, cfg)
+        turn_in, turn_out, cost2, _ = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", msgs, cfg
+        )
         assert cost2 is None
+        assert (turn_in, turn_out) == (0, 0)
 
     def test_new_messages_after_high_water_mark(self, stub_agent):
         cfg = _llm_config(provider="openai", model="gpt-4o")
         first = [HumanMessage(content="hi"), _ai(100, 50)]
-        cost1, _ = NymeriaAgent._compute_turn_cost(stub_agent, "thread-1", first, cfg)
+        _in1, _out1, cost1, _ = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", first, cfg
+        )
         assert cost1 is not None
         extended = first + [HumanMessage(content="more"), _ai(200, 100)]
-        cost2, _ = NymeriaAgent._compute_turn_cost(stub_agent, "thread-1", extended, cfg)
+        turn_in, turn_out, cost2, _ = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", extended, cfg
+        )
         assert cost2 is not None and cost2 > 0
+        assert (turn_in, turn_out) == (200, 100)
+
+    def test_post_compaction_turn_still_bills(self, stub_agent):
+        """Defect #4 end to end: compact (clamping the index to the retained
+        tail), then a new turn on the shortened list must still price its
+        messages instead of slicing empty."""
+        cfg = _llm_config(provider="openai", model="gpt-4o")
+        history = [HumanMessage(content=f"m{i}") for i in range(10)] + [_ai(100, 50)]
+        NymeriaAgent._compute_turn_usage_and_cost(stub_agent, "thread-1", history, cfg)
+        # Compaction: state collapses to a 2-message tail.
+        stub_agent._token_tracker.reset_after_compact(
+            "thread-1", remaining_tokens=50, remaining_message_count=2
+        )
+        post = [HumanMessage(content="tail"), HumanMessage(content="new"), _ai(80, 40)]
+        turn_in, turn_out, cost, _na = NymeriaAgent._compute_turn_usage_and_cost(
+            stub_agent, "thread-1", post, cfg
+        )
+        assert (turn_in, turn_out) == (80, 40)
+        assert cost is not None and cost > 0
 
 
 class TestRecordTurnCost:

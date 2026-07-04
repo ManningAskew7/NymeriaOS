@@ -365,3 +365,81 @@ def test_fixture_streams_can_be_reduced_after_normalization() -> None:
         "tool_call",
         "response",
     ]
+
+def test_session_usage_skips_turns_marked_unrecorded() -> None:
+    """``turn_recorded=False`` on the done event's context_stats means the
+    server extracted no usage this turn; the client must not accumulate the
+    zeros (or, on pre-repair servers, stale values) into session usage."""
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(
+        state,
+        "hello",
+        now=0.1,
+        user_message_id="user-1",
+        assistant_message_id="assistant-1",
+    )
+
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "thread_id": "thread-1",
+            "context_stats": {
+                "input_tokens": 120,
+                "output_tokens": 40,
+                "turn_recorded": True,
+            },
+            "model": "test-model",
+        },
+        now=1.0,
+    )
+    assert state.session_usage.total_input == 120
+    assert state.session_usage.total_output == 40
+    assert state.session_usage.turn_count == 1
+
+    # Unrecorded turn: same non-zero numbers must NOT accumulate again.
+    state = start_turn(
+        state,
+        "again",
+        now=2.0,
+        user_message_id="user-2",
+        assistant_message_id="assistant-2",
+    )
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "thread_id": "thread-1",
+            "context_stats": {
+                "input_tokens": 120,
+                "output_tokens": 40,
+                "turn_recorded": False,
+            },
+            "model": "test-model",
+        },
+        now=3.0,
+    )
+    assert state.session_usage.total_input == 120
+    assert state.session_usage.turn_count == 1
+
+    # Legacy server (no turn_recorded key): the zero-guard still applies,
+    # non-zero values still accumulate.
+    state = start_turn(
+        state,
+        "legacy",
+        now=4.0,
+        user_message_id="user-3",
+        assistant_message_id="assistant-3",
+    )
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "thread_id": "thread-1",
+            "context_stats": {"input_tokens": 10, "output_tokens": 5},
+            "model": "test-model",
+        },
+        now=5.0,
+    )
+    assert state.session_usage.total_input == 130
+    assert state.session_usage.turn_count == 2

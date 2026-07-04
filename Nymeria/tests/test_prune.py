@@ -36,8 +36,24 @@ class _FakeAsyncGraph:
 
 
 def _make_manager(messages: List[Any]) -> tuple[PruneManager, _FakeAsyncGraph]:
+    from nymeria.core.token_tracker import TokenTracker
+
     graph = _FakeAsyncGraph(messages)
-    agent = SimpleNamespace(_default_async_graph=graph)
+    # Post-prune the manager re-estimates context occupancy through the
+    # compaction estimator and stores it on the token tracker; give the fake
+    # agent both so every prune test exercises that path.
+    compaction = SimpleNamespace(
+        _estimate_messages_tokens=lambda msgs, _model="": sum(
+            len(str(getattr(m, "content", ""))) for m in msgs
+        )
+        // 4,
+        _model_for=lambda _tid: "test-model",
+    )
+    agent = SimpleNamespace(
+        _default_async_graph=graph,
+        _compaction=compaction,
+        _token_tracker=TokenTracker(),
+    )
     mgr = PruneManager(agent)
     return mgr, graph
 
@@ -194,6 +210,38 @@ class TestPruneNow:
         assert second["pruned_count"] == 0
         assert second["skipped_already_pruned"] == 1
         assert len(graph.updates) == 1
+
+    @pytest.mark.asyncio
+    async def test_refreshes_context_occupancy_estimate(self):
+        """A successful prune re-estimates context occupancy so the context
+        bar drops immediately (repair-pass defect #7)."""
+        messages = [
+            ToolMessage(content=_big_content(8000), tool_call_id="tc1", id="t1"),
+        ]
+        mgr, graph = _make_manager(messages)
+        tracker = mgr._agent._token_tracker
+        tracker.set_context_estimate("t", 9_999)
+
+        result = await mgr.prune_now("t")
+
+        assert result["success"] is True
+        occupancy = tracker.get_usage("t").context_tokens
+        assert 0 < occupancy < 9_999  # re-estimated from the pruned state
+
+    @pytest.mark.asyncio
+    async def test_noop_prune_keeps_existing_occupancy(self):
+        """Nothing pruned = no state write = no re-estimate."""
+        messages = [
+            ToolMessage(content="tiny", tool_call_id="tc1", id="t1"),
+        ]
+        mgr, _graph = _make_manager(messages)
+        tracker = mgr._agent._token_tracker
+        tracker.set_context_estimate("t", 1_234)
+
+        result = await mgr.prune_now("t")
+
+        assert result["success"] is True
+        assert tracker.get_usage("t").context_tokens == 1_234
 
     @pytest.mark.asyncio
     async def test_preserves_other_additional_kwargs(self):

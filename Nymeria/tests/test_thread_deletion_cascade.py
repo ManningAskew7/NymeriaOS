@@ -247,7 +247,7 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path, a
     agent._user_graphs[("default", target)] = object()
     agent._user_graphs[("default", survivor)] = object()
     agent._async_user_graphs[("default", target)] = object()
-    agent._token_tracker.record_usage(target, 100, 10)
+    agent._token_tracker.record_turn(target, turn_input_tokens=100, turn_output_tokens=10, context_tokens=100)
 
     trigger_manager = agent.trigger_manager
     delattr(agent, "trigger_manager")

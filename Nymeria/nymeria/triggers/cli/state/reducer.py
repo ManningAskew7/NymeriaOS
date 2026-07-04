@@ -1100,6 +1100,13 @@ def _accumulate_session_usage(
     context_stats: dict[str, Any],
     model: str,
 ) -> SessionTokenUsage:
+    # ``turn_recorded=False`` marks a turn whose usage extraction found
+    # nothing: the server keeps token fields honest-zero and clients must not
+    # accumulate (pre-repair servers could carry the PREVIOUS turn's non-zero
+    # values here, which double-counted). Absent key = older server; fall
+    # back to the zero-guard alone.
+    if context_stats.get("turn_recorded") is False:
+        return current
     input_tokens = _safe_int(context_stats.get("input_tokens"))
     output_tokens = _safe_int(context_stats.get("output_tokens"))
     if input_tokens == 0 and output_tokens == 0:

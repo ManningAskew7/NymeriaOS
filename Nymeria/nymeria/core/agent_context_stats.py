@@ -43,8 +43,6 @@ def rehydrate_token_usage(agent: "NymeriaAgent", thread_id: str) -> None:
 
         total_input = 0
         total_output = 0
-        last_input = 0
-        last_output = 0
 
         for msg in messages:
             if not isinstance(msg, AIMessage):
@@ -53,20 +51,25 @@ def rehydrate_token_usage(agent: "NymeriaAgent", thread_id: str) -> None:
             total_input += inp
             total_output += out
 
-        last_input, last_output = extract_last_from_messages(messages)
+        last_input, _last_output = extract_last_from_messages(messages)
 
         if total_input or total_output:
-            # Record with last-call values (sets both last_* and adds to cumulative)
-            agent._token_tracker.record_usage(thread_id, last_input, last_output)
-            # Patch cumulative totals to reflect full history
-            usage = agent._token_tracker.get_usage(thread_id)
-            usage.total_input_tokens = total_input
-            usage.total_output_tokens = total_output
-            # Reset the cost high-water index so new turns post-restart only
-            # bill messages added from this point forward; the cumulative
-            # total comes from persisted metadata below.
-            usage.last_recorded_message_index = len(messages)
-            logger.debug(f"Rehydrated token usage for thread {thread_id}: cumulative={total_input}+{total_output}, last_call={last_input}+{last_output}")
+            # Cumulative = summed per-call usage across history (consumption);
+            # occupancy = the final call's prompt tokens. The high-water index
+            # is set past the history so new turns post-restart only count
+            # messages added from this point forward. Turn fields stay zeroed
+            # with turn_recorded=False (the last turn is unknowable here).
+            agent._token_tracker.seed_rehydrated(
+                thread_id,
+                total_input_tokens=total_input,
+                total_output_tokens=total_output,
+                context_tokens=last_input,
+                message_index=len(messages),
+            )
+            logger.debug(
+                f"Rehydrated token usage for thread {thread_id}: "
+                f"cumulative={total_input}+{total_output}, context={last_input}"
+            )
 
         _rehydrate_cost_from_metadata(agent, thread_id)
     except Exception as e:
@@ -139,32 +142,35 @@ def record_turn_usage(
 ) -> tuple[int, int, bool]:
     """Record a finished turn's token usage and USD cost.
 
-    Extracts input/output tokens and the per-turn cost from ``messages``, then
-    (only when there is something to record) updates the in-memory token tracker
-    and the persisted per-thread cost ledger. Factored out of the three
-    byte-identical copies that lived inline in ``chat`` and ``astream`` (the
-    success and error/overflow paths).
+    Per-turn tokens are summed across all of the turn's model calls (the same
+    message slice the cost calculator prices, via
+    ``agent._compute_turn_usage_and_cost``); context occupancy comes from the
+    final call's prompt tokens. The tracker is always updated: a turn whose
+    extraction found nothing records ``turn_recorded=False`` and keeps the
+    previous occupancy estimate instead of zeroing the context bar. Factored
+    out of the three byte-identical copies that lived inline in ``chat`` and
+    ``astream`` (the success and error/overflow paths).
 
-    Returns ``(input_tokens, output_tokens, recorded)`` where ``recorded`` is
-    True iff something was recorded, so the astream-success caller can gate its
-    debug log on the exact same condition the recording used.
+    Returns ``(turn_input_tokens, turn_output_tokens, recorded)`` where
+    ``recorded`` mirrors the tracker's ``turn_recorded`` flag, so the
+    astream-success caller can gate its debug log on the same condition.
     """
-    input_tok, output_tok = agent._extract_tokens_from_response(messages)
+    context_input, _context_output = agent._extract_tokens_from_response(messages)
     llm_config_for_cost = agent._get_llm_config_for_thread(thread_id)
-    cost_usd, cost_unavailable = agent._compute_turn_cost(
-        thread_id, messages, llm_config_for_cost
+    turn_input, turn_output, cost_usd, cost_unavailable = (
+        agent._compute_turn_usage_and_cost(thread_id, messages, llm_config_for_cost)
     )
-    recorded = bool(input_tok or output_tok or cost_usd is not None or cost_unavailable)
-    if recorded:
-        agent._token_tracker.record_usage(
-            thread_id,
-            input_tok,
-            output_tok,
-            cost_usd=cost_usd,
-            cost_unavailable=cost_unavailable,
-        )
-        agent._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
-    return input_tok, output_tok, recorded
+    recorded = bool(turn_input or turn_output)
+    agent._token_tracker.record_turn(
+        thread_id,
+        turn_input_tokens=turn_input,
+        turn_output_tokens=turn_output,
+        context_tokens=context_input if context_input > 0 else None,
+        cost_usd=cost_usd,
+        cost_unavailable=cost_unavailable,
+    )
+    agent._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
+    return turn_input, turn_output, recorded
 
 
 def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
@@ -207,8 +213,12 @@ def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
         "thread_id": thread_id,
         "model": effective_model,
         "total_tokens": context_used,
-        "input_tokens": usage.last_input_tokens,
-        "output_tokens": usage.last_output_tokens,
+        # This turn's consumption, summed across the turn's model calls.
+        # ``turn_recorded=False`` marks the zeros as "extraction found
+        # nothing", so clients must not accumulate them into session usage.
+        "input_tokens": usage.turn_input_tokens,
+        "output_tokens": usage.turn_output_tokens,
+        "turn_recorded": usage.turn_recorded,
         "cumulative_tokens": usage.total_tokens,
         "context_limit": model_limit,
         "usage_percentage": round(context_used / model_limit * 100, 1) if model_limit else 0,

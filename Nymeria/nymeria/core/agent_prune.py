@@ -208,6 +208,22 @@ class PruneManager:
             )
             return {"success": False, "reason": f"Failed to update state: {e}"}
 
+        # Refresh the context-occupancy estimate so the context bar drops
+        # immediately instead of showing the pre-prune percentage until the
+        # next turn. Best-effort: the estimate is the same chars-based one
+        # compaction uses, replaced by real usage on the next turn.
+        try:
+            post_state = await graph.aget_state(config)
+            post_messages = post_state.values.get("messages", [])
+            estimate = agent._compaction._estimate_messages_tokens(
+                post_messages, agent._compaction._model_for(thread_id)
+            )
+            agent._token_tracker.set_context_estimate(thread_id, estimate)
+        except Exception as e:
+            logger.debug(
+                "Thread %s: post-prune context re-estimate failed: %s", thread_id, e
+            )
+
         logger.info(
             "Thread %s: /prune (%s) complete - pruned=%d, already_pruned=%d, "
             "too_short=%d, chars_saved=%d",

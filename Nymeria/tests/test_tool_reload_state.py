@@ -20,6 +20,7 @@ from nymeria.core.tool_reload import (
 )
 from nymeria.core.agent import NymeriaAgent
 from nymeria.core.agent_compaction import CompactionManager
+from nymeria.core.token_tracker import TokenTracker
 from nymeria.core.event_bus import agent_stream_chunk_to_autonomous_event_data
 from nymeria.vendor.react_agent.nodes import create_tools_node, route_after_tools
 
@@ -277,7 +278,7 @@ def test_astream_reload_resume_streams_post_reload_tool_events():
     agent._compaction = CompactionManager(agent)
     agent.scheduler = SimpleNamespace(cancel=lambda *args, **kwargs: None)
     agent.settings = SimpleNamespace(lock_timeout=1, context_management="none")
-    agent._token_tracker = SimpleNamespace(record_usage=lambda *args, **kwargs: None)
+    agent._token_tracker = TokenTracker()
     agent._get_time_context = lambda **kwargs: "[time]"
     agent._patch_dangling_tool_calls = lambda *args, **kwargs: 0
     agent.get_pending_summary = lambda thread_id: None

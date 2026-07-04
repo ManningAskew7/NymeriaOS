@@ -1149,48 +1149,64 @@ class NymeriaAgent:
             return True
         return False
 
-    def _compute_turn_cost(
+    def _compute_turn_usage_and_cost(
         self,
         thread_id: str,
         messages: List,
         llm_config: "LLMConfig",
     ) -> tuple:
-        """Compute USD cost for AIMessages added since the last recorded turn.
+        """Sum usage and compute USD cost for this turn's AIMessages.
 
-        Returns ``(cost_usd, cost_unavailable)``. When ``cost_unavailable`` is
-        True the caller should not accumulate a number (the thread is on an
-        OAuth subscription or local endpoint). When ``cost_usd`` is None the
-        rates table did not know about the model -- the thread keeps its
-        existing cumulative total unchanged.
+        Slices the messages added since the thread's high-water index and
+        advances the index; the slice happens for EVERY provider class (the
+        pre-repair code skipped it for subscription/local endpoints, which
+        left their indexes at 0 forever), so per-turn token sums are accurate
+        everywhere while cost stays gated on billability.
+
+        Returns ``(turn_input_tokens, turn_output_tokens, cost_usd,
+        cost_unavailable)``. The token sums cover all of the turn's model
+        calls. When ``cost_unavailable`` is True the caller should not
+        accumulate a dollar number (the thread is on an OAuth subscription or
+        local endpoint). When ``cost_usd`` is None the rates table did not
+        know about the model -- the thread keeps its existing cumulative
+        total unchanged.
         """
         from ..config import pricing_table
         from . import cost_calc
+        from .token_tracker import ThreadTokenUsage
 
-        if self._is_cost_unavailable_for_thread(llm_config):
-            return None, True
+        cost_unavailable = self._is_cost_unavailable_for_thread(llm_config)
 
-        # Ensure a persistent usage row exists so the high-water index sticks.
-        # ``get_usage`` returns a transient row when the thread has never been
-        # recorded, which would otherwise drop the index update on the floor.
-        if thread_id not in self._token_tracker._usage:
-            from .token_tracker import ThreadTokenUsage
-            self._token_tracker._usage[thread_id] = ThreadTokenUsage(thread_id=thread_id)
-        usage = self._token_tracker._usage[thread_id]
-        since_index = usage.last_recorded_message_index
-        new_messages, next_index = cost_calc.slice_new_ai_messages(
-            list(messages), since_index
-        )
-        # Update the high-water index regardless of whether we found usage so
-        # the next turn starts fresh.
-        usage.last_recorded_message_index = next_index
+        # Read-advance the high-water index atomically against concurrent
+        # rehydration (get_context_stats can rehydrate off the turn lock).
+        # ``get_usage`` returns a transient row when the thread has never
+        # been recorded, which would drop the index update on the floor, so
+        # ensure a persistent row exists.
+        with self._token_tracker.lock:
+            usage = self._token_tracker._usage.setdefault(
+                thread_id, ThreadTokenUsage(thread_id=thread_id)
+            )
+            since_index = usage.last_recorded_message_index
+            new_messages, next_index = cost_calc.slice_new_ai_messages(
+                list(messages), since_index
+            )
+            # Update the high-water index regardless of whether we found
+            # usage so the next turn starts fresh.
+            usage.last_recorded_message_index = next_index
         if not new_messages:
-            return None, False
+            return 0, 0, None, cost_unavailable
 
         provider = (getattr(llm_config, "provider", None) or "").lower()
         model = getattr(llm_config, "model", "") or ""
         summed, contributing = cost_calc.parse_usage_from_messages(new_messages, provider)
         if contributing == 0:
-            return None, False
+            return 0, 0, None, cost_unavailable
+
+        turn_input = summed.prompt_tokens
+        turn_output = summed.completion_tokens
+
+        if cost_unavailable:
+            return turn_input, turn_output, None, True
 
         rates = pricing_table.get_rates(provider, model)
         cost = cost_calc.compute_cost_usd(summed, rates)
@@ -1209,9 +1225,7 @@ class NymeriaAgent:
             getattr(rates, "source", None) if rates else None,
             cost,
         )
-        if cost is None:
-            return None, False
-        return cost, False
+        return turn_input, turn_output, cost, False
 
     def _record_turn_cost(
         self,
@@ -1222,7 +1236,7 @@ class NymeriaAgent:
     ) -> None:
         """Persist the per-turn cost increment onto ``ThreadMetadata``.
 
-        In-memory accumulation happens via ``TokenTracker.record_usage``; this
+        In-memory accumulation happens via ``TokenTracker.record_turn``; this
         method is the durable write so ``total_cost_usd_micros`` survives
         restart. Skips disk I/O when the thread is on a subscription/local
         endpoint or when no rates were available.
@@ -2067,6 +2081,13 @@ class NymeriaAgent:
                 user_id, thread_id=thread_id
             )
 
+            # Post-restart guard, mirroring astream: seed the tracker row from
+            # checkpoint history BEFORE the turn adds messages, so the
+            # end-of-turn slice bills only this turn.
+            _tracked = getattr(self._token_tracker, "_usage", None)
+            if _tracked is not None and thread_id not in _tracked:
+                self._rehydrate_token_usage(thread_id)
+
             # Prepend cache-safe turn metadata (time/trigger, plus autonomous run
             # guidance for autonomous wake-ups) to the message tail.
             message_with_context = self._prefix_turn_metadata(
@@ -2753,12 +2774,25 @@ class NymeriaAgent:
             abort_event.clear()
 
             _stream_start = time.monotonic()
+            # Guards the error path against re-recording a turn the success
+            # path already recorded (compaction/RAG/observe can raise after
+            # the record, landing in the outer except).
+            turn_usage_recorded = False
             logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}, holder={holder}")
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
             graph = self._get_async_graph_for_user(
                 user_id, thread_id=thread_id
             )
+
+            # Post-restart guard: seed the tracker row from checkpoint history
+            # BEFORE the turn adds messages, so the end-of-turn slice bills
+            # only this turn. The auto-compact pre-check rehydrates too, but
+            # sliding_window/none configs skip it. getattr keeps stubbed
+            # trackers in tests happy.
+            _tracked = getattr(self._token_tracker, "_usage", None)
+            if _tracked is not None and thread_id not in _tracked:
+                self._rehydrate_token_usage(thread_id)
 
             # Pre-flight: patch any dangling tool calls from previous aborted runs.
             # (No tool hooks run here, so the turn source is threaded into the real
@@ -3249,6 +3283,7 @@ class NymeriaAgent:
                     input_tok, output_tok, recorded = self._record_turn_usage(
                         thread_id, user_id, result_messages
                     )
+                    turn_usage_recorded = True
                     if recorded:
                         logger.debug(
                             f"Thread {thread_id}: Recorded {input_tok}+{output_tok} tokens "
@@ -3369,13 +3404,18 @@ class NymeriaAgent:
                     )
                 yield self._classify_stream_exception(e)
 
-                # Try to track tokens + cost even after error so status bar stays alive
-                try:
-                    state = await graph.aget_state(config)
-                    result_messages = state.values.get("messages", [])
-                    self._record_turn_usage(thread_id, user_id, result_messages)
-                except Exception:
-                    logger.debug("Failed to extract token usage after stream error")
+                # Try to track tokens + cost even after error so status bar
+                # stays alive; skipped when the success path already recorded
+                # this turn (the error came from post-record steps like
+                # compaction or RAG indexing, and re-recording would double
+                # the cumulative totals).
+                if not turn_usage_recorded:
+                    try:
+                        state = await graph.aget_state(config)
+                        result_messages = state.values.get("messages", [])
+                        self._record_turn_usage(thread_id, user_id, result_messages)
+                    except Exception:
+                        logger.debug("Failed to extract token usage after stream error")
 
                 # DONE observe on the error path: a `done` notify/webhook hook can
                 # react to a failed turn too. completed_normally=False marks it as
