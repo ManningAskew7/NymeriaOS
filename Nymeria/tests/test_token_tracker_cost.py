@@ -178,3 +178,32 @@ class TestSetContextEstimate:
         t = TokenTracker()
         t.set_context_estimate("t", -5)
         assert t.get_usage("t").context_tokens == 0
+
+class TestTurnLlmSeconds:
+    def test_stored_for_recorded_turn(self):
+        t = TokenTracker()
+        t.record_turn("t", turn_input_tokens=100, turn_output_tokens=50,
+                      context_tokens=100, turn_llm_seconds=2.5)
+        assert t.get_usage("t").turn_llm_seconds == 2.5
+
+    def test_cleared_when_turn_unrecorded(self):
+        t = TokenTracker()
+        t.record_turn("t", turn_input_tokens=100, turn_output_tokens=50,
+                      context_tokens=100, turn_llm_seconds=2.5)
+        t.record_turn("t", turn_input_tokens=0, turn_output_tokens=0,
+                      turn_llm_seconds=1.0)
+        # Tokens unknown -> a rate would divide stale tokens by new time.
+        assert t.get_usage("t").turn_llm_seconds is None
+
+    def test_none_and_nonpositive_stored_as_none(self):
+        t = TokenTracker()
+        t.record_turn("t", turn_input_tokens=10, turn_output_tokens=5,
+                      context_tokens=10, turn_llm_seconds=0.0)
+        assert t.get_usage("t").turn_llm_seconds is None
+
+    def test_survives_compaction_reset(self):
+        t = TokenTracker()
+        t.record_turn("t", turn_input_tokens=100, turn_output_tokens=50,
+                      context_tokens=100, turn_llm_seconds=2.5)
+        t.reset_after_compact("t", remaining_tokens=30)
+        assert t.get_usage("t").turn_llm_seconds == 2.5

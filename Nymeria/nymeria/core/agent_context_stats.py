@@ -139,6 +139,7 @@ def record_turn_usage(
     thread_id: str,
     user_id: str,
     messages: list,
+    turn_llm_seconds: float | None = None,
 ) -> tuple[int, int, bool]:
     """Record a finished turn's token usage and USD cost.
 
@@ -168,6 +169,7 @@ def record_turn_usage(
         context_tokens=context_input if context_input > 0 else None,
         cost_usd=cost_usd,
         cost_unavailable=cost_unavailable,
+        turn_llm_seconds=turn_llm_seconds,
     )
     agent._record_turn_cost(thread_id, user_id, cost_usd, cost_unavailable)
     return turn_input, turn_output, recorded
@@ -219,6 +221,16 @@ def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
         "input_tokens": usage.turn_input_tokens,
         "output_tokens": usage.turn_output_tokens,
         "turn_recorded": usage.turn_recorded,
+        # LLM-stream wall time and the derived output rate for the last
+        # recorded turn; None when timing or tokens are unknown.
+        "turn_llm_seconds": (
+            round(usage.turn_llm_seconds, 3) if usage.turn_llm_seconds else None
+        ),
+        "tokens_per_second": (
+            round(usage.turn_output_tokens / usage.turn_llm_seconds, 1)
+            if usage.turn_llm_seconds and usage.turn_output_tokens > 0
+            else None
+        ),
         "cumulative_tokens": usage.total_tokens,
         "context_limit": model_limit,
         "usage_percentage": round(context_used / model_limit * 100, 1) if model_limit else 0,

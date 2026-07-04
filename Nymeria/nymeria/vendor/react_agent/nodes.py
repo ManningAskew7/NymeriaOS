@@ -1203,6 +1203,30 @@ def _thread_id_from_config(config: Any) -> Optional[str]:
         return None
 
 
+def _accumulate_llm_seconds(config: Any, seconds: float) -> None:
+    """Add one model call's wall-clock duration to the turn's accumulator.
+
+    ``NymeriaAgent.astream``/``chat`` inject a mutable dict per turn as
+    ``config["configurable"]["llm_timing"]``; each successful model call adds
+    its streaming duration so the turn's tokens-per-second rate can exclude
+    tool execution. Side-channel graph runs (compaction summaries,
+    ``nym.llm``, dream seeding) build their own configs without the key and
+    are excluded by construction. Timing must never break a turn, so any
+    failure is swallowed.
+    """
+    try:
+        if isinstance(config, dict):
+            configurable = config.get("configurable") or {}
+        else:
+            configurable = getattr(config, "configurable", {}) or {}
+        timing = configurable.get("llm_timing")
+        if isinstance(timing, dict):
+            timing["seconds"] = float(timing.get("seconds", 0.0)) + max(0.0, seconds)
+            timing["calls"] = int(timing.get("calls", 0)) + 1
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def create_agent_node(
     llm_with_tools: BaseChatModel,
     system_prompt: str,
@@ -1294,6 +1318,10 @@ def create_agent_node(
         # Sync graph callers use the normal invoke path. User-facing live
         # streaming runs through the async node below.
         messages_with_system = _prepare_messages(state, config)
+        # Timing brackets the retry helper, so on the (rare) retried call the
+        # accumulated duration includes backoff sleeps; acceptable for the
+        # sync path, which the live tokens/s display does not ride.
+        call_started_at = time.monotonic()
         response = _invoke_llm_with_retries(
             lambda candidate: candidate.invoke(messages_with_system),
             llm_config,
@@ -1301,6 +1329,7 @@ def create_agent_node(
             tools,
             config,
         )
+        _accumulate_llm_seconds(config, time.monotonic() - call_started_at)
         return _finish_response(response)
 
     async def async_agent_node(state: AgentState, config: Any = None) -> dict:
@@ -1337,6 +1366,11 @@ def create_agent_node(
                     tools=tools,
                     cache=candidate_cache,
                 )
+                # Per-attempt clock for the tokens/s accumulator: unlike
+                # stream_started_at above (kept for the first_chunk/elapsed
+                # log), it resets on every retry/fallback attempt so backoff
+                # sleeps never count as generation time.
+                attempt_started_at = time.monotonic()
                 async for chunk in candidate.astream(messages_with_system):
                     chunks_this_attempt += 1
                     stream_chunks += 1
@@ -1388,6 +1422,9 @@ def create_agent_node(
                     response = await candidate.ainvoke(messages_with_system)
                 else:
                     response = message_chunk_to_message(merged_chunk)
+                # Only successful calls contribute generation time (a failed
+                # attempt's tokens are discarded with it).
+                _accumulate_llm_seconds(config, time.monotonic() - attempt_started_at)
                 break
             except Exception as exc:
                 if chunks_this_attempt > 0:

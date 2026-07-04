@@ -26,6 +26,7 @@ def _fake_usage(
     turn_input: int = 0,
     turn_output: int = 0,
     turn_recorded: bool = False,
+    turn_llm_seconds: float | None = None,
     compaction_count: int = 0,
     last_compaction_at: datetime | None = None,
     last_cost_usd: float | None = None,
@@ -46,6 +47,7 @@ def _fake_usage(
         turn_input_tokens=turn_input,
         turn_output_tokens=turn_output,
         turn_recorded=turn_recorded,
+        turn_llm_seconds=turn_llm_seconds,
         compaction_count=compaction_count,
         last_compaction_at=last_compaction_at,
         context_tokens=last_input,  # mirrors the real property
@@ -196,6 +198,7 @@ def test_record_turn_usage_records_summed_turn_and_occupancy():
                 "context_tokens": 90,
                 "cost_usd": 0.0021,
                 "cost_unavailable": False,
+                "turn_llm_seconds": None,
             },
         )
     ]
@@ -220,6 +223,7 @@ def test_record_turn_usage_empty_extraction_still_updates_tracker():
                 "context_tokens": None,
                 "cost_usd": None,
                 "cost_unavailable": False,
+                "turn_llm_seconds": None,
             },
         )
     ]
@@ -366,6 +370,7 @@ def test_get_stats_returns_dict_with_expected_keys(monkeypatch: pytest.MonkeyPat
         turn_input=700,
         turn_output=500,
         turn_recorded=True,
+        turn_llm_seconds=7.125,
         compaction_count=2,
         last_compaction_at=compaction_at,
     )
@@ -382,6 +387,8 @@ def test_get_stats_returns_dict_with_expected_keys(monkeypatch: pytest.MonkeyPat
         "input_tokens": 700,
         "output_tokens": 500,
         "turn_recorded": True,
+        "turn_llm_seconds": 7.125,
+        "tokens_per_second": 70.2,
         "cumulative_tokens": 5_000,
         "context_limit": 100_000,
         "usage_percentage": 1.5,
@@ -485,3 +492,45 @@ def test_get_stats_last_compaction_none_when_unset(monkeypatch: pytest.MonkeyPat
     stats = get_context_stats(cast(Any, agent), "t1")
 
     assert stats["last_compaction"] is None
+
+def test_get_stats_tokens_per_second_none_without_timing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(
+        last_input=1_000, turn_input=900, turn_output=300, turn_recorded=True,
+        turn_llm_seconds=None,
+    )
+    stats = get_context_stats(cast(Any, _fake_agent(usage=usage)), "t1")
+
+    assert stats["turn_llm_seconds"] is None
+    assert stats["tokens_per_second"] is None
+
+
+def test_get_stats_tokens_per_second_none_without_output_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(
+        last_input=1_000, turn_input=900, turn_output=0, turn_recorded=True,
+        turn_llm_seconds=4.0,
+    )
+    stats = get_context_stats(cast(Any, _fake_agent(usage=usage)), "t1")
+
+    assert stats["turn_llm_seconds"] == 4.0
+    assert stats["tokens_per_second"] is None
+
+
+def test_record_turn_usage_passes_llm_seconds_through():
+    agent = _fake_record_agent(context_tokens=(90, 45), turn=(120, 45, None, True))
+
+    record_turn_usage(cast(Any, agent), "t1", "u1", ["msg"], turn_llm_seconds=3.25)
+
+    _tid, kwargs = agent._record_turn_calls[0]
+    assert kwargs["turn_llm_seconds"] == 3.25
