@@ -34,6 +34,12 @@ class ThreadTokenUsage:
     total_output_tokens: int = 0
     # Context occupancy: the final model call's prompt_tokens.
     last_input_tokens: int = 0
+    # The model whose call (or estimate) produced ``last_input_tokens``.
+    # ``get_context_stats`` compares it against the thread's current
+    # effective model so a mid-thread model switch can re-estimate
+    # occupancy instead of dividing prior-model tokens by the new model's
+    # limit (token-audit defect #11). ``None`` means unknown/legacy.
+    context_model: Optional[str] = None
     # This turn's consumption, summed across the turn's model calls.
     # ``turn_recorded`` is False when the last finished turn extracted no
     # usage metadata (the turn_* zeros are then "unknown", not "zero").
@@ -111,6 +117,7 @@ class TokenTracker:
         cost_usd: Optional[float] = None,
         cost_unavailable: bool = False,
         turn_llm_seconds: Optional[float] = None,
+        context_model: Optional[str] = None,
     ) -> None:
         """
         Record a finished turn.
@@ -135,6 +142,8 @@ class TokenTracker:
             turn_llm_seconds: Wall-clock seconds spent consuming the turn's
                 model streams. Stored only for a recorded turn with a
                 positive duration; a tokens/s rate needs both sides.
+            context_model: The model that produced ``context_tokens``.
+                Stamped only when fresh occupancy is written.
         """
         with self._lock:
             usage = self._row(thread_id)
@@ -152,6 +161,8 @@ class TokenTracker:
                 usage.total_output_tokens += turn_output_tokens
             if context_tokens is not None and context_tokens > 0:
                 usage.last_input_tokens = context_tokens
+                if context_model:
+                    usage.context_model = context_model
             usage.cost_unavailable = bool(cost_unavailable)
             usage.last_cost_usd = None
             if cost_unavailable:
@@ -168,6 +179,7 @@ class TokenTracker:
         total_output_tokens: int,
         context_tokens: int,
         message_index: int,
+        context_model: Optional[str] = None,
     ) -> None:
         """Seed a thread's row from checkpoint history after a restart.
 
@@ -181,12 +193,22 @@ class TokenTracker:
             usage.total_output_tokens = total_output_tokens
             usage.last_input_tokens = context_tokens
             usage.last_recorded_message_index = message_index
+            if context_model:
+                usage.context_model = context_model
 
-    def set_context_estimate(self, thread_id: str, estimated_tokens: int) -> None:
-        """Replace the context-occupancy estimate (e.g. after ``/prune``)."""
+    def set_context_estimate(
+        self,
+        thread_id: str,
+        estimated_tokens: int,
+        context_model: Optional[str] = None,
+    ) -> None:
+        """Replace the context-occupancy estimate (e.g. after ``/prune`` or
+        a mid-thread model switch)."""
         with self._lock:
             usage = self._row(thread_id)
             usage.last_input_tokens = max(0, int(estimated_tokens))
+            if context_model:
+                usage.context_model = context_model
 
     def get_usage(self, thread_id: str) -> ThreadTokenUsage:
         """
@@ -220,6 +242,7 @@ class TokenTracker:
         thread_id: str,
         remaining_tokens: int,
         remaining_message_count: Optional[int] = None,
+        context_model: Optional[str] = None,
     ) -> None:
         """
         Reset context occupancy after compaction.
@@ -242,6 +265,8 @@ class TokenTracker:
             usage.last_input_tokens = remaining_tokens
             usage.last_compaction_at = datetime.now()
             usage.compaction_count += 1
+            if context_model:
+                usage.context_model = context_model
             if remaining_message_count is not None:
                 usage.last_recorded_message_index = remaining_message_count
 
