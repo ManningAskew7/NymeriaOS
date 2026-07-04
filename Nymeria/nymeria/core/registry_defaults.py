@@ -49,6 +49,22 @@ def register_default_commands(service: "CommandService") -> None:
         requires_thread=True,
     )
     service.register(
+        "usage",
+        description="Show token usage and cost statistics",
+        category="Status",
+        usage="/usage [session]",
+        aliases=("tokens", "cost"),
+        requires_thread=True,
+    )
+    service.register(
+        "usage session",
+        description="Show session-wide (cumulative) token usage for this thread",
+        category="Status",
+        usage="/usage session",
+        aliases=("usage_session",),
+        requires_thread=True,
+    )
+    service.register(
         "tasks",
         description="Scheduled tasks overview",
         category="TODOs",
@@ -621,6 +637,21 @@ def register_default_commands(service: "CommandService") -> None:
         category="Personal",
         usage="/activity notifications",
         aliases=("activity_notifications",),
+    )
+    service.register(
+        "artifacts",
+        description="Inspect recent workspace artifacts",
+        category="Personal",
+        usage="/artifacts recent",
+        requires_thread=True,
+    )
+    service.register(
+        "artifacts recent",
+        description="List recent workspace artifacts from thread history",
+        category="Personal",
+        usage="/artifacts recent [limit]",
+        aliases=("artifacts_recent", "artifacts list"),
+        requires_thread=True,
     )
     service.register(
         "doctor",

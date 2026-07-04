@@ -1,4 +1,15 @@
-"""Workspace artifact commands."""
+"""Workspace artifact commands (client-side half).
+
+The server-state listing (``/artifacts recent``: recent artifacts from thread
+history) is a backend command (``core.registry_defaults`` +
+``core.command_executor_context.ContextCommandsMixin``), so it works on every
+frontend. The two genuinely client-side operations stay here: ``open`` shows an
+artifact's path and metadata resolved against the terminal's own recent list,
+and ``download`` writes bytes to the client's local disk via the CLI transport
+method ``download_workspace_artifact`` (which the command-service backend
+clients do not expose). The local root forwards to the backend so a bare
+``/artifacts`` still lists recent when the backend catalog is registered.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +22,6 @@ from ._shared import (
     CommandClientMethodUnavailable,
     call_client_method,
     call_client_user_scoped,
-    one_line,
     unsupported_transport_result,
 )
 from ..rendering.details import collect_recent_artifacts, format_artifact_details
@@ -22,44 +32,18 @@ async def _handle_artifacts_root(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    if args:
-        return CommandResult.failed(
-            "Usage: /artifacts recent|open|download",
-            error_code="usage_error",
-        )
-    return await _handle_artifacts_recent(context, [])
+    """Forward /artifacts to the backend registry (recent listing).
 
+    The backend ``/artifacts`` root and ``/artifacts recent`` win over this
+    local root when the backend catalog is registered, so this handler is only
+    reached on a disconnected transport, where it degrades to the backend
+    proxy's unsupported-transport message. The client-side ``open`` and
+    ``download`` subcommands are merged under the backend root and keep running
+    locally.
+    """
+    from .backend import _execute_backend_command
 
-async def _handle_artifacts_recent(
-    context: CommandContext,
-    args: list[str],
-) -> CommandResult:
-    limit = _parse_limit(args, default=10)
-    artifacts = _recent_artifacts_from_context(context, limit=limit)
-
-    if not artifacts and context.thread_id:
-        artifacts = await _artifacts_from_history(context, limit=limit)
-
-    if not artifacts:
-        return CommandResult.completed(
-            CommandMessage("No recent workspace artifacts found.", level="warning")
-        )
-
-    lines = ["Recent Artifacts", "  #   Name                         Size       Path"]
-    for index, artifact in enumerate(artifacts, start=1):
-        size = (
-            _format_size(artifact.size_bytes)
-            if artifact.size_bytes is not None
-            else ""
-        )
-        lines.append(
-            f"  {index:<3} {one_line(artifact.name or Path(artifact.path).name, limit=28):<28} "
-            f"{size:<10} {one_line(artifact.path, limit=80)}"
-        )
-    return CommandResult.completed(
-        CommandMessage("\n".join(lines), title="Artifacts"),
-        payload={"artifacts": tuple(artifact.path for artifact in artifacts)},
-    )
+    return await _execute_backend_command(context, ("artifacts",), args)
 
 
 async def _handle_artifacts_open(
@@ -237,24 +221,6 @@ def _select_artifact(
     return None
 
 
-def _parse_limit(args: Sequence[str], *, default: int) -> int:
-    if not args:
-        return default
-    for arg in args:
-        if arg.startswith("--limit="):
-            return _positive_int(arg.split("=", 1)[1], default=default)
-        if arg.isdigit():
-            return _positive_int(arg, default=default)
-    return default
-
-
-def _positive_int(value: str, *, default: int) -> int:
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return default
-
-
 def _format_size(size: int) -> str:
     from ..rendering.tool_rows import format_size
 
@@ -262,7 +228,7 @@ def _format_size(size: int) -> str:
 
 
 def register(registry: CommandRegistry) -> None:
-    """Register workspace artifact commands."""
+    """Register the client-side workspace artifact commands."""
     registry.register(Command(
         name="artifacts",
         aliases=[],
@@ -271,14 +237,6 @@ def register(registry: CommandRegistry) -> None:
         handler=_handle_artifacts_root,
         category="Personal",
         subcommands={
-            "recent": Command(
-                name="recent",
-                aliases=["list"],
-                description="List recent workspace artifacts",
-                usage="recent [limit]",
-                handler=_handle_artifacts_recent,
-                category="Personal",
-            ),
             "open": Command(
                 name="open",
                 description="Show artifact path and metadata",

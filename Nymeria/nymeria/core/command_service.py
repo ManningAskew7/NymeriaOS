@@ -21,6 +21,7 @@ from urllib.parse import quote
 import httpx
 
 from ..config import get_settings
+from .command_executor_context import ContextCommandsMixin
 from .command_forms import (
     CommandOutput,
     command_data,
@@ -626,6 +627,19 @@ class CommandHttpClient:
     async def get_context_stats(self, thread_id: str, user_id: Optional[str] = None) -> dict:
         return await self._get(f"/threads/{_path_param(thread_id)}/context", act_as=user_id)
 
+    async def get_history(
+        self,
+        thread_id: str,
+        user_id: Optional[str] = None,
+        *,
+        include_internal: bool = False,
+    ) -> dict:
+        return await self._get(
+            f"/threads/{_path_param(thread_id)}/history",
+            params={"include_internal": str(include_internal).lower()},
+            act_as=user_id,
+        )
+
     async def get_thread_config(self, thread_id: str, user_id: Optional[str] = None) -> Optional[dict]:
         try:
             return await self._get(f"/threads/{_path_param(thread_id)}/config", act_as=user_id)
@@ -933,6 +947,32 @@ class CommandBackendClient:
                 logger.warning("Failed to inspect processing state for %s: %s", thread_id, e)
                 stats["processing"] = False
         return stats
+
+    async def get_history(
+        self,
+        thread_id: str,
+        user_id: Optional[str] = None,
+        *,
+        include_internal: bool = False,
+    ) -> dict:
+        # Mirrors GET /threads/{id}/history: with include_internal the route
+        # forces the autonomous/prompt-metadata filters off, so match that here.
+        self._require_thread_access(thread_id)
+        show_autonomous = False
+        show_prompt_metadata = False
+        if not include_internal:
+            tc = self.agent.thread_config_manager.get_config(thread_id)
+            if tc and getattr(tc, "show_autonomous_prompts", False):
+                show_autonomous = True
+            if tc and getattr(tc, "show_prompt_metadata", False):
+                show_prompt_metadata = True
+        messages = self.agent.get_conversation_history(
+            thread_id,
+            include_internal=include_internal,
+            show_autonomous_prompts=show_autonomous,
+            show_prompt_metadata=show_prompt_metadata,
+        )
+        return {"thread_id": thread_id, "messages": messages}
 
     async def get_thread_config(self, thread_id: str, user_id: Optional[str] = None) -> Optional[dict]:
         self._require_thread_access(thread_id)
@@ -2258,7 +2298,7 @@ def prepare_skill_slash_command(
     )
 
 
-class _CommandExecutor:
+class _CommandExecutor(ContextCommandsMixin):
     """Per-request command executor with the migrated command bodies."""
 
     def __init__(self, api: Any, thread_id: str | None, user_id: str, actor: str = "user"):
