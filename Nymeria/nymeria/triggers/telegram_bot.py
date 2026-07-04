@@ -3112,7 +3112,7 @@ class NymeriaTelegramBot:
                 try:
                     await query.edit_message_reply_markup(reply_markup=None)
                 except Exception:
-                    pass
+                    logger.debug("Failed to remove approval buttons from message")
             else:
                 logger.warning(f"Hook approval resolve failed: {e}")
                 await query.answer("Couldn't resolve the approval.", show_alert=True)

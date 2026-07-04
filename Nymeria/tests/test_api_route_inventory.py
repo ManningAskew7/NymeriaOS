@@ -98,6 +98,8 @@ EXPECTED_ROUTES = [
     ('/health/stream', ('GET',)),
     ('/hooks', ('GET',)),
     ('/hooks', ('POST',)),
+    ('/hooks/approvals', ('GET',)),
+    ('/hooks/approvals/{record_id}/resolve', ('POST',)),
     ('/hooks/executions', ('GET',)),
     ('/hooks/schema', ('GET',)),
     ('/hooks/{hook_id}', ('DELETE',)),
