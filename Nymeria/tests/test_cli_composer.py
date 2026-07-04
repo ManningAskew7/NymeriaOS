@@ -628,15 +628,16 @@ def test_rich_repl_scroll_region_uses_footer_only_layout(tmp_path: Path) -> None
     shell.composer_controller.text_area.buffer.text = "abcdefghij " * 6
 
     assert runtime.scroll_region_enabled() is True
-    assert len(children) == 5
+    assert len(children) == 6
     assert isinstance(children[0], ConditionalContainer)
     assert isinstance(children[1], ConditionalContainer)
     assert isinstance(children[2], HSplit)
     assert isinstance(children[3], ConditionalContainer)  # slash panel, below input
     assert isinstance(children[4], ConditionalContainer)  # form panel, below slash panel
+    assert isinstance(children[5], ConditionalContainer)  # queued panel, bottommost
     assert runtime.composer_input_height() > 1
-    # Composer text does not start with "/" and no form is open, so both panels
-    # are hidden and contribute zero footer height.
+    # Composer text does not start with "/", no form is open, and nothing is
+    # queued, so all three panels are hidden and contribute zero footer height.
     assert runtime.footer_height() == runtime.composer_input_height() + 4
     assert shell.composer_controller.text_area.window.height().min == (
         runtime.composer_input_height()
@@ -743,3 +744,39 @@ def test_rich_repl_queued_submissions_run_in_order() -> None:
     assert [request.message for request in client.chat_requests] == ["first", "second"]
 
 
+
+
+def test_rich_repl_queued_panel_tracks_queue_and_footer_height() -> None:
+    capabilities = FakeTerminalCapabilities(width=80, height=24, renderer="rich")
+    cli_app = CLIApp(
+        None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    renderer = RichReplRenderer(capabilities=capabilities, width=80)
+    runtime = _RichReplRuntime(
+        app=cli_app,
+        renderer=renderer,
+        capabilities=capabilities,
+    )
+
+    assert runtime.queued_panel_visible() is False
+    assert runtime.queued_panel_height() == 0
+    empty_footer = runtime.footer_height()
+
+    runtime.queue_submission(ComposerSubmission("first queued"))
+    runtime.queue_submission(ComposerSubmission("second queued"))
+
+    assert runtime.queued_panel_visible() is True
+    assert runtime.queued_panel_height() == 2
+    assert runtime.footer_height() == empty_footer + 2
+    rendered = "".join(text for _style, text in runtime.queued_panel_fragments())
+    assert "queued 1: first queued" in rendered
+    assert "queued 2: second queued" in rendered
+
+    # Draining the queue hides the panel again and releases the footer rows.
+    assert runtime.next_queued_submission().message == "first queued"
+    assert runtime.queued_panel_height() == 1
+    assert runtime.next_queued_submission().message == "second queued"
+    assert runtime.queued_panel_visible() is False
+    assert runtime.footer_height() == empty_footer

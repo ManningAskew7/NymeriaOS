@@ -41,6 +41,7 @@ from .commands import RichConsoleCommandOutputSink
 from .follow_footer import FollowFooterEngine
 from .rendering import form_panel
 from .rendering.indicator import FRAME_INTERVAL_SECONDS
+from .rendering.queued_panel import queued_panel_fragments, queued_panel_height
 from .rendering.rich_repl import RichReplRenderer
 from .rendering.slash_panel import (
     filter_commands,
@@ -134,7 +135,9 @@ class _RichReplRuntime:
     def next_queued_submission(self) -> Any | None:
         if not self._pending_submissions:
             return None
-        return self._pending_submissions.popleft()
+        submission = self._pending_submissions.popleft()
+        self.invalidate()
+        return submission
 
     def clear_queued_notice_if_idle(self) -> None:
         if (
@@ -347,6 +350,23 @@ class _RichReplRuntime:
             + 4
             + self.slash_panel_height()
             + self.form_height()
+            + self.queued_panel_height()
+        )
+
+    # ----- Queued-prompt panel (see rendering/queued_panel.py) ---------- #
+
+    def queued_panel_visible(self) -> bool:
+        return len(self._pending_submissions) > 0
+
+    def queued_panel_height(self) -> int:
+        return queued_panel_height(tuple(self._pending_submissions))
+
+    def queued_panel_fragments(self) -> list[Any]:
+        return list(
+            queued_panel_fragments(
+                tuple(self._pending_submissions),
+                width=self.terminal_width(),
+            )
         )
 
     def _composer_text(self) -> str:
@@ -905,6 +925,22 @@ class _RichReplPromptToolkitShell:
             ),
             filter=form_panel_filter,
         )
+        queued_panel_filter = (
+            Condition(self.runtime.queued_panel_visible) & footer_visible
+        )
+        queued_panel_container = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: self.runtime.queued_panel_fragments()),
+                height=lambda: Dimension.exact(
+                    max(1, self.runtime.queued_panel_height())
+                ),
+                dont_extend_height=True,
+                style="class:queued-panel",
+                wrap_lines=False,
+                char=" ",
+            ),
+            filter=queued_panel_filter,
+        )
         top_border = ConditionalContainer(
             Window(
                 height=Dimension.exact(1),
@@ -930,7 +966,14 @@ class _RichReplPromptToolkitShell:
         footer_spacer = Window(height=Dimension(weight=1), char=" ")
         if self.runtime.scroll_region_enabled():
             body = HSplit(
-                [transcript_gap, status_bar, input_area, slash_panel, form_panel_container],
+                [
+                    transcript_gap,
+                    status_bar,
+                    input_area,
+                    slash_panel,
+                    form_panel_container,
+                    queued_panel_container,
+                ],
                 height=lambda: Dimension.exact(self.runtime.footer_height()),
             )
         else:
@@ -942,6 +985,7 @@ class _RichReplPromptToolkitShell:
                     input_area,
                     slash_panel,
                     form_panel_container,
+                    queued_panel_container,
                 ]
             )
         bindings = KeyBindings()
@@ -1172,6 +1216,9 @@ def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
         "form-panel.placeholder": ptk_style(theme, "separator"),
         "form-panel.footer": ptk_style(theme, "separator"),
         "form-panel.more": ptk_style(theme, "separator"),
+        "queued-panel": ptk_style(theme, "status_fg"),
+        "queued-panel.index": ptk_style(theme, "prompt_busy", bold=True),
+        "queued-panel.more": ptk_style(theme, "separator"),
     }
 
 
