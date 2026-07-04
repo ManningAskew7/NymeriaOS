@@ -103,12 +103,13 @@ def test_backend_provider_overrides_duplicate_memory_subcommand():
     assert sink.messages[0].content == "backend result for /memory save color deep blue"
 
 
-def test_local_model_root_survives_backend_registration():
-    """The /model root stays local (it opens the picker form).
+def test_backend_model_root_wins_local_registration():
+    """The /model root is backend-owned (it returns the declarative form).
 
-    ``_LOCAL_ROOT_WINS`` makes the provider skip the root-level backend proxy
-    for /model so the local form-opening handler is not shadowed. Local
-    subcommands stay local too.
+    Since the form contract shipped, the backend proxy owns the /model root
+    (the payload in ``CommandResult.data`` carries the picker form) and the
+    old ``_LOCAL_ROOT_WINS`` exception is gone. Local subcommands still merge
+    under the backend root.
     """
     registry = CommandRegistry(include_builtins=False)
     model.register(registry)
@@ -116,13 +117,13 @@ def test_local_model_root_survives_backend_registration():
 
     root = registry.get("model")
     assert root is not None
-    assert root.handler is model._handle_model_context
-    assert root.metadata.get("backend_command") is None
+    assert root.handler is not model._handle_model_context
+    assert root.metadata.get("backend_command") is True
     assert registry.resolve("/model show").path == ("model", "show")
     assert registry.resolve("/model show").command.metadata.get("backend_command") is None
 
 
-def test_local_model_root_survives_backend_first_registration_order():
+def test_backend_model_root_wins_backend_first_registration_order():
     """Order independence: backend provider first, local module second."""
     registry = CommandRegistry(include_builtins=False)
     BackendCommandProvider([command_info("model", category="LLM")]).register(registry)
@@ -130,8 +131,10 @@ def test_local_model_root_survives_backend_first_registration_order():
 
     root = registry.get("model")
     assert root is not None
-    assert root.handler is model._handle_model_context
-    assert root.metadata.get("backend_command") is None
+    assert root.handler is not model._handle_model_context
+    assert root.metadata.get("backend_command") is True
+    assert registry.resolve("/model show").path == ("model", "show")
+    assert registry.resolve("/model show").command.metadata.get("backend_command") is None
 
 
 def test_model_root_forwards_set_shorthand_args_to_backend():

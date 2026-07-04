@@ -1451,3 +1451,82 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     # Full per-definition equality (frozen dataclass value-eq), not just id set,
     # so a kwarg drift between the two construction paths would trip.
     assert fresh._commands == service._commands
+
+
+class _ModelCatalogCommandApi(FakeCommandApi):
+    async def list_available_models(self) -> list[dict[str, Any]]:
+        self.calls.append(("list_available_models", (), {}))
+        return [
+            {"id": "gpt-test", "context_length": 128000},
+            {"id": "gpt-next", "context_length": 400000},
+        ]
+
+
+def _cli_ctx(thread_id: str | None = "thread-1") -> CommandContext:
+    return CommandContext(
+        user_id="alice",
+        thread_id=thread_id,
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+
+
+def test_model_command_returns_declarative_form_payload() -> None:
+    """Bare /model attaches the v1 picker form next to its markdown fallback."""
+    service = CommandService()
+    api = _ModelCatalogCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/model", api=api))
+
+    assert result.success is True
+    assert "global: gpt-test" in result.markdown
+    form = (result.data or {})["form"]
+    assert form["version"] == 1
+    assert form["title"] == "Select model"
+    assert form["submit"]["command"] == "model {model} thread"
+    (tab,) = form["tabs"]
+    kinds = [field["kind"] for field in tab["fields"]]
+    assert kinds == ["search", "radio"]
+    options = tab["fields"][1]["options"]
+    assert [option["id"] for option in options] == ["gpt-test", "gpt-next"]
+    assert options[0]["current"] is True
+    assert options[1]["current"] is False
+    assert "ctx" in options[0]["meta"]
+
+
+def test_model_command_without_thread_targets_global_scope() -> None:
+    service = CommandService()
+    api = _ModelCatalogCommandApi()
+
+    result = run(service.execute(_cli_ctx(thread_id=None), "/model", api=api))
+
+    form = (result.data or {})["form"]
+    assert form["submit"]["command"] == "model {model} global"
+
+
+def test_model_command_without_catalog_keeps_plain_output() -> None:
+    """No model list available: bare /model stays a plain info string."""
+    service = CommandService()
+    api = FakeCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/model", api=api))
+
+    assert result.success is True
+    assert "global: gpt-test" in result.markdown
+    assert result.data is None
+
+
+def test_model_set_thread_scope_returns_state_hint() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/model gpt-next thread", api=api))
+
+    assert result.success is True
+    assert result.data == {"state": {"model": "gpt-next"}}
+    assert ("update_thread_config", ("thread-1",), {"user_id": "alice", "llm_config": {"model": "gpt-next"}}) in api.calls
+
+    global_result = run(service.execute(_cli_ctx(), "/model gpt-next", api=api))
+    assert global_result.success is True
+    assert global_result.data is None

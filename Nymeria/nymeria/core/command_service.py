@@ -21,6 +21,15 @@ from urllib.parse import quote
 import httpx
 
 from ..config import get_settings
+from .command_forms import (
+    CommandOutput,
+    command_data,
+    form_option,
+    form_payload,
+    form_tab,
+    radio_field,
+    search_field,
+)
 from .registry_defaults import register_default_commands
 from .time_utils import ensure_aware_utc, parse_tool_ttl, utc_now
 
@@ -1924,6 +1933,10 @@ class CommandService:
 
         try:
             raw_output = await method(parsed.args, parsed.rest)
+            data: dict[str, Any] | None = None
+            if isinstance(raw_output, CommandOutput):
+                data = raw_output.data
+                raw_output = raw_output.text
             success, markdown = _format_legacy_output(raw_output)
             limit = SKILL_SHOW_MAX_CHARS if definition.id == "skills.show" else 4000
             return CommandResult(
@@ -1931,6 +1944,7 @@ class CommandService:
                 _truncate(markdown, limit=limit),
                 command_label,
                 level="success" if success else "error",
+                data=data if success else None,
             )
         except httpx.HTTPStatusError as e:
             return CommandResult(False, f"**Error:** {http_error_detail(e)}", command_label, level="error")
@@ -3788,7 +3802,7 @@ class _CommandExecutor:
 
     # ── Model / thinking ──────────────────────────────────────────────────
 
-    async def _cmd_model(self, args: list[str], rest: str) -> str:
+    async def _cmd_model(self, args: list[str], rest: str) -> str | CommandOutput:
         if not args:
             settings = await self.api.get_settings()
             tc = await self.api.get_thread_config(self.thread_id) if self.thread_id else None
@@ -3801,7 +3815,12 @@ class _CommandExecutor:
                 lines.append(f"this thread: {thread_model} (override)")
             else:
                 lines.append("this thread: using global default")
-            return "[Info]: " + "\n".join(lines)
+            lines.append("set with: /model <name> [global|thread]")
+            text = "[Info]: " + "\n".join(lines)
+            form = await self._model_picker_form(settings, thread_model)
+            if form is None:
+                return text
+            return CommandOutput(text, data=command_data(form=form))
 
         name = args[0]
         scope = args[1].lower() if len(args) > 1 else "global"
@@ -3812,7 +3831,10 @@ class _CommandExecutor:
             await self.api.update_thread_config(
                 self.thread_id, user_id=self.user_id, llm_config={"model": name}
             )
-            return f"[Success]: Model for this thread set to {name}."
+            return CommandOutput(
+                f"[Success]: Model for this thread set to {name}.",
+                data=command_data(state={"model": name}),
+            )
         if scope == "global":
             result = await self.api.update_settings(user_id=self.user_id, llm_model=name)
             msg = f"[Success]: Global model set to {name}."
@@ -3820,6 +3842,51 @@ class _CommandExecutor:
                 msg += " (restart required to take effect)"
             return msg
         return "[Error]: scope must be 'global' or 'thread'."
+
+    async def _model_picker_form(
+        self,
+        settings: dict[str, Any],
+        thread_model: str | None,
+    ) -> dict[str, Any] | None:
+        """Build the declarative model-picker form, or None when unavailable.
+
+        Best effort: if the provider exposes no model list the bare ``/model``
+        keeps its plain info output and rich clients simply get no form.
+        """
+
+        try:
+            models = await self.api.list_available_models()
+        except Exception:  # noqa: BLE001 - the form is an optional enhancement.
+            logger.debug("model picker: list_available_models failed", exc_info=True)
+            return None
+        current = str(thread_model or settings.get("llm_model", "") or "")
+        options: list[dict[str, Any]] = []
+        for entry in models or []:
+            model_id = str(entry.get("id") or entry.get("name") or "")
+            if not model_id:
+                continue
+            ctx_len = entry.get("context_length") or entry.get("context_window")
+            meta = f"{fmt_tokens(ctx_len)} ctx" if ctx_len else ""
+            options.append(
+                form_option(model_id, meta=meta, current=model_id == current)
+            )
+        if not options:
+            return None
+        scope = "thread" if self.thread_id else "global"
+        return form_payload(
+            "Select model",
+            [
+                form_tab(
+                    "Models",
+                    [
+                        search_field("filter", placeholder="Filter models…"),
+                        radio_field("model", options),
+                    ],
+                )
+            ],
+            submit_command=f"model {{model}} {scope}",
+            footer_hint="Enter apply · Esc cancel",
+        )
 
     async def _cmd_models(self, args: list[str], rest: str) -> str:
         models = await self.api.list_available_models()

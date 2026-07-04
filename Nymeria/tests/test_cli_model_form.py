@@ -77,6 +77,56 @@ class FakeModelClient:
         self.thread_config.update(kwargs)
         return dict(self.thread_config)
 
+    async def execute_command(self, command: str, **_kwargs: Any) -> dict[str, Any]:
+        """Emulate the backend /model handlers under the form contract."""
+
+        self.calls.append(("execute_command", {"command": command}))
+        tokens = command.lstrip("/").split()
+        if tokens == ["model"]:
+            options = [
+                {
+                    "id": str(entry["id"]),
+                    "label": str(entry["id"]),
+                    "meta": "",
+                    "description": "",
+                    "current": entry["id"] == "gpt-5.5",
+                }
+                for entry in self.models
+            ]
+            return {
+                "success": True,
+                "markdown": "global: gpt-5.5 (openai)",
+                "command": "model",
+                "level": "success",
+                "data": {
+                    "form": {
+                        "version": 1,
+                        "title": "Select model",
+                        "footer_hint": "",
+                        "tabs": [
+                            {
+                                "label": "Models",
+                                "fields": [
+                                    {"kind": "search", "key": "filter", "placeholder": ""},
+                                    {"kind": "radio", "key": "model", "options": options},
+                                ],
+                            }
+                        ],
+                        "submit": {"command": "model {model} thread"},
+                    }
+                },
+            }
+        if len(tokens) == 3 and tokens[0] == "model" and tokens[2] == "thread":
+            self.thread_config["llm_config"] = {"model": tokens[1]}
+            return {
+                "success": True,
+                "markdown": f"**Done.** Model for this thread set to {tokens[1]}.",
+                "command": "model",
+                "level": "success",
+                "data": {"state": {"model": tokens[1]}},
+            }
+        return {"success": False, "markdown": "unexpected", "command": "model", "level": "error"}
+
 
 def _make_context(
     client: FakeModelClient,
@@ -100,15 +150,39 @@ def _registry() -> CommandRegistry:
     return registry
 
 
-def test_model_command_opens_form_in_rich_repl() -> None:
+def _backend_registry() -> CommandRegistry:
+    """Registry as assembled on a live connection: backend proxy owns /model."""
+
+    from nymeria.triggers.cli.commands.backend import BackendCommandProvider
+
+    registry = _registry()
+    BackendCommandProvider(
+        [
+            {
+                "id": "model",
+                "name": "model",
+                "path": ["model"],
+                "usage": "/model",
+                "description": "Show or set model",
+                "category": "LLM",
+                "execution_kind": "command",
+                "aliases": [],
+            }
+        ]
+    ).register(registry)
+    return registry
+
+
+def test_model_root_opens_backend_declared_form_in_rich_repl() -> None:
     client = FakeModelClient()
     actions: list[Any] = []
     ctx = _make_context(client, renderer="rich", actions=actions)
 
-    result = run(_registry().dispatch_async(ctx, "/model"))
+    result = run(_backend_registry().dispatch_async(ctx, "/model"))
 
     assert result.ok is True
     assert result.payload.get("suppress_transcript") is True
+    assert ("execute_command", {"command": "/model"}) in client.calls
 
     open_actions = [action for action in actions if action.get("type") == "open_form"]
     assert len(open_actions) == 1
@@ -123,12 +197,12 @@ def test_model_command_opens_form_in_rich_repl() -> None:
     assert spec.tabs[0].fields[0].kind == "search"
 
 
-def test_form_confirm_persists_and_dispatches_set_model() -> None:
+def test_form_confirm_round_trips_backend_set_and_state_hint() -> None:
     client = FakeModelClient()
     actions: list[Any] = []
     ctx = _make_context(client, renderer="rich", actions=actions)
 
-    run(_registry().dispatch_async(ctx, "/model"))
+    run(_backend_registry().dispatch_async(ctx, "/model"))
     spec = next(a["spec"] for a in actions if a.get("type") == "open_form")
 
     confirm = run(
@@ -142,11 +216,11 @@ def test_form_confirm_persists_and_dispatches_set_model() -> None:
     )
 
     assert confirm.ok is True
-    assert any(
-        name == "update_thread_config"
-        and payload.get("llm_config") == {"model": "claude-opus-4-8"}
-        for name, payload in client.calls
-    )
+    assert (
+        "execute_command",
+        {"command": "/model claude-opus-4-8 thread"},
+    ) in client.calls
+    assert client.thread_config["llm_config"] == {"model": "claude-opus-4-8"}
     assert {"type": "set_model", "model": "claude-opus-4-8"} in actions
 
 

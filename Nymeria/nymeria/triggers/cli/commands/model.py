@@ -6,7 +6,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
-from ..rendering.form_panel import FormField, FormOption, FormResult, FormSpec, FormTab
 from ._shared import (
     call_client_method,
     compact_id,
@@ -21,128 +20,21 @@ async def _handle_model_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    """Open the model picker form, or show the effective model as a fallback.
+    """Forward /model to the backend registry; offline falls back to show.
 
-    Bare ``/model`` opens the local picker form. Invocations with arguments
-    (``/model <name> [global|thread]``, the backend set-model shorthand)
-    forward to the backend command so its semantics stay authoritative. The
-    local root keeps ownership because the backend text proxy cannot open the
-    form; see ``backend._LOCAL_ROOT_WINS``.
+    The backend root returns the declarative model-picker form on rich
+    renderers (adapted and opened by the form contract in
+    ``backend._execute_backend_command``) plus a markdown fallback for
+    everything else. This local root is only reachable when no backend
+    catalog registered (disconnected transport), where bare ``/model``
+    degrades to the show output.
     """
 
     if args:
         from .backend import _execute_backend_command
 
         return await _execute_backend_command(context, ("model",), args)
-    if not context.supports_forms():
-        return await _handle_model_show_context(context, args)
-
-    try:
-        entries = await _list_models(context)
-    except CommandClientMethodUnavailable:
-        return await _handle_model_show_context(context, args)
-    options = _model_form_options(entries, current=await _effective_model(context))
-    if not options:
-        return await _handle_model_show_context(context, args)
-
-    spec = FormSpec(
-        title="Select model",
-        tabs=(
-            FormTab(
-                label="Models",
-                fields=(
-                    FormField(
-                        kind="search",
-                        key="filter",
-                        placeholder="Filter models…",
-                    ),
-                    FormField(kind="radio", key="model", options=tuple(options)),
-                ),
-            ),
-        ),
-        on_confirm=lambda result: _confirm_model(context, result),
-    )
-    await context.dispatch({"type": "open_form", "spec": spec})
-    return CommandResult.completed(payload={"suppress_transcript": True})
-
-
-def _model_form_options(
-    entries: Sequence[Mapping[str, Any]],
-    *,
-    current: str,
-) -> list[FormOption]:
-    options: list[FormOption] = []
-    for entry in entries:
-        model_id = _model_id(entry)
-        if not model_id:
-            continue
-        options.append(
-            FormOption(
-                id=model_id,
-                label=model_id,
-                meta=_context_window_label(entry),
-                current=model_id == current,
-            )
-        )
-    return options
-
-
-def _context_window_label(entry: Mapping[str, Any]) -> str:
-    context_window = (
-        entry.get("context_length")
-        or entry.get("context_window")
-        or entry.get("max_context_tokens")
-        or entry.get("context")
-        or ""
-    )
-    return f"{context_window:,} ctx" if isinstance(context_window, int) else ""
-
-
-async def _effective_model(context: CommandContext) -> str:
-    """Return the model in effect for the active thread (override or global)."""
-
-    settings = await _settings_or_none(context)
-    config = await _thread_config_or_none(context)
-    stats = await _context_stats_or_none(context)
-
-    global_model = str(mapping_get(settings or {}, "llm_model", "") or "")
-    llm_config = mapping_get(config or {}, "llm_config", {}) or {}
-    override = ""
-    if isinstance(llm_config, Mapping):
-        override = str(llm_config.get("model") or "")
-    return (
-        override
-        or str(mapping_get(stats or {}, "model", "") or "")
-        or str(mapping_get(stats or {}, "active_model", "") or "")
-        or global_model
-    )
-
-
-async def _confirm_model(context: CommandContext, result: FormResult) -> CommandResult:
-    """Apply the model chosen in the picker form (mirrors /model set)."""
-
-    model_id = (result.radio_value or "").strip()
-    if not model_id:
-        return CommandResult.completed()
-    if not context.thread_id:
-        return CommandResult.failed("No active thread is selected.")
-
-    try:
-        await call_client_method(
-            context,
-            "update_thread_config",
-            context.thread_id,
-            user_id=context.user_id,
-            llm_config={"model": model_id},
-        )
-    except CommandClientMethodUnavailable as exc:
-        return unsupported_transport_result("/model set", method_name=exc.method_name)
-
-    await context.dispatch({"type": "set_model", "model": model_id})
-    return CommandResult.completed(
-        CommandMessage(f"Model set to: {model_id}", level="success"),
-        payload={"thread_id": context.thread_id, "model": model_id},
-    )
+    return await _handle_model_show_context(context, args)
 
 
 async def _handle_model_show_context(
