@@ -28,6 +28,8 @@ class FakeCommandApi:
         self.closed = False
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.memories = [{"key": "a", "value": "12345"}]
+        self.env_set_keys: set[str] = set()
+        self.provider_test_result: dict[str, Any] = {"ok": True, "message": ""}
         self.thread_config = {"enabled_tools": [], "disabled_tools": [], "memory_char_limit": None}
         self.threads: list[dict[str, Any]] = [
             {
@@ -231,6 +233,30 @@ class FakeCommandApi:
     ) -> dict[str, Any]:
         self.calls.append(("get_env_var", (key,), {"user_id": user_id}))
         return {"name": key, "value": "secret-value"}
+
+    async def get_env_vars(self, *, user_id: str | None = None) -> dict[str, Any]:
+        self.calls.append(("get_env_vars", (), {"user_id": user_id}))
+        entries = [
+            {"name": name, "is_set": name in self.env_set_keys}
+            for name in (
+                "openai_api_key",
+                "anthropic_api_key",
+                "anthropic_direct_api_key",
+                "openrouter_api_key",
+            )
+        ]
+        return {"entries": entries}
+
+    async def test_llm_provider_config(
+        self,
+        request: dict[str, Any],
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            ("test_llm_provider_config", (request,), {"user_id": user_id})
+        )
+        return dict(self.provider_test_result)
 
     async def list_memories(self, user_id: str) -> list[dict[str, Any]]:
         self.calls.append(("list_memories", (user_id,), {}))
@@ -825,8 +851,8 @@ class _OffEffortCommandApi(FakeCommandApi):
         return data
 
 
-def test_think_on_clears_persisted_off_effort() -> None:
-    """/think on after /think off must clear effort="off" (explicit null)."""
+def test_think_on_global_clears_persisted_off_effort() -> None:
+    """/think on global after /think off must clear effort="off" (null)."""
     api = _OffEffortCommandApi()
 
     result = run(
@@ -838,7 +864,7 @@ def test_think_on_clears_persisted_off_effort() -> None:
                 surface="cli",
                 is_admin=True,
             ),
-            "/think on",
+            "/think on global",
             api=api,
         )
     )
@@ -859,7 +885,33 @@ def test_think_on_clears_persisted_off_effort() -> None:
     ]
 
 
-def test_think_on_without_persisted_off_leaves_effort_untouched() -> None:
+def test_think_on_in_thread_with_global_off_guides_instead_of_no_op() -> None:
+    """A thread-scoped on cannot neutralize a globally persisted "off"
+    (the choke point resolves a thread "" back to the global value), so the
+    handler must guide instead of writing a no-op."""
+    api = _OffEffortCommandApi()
+
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/think on",
+            api=api,
+        )
+    )
+
+    assert result.success is False
+    assert "/think on global" in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+    assert not [call for call in api.calls if call[0] == "update_thread_config"]
+
+
+def test_think_on_defaults_to_thread_scope_when_thread_active() -> None:
     api = FakeCommandApi()
 
     result = run(
@@ -872,6 +924,38 @@ def test_think_on_without_persisted_off_leaves_effort_untouched() -> None:
                 is_admin=True,
             ),
             "/think on",
+            api=api,
+        )
+    )
+
+    assert result.success is True
+    assert "this thread" in result.markdown
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+    thread_updates = [
+        call for call in api.calls if call[0] == "update_thread_config"
+    ]
+    assert thread_updates == [
+        (
+            "update_thread_config",
+            ("thread-1",),
+            {"user_id": "alice", "llm_config": {"extended_thinking": True}},
+        )
+    ]
+
+
+def test_think_on_without_persisted_off_leaves_effort_untouched() -> None:
+    api = FakeCommandApi()
+
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/think on global",
             api=api,
         )
     )
@@ -953,7 +1037,258 @@ def test_think_show_lists_supported_levels() -> None:
     result = _run_think(api, "/think")
 
     assert result.success is True
-    assert "claude-fable-5 supports: low, medium, high, xhigh, max" in result.markdown
+    assert "low, medium, high, xhigh, max (claude-fable-5)" in result.markdown
+    # Scope-aware show: global state plus the active thread's override row.
+    assert "Global" in result.markdown
+    assert "Effective" in result.markdown
+
+
+def test_think_level_in_thread_writes_thread_config_and_reasoning_hint() -> None:
+    api = FakeCommandApi()
+
+    result = _run_think(api, "/think high")
+
+    assert result.success is True
+    assert "this thread" in result.markdown
+    thread_updates = [
+        call for call in api.calls if call[0] == "update_thread_config"
+    ]
+    assert thread_updates == [
+        (
+            "update_thread_config",
+            ("thread-1",),
+            {
+                "user_id": "alice",
+                "llm_config": {"extended_thinking": True, "reasoning_effort": "high"},
+            },
+        )
+    ]
+    assert result.data == {"state": {"reasoning": {"enabled": True, "effort": "high"}}}
+
+
+def test_think_off_in_thread_persists_off_and_hint_disables() -> None:
+    api = FakeCommandApi()
+
+    result = _run_think(api, "/think off")
+
+    assert result.success is True
+    thread_updates = [
+        call for call in api.calls if call[0] == "update_thread_config"
+    ]
+    assert thread_updates == [
+        (
+            "update_thread_config",
+            ("thread-1",),
+            {
+                "user_id": "alice",
+                "llm_config": {"extended_thinking": False, "reasoning_effort": "off"},
+            },
+        )
+    ]
+    assert result.data is not None
+    assert result.data["state"]["reasoning"]["enabled"] is False
+
+
+def test_reasoning_and_thinking_are_catalog_aliases_of_think() -> None:
+    api = FakeCommandApi()
+
+    shown = _run_think(api, "/reasoning")
+    assert shown.success is True
+    assert "Thinking:" in shown.markdown
+
+    set_result = _run_think(api, "/thinking medium global")
+    assert set_result.success is True
+    updates = [call for call in api.calls if call[0] == "update_settings"]
+    assert updates == [
+        (
+            "update_settings",
+            (),
+            {
+                "user_id": "alice",
+                "llm_extended_thinking": True,
+                "llm_reasoning_effort": "medium",
+            },
+        )
+    ]
+
+
+def test_think_rejects_unknown_tokens() -> None:
+    api = FakeCommandApi()
+
+    result = _run_think(api, "/think sideways")
+
+    assert result.success is False
+    assert "Usage:" in result.markdown
+    assert not [call for call in api.calls if call[0].startswith("update_")]
+
+
+# ── /settings (delegating alias of the /config family) ─────────────────────
+
+
+def _run_command(api: FakeCommandApi, command: str, *, is_admin: bool = True):
+    return run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="thread-1",
+                actor="user",
+                surface="cli",
+                is_admin=is_admin,
+            ),
+            command,
+            api=api,
+        )
+    )
+
+
+def test_settings_bare_and_view_delegate_to_config_show() -> None:
+    api = FakeCommandApi()
+
+    bare = _run_command(api, "/settings")
+    view = _run_command(api, "/settings view")
+
+    for result in (bare, view):
+        assert result.success is True
+        assert "provider: openai" in result.markdown
+        assert "model: gpt-test" in result.markdown
+
+
+def test_settings_get_and_set_delegate_to_config_handlers() -> None:
+    api = FakeCommandApi()
+
+    got = _run_command(api, "/settings get llm_model")
+    assert got.success is True
+    assert "llm_model = gpt-test" in got.markdown
+
+    set_result = _run_command(api, "/settings set log_level DEBUG")
+    assert set_result.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "log_level": "DEBUG"},
+    ) in api.calls
+
+    unknown = _run_command(api, "/settings frobnicate")
+    assert unknown.success is False
+    assert "Usage: /settings" in unknown.markdown
+
+
+# ── /provider family ────────────────────────────────────────────────────────
+
+
+def test_provider_show_reports_active_provider_and_credential_status() -> None:
+    api = FakeCommandApi()
+    api.env_set_keys = {"openai_api_key"}
+
+    result = _run_command(api, "/provider")
+
+    assert result.success is True
+    assert "OpenAI" in result.markdown
+    assert "authenticated (server)" in result.markdown
+    assert "gpt-test" in result.markdown
+
+
+def test_provider_show_degrades_when_env_listing_is_admin_gated() -> None:
+    class _EnvDeniedApi(FakeCommandApi):
+        async def get_env_vars(self, *, user_id: str | None = None) -> dict[str, Any]:
+            raise RuntimeError("403 admin required")
+
+    result = _run_command(_EnvDeniedApi(), "/provider")
+
+    assert result.success is True
+    assert "unknown (unavailable (admin only))" in result.markdown
+
+
+def test_provider_list_groups_by_tier_without_secrets() -> None:
+    api = FakeCommandApi()
+    api.env_set_keys = {"anthropic_api_key"}
+
+    result = _run_command(api, "/provider list")
+
+    assert result.success is True
+    assert "[NATIVE]" in result.markdown
+    assert "anthropic" in result.markdown
+    assert "authenticated" in result.markdown
+    assert "secret" not in result.markdown.lower()
+
+
+def test_provider_set_maps_credential_fields_to_settings() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider set openai api_key=sk-new")
+
+    assert result.success is True
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "openai_api_key": "sk-new"},
+    ) in api.calls
+
+    unknown = _run_command(api, "/provider set bogus api_key=x")
+    assert unknown.success is False
+    assert "Unknown provider" in unknown.markdown
+
+    bad_field = _run_command(api, "/provider set openai token=x")
+    assert bad_field.success is False
+    assert "Allowed fields" in bad_field.markdown
+    # Only the first, valid call reached update_settings.
+    assert len([call for call in api.calls if call[0] == "update_settings"]) == 1
+
+
+def test_provider_set_requires_admin() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider set openai api_key=sk-new", is_admin=False)
+
+    assert result.success is False
+    assert "admin" in result.markdown.lower()
+    assert not [call for call in api.calls if call[0] == "update_settings"]
+
+
+def test_provider_switch_warns_without_server_credential() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider switch anthropic")
+
+    assert result.success is True
+    assert "Switched provider to Anthropic" in result.markdown
+    assert "no server credential" in result.markdown
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_provider": "anthropic"},
+    ) in api.calls
+
+
+def test_provider_test_builds_request_without_client_secret() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider test")
+
+    assert result.success is True
+    assert "provider test succeeded" in result.markdown
+    test_calls = [call for call in api.calls if call[0] == "test_llm_provider_config"]
+    assert len(test_calls) == 1
+    request = test_calls[0][1][0]
+    # The active provider keeps its configured model; the credential is
+    # resolved server-side (vault -> settings -> env), never sent by the
+    # command handler.
+    assert request == {
+        "llm_provider": "openai",
+        "llm_model": "gpt-test",
+        "openai_api_mode": "responses",
+    }
+    assert "api_key" not in request
+
+
+def test_provider_test_failure_renders_backend_message() -> None:
+    api = FakeCommandApi()
+    api.provider_test_result = {"ok": False, "message": "401 unauthorized"}
+
+    result = _run_command(api, "/provider test openai")
+
+    assert result.success is False
+    assert "401 unauthorized" in result.markdown
 
 
 def test_default_execution_uses_current_agent_backend_without_http(
@@ -1534,8 +1869,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 118
-    assert sum(cmd.executable for cmd in service._commands.values()) == 104
+    assert len(service._commands) == 124
+    assert sum(cmd.executable for cmd in service._commands.values()) == 110
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
