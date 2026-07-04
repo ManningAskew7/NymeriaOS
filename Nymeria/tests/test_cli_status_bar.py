@@ -399,3 +399,118 @@ def test_context_usage_label_caps_bar_at_compact_trigger_by_mode() -> None:
 
     no_settings_label = context_usage_label(state)
     assert no_settings_label.startswith("ctx 100/1.0k [")
+
+
+def test_context_usage_label_prefers_backend_resolved_trigger() -> None:
+    from types import SimpleNamespace
+
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "context_stats": {
+                "total_tokens": 100,
+                "context_window": 1000,
+                "compact_trigger_tokens": 500,
+            },
+        },
+        now=1.1,
+    )
+
+    # Local settings disagree (800); the backend-resolved trigger wins.
+    settings = SimpleNamespace(
+        compact_threshold_mode="tokens",
+        compact_threshold_tokens=800,
+        compact_threshold=0.8,
+    )
+    label = context_usage_label(state, compact_settings=settings)
+    assert label.startswith("ctx 100/500 [")
+
+
+def test_context_usage_label_null_backend_trigger_disables_compact_cap() -> None:
+    from types import SimpleNamespace
+
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "done",
+            "context_stats": {
+                "total_tokens": 100,
+                "context_window": 1000,
+                "compact_trigger_tokens": None,
+            },
+        },
+        now=1.1,
+    )
+
+    # The key is present but null: auto-compact is off for this thread, so
+    # the bar caps at the full limit even though local settings have one.
+    settings = SimpleNamespace(
+        compact_threshold_mode="tokens",
+        compact_threshold_tokens=500,
+        compact_threshold=0.8,
+    )
+    label = context_usage_label(state, compact_settings=settings)
+    assert label.startswith("ctx 100/1.0k [")
+
+
+def test_status_segments_come_from_keyed_registry_in_default_order() -> None:
+    renderer = StatusBarRenderer()
+    assert renderer.segment_keys == (
+        "brand",
+        "activity",
+        "notice",
+        "connection",
+        "model",
+        "fast",
+        "reasoning",
+        "thread",
+        "context",
+        "queued",
+        "cwd",
+    )
+
+
+def test_register_segment_supports_append_anchor_override_and_remove() -> None:
+    from nymeria.triggers.cli.rendering.status_bar import StatusSegment
+
+    renderer = StatusBarRenderer()
+    caps = FakeTerminalCapabilities(width=200)
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+
+    def tps_provider(r, s, capabilities, context, now):
+        return StatusSegment(text="42 tok/s", priority=1, min_width=6)
+
+    # Append by default.
+    renderer.register_segment("tps", tps_provider)
+    assert renderer.segment_keys[-1] == "tps"
+    render = renderer.render(state, capabilities=caps, width=200, now=5.0)
+    assert "42 tok/s" in render.segments
+
+    # Re-register in place: order is unchanged.
+    def tps_provider_v2(r, s, capabilities, context, now):
+        return StatusSegment(text="99 tok/s", priority=1, min_width=6)
+
+    keys_before = renderer.segment_keys
+    renderer.register_segment("tps", tps_provider_v2)
+    assert renderer.segment_keys == keys_before
+    render = renderer.render(state, capabilities=caps, width=200, now=5.0)
+    assert "99 tok/s" in render.segments
+
+    # Anchored insertion.
+    def flag_provider(r, s, capabilities, context, now):
+        return StatusSegment(text="flag", priority=1, min_width=4)
+
+    renderer.register_segment("flag", flag_provider, before="thread")
+    keys = renderer.segment_keys
+    assert keys.index("flag") == keys.index("thread") - 1
+
+    # Removal by key.
+    assert renderer.remove_segment("tps") is True
+    assert renderer.remove_segment("tps") is False
+    render = renderer.render(state, capabilities=caps, width=200, now=5.0)
+    assert not any("tok/s" in segment for segment in render.segments)
