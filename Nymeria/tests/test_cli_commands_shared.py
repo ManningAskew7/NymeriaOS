@@ -358,7 +358,8 @@ _TOOLKIT_WIRING = [
     (todos, "unsupported_transport_result"),
     (triggers, "parse_scalar"),
     (tools, "parse_scalar"),
-    (system, "parse_scalar"),
+    # system.py stopped importing parse_scalar when /settings moved to the
+    # backend registry (config-group migration).
     (system, "call_client_method"),
     # F9: the 6 importers of the call-shim helper resolve the shared copy.
     (tools, "call_client_user_scoped"),

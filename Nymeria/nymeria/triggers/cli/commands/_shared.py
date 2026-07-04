@@ -4,8 +4,9 @@ This module is the canonical home for the cross-cutting command toolkit: the
 transport shim (client-method resolution), confirmation helpers, the small
 value-coercion / formatting helpers, and the scalar parser. It is imported by
 the other command modules (and a couple of CLI callers) instead of reaching
-into `system.py`, which now holds only the `/history`, `/settings`, `/redraw`,
-and `/verbose` handlers plus their settings-specific formatters.
+into `system.py`, which now holds only the `/history`, `/redraw`, and
+`/verbose` handlers (/settings moved to the backend registry in the 2026-07
+config-group migration).
 
 Finding F2 (relocating the `system.py` helper toolkit here) and finding F10
 (folding `tools.py`'s duplicate scalar parser onto the shared `parse_scalar`)
@@ -13,9 +14,9 @@ shipped against this module. The earlier F3 partial seeded it with the
 byte-identical `mapping_sequence` / `string_list` helpers. Helpers that diverge
 across modules (`_csv`, and the per-module `_aligned_rows` copies) are
 deliberately left in their own modules: their bodies and signatures differ, so
-merging them would change output. `parse_key_values` and `format_settings_view`
-stay in `system.py` as settings-command-local helpers (no other command module
-imports them).
+merging them would change output. (`parse_key_values` and
+`format_settings_view` were deleted with the local /settings command in the
+config-group migration.)
 """
 
 from __future__ import annotations
