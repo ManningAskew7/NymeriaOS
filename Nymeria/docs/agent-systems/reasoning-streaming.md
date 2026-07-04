@@ -27,19 +27,29 @@ old checkout would reset it, so keep the 2026-05-11 provider-header change in
 the Nymeria image/checkout and verify with `tools/check_cliproxy_cloak.py
 --check-thinking` after proxy upgrades.
 
-## Toggling reasoning from the CLI
+## Toggling reasoning with slash commands
 
-Use the `/reasoning` command (alias `/thinking`) instead of manually patching two settings:
+Use the `/think` command (aliases `/reasoning` and `/thinking`; one backend
+handler serves every surface: CLI, desktop, mobile, bots) instead of manually
+patching two settings. Scope follows the /model convention: with an active
+thread the command writes that thread's llm_config; a trailing `global` or
+`thread` token overrides.
 
 ```
-/reasoning on          # enable extended thinking (per-thread or global)
-/reasoning off         # disable (persists effort "off", which wins over a global level)
-/reasoning high        # enable + set effort to high
-/reasoning low         # enable + set effort to low
-/reasoning xhigh       # enable + set effort to xhigh (frontier models)
-/reasoning max         # enable + set effort to max (clamped to the model's ceiling)
-/reasoning             # show current state (global, override, effective)
+/think on              # enable extended thinking (this thread when one is active)
+/think off             # disable (persists effort "off", which wins over a level)
+/think high            # enable + set effort to high
+/think low             # enable + set effort to low
+/think xhigh           # enable + set effort to xhigh (frontier models)
+/think max             # enable + set effort to max (clamped to the model's ceiling)
+/think medium global   # explicit global scope
+/think                 # show current state (global, thread override, effective)
 ```
+
+A thread-scoped `on` cannot neutralize a globally persisted `"off"` (the
+per-thread `""` marker means "inherit global" at the LLMConfig choke point),
+so the command explains and points at `/think on global` or an explicit
+thread level instead of writing a no-op.
 
 Valid efforts are `off|low|medium|high|xhigh|max`. Levels a model does not
 support are clamped onto its supported ladder before the request is sent
