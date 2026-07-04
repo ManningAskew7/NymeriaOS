@@ -72,6 +72,7 @@ from .runtime_admin import (
 from .outlook_email import EMAIL_TOOLS
 from .browser import BROWSER_TOOLS
 from .chrome_browser import CHROME_BROWSER_TOOLS
+from .cli_statusbar import CLI_STATUSBAR_TOOLS
 from .calendar import CALENDAR_TOOLS
 from .notify import notify, NOTIFY_TOOLS
 from .triggers import (
@@ -1420,6 +1421,7 @@ CATALOG_TOOLS = {t.name: t for t in (
     + HOOK_TOOLS
     + BROWSER_TOOLS
     + CHROME_BROWSER_TOOLS
+    + CLI_STATUSBAR_TOOLS
     + CALENDAR_TOOLS
     + SELF_AGENT_TOOLS
     + RUNTIME_ADMIN_TOOLS

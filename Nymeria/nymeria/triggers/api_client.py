@@ -972,6 +972,25 @@ class NymeriaAPIClient:
             act_as=user_id,
         )
 
+    # ── CLI config commands ───────────────────────────────────────────────
+
+    async def post_cli_config_result(
+        self,
+        command_id: str,
+        result: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Ack a ``cli_config`` autonomous event (first ack wins server-side).
+
+        ``result`` carries ``ok``, ``status`` ("success" | "error"), and
+        optional ``data``/``error`` fields.
+        """
+        return await self._post(
+            f"/cli-config/{_path_param(command_id)}/result",
+            json=result,
+            act_as=user_id,
+        )
+
     # ── Settings ──────────────────────────────────────────────────────────
 
     async def get_settings(self, user_id: Optional[str] = None) -> dict:

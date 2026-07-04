@@ -780,6 +780,7 @@ def test_bundled_capability_kits_expose_exact_required_tools():
             "request_credential",
         ],
         "workflow-authoring": ["tool_create", "workflow_info"],
+        "cli-customization": ["cli_statusbar_get", "cli_statusbar_set"],
     }
     bundled = _bundled_skills_dir()
     for name, tools in expected.items():

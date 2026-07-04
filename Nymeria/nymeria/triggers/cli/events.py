@@ -26,6 +26,7 @@ KnownEventType: TypeAlias = Literal[
     "task_completed",
     "hook_approval",
     "hook_approval_resolved",
+    "cli_config",
     "error",
     "done",
 ]
@@ -217,6 +218,21 @@ class HookApprovalResolvedEvent(CLIStreamEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class CLIConfigEvent(CLIStreamEvent):
+    """A backend-pushed CLI configuration command (cli_statusbar_* tools).
+
+    User-scoped, not thread-scoped: every connected CLI applies it and
+    POSTs its outcome to ``/cli-config/{command_id}/result``.
+    """
+
+    type: Literal["cli_config"] = "cli_config"
+    command_id: str = ""
+    command_type: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
+    timeout_seconds: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ErrorEvent(CLIStreamEvent):
     type: Literal["error"] = "error"
     content: str = ""
@@ -263,6 +279,7 @@ NormalizedEvent: TypeAlias = (
     | TaskCompletedEvent
     | HookApprovalEvent
     | HookApprovalResolvedEvent
+    | CLIConfigEvent
     | ErrorEvent
     | DoneEvent
     | DiagnosticEvent
@@ -524,6 +541,21 @@ def normalize_stream_event(
             raw=raw,
         )
 
+    if event_type == "cli_config":
+        return CLIConfigEvent(
+            thread_id=thread_id,
+            command_id=_text(_first(payload, "command_id", "commandId"), default=""),
+            command_type=_text(
+                _first(payload, "command_type", "commandType"),
+                default="",
+            ),
+            args=_as_dict(_first(payload, "args"), default={}),
+            timeout_seconds=_optional_int(
+                _first(payload, "timeout_seconds", "timeoutSeconds"),
+            ),
+            raw=raw,
+        )
+
     if event_type == "error":
         return ErrorEvent(
             thread_id=thread_id,
@@ -726,6 +758,7 @@ __all__ = [
     "TaskCompletedEvent",
     "HookApprovalEvent",
     "HookApprovalResolvedEvent",
+    "CLIConfigEvent",
     "ErrorEvent",
     "DoneEvent",
     "DiagnosticEvent",
