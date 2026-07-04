@@ -1250,6 +1250,19 @@ is omitted. `/compact` appears in discovery with `execution_kind:
 "chat_stream"`, but `POST /commands/execute` returns a markdown error telling
 the caller to route it through chat streaming instead.
 
+`data` is usually `null`. On success it may carry the structured payloads of
+the declarative form contract (schema owned by `core/command_forms.py`):
+`data.form` is a versioned form definition (v1: title, tabs of
+search/radio/checkbox fields, and a submit command template with `{key}`
+placeholders; on confirm the client substitutes the selected values and
+dispatches the resulting slash command), and `data.state` is a dict of
+client-state sync hints (for example `{"model": ...}` after a model change,
+or `{"switch_thread": {"thread_id": ...}}` after `/thread switch`). The
+markdown fallback is always present, so frontends may ignore `data`
+entirely; the Rich CLI is the first consumer (bare `/model` renders as a
+native picker there). Clients that render forms should treat unknown
+versions or field kinds as "render the markdown instead".
+
 ### Chat Slash Commands
 
 The `/chat` endpoint keeps streaming slash commands that are not simple
