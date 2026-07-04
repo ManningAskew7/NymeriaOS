@@ -106,13 +106,14 @@ async def _show_thread_usage(context: CommandContext) -> CommandResult:
     if not isinstance(stats, Mapping):
         return CommandResult.failed("Could not retrieve usage statistics.")
 
+    compact_trigger = stats.get("compact_trigger_tokens")
     return CommandResult.completed(
         CommandMessage(
-            _format_thread_usage(stats, compact_trigger=None),
+            _format_thread_usage(stats, compact_trigger=compact_trigger),
             title="Usage",
         ),
         payload=dict(stats),
-        json_payload=_thread_usage_payload(stats, compact_trigger=None),
+        json_payload=_thread_usage_payload(stats, compact_trigger=compact_trigger),
     )
 
 

@@ -193,6 +193,16 @@ def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
     model_limit = get_context_limit(effective_model)
     context_used = usage.context_tokens  # Last call's prompt_tokens = actual window usage
 
+    # Resolved auto-compact trigger (per-thread threshold overrides included)
+    # so clients can render "until compact" markers without re-deriving
+    # threshold semantics; None when auto-compaction is not active.
+    compact_trigger = None
+    if model_limit and agent.settings.context_management == "auto_compact":
+        mode, pct, tokens = agent._compaction._resolve_threshold_config(thread_id)
+        compact_trigger = agent._compact_trigger_tokens(
+            model_limit, pct, mode=mode, tokens=tokens
+        )
+
     return {
         "thread_id": thread_id,
         "model": effective_model,
@@ -203,6 +213,7 @@ def get_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Any]:
         "context_limit": model_limit,
         "usage_percentage": round(context_used / model_limit * 100, 1) if model_limit else 0,
         "compaction_count": usage.compaction_count,
+        "compact_trigger_tokens": compact_trigger,
         "last_compaction": usage.last_compaction_at.isoformat() if usage.last_compaction_at else None,
         "context_management": agent.settings.context_management,
         "cost_usd_last": usage.last_cost_usd,

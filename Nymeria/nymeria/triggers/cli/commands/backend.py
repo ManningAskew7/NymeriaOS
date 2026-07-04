@@ -17,6 +17,15 @@ _CLI_CATEGORY_MAP = {
     "TODOs": "Personal",
 }
 
+# Roots whose local CLI implementation keeps the root handler because it opens
+# an interactive form the backend text proxy cannot provide. Only the
+# root-level backend proxy is skipped; backend subcommands still merge under
+# the local root via _register_path, and the skip is order-independent (the
+# local root simply never meets a competing backend root). Interim measure
+# until backend-declared form payloads ship
+# (docs/private/plans/cli-modernization.md, Phase 3).
+_LOCAL_ROOT_WINS = frozenset({"model"})
+
 
 class BackendCommandProvider:
     """Registers backend global commands as CLI proxy handlers."""
@@ -72,6 +81,8 @@ class BackendCommandProvider:
                 continue
             path = _path(info)
             if not path:
+                continue
+            if len(path) == 1 and path[0] in _LOCAL_ROOT_WINS:
                 continue
             self._register_path(registry, info, path)
 

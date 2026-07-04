@@ -72,6 +72,59 @@ def test_cli_config_logout_removes_active_token(tmp_path) -> None:
     assert "nym_secret" not in text
 
 
+def test_cli_config_profile_save_preserves_unmanaged_sections(tmp_path) -> None:
+    """A profile write must not clobber sections owned by other writers.
+
+    Regression test: /login and /logout previously rewrote cli.json with only
+    the managed profile keys, silently deleting a saved theme (or any future
+    section such as status_bar).
+    """
+    config_path = tmp_path / ".nymeria" / "cli.json"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        json.dumps(
+            {
+                "theme": {"spinner": "#123456"},
+                "status_bar": {"segments": ["model"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    save_active_profile(
+        api_url="http://api",
+        api_key="nym_secret",
+        path=config_path,
+    )
+    remove_active_profile_token(config_path)
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["theme"] == {"spinner": "#123456"}
+    assert data["status_bar"] == {"segments": ["model"]}
+    assert data["profiles"] == {}
+
+
+def test_cli_theme_save_preserves_profiles(tmp_path) -> None:
+    """The reverse direction: a theme write must not clobber saved profiles."""
+    from nymeria.triggers.cli.theme import CLITheme, save_cli_theme
+
+    config_path = tmp_path / ".nymeria" / "cli.json"
+    save_active_profile(
+        api_url="http://api",
+        api_key="nym_secret",
+        path=config_path,
+    )
+
+    save_cli_theme(CLITheme(overrides={"spinner": "#123456"}), config_path)
+
+    config = load_cli_config(config_path)
+    assert config.active_profile == "default"
+    assert config.active is not None
+    assert config.active.api_key == "nym_secret"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["theme"] == {"spinner": "#123456"}
+
+
 def test_cli_token_redaction_never_prints_raw_token() -> None:
     assert redact_token("nym_secret") == "nym_<redacted>"
     assert redact_token("") == ""

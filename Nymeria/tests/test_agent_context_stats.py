@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from nymeria.core.agent_compaction import CompactionManager
 from nymeria.core.agent_context_stats import (
     get_context_stats,
     record_turn_usage,
@@ -61,6 +62,7 @@ def _fake_agent(
     rehydrate: Any | None = None,
     model: str = "gpt-4o",
     context_management: str = "auto_compact",
+    threshold_config: tuple[str, float, int] = ("tokens", 0.8, 200_000),
 ) -> Any:
     """Build a minimal agent stub for the context-stats functions.
 
@@ -100,12 +102,18 @@ def _fake_agent(
 
     llm_config = SimpleNamespace(model=model)
     settings = SimpleNamespace(context_management=context_management)
+    compaction = SimpleNamespace(
+        _resolve_threshold_config=lambda _tid: threshold_config,
+    )
 
     agent = SimpleNamespace(
         _default_graph=default_graph,
         _token_tracker=token_tracker,
         _rehydrate_token_usage=rehydrate if rehydrate is not None else MagicMock(),
         _get_llm_config_for_thread=lambda _tid: llm_config,
+        _compaction=compaction,
+        # Real trigger math (the agent facade is a passthrough to this static).
+        _compact_trigger_tokens=CompactionManager.compact_trigger_tokens,
         settings=settings,
     )
     agent._record_calls = record_calls  # type: ignore[attr-defined]
@@ -359,6 +367,8 @@ def test_get_stats_returns_dict_with_expected_keys(monkeypatch: pytest.MonkeyPat
         "context_limit": 100_000,
         "usage_percentage": 1.5,
         "compaction_count": 2,
+        # tokens-mode 200k trigger clamped to the 100k model limit.
+        "compact_trigger_tokens": 100_000,
         "last_compaction": compaction_at.isoformat(),
         "context_management": "auto_compact",
         "cost_usd_last": None,
@@ -412,6 +422,37 @@ def test_get_stats_usage_percentage_zero_when_no_limit(monkeypatch: pytest.Monke
     # No ZeroDivisionError; percentage falls back to 0.
     assert stats["context_limit"] == 0
     assert stats["usage_percentage"] == 0
+
+
+def test_get_stats_compact_trigger_none_when_auto_compact_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(last_input=1)
+    agent = _fake_agent(usage=usage, context_management="none")
+
+    stats = get_context_stats(cast(Any, agent), "t1")
+
+    assert stats["compact_trigger_tokens"] is None
+
+
+def test_get_stats_compact_trigger_honors_thread_threshold_override(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Per-thread percentage-mode override flows into the resolved trigger."""
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    usage = _fake_usage(last_input=1)
+    agent = _fake_agent(usage=usage, threshold_config=("percentage", 0.5, 0))
+
+    stats = get_context_stats(cast(Any, agent), "t1")
+
+    assert stats["compact_trigger_tokens"] == 50_000
 
 
 def test_get_stats_last_compaction_none_when_unset(monkeypatch: pytest.MonkeyPatch):

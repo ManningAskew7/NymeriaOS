@@ -745,6 +745,7 @@ Get context window usage statistics for a thread.
   "context_limit": 200000,
   "usage_percentage": 22.5,
   "compaction_count": 1,
+  "compact_trigger_tokens": 160000,
   "last_compaction": "2025-01-15T10:30:00Z",
   "context_management": "auto_compact",
   "cost_usd_last": 0.012345,
@@ -752,6 +753,10 @@ Get context window usage statistics for a thread.
   "cost_unavailable": false
 }
 ```
+
+`compact_trigger_tokens` is the resolved auto-compact trigger with per-thread
+threshold overrides applied; it is `null` when `context_management` is not
+`auto_compact`.
 
 ---
 

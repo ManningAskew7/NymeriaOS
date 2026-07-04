@@ -21,13 +21,19 @@ async def _handle_model_context(
     context: CommandContext,
     args: list[str],
 ) -> CommandResult:
-    """Open the model picker form, or show the effective model as a fallback."""
+    """Open the model picker form, or show the effective model as a fallback.
+
+    Bare ``/model`` opens the local picker form. Invocations with arguments
+    (``/model <name> [global|thread]``, the backend set-model shorthand)
+    forward to the backend command so its semantics stay authoritative. The
+    local root keeps ownership because the backend text proxy cannot open the
+    form; see ``backend._LOCAL_ROOT_WINS``.
+    """
 
     if args:
-        return CommandResult.failed(
-            "Usage: /model show|set|available",
-            error_code="usage_error",
-        )
+        from .backend import _execute_backend_command
+
+        return await _execute_backend_command(context, ("model",), args)
     if not context.supports_forms():
         return await _handle_model_show_context(context, args)
 
