@@ -169,6 +169,20 @@ def test_apply_state_hints_dispatches_model_sync() -> None:
     assert dispatched == [{"type": "set_model", "model": "gpt-next"}]
 
 
+def test_apply_state_hints_dispatches_reasoning_sync() -> None:
+    context, dispatched = _context(_RecordingClient())
+
+    run(apply_state_hints({"reasoning": {"enabled": True, "effort": "high"}}, context))
+    run(apply_state_hints({"reasoning": {"enabled": False, "effort": ""}}, context))
+    # Non-mapping reasoning hints are ignored.
+    run(apply_state_hints({"reasoning": "junk"}, context))
+
+    assert dispatched == [
+        {"type": "set_reasoning", "enabled": True, "effort": "high"},
+        {"type": "set_reasoning", "enabled": False, "effort": ""},
+    ]
+
+
 def test_apply_state_hints_dispatches_thread_switch() -> None:
     context, dispatched = _context(_RecordingClient())
 

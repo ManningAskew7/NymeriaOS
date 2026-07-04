@@ -71,9 +71,10 @@ async def apply_state_hints(state: Any, context: CommandContext) -> None:
 
     Each hint reconstructs the exact CLI dispatch action the retired local
     handler fired, so the forwarder path is lossless: ``model`` -> ``set_model``,
-    ``switch_thread`` -> ``switch_thread``, ``thread_label`` ->
-    ``set_thread_label``, and the two header-refresh flags map to the existing
-    ``thread_metadata_updated`` / ``thread_context_updated`` actions.
+    ``reasoning`` -> ``set_reasoning``, ``switch_thread`` -> ``switch_thread``,
+    ``thread_label`` -> ``set_thread_label``, and the two header-refresh flags
+    map to the existing ``thread_metadata_updated`` / ``thread_context_updated``
+    actions.
     """
 
     if not isinstance(state, Mapping):
@@ -81,6 +82,14 @@ async def apply_state_hints(state: Any, context: CommandContext) -> None:
     model = state.get("model")
     if isinstance(model, str) and model.strip():
         await context.dispatch({"type": "set_model", "model": model.strip()})
+
+    reasoning = state.get("reasoning")
+    if isinstance(reasoning, Mapping):
+        await context.dispatch({
+            "type": "set_reasoning",
+            "enabled": bool(reasoning.get("enabled")),
+            "effort": str(reasoning.get("effort") or ""),
+        })
 
     switch = state.get("switch_thread")
     if isinstance(switch, Mapping):

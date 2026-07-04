@@ -163,12 +163,9 @@ class CLIApp:
             conversation,
             doctor,
             export,
-            fallback,
-            reasoning,
             mcp,
             memory,
             model,
-            provider,
             skills,
             statusbar,
             system,
@@ -202,11 +199,8 @@ class CLIApp:
         theme.register(self.registry)
         statusbar.register(self.registry)
         export.register(self.registry)
-        fallback.register(self.registry)
-        provider.register(self.registry)
         clipboard.register(self.registry)
         conversation.register(self.registry)
-        reasoning.register(self.registry)
 
     def run(self) -> None:
         """Main REPL loop, or oneshot mode if a message was provided."""
