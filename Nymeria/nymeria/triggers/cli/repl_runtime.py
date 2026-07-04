@@ -844,7 +844,18 @@ class _RichReplRuntime:
             except Exception:  # noqa: BLE001 - ack is best effort; another CLI may answer.
                 pass
         if command_type == "statusbar_set" and result.get("ok"):
-            self.set_status_notice("Status bars updated by the agent.")
+            bar = str(args.get("bar", "") or "bar") if isinstance(args, dict) else "bar"
+            segments = args.get("segments") if isinstance(args, dict) else None
+            summary = (
+                " ".join(str(ref) for ref in segments)
+                if isinstance(segments, list) and segments
+                else "defaults"
+            )
+            from .rendering.markdown import truncate_cell_width
+
+            self.set_status_notice(
+                truncate_cell_width(f"Agent set {bar} bar: {summary}", 70)
+            )
 
     def _execute_cli_config_command(
         self,
@@ -872,6 +883,19 @@ class _RichReplRuntime:
                 "ok": False,
                 "status": "error",
                 "error": "segments must be a list of segment refs",
+            }
+        if any(str(ref).strip().startswith("script:") for ref in raw_segments):
+            # Security boundary (defense in depth; the backend tool rejects
+            # these too): a pushed script: ref would make this CLI execute a
+            # command on this machine every few seconds. Script segments are
+            # user-installed only, via the local /statusbar command.
+            return {
+                "ok": False,
+                "status": "error",
+                "error": (
+                    "script: segments cannot be pushed remotely; add them "
+                    "locally with /statusbar set"
+                ),
             }
         try:
             bar = normalize_bar_name(str(args.get("bar", "")))

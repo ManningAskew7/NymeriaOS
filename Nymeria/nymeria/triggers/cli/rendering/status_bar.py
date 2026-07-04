@@ -982,6 +982,7 @@ def _first_number(payload: dict[str, Any], *keys: str) -> float | None:
 
 __all__ = [
     "DEFAULT_NOTICE_TTL_SECONDS",
+    "DEFAULT_SEGMENT_KEYS",
     "NoticeLevel",
     "SCRIPT_REF_PREFIX",
     "STATUS_SEPARATOR",

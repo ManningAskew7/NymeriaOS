@@ -40,9 +40,13 @@ A segment ref is one of:
 - a built-in key: `brand`, `activity`, `notice`, `connection`, `model`,
   `fast`, `reasoning`, `thread`, `context`, `tps`, `queued`, `cwd`
 - `text:<literal>`: a static label (e.g. `text:PROD`)
-- `script:<command>`: a script segment run on the user's machine. It
-  receives a JSON snapshot of CLI state on stdin and its first stdout
-  line is shown (the Claude Code statusline contract).
+- `script:<command>`: a script segment run periodically on the user's own
+  machine (JSON snapshot on stdin, first stdout line shown). You can READ
+  these via `cli_statusbar_get`, but you can NOT push them: both the tool
+  and the CLI reject `script:` refs from this channel, because they
+  execute code on the user's machine. If a script segment is the right
+  answer, give the user the exact local command to run themselves, e.g.
+  `/statusbar set under "script:git branch --show-current"`.
 
 ## Workflow
 
@@ -57,8 +61,11 @@ Examples:
 
 - "put tokens per second on my status bar" with a pinned minimal top bar:
   `cli_statusbar_set(bar="top", segments=["model", "context", "tps"])`
-- "show the git branch under my prompt":
-  `cli_statusbar_set(bar="under", segments=["script:git branch --show-current"])`
+- "show a static label under my prompt":
+  `cli_statusbar_set(bar="under", segments=["text:PROD", "context"])`
+- "show the git branch under my prompt": script segments are user-installed
+  only, so reply with the command for them to run:
+  `/statusbar set under "script:git branch --show-current"`
 - "put everything back": `cli_statusbar_set(bar="top", segments=[])` and
   `cli_statusbar_set(bar="under", segments=[])`
 
@@ -66,9 +73,8 @@ Examples:
 
 - Prefer keeping `activity` and `notice` in the top bar: they carry busy
   state and error notices. Warn the user when asked to remove them.
-- `script:` commands run with the user's shell on their machine every few
-  seconds. Only add commands the user asked for or clearly described, keep
-  them fast and read-only, and never construct commands that write,
-  delete, or send data.
+- When suggesting a `script:` command for the user to install, keep it
+  fast and read-only, and never suggest commands that write, delete, or
+  send data.
 - Changes persist across CLI restarts. If the user just wants a look, say
   how to revert (`/statusbar reset`, or an empty `segments` list).

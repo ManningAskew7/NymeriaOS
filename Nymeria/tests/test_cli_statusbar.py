@@ -111,6 +111,24 @@ def test_load_drops_malformed_refs_and_sections(
     assert layout.under_prompt == ()
 
 
+def test_all_invalid_top_list_falls_back_to_default_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A hand-edited or downgraded config whose pinned top refs are ALL
+    unknown must not pin a blank bar; it falls back to the default order."""
+    config_path = tmp_path / "cli.json"
+    monkeypatch.setenv(THEME_CONFIG_ENV, str(config_path))
+    config_path.write_text(
+        json.dumps({"status_bar": {"top": ["bogus-one", "bogus-two", 99]}}),
+        encoding="utf-8",
+    )
+
+    layout = load_statusbar_layout()
+    assert layout.top is None
+    assert layout.is_default
+
+
 def test_ref_and_bar_validation() -> None:
     assert normalize_bar_name("TOP") == "top"
     assert normalize_bar_name("bottom") == "under"
@@ -297,6 +315,20 @@ async def test_failing_and_empty_scripts_render_nothing() -> None:
     assert runner.lookup("exit 3") is None
     assert await runner._refresh_command("true") is False  # no output
     assert runner.lookup("true") is None
+
+
+@pytest.mark.asyncio
+async def test_oversized_output_is_bounded_not_buffered() -> None:
+    """The runner must never buffer a chatty script's whole stdout: it reads
+    to the first newline, EOF, or the 16KB bound, and the shown segment is
+    capped at 200 chars."""
+    runner = ScriptSegmentRunner(snapshot_provider=_snapshot)
+
+    changed = await runner._refresh_command("python3 -c \"print('x' * 30000)\"")
+
+    assert changed is True
+    cached = runner.lookup("python3 -c \"print('x' * 30000)\"")
+    assert cached == "x" * 200
 
 
 @pytest.mark.asyncio
