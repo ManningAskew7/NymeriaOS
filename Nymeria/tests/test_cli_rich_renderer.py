@@ -597,12 +597,12 @@ def test_resize_triggers_redraw() -> None:
             renderer=renderer,
             capabilities=FakeTerminalCapabilities(width=80),
         )
-        runtime._resize_pending = True
-        runtime.terminal_width = Mock(return_value=120)  # type: ignore[method-assign]
+        runtime.footer._resize_pending = True
+        runtime.footer.terminal_width = Mock(return_value=120)  # type: ignore[method-assign]
         redraw = AsyncMock()
-        runtime.redraw = redraw  # type: ignore[method-assign]
+        runtime.footer.redraw = redraw  # type: ignore[method-assign]
 
-        await runtime._maybe_resize_redraw()
+        await runtime.footer._maybe_resize_redraw()
 
         return renderer, redraw, runtime
 
@@ -610,7 +610,7 @@ def test_resize_triggers_redraw() -> None:
 
     renderer.update_terminal_width.assert_called_once_with(120)
     redraw.assert_awaited_once()
-    assert runtime._resize_pending is False
+    assert runtime.footer._resize_pending is False
 
 
 def test_live_width_change_triggers_redraw_without_signal_flag() -> None:
@@ -628,11 +628,11 @@ def test_live_width_change_triggers_redraw_without_signal_flag() -> None:
             renderer=renderer,
             capabilities=FakeTerminalCapabilities(width=80),
         )
-        runtime.terminal_width = Mock(return_value=120)  # type: ignore[method-assign]
+        runtime.footer.terminal_width = Mock(return_value=120)  # type: ignore[method-assign]
         redraw = AsyncMock()
-        runtime.redraw = redraw  # type: ignore[method-assign]
+        runtime.footer.redraw = redraw  # type: ignore[method-assign]
 
-        await runtime._maybe_resize_redraw()
+        await runtime.footer._maybe_resize_redraw()
 
         return renderer, redraw
 
@@ -671,8 +671,8 @@ def test_scroll_region_runtime_owns_prompt_toolkit_resize_handler() -> None:
 
     runtime.bind_application(application, None)
 
-    assert application._on_resize.__self__ is runtime
-    assert application._on_resize.__func__ is runtime.handle_terminal_resize.__func__
+    assert application._on_resize.__self__ is runtime.footer
+    assert application._on_resize.__func__ is runtime.footer.handle_terminal_resize.__func__
 
 
 def test_scroll_region_runtime_suppresses_prompt_toolkit_startup_height_probe() -> None:
@@ -689,7 +689,7 @@ def test_scroll_region_runtime_keeps_nymeria_pin_probe_available() -> None:
     runtime, output, prompt_renderer, _controller = _make_scroll_region_runtime()
     prompt_renderer._min_available_height = 0
 
-    runtime._request_follow_footer_pin_probe()
+    runtime.footer._request_follow_footer_pin_probe()
 
     assert prompt_renderer._min_available_height == 0
     assert ("request_cpr", None) in output.ops
@@ -756,13 +756,13 @@ def test_scroll_region_height_resize_triggers_hard_redraw() -> None:
             renderer=prompt_renderer,
             is_running=False,
         )
-        runtime._terminal_size = (80, 24)
-        runtime._resize_pending = True
+        runtime.footer._terminal_size = (80, 24)
+        runtime.footer._resize_pending = True
         output.rows = 30
         redraw = AsyncMock()
-        runtime.redraw = redraw  # type: ignore[method-assign]
+        runtime.footer.redraw = redraw  # type: ignore[method-assign]
 
-        await runtime._maybe_resize_redraw()
+        await runtime.footer._maybe_resize_redraw()
 
         return renderer, redraw, runtime
 
@@ -770,8 +770,8 @@ def test_scroll_region_height_resize_triggers_hard_redraw() -> None:
 
     renderer.update_terminal_width.assert_called_once_with(80)
     redraw.assert_awaited_once_with(rebuild_scrollback=True)
-    assert runtime._terminal_size == (80, 30)
-    assert runtime._resize_pending is False
+    assert runtime.footer._terminal_size == (80, 30)
+    assert runtime.footer._resize_pending is False
 
 
 def test_scroll_region_resize_replay_resets_pinned_margins_before_clear() -> None:
@@ -802,12 +802,12 @@ def test_scroll_region_resize_replay_resets_pinned_margins_before_clear() -> Non
         renderer=prompt_renderer,
         is_running=False,
     )
-    runtime._pinned_footer_active = True
-    runtime._pinned_footer_height = 5
-    runtime._pinned_scroll_bottom = 25
-    runtime._pinned_terminal_size = (100, 30)
+    runtime.footer._pinned_footer_active = True
+    runtime.footer._pinned_footer_height = 5
+    runtime.footer._pinned_scroll_bottom = 25
+    runtime.footer._pinned_terminal_size = (100, 30)
 
-    runtime._redraw_follow_footer()
+    runtime.footer._redraw_follow_footer()
 
     assert output.ops.index(("raw", "\x1b[r")) < output.ops.index(("erase_screen", None))
     assert ("raw", "\x1b[3J") not in output.ops
@@ -858,7 +858,7 @@ def test_scroll_region_resize_rebuild_clears_scrollback_before_replay() -> None:
         is_running=False,
     )
 
-    runtime._redraw_follow_footer(rebuild_scrollback=True)
+    runtime.footer._redraw_follow_footer(rebuild_scrollback=True)
 
     erase_index = output.ops.index(("erase_screen", None))
     clear_scrollback_index = output.ops.index(("raw", "\x1b[3J"))
@@ -903,8 +903,8 @@ def test_scroll_region_resize_redraw_does_not_overlap_existing_task() -> None:
         is_running=True,
         create_background_task=create_background_task,
     )
-    runtime._resize_pending = True
-    runtime._resize_task = PendingTask()  # type: ignore[assignment]
+    runtime.footer._resize_pending = True
+    runtime.footer._resize_task = PendingTask()  # type: ignore[assignment]
 
     runtime.schedule_resize_redraw()
 
@@ -1036,7 +1036,7 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
         events: list[str] = []
 
         assert runtime.save_follow_footer_transcript_cursor() is True
-        runtime._follow_footer_pin_probe_pending = True
+        runtime.footer._follow_footer_pin_probe_pending = True
         runtime.prepare_follow_footer_render()
         activation_ops = list(output.ops)
         output.ops.clear()
@@ -1073,11 +1073,11 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
 def test_rich_runtime_restores_input_cursor_after_pinned_transcript_write() -> None:
     async def exercise() -> list[tuple[str, object]]:
         runtime, output, prompt_renderer, _controller = _make_scroll_region_runtime()
-        runtime._follow_footer_transcript_cursor_saved = True
-        runtime._pinned_footer_active = True
-        runtime._pinned_footer_height = 5
-        runtime._pinned_scroll_bottom = 19
-        runtime._pinned_terminal_size = (80, 24)
+        runtime.footer._follow_footer_transcript_cursor_saved = True
+        runtime.footer._pinned_footer_active = True
+        runtime.footer._pinned_footer_height = 5
+        runtime.footer._pinned_scroll_bottom = 19
+        runtime.footer._pinned_terminal_size = (80, 24)
         prompt_renderer._cursor_pos = SimpleNamespace(x=4, y=3)
 
         runtime.finish_follow_footer_render()
@@ -1095,13 +1095,13 @@ def test_rich_runtime_restores_input_cursor_after_pinned_transcript_write() -> N
 
 def test_rich_runtime_hides_cursor_before_pinned_footer_repaint_anchor() -> None:
     runtime, output, _prompt_renderer, _controller = _make_scroll_region_runtime()
-    runtime._follow_footer_transcript_cursor_saved = True
-    runtime._pinned_footer_active = True
-    runtime._pinned_footer_height = 5
-    runtime._pinned_scroll_bottom = 19
-    runtime._pinned_terminal_size = (80, 24)
+    runtime.footer._follow_footer_transcript_cursor_saved = True
+    runtime.footer._pinned_footer_active = True
+    runtime.footer._pinned_footer_height = 5
+    runtime.footer._pinned_scroll_bottom = 19
+    runtime.footer._pinned_terminal_size = (80, 24)
 
-    runtime._prepare_pinned_footer_render()
+    runtime.footer._prepare_pinned_footer_render()
 
     hide_index = output.ops.index(("hide_cursor", None))
     reset_index = output.ops.index(("raw", "\x1b[r"))
@@ -1114,19 +1114,19 @@ def test_rich_runtime_resizes_pinned_footer_when_composer_grows() -> None:
         width=20,
         height=24,
     )
-    runtime._follow_footer_transcript_cursor_saved = True
-    runtime._pinned_footer_active = True
-    runtime._pinned_footer_height = 5
-    runtime._pinned_scroll_bottom = 19
-    runtime._pinned_terminal_size = (20, 24)
+    runtime.footer._follow_footer_transcript_cursor_saved = True
+    runtime.footer._pinned_footer_active = True
+    runtime.footer._pinned_footer_height = 5
+    runtime.footer._pinned_scroll_bottom = 19
+    runtime.footer._pinned_terminal_size = (20, 24)
     controller.text_area.buffer.text = "abcdefghij " * 4
 
-    runtime._prepare_pinned_footer_render()
+    runtime.footer._prepare_pinned_footer_render()
 
     assert runtime.pinned_footer_active() is True
     assert runtime.footer_height() == 7
-    assert runtime._pinned_footer_height == 7
-    assert runtime._pinned_scroll_bottom == 17
+    assert runtime.footer._pinned_footer_height == 7
+    assert runtime.footer._pinned_scroll_bottom == 17
     assert ("raw", "\x1b[1;19r") in output.ops
     assert ("raw", "\r\n\r\n") in output.ops
     assert ("raw", "\x1b[17;1H") in output.ops
@@ -1149,22 +1149,22 @@ def test_rich_runtime_rebuilds_transcript_when_pinned_footer_shrinks() -> None:
         width=20,
         height=24,
     )
-    runtime._follow_footer_transcript_cursor_saved = True
-    runtime._pinned_footer_active = True
-    runtime._pinned_footer_height = 7
-    runtime._pinned_scroll_bottom = 17
-    runtime._pinned_terminal_size = (20, 24)
+    runtime.footer._follow_footer_transcript_cursor_saved = True
+    runtime.footer._pinned_footer_active = True
+    runtime.footer._pinned_footer_height = 7
+    runtime.footer._pinned_scroll_bottom = 17
+    runtime.footer._pinned_terminal_size = (20, 24)
     controller.text_area.buffer.text = ""
 
-    runtime._prepare_pinned_footer_render()
+    runtime.footer._prepare_pinned_footer_render()
 
     # Shrink path deactivates the pinned footer and triggers a transcript
     # replay; the next render cycle's probe re-activates the pin.
     assert runtime.pinned_footer_active() is False
-    assert runtime._pinned_footer_height == 0
-    assert runtime._pinned_scroll_bottom == 0
-    assert runtime._follow_footer_pin_probe_pending is True
-    assert runtime._follow_footer_transcript_cursor_saved is True
+    assert runtime.footer._pinned_footer_height == 0
+    assert runtime.footer._pinned_scroll_bottom == 0
+    assert runtime.footer._follow_footer_pin_probe_pending is True
+    assert runtime.footer._follow_footer_transcript_cursor_saved is True
     assert ("raw", "\x1b[r") in output.ops  # scroll region reset
     assert ("erase_screen", None) in output.ops
     # Scrollback must be cleared as well — otherwise the previously-visible
@@ -1179,13 +1179,13 @@ def test_rich_runtime_streams_through_resized_pinned_scroll_region() -> None:
             width=20,
             height=24,
         )
-        runtime._follow_footer_transcript_cursor_saved = True
-        runtime._pinned_footer_active = True
-        runtime._pinned_footer_height = 5
-        runtime._pinned_scroll_bottom = 19
-        runtime._pinned_terminal_size = (20, 24)
+        runtime.footer._follow_footer_transcript_cursor_saved = True
+        runtime.footer._pinned_footer_active = True
+        runtime.footer._pinned_footer_height = 5
+        runtime.footer._pinned_scroll_bottom = 19
+        runtime.footer._pinned_terminal_size = (20, 24)
         controller.text_area.buffer.text = "abcdefghij " * 4
-        runtime._prepare_pinned_footer_render()
+        runtime.footer._prepare_pinned_footer_render()
         output.ops.clear()
         events: list[str] = []
 
@@ -1218,7 +1218,7 @@ def test_rich_runtime_exit_cleanup_moves_shell_prompt_below_follow_footer() -> N
         capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
     )
     runtime.application = SimpleNamespace(output=output, is_running=False)
-    runtime._follow_footer_transcript_cursor_saved = True
+    runtime.footer._follow_footer_transcript_cursor_saved = True
 
     runtime.reset_follow_footer(prepare_shell_cursor=True)
 
@@ -1244,11 +1244,11 @@ def test_rich_runtime_exit_cleanup_moves_shell_prompt_below_pinned_footer() -> N
         capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
     )
     runtime.application = SimpleNamespace(output=output, is_running=False)
-    runtime._follow_footer_transcript_cursor_saved = True
-    runtime._pinned_footer_active = True
-    runtime._pinned_footer_height = runtime.footer_height()
-    runtime._pinned_scroll_bottom = 24 - runtime.footer_height()
-    runtime._pinned_terminal_size = (80, 24)
+    runtime.footer._follow_footer_transcript_cursor_saved = True
+    runtime.footer._pinned_footer_active = True
+    runtime.footer._pinned_footer_height = runtime.footer_height()
+    runtime.footer._pinned_scroll_bottom = 24 - runtime.footer_height()
+    runtime.footer._pinned_terminal_size = (80, 24)
 
     runtime.reset_follow_footer(prepare_shell_cursor=True)
 
