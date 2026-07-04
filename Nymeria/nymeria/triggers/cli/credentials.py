@@ -140,15 +140,31 @@ def remove_active_profile_token(
 
 
 def write_cli_config(config: CLIProfileConfig, path: Path | str | None = None) -> None:
-    """Write CLI config with private directory/file permissions."""
+    """Write CLI config with private directory/file permissions.
+
+    Only the managed keys (``version``, ``active_profile``, ``profiles``) are
+    rewritten. Unknown top-level keys owned by other writers of this file
+    (for example the ``theme`` section saved by ``theme.save_cli_theme``, or
+    future sections like ``status_bar``) are preserved, mirroring the
+    merge-before-write behavior of the theme saver.
+    """
 
     selected_path = Path(path).expanduser() if path is not None else default_cli_config_path()
     selected_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(selected_path.parent, 0o700)
 
+    data: dict[str, Any] = {}
+    try:
+        raw = json.loads(selected_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw = None
+    if isinstance(raw, dict):
+        data.update(raw)
+    data.update(_config_to_json(config))
+
     tmp_path = selected_path.with_name(f".{selected_path.name}.tmp")
     tmp_path.write_text(
-        json.dumps(_config_to_json(config), indent=2, sort_keys=True) + "\n",
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     os.chmod(tmp_path, 0o600)

@@ -103,13 +103,42 @@ def test_backend_provider_overrides_duplicate_memory_subcommand():
     assert sink.messages[0].content == "backend result for /memory save color deep blue"
 
 
-def test_backend_provider_preserves_local_model_subcommands_while_proxying_root():
+def test_local_model_root_survives_backend_registration():
+    """The /model root stays local (it opens the picker form).
+
+    ``_LOCAL_ROOT_WINS`` makes the provider skip the root-level backend proxy
+    for /model so the local form-opening handler is not shadowed. Local
+    subcommands stay local too.
+    """
     registry = CommandRegistry(include_builtins=False)
     model.register(registry)
     BackendCommandProvider([command_info("model", category="LLM")]).register(registry)
 
+    root = registry.get("model")
+    assert root is not None
+    assert root.handler is model._handle_model_context
+    assert root.metadata.get("backend_command") is None
     assert registry.resolve("/model show").path == ("model", "show")
     assert registry.resolve("/model show").command.metadata.get("backend_command") is None
+
+
+def test_local_model_root_survives_backend_first_registration_order():
+    """Order independence: backend provider first, local module second."""
+    registry = CommandRegistry(include_builtins=False)
+    BackendCommandProvider([command_info("model", category="LLM")]).register(registry)
+    model.register(registry)
+
+    root = registry.get("model")
+    assert root is not None
+    assert root.handler is model._handle_model_context
+    assert root.metadata.get("backend_command") is None
+
+
+def test_model_root_forwards_set_shorthand_args_to_backend():
+    """/model <name> [global|thread] still reaches the backend command."""
+    registry = CommandRegistry(include_builtins=False)
+    model.register(registry)
+    BackendCommandProvider([command_info("model", category="LLM")]).register(registry)
 
     client = _FakeCommandClient()
     result = run(
