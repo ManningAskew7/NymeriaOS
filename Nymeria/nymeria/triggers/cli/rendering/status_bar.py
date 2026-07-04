@@ -26,6 +26,11 @@ NoticeLevel = Literal["info", "warning", "error"]
 DEFAULT_NOTICE_TTL_SECONDS = 6.0
 STATUS_SEPARATOR = " | "
 
+# Segment-ref grammar shared with statusbar_config (defined here so the
+# layout module can import them without a circular dependency).
+TEXT_REF_PREFIX = "text:"
+SCRIPT_REF_PREFIX = "script:"
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StatusNotice:
@@ -82,6 +87,11 @@ SegmentProvider = Callable[
     "StatusSegment | None",
 ]
 
+# A script source resolves a ``script:<command>`` ref to its cached first
+# stdout line (or None while unavailable). It must never block: execution
+# happens off the render loop (see ``script_segments.ScriptSegmentRunner``).
+ScriptSource = Callable[[str], "str | None"]
+
 
 class StatusBarRenderer:
     """Render a stable one-line status bar from keyed segment providers.
@@ -103,12 +113,35 @@ class StatusBarRenderer:
         self._segment_providers: dict[str, SegmentProvider] = dict(
             _DEFAULT_SEGMENT_PROVIDERS
         )
+        self._layout: tuple[str, ...] | None = None
+        self._script_source: ScriptSource | None = None
 
     @property
     def segment_keys(self) -> tuple[str, ...]:
         """Registered segment keys in render order."""
 
         return tuple(self._segment_providers)
+
+    @property
+    def layout(self) -> tuple[str, ...] | None:
+        """Configured segment refs, or None for the registry default order."""
+
+        return self._layout
+
+    def set_layout(self, refs: tuple[str, ...] | None) -> None:
+        """Pin the bar to an explicit ordered ref list (None = default).
+
+        Refs follow the statusbar_config grammar: a registered segment key,
+        ``text:<literal>``, or ``script:<command>``. Unknown keys and script
+        refs without a source resolve to nothing at render time.
+        """
+
+        self._layout = tuple(refs) if refs is not None else None
+
+    def set_script_source(self, source: ScriptSource | None) -> None:
+        """Install the resolver for ``script:`` refs (must not block)."""
+
+        self._script_source = source
 
     def register_segment(
         self,
@@ -229,11 +262,53 @@ class StatusBarRenderer:
         now: float,
     ) -> list[StatusSegment]:
         segments: list[StatusSegment] = []
-        for provider in self._segment_providers.values():
-            segment = provider(self, state, capabilities, context, now)
+        if self._layout is None:
+            for provider in self._segment_providers.values():
+                segment = provider(self, state, capabilities, context, now)
+                if segment is not None:
+                    segments.append(segment)
+            return segments
+        for ref in self._layout:
+            segment = self._segment_for_ref(
+                ref,
+                state,
+                capabilities=capabilities,
+                context=context,
+                now=now,
+            )
             if segment is not None:
                 segments.append(segment)
         return segments
+
+    def _segment_for_ref(
+        self,
+        ref: str,
+        state: CLIUIState,
+        *,
+        capabilities: Any,
+        context: StatusBarContext,
+        now: float,
+    ) -> StatusSegment | None:
+        if ref.startswith(TEXT_REF_PREFIX):
+            literal = ref[len(TEXT_REF_PREFIX):].strip()
+            if not literal:
+                return None
+            return StatusSegment(text=literal, priority=2, min_width=1)
+        if ref.startswith(SCRIPT_REF_PREFIX):
+            command = ref[len(SCRIPT_REF_PREFIX):].strip()
+            if not command or self._script_source is None:
+                return None
+            try:
+                text = self._script_source(command)
+            except Exception:
+                return None
+            if not text:
+                return None
+            return StatusSegment(text=text, priority=2, min_width=1)
+        provider = self._segment_providers.get(ref)
+        if provider is None:
+            return None
+        return provider(self, state, capabilities, context, now)
 
     def activity_segment(
         self,
@@ -908,7 +983,10 @@ def _first_number(payload: dict[str, Any], *keys: str) -> float | None:
 __all__ = [
     "DEFAULT_NOTICE_TTL_SECONDS",
     "NoticeLevel",
+    "SCRIPT_REF_PREFIX",
     "STATUS_SEPARATOR",
+    "ScriptSource",
+    "TEXT_REF_PREFIX",
     "StatusBarContext",
     "StatusBarRender",
     "StatusBarRenderer",

@@ -39,6 +39,7 @@ from .rendering.plain import PlainRenderer, strip_ansi
 from .rendering.rich_repl import RichReplRenderer
 from .state import CLIState, create_initial_state
 from .temporary_model import apply_temporary_model, restore_temporary_model
+from .statusbar_config import StatusBarLayout
 from .theme import CLITheme, load_cli_theme
 from .transport.base import AgentClient, Attachment
 from .transport.disconnected import is_disconnected_client
@@ -169,6 +170,7 @@ class CLIApp:
             model,
             provider,
             skills,
+            statusbar,
             system,
             theme,
             todos,
@@ -198,6 +200,7 @@ class CLIApp:
         artifacts.register(self.registry)
         doctor.register(self.registry)
         theme.register(self.registry)
+        statusbar.register(self.registry)
         export.register(self.registry)
         fallback.register(self.registry)
         provider.register(self.registry)
@@ -365,6 +368,7 @@ class CLIApp:
                 runtime.uninstall_resize_handler()
                 runtime.stop_autonomous_listener()
                 runtime.stop_reconnect_watcher()
+                runtime.stop_script_segments()
             self._active_capabilities = None
             self._active_rich_runtime = None
             self._active_repl_renderer = None
@@ -1007,6 +1011,13 @@ class CLIApp:
                     )
                     runtime.invalidate()
                 refresh_header = True
+        elif action_type == "statusbar_updated":
+            layout = action.get("layout")
+            if isinstance(layout, StatusBarLayout):
+                runtime = self._active_rich_runtime
+                if runtime is not None:
+                    runtime.apply_statusbar_layout(layout)
+            return
         elif action_type == "clear_transcript":
             self._reset_active_repl_state()
             runtime = self._active_rich_runtime

@@ -50,6 +50,8 @@ from .rendering.slash_panel import (
     slash_panel_visible,
 )
 from .rendering.status_bar import StatusBarContext, StatusBarRenderer, StatusNotice
+from .script_segments import ScriptSegmentRunner
+from .statusbar_config import StatusBarLayout, load_statusbar_layout
 from .theme import CLITheme, DEFAULT_CLI_THEME, ptk_style
 from .transport.disconnected import DISCONNECTED_MESSAGE, is_disconnected_client
 
@@ -77,6 +79,9 @@ class _RichReplRuntime:
         self.renderer = renderer
         self.capabilities = capabilities
         self.status_bar_renderer = StatusBarRenderer()
+        self.under_status_bar_renderer = StatusBarRenderer()
+        self._statusbar_layout = StatusBarLayout()
+        self._script_runner: ScriptSegmentRunner | None = None
         self.footer = FollowFooterEngine(
             renderer_getter=lambda: self.renderer,
             capabilities=capabilities,
@@ -115,6 +120,7 @@ class _RichReplRuntime:
                 ttl_seconds=ttl_seconds,
             ),
         )
+        self.apply_statusbar_layout(load_statusbar_layout())
 
     @property
     def busy(self) -> bool:
@@ -263,6 +269,88 @@ class _RichReplRuntime:
             )
         )
 
+    # ----- configurable status bars (backlog #53, Phase 4) -------------- #
+
+    @property
+    def statusbar_layout(self) -> StatusBarLayout:
+        return self._statusbar_layout
+
+    def apply_statusbar_layout(self, layout: StatusBarLayout) -> None:
+        """Apply a persisted layout to both bars and the script runner."""
+
+        self._statusbar_layout = layout
+        self.status_bar_renderer.set_layout(layout.top)
+        self.under_status_bar_renderer.set_layout(layout.under_prompt)
+        commands = layout.script_commands()
+        if commands:
+            self._ensure_script_runner().set_commands(commands)
+        elif self._script_runner is not None:
+            self._script_runner.set_commands(())
+        self.invalidate()
+
+    def under_status_visible(self) -> bool:
+        return bool(self._statusbar_layout.under_prompt)
+
+    def under_status_height(self) -> int:
+        return 1 if self.under_status_visible() else 0
+
+    def under_status_fragments(self):
+        return list(
+            self.under_status_bar_renderer.render_fragments(
+                self.renderer.state,
+                capabilities=self.capabilities,
+                context=self._status_context(),
+                width=self.terminal_width(),
+                now=time.monotonic(),
+            )
+        )
+
+    def _ensure_script_runner(self) -> ScriptSegmentRunner:
+        if self._script_runner is None:
+            self._script_runner = ScriptSegmentRunner(
+                snapshot_provider=self._script_snapshot,
+                on_update=self.invalidate,
+            )
+            self.status_bar_renderer.set_script_source(self._script_runner.lookup)
+            self.under_status_bar_renderer.set_script_source(
+                self._script_runner.lookup
+            )
+        return self._script_runner
+
+    def _script_snapshot(self) -> dict[str, Any]:
+        """JSON-safe CLI state snapshot piped to ``script:`` segments."""
+
+        state = self.renderer.state
+        context = self._status_context()
+        usage = state.session_usage
+        return {
+            "model": {"display_name": context.model},
+            "workspace": {"current_dir": str(context.cwd or "")},
+            "thread": {
+                "id": str(self.app.state.thread_id or ""),
+                "label": context.thread_label,
+            },
+            "connection": {
+                "label": context.connection_label,
+                "disconnected": context.disconnected,
+            },
+            "busy": context.busy,
+            "context_stats": dict(state.context_stats or {}),
+            "session_usage": {
+                "total_input": usage.total_input,
+                "total_output": usage.total_output,
+                "turn_count": usage.turn_count,
+            },
+        }
+
+    def stop_script_segments(self) -> None:
+        if self._script_runner is not None:
+            self._script_runner.stop()
+
+    async def stop_script_segments_async(self) -> None:
+        if self._script_runner is not None:
+            await self._script_runner.stop_async()
+
     def prompt_fragments(self, prompt: str | None = None):
         label = str(prompt or ("Busy: " if self._busy else "You: "))
         prompt_style = "class:prompt.busy" if self._busy else "class:prompt"
@@ -348,6 +436,7 @@ class _RichReplRuntime:
         return (
             self.composer_input_height()
             + 4
+            + self.under_status_height()
             + self.slash_panel_height()
             + self.form_height()
             + self.queued_panel_height()
@@ -899,6 +988,20 @@ class _RichReplPromptToolkitShell:
             ),
             filter=footer_visible,
         )
+        under_status_filter = (
+            Condition(self.runtime.under_status_visible) & footer_visible
+        )
+        under_status_bar = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: self.runtime.under_status_fragments()),
+                height=Dimension.exact(1),
+                dont_extend_height=True,
+                style="class:status",
+                wrap_lines=False,
+                char=" ",
+            ),
+            filter=under_status_filter,
+        )
         slash_panel_filter = (
             Condition(self.runtime.slash_panel_visible) & footer_visible
         )
@@ -970,6 +1073,7 @@ class _RichReplPromptToolkitShell:
                     transcript_gap,
                     status_bar,
                     input_area,
+                    under_status_bar,
                     slash_panel,
                     form_panel_container,
                     queued_panel_container,
@@ -983,6 +1087,7 @@ class _RichReplPromptToolkitShell:
                     transcript_gap,
                     status_bar,
                     input_area,
+                    under_status_bar,
                     slash_panel,
                     form_panel_container,
                     queued_panel_container,
