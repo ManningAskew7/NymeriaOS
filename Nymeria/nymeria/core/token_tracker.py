@@ -1,9 +1,23 @@
 """Token usage tracking per conversation thread.
 
-Tracks cumulative token usage (input + output) for each thread to determine
-when auto-compaction should be triggered.
+Two distinct quantities per thread, kept deliberately separate (they were
+conflated before the 2026-07-04 repair pass):
+
+- **Context occupancy** (``last_input_tokens``, exposed as the
+  ``context_tokens`` property): the final model call's prompt-side tokens,
+  i.e. how full the context window is. Drives auto-compaction triggers and
+  the clients' context bars. Reset by compaction and re-estimated by
+  ``/prune``.
+- **Per-turn consumption** (``turn_input_tokens`` / ``turn_output_tokens``):
+  tokens billed by this turn, summed across *all* of the turn's model calls
+  (the same message slice the USD cost calculator prices, so the two can
+  never diverge). Cumulative totals are sums of turn consumption and survive
+  compaction. ``turn_recorded`` distinguishes "this turn recorded 0/0"
+  (extraction found nothing) from real zeros, so clients do not accumulate
+  stale values.
 """
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
@@ -14,10 +28,18 @@ class ThreadTokenUsage:
     """Token usage statistics for a conversation thread."""
 
     thread_id: str
-    total_input_tokens: int = 0      # Cumulative (for cost reporting)
-    total_output_tokens: int = 0     # Cumulative (for cost reporting)
-    last_input_tokens: int = 0       # Latest call's prompt_tokens (= actual context window usage)
-    last_output_tokens: int = 0      # Latest call's completion_tokens
+    # Cumulative consumption: sums of per-turn billed tokens. Survives
+    # compaction; rebuilt best-effort from checkpoint history after restart.
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    # Context occupancy: the final model call's prompt_tokens.
+    last_input_tokens: int = 0
+    # This turn's consumption, summed across the turn's model calls.
+    # ``turn_recorded`` is False when the last finished turn extracted no
+    # usage metadata (the turn_* zeros are then "unknown", not "zero").
+    turn_input_tokens: int = 0
+    turn_output_tokens: int = 0
+    turn_recorded: bool = False
     last_compaction_at: Optional[datetime] = None
     compaction_count: int = 0
     # USD cost accounting. ``None`` for ``last_cost_usd`` distinguishes
@@ -27,13 +49,13 @@ class ThreadTokenUsage:
     last_cost_usd: Optional[float] = None
     total_cost_usd: float = 0.0
     cost_unavailable: bool = False
-    # High-water message index used by the cost calculator to avoid
-    # double-counting AIMessages across ReAct iterations within a single turn.
+    # High-water message index shared by the cost calculator and the per-turn
+    # token sums: only AIMessages past it belong to the current turn.
     last_recorded_message_index: int = 0
 
     @property
     def total_tokens(self) -> int:
-        """Cumulative total — used for cost reporting."""
+        """Cumulative consumption total (input + output)."""
         return self.total_input_tokens + self.total_output_tokens
 
     @property
@@ -47,27 +69,57 @@ class TokenTracker:
     Track token usage per thread for context window monitoring.
 
     Used by NymeriaAgent to determine when auto-compaction should be triggered
-    based on cumulative token usage approaching the model's context limit.
+    based on context occupancy approaching the model's context limit, and to
+    surface per-turn and cumulative consumption to clients.
+
+    Mutating methods hold an internal lock; the ``lock`` property is exposed
+    for callers that need a read-advance sequence to be atomic against
+    concurrent rehydration (e.g. the turn-slice index bump in
+    ``NymeriaAgent._compute_turn_usage_and_cost``).
     """
 
     def __init__(self):
         self._usage: Dict[str, ThreadTokenUsage] = {}
+        self._lock = threading.Lock()
 
-    def record_usage(
+    @property
+    def lock(self) -> threading.Lock:
+        return self._lock
+
+    def _row(self, thread_id: str) -> ThreadTokenUsage:
+        """Return the persistent usage row, creating it if needed.
+
+        Callers must hold ``self._lock``.
+        """
+        row = self._usage.get(thread_id)
+        if row is None:
+            row = ThreadTokenUsage(thread_id=thread_id)
+            self._usage[thread_id] = row
+        return row
+
+    def record_turn(
         self,
         thread_id: str,
-        input_tokens: int,
-        output_tokens: int,
+        *,
+        turn_input_tokens: int,
+        turn_output_tokens: int,
+        context_tokens: Optional[int] = None,
         cost_usd: Optional[float] = None,
         cost_unavailable: bool = False,
     ) -> None:
         """
-        Record token usage for a thread.
+        Record a finished turn.
 
         Args:
             thread_id: Thread identifier
-            input_tokens: Number of input tokens from this turn
-            output_tokens: Number of output tokens from this turn
+            turn_input_tokens: Input tokens billed by this turn, summed
+                across all of the turn's model calls
+            turn_output_tokens: Output tokens generated this turn, summed
+                across all of the turn's model calls
+            context_tokens: The final model call's prompt-side tokens
+                (context occupancy). ``None`` or 0 keeps the previous
+                occupancy estimate rather than zeroing the context bar
+                (extraction can legitimately find nothing on a turn).
             cost_usd: USD cost of this turn. ``None`` means rates were
                 unavailable; cumulative totals are left unchanged and
                 ``last_cost_usd`` is cleared.
@@ -76,20 +128,52 @@ class TokenTracker:
                 cost is not meaningful. Sets the latest-call flag and skips
                 accumulation, even if ``cost_usd`` happens to be set.
         """
-        if thread_id not in self._usage:
-            self._usage[thread_id] = ThreadTokenUsage(thread_id=thread_id)
-        usage = self._usage[thread_id]
-        usage.total_input_tokens += input_tokens
-        usage.total_output_tokens += output_tokens
-        usage.last_input_tokens = input_tokens    # Overwrite — tracks latest call only
-        usage.last_output_tokens = output_tokens
-        usage.cost_unavailable = bool(cost_unavailable)
-        usage.last_cost_usd = None
-        if cost_unavailable:
-            return
-        if cost_usd is not None:
-            usage.last_cost_usd = float(cost_usd)
-            usage.total_cost_usd += float(cost_usd)
+        with self._lock:
+            usage = self._row(thread_id)
+            found = bool(turn_input_tokens or turn_output_tokens)
+            usage.turn_input_tokens = turn_input_tokens if found else 0
+            usage.turn_output_tokens = turn_output_tokens if found else 0
+            usage.turn_recorded = found
+            if found:
+                usage.total_input_tokens += turn_input_tokens
+                usage.total_output_tokens += turn_output_tokens
+            if context_tokens is not None and context_tokens > 0:
+                usage.last_input_tokens = context_tokens
+            usage.cost_unavailable = bool(cost_unavailable)
+            usage.last_cost_usd = None
+            if cost_unavailable:
+                return
+            if cost_usd is not None:
+                usage.last_cost_usd = float(cost_usd)
+                usage.total_cost_usd += float(cost_usd)
+
+    def seed_rehydrated(
+        self,
+        thread_id: str,
+        *,
+        total_input_tokens: int,
+        total_output_tokens: int,
+        context_tokens: int,
+        message_index: int,
+    ) -> None:
+        """Seed a thread's row from checkpoint history after a restart.
+
+        Turn fields stay zeroed with ``turn_recorded=False``: the last
+        turn's consumption is unknowable post-restart, and clients must not
+        re-accumulate it.
+        """
+        with self._lock:
+            usage = self._row(thread_id)
+            usage.total_input_tokens = total_input_tokens
+            usage.total_output_tokens = total_output_tokens
+            usage.last_input_tokens = context_tokens
+            usage.last_recorded_message_index = message_index
+
+    def set_context_estimate(self, thread_id: str, estimated_tokens: int) -> None:
+        """Replace the context-occupancy estimate (e.g. after ``/prune``)."""
+        with self._lock:
+            usage = self._row(thread_id)
+            usage.last_input_tokens = max(0, int(estimated_tokens))
 
     def get_usage(self, thread_id: str) -> ThreadTokenUsage:
         """
@@ -118,23 +202,35 @@ class TokenTracker:
         usage = self.get_usage(thread_id)
         return usage.context_tokens >= (model_limit * threshold)
 
-    def reset_after_compact(self, thread_id: str, remaining_tokens: int) -> None:
+    def reset_after_compact(
+        self,
+        thread_id: str,
+        remaining_tokens: int,
+        remaining_message_count: Optional[int] = None,
+    ) -> None:
         """
-        Reset token tracking after compaction.
+        Reset context occupancy after compaction.
+
+        Cumulative consumption and the last turn's fields survive: compaction
+        shrinks the context window, it does not un-consume tokens.
 
         Args:
             thread_id: Thread identifier
             remaining_tokens: Estimated tokens remaining after compaction
+            remaining_message_count: Length of the post-compaction message
+                list. When provided, the turn-slice high-water index is reset
+                to it so the next turn bills only genuinely new messages
+                (the retained tail was already counted before compaction;
+                leaving the pre-compaction index in place made the first
+                post-compaction turn slice empty and silently drop its cost).
         """
-        if thread_id not in self._usage:
-            self._usage[thread_id] = ThreadTokenUsage(thread_id=thread_id)
-
-        self._usage[thread_id].total_input_tokens = remaining_tokens
-        self._usage[thread_id].total_output_tokens = 0
-        self._usage[thread_id].last_input_tokens = remaining_tokens
-        self._usage[thread_id].last_output_tokens = 0
-        self._usage[thread_id].last_compaction_at = datetime.now()
-        self._usage[thread_id].compaction_count += 1
+        with self._lock:
+            usage = self._row(thread_id)
+            usage.last_input_tokens = remaining_tokens
+            usage.last_compaction_at = datetime.now()
+            usage.compaction_count += 1
+            if remaining_message_count is not None:
+                usage.last_recorded_message_index = remaining_message_count
 
     def clear_thread(self, thread_id: str) -> None:
         """
@@ -143,8 +239,9 @@ class TokenTracker:
         Args:
             thread_id: Thread identifier
         """
-        if thread_id in self._usage:
-            del self._usage[thread_id]
+        with self._lock:
+            if thread_id in self._usage:
+                del self._usage[thread_id]
 
     def get_all_threads(self) -> Dict[str, ThreadTokenUsage]:
         """
@@ -153,4 +250,5 @@ class TokenTracker:
         Returns:
             Dict mapping thread_id to ThreadTokenUsage
         """
-        return self._usage.copy()
+        with self._lock:
+            return self._usage.copy()

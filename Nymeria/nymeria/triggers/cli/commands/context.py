@@ -84,8 +84,8 @@ def _format_context_stats(stats: Mapping[str, object]) -> str:
     rows = [
         ("Thread", stats.get("thread_id", "")),
         ("Total tokens", _token_ratio(stats)),
-        ("Input", stats.get("input_tokens", "")),
-        ("Output", stats.get("output_tokens", "")),
+        ("Turn input", stats.get("input_tokens", "")),
+        ("Turn output", stats.get("output_tokens", "")),
         ("Context mgmt", stats.get("context_management", "")),
         ("Compactions", stats.get("compaction_count", "")),
         ("Last compacted", stats.get("last_compaction") or "Never"),

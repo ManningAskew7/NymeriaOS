@@ -830,6 +830,7 @@ class CompactionManager:
         agent._token_tracker.reset_after_compact(
             thread_id,
             self._estimate_messages_tokens(tail, self._model_for(thread_id)),
+            remaining_message_count=len(tail),
         )
         logger.info(
             f"Thread {thread_id}: Compaction complete, summarized "
@@ -910,6 +911,7 @@ class CompactionManager:
         agent._token_tracker.reset_after_compact(
             thread_id,
             self._estimate_messages_tokens(tail, self._model_for(thread_id)),
+            remaining_message_count=len(tail),
         )
         logger.info(
             f"Thread {thread_id}: Sync compaction complete, summarized "

@@ -55,10 +55,10 @@ def test_auto_compact_uses_percentage_threshold_only_for_large_models():
 
     assert agent._compact_trigger_tokens(1_050_000, 0.8, mode="percentage") == 840_000
 
-    agent._token_tracker.record_usage("thread-a", 134_000, 10)
+    agent._token_tracker.record_turn("thread-a", turn_input_tokens=134_000, turn_output_tokens=10, context_tokens=134_000)
     assert agent._should_auto_compact_now("thread-a", "user-a") is False
 
-    agent._token_tracker.record_usage("thread-b", 840_000, 10)
+    agent._token_tracker.record_turn("thread-b", turn_input_tokens=840_000, turn_output_tokens=10, context_tokens=840_000)
     assert agent._should_auto_compact_now("thread-b", "user-a") is True
 
 
@@ -84,10 +84,10 @@ def test_compact_trigger_tokens_token_mode_clamped_to_model_limit():
 def test_auto_compact_token_mode_global_setting():
     agent = _agent_with_compaction(mode="tokens", tokens=100_000)
 
-    agent._token_tracker.record_usage("thread-a", 95_000, 10)
+    agent._token_tracker.record_turn("thread-a", turn_input_tokens=95_000, turn_output_tokens=10, context_tokens=95_000)
     assert agent._should_auto_compact_now("thread-a", "user-a") is False
 
-    agent._token_tracker.record_usage("thread-b", 105_000, 10)
+    agent._token_tracker.record_turn("thread-b", turn_input_tokens=105_000, turn_output_tokens=10, context_tokens=105_000)
     assert agent._should_auto_compact_now("thread-b", "user-a") is True
 
 
@@ -104,10 +104,10 @@ def test_auto_compact_per_thread_override_wins_over_global():
         ),
     )
 
-    agent._token_tracker.record_usage("thread-override", 60_000, 10)
+    agent._token_tracker.record_turn("thread-override", turn_input_tokens=60_000, turn_output_tokens=10, context_tokens=60_000)
     assert agent._should_auto_compact_now("thread-override", "user-a") is True
 
-    agent._token_tracker.record_usage("thread-default", 60_000, 10)
+    agent._token_tracker.record_turn("thread-default", turn_input_tokens=60_000, turn_output_tokens=10, context_tokens=60_000)
     assert agent._should_auto_compact_now("thread-default", "user-a") is False
 
 
@@ -124,10 +124,10 @@ def test_auto_compact_thread_override_partial_falls_back_to_global_tokens():
         ),
     )
 
-    agent._token_tracker.record_usage("thread-partial", 70_000, 10)
+    agent._token_tracker.record_turn("thread-partial", turn_input_tokens=70_000, turn_output_tokens=10, context_tokens=70_000)
     assert agent._should_auto_compact_now("thread-partial", "user-a") is False
 
-    agent._token_tracker.record_usage("thread-partial-2", 90_000, 10)
+    agent._token_tracker.record_turn("thread-partial-2", turn_input_tokens=90_000, turn_output_tokens=10, context_tokens=90_000)
     agent.thread_config_manager.set_llm_config(
         "thread-partial-2",
         SimpleNamespace(
@@ -143,8 +143,8 @@ def test_check_and_compact_sync_honors_token_mode_and_thread_override():
     """The sync compaction path must apply the same mode + per-thread resolution as the async path."""
     agent = _agent_with_compaction(mode="tokens", tokens=100_000)
 
-    agent._token_tracker.record_usage("thread-under", 95_000, 10)
-    agent._token_tracker.record_usage("thread-over", 105_000, 10)
+    agent._token_tracker.record_turn("thread-under", turn_input_tokens=95_000, turn_output_tokens=10, context_tokens=95_000)
+    agent._token_tracker.record_turn("thread-over", turn_input_tokens=105_000, turn_output_tokens=10, context_tokens=105_000)
 
     assert agent._compaction.check_and_compact_sync("thread-under", "user-a") is None
 
@@ -169,7 +169,7 @@ def test_check_and_compact_sync_honors_token_mode_and_thread_override():
             compact_threshold_tokens=40_000,
         ),
     )
-    agent._token_tracker.record_usage("thread-override", 50_000, 10)
+    agent._token_tracker.record_turn("thread-override", turn_input_tokens=50_000, turn_output_tokens=10, context_tokens=50_000)
     triggered.clear()
     result = agent._compaction.check_and_compact_sync("thread-override", "user-a")
     assert result == {"success": True, "thread_id": "thread-override"}

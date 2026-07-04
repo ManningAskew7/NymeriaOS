@@ -128,8 +128,8 @@ def _format_thread_usage(
             lines.append(f"  Until compact   [{bar}] {pct_label} of {compact_cap}")
         else:
             lines.append(f"                  [{bar}] {pct_label}")
-    lines.append(f"    Input         {_fmt_tokens(input_tokens)}")
-    lines.append(f"    Output        {_fmt_tokens(output_tokens)}")
+    lines.append(f"    Turn input    {_fmt_tokens(input_tokens)}")
+    lines.append(f"    Turn output   {_fmt_tokens(output_tokens)}")
     if cumulative and cumulative != total_tokens:
         lines.append(f"  Cumulative      {_fmt_tokens(cumulative)}")
 
