@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -75,8 +75,22 @@ class StatusBarRender:
     fragments: tuple[tuple[str, str], ...] = ()
 
 
+# A segment provider builds one keyed StatusSegment (or None to omit it this
+# frame). Signature: (renderer, state, capabilities, context, now).
+SegmentProvider = Callable[
+    ["StatusBarRenderer", CLIUIState, Any, StatusBarContext, float],
+    "StatusSegment | None",
+]
+
+
 class StatusBarRenderer:
-    """Render a stable one-line status bar from reducer state."""
+    """Render a stable one-line status bar from keyed segment providers.
+
+    The built-in segments register in a keyed, ordered provider registry
+    (``DEFAULT_SEGMENT_KEYS``). Later phases plug into the same registry:
+    layout config reorders or removes by key, and script or agent-pushed
+    segments register alongside the built-ins via ``register_segment``.
+    """
 
     def __init__(
         self,
@@ -86,6 +100,54 @@ class StatusBarRenderer:
     ) -> None:
         self.indicator = indicator or ActivityIndicator()
         self.default_notice_ttl_seconds = max(0.0, default_notice_ttl_seconds)
+        self._segment_providers: dict[str, SegmentProvider] = dict(
+            _DEFAULT_SEGMENT_PROVIDERS
+        )
+
+    @property
+    def segment_keys(self) -> tuple[str, ...]:
+        """Registered segment keys in render order."""
+
+        return tuple(self._segment_providers)
+
+    def register_segment(
+        self,
+        key: str,
+        provider: SegmentProvider,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+    ) -> None:
+        """Register or replace a segment provider by key.
+
+        Re-registering an existing key replaces it in place. A new key is
+        appended, or inserted relative to ``before``/``after`` when the
+        anchor key exists (unknown anchors fall back to append).
+        """
+
+        if before is not None and after is not None:
+            raise ValueError("register_segment takes before or after, not both")
+        providers = self._segment_providers
+        if key in providers:
+            providers[key] = provider
+            return
+        anchor = before or after
+        if anchor is None or anchor not in providers:
+            providers[key] = provider
+            return
+        reordered: dict[str, SegmentProvider] = {}
+        for existing_key, existing in providers.items():
+            if before is not None and existing_key == anchor:
+                reordered[key] = provider
+            reordered[existing_key] = existing
+            if after is not None and existing_key == anchor:
+                reordered[key] = provider
+        self._segment_providers = reordered
+
+    def remove_segment(self, key: str) -> bool:
+        """Remove a segment provider by key; True when it existed."""
+
+        return self._segment_providers.pop(key, None) is not None
 
     def render(
         self,
@@ -166,106 +228,11 @@ class StatusBarRenderer:
         context: StatusBarContext,
         now: float,
     ) -> list[StatusSegment]:
-        notice = select_status_notice(
-            state,
-            context.notice,
-            now=now,
-            default_ttl_seconds=self.default_notice_ttl_seconds,
-        )
-        thread = context.thread_label or state.thread_id or ""
-        # Disconnected bars omit the model segment entirely; the "disconnected"
-        # connection label already conveys state, and there is no backend model
-        # to report (the local Settings default must never surface as active).
-        model = "" if context.disconnected else (state.active_model or context.model)
-        context_usage = context_usage_label(
-            state, compact_settings=context.compact_settings,
-        )
-        cwd = cwd_label(context.cwd)
-
-        segments = [
-            StatusSegment(
-                text="Nymeria",
-                style_class="status.accent",
-                priority=0,
-                min_width=3,
-                removable=False,
-            ),
-            StatusSegment(
-                text=self.activity_segment(
-                    state,
-                    capabilities=capabilities,
-                    now=now,
-                    busy=context.busy,
-                ),
-                style_class="status.activity",
-                priority=0,
-                min_width=8,
-                removable=False,
-            ),
-        ]
-        if notice:
-            segments.append(
-                StatusSegment(
-                    text=notice,
-                    style_class=_notice_style_class(
-                        context.notice,
-                        state,
-                        now=now,
-                        default_ttl_seconds=self.default_notice_ttl_seconds,
-                    ),
-                    priority=0,
-                    min_width=8,
-                    removable=False,
-                )
-            )
-        if context.connection_label:
-            segments.append(StatusSegment(text=context.connection_label, priority=1))
-        if model:
-            segments.append(StatusSegment(text=str(model), priority=2, min_width=8))
-        if context.fast_mode_active:
-            segments.append(
-                StatusSegment(
-                    text="FAST",
-                    style_class="status.accent",
-                    priority=1,
-                    min_width=4,
-                )
-            )
-        if context.reasoning_label:
-            segments.append(
-                StatusSegment(
-                    text=context.reasoning_label,
-                    style_class="status.accent",
-                    priority=1,
-                    min_width=6,
-                )
-            )
-        if thread:
-            segments.append(
-                StatusSegment(
-                    text=f"thread {thread}",
-                    priority=0,
-                    min_width=10,
-                    removable=False,
-                )
-            )
-        if context_usage:
-            ctx_usage = select_context_usage(state)
-            ctx_pct = ctx_usage.get("percent_used")
-            ctx_style = _context_style_class(ctx_pct)
-            segments.append(StatusSegment(
-                text=context_usage, style_class=ctx_style, priority=1, min_width=6,
-            ))
-        if context.queued_count > 0:
-            segments.append(
-                StatusSegment(
-                    text=f"queued {context.queued_count}",
-                    priority=1,
-                    min_width=8,
-                )
-            )
-        if cwd:
-            segments.append(StatusSegment(text=cwd, priority=3, min_width=8))
+        segments: list[StatusSegment] = []
+        for provider in self._segment_providers.values():
+            segment = provider(self, state, capabilities, context, now)
+            if segment is not None:
+                segments.append(segment)
         return segments
 
     def activity_segment(
@@ -286,6 +253,223 @@ class StatusBarRenderer:
         duration = format_duration(current_time - activity.started_at)
         detail = normalize_detail(activity.detail)
         return " ".join(part for part in (frame, label, duration, detail) if part)
+
+
+# ----- built-in segment providers (render order = registration order) ----- #
+
+
+def _brand_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    return StatusSegment(
+        text="Nymeria",
+        style_class="status.accent",
+        priority=0,
+        min_width=3,
+        removable=False,
+    )
+
+
+def _activity_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    return StatusSegment(
+        text=renderer.activity_segment(
+            state,
+            capabilities=capabilities,
+            now=now,
+            busy=context.busy,
+        ),
+        style_class="status.activity",
+        priority=0,
+        min_width=8,
+        removable=False,
+    )
+
+
+def _notice_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    notice = select_status_notice(
+        state,
+        context.notice,
+        now=now,
+        default_ttl_seconds=renderer.default_notice_ttl_seconds,
+    )
+    if not notice:
+        return None
+    return StatusSegment(
+        text=notice,
+        style_class=_notice_style_class(
+            context.notice,
+            state,
+            now=now,
+            default_ttl_seconds=renderer.default_notice_ttl_seconds,
+        ),
+        priority=0,
+        min_width=8,
+        removable=False,
+    )
+
+
+def _connection_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    if not context.connection_label:
+        return None
+    return StatusSegment(text=context.connection_label, priority=1)
+
+
+def _model_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    # Disconnected bars omit the model segment entirely; the "disconnected"
+    # connection label already conveys state, and there is no backend model
+    # to report (the local Settings default must never surface as active).
+    model = "" if context.disconnected else (state.active_model or context.model)
+    if not model:
+        return None
+    return StatusSegment(text=str(model), priority=2, min_width=8)
+
+
+def _fast_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    if not context.fast_mode_active:
+        return None
+    return StatusSegment(
+        text="FAST",
+        style_class="status.accent",
+        priority=1,
+        min_width=4,
+    )
+
+
+def _reasoning_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    if not context.reasoning_label:
+        return None
+    return StatusSegment(
+        text=context.reasoning_label,
+        style_class="status.accent",
+        priority=1,
+        min_width=6,
+    )
+
+
+def _thread_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    thread = context.thread_label or state.thread_id or ""
+    if not thread:
+        return None
+    return StatusSegment(
+        text=f"thread {thread}",
+        priority=0,
+        min_width=10,
+        removable=False,
+    )
+
+
+def _context_usage_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    context_usage = context_usage_label(
+        state, compact_settings=context.compact_settings,
+    )
+    if not context_usage:
+        return None
+    ctx_usage = select_context_usage(state)
+    ctx_pct = ctx_usage.get("percent_used")
+    return StatusSegment(
+        text=context_usage,
+        style_class=_context_style_class(ctx_pct),
+        priority=1,
+        min_width=6,
+    )
+
+
+def _queued_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    if context.queued_count <= 0:
+        return None
+    return StatusSegment(
+        text=f"queued {context.queued_count}",
+        priority=1,
+        min_width=8,
+    )
+
+
+def _cwd_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    cwd = cwd_label(context.cwd)
+    if not cwd:
+        return None
+    return StatusSegment(text=cwd, priority=3, min_width=8)
+
+
+_DEFAULT_SEGMENT_PROVIDERS: dict[str, SegmentProvider] = {
+    "brand": _brand_provider,
+    "activity": _activity_provider,
+    "notice": _notice_provider,
+    "connection": _connection_provider,
+    "model": _model_provider,
+    "fast": _fast_provider,
+    "reasoning": _reasoning_provider,
+    "thread": _thread_provider,
+    "context": _context_usage_provider,
+    "queued": _queued_provider,
+    "cwd": _cwd_provider,
+}
+
+DEFAULT_SEGMENT_KEYS: tuple[str, ...] = tuple(_DEFAULT_SEGMENT_PROVIDERS)
 
 
 def select_status_notice(
@@ -433,7 +617,20 @@ def context_usage_label(
     limit = _first_number(usage, "max_tokens", "context_limit", "context_window", "limit")
 
     if used is not None and limit and isinstance(percent, (int, float)):
-        trigger = compact_trigger_display_tokens(compact_settings, limit)
+        # Prefer the backend-resolved trigger (honors per-thread threshold
+        # overrides; null means auto-compact is off). The local settings
+        # derivation remains the fallback for payloads without the key.
+        if "compact_trigger_tokens" in usage:
+            raw_trigger = usage.get("compact_trigger_tokens")
+            trigger = (
+                int(raw_trigger)
+                if isinstance(raw_trigger, (int, float))
+                and not isinstance(raw_trigger, bool)
+                and raw_trigger > 0
+                else None
+            )
+        else:
+            trigger = compact_trigger_display_tokens(compact_settings, limit)
         bar = _ctx_bar(percent, compact_threshold=_trigger_fraction(trigger, limit))
         cap = _bar_cap_label(limit, trigger)
         return f"ctx {_fmt_tokens(used)}/{cap} [{bar}] {percent:.0f}%"
