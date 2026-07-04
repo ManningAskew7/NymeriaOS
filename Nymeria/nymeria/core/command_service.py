@@ -23,6 +23,7 @@ import httpx
 
 from ..config import get_settings
 from .command_executor_context import ContextCommandsMixin
+from .command_executor_llm import LLMCommandsMixin
 from .command_executor_threads import ThreadCommandsMixin
 from .command_forms import (
     CommandOutput,
@@ -820,6 +821,15 @@ class CommandHttpClient:
     async def update_settings(self, *, user_id: Optional[str] = None, **kwargs) -> dict:
         return await self._patch("/settings", json=kwargs, act_as=user_id)
 
+    async def test_llm_provider_config(
+        self,
+        request: dict,
+        *,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Test an LLM provider configuration without saving it (admin)."""
+        return await self._post("/settings/llm/test", json=request, act_as=user_id)
+
     async def update_thread_config(
         self,
         thread_id: str,
@@ -1509,6 +1519,27 @@ class CommandBackendClient:
             agent=self.agent,
             get_settings_fn=self.settings_fn,
         )
+
+    async def test_llm_provider_config(
+        self,
+        request: dict,
+        *,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        self._require_admin()
+        # Same probe as POST /settings/llm/test (incl. its admin gate above):
+        # credential resolution falls through vault -> settings -> environment
+        # when the request carries no api_key.
+        from ..api.routers.settings import _test_llm_provider_config
+        from ..api.schemas.settings import LLMProviderTestRequest
+
+        response = await _test_llm_provider_config(
+            LLMProviderTestRequest(**request),
+            settings=self._settings(),
+            vault=getattr(self.agent, "credential_vault", None),
+            owner_user_id=self.user.id,
+        )
+        return response.model_dump(mode="json")
 
     async def update_thread_config(
         self,
@@ -2514,7 +2545,7 @@ def prepare_skill_slash_command(
     )
 
 
-class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin):
+class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMixin):
     """Per-request command executor with the migrated command bodies."""
 
     def __init__(self, api: Any, thread_id: str | None, user_id: str, actor: str = "user"):
@@ -4303,208 +4334,8 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin):
             lines.append(f"Base URL override: {base_url}")
         return "[Info]: " + "\n".join(lines)
 
-    async def _cmd_fallback(self, args: list[str], rest: str) -> str:
-        """Manage the global fallback chain: list / add / remove / clear / set."""
-        sub = args[0].lower() if args else "list"
-        settings = await self.api.get_settings()
-        chain = self._fallback_chain(settings)
-
-        if sub == "list":
-            primary = str(settings.get("llm_model", "") or "").strip() or "Unknown"
-            provider = str(settings.get("llm_provider", "") or "").strip()
-            lines = [f"Primary: {primary}" + (f" ({provider})" if provider else "")]
-            if chain:
-                lines += [f"  {i}. {model}" for i, model in enumerate(chain, start=1)]
-            else:
-                lines.append("  (no fallback models configured)")
-            return "[Info]: Model Fallbacks\n" + "\n".join(lines)
-
-        if sub == "add":
-            model, position, error = self._parse_fallback_add(args[1:])
-            if error:
-                return f"[Error]: {error}"
-            next_chain = [m for m in chain if m != model]
-            if position is None:
-                next_chain.append(model)
-            else:
-                next_chain.insert(min(position - 1, len(next_chain)), model)
-            return await self._save_fallback_chain(next_chain, f"Added fallback model: {model}")
-
-        if sub in {"remove", "rm"}:
-            model = " ".join(args[1:]).strip()
-            if not model:
-                return "[Error]: Usage: /fallback remove <model-id>"
-            next_chain = [m for m in chain if m != model]
-            if len(next_chain) == len(chain):
-                return f"[Error]: Fallback model is not configured: {model}"
-            return await self._save_fallback_chain(next_chain, f"Removed fallback model: {model}")
-
-        if sub == "clear":
-            return await self._save_fallback_chain([], "Cleared fallback chain.")
-
-        if sub == "set":
-            next_chain = self._dedupe_models(args[1:])
-            if not next_chain:
-                return "[Error]: Usage: /fallback set <model1> <model2> ..."
-            label = " -> ".join(next_chain)
-            return await self._save_fallback_chain(next_chain, f"Fallback chain set: {label}")
-
-        return "[Error]: Usage: /fallback [list|add|remove|clear|set]"
-
-    async def _save_fallback_chain(self, chain: list[str], message: str) -> str:
-        result = await self.api.update_settings(
-            user_id=self.user_id, llm_fallback_models=",".join(chain)
-        )
-        if result.get("restart_required"):
-            message += " (restart required to take effect)"
-        return f"[Success]: {message}"
-
-    @staticmethod
-    def _fallback_chain(settings: dict) -> list[str]:
-        raw = settings.get("llm_fallback_models", [])
-        if isinstance(raw, str):
-            raw = raw.replace("\n", ",").split(",")
-        elif not isinstance(raw, (list, tuple)):
-            raw = [raw]
-        return _CommandExecutor._dedupe_models(raw)
-
-    @staticmethod
-    def _dedupe_models(values) -> list[str]:
-        output: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            model = str(value or "").strip()
-            if model and model not in seen:
-                output.append(model)
-                seen.add(model)
-        return output
-
-    @staticmethod
-    def _parse_position(value: str) -> tuple[int | None, str]:
-        try:
-            position = int(value)
-        except ValueError:
-            return None, f"Invalid position: {value}"
-        if position < 1:
-            return None, "Position must be 1 or greater."
-        return position, ""
-
-    @staticmethod
-    def _parse_fallback_add(args: list[str]) -> tuple[str, int | None, str]:
-        model = ""
-        position: int | None = None
-        index = 0
-        while index < len(args):
-            token = args[index]
-            if token == "--position":
-                if index + 1 >= len(args):
-                    return "", None, "--position requires a value."
-                position, error = _CommandExecutor._parse_position(args[index + 1])
-                if error:
-                    return "", None, error
-                index += 1
-            elif token.startswith("--position="):
-                position, error = _CommandExecutor._parse_position(
-                    token.split("=", 1)[1]
-                )
-                if error:
-                    return "", None, error
-            elif token.startswith("--"):
-                return "", None, f"Unknown option: {token}"
-            elif model:
-                return "", None, "Usage: /fallback add <model-id> [--position N]"
-            else:
-                model = token.strip()
-            index += 1
-        if not model:
-            return "", None, "Usage: /fallback add <model-id> [--position N]"
-        return model, position, ""
-
-    @staticmethod
-    def _think_clamp_note(settings: dict, effort: str) -> tuple[str, str]:
-        """Return (effective effort, human note) for the global model.
-
-        The note is empty when the requested level is honored as-is; otherwise
-        it names the level the model actually runs at.
-        """
-        try:
-            from ..config.model_capabilities import clamp_reasoning_effort
-
-            provider = str(settings.get("llm_provider") or "")
-            model = str(settings.get("llm_model") or "")
-            if not model:
-                return effort, ""
-            effective = clamp_reasoning_effort(provider, model, effort)
-        except Exception:
-            return effort, ""
-        if not effective or effective == effort:
-            return effort, ""
-        if effort == "off":
-            return effective, (
-                f" Note: {model} cannot disable thinking; it runs at {effective}."
-            )
-        return effective, f" Note: {model} runs at {effective}."
-
-    async def _cmd_think(self, args: list[str], rest: str) -> str:
-        if not args:
-            settings = await self.api.get_settings()
-            thinking = settings.get("llm_extended_thinking", False)
-            effort = settings.get("llm_reasoning_effort")
-            supported = ""
-            try:
-                from ..config.model_capabilities import supported_reasoning_efforts
-
-                provider = str(settings.get("llm_provider") or "")
-                model = str(settings.get("llm_model") or "")
-                if model:
-                    ladder = supported_reasoning_efforts(provider, model)
-                    supported = f" {model} supports: {', '.join(ladder)}."
-            except Exception:
-                supported = ""
-            if not thinking or str(effort or "").lower() == "off":
-                return f"[Info]: Thinking is off.{supported}"
-            if effort:
-                _, note = self._think_clamp_note(settings, str(effort).lower())
-                return f"[Info]: Thinking is on (effort: {effort}).{note}{supported}"
-            return f"[Info]: Thinking is on.{supported}"
-        value = args[0].lower()
-        if value == "off":
-            # Persist effort="off" so the explicit off wins over any saved
-            # effort level (and over extended_thinking on other surfaces).
-            await self.api.update_settings(
-                user_id=self.user_id,
-                llm_extended_thinking=False,
-                llm_reasoning_effort="off",
-            )
-            settings = await self.api.get_settings()
-            _, note = self._think_clamp_note(settings, "off")
-            return f"[Success]: Thinking disabled.{note}"
-        if value == "on":
-            settings = await self.api.get_settings()
-            effort = str(settings.get("llm_reasoning_effort") or "").lower()
-            if effort == "off":
-                # A persisted effort "off" wins over extended_thinking, so
-                # clear it (explicit null) back to provider-default behavior.
-                await self.api.update_settings(
-                    user_id=self.user_id,
-                    llm_extended_thinking=True,
-                    llm_reasoning_effort=None,
-                )
-                return "[Success]: Thinking enabled (effort reset to default)."
-            await self.api.update_settings(
-                user_id=self.user_id, llm_extended_thinking=True
-            )
-            return "[Success]: Thinking enabled."
-        if value in ("low", "medium", "high", "xhigh", "max"):
-            await self.api.update_settings(
-                user_id=self.user_id,
-                llm_extended_thinking=True,
-                llm_reasoning_effort=value,
-            )
-            settings = await self.api.get_settings()
-            _, note = self._think_clamp_note(settings, value)
-            return f"[Success]: Thinking enabled, effort: {value}.{note}"
-        return "[Error]: Usage: /think [off|on|low|medium|high|xhigh|max]"
+    # /fallback, /think and the /provider family live in
+    # command_executor_llm.py (LLMCommandsMixin).
 
     # ── Config ────────────────────────────────────────────────────────────
 
@@ -4569,6 +4400,24 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin):
         if result.get("restart_required"):
             msg += " (restart required to take effect)"
         return msg
+
+    async def _cmd_settings(self, args: list[str], rest: str) -> str:
+        """Delegating alias of the /config family (one implementation).
+
+        Registered as its own catalog entry because a registry alias cannot
+        point a bare root at a subcommand path (the CLI proxy only carries
+        single-token aliases on single-token paths). The set branch delegates
+        to /config set, whose settings applier enforces admin on both
+        transports.
+        """
+        sub = args[0].lower() if args else "show"
+        if sub in ("show", "view"):
+            return await self._cmd_config_show(args[1:], "")
+        if sub == "get":
+            return await self._cmd_config_get(args[1:], "")
+        if sub == "set":
+            return await self._cmd_config_set(args[1:], "")
+        return "[Error]: Usage: /settings [show|get <key>|set <key> <value>]"
 
     # ── Env ───────────────────────────────────────────────────────────────
 

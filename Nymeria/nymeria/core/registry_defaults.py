@@ -225,9 +225,50 @@ def register_default_commands(service: "CommandService") -> None:
     )
     service.register(
         "think",
-        description="Show or change thinking mode",
+        description="Show or change thinking mode (thread-scoped when a thread is active)",
         category="LLM",
-        usage="/think [off|on|low|medium|high|xhigh|max]",
+        usage="/think [off|on|low|medium|high|xhigh|max] [global|thread]",
+        aliases=("reasoning", "thinking"),
+        mutates_state=True,
+        danger_level="normal",
+    )
+    service.register(
+        "provider",
+        description="Show the active LLM provider and credential status",
+        category="LLM",
+        usage="/provider [list|set|test|switch]",
+    )
+    service.register(
+        "provider list",
+        description="List LLM providers grouped by support tier",
+        category="LLM",
+        aliases=("provider_list",),
+    )
+    service.register(
+        "provider set",
+        description="Apply provider credentials to backend settings",
+        category="LLM",
+        usage="/provider set <provider> <key=value> [key=value...]",
+        aliases=("provider_set",),
+        requires_admin=True,
+        mutates_state=True,
+        danger_level="dangerous",
+    )
+    service.register(
+        "provider test",
+        description="Test provider connectivity without saving anything",
+        category="LLM",
+        usage="/provider test [provider]",
+        aliases=("provider_test",),
+        requires_admin=True,
+    )
+    service.register(
+        "provider switch",
+        description="Switch the active LLM provider",
+        category="LLM",
+        usage="/provider switch <provider>",
+        aliases=("provider_switch",),
+        requires_admin=True,
         mutates_state=True,
         danger_level="normal",
     )
@@ -253,6 +294,18 @@ def register_default_commands(service: "CommandService") -> None:
         requires_admin=True,
         mutates_state=True,
         danger_level="dangerous",
+    )
+    service.register(
+        "settings",
+        description="Show or change server settings (delegates to /config)",
+        category="Settings",
+        usage="/settings [show|get <key>|set <key> <value>]",
+        mutates_state=True,
+        danger_level="normal",
+        note=(
+            "The set branch requires an admin user, enforced at the update "
+            "surface (CommandBackendClient.update_settings and PATCH /settings)."
+        ),
     )
     service.register(
         "env show",
