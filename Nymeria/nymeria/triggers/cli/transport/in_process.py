@@ -539,6 +539,25 @@ class InProcessAgentClient:
             )
         ]
 
+    async def post_cli_config_result(
+        self,
+        command_id: str,
+        result: Mapping[str, Any],
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Ack a ``cli_config`` event by resolving the in-process future.
+
+        The slim CLI shares the process with the agent runtime, so no HTTP
+        round trip is needed: this is the same resolve the REST endpoint
+        performs for thin clients.
+        """
+
+        from ....core.cli_config_coordinator import get_cli_config_coordinator
+
+        del user_id
+        delivered = get_cli_config_coordinator().resolve(command_id, dict(result))
+        return {"received": True, "delivered": delivered}
+
 
 def _astream_kwargs(
     *,

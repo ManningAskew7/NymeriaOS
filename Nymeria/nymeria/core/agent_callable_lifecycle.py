@@ -117,6 +117,17 @@ def abort_with_cascade(agent: "NymeriaAgent", thread_id: str) -> None:
             f"Failed to abort pending browser commands on abort for {thread_id}: {e}"
         )
     try:
+        from .cli_config_coordinator import get_cli_config_coordinator
+        cli_aborted = get_cli_config_coordinator().abort_thread(thread_id)
+        if cli_aborted:
+            logger.info(
+                f"Abort on thread {thread_id} aborted {cli_aborted} pending CLI config command(s)"
+            )
+    except Exception as e:
+        logger.warning(
+            f"Failed to abort pending CLI config commands on abort for {thread_id}: {e}"
+        )
+    try:
         from .hook_approvals import get_hook_approval_coordinator
         held = get_hook_approval_coordinator().abort_thread(thread_id)
         if held:

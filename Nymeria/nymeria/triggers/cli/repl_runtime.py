@@ -49,9 +49,21 @@ from .rendering.slash_panel import (
     slash_panel_height,
     slash_panel_visible,
 )
-from .rendering.status_bar import StatusBarContext, StatusBarRenderer, StatusNotice
+from .rendering.status_bar import (
+    DEFAULT_SEGMENT_KEYS,
+    StatusBarContext,
+    StatusBarRenderer,
+    StatusNotice,
+)
 from .script_segments import ScriptSegmentRunner
-from .statusbar_config import StatusBarLayout, load_statusbar_layout
+from .statusbar_config import (
+    StatusBarConfigError,
+    StatusBarLayout,
+    load_statusbar_layout,
+    normalize_bar_name,
+    normalize_segment_ref,
+    save_statusbar_layout,
+)
 from .theme import CLITheme, DEFAULT_CLI_THEME, ptk_style
 from .transport.disconnected import DISCONNECTED_MESSAGE, is_disconnected_client
 
@@ -801,8 +813,101 @@ class _RichReplRuntime:
         if event_type == "hook_approval_resolved":
             await self._on_hook_approval_resolved_event(normalized)
             return True
+        if event_type == "cli_config":
+            await self._on_cli_config_event(normalized)
+            return True
         await self.render_event_above_prompt(normalized)
         return True
+
+    # -- cli_config commands (backlog #53 push half) --------------------------
+    #
+    # A cli_statusbar_* tool published a user-scoped command over the
+    # autonomous stream. Every connected CLI applies and persists it, then
+    # POSTs its outcome; the backend resolves the tool with the first ack.
+
+    async def _on_cli_config_event(self, event: Any) -> None:
+        command_id = str(getattr(event, "command_id", "") or "")
+        if not command_id:
+            return
+        command_type = str(getattr(event, "command_type", "") or "")
+        args = getattr(event, "args", None)
+        result = self._execute_cli_config_command(
+            command_type,
+            dict(args) if isinstance(args, dict) else {},
+        )
+        client = self.app._client
+        post_attr = getattr(client, "post_cli_config_result", None)
+        if callable(post_attr):
+            post: Any = post_attr
+            try:
+                await post(command_id, result, user_id=self.app.state.user_id)
+            except Exception:  # noqa: BLE001 - ack is best effort; another CLI may answer.
+                pass
+        if command_type == "statusbar_set" and result.get("ok"):
+            self.set_status_notice("Status bars updated by the agent.")
+
+    def _execute_cli_config_command(
+        self,
+        command_type: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        if command_type == "statusbar_get":
+            return {
+                "ok": True,
+                "status": "success",
+                "data": self._statusbar_layout_payload(self._statusbar_layout),
+            }
+        if command_type == "statusbar_set":
+            return self._apply_statusbar_set_command(args)
+        return {
+            "ok": False,
+            "status": "error",
+            "error": f"Unknown cli_config command type: {command_type or '(missing)'}",
+        }
+
+    def _apply_statusbar_set_command(self, args: dict[str, Any]) -> dict[str, Any]:
+        raw_segments = args.get("segments")
+        if not isinstance(raw_segments, list):
+            return {
+                "ok": False,
+                "status": "error",
+                "error": "segments must be a list of segment refs",
+            }
+        try:
+            bar = normalize_bar_name(str(args.get("bar", "")))
+            refs = tuple(
+                normalize_segment_ref(str(ref)) for ref in raw_segments
+            )
+        except StatusBarConfigError as exc:
+            return {"ok": False, "status": "error", "error": str(exc)}
+
+        layout = load_statusbar_layout()
+        if refs:
+            layout = layout.with_bar(bar, refs)
+        else:
+            layout = layout.without_bar(bar)
+        try:
+            save_statusbar_layout(layout)
+        except OSError as exc:
+            return {
+                "ok": False,
+                "status": "error",
+                "error": f"Could not persist the layout: {exc}",
+            }
+        self.apply_statusbar_layout(layout)
+        return {
+            "ok": True,
+            "status": "success",
+            "data": self._statusbar_layout_payload(layout),
+        }
+
+    @staticmethod
+    def _statusbar_layout_payload(layout: StatusBarLayout) -> dict[str, Any]:
+        return {
+            "top": list(layout.top) if layout.top is not None else None,
+            "under_prompt": list(layout.under_prompt),
+            "builtin_segments": list(DEFAULT_SEGMENT_KEYS),
+        }
 
     # -- require_approval holds (backlog #77) --------------------------------
     #

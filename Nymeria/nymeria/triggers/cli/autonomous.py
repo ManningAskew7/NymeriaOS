@@ -125,6 +125,11 @@ def decide_autonomous_event(
 
     normalized = normalize_stream_event(event)
     event_type = getattr(normalized, "type", "")
+    if event_type == "cli_config":
+        # Client-scoped, not thread-scoped: a cli_config command targets
+        # every connected CLI for the user regardless of the active thread
+        # (the publishing thread's id rides along for abort bookkeeping).
+        return AutonomousEventDecision(accepted=True, event=normalized)
     event_thread_id = getattr(normalized, "thread_id", None)
     if event_thread_id != active_thread_id:
         if event_thread_id is None and event_type == "error":

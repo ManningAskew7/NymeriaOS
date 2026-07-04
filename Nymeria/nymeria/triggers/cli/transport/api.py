@@ -367,6 +367,19 @@ class APIAgentClient:
             user_id=self._selected_user_id(user_id),
         )
 
+    async def post_cli_config_result(
+        self,
+        command_id: str,
+        result: Mapping[str, Any],
+        user_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Ack a ``cli_config`` autonomous event (first ack wins server-side)."""
+        return await self.api.post_cli_config_result(
+            command_id,
+            dict(result),
+            user_id=self._selected_user_id(user_id),
+        )
+
     def _selected_user_id(self, user_id: str | None) -> str:
         if user_id and (user_id != "default" or self.default_user_id == "default"):
             return user_id
