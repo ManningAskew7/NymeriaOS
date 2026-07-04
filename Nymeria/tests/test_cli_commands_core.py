@@ -12,7 +12,7 @@ from nymeria.triggers.cli.commands import (
     ListCommandOutputSink,
 )
 from nymeria.triggers.cli.commands import context as context_commands
-from nymeria.triggers.cli.commands import model, provider, system, threads
+from nymeria.triggers.cli.commands import model, provider, system
 
 
 class CoreFakeClient:
@@ -296,7 +296,6 @@ def make_registry() -> CommandRegistry:
     registry = CommandRegistry()
     system.register(registry)
     context_commands.register(registry)
-    threads.register(registry)
     model.register(registry)
     provider.register(registry)
     return registry
@@ -319,117 +318,7 @@ def make_context(
     )
 
 
-def test_thread_commands_use_client_and_dispatch_thread_actions() -> None:
-    client = CoreFakeClient()
-    actions: list[Any] = []
-    sink = ListCommandOutputSink()
-    registry = make_registry()
-    ctx = make_context(client, output=sink, actions=actions)
-
-    list_result = run(registry.dispatch_async(ctx, "/thread list"))
-    switch_result = run(registry.dispatch_async(ctx, "/t s thread-2"))
-    new_result = run(registry.dispatch_async(ctx, "/threads new Draft title"))
-    rename_result = run(registry.dispatch_async(ctx, "/thread rename Renamed"))
-    pin_result = run(registry.dispatch_async(ctx, "/thread pin thread-2 off"))
-
-    assert list_result.ok is True
-    assert "Current" in sink.messages[0].content
-    assert switch_result.payload["thread_id"] == "thread-2"
-    assert new_result.payload["thread_id"] == "thread-new"
-    assert rename_result.ok is True
-    assert pin_result.payload == {"thread_id": "thread-2", "pinned": False}
-    assert actions[:2] == [
-        {"type": "switch_thread", "thread_id": "thread-2", "thread_label": "Next"},
-        {
-            "type": "switch_thread",
-            "thread_id": "thread-new",
-            "thread_label": "Draft title",
-        },
-    ]
-    assert ("update_thread_metadata", {
-        "thread_id": "thread-new",
-        "user_id": "alice",
-        "title": "Renamed",
-        "pinned": None,
-    }) in client.calls
-
-
-def test_thread_resolver_matches_ids_titles_substrings_and_ambiguity() -> None:
-    thread_list = [
-        {"thread_id": "alpha-111", "title": "Quarterly Planning"},
-        {"thread_id": "alpha-222", "title": "Quarterly Review"},
-        {"thread_id": "bravo-333", "title": "Supplier Followup"},
-    ]
-
-    assert threads.resolve_thread_reference(thread_list, "bravo-333").thread == thread_list[2]
-    assert threads.resolve_thread_reference(thread_list, "bravo").thread == thread_list[2]
-    assert (
-        threads.resolve_thread_reference(thread_list, "Quarterly Planning").thread
-        == thread_list[0]
-    )
-    assert threads.resolve_thread_reference(thread_list, "supplier").thread == thread_list[2]
-    assert threads.resolve_thread_reference(thread_list, "alpha").status == "ambiguous"
-    assert threads.resolve_thread_reference(thread_list, "missing").status == "missing"
-
-
-def test_thread_list_formats_backend_teams_before_ungrouped_threads() -> None:
-    thread_list = [
-        {
-            "thread_id": "recent",
-            "title": "Recent unpinned",
-            "pinned": False,
-            "updated_at": "2026-05-10T12:00:00Z",
-            "platform": "desktop",
-        },
-        {
-            "thread_id": "pinned",
-            "title": "Pinned ungrouped",
-            "pinned": True,
-            "updated_at": "2026-05-10T10:00:00Z",
-            "platform": "desktop",
-        },
-        {
-            "thread_id": "team-a",
-            "title": "Team A",
-            "pinned": False,
-            "updated_at": "2026-05-10T09:00:00Z",
-            "platform": "callable",
-        },
-    ]
-    lines = threads._format_thread_list(
-        thread_list,
-        active_thread_id="recent",
-        teams=[{"id": "ops", "name": "Ops", "thread_ids": ["team-a"]}],
-    )
-
-    team_index = lines.index("  Team: Ops")
-    pinned_index = lines.index("  Pinned")
-    recent_index = lines.index("  Recent")
-    assert team_index < pinned_index < recent_index
-    assert any("team-a" in line and "Team A" in line for line in lines)
-    assert any("pinned" in line and "Pinned ungrouped" in line for line in lines)
-
-
-def test_thread_delete_requires_confirmation_then_deletes() -> None:
-    client = CoreFakeClient()
-    registry = make_registry()
-    sink = ListCommandOutputSink()
-    unconfirmed = make_context(client, output=sink, confirm=False)
-
-    result = run(registry.dispatch_async(unconfirmed, "/thread delete thread-2"))
-
-    assert result.ok is True
-    assert sink.messages[-1].level == "warning"
-    assert not any(name == "delete_thread" for name, _payload in client.calls)
-
-    confirmed = make_context(client, output=ListCommandOutputSink(), confirm=True)
-    result = run(registry.dispatch_async(confirmed, "/thread delete thread-2"))
-
-    assert result.ok is True
-    assert ("delete_thread", {"thread_id": "thread-2", "user_id": "alice"}) in client.calls
-
-
-def test_model_settings_history_context_and_compact_commands_use_client() -> None:
+def test_model_settings_history_and_context_commands_use_client() -> None:
     client = CoreFakeClient()
     registry = make_registry()
     sink = ListCommandOutputSink()
@@ -444,7 +333,6 @@ def test_model_settings_history_context_and_compact_commands_use_client() -> Non
     ).ok is True
     assert run(registry.dispatch_async(ctx, "/history --internal 5")).ok is True
     assert run(registry.dispatch_async(ctx, "/context")).ok is True
-    assert run(registry.dispatch_async(ctx, "/thread compact")).ok is True
 
     call_names = [name for name, _payload in client.calls]
     assert "update_thread_config" in call_names
@@ -455,7 +343,6 @@ def test_model_settings_history_context_and_compact_commands_use_client() -> Non
         "user_id": "alice",
         "include_internal": True,
     }) in client.calls
-    assert ("compact", {"thread_id": "thread-1", "user_id": "alice"}) in client.calls
     assert any("gpt-new" in message.content for message in sink.messages)
     assert any("hi there" in message.content for message in sink.messages)
 
@@ -464,14 +351,6 @@ def test_core_commands_emit_json_payloads(capsys: Any) -> None:
     client = CoreFakeClient()
     registry = make_registry()
     ctx = make_context(client)
-
-    assert run(registry.dispatch_async(ctx, "/thread list --json")).ok is True
-    threads_payload = json.loads(capsys.readouterr().out)
-    assert isinstance(threads_payload, list)
-    assert {thread["thread_id"] for thread in threads_payload} == {
-        "thread-1",
-        "thread-2",
-    }
 
     assert run(registry.dispatch_async(ctx, "/settings --json")).ok is True
     settings_payload = json.loads(capsys.readouterr().out)

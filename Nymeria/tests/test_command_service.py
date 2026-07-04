@@ -29,9 +29,105 @@ class FakeCommandApi:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.memories = [{"key": "a", "value": "12345"}]
         self.thread_config = {"enabled_tools": [], "disabled_tools": [], "memory_char_limit": None}
+        self.threads: list[dict[str, Any]] = [
+            {
+                "thread_id": "thread-1",
+                "title": "Current",
+                "pinned": False,
+                "platform": "cli",
+                "updated_at": "2026-05-10T12:00:00Z",
+            },
+            {
+                "thread_id": "thread-2",
+                "title": "Next",
+                "pinned": True,
+                "platform": "cli",
+                "updated_at": "2026-05-10T13:00:00Z",
+            },
+        ]
+        self.thread_teams: list[dict[str, Any]] = []
 
     async def close(self) -> None:
         self.closed = True
+
+    async def list_threads(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        self.calls.append(("list_threads", (user_id,), {}))
+        return [dict(thread) for thread in self.threads]
+
+    async def list_thread_teams(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        self.calls.append(("list_thread_teams", (user_id,), {}))
+        return [dict(team) for team in self.thread_teams]
+
+    async def create_thread(
+        self,
+        user_id: str | None = None,
+        *,
+        thread_id: str | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(("create_thread", (user_id,), {"thread_id": thread_id, "title": title}))
+        created = {
+            "thread_id": thread_id or "thread-new",
+            "title": title or "New Chat",
+            "pinned": False,
+            "platform": "cli",
+        }
+        self.threads.append(dict(created))
+        return created
+
+    async def update_thread_metadata(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "update_thread_metadata",
+                (thread_id,),
+                {"user_id": user_id, "title": title, "pinned": pinned},
+            )
+        )
+        for item in self.threads:
+            if item["thread_id"] == thread_id:
+                if title is not None:
+                    item["title"] = title
+                if pinned is not None:
+                    item["pinned"] = pinned
+                return dict(item)
+        return {"thread_id": thread_id, "title": title, "pinned": pinned}
+
+    async def delete_thread(self, thread_id: str, user_id: str | None = None) -> dict[str, Any]:
+        self.calls.append(("delete_thread", (thread_id,), {"user_id": user_id}))
+        self.threads = [item for item in self.threads if item["thread_id"] != thread_id]
+        return {"ok": True, "thread_id": thread_id}
+
+    async def branch_thread(
+        self,
+        thread_id: str,
+        user_id: str | None = None,
+        *,
+        title: str | None = None,
+        from_message_index: int | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "branch_thread",
+                (thread_id,),
+                {"user_id": user_id, "title": title, "from_message_index": from_message_index},
+            )
+        )
+        return {
+            "thread_id": "branch-1",
+            "title": title or "Branch of Current",
+            "from_message_index": from_message_index,
+        }
+
+    async def compact_thread(self, thread_id: str, user_id: str | None = None) -> dict[str, Any]:
+        self.calls.append(("compact_thread", (thread_id,), {"user_id": user_id}))
+        return {"messages_removed": 3, "messages_before": 8, "messages_after": 5}
 
     async def get_default_tools(self, user_id: str = "default") -> dict[str, Any]:
         self.calls.append(("get_default_tools", (user_id,), {}))
@@ -1438,8 +1534,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 107
-    assert sum(cmd.executable for cmd in service._commands.values()) == 93
+    assert len(service._commands) == 118
+    assert sum(cmd.executable for cmd in service._commands.values()) == 104
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -1456,6 +1552,24 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     assert skill.note == "Handled by the chat stream endpoint."
 
     assert by_name["compact"].agent_allowed is False
+
+    # /thread management subtree: read verbs stay agent-allowed, mutating and
+    # navigation verbs are gated off, delete matches the "dangerous" pattern,
+    # and the root carries the threads/t aliases.
+    assert by_name["thread"].aliases == (("threads",), ("t",))
+    assert by_name["thread list"].agent_allowed is True
+    assert by_name["thread switch"].agent_allowed is False
+    assert by_name["thread switch"].aliases == (("thread_switch",), ("thread", "s"))
+    assert by_name["thread delete"].danger_level == "dangerous"
+    assert by_name["thread delete"].mutates_state is True
+    assert by_name["thread delete"].aliases == (
+        ("thread_delete",),
+        ("thread", "del"),
+        ("thread", "rm"),
+    )
+    assert by_name["thread branch"].requires_thread is True
+    assert by_name["branch"].aliases == (("fork",),)
+
     assert by_name["mcp remove"].aliases == (
         ("mcp_remove",),
         ("mcp_rm",),
@@ -1689,3 +1803,227 @@ def test_artifacts_recent_reports_empty_history() -> None:
 
     assert result.success is True
     assert "No recent workspace artifacts" in result.markdown
+
+
+# ── /thread tree migrated from the CLI ───────────────────────────────────────
+
+
+def test_thread_list_renders_threads_and_reports_empty() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/thread list", api=api))
+    assert result.success is True
+    assert "Current" in result.markdown
+    assert "Next" in result.markdown
+
+    empty = FakeCommandApi()
+    empty.threads = []
+    none_result = run(service.execute(_cli_ctx(), "/thread list", api=empty))
+    assert none_result.success is True
+    assert "No threads found" in none_result.markdown
+
+
+def test_thread_switch_resolves_ref_and_returns_switch_state_hint() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    # Resolve by title substring (mirrors the CLI resolver).
+    result = run(service.execute(_cli_ctx(), "/thread switch next", api=api))
+    assert result.success is True
+    assert result.data == {
+        "state": {"switch_thread": {"thread_id": "thread-2", "thread_label": "Next"}}
+    }
+
+    # The `s` alias resolves to the same handler.
+    aliased = run(service.execute(_cli_ctx(), "/thread s thread-2", api=api))
+    assert aliased.data == {
+        "state": {"switch_thread": {"thread_id": "thread-2", "thread_label": "Next"}}
+    }
+
+
+def test_thread_switch_missing_and_ambiguous_refs() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    api.threads = [
+        {"thread_id": "alpha-1", "title": "Quarterly Planning"},
+        {"thread_id": "alpha-2", "title": "Quarterly Review"},
+    ]
+
+    missing = run(service.execute(_cli_ctx(), "/thread switch nope", api=api))
+    assert missing.success is False
+    assert "No thread matching" in missing.markdown
+
+    ambiguous = run(service.execute(_cli_ctx(), "/thread switch alpha", api=api))
+    assert ambiguous.success is True
+    assert "Ambiguous" in ambiguous.markdown
+    assert ambiguous.data is None
+
+
+def test_thread_new_creates_and_returns_switch_state_hint() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/thread new Draft title", api=api))
+    assert result.success is True
+    assert result.data == {
+        "state": {
+            "switch_thread": {"thread_id": "thread-new", "thread_label": "Draft title"}
+        }
+    }
+    assert ("create_thread", ("alice",), {"thread_id": None, "title": "Draft title"}) in api.calls
+
+
+def test_thread_rename_updates_metadata_and_returns_label_hint() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/thread rename Renamed", api=api))
+    assert result.success is True
+    assert result.data == {"state": {"thread_label": "Renamed"}}
+    assert (
+        "update_thread_metadata",
+        ("thread-1",),
+        {"user_id": "alice", "title": "Renamed", "pinned": None},
+    ) in api.calls
+
+
+def test_thread_pin_toggles_and_hints_only_for_active_thread() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    # Pinning a non-active thread carries no header-refresh hint.
+    other = run(service.execute(_cli_ctx(), "/thread pin thread-2 off", api=api))
+    assert other.success is True
+    assert other.data is None
+    assert (
+        "update_thread_metadata",
+        ("thread-2",),
+        {"user_id": "alice", "title": None, "pinned": False},
+    ) in api.calls
+
+    # Toggling the active thread refreshes the header via a metadata hint.
+    active = run(service.execute(_cli_ctx(), "/thread pin toggle", api=api))
+    assert active.success is True
+    assert active.data == {"state": {"thread_metadata_updated": True}}
+
+
+def test_thread_delete_guards_active_thread_and_accepts_yes_flag() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    active = run(service.execute(_cli_ctx(), "/thread delete thread-1", api=api))
+    assert active.success is False
+    assert "active thread" in active.markdown
+    assert not any(name == "delete_thread" for name, *_ in api.calls)
+
+    deleted = run(service.execute(_cli_ctx(), "/thread delete thread-2 --yes", api=api))
+    assert deleted.success is True
+    assert ("delete_thread", ("thread-2",), {"user_id": "alice"}) in api.calls
+
+
+def test_thread_compact_reports_result_and_context_hint() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    result = run(service.execute(_cli_ctx(), "/thread compact", api=api))
+    assert result.success is True
+    assert "Removed 3 messages (8 -> 5)" in result.markdown
+    assert result.data == {"state": {"thread_context_updated": True}}
+    assert ("compact_thread", ("thread-1",), {"user_id": "alice"}) in api.calls
+
+
+def test_thread_branch_and_top_level_branch_share_handler() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    branched = run(service.execute(_cli_ctx(), "/thread branch --from 3 Side quest", api=api))
+    assert branched.success is True
+    assert "from message #3" in branched.markdown
+    assert branched.data == {
+        "state": {"switch_thread": {"thread_id": "branch-1", "thread_label": "Side quest"}}
+    }
+    assert (
+        "branch_thread",
+        ("thread-1",),
+        {"user_id": "alice", "title": "Side quest", "from_message_index": 3},
+    ) in api.calls
+
+    top = run(service.execute(_cli_ctx(), "/branch Topic", api=FakeCommandApi()))
+    assert top.success is True
+    assert top.data == {
+        "state": {"switch_thread": {"thread_id": "branch-1", "thread_label": "Topic"}}
+    }
+
+
+def test_thread_info_and_config_render_from_client() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+
+    info = run(service.execute(_cli_ctx(), "/thread info", api=api))
+    assert info.success is True
+    assert "Thread ID" in info.markdown
+    assert "thread-1" in info.markdown
+
+    config = run(service.execute(_cli_ctx(), "/thread config", api=api))
+    assert config.success is True
+    assert "Thread Config" in config.markdown
+
+
+def test_thread_resolver_matches_ids_titles_substrings_and_ambiguity() -> None:
+    from nymeria.core.command_executor_threads import resolve_thread_reference
+
+    thread_list = [
+        {"thread_id": "alpha-111", "title": "Quarterly Planning"},
+        {"thread_id": "alpha-222", "title": "Quarterly Review"},
+        {"thread_id": "bravo-333", "title": "Supplier Followup"},
+    ]
+
+    assert resolve_thread_reference(thread_list, "bravo-333").thread == thread_list[2]
+    assert resolve_thread_reference(thread_list, "bravo").thread == thread_list[2]
+    assert (
+        resolve_thread_reference(thread_list, "Quarterly Planning").thread == thread_list[0]
+    )
+    assert resolve_thread_reference(thread_list, "supplier").thread == thread_list[2]
+    assert resolve_thread_reference(thread_list, "alpha").status == "ambiguous"
+    assert resolve_thread_reference(thread_list, "missing").status == "missing"
+
+
+def test_thread_list_formats_backend_teams_before_ungrouped_threads() -> None:
+    from nymeria.core.command_executor_threads import _format_thread_list
+
+    thread_list = [
+        {
+            "thread_id": "recent",
+            "title": "Recent unpinned",
+            "pinned": False,
+            "updated_at": "2026-05-10T12:00:00Z",
+            "platform": "desktop",
+        },
+        {
+            "thread_id": "pinned",
+            "title": "Pinned ungrouped",
+            "pinned": True,
+            "updated_at": "2026-05-10T10:00:00Z",
+            "platform": "desktop",
+        },
+        {
+            "thread_id": "team-a",
+            "title": "Team A",
+            "pinned": False,
+            "updated_at": "2026-05-10T09:00:00Z",
+            "platform": "callable",
+        },
+    ]
+    lines = _format_thread_list(
+        thread_list,
+        active_thread_id="recent",
+        teams=[{"id": "ops", "name": "Ops", "thread_ids": ["team-a"]}],
+    )
+
+    team_index = lines.index("  Team: Ops")
+    pinned_index = lines.index("  Pinned")
+    recent_index = lines.index("  Recent")
+    assert team_index < pinned_index < recent_index
+    assert any("team-a" in line and "Team A" in line for line in lines)
+    assert any("pinned" in line and "Pinned ungrouped" in line for line in lines)

@@ -40,7 +40,119 @@ def register_default_commands(service: "CommandService") -> None:
         "thread",
         description="Show active thread context usage",
         category="Status",
+        aliases=("threads", "t"),
         requires_thread=True,
+    )
+    # /thread management subtree. The read verbs are agent-allowed; the
+    # navigation, mutation, and destructive verbs are not (the agent has its
+    # own thread tools, e.g. spawn_thread). Category "Thread" groups these with
+    # the other thread-lifecycle commands (compact/clear/prune/notepad); it
+    # also sorts after "Status" so the executable `thread` root registers
+    # before its subs in the CLI backend-command proxy.
+    service.register(
+        "thread list",
+        description="List threads",
+        category="Thread",
+        usage="/thread list",
+        aliases=("thread_list",),
+    )
+    service.register(
+        "thread switch",
+        description="Switch the active thread",
+        category="Thread",
+        usage="/thread switch <id-or-title>",
+        aliases=("thread_switch", "thread s"),
+        agent_allowed=False,
+    )
+    service.register(
+        "thread new",
+        description="Create a new thread and switch to it",
+        category="Thread",
+        usage="/thread new [title]",
+        aliases=("thread_new", "thread n"),
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
+    )
+    service.register(
+        "thread delete",
+        description="Delete a thread permanently",
+        category="Thread",
+        usage="/thread delete <id> [--yes]",
+        aliases=("thread_delete", "thread del", "thread rm"),
+        mutates_state=True,
+        danger_level="dangerous",
+        agent_allowed=False,
+    )
+    service.register(
+        "thread info",
+        description="Show details for the active thread",
+        category="Thread",
+        usage="/thread info",
+        aliases=("thread_info",),
+        requires_thread=True,
+    )
+    service.register(
+        "thread rename",
+        description="Rename the active thread",
+        category="Thread",
+        usage="/thread rename <title>",
+        aliases=("thread_rename",),
+        requires_thread=True,
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
+    )
+    service.register(
+        "thread pin",
+        description="Pin or unpin a thread",
+        category="Thread",
+        usage="/thread pin [id] [on|off|toggle]",
+        aliases=("thread_pin",),
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
+    )
+    service.register(
+        "thread config",
+        description="Show the active thread's configuration",
+        category="Thread",
+        usage="/thread config",
+        aliases=("thread_config",),
+        requires_thread=True,
+    )
+    service.register(
+        "thread branch",
+        description="Branch the active thread into a new thread",
+        category="Thread",
+        usage="/thread branch [--from N] [title]",
+        aliases=("thread_branch", "thread fork"),
+        requires_thread=True,
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
+    )
+    service.register(
+        "thread compact",
+        description="Compact the active thread's context",
+        category="Thread",
+        usage="/thread compact [--yes]",
+        aliases=("thread_compact",),
+        requires_thread=True,
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
+    )
+    service.register(
+        "branch",
+        description="Branch the active thread into a new thread",
+        category="Thread",
+        usage="/branch [--from N] [title]",
+        aliases=("fork",),
+        requires_thread=True,
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
     )
     service.register(
         "context",
