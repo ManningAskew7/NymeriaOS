@@ -1,9 +1,10 @@
-"""CLIApp — main REPL loop and orchestrator."""
+"""CLIApp: main REPL loop and orchestrator."""
 
 from __future__ import annotations
 
 import asyncio
 import getpass
+import logging
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -47,6 +48,8 @@ if TYPE_CHECKING:
     from ...core.agent import NymeriaAgent
     from .commands import CommandResult
 
+
+logger = logging.getLogger(__name__)
 
 TransportMode = Literal["api", "local", "auto"]
 RendererMode = Literal["rich", "plain", "auto"]
@@ -456,7 +459,8 @@ class CLIApp:
                 self.state.user_id,
                 thread_id=self.state.thread_id,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - startup metadata persistence is best effort.
+            logger.debug("Failed to persist startup thread metadata", exc_info=True)
             return
 
     async def _render_startup_thread_list_async(
@@ -593,6 +597,7 @@ class CLIApp:
         try:
             return self.state.settings
         except Exception:  # noqa: BLE001
+            logger.debug("Failed to resolve settings for compact display", exc_info=True)
             return None
 
     def _status_connection_label(self) -> str:
@@ -611,22 +616,8 @@ class CLIApp:
         self,
         capabilities: TerminalCapabilities | None = None,
     ) -> CLIHeaderSnapshot | None:
-        if self._client is None:
-            self._header_snapshot = None
-            return None
-        snapshot = asyncio.run(
-            build_header_snapshot(
-                self.state,
-                self._client,
-                runtime_config=self.runtime_config,
-            )
-        )
-        self._header_snapshot = snapshot
-        self._header_refresh_pending = False
-        runtime = self._active_rich_runtime
-        if runtime is not None:
-            runtime.invalidate()
-        return snapshot
+        """Sync wrapper over the async twin (plain REPL path, no running loop)."""
+        return asyncio.run(self._refresh_header_snapshot_async(capabilities))
 
     async def _refresh_header_snapshot_async(
         self,
@@ -1491,16 +1482,11 @@ class CLIApp:
 
 
     def _stop_current_turn(self) -> None:
-        if self._client is None:
-            return
-
-        async def stop() -> None:
-            assert self._client is not None
-            await self._client.stop(self.state.thread_id, self.state.user_id)
-
+        """Sync wrapper over the async twin (plain REPL path, no running loop)."""
         try:
-            asyncio.run(stop())
+            asyncio.run(self._stop_current_turn_async())
         except Exception:  # noqa: BLE001 - cancellation feedback is best effort.
+            logger.debug("Failed to stop the current turn", exc_info=True)
             return
 
     async def _stop_current_turn_async(self) -> None:
@@ -1509,6 +1495,7 @@ class CLIApp:
         try:
             await self._client.stop(self.state.thread_id, self.state.user_id)
         except Exception:  # noqa: BLE001 - cancellation feedback is best effort.
+            logger.debug("Failed to stop the current turn", exc_info=True)
             return
 
     def _render_cancelled(self, renderer: _ReplRenderer) -> None:
