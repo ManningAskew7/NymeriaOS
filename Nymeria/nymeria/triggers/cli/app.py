@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 
 
 TransportMode = Literal["api", "local", "auto"]
-RendererMode = Literal["full", "rich", "plain", "auto"]
+RendererMode = Literal["rich", "plain", "auto"]
 ColorMode = Literal["auto", "always", "never"]
 _RICH_SCROLL_REGION_MIN_ROWS = 12
 _RICH_REPL_COMPOSER_MAX_HEIGHT = 6
@@ -81,7 +81,6 @@ class CLIRuntimeConfig:
     api_key: Optional[str] = None
     user_id: str = "default"
     user_id_explicit: bool = False
-    alt_screen: bool = True
     animation: bool = True
     ascii_only: bool = False
     color: ColorMode = "auto"
@@ -1445,11 +1444,7 @@ class _RichReplRuntime:
 
 
 class _RichReplPromptToolkitShell:
-    """Default prompt_toolkit shell for the Rich REPL status/composer.
-
-    The Rich REPL is the default, actively maintained CLI renderer; the
-    full-screen TUI shell (``rendering/full_screen_legacy.py``) is legacy.
-    """
+    """Prompt_toolkit shell for the Rich REPL status bar and composer."""
 
     def __init__(
         self,
@@ -1858,10 +1853,6 @@ class CLIApp:
             sys.exit(0 if self.run_oneshot() else 1)
 
         capabilities = detect_terminal_capabilities(self.runtime_config)
-        if capabilities.renderer == "full":
-            self._run_full_screen(capabilities)
-            return
-
         self._run_repl(capabilities)
 
     def run_oneshot(self) -> bool:
@@ -1909,60 +1900,6 @@ class CLIApp:
                 await self._close_selected_client()
 
         return asyncio.run(_run())
-
-    def _run_full_screen(self, capabilities: TerminalCapabilities) -> None:
-        """Run the legacy full-screen TUI shell (opt-in via ``--renderer full``).
-
-        The Rich REPL is the default, actively maintained shell; this path is
-        reached only when the terminal explicitly requests the full renderer.
-        """
-        from .rendering.full_screen_legacy import (
-            LegacyFullScreenPromptToolkitShell,
-            LegacyFullScreenShellConfig,
-        )
-        from .transport.api import APITransportStartupError
-
-        async def launch() -> None:
-            try:
-                client = await self._select_agent_client()
-            except APITransportStartupError as exc:
-                self.state.console.print(f"[red]Error: {exc.message}[/red]")
-                return
-            self._client = client
-            if await self._handle_startup_thread_intents_async(capabilities):
-                await self._close_selected_client()
-                return
-
-            on_turn_complete = (
-                self._maybe_auto_title if client is self._local_client else None
-            )
-            shell = LegacyFullScreenPromptToolkitShell(
-                client=client,
-                capabilities=capabilities,
-                config=LegacyFullScreenShellConfig(
-                    thread_id=self.state.thread_id,
-                    user_id=self.state.user_id,
-                    model=self.state.get_effective_model(),
-                    thread_label=self.state.get_thread_title(),
-                ),
-                on_turn_complete=on_turn_complete,
-                command_registry=self.registry,
-                history_path=self.state.settings.data_dir / "cli_history",
-                theme=self.theme,
-            )
-            if is_disconnected_client(client):
-                shell.set_status_notice(
-                    _disconnected_notice_text(client),
-                    level="warning",
-                )
-            await shell.run_async()
-
-        asyncio.run(launch())
-
-    def _run_legacy_repl(self) -> None:
-        """Compatibility wrapper for callers that still expect the REPL method."""
-
-        self._run_repl(detect_terminal_capabilities(self.runtime_config))
 
     def _run_repl(self, capabilities: TerminalCapabilities) -> None:
         """Run the prompt_toolkit REPL with reducer-backed rich/plain rendering."""
@@ -2887,26 +2824,6 @@ class CLIApp:
             submission.message,
             renderer,
             attachments=submission.attachments,
-            runtime=runtime,
-        )
-
-    async def _submit_repl_message_async(
-        self,
-        raw_input: str,
-        renderer: _ReplRenderer,
-        *,
-        runtime: _RichReplRuntime,
-    ) -> None:
-        from .input import parse_composer_submission
-
-        submission = parse_composer_submission(raw_input, cwd=Path.cwd())
-        if submission.attachment_errors:
-            runtime.set_status_notice(submission.attachment_errors[0], level="warning")
-            return
-
-        await self._submit_rich_submission_async(
-            submission,
-            renderer,
             runtime=runtime,
         )
 

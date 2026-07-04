@@ -4,7 +4,7 @@ import copy
 import json
 from typing import Any
 
-from cli_fixtures import FakeTerminalCapabilities, run
+from cli_fixtures import run
 
 from nymeria.triggers.cli.commands import (
     CommandContext,
@@ -14,10 +14,6 @@ from nymeria.triggers.cli.commands import (
 from nymeria.triggers.cli.commands import context as context_commands
 from nymeria.triggers.cli.commands import fast, smart
 from nymeria.triggers.cli.commands import model, provider, system, threads, usage
-from nymeria.triggers.cli.rendering.full_screen_legacy import (
-    LegacyFullScreenPromptToolkitShell,
-    LegacyFullScreenShellConfig,
-)
 
 
 class CoreFakeClient:
@@ -699,35 +695,6 @@ def test_settings_patch_rejects_secret_or_unknown_fields() -> None:
     assert not any(name == "update_settings" for name, _payload in client.calls)
 
 
-def test_full_screen_shell_core_commands_update_runtime_context() -> None:
-    client = CoreFakeClient()
-    registry = make_registry()
-    shell = LegacyFullScreenPromptToolkitShell(
-        client=client,
-        capabilities=FakeTerminalCapabilities(width=100),
-        config=LegacyFullScreenShellConfig(
-            thread_id="thread-1",
-            user_id="alice",
-            model="gpt-thread",
-            thread_label="Current",
-        ),
-        command_registry=registry,
-    )
-
-    switch_result = run(shell._run_command("/thread switch thread-2"))
-    model_result = run(shell._run_command("/model set gpt-new"))
-    redraw_result = run(shell._run_command("/redraw"))
-
-    assert switch_result.ok is True
-    assert model_result.ok is True
-    assert redraw_result.ok is True
-    assert shell.config.thread_id == "thread-2"
-    assert shell.config.thread_label == "Next"
-    assert shell.config.model == "gpt-new"
-    assert "Switched to thread-2 Next" in shell.transcript.text
-    assert "Model set to: gpt-new" in shell.transcript.text
-
-
 def test_format_settings_view_renders_compact_trigger_by_mode() -> None:
     base = {
         "llm_provider": "openai",
@@ -746,6 +713,35 @@ def test_format_settings_view_renders_compact_trigger_by_mode() -> None:
     assert "80%" in percent_view
     assert "200000 tokens" in tokens_view
     assert "80%" not in tokens_view
+
+
+def test_usage_command_renders_compact_marker_from_context_stats() -> None:
+    """The live /usage path sources the trigger from get_context_stats.
+
+    Regression test: the trigger used to be hard-coded to None on the live
+    path, so the "Until compact" marker never rendered even though the render
+    branch existed.
+    """
+    client = CoreFakeClient()
+    client.context_stats = {
+        "model": "gpt-thread",
+        "input_tokens": 80,
+        "output_tokens": 40,
+        "total_tokens": 120_000,
+        "context_limit": 400_000,
+        "usage_percentage": 30,
+        "compact_trigger_tokens": 200_000,
+    }
+    registry = make_registry()
+    sink = ListCommandOutputSink()
+    ctx = make_context(client, output=sink)
+
+    result = run(registry.dispatch_async(ctx, "/usage"))
+
+    assert result.ok is True
+    assert any("Until compact" in message.content for message in sink.messages)
+    assert any("of 200.0k" in message.content for message in sink.messages)
+    assert result.json_payload["compact_trigger_tokens"] == 200_000
 
 
 def test_format_thread_usage_compact_cap_honors_trigger_tokens() -> None:

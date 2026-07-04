@@ -3,18 +3,11 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
-from cli_fixtures import CapturedRenderOutput, FakeAgentClient, FakeTerminalCapabilities
+from cli_fixtures import CapturedRenderOutput
 
 from nymeria.triggers.cli.app import CLIRuntimeConfig
 from nymeria.triggers.cli.capabilities import detect_terminal_capabilities
-from nymeria.triggers.cli.rendering.full_screen_legacy import (
-    LegacyFullScreenPromptToolkitShell,
-    LegacyFullScreenShellConfig,
-    _transcript_render_width,
-)
 from nymeria.triggers.cli.rendering.plain import PlainRenderer
-from nymeria.triggers.cli.rendering.transcript import max_line_width
-from nymeria.triggers.cli.state import reduce_stream_event, start_turn
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
@@ -50,7 +43,6 @@ def test_rendering_fallback_matrix_covers_non_tty_no_color_and_dumb_terminal() -
     assert non_tty.renderer == "plain"
     assert non_tty.renderer_reason == "stdout-not-tty"
     assert non_tty.color_enabled is False
-    assert non_tty.alt_screen_enabled is False
 
     # NO_COLOR disables color/animation but keeps the default interactive
     # renderer (rich); it does not force the plain fallback.
@@ -121,67 +113,3 @@ def test_plain_stream_contract_keeps_status_off_stdout_and_removes_ansi() -> Non
     assert not ANSI_RE.search(output.stderr_text)
 
 
-def make_shell(*, width: int = 80) -> LegacyFullScreenPromptToolkitShell:
-    return LegacyFullScreenPromptToolkitShell(
-        client=FakeAgentClient(),
-        capabilities=FakeTerminalCapabilities(width=width),
-        config=LegacyFullScreenShellConfig(
-            thread_id="thread-1",
-            user_id="alice",
-            model="provider/" + ("model-" * 16),
-            thread_label="A long thread title " + ("with many words " * 8),
-        ),
-    )
-
-
-def test_full_screen_resize_recomputes_transcript_and_status_widths() -> None:
-    shell = make_shell(width=40)
-    long_response = (
-        "This is a long response with several words that should wrap cleanly "
-        "when terminal dimensions change."
-    )
-
-    shell.state = start_turn(shell.state, "resize please", now=0.0)
-    shell.state = reduce_stream_event(
-        shell.state,
-        {"type": "response", "content": long_response, "thread_id": "thread-1"},
-        now=1.0,
-    )
-    shell.state = reduce_stream_event(
-        shell.state,
-        {"type": "done", "thread_id": "thread-1", "tool_call_count": 0},
-        now=1.1,
-    )
-
-    shell._refresh_transcript()
-    narrow_status = shell._status_text()
-
-    assert max_line_width(shell.transcript.text) <= _transcript_render_width(
-        shell.capabilities
-    )
-    assert len(narrow_status) <= 40
-    assert narrow_status.endswith("...")
-
-    shell.capabilities = shell.capabilities.with_overrides(width=120)
-    shell._refresh_transcript()
-
-    assert max_line_width(shell.transcript.text) <= _transcript_render_width(
-        shell.capabilities
-    )
-    assert len(shell._status_text()) <= 120
-    assert "thread A long thread title" in shell._status_text()
-
-
-def test_full_screen_transcript_width_accounts_for_frame_and_scrollbar() -> None:
-    shell = make_shell(width=100)
-    shell.state = start_turn(shell.state, "hey", now=0.0)
-    shell.state = reduce_stream_event(
-        shell.state,
-        {"type": "response", "content": "hello", "thread_id": "thread-1"},
-        now=1.0,
-    )
-
-    shell._refresh_transcript()
-
-    assert _transcript_render_width(shell.capabilities) == 96
-    assert max_line_width(shell.transcript.text) <= 96

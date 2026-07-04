@@ -17,6 +17,7 @@ from cli_fixtures import (
 )
 
 from nymeria.triggers.cli.app import CLIApp, CLIRuntimeConfig, _RichReplRuntime
+from nymeria.triggers.cli.input import ComposerSubmission
 from nymeria.triggers.cli.rendering.plain import PlainRenderer
 from nymeria.triggers.cli.rendering.rich_repl import RichReplRenderer
 from nymeria.triggers.cli.rendering.stream import StreamRenderer
@@ -203,12 +204,16 @@ def test_rich_async_submission_keeps_prompt_available_and_queues_next_turn() -> 
             capabilities=FakeTerminalCapabilities(width=120, supports_color=False),
         )
 
-        await app._submit_repl_message_async("first", renderer, runtime=runtime)
+        await app._submit_rich_submission_async(
+            ComposerSubmission("first"), renderer, runtime=runtime
+        )
         await asyncio.sleep(0)
         assert runtime.current_turn_task is not None
         assert runtime.busy is True
 
-        await app._submit_repl_message_async("second", renderer, runtime=runtime)
+        await app._submit_rich_submission_async(
+            ComposerSubmission("second"), renderer, runtime=runtime
+        )
         assert runtime.queued_count == 1
 
         await runtime.current_turn_task

@@ -418,7 +418,6 @@ def build_cli_runtime_config(args: argparse.Namespace):
         api_key=args.api_key,
         user_id=args.user_id,
         user_id_explicit=bool(getattr(args, "user_id_explicit", False)),
-        alt_screen=args.alt_screen,
         animation=args.animation,
         ascii_only=args.ascii_only,
         color=args.color,
@@ -1633,7 +1632,7 @@ Examples:
     )
     cli_parser.add_argument(
         "--renderer",
-        choices=("full", "rich", "plain", "auto"),
+        choices=("rich", "plain", "auto"),
         default="rich",
         help="Renderer mode for CLI terminal output (default: rich)",
     )
@@ -1682,13 +1681,6 @@ Examples:
         default=None,
         metavar="PATH",
         help="Output file path for --export (default: auto-generated)",
-    )
-    cli_parser.add_argument(
-        "--no-alt-screen",
-        dest="alt_screen",
-        action="store_false",
-        default=True,
-        help="Disable alternate-screen mode for full-screen renderer",
     )
     cli_parser.add_argument(
         "--no-animation",

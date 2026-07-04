@@ -9,7 +9,6 @@ from cli_fixtures import FakeTerminalCapabilities, run
 from nymeria.triggers.cli.app import _repl_prompt_style
 from nymeria.triggers.cli.commands import CommandContext, CommandRegistry, ListCommandOutputSink
 from nymeria.triggers.cli.commands import theme as theme_commands
-from nymeria.triggers.cli.rendering.full_screen_legacy import _style
 from nymeria.triggers.cli.rendering.rich_repl import render_tool_row
 from nymeria.triggers.cli.state import ToolCallStep
 from nymeria.triggers.cli.theme import (
@@ -108,24 +107,18 @@ def test_theme_flows_into_prompt_toolkit_and_rich_styles() -> None:
     theme = (
         CLITheme()
         .with_override("status_fg", "#111111")
-        .with_override("status_bg", "#222222")
         .with_override("prompt_busy", "#333333")
         .with_override("tool", "#444444")
     )
 
-    full_attrs = _style(FakeTerminalCapabilities(), theme=theme).get_attrs_for_style_str(
-        "class:status"
-    )
-    repl_attrs = _repl_prompt_style(
-        FakeTerminalCapabilities(),
-        theme=theme,
-    ).get_attrs_for_style_str("class:composer.busy")
+    style = _repl_prompt_style(FakeTerminalCapabilities(), theme=theme)
+    status_attrs = style.get_attrs_for_style_str("class:status")
+    repl_attrs = style.get_attrs_for_style_str("class:composer.busy")
     tool_row = render_tool_row(
         ToolCallStep(id="call-1", name="search_memory", status="success"),
         theme=theme,
     )
 
-    assert full_attrs.color == "111111"
-    assert full_attrs.bgcolor == "222222"
+    assert status_attrs.color == "111111"
     assert repl_attrs.color == "333333"
     assert str(tool_row.style) == "#444444"

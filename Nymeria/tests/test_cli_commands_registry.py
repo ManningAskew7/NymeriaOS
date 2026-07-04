@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-from cli_fixtures import FakeAgentClient, FakeTerminalCapabilities, run
+from cli_fixtures import run
 
 from nymeria.triggers.cli.commands import (
     Command,
@@ -14,11 +14,6 @@ from nymeria.triggers.cli.commands import (
     CommandResult,
     ListCommandOutputSink,
 )
-from nymeria.triggers.cli.rendering.full_screen_legacy import (
-    LegacyFullScreenPromptToolkitShell,
-    LegacyFullScreenShellConfig,
-)
-from nymeria.triggers.cli.state import start_turn
 
 
 def test_parse_and_resolve_root_alias_and_subcommand_alias() -> None:
@@ -268,54 +263,3 @@ def test_completion_items_and_palette_entries_include_descriptions() -> None:
     )
 
 
-def make_shell_with_registry(
-    registry: CommandRegistry,
-) -> LegacyFullScreenPromptToolkitShell:
-    return LegacyFullScreenPromptToolkitShell(
-        client=FakeAgentClient(),
-        capabilities=FakeTerminalCapabilities(width=100),
-        config=LegacyFullScreenShellConfig(
-            thread_id="thread-1",
-            user_id="alice",
-            model="test-model",
-            thread_label="Fixture thread",
-        ),
-        command_registry=registry,
-    )
-
-
-def test_full_screen_shell_dispatches_slash_commands_to_registry() -> None:
-    registry = CommandRegistry()
-    shell = make_shell_with_registry(registry)
-
-    result = run(shell._run_command("/help"))
-
-    assert result.status == "ok"
-    assert shell.client.chat_requests == []
-    assert "Commands" in shell.transcript.text
-    assert "/help [query]" in shell.transcript.text
-
-
-def test_full_screen_shell_renders_unknown_command_as_structured_error() -> None:
-    shell = make_shell_with_registry(CommandRegistry())
-
-    result = run(shell._run_command("/not-real"))
-
-    assert result.status == "error"
-    assert result.error_code == "unknown_command"
-    assert "Error: Unknown command: /not-real" in shell.transcript.text
-    assert shell.client.chat_requests == []
-
-
-def test_full_screen_shell_clear_command_resets_transcript() -> None:
-    shell = make_shell_with_registry(CommandRegistry())
-    shell.state = start_turn(shell.state, "hello", now=1.0)
-    shell._refresh_transcript()
-    assert "──── You " in shell.transcript.text
-    assert "\n  hello" in shell.transcript.text
-
-    result = run(shell._run_command("/cls"))
-
-    assert result.status == "clear"
-    assert shell.transcript.text == ""
-    assert "Cleared." in shell._status_text()

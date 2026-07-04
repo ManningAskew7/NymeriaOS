@@ -92,7 +92,6 @@ def test_run_cli_parser_accepts_tui_contract_defaults(monkeypatch):
     assert runtime_config.api_key is None
     assert runtime_config.user_id == "default"
     assert runtime_config.user_id_explicit is False
-    assert runtime_config.alt_screen is True
     assert runtime_config.animation is True
     assert runtime_config.ascii_only is False
     assert runtime_config.color == "auto"
@@ -372,7 +371,6 @@ def test_run_cli_parser_carries_explicit_tui_contract_flags():
             "nym_test",
             "--user-id",
             "owner",
-            "--no-alt-screen",
             "--no-animation",
             "--ascii",
             "--color",
@@ -388,7 +386,6 @@ def test_run_cli_parser_carries_explicit_tui_contract_flags():
     assert runtime_config.api_key == "nym_test"
     assert runtime_config.user_id == "owner"
     assert runtime_config.user_id_explicit is True
-    assert runtime_config.alt_screen is False
     assert runtime_config.animation is False
     assert runtime_config.ascii_only is True
     assert runtime_config.color == "never"

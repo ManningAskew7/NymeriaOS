@@ -5,22 +5,20 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
 from cli_fixtures import (
+    CapturedRenderOutput,
     ChatRequest,
-    DelayedEvent,
     FakeAgentClient,
     FakeTerminalCapabilities,
     run,
 )
 
+from nymeria.triggers.cli.app import CLIApp, CLIRuntimeConfig, _RichReplRuntime
 from nymeria.triggers.cli.input import ComposerSubmission
 from nymeria.triggers.cli.lifecycle import (
     TurnLifecycleController,
     stream_error_event_from_exception,
 )
-from nymeria.triggers.cli.rendering.full_screen_legacy import (
-    LegacyFullScreenPromptToolkitShell,
-    LegacyFullScreenShellConfig,
-)
+from nymeria.triggers.cli.rendering.rich_repl import RichReplRenderer
 from nymeria.triggers.cli.state import (
     CLIUIState,
     create_initial_state,
@@ -29,17 +27,32 @@ from nymeria.triggers.cli.state import (
 )
 
 
-def make_shell(client: Any) -> LegacyFullScreenPromptToolkitShell:
-    return LegacyFullScreenPromptToolkitShell(
-        client=client,
-        capabilities=FakeTerminalCapabilities(width=100),
-        config=LegacyFullScreenShellConfig(
-            thread_id="thread-1",
-            user_id="alice",
-            model="test-model",
-            thread_label="Fixture thread",
-        ),
+class DummyAgent:
+    pass
+
+
+def make_rich_harness(
+    client: FakeAgentClient,
+) -> tuple[CLIApp, RichReplRenderer, _RichReplRuntime]:
+    """Rich-runtime harness mirroring the live REPL wiring (no pt Application)."""
+    app = CLIApp(
+        DummyAgent(),
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", transport="local"),
     )
+    app._client = client
+    app._maybe_auto_title = lambda _message: None
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(supports_color=False),
+        stdout=CapturedRenderOutput().stdout,
+        width=100,
+    )
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=renderer,
+        capabilities=FakeTerminalCapabilities(width=120, supports_color=False),
+    )
+    return app, renderer, runtime
 
 
 def state_with_running_tool() -> CLIUIState:
@@ -170,16 +183,33 @@ class RaisingStreamClient(FakeAgentClient):
         yield {}
 
 
-def test_full_screen_stream_exception_renders_structured_error() -> None:
-    client = RaisingStreamClient()
-    shell = make_shell(client)
+def test_rich_stream_exception_keeps_prompt_alive_with_status_notice() -> None:
+    """A raw stream exception must not kill the turn task or the prompt.
 
-    assert run(shell.run_chat_turn("hello")) is True
+    Rehosted from the legacy shell (which converted the exception into a
+    transcript error event): the Rich runtime instead surfaces a status-bar
+    notice and frees the prompt.
+    """
 
-    assert shell.state.turn_status == "error"
-    assert shell.state.errors[-1].code == "cli_stream_error"
-    assert "network dropped" in shell.transcript.text
+    async def exercise() -> tuple[RaisingStreamClient, _RichReplRuntime]:
+        client = RaisingStreamClient()
+        app, renderer, runtime = make_rich_harness(client)
+
+        await app._submit_rich_submission_async(
+            ComposerSubmission("hello"), renderer, runtime=runtime
+        )
+        task = runtime.current_turn_task
+        assert task is not None
+        await task
+        return client, runtime
+
+    client, runtime = run(exercise())
+
+    assert client.chat_requests[0].message == "hello"
     assert client.stop_count == 0
+    assert runtime.busy is False
+    assert runtime.current_turn_task is None
+    assert "Stream failed: network dropped" in runtime.status_text()
 
 
 class StopAwareDisconnectClient(FakeAgentClient):
@@ -214,57 +244,35 @@ class StopAwareDisconnectClient(FakeAgentClient):
         return result
 
 
-def test_full_screen_explicit_stop_converts_followup_disconnect_to_cancelled() -> None:
-    async def exercise() -> LegacyFullScreenPromptToolkitShell:
+def test_rich_explicit_stop_reaches_client_once_and_frees_prompt() -> None:
+    """Explicit stop wiring on the Rich path: one client.stop, prompt recovers.
+
+    Rehosted from the legacy shell's stop tests. The at-most-once stop
+    semantics are pinned separately by the TurnLifecycleController unit tests
+    above; this pins the live Rich wiring end to end.
+    """
+
+    async def exercise() -> tuple[StopAwareDisconnectClient, _RichReplRuntime]:
         client = StopAwareDisconnectClient()
-        shell = make_shell(client)
+        app, renderer, runtime = make_rich_harness(client)
 
-        assert shell._handle_composer_submission(ComposerSubmission("slow"))
-        await asyncio.sleep(0)
-        assert shell._busy is True
-        assert await shell.stop_current_turn() is True
-        assert shell._current_turn_task is not None
-        await shell._current_turn_task
-        return shell
-
-    shell = run(exercise())
-
-    assert shell.state.turn_status == "cancelling"
-    assert shell.state.errors[-1].code == "cancelled"
-    assert "Cancelled." in shell.transcript.text
-
-
-def test_full_screen_shutdown_stops_active_turn_and_cancels_task() -> None:
-    async def exercise() -> tuple[LegacyFullScreenPromptToolkitShell, FakeAgentClient]:
-        client = FakeAgentClient(
-            streams={
-                "slow": [
-                    DelayedEvent(
-                        60.0,
-                        {
-                            "type": "response",
-                            "content": "late",
-                            "thread_id": "thread-1",
-                        },
-                    )
-                ]
-            },
-            real_sleep=True,
+        await app._submit_rich_submission_async(
+            ComposerSubmission("slow"), renderer, runtime=runtime
         )
-        shell = make_shell(client)
+        task = runtime.current_turn_task
+        assert task is not None
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if runtime.busy:
+                break
+        assert runtime.busy is True
 
-        assert shell._handle_composer_submission(ComposerSubmission("slow")) is True
-        await asyncio.sleep(0)
-        assert shell._busy is True
-        result = await shell.shutdown_active_turn(reason="shutdown")
+        await app._stop_current_turn_async()
+        await task
+        return client, runtime
 
-        assert result is not None
-        assert result.status == "stopping"
-        assert shell._current_turn_task is not None
-        assert shell._current_turn_task.done()
-        return shell, client
-
-    shell, client = run(exercise())
+    client, runtime = run(exercise())
 
     assert client.stop_count == 1
-    assert shell.state.turn_status == "cancelling"
+    assert runtime.busy is False
+    assert runtime.current_turn_task is None
