@@ -5,6 +5,7 @@ Built-in SKILL.md bundles shipped with Nymeria. Each subdirectory contains a SKI
 ## Contents
 
 - `callable-thread-builder/`  -  skill for creating callable threads
+- `cli-customization/`  -  kit: read/reconfigure the user's terminal CLI status bars via the `cli_statusbar_*` tools (not default-on; discovered via search or `/kit`)
 - `credential-management/`  -  kit: request, inspect, and clean up credentials and connections
 - `goal-supervisor/`  -  internal kit: supervises goal-worker threads
 - `goal-worker/`  -  internal kit: executes a goal under supervision
