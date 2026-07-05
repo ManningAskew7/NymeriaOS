@@ -28,7 +28,7 @@ def test_require_service_token_strips_whitespace():
 
 def test_require_service_token_falls_back_to_minted_file(tmp_path):
     """When the env token is empty, the api-minted file on the shared volume
-    supplies it (the full Docker stack worker/watchdog/mcp path)."""
+    supplies it (the full Docker stack worker/mcp path)."""
     (tmp_path / SLIM_SERVICE_TOKEN_FILENAME).write_text("nym_from_file\n", encoding="utf-8")
     settings = SimpleNamespace(nymeria_service_token="", data_dir=tmp_path)
 
@@ -64,7 +64,6 @@ def test_require_service_token_exits_with_provisioning_guidance(capsys):
     [
         ("discord-bot", None, "the Discord bot"),
         ("telegram-bot", None, "the Telegram bot"),
-        ("watchdog", None, "the watchdog worker"),
         ("mcp", None, "the MCP thin client"),
         ("service", None, "the foreground gateway service"),
     ],

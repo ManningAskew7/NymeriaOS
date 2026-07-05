@@ -505,7 +505,7 @@ def test_api_client_tool_wrappers_cover_unified_defaults_and_custom_tools(monkey
 # ── Service-token refresh-and-retry on 401 ──────────────────────────────────
 #
 # In the full Docker stack the api self-mints the service token onto the
-# shared volume; a long-running worker/watchdog holds the old token after a
+# shared volume; a long-running worker/bot holds the old token after a
 # re-mint. The client refreshes via an injected refresher and retries once.
 
 

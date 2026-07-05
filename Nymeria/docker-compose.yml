@@ -23,8 +23,8 @@ x-agent-fs: &agent-fs
   tmpfs:
     - /tmp
 
-# Filesystem hardening for THIN-CLIENT containers (watchdog, mcp, bots,
-# caddy). These talk to the API over HTTP and never need to write to the
+# Filesystem hardening for THIN-CLIENT containers (mcp, bots, caddy).
+# These talk to the API over HTTP and never need to write to the
 # rootfs. Locking them down prevents an attacker who compromises a chat
 # integration from persisting a backdoor inside the container image layer.
 x-thin-client-fs: &thin-client-fs
@@ -297,9 +297,12 @@ services:
       # Scheduler & autonomy
       TICKER_POLL_INTERVAL: ${TICKER_POLL_INTERVAL:-5}
       MAX_CONCURRENT_AUTONOMOUS: ${MAX_CONCURRENT_AUTONOMOUS:-5}
+      # The watchdog sweep runs inside the worker's ticker (and reads the
+      # NYMERIA_WATCHDOG_DISABLED env kill switch live, every cycle).
       WATCHDOG_ENABLED: ${WATCHDOG_ENABLED:-true}
       WATCHDOG_INTERVAL_MINUTES: ${WATCHDOG_INTERVAL_MINUTES:-5}
       TODO_STALENESS_MINUTES: ${TODO_STALENESS_MINUTES:-20}
+      NYMERIA_WATCHDOG_DISABLED: ${NYMERIA_WATCHDOG_DISABLED:-}
       ACTIVITY_RETENTION_HOURS: ${ACTIVITY_RETENTION_HOURS:-12}
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -436,41 +439,6 @@ services:
     networks:
       - edge       # for API relay calls and outbound trigger/source access
       - backend    # for Redis events and datastore dependency checks
-
-  # Watchdog thin-client worker (polls API for stale TODOs)
-  watchdog:
-    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
-    container_name: nymeria-watchdog
-    restart: unless-stopped
-    command: ["python", "run.py", "watchdog", "--api-url", "http://nymeria-api:8000"]
-    environment:
-      <<: *thin-client-env
-      # Thin client: the watchdog deliberately does NOT receive
-      # NYMERIA_SECRETS_KEY (the per-deployment master Fernet key that decrypts
-      # the whole credential vault). It cannot, therefore, decrypt notification
-      # destination secrets to deliver off-frontend stale-TODO alerts from a
-      # container. Routing that delivery through the API (which holds the key)
-      # is a to-be-completed item (see dev-ledger / dev-todo). In slim the
-      # watchdog shares the API process, so it delivers there.
-      WATCHDOG_ENABLED: ${WATCHDOG_ENABLED:-true}
-      WATCHDOG_INTERVAL_MINUTES: ${WATCHDOG_INTERVAL_MINUTES:-5}
-      TODO_STALENESS_MINUTES: ${TODO_STALENESS_MINUTES:-20}
-      NYMERIA_WATCHDOG_DISABLED: ${NYMERIA_WATCHDOG_DISABLED:-}
-    volumes:
-      - nymeria_data:/data                    # for kill-switch file at /data/flags/watchdog-off
-      - ./nymeria:/app/nymeria:ro                # Bind mount: live code sync
-      - ./run.py:/app/run.py:ro                  # Bind mount: live entry point
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "watchdog", "--api-url", "http://nymeria-api:8000"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    networks:
-      - edge
 
   # Discord Bot for two-way communication
   discord-bot:
@@ -758,7 +726,7 @@ volumes:
 
 networks:
   # Edge network: the proxy + everything the proxy reaches (api, mcp) plus
-  # the chat bots / worker / watchdog that need outbound network and api
+  # the chat bots / worker that need outbound network and api
   # access. Reachable from caddy on 80/443.
   edge:
     driver: bridge

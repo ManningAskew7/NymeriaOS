@@ -318,7 +318,7 @@ def send_external_notifications(
     uses).
 
     Unlike :func:`send_via_profile`, this does NOT write an in-app notification
-    row: the callers (the watchdog path via ``POST /notifications/external``)
+    row: the callers (the watchdog sweep, ``POST /notifications/external``)
     want external delivery only. Returns the destination names that accepted
     delivery; per-destination failures are isolated inside
     :func:`dispatch_to_profile` and simply omitted from the result.

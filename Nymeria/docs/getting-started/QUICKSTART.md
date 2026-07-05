@@ -285,7 +285,7 @@ If you are offline or intentionally testing without provider access, use
 ## Step 4: Start the Backend
 
 For solo/local use the simplest path is `python3 run.py slim`, which runs
-the API, ticker, MCP, and watchdog in a single process backed by SQLite;
+the API, ticker (including the watchdog sweep), and MCP in a single process backed by SQLite;
 no Docker, no Redis, no Postgres:
 
 ```bash
@@ -302,7 +302,7 @@ Starting NymeriaOS SLIM (single-process) on 127.0.0.1:8000
 ```
 
 `python3 run.py slim` writes an internal `data/SLIM_SERVICE_TOKEN.txt`
-(mode 0600) on first boot so embedded MCP, the watchdog, and trigger fires
+(mode 0600) on first boot so embedded MCP and trigger fires
 can authenticate against the API in the same process. That is NOT the
 human bootstrap token; paste `data/BOOTSTRAP_TOKEN.txt` into the desktop
 Setup Wizard, not `SLIM_SERVICE_TOKEN.txt`. See

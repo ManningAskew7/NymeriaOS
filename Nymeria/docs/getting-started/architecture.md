@@ -256,10 +256,11 @@ When Nymeria starts, the Ticker:
 2. Recovers any missed scheduled TODOs that were due during downtime
 
 **Single Agent Runtime (Docker):**
-In Docker, the `worker` container schedules TODOs and trigger polls but no
-longer constructs a `NymeriaAgent`. Every turn it dispatches is relayed to
-the `api` container via `POST /chat`, mirroring the existing thin-client
-watchdog pattern. The `api` container is therefore the single agent
+In Docker, the `worker` container schedules TODOs, trigger polls, and the
+watchdog sweep but does not construct a `NymeriaAgent`. Every turn it
+dispatches is relayed to the `api` container via `POST /chat`, following
+the same thin-client pattern as the chat bots. The `api` container is
+therefore the single agent
 runtime in both shapes (slim runs it in-process, Docker runs it in the
 API container), which keeps the in-memory `ThreadLockManager` and
 `PendingPromptQueue` authoritative for cross-source contention. The
@@ -307,39 +308,42 @@ parent, the fresh-thread memory seed is suppressed for them
 
 ---
 
-### 4.1 Watchdog (thin client, `nymeria/triggers/watchdog_worker.py`)
+### 4.1 Watchdog sweep (ticker sub-loop, `nymeria/core/watchdog_sweep.py`)
 
-The **Watchdog** nudges Nymeria when active TODOs haven't been touched for a while. In Docker it runs as a **thin-client process** alongside the API, following the same API-client pattern as the chat bots. In slim mode the API registers an in-process watchdog task, but it still talks through the same service-token API client path rather than constructing a second agent runtime.
+The **watchdog sweep** nudges Nymeria when active TODOs haven't been touched for a while. It runs as a supervisory sub-loop inside the Ticker, alongside trigger polling, TODO archival, the spawned-thread idle sweep, and the dream sweep: in slim that is the agent's in-process ticker (the API process), in Docker the `worker` container's ticker. There is no separate watchdog process, container, or `run.py` subcommand.
 
-**Why a separate process?** The old watchdog lived inside `NymeriaAgent.__init__`, which meant every container that built an agent (both `api` and `worker` in Docker) started its own watchdog  -  two instances scanning the same TODOs, with in-process callbacks via `get_watchdog()` to clear nudge state. Running it as a sibling service eliminates the duplication and the global coupling.
+**History:** the watchdog started inside `NymeriaAgent.__init__` (duplicated per agent-building container), was extracted to a standalone thin-client process to fix that, and was finally folded into the ticker once the worker stopped constructing its own agent: the scheduler-vs-supervisor distinction is a loop boundary, not a process boundary. The sweep keeps its own enable flag, interval, and kill switches so the supervisory role stays legible.
 
 **Flow:**
 ```
-watchdog container (run.py watchdog)
+ticker sub-loop (every watchdog_interval_minutes)
     │
-    ├─ every watchdog_interval_minutes:
-    │     GET /todos/users  → list user IDs
-    │     GET /todos with X-Nymeria-Act-As: X  → fetch each user's TODOs
+    ├─ detection (housekeeping executor):
+    │     TodoManager.get_all_users_with_todos() / get_todos(user)
     │     filter: active + not recurring + scheduled_for not in future
     │            + updated_at older than todo_staleness_minutes
     │     group stale TODOs by thread_id
     │
-    └─ per thread:
-          POST /chat  { is_self_invoke: true, trigger_override: "watchdog" }
+    └─ per thread (autonomous worker pool):
+          TurnExecutor.astream  { _is_self_invoke, _trigger_override: "watchdog" }
+          (slim: agent.astream in-process; Docker: relayed to the API's /chat,
+          the single agent runtime)
           ↓
-          API sets holder=autonomous, routes through autonomous prompt,
-          publishes task_started/tool_call/.../task_completed to
-          /autonomous/stream subscribers
+          the sweep publishes task_started/tool_call/.../task_completed to
+          /autonomous/stream subscribers (task id watchdog-<thread_id>)
           ↓
-          POST /notifications/external with X-Nymeria-Act-As: X
-          → the API (the master secrets key holder) delivers an
-            off-frontend alert via the user's default notification
-            profile; the watchdog itself never touches the vault.
+          send_external_notifications(...) in-process
+          → an off-frontend alert via the user's default notification
+            profile (both runtimes hold the master secrets key). The
+            POST /notifications/external endpoint remains available as the
+            generic thin-client delivery surface.
 ```
 
-**State:** The worker keeps per-(user, todo_id) "last nudge time" and "last-seen updated_at" in memory. Nudge eligibility resets naturally on the next poll whenever `updated_at > last_seen`  -  no cross-process callbacks required. State is lost on restart, which is fine: stale TODOs will simply re-nudge on the next cycle.
+**State:** The sweep keeps per-(user, todo_id) "last nudge time" and "last-seen updated_at" in memory. Nudge eligibility resets naturally on the next cycle whenever `updated_at > last_seen`. A nudge turn that fails before producing any response retries next cycle, capped at 3 consecutive failures (then suppressed until the TODO is updated). State is lost on restart, which is fine: stale TODOs will simply re-nudge on the next cycle. Delivery counters surface in the worker heartbeat (`watchdog` key).
 
-**Kill switches:** `NYMERIA_WATCHDOG_DISABLED=1` env var, or a `{data_dir}/flags/watchdog-off` file (persistent across container restarts).
+**Kill switches:** `NYMERIA_WATCHDOG_DISABLED=1` env var (re-read every cycle), or a `{data_dir}/flags/watchdog-off` file (persistent across restarts). `WATCHDOG_ENABLED=false` prevents the sub-loop from being constructed at all; slim's `--no-watchdog` flag sets the env kill switch.
+
+**Tradeoff (accepted knowingly):** a dead worker also silences the staleness alarm about the work it is failing to do. The heartbeat healthchecks exist precisely to restart a wedged worker, and the watchdog never monitored services, only TODO `updated_at` age.
 
 ---
 
@@ -353,7 +357,7 @@ workstation image for every process:
   relay that POSTs autonomous turns to the API but currently shares the full
   image. These processes keep the Kali tools, browser runtime, and CLI-oriented
   environment that shell-capable tools may call.
-- `nymeria-slim:local` (`Dockerfile.slim`) runs Watchdog, Discord, Telegram,
+- `nymeria-slim:local` (`Dockerfile.slim`) runs Discord, Telegram,
   Slack, and MCP. Those services are
   HTTP thin clients over the API and do not execute local agent tools, so they
   omit Kali packages, Playwright browsers, Node.js, Claude Code CLI, and

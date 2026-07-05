@@ -2,7 +2,7 @@
 
 `python3 run.py slim` runs everything Nymeria needs for local/personal use
 in a **single Python process**: the REST API, the in-process ticker, the
-watchdog task, and the Streamable HTTP MCP endpoint, all backed by SQLite
+watchdog sweep, and the Streamable HTTP MCP endpoint, all backed by SQLite
 files in `data/`. There is no Docker, no Redis, and no Postgres.
 
 This is the right launcher for:
@@ -35,7 +35,7 @@ On first boot:
 - `data/BOOTSTRAP_TOKEN.txt` is written (mode `0600`). Paste this `nym_<token>`
   value into the desktop/mobile Setup Wizard once.
 - `data/SLIM_SERVICE_TOKEN.txt` is written (mode `0600`). This is an
-  *internal* admin token that the in-process MCP, watchdog, trigger-fire
+  *internal* admin token that the in-process MCP, trigger-fire
   and command-service callers use to authenticate against the API in the
   same process. **Do not** paste this into the Setup Wizard. It is a
   service credential, not a user credential.
@@ -65,8 +65,9 @@ Then it constructs the FastAPI app with `slim_mode=True`, which:
 - Bootstraps the `bot-service` admin user and reuses or mints
   `SLIM_SERVICE_TOKEN.txt`.
 - Mounts the MCP ASGI app at `/mcp` (before the SPA fallback route).
-- Registers the watchdog as a FastAPI startup task (and stops it cleanly
-  on shutdown). The watchdog still respects `WATCHDOG_ENABLED=false`.
+- The watchdog sweep rides the agent's in-process ticker (no separate
+  startup task). It still respects `WATCHDOG_ENABLED=false` and the
+  `NYMERIA_WATCHDOG_DISABLED` / flag-file kill switches.
 
 ## Flags
 
@@ -78,7 +79,7 @@ Then it constructs the FastAPI app with `slim_mode=True`, which:
 | `--missed-work-policy` | `run` | Startup policy for scheduled TODOs missed while offline: `run` executes them automatically, `ask` holds them until released |
 | `--active-execution-stale-minutes` | `1440` | Minutes before an interrupted scheduled-TODO execution marker is considered stale |
 | `--no-mcp` | off | Skip mounting `/mcp` (debug only) |
-| `--no-watchdog` | off | Skip the in-process watchdog task (debug only) |
+| `--no-watchdog` | off | Skip the watchdog ticker sub-loop (sets `NYMERIA_WATCHDOG_DISABLED`; debug only) |
 
 ## On/off local operation
 
@@ -128,7 +129,7 @@ to `http://127.0.0.1:8000/mcp` using `SLIM_SERVICE_TOKEN.txt` as the bearer.
 | File | Audience | Purpose | Persistence |
 |---|---|---|---|
 | `data/BOOTSTRAP_TOKEN.txt` | The human operator | First-run admin login for the Setup Wizard | Auto-deleted when first used |
-| `data/SLIM_SERVICE_TOKEN.txt` | Slim's same-process callers (MCP/watchdog/triggers) | Internal admin service credential | Persists; reused on every boot |
+| `data/SLIM_SERVICE_TOKEN.txt` | Slim's same-process callers (MCP/triggers) | Internal admin service credential | Persists; reused on every boot |
 
 ## Docker users: what does NOT work
 

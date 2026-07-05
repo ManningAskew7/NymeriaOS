@@ -5,7 +5,7 @@ This document outlines deployment options for Nymeria, from local development to
 ## Deployment Options Overview
 
 - **Local**: run directly on host (`python3 run.py api`, or other `run.py` subcommands as needed)
-- **Docker Compose**: production-oriented split services (`api`, `worker`, `watchdog`, `postgres`, `redis`, `caddy`, `mcp`, optional chat/voice services)
+- **Docker Compose**: production-oriented split services (`api`, `worker`, `postgres`, `redis`, `caddy`, `mcp`, optional chat/voice services)
 
 ## Quick Start
 
@@ -51,7 +51,7 @@ Docker Compose builds two Nymeria application images:
   Kali/browser/CLI workstation dependencies used by shell-capable and
   browser-capable tools. The worker is a scheduler/trigger relay that POSTs
   turns to the API, but it currently shares the full image in Compose.
-- `nymeria-slim:local` from `Dockerfile.slim` for `watchdog`, `discord-bot`,
+- `nymeria-slim:local` from `Dockerfile.slim` for `discord-bot`,
   `telegram-bot`, `slack-bot`, and `mcp`.
   These processes are HTTP thin clients over the API and do not construct their
   own `NymeriaAgent`.
@@ -105,11 +105,12 @@ because the images run different commands in different containers.
 The API container uses `GET /ready` for its Compose health check; `/ready`
 validates database and Redis readiness. Caddy checks the proxied `/health`
 route, and thin-client services use `python -m nymeria.core.service_health`.
-Worker, watchdog, and profiled chat bot processes write runtime heartbeat files
+Worker and profiled chat bot processes write runtime heartbeat files
 under `/tmp/nymeria-health/`. Those checks fail when the heartbeat is stale,
 the heartbeat PID is gone, the service reports an unhealthy client/ticker loop,
 or a service-specific dependency check fails. The worker validates PostgreSQL
-and Redis access; watchdog, Discord, Slack, Telegram, and MCP validate
+and Redis access (its heartbeat details include the watchdog sweep counters);
+Discord, Slack, Telegram, and MCP validate
 API `/health`; MCP also validates its local TCP listener.
 
 Use `docker compose --env-file .env.docker ps` for the container health summary.
@@ -143,8 +144,8 @@ docker compose --env-file .env.docker exec worker \
 |          ^                                                        |
 |          | REST/SSE with service token                            |
 |  +-------------------------------+                                |
-|  | Worker, watchdog, MCP, and    |                                |
-|  | profiled chat bot containers  |                                |
+|  | Worker, MCP, and profiled     |                                |
+|  | chat bot containers           |                                |
 |  +-------------------------------+                                |
 |                                                                   |
 |  Volumes:                                                         |
@@ -237,7 +238,7 @@ Nymeria can expose an MCP server for other AI agents to use her capabilities.
 The MCP process is a thin client: it talks to the running REST/SSE API with
 `NYMERIA_SERVICE_TOKEN` and uses `X-Nymeria-Act-As` for user-scoped tools.
 `python3 run.py mcp` exits during startup if that token is missing, matching the
-worker, bot, watchdog, and foreground service launch checks.
+worker, bot, and foreground service launch checks.
 
 ### Local MCP
 
@@ -297,7 +298,8 @@ The worker (`python3 run.py worker`) should only run one instance to avoid dupli
 
 In Docker the worker is a **scheduler-only thin client**: it polls due TODOs
 and poll-based trigger sources, then relays each turn to the API container
-via `POST /chat` (mirroring the watchdog). It no longer constructs a
+via `POST /chat` (the same thin-client pattern as the chat bots); its
+ticker also hosts the stale-TODO watchdog sweep. It does not construct a
 `NymeriaAgent`, so its memory footprint drops by roughly the size of the
 tool registry, LLM client, and MCP runtime, roughly 50 to 150 MB. The API
 container's footprint grows by a comparable amount because it now serves
@@ -397,13 +399,13 @@ just as they do for local Docker.
 
 ## Security Considerations
 
-1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add` for new users or `python3 run.py users issue-token` for an existing user. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, watchdog, bots, MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
+1. **Account tokens**: Per-user bearer tokens (`nym_<token>`) are minted via `python3 run.py users add` for new users or `python3 run.py users issue-token` for an existing user. The legacy shared `NYMERIA_API_KEY` was retired; see `docs/accounts.md`. Worker, bots, MCP, and foreground service processes authenticate with the admin `NYMERIA_SERVICE_TOKEN` plus `X-Nymeria-Act-As: <user_id>` for per-user routing.
 2. **Secrets at rest**: `Nymeria/.env.docker`, `.env`, `firebase-service-account.json`, and `google_credentials.json` hold secrets and are gitignored. Keep them out of version control, restrict file permissions, and back them up separately from the repo. See the Secrets Management section above.
 3. **CORS**: Restrict origins in production. `CORS_ORIGINS` should list your `NYMERIA_HOSTNAME` and the local Tauri origins for desktop/mobile clients; no wildcards.
 4. **Trigger secrets**: Per-trigger shared secrets for webhook fire endpoints (see `docs/triggers.md`)
 5. **Network**: TLS is terminated at the Caddy reverse proxy (above). Only 80/443 should be open on the host firewall; 8000/8001 are loopback-only. Note that UFW alone does not protect Docker-published ports: Docker inserts its forwarding rules ahead of UFW's INPUT chain, so any compose `ports:` entry without an explicit `127.0.0.1:` bind prefix is internet-reachable on a public-IP host even when `ufw status` shows the port closed. Every service in the committed compose files is loopback-bound except Caddy, and `tests/test_docker_security.py` enforces that; keep the `127.0.0.1:` prefix on any port you add unless it is deliberately public.
-6. **Container privileges**: App containers run as the Dockerfile's non-root `nymeria` user (uid 999) with `cap_drop: ALL` and `no-new-privileges:true`. Full-runtime containers (`api`, `worker`) keep a writable rootfs for runtime caches and workspace operations, but do not get `SETUID`, `SETGID`, `DAC_OVERRIDE`, or other package-install capabilities. Thin-client containers (watchdog, mcp, chat bots, caddy) also use read-only rootfs plus tmpfs for `/tmp` and `/home/nymeria`.
-7. **Network segmentation**: Two Docker networks: `edge` for Caddy, API, MCP, worker, watchdog, profiled chat bots, and voice services; `backend` for PostgreSQL, Redis, API, and worker. Chat bots and MCP cannot reach the database directly even if compromised.
+6. **Container privileges**: App containers run as the Dockerfile's non-root `nymeria` user (uid 999) with `cap_drop: ALL` and `no-new-privileges:true`. Full-runtime containers (`api`, `worker`) keep a writable rootfs for runtime caches and workspace operations, but do not get `SETUID`, `SETGID`, `DAC_OVERRIDE`, or other package-install capabilities. Thin-client containers (mcp, chat bots, caddy) also use read-only rootfs plus tmpfs for `/tmp` and `/home/nymeria`.
+7. **Network segmentation**: Two Docker networks: `edge` for Caddy, API, MCP, worker, profiled chat bots, and voice services; `backend` for PostgreSQL, Redis, API, and worker. Chat bots and MCP cannot reach the database directly even if compromised.
 8. **Resource limits**: Every service declares `mem_limit`, `cpus`, and `pids_limit` (see the `x-limits-*` anchors in `docker-compose.yml`). A runaway tool call cannot exhaust host memory or fork-bomb the kernel.
 9. **Bind mounts**: `./nymeria` and `run.py` are mounted **read-only** into containers for live code sync. `.env.docker` is not mounted; services receive only the selected environment variables declared in Compose. `.env.docker` stays out of image layers and is ignored by the Docker build context.
 10. **Kali Tools**: The full image includes nmap, hydra, sqlmap, etc. for `bash_execute` access. Use responsibly and only on authorized targets. Since the container is non-root, nmap loses SYN-scan privileges and falls back to TCP-connect scans.

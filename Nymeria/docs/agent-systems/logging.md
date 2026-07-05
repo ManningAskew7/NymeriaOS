@@ -31,7 +31,7 @@ LOG_MODULES=nymeria.core.agent:DEBUG    # Per-module overrides (highest priority
 | `tools` | Tool call/result tracing, callable thread executor | Debug tool failures, unexpected tool behavior |
 | `agent` | Stream lifecycle, context loading, lock details | Debug stream hangs, lock contention, context issues |
 | `threads` | Callable thread executor + tool_factory + agent | **Debug callable thread orchestration and parent→child flows** |
-| `ticker` | Scheduled TODO polling and execution, watchdog | Debug autonomous task scheduling |
+| `ticker` | Scheduled TODO polling and execution, watchdog sweep | Debug autonomous task scheduling |
 | `triggers` | Trigger checking, firing, source plugins | Debug event-driven trigger issues |
 | `checkpoints` | SQLite/Postgres checkpoint read/write | Debug state persistence, missing messages |
 | `api` | HTTP request handling | Debug API routing, auth issues, schedule parsing |
@@ -58,7 +58,7 @@ Every subsystem uses a standardized `[TAG]` prefix. Filter by tag to isolate a s
 | `[STREAM_BRIDGE]` | `core/stream_bridge.py` | Sync bridge diagnostics for autonomous worker callers. Shows when a sync worker starts consuming `agent.astream()`, first yielded chunk timing/type, total yielded chunks, and elapsed time. |
 | `[CALLABLE]` | `core/thread_agent_executor.py` | Callable thread lifecycle. Shows name, thread_id, task_id, task preview, timing. |
 | `[TICKER]` | `core/ticker.py` | Scheduled TODO execution. |
-| `[WATCHDOG]` | `triggers/watchdog_worker.py` | Stale TODO nudge lifecycle. Emitted by the standalone watchdog container; the API also logs `[ASTREAM]` when the resulting `/chat` self-invoke runs. |
+| `[WATCHDOG]` | `core/watchdog_sweep.py` | Stale TODO nudge lifecycle. Emitted by the ticker's watchdog sweep (the worker container in Docker, the single process in slim); `[ASTREAM]` frames the resulting self-invoke turn in the API process. |
 | `[TRIGGER]` | `core/trigger_manager.py` | Event-driven trigger firing. Shows trigger name, thread_id, timing. |
 
 **Framing pattern:** Every execution path uses `=== START ===` / `=== END ===` / `=== ERROR ===` framing at INFO:
@@ -142,7 +142,7 @@ Autonomous tasks use `[ASTREAM]` with `holder=autonomous`, even when the caller 
 [WATCHDOG] thread=todo-thread nudge complete (response=True)
 [ASTREAM] === END === thread=todo-thread, elapsed=12.5s
 ```
-Note the nesting: the `[WATCHDOG]` nudging/complete pair brackets the high-level nudge (the watchdog process logs it), while `[ASTREAM]` frames the inner agent execution in the API process.
+Note the nesting: the `[WATCHDOG]` nudging/complete pair brackets the high-level nudge (logged by the ticker's watchdog sweep), while `[ASTREAM]` frames the inner agent execution in the API process.
 
 If autonomous output looks batched, compare these diagnostics:
 - `[LLM STREAM] chunks=1` with a large `text_chars` value means the provider or LangChain model wrapper only delivered one coarse async chunk.

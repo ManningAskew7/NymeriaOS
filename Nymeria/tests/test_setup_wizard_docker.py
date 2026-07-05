@@ -209,7 +209,7 @@ def test_finalize_starts_full_stack_single_up_and_surfaces_token(monkeypatch, tm
     cmds = [cmd for cmd, _cwd, _env in calls]
     # A single `up -d` brings up the whole stack (no api-only phase, no DISCORD
     # sentinel); the api self-mints the service token onto the shared volume and the
-    # worker/mcp/watchdog read it from disk, so there is no host-side mint.
+    # worker/mcp read it from disk, so there is no host-side mint.
     assert cmds[0] == ["docker", "compose", "--env-file", ".env.docker", "up", "-d"]
     assert "DISCORD_BOT_TOKEN=disabled" not in out
     # Health polled on the deep /ready endpoint.

@@ -8,8 +8,8 @@ from nymeria.core.agent import NymeriaAgent
 from nymeria.core.prompts import AUTONOMOUS_MODE_RULES, get_autonomous_tail_guidance
 from nymeria.core.thread_agent_executor import _format_handoff_prompt
 from nymeria.core.thread_config import ThreadConfig
-from nymeria.core.todo_manager import TodoManager
-from nymeria.triggers.watchdog_worker import WatchdogWorker
+from nymeria.core.todo_manager import TodoItem, TodoManager
+from nymeria.core.watchdog_sweep import WatchdogSweep
 
 
 class FakeThreadConfigManager:
@@ -172,17 +172,17 @@ def test_active_todos_section_uses_current_tool_names(tmp_path):
 
 
 def test_watchdog_nudge_uses_current_tool_names_and_no_silence_language():
-    worker = WatchdogWorker.__new__(WatchdogWorker)
-    worker.staleness_minutes = 20
+    sweep = WatchdogSweep.__new__(WatchdogSweep)
+    sweep.staleness_minutes = 20
 
-    message = worker._build_nudge_message(
+    message = sweep._build_nudge_message(
         [
-            {
-                "id": "abc12345",
-                "task": "Check stale task",
-                "status": "pending",
-                "updated_at": "2026-04-27T00:00:00Z",
-            }
+            TodoItem(
+                id="abc12345",
+                task="Check stale task",
+                thread_id="thread-1",
+                updated_at=datetime(2026, 4, 27, tzinfo=timezone.utc),
+            )
         ]
     )
 

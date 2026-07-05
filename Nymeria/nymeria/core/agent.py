@@ -544,9 +544,10 @@ class NymeriaAgent:
         else:
             logger.info("Ticker disabled (separate worker handles scheduling)")
 
-        # The watchdog now runs as a standalone thin-client service
-        # (run.py watchdog → nymeria/triggers/watchdog_worker.py).
-        # NymeriaAgent no longer owns one; see docs/architecture.md.
+        # The stale-TODO watchdog sweep rides the Ticker as a supervisory
+        # sub-loop (core/watchdog_sweep.py): the agent's in-process ticker in
+        # slim, the worker container's ticker in Docker. There is no separate
+        # watchdog process; see docs/architecture.md 4.1.
 
         logger.info(
             f"NymeriaAgent initialized with provider={self.settings.llm_provider}, "

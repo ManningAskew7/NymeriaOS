@@ -1851,7 +1851,7 @@ def _print_docker_next_steps(console: Console, state: WizardState) -> None:
     Both stacks are now a single `up -d` plus the in-container bootstrap-token
     read: the slim container mints its internal service token in-process, and the
     full stack's api mints it onto the shared `nymeria_data` volume where the
-    worker / mcp / watchdog containers read it, so there is no host-side
+    worker / mcp containers read it, so there is no host-side
     service-token step to run.
     """
     spec = _docker_stack_spec(state)
@@ -1917,7 +1917,7 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
     # One `up -d` brings up the whole stack: the full stack's `depends_on` health
     # gates order Postgres + Redis before the api, the api self-mints the internal
     # service token onto the shared volume during its own startup, and the worker /
-    # mcp / watchdog read that token from disk once the api is healthy. No host-side
+    # mcp read that token from disk once the api is healthy. No host-side
     # service-token provisioning is needed for either stack.
     up_command = _compose_command_str(spec, "up", "-d")
     console.print(f"\nStarting Nymeria ({spec.label})...")

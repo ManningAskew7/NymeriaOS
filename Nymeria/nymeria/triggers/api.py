@@ -397,7 +397,7 @@ async def resolve_authenticated_user(
 
     ``X-Nymeria-Act-As: <user_id>`` is honored only for admin-role callers.
     When present, the dep returns the target user instead of the admin, so
-    shared infrastructure (bots, ticker, watchdog) can route traffic per-user
+    shared infrastructure (bots, the worker ticker) can route traffic per-user
     without holding each user's raw token. Non-admin use → 403. Unknown or
     disabled target → 404.
     """
@@ -637,7 +637,6 @@ def create_api_app(
     slim_mode: bool = False,
     slim_base_url: Optional[str] = None,
     enable_slim_mcp: bool = True,
-    enable_slim_watchdog: bool = True,
 ) -> FastAPI:
     """
     Create the FastAPI application.
@@ -646,15 +645,15 @@ def create_api_app(
         agent: Optional agent instance (creates default if not provided)
         slim_mode: True when launched via ``python run.py slim``. Forces the
             in-process ticker on (Redis must already be off), mounts the
-            embedded MCP ASGI app at ``/mcp``, bootstraps an internal admin
-            service token, and registers an async watchdog as a startup task.
+            embedded MCP ASGI app at ``/mcp``, and bootstraps an internal
+            admin service token. The watchdog sweep rides the in-process
+            ticker (``core/watchdog_sweep.py``), so no slim-specific
+            watchdog wiring exists here.
         slim_base_url: Loopback URL slim-mode internal clients should use to
             reach this very process (e.g. ``http://127.0.0.1:8000``). Used
-            by the embedded MCP backend client and the slim watchdog client.
+            by the embedded MCP backend client.
         enable_slim_mcp: Debug escape hatch — set False to skip mounting MCP
             in slim mode.
-        enable_slim_watchdog: Debug escape hatch — set False to skip the
-            in-process watchdog task even when ``WATCHDOG_ENABLED=true``.
 
     Returns:
         Configured FastAPI application
@@ -686,11 +685,11 @@ def create_api_app(
             enable_ticker=not disable_ticker,
         )
 
-    # Bootstrap an internal admin service token so MCP / watchdog / trigger-fire
+    # Bootstrap an internal admin service token so MCP / trigger-fire
     # / command-service calls can authenticate without manual operator
     # provisioning. Slim mints it for its single process; the full Docker stack
     # mints it from the api into the shared ``nymeria_data`` volume, where the
-    # sibling worker / mcp / watchdog containers read the file (see
+    # sibling worker / mcp containers read the file (see
     # ``core.service_bootstrap.resolve_service_token``). Persisted at
     # ``data/SLIM_SERVICE_TOKEN.txt`` (mode 0600) and reused on later boots.
     slim_service_token: Optional[str] = None
@@ -719,7 +718,7 @@ def create_api_app(
         except Exception:  # noqa: BLE001
             if slim_mode:
                 # Slim is one process: without the token its embedded MCP /
-                # watchdog / command calls cannot authenticate, so fail loudly
+                # command calls cannot authenticate, so fail loudly
                 # rather than start a half-working backend (pre-broadening behavior).
                 raise
             # Full stack: best-effort. A mint failure here must not block the api
@@ -1019,7 +1018,7 @@ def create_api_app(
     _register_hook_approval_sweep_lifecycle(app)
 
     # ========================================================================
-    # Slim-mode wiring (embedded MCP + in-process watchdog)
+    # Slim-mode wiring (embedded MCP)
     #
     # MCP must be mounted before the frontend catch-all route is registered,
     # otherwise the SPA fallback can swallow /mcp/* requests.
@@ -1038,14 +1037,6 @@ def create_api_app(
         # so we enter the session manager's run() context from the parent
         # FastAPI lifespan instead.
         _register_slim_mcp_lifecycle(app, fastmcp_app)
-
-    if slim_mode and enable_slim_watchdog:
-        _register_slim_watchdog_lifecycle(
-            app,
-            settings=settings,
-            base_url=slim_base_url,
-            service_token=slim_service_token,
-        )
 
     # In Docker, scheduled TODOs / triggers are driven by the worker
     # container (which now relays turns back into this API), so the
@@ -1109,73 +1100,6 @@ def _register_slim_mcp_lifecycle(app: FastAPI, fastmcp_app) -> None:
 
     app.router.add_event_handler("startup", _start_mcp_session_manager)
     app.router.add_event_handler("shutdown", _stop_mcp_session_manager)
-
-
-def _register_slim_watchdog_lifecycle(
-    app: FastAPI,
-    *,
-    settings: Settings,
-    base_url: Optional[str],
-    service_token: Optional[str],
-) -> None:
-    """Wire startup/shutdown event handlers for the in-process watchdog."""
-    import asyncio
-
-    async def _start_slim_watchdog() -> None:
-        # Import lazily so the stubs swapped in by tests via monkeypatch take
-        # effect even when the test patches the module-level attribute after
-        # this factory is imported.
-        from . import api_client as api_client_module
-        from . import watchdog_worker as watchdog_module
-
-        if not settings.watchdog_enabled:
-            logger.info("Slim watchdog skipped: WATCHDOG_ENABLED=false")
-            return
-        if not service_token:
-            logger.warning("Slim watchdog skipped: no service token available")
-            return
-
-        # base_url is required for the API client; the slim launcher always
-        # passes one, but fall back to a sane local default if a caller
-        # constructs the app directly without it.
-        client_base_url = base_url or f"http://127.0.0.1:{settings.api_port}"
-        client = api_client_module.NymeriaAPIClient(
-            base_url=client_base_url,
-            api_key=service_token,
-        )
-        worker = watchdog_module.WatchdogWorker(client=client, settings=settings)
-        task = asyncio.create_task(worker.run())
-        app.state.slim_watchdog_worker = worker
-        app.state.slim_watchdog_client = client
-        app.state.slim_watchdog_task = task
-        logger.info("Slim watchdog started (in-process task)")
-
-    async def _stop_slim_watchdog() -> None:
-        worker = getattr(app.state, "slim_watchdog_worker", None)
-        task = getattr(app.state, "slim_watchdog_task", None)
-        client = getattr(app.state, "slim_watchdog_client", None)
-        if worker is not None:
-            worker.stop()
-        if task is not None:
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except asyncio.TimeoutError:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass  # Cancellation result is intentionally discarded during shutdown.
-            except Exception as exc:  # noqa: BLE001 - shutdown is best-effort
-                logger.warning("Slim watchdog task exited with error: %s", exc)
-        if client is not None:
-            try:
-                await client.aclose()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Slim watchdog client close failed: %s", exc)
-        logger.info("Slim watchdog stopped")
-
-    app.router.add_event_handler("startup", _start_slim_watchdog)
-    app.router.add_event_handler("shutdown", _stop_slim_watchdog)
 
 
 def _register_periodic_task(
@@ -1492,7 +1416,6 @@ def run_api(
     slim_mode: bool = False,
     slim_base_url: Optional[str] = None,
     enable_slim_mcp: bool = True,
-    enable_slim_watchdog: bool = True,
 ) -> None:
     """
     Run the API server.
@@ -1501,10 +1424,9 @@ def run_api(
         host: Host to bind to
         port: Port to listen on
         agent: Optional agent instance
-        slim_mode: Enable slim single-process mode (embedded MCP + watchdog).
+        slim_mode: Enable slim single-process mode (embedded MCP).
         slim_base_url: Loopback URL internal slim clients should use.
         enable_slim_mcp: Disable to skip mounting MCP in slim mode.
-        enable_slim_watchdog: Disable to skip the in-process watchdog task.
     """
     import uvicorn
 
@@ -1513,7 +1435,6 @@ def run_api(
         slim_mode=slim_mode,
         slim_base_url=slim_base_url,
         enable_slim_mcp=enable_slim_mcp,
-        enable_slim_watchdog=enable_slim_watchdog,
     )
 
     # Honor X-Forwarded-For only from explicitly trusted proxy IPs. Without

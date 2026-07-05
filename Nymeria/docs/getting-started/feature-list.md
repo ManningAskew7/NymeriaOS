@@ -224,9 +224,9 @@ total).
 - **Missed schedule recovery**  -  Detects and re-executes overdue TODOs on startup
 - **Event publishing**  -  Real-time SSE for watching autonomous work
 
-### Watchdog Monitoring
+### Watchdog Monitoring (ticker sub-loop)
 - **Staleness detection**  -  Finds TODOs unchanged beyond configurable threshold
-- **Nudge mechanism**  -  Groups stale TODOs by thread, sends prompts via `/chat`
+- **Nudge mechanism**  -  Groups stale TODOs by thread, fires self-invoke agent turns
 - **External notifications**  -  Alerts via Telegram/Discord/Slack with elapsed time
 - **Kill switches**  -  Environment variable or file flag to disable
 
@@ -427,7 +427,6 @@ total).
 |-----------|------|---------|
 | nymeria-api | 8000 | FastAPI REST API + SSE streaming (also hosts WhatsApp/Teams webhook runtimes) |
 | nymeria-worker |  -  | Ticker daemon for autonomous tasks |
-| nymeria-watchdog |  -  | Thin-client watchdog worker |
 | nymeria-mcp | 8001 | MCP server (HTTP mode) |
 | nymeria-postgres | 5432 | PostgreSQL 15 |
 | nymeria-redis | 6379 | Redis event bus |

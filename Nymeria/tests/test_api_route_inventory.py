@@ -723,7 +723,7 @@ def test_create_api_app_multi_container_mints_service_token(
 ):
     """Full Docker stack (Redis on, no operator token): the api self-mints the
     internal service token onto the shared data volume so the sibling worker /
-    mcp / watchdog containers can read it without operator provisioning."""
+    mcp containers can read it without operator provisioning."""
     from nymeria.core.event_bus import EventBus
     from nymeria.core.service_bootstrap import SLIM_SERVICE_TOKEN_FILENAME
 
