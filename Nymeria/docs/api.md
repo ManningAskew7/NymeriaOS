@@ -1287,7 +1287,10 @@ POST /commands/execute
 Commands that require an active thread return a markdown error if `thread_id`
 is omitted. `/compact` appears in discovery with `execution_kind:
 "chat_stream"`, but `POST /commands/execute` returns a markdown error telling
-the caller to route it through chat streaming instead.
+the caller to route it through chat streaming instead; that refusal carries
+`data: {"execution_kind": "chat_stream"}` so generic passthroughs (the
+chat-platform bots) can detect it structurally and re-route the raw command
+text into their normal chat path instead of string-matching the error copy.
 
 `data` is usually `null`. On success it may carry the structured payloads of
 the declarative form contract (schema owned by `core/command_forms.py`):

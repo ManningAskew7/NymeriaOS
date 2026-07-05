@@ -1425,6 +1425,10 @@ def test_compact_is_listed_but_not_executed_by_command_service() -> None:
     assert compact.execution_kind == "chat_stream"
     assert result.success is False
     assert "handled outside the command service" in result.markdown
+    # Structural marker for generic bot passthroughs: they re-route
+    # chat_stream commands into the chat path based on this, not on
+    # matching the error string.
+    assert result.data == {"execution_kind": "chat_stream"}
 
 
 def test_prune_is_registered_as_executable_command() -> None:

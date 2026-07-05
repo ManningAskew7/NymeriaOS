@@ -13,6 +13,7 @@ from nymeria.triggers.bot_helpers import (
     coerce_value,
     context_bar,
     fmt_tokens,
+    forward_backend_command,
     http_error_detail,
     join_api_base,
     normalize_base_url,
@@ -213,6 +214,136 @@ def test_safe_id_matches_legacy_plain_variant_for_all_string_inputs() -> None:
 
     for value in ["abc", "A.B_c-d", "  spaced  ", "", "0", "None", "x/y\\z", "té-1"]:
         assert safe_id(value) == legacy_plain(value)
+
+
+class FakeCommandAPI:
+    """execute_command fake matching the NymeriaAPIClient signature."""
+
+    def __init__(self, result: Optional[dict] = None, error: Optional[Exception] = None) -> None:
+        self.result = result if result is not None else {"success": True, "markdown": "ok"}
+        self.error = error
+        self.calls: list[dict] = []
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: Optional[str] = None,
+        source: str = "user",
+        actor: Optional[str] = None,
+        surface: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        self.calls.append(
+            {
+                "command": command,
+                "thread_id": thread_id,
+                "source": source,
+                "actor": actor,
+                "surface": surface,
+                "user_id": user_id,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _run_forward(api: FakeCommandAPI, command: str = "/status") -> tuple[bool, list[str]]:
+    sent: list[str] = []
+
+    async def send(text: str) -> None:
+        sent.append(text)
+
+    handled = asyncio.run(
+        forward_backend_command(
+            api,
+            command,
+            thread_id="thread-1",
+            user_id="alice",
+            surface="slack",
+            send=send,
+        )
+    )
+    return handled, sent
+
+
+def test_forward_backend_command_relays_markdown_with_wire_params() -> None:
+    api = FakeCommandAPI(result={"success": True, "markdown": "**Status**: idle"})
+    handled, sent = _run_forward(api, "/status verbose")
+
+    assert handled is True
+    assert sent == ["**Status**: idle"]
+    assert api.calls == [
+        {
+            "command": "/status verbose",
+            "thread_id": "thread-1",
+            "source": "user",
+            "actor": "user",
+            "surface": "slack",
+            "user_id": "alice",
+        }
+    ]
+
+
+def test_forward_backend_command_falls_back_to_terse_copy_on_empty_markdown() -> None:
+    handled, sent = _run_forward(FakeCommandAPI(result={"success": True, "markdown": ""}))
+    assert handled is True
+    assert sent == ["Done."]
+
+    handled, sent = _run_forward(FakeCommandAPI(result={"success": False, "markdown": "  "}))
+    assert handled is True
+    assert sent == ["Command returned no output."]
+
+
+def test_forward_backend_command_chat_stream_kind_falls_through_silently() -> None:
+    # chat_stream commands (e.g. /skill) are not executable by the command
+    # service; the structured refusal marker tells the caller to run the raw
+    # text through its normal chat path instead. Nothing is sent here.
+    api = FakeCommandAPI(
+        result={
+            "success": False,
+            "markdown": "**Error:** `/skill` is handled outside the command service.",
+            "data": {"execution_kind": "chat_stream"},
+        }
+    )
+    handled, sent = _run_forward(api, "/skill research")
+    assert handled is False
+    assert sent == []
+
+
+def test_forward_backend_command_relays_failed_refusals_without_marker() -> None:
+    # Non-chat_stream refusals (unknown command, admin-gated, surface_local)
+    # are terminal: the error markdown is relayed, no chat fall-through.
+    api = FakeCommandAPI(
+        result={
+            "success": False,
+            "markdown": "**Error:** Unknown command: /nope",
+            "data": None,
+        }
+    )
+    handled, sent = _run_forward(api, "/nope")
+    assert handled is True
+    assert sent == ["**Error:** Unknown command: /nope"]
+
+
+def test_forward_backend_command_guards_non_dict_results() -> None:
+    handled, sent = _run_forward(FakeCommandAPI(result="garbage"))  # type: ignore[arg-type]
+    assert handled is True
+    assert sent == ["Command returned no output."]
+
+
+def test_forward_backend_command_renders_http_error_detail() -> None:
+    error = _http_status_error(httpx.Response(403, json={"detail": "admin only"}))
+    handled, sent = _run_forward(FakeCommandAPI(error=error))
+    assert handled is True
+    assert sent == ["Error: admin only"]
+
+
+def test_forward_backend_command_renders_generic_errors() -> None:
+    handled, sent = _run_forward(FakeCommandAPI(error=RuntimeError("backend down")))
+    assert handled is True
+    assert sent == ["Error: backend down"]
 
 
 def test_normalize_base_url_strips_only_trailing_slash() -> None:

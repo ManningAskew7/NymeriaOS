@@ -29,6 +29,11 @@ from ...core.chat_bindings import (
     claim_platform_link,
     claim_thread_bind,
 )
+from ...core.command_service import (
+    CommandBackendClient,
+    CommandContext,
+    get_command_service,
+)
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
@@ -151,6 +156,45 @@ class InProcessBotAPI:
         repo.delete_thread_binding(binding.id, user_id=binding.user_id)
         self._publish_platform_sync(binding.thread_id, binding.user_id)
         return {"unbound": True, "thread_id": binding.thread_id}
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: Optional[str] = None,
+        source: str = "user",
+        actor: Optional[str] = None,
+        surface: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Execute a backend slash command in-process.
+
+        Mirrors ``POST /commands/execute`` (and the HTTP client's
+        ``NymeriaAPIClient.execute_command`` signature and return shape) so the
+        webhook bots can forward slash commands through the same adapter they
+        already chat through. ``surface`` defaults to this adapter's
+        ``origin_client_id``, which matches the ``CommandSurface`` literal for
+        every webhook platform.
+        """
+        authed = self._authenticated_user(user_id)
+        ctx = CommandContext(
+            user_id=authed.id,
+            thread_id=thread_id,
+            source=cast(Any, source),
+            actor=cast(Any, actor),
+            surface=cast(Any, surface or self._origin_client_id),
+            is_admin=authed.role == "admin",
+            via_act_as=True,
+        )
+        backend = CommandBackendClient.from_context(ctx, agent=self.agent, user=authed)
+        result = await get_command_service().execute(ctx, command, api=backend)
+        return {
+            "success": result.success,
+            "markdown": result.markdown,
+            "command": result.command,
+            "level": result.level,
+            "data": result.data,
+        }
 
     async def stop(self, thread_id: str, user_id: Optional[str] = None) -> dict[str, Any]:
         authed = self._authenticated_user(user_id)

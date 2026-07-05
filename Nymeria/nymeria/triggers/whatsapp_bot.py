@@ -6,11 +6,12 @@ import logging
 import re
 from collections.abc import AsyncIterable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Optional, Protocol
 
 import httpx
 
-from .bot_helpers import SeenEventCache, safe_id as _safe_id
+from .bot_helpers import SeenEventCache, forward_backend_command, safe_id as _safe_id
 from .message_splitter import split_whatsapp_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -66,6 +67,18 @@ class WhatsAppNymeriaAPI(Protocol):
         ...
 
     async def stop(self, thread_id: str, user_id: Optional[str] = None) -> dict[str, Any]:
+        ...
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: Optional[str] = None,
+        source: str = "user",
+        actor: Optional[str] = None,
+        surface: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict[str, Any]:
         ...
 
     def chat_stream(
@@ -337,6 +350,25 @@ class NymeriaWhatsAppBot:
             return
 
         thread_id = self._resolve_thread_id(message.sender_id)
+
+        # Generic backend slash-command passthrough. Local commands
+        # (link/bind/unbind/stop) were consumed above; any other "/" text is a
+        # backend command, except chat_stream-kind commands (e.g. /skill),
+        # which fall through to the normal chat path below.
+        stripped_text = message.text.strip()
+        if stripped_text.startswith("/"):
+            handled = await forward_backend_command(
+                self.api,
+                stripped_text,
+                thread_id=thread_id,
+                user_id=user_id,
+                surface="whatsapp",
+                send=partial(self._send_text, target),
+                logger=logger,
+            )
+            if handled:
+                return
+
         prompt = message.text
         await self._stream_to_whatsapp(
             message=prompt,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional, Protocol
 
 import httpx
@@ -103,6 +103,75 @@ def http_error_detail(exc: httpx.HTTPStatusError, *, text_limit: int = 200) -> s
             return text[:text_limit]
         return f"HTTP {response.status_code}"
     return str(exc)
+
+
+async def forward_backend_command(
+    api: Any,
+    raw_command: str,
+    *,
+    thread_id: str,
+    user_id: str,
+    surface: str,
+    send: Callable[[str], Awaitable[None]],
+    logger: logging.Logger | None = None,
+) -> bool:
+    """Forward a slash command to the backend command service and relay the result.
+
+    Generic passthrough shared by the chat-platform bots: ``api`` needs only an
+    ``execute_command`` method with the ``NymeriaAPIClient`` signature (the
+    in-process webhook adapter mirrors it). The command result's markdown (or a
+    terse fallback) is delivered through ``send``, which is expected to handle
+    platform chunking/length limits (every bot's ``_send_text`` does).
+
+    Returns True when the command was handled here (output or error relayed).
+    Returns False when the caller should fall through to its normal chat path:
+    commands with ``execution_kind == "chat_stream"`` (e.g. ``/skill``) are not
+    executable by the command service and run as regular agent messages, which
+    is exactly what the chat path already does with their raw text.
+    """
+    log = logger or logging.getLogger(__name__)
+    try:
+        result = await api.execute_command(
+            raw_command,
+            thread_id=thread_id,
+            source="user",
+            actor="user",
+            surface=surface,
+            user_id=user_id,
+        )
+    except httpx.HTTPStatusError as exc:
+        log.error(
+            "Backend command failed on %s: %s", surface, raw_command, exc_info=True
+        )
+        await send(f"Error: {http_error_detail(exc)}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "Backend command failed on %s: %s", surface, raw_command, exc_info=True
+        )
+        await send(f"Error: {exc}")
+        return True
+
+    if not isinstance(result, dict):
+        log.error(
+            "Backend command returned a non-dict result on %s: %s", surface, raw_command
+        )
+        await send("Command returned no output.")
+        return True
+
+    data = result.get("data")
+    if (
+        not result.get("success")
+        and isinstance(data, dict)
+        and data.get("execution_kind") == "chat_stream"
+    ):
+        return False
+
+    text = str(result.get("markdown") or "").strip()
+    if not text:
+        text = "Done." if result.get("success") else "Command returned no output."
+    await send(text)
+    return True
 
 
 class UserResolver:
