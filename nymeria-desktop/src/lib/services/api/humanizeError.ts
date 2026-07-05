@@ -39,7 +39,8 @@ export type ErrorAction =
   | 'remove'
   | 'disconnect'
   | 'approve'
-  | 'decline';
+  | 'decline'
+  | 'rewind';
 
 export interface HumanErrorContext {
   /** What the user was trying to do. Drives the verb in the headline. */
@@ -89,6 +90,7 @@ const ACTION_VERB: Record<ErrorAction, string> = {
   disconnect: 'disconnect',
   approve: 'approve',
   decline: 'decline',
+  rewind: 'rewind',
 };
 
 // Recovery hint per action -- generic but actionable, which is the §9 bar

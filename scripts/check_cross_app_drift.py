@@ -190,6 +190,11 @@ KNOWN_DRIFT: set[str] = {
     # Utils with platform tweaks
     "lib/utils/markdown.ts",
     "lib/utils/modelOptions.ts",
+    # Rewind/edit affordances (backlog #12): mobile drops the desktop-only
+    # sync-poll baseline and uses touch idioms, so helper + tests diverge
+    "lib/utils/rewind.ts",
+    "lib/utils/rewind.test.ts",
+    "lib/stores/chat.test.ts",
 }
 
 SCAN_EXTENSIONS = {".ts", ".svelte", ".css"}

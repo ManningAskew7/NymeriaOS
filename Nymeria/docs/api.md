@@ -694,7 +694,7 @@ Optional query: `show_autonomous_prompts=true|false` overrides the per-thread `s
 {
   "thread_id": "abc123",
   "messages": [
-    {"id": "abc123-1", "role": "user", "content": "Hello"},
+    {"id": "abc123-1", "role": "user", "content": "Hello", "message_id": "run-77af3c-0"},
     {
       "id": "abc123-2",
       "role": "assistant",
@@ -717,6 +717,8 @@ Optional query: `show_autonomous_prompts=true|false` overrides the per-thread `s
   ]
 }
 ```
+
+User entries carry `message_id`, the underlying LangGraph message id, which is the exact-targeting handle for the rewind endpoint's `to_message_id` (the entry `id` is a synthetic per-render counter and is not stable across fetches).
 
 Assistant `steps` are optional. They appear when a turn has reasoning/thinking, tool calls, or interleaved response chunks. Anthropic typed thinking blocks, OpenAI-compatible `reasoning_content` metadata, and OpenAI Responses `reasoning` summary blocks are returned as `{"type": "thinking"}` steps so desktop and mobile can re-render the same thinking dropdown after history sync. Visible assistant commentary before a tool call is not thinking; it is stored and served as a `{"type": "response"}` step before the `tool_call` step.
 
@@ -1017,16 +1019,32 @@ Content-Type: application/json
 { "steps": 1 }
 ```
 
-Removes the last N user+assistant exchanges from the thread's message state.
+Removes trailing user+assistant exchanges from the thread's message state.
 An exchange starts at a `HumanMessage` and includes every following
-`AIMessage` and `ToolMessage` up to the next `HumanMessage`. Backs the
-`/undo` and `/retry` slash commands in the CLI. Uses LangGraph's
+`AIMessage` and `ToolMessage` up to the next `HumanMessage`. Uses LangGraph's
 `RemoveMessage` + `update_state` (the same mechanism as context trimming),
 so the message IDs and reducer history remain consistent.
 
-`steps` is optional (defaults to `1`) and must be between `1` and `100`. If
-the thread has fewer than `steps` exchanges, all available cycles are
-removed.
+Two addressing modes:
+
+- `steps` (optional, defaults to `1`, between `1` and `100`): removes the
+  last N exchanges. Backs the `/undo` and `/retry` slash commands in the
+  CLI. If the thread has fewer than `steps` exchanges, all available cycles
+  are removed.
+- `to_message_id` (optional): the LangGraph id of the user message to rewind
+  to, inclusive; that message and everything after it are removed. Takes
+  precedence over `steps` when set. History user entries expose this id as
+  `message_id`, and the desktop/mobile edit and rewind bubble affordances
+  use it for exact targeting. Returns `404` when the id is not a user
+  message in thread state (for example, removed by compaction).
+
+The endpoint refuses with `409` while the thread lock is held (a turn is
+running); stop the turn first. The guard is advisory: it probes the lock
+just before rewinding rather than holding it through the rewind, so a turn
+starting in the same instant can still race it (the same trade-off as the
+stop endpoint). On success with `removed > 0` it publishes a
+`thread_rewound` sync event on `/autonomous/stream` (see the sync-events
+table); a no-op rewind (nothing to remove) returns `200` without an event.
 
 **Response:**
 ```json
@@ -1040,7 +1058,8 @@ removed.
 
 `removed` is the number of underlying messages actually deleted, which is
 usually larger than `steps` because each exchange contains a human turn plus
-one or more assistant/tool messages.
+one or more assistant/tool messages. In `to_message_id` mode, `steps` echoes
+the number of exchanges the rewind spanned.
 
 ---
 
@@ -1387,6 +1406,7 @@ The same stream also carries cross-client sync events used by open frontends:
 | `thread_created` | A thread/callable thread was created | `title`, `title_source`, `platform` |
 | `thread_updated` | Thread metadata changed | `title`, `title_source`, `pinned`, `platform` |
 | `thread_deleted` | A thread was deleted | none |
+| `thread_rewound` | Trailing exchanges were removed via the rewind endpoint | `steps`, `removed`, optional `to_message_id` |
 
 **Example Stream:**
 ```

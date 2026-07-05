@@ -55,7 +55,16 @@
   }
 
   function handleBackButton() {
-    // Priority: return to chat panel from side panels → exit
+    // Priority: dismiss the message action sheet, then cancel an in-progress
+    // prompt edit, then return to chat panel from side panels, else exit.
+    if (chatStore.actionSheetMessageId) {
+      chatStore.closeActionSheet();
+      return;
+    }
+    if (chatStore.isEditing) {
+      chatStore.cancelEdit();
+      return;
+    }
     if (uiStore.activePanel !== 'chat') {
       uiStore.goToChat();
     }

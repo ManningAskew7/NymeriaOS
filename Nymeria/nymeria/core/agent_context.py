@@ -14,7 +14,7 @@ so important facts survive deletion.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, NamedTuple, Optional, TYPE_CHECKING
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 
@@ -306,73 +306,133 @@ def trim_context_window(
         return 0
 
 
+class RewindTargetNotFound(LookupError):
+    """Raised when a rewind target message id is not a user message in state.
+
+    Distinct from "nothing to remove" so callers can report a stale target
+    (e.g. a message removed by compaction) instead of silently clamp-wiping
+    or pretending the rewind succeeded.
+    """
+
+
+class RewindResult(NamedTuple):
+    """Outcome of a thread rewind."""
+
+    removed: int
+    """Underlying graph messages actually deleted."""
+
+    exchanges: int
+    """User+assistant exchanges those messages spanned."""
+
+
+def _resolve_rewind_cut(
+    messages: list,
+    *,
+    steps: Optional[int],
+    to_message_id: Optional[str],
+) -> Optional[int]:
+    """Resolve the index of the first message a rewind should remove.
+
+    ``to_message_id`` wins when provided: the cut lands on the
+    ``HumanMessage`` with that id (inclusive), and a missing or non-user id
+    raises :class:`RewindTargetNotFound`. Otherwise ``steps`` counts trailing
+    exchanges from the end, clamped to what exists. Returns ``None`` when
+    there is nothing to remove.
+    """
+    cycle_starts = [
+        i for i, msg in enumerate(messages) if isinstance(msg, HumanMessage)
+    ]
+    if to_message_id is not None:
+        for index in cycle_starts:
+            if getattr(messages[index], "id", None) == to_message_id:
+                return index
+        raise RewindTargetNotFound(
+            f"No user message with id '{to_message_id}' in thread state"
+        )
+    if not cycle_starts or steps is None or steps <= 0:
+        return None
+    return cycle_starts[-min(steps, len(cycle_starts))]
+
+
+def rewind_thread(
+    agent: "NymeriaAgent",
+    thread_id: str,
+    *,
+    steps: Optional[int] = None,
+    to_message_id: Optional[str] = None,
+) -> RewindResult:
+    """
+    Remove trailing exchanges from a thread's message state.
+
+    An exchange starts at a ``HumanMessage`` and includes every following
+    ``AIMessage`` / ``ToolMessage`` up to the next ``HumanMessage`` (or the
+    end of the list). Two addressing modes:
+
+    - ``steps=N``: remove the last N exchanges (clamped when fewer exist).
+      Backs the CLI ``/undo`` and ``/retry`` commands.
+    - ``to_message_id``: remove the ``HumanMessage`` with that LangGraph
+      message id and everything after it. Exact targeting for the GUI
+      edit/rewind affordances; raises :class:`RewindTargetNotFound` when the
+      id is absent instead of guessing a count.
+
+    ``to_message_id`` takes precedence when both are given. Uses LangGraph's
+    ``RemoveMessage`` + ``update_state`` via the ``add_messages`` reducer,
+    the same mechanism as ``trim_context_window``. Unexpected graph errors
+    propagate to the caller; use :func:`rewind_thread_exchanges` for the
+    legacy swallow-to-zero contract.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    state = agent._default_graph.get_state(config)
+    messages = state.values.get("messages", [])
+
+    cut_index = _resolve_rewind_cut(
+        messages, steps=steps, to_message_id=to_message_id
+    )
+    if cut_index is None:
+        return RewindResult(removed=0, exchanges=0)
+
+    messages_to_remove = messages[cut_index:]
+    exchanges = sum(
+        1 for msg in messages_to_remove if isinstance(msg, HumanMessage)
+    )
+    remove_commands = [
+        RemoveMessage(id=msg.id)
+        for msg in messages_to_remove
+        if getattr(msg, "id", None)
+    ]
+    if not remove_commands:
+        return RewindResult(removed=0, exchanges=0)
+
+    agent._default_graph.update_state(
+        config,
+        {"messages": remove_commands},
+    )
+
+    logger.info(
+        f"Thread {thread_id}: Rewound {exchanges} exchange(s) "
+        f"({len(remove_commands)} messages)"
+    )
+    return RewindResult(removed=len(remove_commands), exchanges=exchanges)
+
+
 def rewind_thread_exchanges(
     agent: "NymeriaAgent",
     thread_id: str,
     steps: int = 1,
 ) -> int:
     """
-    Remove the last N user+assistant exchanges from a thread's message state.
+    Legacy steps-only rewind preserving the swallow-to-zero contract.
 
-    An exchange starts at a ``HumanMessage`` and includes every following
-    ``AIMessage`` / ``ToolMessage`` up to the next ``HumanMessage`` (or the end
-    of the list). Removing the last N exchanges therefore deletes everything
-    from the Nth-from-last ``HumanMessage`` onward, which is what ``/undo``
-    (steps=1) and ``/retry`` (steps=1, then re-send) need.
-
-    Uses LangGraph's ``RemoveMessage`` + ``update_state`` via the
-    ``add_messages`` reducer, the same mechanism as ``trim_context_window``.
-    If the thread has fewer than ``steps`` exchanges, all available cycles
-    are removed.
-
-    Args:
-        agent: NymeriaAgent instance.
-        thread_id: Conversation thread ID.
-        steps: Number of trailing exchanges to remove (default 1).
-
-    Returns:
-        Number of messages actually removed (0 if nothing to remove).
+    Thin wrapper over :func:`rewind_thread` that returns only the removed
+    message count and maps any failure to 0. No production path calls this
+    anymore (the rewind API endpoint, which backs CLI /undo and /retry and
+    the GUI affordances, uses :func:`rewind_thread` directly); it is kept
+    for the original unit-test contract and any out-of-tree callers of the
+    matching ``NymeriaAgent`` facade method. New callers should prefer
+    :func:`rewind_thread`, which reports exchanges and raises on errors.
     """
-    if steps <= 0:
-        return 0
-
     try:
-        config = {"configurable": {"thread_id": thread_id}}
-        state = agent._default_graph.get_state(config)
-        messages = state.values.get("messages", [])
-
-        if not messages:
-            return 0
-
-        cycle_starts = [
-            i for i, msg in enumerate(messages) if isinstance(msg, HumanMessage)
-        ]
-        if not cycle_starts:
-            return 0
-
-        cycles_to_remove = min(steps, len(cycle_starts))
-        remove_from_index = cycle_starts[-cycles_to_remove]
-        messages_to_remove = messages[remove_from_index:]
-
-        remove_commands = [
-            RemoveMessage(id=msg.id)
-            for msg in messages_to_remove
-            if getattr(msg, "id", None)
-        ]
-        if not remove_commands:
-            return 0
-
-        agent._default_graph.update_state(
-            config,
-            {"messages": remove_commands},
-        )
-
-        logger.info(
-            f"Thread {thread_id}: Rewound {cycles_to_remove} exchange(s) "
-            f"({len(remove_commands)} messages)"
-        )
-        return len(remove_commands)
-
+        return rewind_thread(agent, thread_id, steps=steps).removed
     except Exception as e:
         logger.error(f"Error rewinding thread {thread_id}: {e}")
         return 0

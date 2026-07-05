@@ -48,6 +48,13 @@ export function createChatStore() {
   let isLoadingHistory = $state(false);
   let _instantScroll = $state(false);
 
+  // Edit-previous-prompt state (backlog #12). Entering edit only prefills the
+  // composer; the backend rewind is deferred until the user actually sends
+  // (the CLI /retry composition), so cancelling an edit loses nothing.
+  let editingMessageId = $state<string | null>(null);
+  let editingDraft = $state('');
+  let editingImageAttachments = $state<FileAttachment[]>([]);
+
   // Throttle state for streaming buffers
   let _responseBuffer = '';
   let _thinkingBuffer = '';
@@ -1008,6 +1015,54 @@ export function createChatStore() {
       messages = newMessages;
     },
 
+    get editingMessageId() {
+      return editingMessageId;
+    },
+    get isEditing() {
+      return editingMessageId !== null;
+    },
+    get editingDraft() {
+      return editingDraft;
+    },
+    get editingImageAttachments() {
+      return editingImageAttachments;
+    },
+
+    /**
+     * Enter edit mode for a prior user message. The composer seeds itself
+     * from editingDraft/editingImageAttachments; nothing is sent or removed
+     * until the user submits the edited prompt.
+     */
+    beginEdit(
+      messageId: string,
+      draftText: string,
+      imageAttachments: FileAttachment[] = []
+    ) {
+      editingMessageId = messageId;
+      editingDraft = draftText;
+      editingImageAttachments = imageAttachments;
+    },
+
+    cancelEdit() {
+      editingMessageId = null;
+      editingDraft = '';
+      editingImageAttachments = [];
+    },
+
+    /**
+     * Local transcript truncation after a successful backend rewind: drops
+     * the target message and everything after it. Unrelated to the
+     * provider-retry cleanup rewindLastAssistantToStablePoint().
+     */
+    truncateFromMessage(messageId: string) {
+      const index = messages.findIndex((msg) => msg.id === messageId);
+      if (index < 0) return;
+      messages = messages.slice(0, index);
+      if (editingMessageId && !messages.some((msg) => msg.id === editingMessageId)) {
+        this.cancelEdit();
+      }
+    },
+
     setInstantScroll(v: boolean) {
       _instantScroll = v;
     },
@@ -1021,6 +1076,9 @@ export function createChatStore() {
       activeModel = null;
       isQueued = false;
       this.clearPendingPrompts();
+      // New-thread flows call this without prepareForThreadSwitch: a seeded
+      // edit must not survive into the fresh transcript.
+      this.cancelEdit();
     },
 
     /**
@@ -1039,6 +1097,7 @@ export function createChatStore() {
       contextAttachedMessage = null;
       _lastFlushTime = 0;
       this.clearPendingPrompts();
+      this.cancelEdit();
     },
 
     removeMessage(messageId: string) {

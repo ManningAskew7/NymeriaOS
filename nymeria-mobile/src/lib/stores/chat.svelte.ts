@@ -23,7 +23,7 @@ function mergeArtifacts(
 
 const FLUSH_INTERVAL = 48; // ~20 updates/sec
 
-function createChatStore() {
+export function createChatStore() {
   let messages = $state<Message[]>([]);
   let isStreaming = $state(false);
   let activeToolCalls = $state<Map<string, ToolCall>>(new Map());
@@ -38,6 +38,17 @@ function createChatStore() {
   const pendingPromptAborts = new Map<string, AbortController>();
   let isLoadingHistory = $state(false);
   let _instantScroll = $state(false);
+
+  // Edit-previous-prompt state (backlog #12). Entering edit only prefills the
+  // composer; the backend rewind is deferred until the user actually sends
+  // (the CLI /retry composition), so cancelling an edit loses nothing.
+  let editingMessageId = $state<string | null>(null);
+  let editingDraft = $state('');
+  let editingImageAttachments = $state<FileAttachment[]>([]);
+
+  // Action-sheet state (mobile only): the id of the user bubble whose
+  // long-press action sheet is open, or null when none is showing.
+  let actionSheetMessageId = $state<string | null>(null);
 
   // Throttle state for streaming buffers
   let _responseBuffer = '';
@@ -94,6 +105,21 @@ function createChatStore() {
     },
     get instantScroll() {
       return _instantScroll;
+    },
+    get editingMessageId() {
+      return editingMessageId;
+    },
+    get isEditing() {
+      return editingMessageId !== null;
+    },
+    get editingDraft() {
+      return editingDraft;
+    },
+    get editingImageAttachments() {
+      return editingImageAttachments;
+    },
+    get actionSheetMessageId() {
+      return actionSheetMessageId;
     },
 
     addUserMessage(content: string, attachments?: FileAttachment[]): string {
@@ -743,6 +769,50 @@ function createChatStore() {
       _instantScroll = v;
     },
 
+    /**
+     * Enter edit mode for a prior user message. The composer seeds itself
+     * from editingDraft/editingImageAttachments; nothing is sent or removed
+     * until the user submits the edited prompt.
+     */
+    beginEdit(
+      messageId: string,
+      draftText: string,
+      imageAttachments: FileAttachment[] = []
+    ) {
+      editingMessageId = messageId;
+      editingDraft = draftText;
+      editingImageAttachments = imageAttachments;
+    },
+
+    cancelEdit() {
+      editingMessageId = null;
+      editingDraft = '';
+      editingImageAttachments = [];
+    },
+
+    /**
+     * Local transcript truncation after a successful backend rewind: drops
+     * the target message and everything after it. Unrelated to the
+     * provider-retry cleanup rewindLastAssistantToStablePoint().
+     */
+    truncateFromMessage(messageId: string) {
+      const index = messages.findIndex((msg) => msg.id === messageId);
+      if (index < 0) return;
+      messages = messages.slice(0, index);
+      if (editingMessageId && !messages.some((msg) => msg.id === editingMessageId)) {
+        this.cancelEdit();
+      }
+    },
+
+    /** Open the long-press action sheet for a user bubble. */
+    openActionSheet(messageId: string) {
+      actionSheetMessageId = messageId;
+    },
+
+    closeActionSheet() {
+      actionSheetMessageId = null;
+    },
+
     clearMessages() {
       this._forceFlush();
       messages = [];
@@ -752,6 +822,10 @@ function createChatStore() {
       activeModel = null;
       isQueued = false;
       this.clearPendingPrompts();
+      // New-thread flows call this without prepareForThreadSwitch: a seeded
+      // edit or open action sheet must not survive into the fresh transcript.
+      this.cancelEdit();
+      this.closeActionSheet();
     },
 
     /**
@@ -770,6 +844,8 @@ function createChatStore() {
       contextAttachedMessage = null;
       _lastFlushTime = 0;
       this.clearPendingPrompts();
+      this.cancelEdit();
+      this.closeActionSheet();
     },
 
     removeMessage(messageId: string) {

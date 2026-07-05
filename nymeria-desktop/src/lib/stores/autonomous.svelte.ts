@@ -15,6 +15,8 @@ import { threadConfigStore } from './threadConfig.svelte';
 import { notificationStore } from './notifications.svelte';
 import { workflowsStore } from './workflows.svelte';
 import { authPromptStore } from './authPrompt.svelte';
+import { errorsStore } from './errors.svelte';
+import { refreshThreadSyncBaseline } from './syncPoll.svelte';
 import { api } from '$lib/services/api.svelte';
 import { debugLog, debugLoggingEnabled } from '$lib/utils/debug';
 import { isTodoTool } from '$lib/utils/todoTools';
@@ -36,6 +38,32 @@ interface AutonomousEvent {
 /**
  * Classify the source of an autonomous task from its SSE event data.
  */
+/**
+ * Reload the on-screen transcript after another client rewound this thread.
+ * If the user was mid-edit, the target bubble no longer resolves after a
+ * reload (hydration assigns fresh ids), so the edit is cancelled with an
+ * explanatory toast rather than risking a rewind against removed messages.
+ */
+async function reloadAfterExternalRewind(threadId: string): Promise<void> {
+  const editingId = chatStore.editingMessageId;
+  try {
+    const history = await api.getThreadHistory(threadId);
+    if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
+    chatStore.setMessages(history.messages);
+    void refreshThreadSyncBaseline(threadId);
+  } catch (error) {
+    debugLog('Failed to reload thread after external rewind:', error);
+    return;
+  }
+  if (editingId && !chatStore.messages.some((m) => m.id === editingId)) {
+    chatStore.cancelEdit();
+    errorsStore.push({
+      kind: 'generic',
+      message: 'This conversation was rewound from another device, so your edit was cancelled.',
+    });
+  }
+}
+
 function classifyAutonomousSource(event: AutonomousEvent): string {
   if (event.todo_id) return 'scheduler';
   if (event.source === 'watchdog') return 'watchdog';
@@ -1116,6 +1144,19 @@ function createAutonomousStore() {
         // Another client deleted a thread
         threadsStore.deleteThreadLocal(event.thread_id);
         break;
+
+      case 'thread_rewound': {
+        // Another client rewound this thread (edit/rewind affordance or CLI
+        // /undo). Our own rewinds apply optimistically before the echo
+        // arrives (hook_approval idempotency model), so skip those; only
+        // reload the transcript when it is on screen and idle. A live
+        // stream owns the transcript; the sync poller reconciles after.
+        if ((event._origin_client_id as string | undefined) === clientId) break;
+        if (event.thread_id !== threadsStore.currentThreadId) break;
+        if (chatStore.isStreaming) break;
+        void reloadAfterExternalRewind(event.thread_id);
+        break;
+      }
 
       // ================================================================
       // Mid-turn pending-prompt drain on an autonomous holder.

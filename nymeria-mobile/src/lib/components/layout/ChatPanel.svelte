@@ -1,10 +1,12 @@
 <script lang="ts">
   import Icon from '$lib/components/common/Icon.svelte';
-  import { ChatContainer, InputBar, ContextStatusBar, QueuedPromptsBar } from '$lib/components/chat';
+  import { ChatContainer, InputBar, ContextStatusBar, QueuedPromptsBar, MessageActionSheet } from '$lib/components/chat';
   import { ThreadSettingsPanel } from '$lib/components/threads';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { errorsStore } from '$lib/stores/errors.svelte';
+  import { rewindToMessage } from '$lib/utils/rewind';
   import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
@@ -180,6 +182,15 @@
   async function handleSend(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
+    // Edit-and-resend (backlog #12): the composer was seeded from a prior user
+    // message; sending commits the deferred rewind, then streams the edited
+    // prompt as a fresh turn. Checked before the queue/streaming gates so an
+    // edit-send never silently queues behind a turn that started mid-edit.
+    if (chatStore.isEditing) {
+      await performEditResend(message, attachments);
+      return;
+    }
+
     const trimmed = message.trim();
     const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0].toLowerCase() : '';
 
@@ -213,6 +224,12 @@
       return;
     }
 
+    await streamMessage(message, attachments);
+  }
+
+  /** Add the user message and stream the agent's reply. Shared by the normal
+   *  send path and the edit-and-resend flow (after its rewind lands). */
+  async function streamMessage(message: string, attachments?: FileAttachment[]) {
     // Create thread if needed
     if (!threadsStore.currentThreadId) {
       const thread = threadsStore.createThread();
@@ -249,6 +266,81 @@
       chatStore.setStreaming(false);
       chatStore.clearActiveToolCalls();
     }
+  }
+
+  /**
+   * Commit a deferred prompt edit: rewind to the edited message, then send
+   * the edited text (plus any carried image attachments) as a fresh turn.
+   * Refusals keep edit mode, and with it the composer content (InputBar's
+   * wasEditing guard skips the post-send clear), so nothing typed is lost.
+   */
+  // Reentrancy guard: the edit path deliberately keeps the composer populated
+  // (a refused send must not lose the draft), so unlike a normal send the
+  // Send button stays live during the rewind round-trip. A double submit
+  // would race two rewinds: the loser 404s and reloads the transcript over
+  // the winner's live stream.
+  let editResendInFlight = false;
+
+  async function performEditResend(message: string, attachments?: FileAttachment[]) {
+    if (editResendInFlight) return;
+    editResendInFlight = true;
+    try {
+      await performEditResendInner(message, attachments);
+    } finally {
+      editResendInFlight = false;
+    }
+  }
+
+  async function performEditResendInner(message: string, attachments?: FileAttachment[]) {
+    const threadId = threadsStore.currentThreadId;
+    const targetId = chatStore.editingMessageId;
+    if (!threadId || !targetId) {
+      chatStore.cancelEdit();
+      return;
+    }
+    // Slash commands are not prompts: an edit-send would bypass the command
+    // routing above (executeCommand vs chat-stream) and silently rewind
+    // before a config command. Refuse and keep the edit + composer intact.
+    if (message.trim().startsWith('/')) {
+      errorsStore.push({
+        kind: 'generic',
+        message:
+          'Slash commands cannot be sent as an edited prompt. Cancel the edit to run a command.',
+      });
+      return;
+    }
+    if (chatStore.isStreaming || chatStore.isQueued) {
+      errorsStore.push({
+        kind: 'generic',
+        message: 'The agent is busy on this thread. Wait for the turn to finish, then send your edit.',
+      });
+      return;
+    }
+
+    const outcome = await rewindToMessage(threadId, targetId);
+    if (!outcome.ok) {
+      if (outcome.reason === 'stale_target') {
+        chatStore.cancelEdit();
+        errorsStore.push({
+          kind: 'generic',
+          message:
+            'The conversation changed on the backend, so it was reloaded and your edit was cancelled.',
+        });
+      } else {
+        errorsStore.push({
+          kind: 'generic',
+          message: humanizeErrorText(outcome.error, {
+            action: 'rewind',
+            resource: 'the conversation',
+          }),
+        });
+      }
+      return;
+    }
+
+    // rewindToMessage truncated the transcript and cleared edit state; stream
+    // the edited prompt as a normal fresh turn.
+    await streamMessage(message, attachments);
   }
 
   /**
@@ -591,6 +683,9 @@
     onClose={() => (showThreadSettings = false)}
   />
 {/if}
+
+<!-- Long-press action sheet for user bubbles (edit / rewind). -->
+<MessageActionSheet />
 
 <style>
   .chat-panel {

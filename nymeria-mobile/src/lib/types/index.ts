@@ -143,6 +143,7 @@ export interface Message {
   status: MessageStatus;
   toolCalls?: ToolCall[];         // Legacy history fallback for messages without steps
   attachments?: FileAttachment[]; // File attachments for multimodal messages
+  graphMessageId?: string;        // Backend LangGraph message id (user messages from history); rewind target for POST /threads/{id}/rewind
   contextSummary?: string;        // Context summary from /compact (collapsible in UI)
   messagesRemoved?: number;       // Number of messages summarized by compaction
   autoResumed?: boolean;          // True when assistant output resumed after compaction

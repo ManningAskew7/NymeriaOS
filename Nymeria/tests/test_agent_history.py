@@ -118,6 +118,7 @@ def test_format_conversation_history_attaches_tool_results_and_artifacts():
         "role": "user",
         "content": "Find the file",
         "timestamp": "2026-05-03T16:05:00+00:00",
+        "message_id": "user-1",
     }
 
     assistant = history[1]
@@ -370,6 +371,38 @@ def test_memory_init_seed_visible_with_include_internal():
 
     # opener (user) + a consolidated assistant turn carrying the reads
     assert any(e["role"] == "assistant" for e in history)
+
+
+def test_user_entries_expose_graph_message_id():
+    """Rendered user entries carry the LangGraph message id as message_id so
+    clients can target them with the rewind endpoint's to_message_id. The
+    entry "id" stays the synthetic per-render counter."""
+    messages = [
+        HumanMessage(content="Real prompt", id="graph-h1"),
+        AIMessage(content="Reply", id="graph-a1"),
+        HumanMessage(
+            content="[Trigger: scheduler]\n\nWake up",
+            id="graph-h2",
+            additional_kwargs={
+                "internal": True,
+                "internal_type": "autonomous_wakeup",
+            },
+        ),
+        AIMessage(content="Autonomous reply", id="graph-a2"),
+    ]
+
+    shown = format_conversation_history(
+        messages, thread_id="thread-mid", show_autonomous_prompts=True
+    )
+    user_entries = [e for e in shown if e["role"] == "user"]
+    assert [e["message_id"] for e in user_entries] == ["graph-h1", "graph-h2"]
+    assert user_entries[0]["id"] != "graph-h1"
+
+    hidden = format_conversation_history(
+        messages, thread_id="thread-mid", show_autonomous_prompts=False
+    )
+    hidden_users = [e for e in hidden if e["role"] == "user"]
+    assert [e["message_id"] for e in hidden_users] == ["graph-h1"]
 
 
 # ---------------------------------------------------------------------------

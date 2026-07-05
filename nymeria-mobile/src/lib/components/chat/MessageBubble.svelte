@@ -5,11 +5,13 @@
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { formatMessageTime } from '$lib/utils/time';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
-  import { threadConfigStore } from '$lib/stores/threadConfig.svelte';
   import { threadsStore } from '$lib/stores/threads.svelte';
+  import { chatStore } from '$lib/stores/chat.svelte';
   import { errorsStore } from '$lib/stores/errors.svelte';
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
+  import { parseUserMessage } from '$lib/utils/messageParsing';
+  import { hapticImpact } from '$lib/utils/haptics';
   import ToolCallCard from './ToolCallCard.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ImageModal from './ImageModal.svelte';
@@ -19,28 +21,6 @@
   }
 
   let { message }: Props = $props();
-
-  // Pattern to detect time context prefix (added by backend to all messages)
-  // Format: [Current Time: ...]\n[Trigger: ...]\n\n{actual message}
-  const TIME_CONTEXT_PATTERN = /^\[(?:Current )?Time:[^\]]+\]\n\[Trigger:[^\]]+\]\n\n/;
-
-  // Pattern to detect smartwatch trigger source
-  const SMARTWATCH_TRIGGER_PATTERN = /\[Trigger: Smartwatch[^\]]*\]/;
-
-  // Pattern to detect autonomous wake-up messages (internal system triggers - should be hidden)
-  // Format: [Current Time: ...]\n[Trigger: Autonomous Wake-up...]\n\nWork on TODO ...
-  const AUTONOMOUS_WAKEUP_PATTERN = /^\[(?:Current )?Time:[^\]]+\]\n\[Trigger: Autonomous Wake-up[^\]]*\]\n\n/;
-
-  // Pattern to detect compaction system request (should be hidden)
-  const COMPACTION_REQUEST_PATTERN = /^\*\*System Request: Context Compaction\*\*/;
-
-  // Pattern to detect manual /compact context summary suffix
-  // Format: {user message}\n\n---\n*This conversation is resuming...*\n\n{summary}\n\n---
-  const MANUAL_COMPACT_PATTERN = /\n\n---\n\*This conversation is resuming from a previous session that exceeded context limits\. Summary of prior context:\*\n\n([\s\S]*?)\n\n---$/;
-
-  // Pattern to detect auto-compact message
-  // Format: [Auto-compact: ...]\n\n---\n*Context Summary (auto-compact):*\n\n{summary}\n\n---\n\nContinue...
-  const AUTO_COMPACT_PATTERN = /^\[Auto-compact: Context limit reached, conversation summarized\]\n\n---\n\*Context Summary \(auto-compact\):\*\n\n([\s\S]*?)\n\n---\n\n[\s\S]*$/;
 
   // Patterns to detect AI compaction summary response (follows the compaction request)
   // These typically contain structured summary headers from the COMPACT_PROMPT
@@ -58,49 +38,6 @@
     'save persistent facts',
     'current state',
   ];
-
-  // Parse user message to extract actual content, context summary, and hidden flag
-  function parseUserMessage(content: string): { text: string; contextSummary: string | null; hidden: boolean; isSmartwatch: boolean } {
-    let text = content;
-    let contextSummary: string | null = null;
-
-    // Detect smartwatch trigger before stripping metadata
-    const isSmartwatch = SMARTWATCH_TRIGGER_PATTERN.test(text);
-
-    // Check if this is an autonomous wake-up message (should be hidden entirely)
-    if (AUTONOMOUS_WAKEUP_PATTERN.test(text)) {
-      return { text: '', contextSummary: null, hidden: true, isSmartwatch: false };
-    }
-
-    // Check if this is a compaction system request (should be hidden entirely)
-    if (COMPACTION_REQUEST_PATTERN.test(text)) {
-      return { text: '', contextSummary: null, hidden: true, isSmartwatch: false };
-    }
-
-    // Strip time context prefix unless user opted to show metadata
-    const tid = threadsStore.currentThreadId;
-    const showMeta = tid ? threadConfigStore.getConfig(tid)?.showPromptMetadata : false;
-    if (!showMeta) {
-      text = text.replace(TIME_CONTEXT_PATTERN, '');
-    }
-
-    // Check for auto-compact message format
-    const autoCompactMatch = text.match(AUTO_COMPACT_PATTERN);
-    if (autoCompactMatch) {
-      contextSummary = autoCompactMatch[1].trim();
-      text = '[Auto-compact: Thread summarized]';
-      return { text, contextSummary, hidden: false, isSmartwatch };
-    }
-
-    // Check for manual /compact summary suffix
-    const manualCompactMatch = text.match(MANUAL_COMPACT_PATTERN);
-    if (manualCompactMatch) {
-      contextSummary = manualCompactMatch[1].trim();
-      text = text.replace(MANUAL_COMPACT_PATTERN, '').trim();
-    }
-
-    return { text, contextSummary, hidden: false, isSmartwatch };
-  }
 
   // Parse assistant message to detect if it should be hidden (compaction summary response)
   function parseAssistantMessage(content: string): { hidden: boolean } {
@@ -150,7 +87,7 @@
   let parsedUserContent = $derived(
     message.role === 'user'
       ? parseUserMessage(message.content)
-      : { text: message.content, contextSummary: null, hidden: false, isSmartwatch: false }
+      : { text: message.content, contextSummary: null, hidden: false, isSmartwatch: false, isAutoCompact: false }
   );
 
   // Computed: parsed assistant message (checks if it should be hidden)
@@ -184,6 +121,81 @@
   // Support attachments field
   let allAttachments = $derived(message.attachments || []);
   let hasAttachments = $derived(allAttachments.length > 0);
+
+  // Long-press on a user bubble opens the edit/rewind action sheet (backlog
+  // #12, mobile's touch idiom for desktop's hover buttons). Suppressed while a
+  // turn is streaming or queued (the backend refuses rewinds on a locked
+  // thread, so the affordance goes away instead of failing) and on autonomous
+  // wake-up prompts (their display text is not an editable user prompt).
+  let canLongPressUser = $derived(
+    isUser &&
+      !isHiddenMessage &&
+      !message.autonomousSource &&
+      !chatStore.isStreaming &&
+      !chatStore.isQueued
+  );
+
+  const LONG_PRESS_MS = 500;
+  // Finger jitter during a deliberate stationary hold can fire pointermove;
+  // only movement beyond this slop cancels the press (scrolls exceed it).
+  const LONG_PRESS_SLOP_PX = 10;
+  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  let pressOriginX = 0;
+  let pressOriginY = 0;
+  // Set true when the timer fires; used to swallow the click that a completed
+  // long-press would otherwise deliver to an attachment button underneath.
+  let longPressFired = false;
+
+  function clearLongPress() {
+    if (longPressTimer !== null) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
+
+  // A pending timer must not outlive the bubble (e.g. truncation mid-press):
+  // it would fire against a stale message id.
+  $effect(() => {
+    return () => clearLongPress();
+  });
+
+  function handleBubblePointerDown(event: PointerEvent) {
+    if (!canLongPressUser) return;
+    longPressFired = false;
+    clearLongPress();
+    pressOriginX = event.clientX;
+    pressOriginY = event.clientY;
+    longPressTimer = setTimeout(() => {
+      longPressTimer = null;
+      longPressFired = true;
+      void hapticImpact('medium');
+      chatStore.openActionSheet(message.id);
+    }, LONG_PRESS_MS);
+  }
+
+  // Real movement, lift, or scroll cancels an in-flight press. Attaching these
+  // to the bubble container means a press that started on an attachment button
+  // still cancels when the finger slides or the list scrolls.
+  function handleBubblePressCancel() {
+    clearLongPress();
+  }
+
+  function handleBubblePointerMove(event: PointerEvent) {
+    if (longPressTimer === null) return;
+    const dx = event.clientX - pressOriginX;
+    const dy = event.clientY - pressOriginY;
+    if (dx * dx + dy * dy > LONG_PRESS_SLOP_PX * LONG_PRESS_SLOP_PX) {
+      clearLongPress();
+    }
+  }
+
+  function handleBubbleClickCapture(event: MouseEvent) {
+    if (longPressFired) {
+      event.stopPropagation();
+      event.preventDefault();
+      longPressFired = false;
+    }
+  }
 
   // Modal state for image preview
   let modalFile = $state<FileAttachment | null>(null);
@@ -333,7 +345,19 @@
   </div>
 </div>
 {:else if !isHiddenMessage}
-<div class="message-bubble" class:user={isUser} class:assistant={!isUser} class:autonomous-prompt={!!message.autonomousSource}>
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+<div
+  class="message-bubble"
+  class:user={isUser}
+  class:assistant={!isUser}
+  class:autonomous-prompt={!!message.autonomousSource}
+  onpointerdown={handleBubblePointerDown}
+  onpointerup={handleBubblePressCancel}
+  onpointermove={handleBubblePointerMove}
+  onpointercancel={handleBubblePressCancel}
+  onpointerleave={handleBubblePressCancel}
+  onclickcapture={handleBubbleClickCapture}
+>
   <!--
     Crit 4 — aria-busy silences AT browse-mode reads of mid-stream content
     on the assistant bubble. Cleared when status leaves 'streaming', after
