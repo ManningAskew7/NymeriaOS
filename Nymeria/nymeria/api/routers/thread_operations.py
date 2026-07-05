@@ -386,35 +386,86 @@ def create_thread_operations_router(
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
-        Remove the last N user+assistant exchanges from a thread.
+        Remove trailing user+assistant exchanges from a thread.
 
-        Backs the CLI /undo and /retry commands. An exchange starts at a
-        HumanMessage and includes every following AIMessage/ToolMessage up to
-        the next HumanMessage. Uses LangGraph's RemoveMessage + update_state,
-        the same mechanism as context trimming.
+        Backs the CLI /undo and /retry commands (steps mode) and the GUI
+        edit/rewind affordances (to_message_id mode, exact targeting). An
+        exchange starts at a HumanMessage and includes every following
+        AIMessage/ToolMessage up to the next HumanMessage. Uses LangGraph's
+        RemoveMessage + update_state, the same mechanism as context trimming.
+
+        Refuses with 409 while the thread lock is held (a turn is running)
+        and with 404 when to_message_id is not a user message in state.
         """
+        from ...core.agent_context import RewindTargetNotFound
+
         require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
+
+        # Advisory busy guard, mirroring stop_thread: the check is not atomic
+        # with the rewind itself (real exclusion would require this route to
+        # participate in the pending-prompt release protocol, which is turn
+        # machinery). is_thread_busy probes the actual lock, so a turn that
+        # has acquired it but not yet stamped lock_info is still refused.
+        lock_info = agent._thread_locks.get_lock_info(thread_id)
+        if lock_info is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Thread is busy (held by '{lock_info.get('holder')}' for "
+                    f"{lock_info.get('held_seconds', 0):.0f}s). Stop the "
+                    "current turn before rewinding."
+                ),
+            )
+        if agent._thread_locks.is_thread_busy(thread_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Thread is busy. Stop the current turn before rewinding.",
+            )
+
         steps = request.steps if request is not None else 1
+        to_message_id = request.to_message_id if request is not None else None
 
-        removed = await run_in_threadpool(
-            agent.rewind_thread_exchanges, thread_id, steps
-        )
+        try:
+            result = await run_in_threadpool(
+                agent.rewind_thread,
+                thread_id,
+                steps=steps,
+                to_message_id=to_message_id,
+            )
+        except RewindTargetNotFound:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Rewind target not found in thread state. It may have "
+                    "been removed by compaction; refresh the conversation "
+                    "and try again."
+                ),
+            )
 
-        client_id = http_request.headers.get("x-nymeria-client-id", "")
-        publish_sync_event_fn(
-            event_type="thread_rewound",
-            thread_id=thread_id,
-            user_id=user_id,
-            data={"steps": steps, "removed": removed},
-            origin_client_id=client_id,
-        )
+        steps_echo = result.exchanges if to_message_id is not None else steps
+        if result.removed > 0:
+            event_data: dict[str, Any] = {
+                "steps": steps_echo,
+                "removed": result.removed,
+            }
+            if to_message_id is not None:
+                event_data["to_message_id"] = to_message_id
+
+            client_id = http_request.headers.get("x-nymeria-client-id", "")
+            publish_sync_event_fn(
+                event_type="thread_rewound",
+                thread_id=thread_id,
+                user_id=user_id,
+                data=event_data,
+                origin_client_id=client_id,
+            )
 
         return ThreadRewindResponse(
             status="ok",
             thread_id=thread_id,
-            steps=steps,
-            removed=removed,
+            steps=steps_echo,
+            removed=result.removed,
         )
 
     @router.post("/threads/{thread_id}/stop")

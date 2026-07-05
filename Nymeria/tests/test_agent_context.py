@@ -3,10 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from nymeria.core.agent_context import (
+    RewindResult,
+    RewindTargetNotFound,
     _mark_in_flight_tail,
+    rewind_thread,
     rewind_thread_exchanges,
     trim_context_window,
 )
@@ -137,6 +141,68 @@ def test_rewind_noop_when_no_human_messages() -> None:
 
     assert rewind_thread_exchanges(cast(Any, agent), "thread-1") == 0
     assert agent._default_graph.update_calls == []
+
+
+def test_rewind_to_message_id_cuts_mid_thread() -> None:
+    messages = _three_cycle_messages()
+    agent = _FakeAgent(messages)
+
+    result = rewind_thread(cast(Any, agent), "thread-1", to_message_id="h2")
+
+    assert result == RewindResult(removed=5, exchanges=2)
+    assert len(agent._default_graph.update_calls) == 1
+    _, payload = agent._default_graph.update_calls[0]
+    assert [command.id for command in payload["messages"]] == [
+        "h2",
+        "a2",
+        "a3",
+        "h3",
+        "a4",
+    ]
+
+
+def test_rewind_to_message_id_wins_over_steps() -> None:
+    agent = _FakeAgent(_three_cycle_messages())
+
+    result = rewind_thread(
+        cast(Any, agent), "thread-1", steps=99, to_message_id="h3"
+    )
+
+    assert result == RewindResult(removed=2, exchanges=1)
+    _, payload = agent._default_graph.update_calls[0]
+    assert [command.id for command in payload["messages"]] == ["h3", "a4"]
+
+
+def test_rewind_to_unknown_message_id_raises() -> None:
+    agent = _FakeAgent(_three_cycle_messages())
+
+    with pytest.raises(RewindTargetNotFound):
+        rewind_thread(cast(Any, agent), "thread-1", to_message_id="missing")
+    assert agent._default_graph.update_calls == []
+
+
+def test_rewind_to_non_user_message_id_raises() -> None:
+    agent = _FakeAgent(_three_cycle_messages())
+
+    with pytest.raises(RewindTargetNotFound):
+        rewind_thread(cast(Any, agent), "thread-1", to_message_id="a2")
+    assert agent._default_graph.update_calls == []
+
+
+def test_rewind_to_message_id_on_empty_thread_raises() -> None:
+    agent = _FakeAgent([])
+
+    with pytest.raises(RewindTargetNotFound):
+        rewind_thread(cast(Any, agent), "thread-1", to_message_id="h1")
+    assert agent._default_graph.update_calls == []
+
+
+def test_rewind_thread_steps_mode_reports_exchanges() -> None:
+    agent = _FakeAgent(_three_cycle_messages())
+
+    result = rewind_thread(cast(Any, agent), "thread-1", steps=2)
+
+    assert result == RewindResult(removed=5, exchanges=2)
 
 
 class _FakeLocks:

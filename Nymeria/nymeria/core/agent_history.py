@@ -400,6 +400,12 @@ def _handle_human_history_message(
     ):
         entry["autonomous_source"] = classify_autonomous_source(entry["content"])
 
+    # Expose the underlying LangGraph message id so clients can target this
+    # exact prompt with POST /threads/{id}/rewind to_message_id (the entry
+    # "id" above is a synthetic per-render counter, not a stable graph id).
+    if msg.id:
+        entry["message_id"] = msg.id
+
     ctx.history.append(entry)
 
 

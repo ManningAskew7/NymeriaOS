@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import httpx
+
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from ..state.model import AssistantMessage, CLIUIState, UserMessage
 from ._shared import (
@@ -11,6 +13,20 @@ from ._shared import (
     unsupported_transport_result,
     CommandClientMethodUnavailable,
 )
+
+
+def _rewind_http_failure(exc: httpx.HTTPStatusError) -> CommandResult:
+    """Surface the backend rewind refusal (409 busy / 404 target gone) cleanly."""
+    detail = None
+    try:
+        body = exc.response.json()
+        if isinstance(body, dict):
+            detail = body.get("detail")
+    except Exception:
+        detail = None
+    if not isinstance(detail, str) or not detail.strip():
+        detail = f"Rewind failed (HTTP {exc.response.status_code})."
+    return CommandResult.failed(detail)
 
 
 def _get_ui_state(context: CommandContext) -> CLIUIState | None:
@@ -70,6 +86,8 @@ async def _handle_retry(
         )
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/retry", method_name=exc.method_name)
+    except httpx.HTTPStatusError as exc:
+        return _rewind_http_failure(exc)
 
     await context.dispatch({"type": "undo_last_exchange"})
 
@@ -124,6 +142,8 @@ async def _handle_undo(
         )
     except CommandClientMethodUnavailable as exc:
         return unsupported_transport_result("/undo", method_name=exc.method_name)
+    except httpx.HTTPStatusError as exc:
+        return _rewind_http_failure(exc)
 
     await context.dispatch({"type": "undo_last_exchange"})
 

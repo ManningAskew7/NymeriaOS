@@ -1,7 +1,8 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
   import type { Message, MessageStep, FileAttachment } from '$lib/types';
-  import { Icon, Modal } from '$lib/components/common';
+  import { Button, Icon, Modal } from '$lib/components/common';
+  import { computeVisibleBlastRadius, rewindToMessage } from '$lib/utils/rewind';
   import { formatFileSize, getFileExtension } from '$lib/utils/fileProcessing';
   import { formatMessageTime } from '$lib/utils/time';
   import { renderMarkdown, renderMarkdownStreaming } from '$lib/utils/markdown';
@@ -64,7 +65,7 @@
   ];
 
   // Parse user message to extract actual content, context summary, and hidden flag
-  function parseUserMessage(content: string): { text: string; contextSummary: string | null; hidden: boolean; isSmartwatch: boolean } {
+  function parseUserMessage(content: string): { text: string; contextSummary: string | null; hidden: boolean; isSmartwatch: boolean; isAutoCompact: boolean } {
     let text = content;
     let contextSummary: string | null = null;
 
@@ -73,12 +74,12 @@
 
     // Check if this is an autonomous wake-up message (should be hidden entirely)
     if (AUTONOMOUS_WAKEUP_PATTERN.test(text)) {
-      return { text: '', contextSummary: null, hidden: true, isSmartwatch: false };
+      return { text: '', contextSummary: null, hidden: true, isSmartwatch: false, isAutoCompact: false };
     }
 
     // Check if this is a compaction system request (should be hidden entirely)
     if (COMPACTION_REQUEST_PATTERN.test(text)) {
-      return { text: '', contextSummary: null, hidden: true, isSmartwatch: false };
+      return { text: '', contextSummary: null, hidden: true, isSmartwatch: false, isAutoCompact: false };
     }
 
     // Strip time context prefix unless user opted to show metadata
@@ -93,7 +94,7 @@
     if (autoCompactMatch) {
       contextSummary = autoCompactMatch[1].trim();
       text = '[Auto-compact: Thread summarized]';
-      return { text, contextSummary, hidden: false, isSmartwatch };
+      return { text, contextSummary, hidden: false, isSmartwatch, isAutoCompact: true };
     }
 
     // Check for manual /compact summary suffix
@@ -103,7 +104,7 @@
       text = text.replace(MANUAL_COMPACT_PATTERN, '').trim();
     }
 
-    return { text, contextSummary, hidden: false, isSmartwatch };
+    return { text, contextSummary, hidden: false, isSmartwatch, isAutoCompact: false };
   }
 
   // Parse assistant message to detect if it should be hidden (compaction summary response)
@@ -132,7 +133,7 @@
   let parsedUserContent = $derived(
     message.role === 'user'
       ? parseUserMessage(message.content)
-      : { text: message.content, contextSummary: null, hidden: false, isSmartwatch: false }
+      : { text: message.content, contextSummary: null, hidden: false, isSmartwatch: false, isAutoCompact: false }
   );
 
   // Computed: parsed assistant message (checks if it should be hidden)
@@ -298,6 +299,72 @@
 
   // Action buttons (copy + report) — only on completed assistant messages
   let showActions = $derived(!isUser && !isStreaming && !isHiddenMessage);
+
+  // User-bubble actions (edit and resend / rewind to here, backlog #12).
+  // Hidden while a turn is streaming or queued (the backend refuses rewinds
+  // on a locked thread, so the affordance disappears instead of failing) and
+  // on autonomous wake-up prompts (their text is not an editable user prompt).
+  let showUserActions = $derived(
+    isUser &&
+      !isHiddenMessage &&
+      !message.autonomousSource &&
+      !chatStore.isStreaming &&
+      !chatStore.isQueued
+  );
+
+  function handleEditMessage() {
+    // Re-attach image attachments on resend: rewinding drops them from model
+    // context, unlike document files which persist in the thread sandbox.
+    // Skip images whose dataUrl did not survive serialization.
+    const images = (message.attachments || []).filter(
+      (file) => file.type === 'image' && file.dataUrl
+    );
+    chatStore.beginEdit(message.id, parsedUserContent.text, images);
+  }
+
+  // Rewind-to-here confirm flow (destructive: needs the house confirm modal).
+  let rewindConfirmOpen = $state(false);
+  let rewindBusy = $state(false);
+  let rewindError = $state<string | null>(null);
+  let rewindBlastRadius = $derived(
+    computeVisibleBlastRadius(
+      chatStore.messages,
+      chatStore.messages.findIndex((m) => m.id === message.id)
+    )
+  );
+
+  function openRewindConfirm() {
+    rewindError = null;
+    rewindConfirmOpen = true;
+  }
+
+  function closeRewindConfirm() {
+    if (rewindBusy) return;
+    rewindConfirmOpen = false;
+    rewindError = null;
+  }
+
+  async function confirmRewind() {
+    const threadId = threadsStore.currentThreadId;
+    if (!threadId || rewindBusy) return;
+    rewindBusy = true;
+    rewindError = null;
+    const outcome = await rewindToMessage(threadId, message.id);
+    rewindBusy = false;
+    if (outcome.ok) {
+      rewindConfirmOpen = false;
+      return;
+    }
+    if (outcome.reason === 'stale_target') {
+      rewindError =
+        'The conversation changed on the backend and was reloaded. Close this dialog and pick a message again.';
+      return;
+    }
+    rewindError = humanizeErrorText(outcome.error, {
+      action: 'rewind',
+      resource: 'the conversation'
+    });
+  }
 
   // Copy response only
   let copyResponseIcon = $state<'copy' | 'check'>('copy');
@@ -591,6 +658,21 @@
     <time class="timestamp">
       {formatMessageTime(message.timestamp)}
     </time>
+    {#if showUserActions}
+      <div class="message-actions">
+        <!-- Auto-compact bubbles render a placeholder, not the stored prompt:
+             editing one would resend the literal placeholder string, so only
+             Rewind is offered there. -->
+        {#if !parsedUserContent.isAutoCompact}
+          <button type="button" class="action-btn" data-tooltip="Edit and resend" aria-label="Edit and resend this message" onclick={handleEditMessage}>
+            <Icon name="edit" size={14} />
+          </button>
+        {/if}
+        <button type="button" class="action-btn danger" data-tooltip="Rewind to here" aria-label="Rewind conversation to this message" onclick={openRewindConfirm}>
+          <Icon name="rewind" size={14} />
+        </button>
+      </div>
+    {/if}
     {#if showActions}
       <div class="message-actions">
         <button type="button" class="action-btn" data-tooltip="Copy response" aria-label="Copy response" onclick={handleCopyResponse}>
@@ -638,6 +720,29 @@
         {reportSending ? 'Sending…' : 'Send Report'}
       </button>
     {/if}
+  {/snippet}
+</Modal>
+
+<Modal title="Rewind conversation?" isOpen={rewindConfirmOpen} onClose={closeRewindConfirm}>
+  {#snippet children()}
+    <p class="rewind-confirm-text">
+      {#if rewindBlastRadius === 0}
+        This removes this message. This cannot be undone.
+      {:else}
+        This removes this message and
+        {rewindBlastRadius === 1 ? '1 later message' : `${rewindBlastRadius} later messages`},
+        including the agent's replies. This cannot be undone.
+      {/if}
+    </p>
+    {#if rewindError}
+      <p class="rewind-error" role="alert">{rewindError}</p>
+    {/if}
+    <div class="rewind-confirm-actions">
+      <Button variant="secondary" onclick={closeRewindConfirm} disabled={rewindBusy}>Cancel</Button>
+      <Button variant="danger" onclick={confirmRewind} disabled={rewindBusy} loading={rewindBusy}>
+        {rewindBusy ? 'Rewinding…' : 'Rewind'}
+      </Button>
+    </div>
   {/snippet}
 </Modal>
 
@@ -1240,6 +1345,42 @@
   .action-btn:hover {
     color: var(--text-secondary);
     background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  }
+
+  .action-btn:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+
+  /* Destructive action: hover telegraphs data loss by shifting toward the
+     error color instead of the neutral hover tint. */
+  .action-btn.danger:hover {
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+  }
+
+  .action-btn.danger:focus-visible {
+    outline-color: var(--error);
+  }
+
+  /* Rewind confirm modal */
+  .rewind-confirm-text {
+    margin: 0 0 var(--spacing-md) 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+
+  .rewind-error {
+    margin: 0 0 var(--spacing-md) 0;
+    font-size: var(--font-size-sm);
+    color: var(--error);
+  }
+
+  .rewind-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--spacing-sm);
   }
 
   /* Report modal */

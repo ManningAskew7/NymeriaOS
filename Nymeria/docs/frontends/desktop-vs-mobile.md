@@ -158,6 +158,32 @@ These files share core logic but have platform-specific adaptations. When making
 
 **When changing**: Changes to file processing logic, the `addFiles`/`removeFile` functions, or the file validation flow should be replicated. UI layout and interaction changes are platform-specific.
 
+#### Edit and rewind on user bubbles (`MessageBubble.svelte` + `utils/rewind.ts`)
+
+Both apps expose the same two actions on user messages, backed by `POST
+/threads/{id}/rewind` with `to_message_id` targeting (`utils/rewind.ts` in
+each app owns the targeting and orchestration; `chat.svelte.ts` carries the
+shared edit state: `beginEdit`/`cancelEdit`/`truncateFromMessage`). The
+affordance and confirm surfaces diverge by platform:
+
+| Aspect | Desktop | Mobile |
+|--------|---------|--------|
+| **Reveal** | Hover/focus toolbar in the bubble footer | Long-press (~500ms) with medium haptic |
+| **Action surface** | Inline `.action-btn` icons (edit, rewind) | `MessageActionSheet.svelte` bottom sheet, 44px rows |
+| **Rewind confirm** | `Modal` + `Button variant="danger"` | `hapticNotification('warning')` + `window.confirm` |
+| **Edit cancel** | Banner X button or Esc | Banner X button or Android back |
+| **Post-rewind reconciliation** | `refreshThreadSyncBaseline` after local truncate | Local truncate + history refetch (no syncPoll on mobile) |
+
+Editing defers the rewind until Send: entering edit only seeds the composer
+(text plus image attachments, which fall out of model context on rewind,
+unlike sandbox-persisted document files). Both apps consume the
+`thread_rewound` sync event and dedupe their own echo by client id. Shared
+guardrails: auto-compact bubbles (placeholder display text) offer Rewind
+only, never Edit; edit mode refuses slash-command sends with a toast; and
+the live-bubble ordinal fallback in `utils/rewind.ts` verifies the matched
+authoritative message contains the bubble's text before rewinding, falling
+back to a history reload on mismatch.
+
 #### `components/chat/QueuedPromptsBar.svelte`
 
 Both apps show the same queued sub-turn prompts, but the component is classified

@@ -83,6 +83,37 @@
       cancelled = true;
     };
   });
+
+  // Edit-previous-prompt seeding (backlog #12): entering edit REPLACES the
+  // composer content with the edited prompt and its image attachments; leaving
+  // edit clears whatever the edit flow left behind. Keyed on the editing id so
+  // ordinary typing does not retrigger the seed.
+  let _lastEditingId: string | null = null;
+  $effect(() => {
+    const editingId = chatStore.editingMessageId;
+    if (editingId === _lastEditingId) return;
+    _lastEditingId = editingId;
+    if (editingId !== null) {
+      inputValue = chatStore.editingDraft;
+      pendingFiles = [...chatStore.editingImageAttachments];
+      if (textareaRef) {
+        requestAnimationFrame(() => {
+          if (textareaRef) {
+            textareaRef.style.height = 'auto';
+            textareaRef.style.height = Math.min(textareaRef.scrollHeight, 120) + 'px';
+            textareaRef.focus();
+          }
+        });
+      }
+    } else {
+      inputValue = '';
+      pendingFiles = [];
+      if (textareaRef) {
+        textareaRef.style.height = 'auto';
+      }
+    }
+  });
+
   let isCommandNameEntry = $derived(inputValue.startsWith('/') && !/\s/.test(inputValue.slice(1)));
   let slashQuery = $derived(
     isCommandNameEntry ? inputValue.slice(1).toLowerCase() : ''
@@ -142,7 +173,14 @@
   function handleSubmit() {
     if (!canSend) return;
     hapticImpact('light');
+    const wasEditing = chatStore.isEditing;
     onSend(inputValue.trim(), pendingFiles.length > 0 ? pendingFiles : undefined);
+    if (wasEditing) {
+      // Keep the draft: a successful edit-send exits edit mode, which clears
+      // the composer via the $effect above; a refused one (rewind failed,
+      // thread became busy) keeps edit mode so nothing typed is lost.
+      return;
+    }
     inputValue = '';
     pendingFiles = [];
     if (textareaRef) {
@@ -299,6 +337,21 @@
 </script>
 
 <div class="input-container">
+  {#if chatStore.isEditing}
+    <div class="editing-banner">
+      <Icon name="edit" size={14} />
+      <span>Editing your message. Sending rewinds the conversation to this point.</span>
+      <button
+        type="button"
+        class="editing-cancel"
+        onclick={() => chatStore.cancelEdit()}
+        aria-label="Cancel editing"
+      >
+        <Icon name="x" size={16} />
+      </button>
+    </div>
+  {/if}
+
   {#if errorMessage}
     <div class="error-banner">
       <Icon name="error" size={14} />
@@ -562,5 +615,40 @@
     color: var(--error);
     font-size: var(--font-size-sm);
     border-radius: var(--radius-md);
+  }
+
+  .editing-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-xs) var(--spacing-xs) var(--spacing-xs) var(--spacing-sm);
+    margin-bottom: var(--spacing-xs);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    border-radius: var(--radius-md);
+  }
+
+  .editing-banner span {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .editing-cancel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    flex-shrink: 0;
+  }
+
+  .editing-cancel:active {
+    color: var(--text-primary);
+    background: var(--bg-hover);
   }
 </style>

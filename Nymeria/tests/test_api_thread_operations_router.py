@@ -16,9 +16,13 @@ from nymeria.core.thread_metadata import ThreadMetadataManager
 class FakeThreadLocks:
     def __init__(self):
         self.lock_info = None
+        self.busy = False
 
     def get_lock_info(self, thread_id: str):
         return self.lock_info
+
+    def is_thread_busy(self, thread_id: str) -> bool:
+        return self.busy
 
 
 class FakeToolRegistry:
@@ -41,8 +45,10 @@ class FakeAgent:
         self.aborted_threads: list[str] = []
         self.compactions: list[tuple[str, str, str | None]] = []
         self.prunes: list[tuple[str, str, str]] = []
-        self.rewinds: list[tuple[str, int]] = []
+        self.rewinds: list[tuple[str, object]] = []
         self.rewind_return = 0
+        self.rewind_exchanges = 0
+        self.rewind_missing_target = False
         self.synced_tools = 0
 
     def _get_llm_config_for_thread(self, thread_id: str) -> ThreadLLMConfig:
@@ -59,9 +65,22 @@ class FakeAgent:
         self.prunes.append((thread_id, user_id, mode))
         return {"success": True, "pruned_count": 3, "chars_saved": 1234}
 
-    def rewind_thread_exchanges(self, thread_id: str, steps: int = 1) -> int:
+    def rewind_thread(
+        self,
+        thread_id: str,
+        *,
+        steps: int | None = None,
+        to_message_id: str | None = None,
+    ):
+        from nymeria.core.agent_context import RewindResult, RewindTargetNotFound
+
+        if to_message_id is not None:
+            if self.rewind_missing_target:
+                raise RewindTargetNotFound(to_message_id)
+            self.rewinds.append((thread_id, to_message_id))
+            return RewindResult(self.rewind_return, self.rewind_exchanges)
         self.rewinds.append((thread_id, steps))
-        return self.rewind_return
+        return RewindResult(self.rewind_return, self.rewind_exchanges)
 
     def abort_with_cascade(self, thread_id: str):
         self.aborted_threads.append(thread_id)
@@ -263,6 +282,158 @@ def test_rewind_route_rejects_zero_or_negative_steps(tmp_path: Path, api_client_
     assert zero.status_code == 422
     assert negative.status_code == 422
     assert agent.rewinds == []
+
+
+def test_rewind_route_accepts_to_message_id(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind-target"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.rewind_return = 4
+    agent.rewind_exchanges = 2
+
+    response = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+        json={"to_message_id": "h2"},
+    )
+
+    assert response.status_code == 200
+    # steps echoes the resolved exchange count in id mode.
+    assert response.json() == {
+        "status": "ok",
+        "thread_id": thread_id,
+        "steps": 2,
+        "removed": 4,
+    }
+    assert agent.rewinds == [(thread_id, "h2")]
+
+
+def test_rewind_route_404_when_target_missing(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind-gone"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.rewind_missing_target = True
+
+    response = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+        json={"to_message_id": "compacted-away"},
+    )
+
+    assert response.status_code == 404
+    assert "Rewind target not found" in response.json()["detail"]
+    assert agent.rewinds == []
+
+
+def test_rewind_route_409_while_thread_locked(tmp_path: Path, api_client_builder):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind-busy"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent._thread_locks.lock_info = {"holder": "chat", "held_seconds": 3.2}
+
+    response = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+        json={"steps": 1},
+    )
+
+    assert response.status_code == 409
+    assert "Thread is busy" in response.json()["detail"]
+    assert agent.rewinds == []
+
+
+def test_rewind_route_409_when_lock_held_without_info(
+    tmp_path: Path, api_client_builder
+):
+    """The raw lock probe refuses even before the holder stamps lock_info."""
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind-probe"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent._thread_locks.busy = True
+
+    response = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+        json={"steps": 1},
+    )
+
+    assert response.status_code == 409
+    assert "Thread is busy" in response.json()["detail"]
+    assert agent.rewinds == []
+
+
+def test_rewind_route_skips_sync_event_when_nothing_removed(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    from nymeria.core import event_bus as event_bus_module
+
+    published = []
+
+    class _CapturingBus:
+        def publish(self, event):
+            published.append(event)
+
+    monkeypatch.setattr(
+        event_bus_module, "get_event_bus", lambda: _CapturingBus()
+    )
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind-noop"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.rewind_return = 0
+
+    response = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(token),
+        json={"steps": 1},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["removed"] == 0
+    assert published == []
+
+
+def test_rewind_route_publishes_thread_rewound_sync_event(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    from nymeria.core import event_bus as event_bus_module
+
+    published = []
+
+    class _CapturingBus:
+        def publish(self, event):
+            published.append(event)
+
+    monkeypatch.setattr(
+        event_bus_module, "get_event_bus", lambda: _CapturingBus()
+    )
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-rewind-event"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.rewind_return = 4
+    agent.rewind_exchanges = 2
+
+    response = client.post(
+        f"/threads/{thread_id}/rewind",
+        headers=api_client_builder.auth(
+            token, **{"x-nymeria-client-id": "client-abc"}
+        ),
+        json={"to_message_id": "h2"},
+    )
+
+    assert response.status_code == 200
+    assert len(published) == 1
+    event = published[0]
+    assert event.event_type == "thread_rewound"
+    assert event.thread_id == thread_id
+    assert event.user_id == "owner"
+    assert event.data == {
+        "steps": 2,
+        "removed": 4,
+        "to_message_id": "h2",
+        "_origin_client_id": "client-abc",
+    }
 
 
 def test_stop_route_aborts_only_when_thread_is_running(tmp_path: Path, api_client_builder):

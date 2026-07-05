@@ -66,6 +66,37 @@
     }
   });
 
+  // Edit-previous-prompt seeding (backlog #12): entering edit REPLACES the
+  // composer content with the edited prompt and its image attachments,
+  // unlike the append-only insertText channel above; leaving edit clears
+  // whatever the edit flow left behind. Keyed on the editing id so ordinary
+  // typing does not retrigger the seed.
+  let _lastEditingId: string | null = null;
+  $effect(() => {
+    const editingId = chatStore.editingMessageId;
+    if (editingId === _lastEditingId) return;
+    _lastEditingId = editingId;
+    if (editingId !== null) {
+      inputValue = chatStore.editingDraft;
+      pendingFiles = [...chatStore.editingImageAttachments];
+      if (textareaRef) {
+        requestAnimationFrame(() => {
+          if (textareaRef) {
+            textareaRef.style.height = 'auto';
+            textareaRef.style.height = Math.min(textareaRef.scrollHeight, 200) + 'px';
+            textareaRef.focus();
+          }
+        });
+      }
+    } else {
+      inputValue = '';
+      pendingFiles = [];
+      if (textareaRef) {
+        textareaRef.style.height = 'auto';
+      }
+    }
+  });
+
   let isStreaming = $derived(chatStore.isStreaming);
   let pendingImageCount = $derived(pendingFiles.filter((f) => f.type === 'image').length);
   // After Phase B, non-image attachments are sandboxed at ingress and ride
@@ -194,7 +225,14 @@
 
   function handleSubmit() {
     if (!canSend) return;
+    const wasEditing = chatStore.isEditing;
     onSend(inputValue.trim(), pendingFiles.length > 0 ? pendingFiles : undefined);
+    if (wasEditing) {
+      // Keep the draft: a successful edit-send exits edit mode, which clears
+      // the composer via the $effect above; a refused one (rewind failed,
+      // thread became busy) keeps edit mode so nothing typed is lost.
+      return;
+    }
     inputValue = '';
     pendingFiles = [];
     if (textareaRef) {
@@ -233,6 +271,14 @@
         commandsLoaded = false;
         return;
       }
+    }
+
+    // Escape cancels an in-progress prompt edit (command palette handled it
+    // above when open, so this never fights the palette dismiss).
+    if (event.key === 'Escape' && chatStore.isEditing) {
+      event.preventDefault();
+      chatStore.cancelEdit();
+      return;
     }
 
     // Cmd/Ctrl + Enter to send (queues if a turn is already streaming)
@@ -398,6 +444,22 @@
   ondragleave={handleDragLeave}
   ondrop={handleDrop}
 >
+  {#if chatStore.isEditing}
+    <div class="editing-banner">
+      <Icon name="edit" size={14} />
+      <span>Editing your message. Sending rewinds the conversation to this point.</span>
+      <button
+        type="button"
+        class="editing-cancel"
+        onclick={() => chatStore.cancelEdit()}
+        aria-label="Cancel editing"
+        data-tooltip="Cancel editing (Esc)"
+      >
+        <Icon name="x" size={14} />
+      </button>
+    </div>
+  {/if}
+
   {#if errorMessage}
     <div class="error-banner">
       <Icon name="error" size={14} />
@@ -731,6 +793,46 @@
     font-size: var(--font-size-sm);
     border-radius: var(--radius-md) var(--radius-md) 0 0;
     animation: slideDown var(--transition-fast);
+  }
+
+  .editing-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    animation: slideDown var(--transition-fast);
+  }
+
+  .editing-banner span {
+    flex: 1;
+  }
+
+  .editing-cancel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .editing-cancel:hover {
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+  }
+
+  .editing-cancel:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
   }
 
   @keyframes slideDown {

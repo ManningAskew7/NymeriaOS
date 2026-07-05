@@ -121,3 +121,13 @@ describe('humanizeError', () => {
     expect(title).toBe('Connection lost');
   });
 });
+
+describe('rewind action verb', () => {
+  it('renders rewind failures with the rewind verb', () => {
+    const body = humanizeErrorText(new Error('boom'), {
+      action: 'rewind',
+      resource: 'the conversation',
+    });
+    expect(body).toContain("Couldn't rewind the conversation");
+  });
+});

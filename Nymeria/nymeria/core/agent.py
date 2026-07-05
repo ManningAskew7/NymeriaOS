@@ -27,6 +27,7 @@ from .token_usage import extract_last_from_messages
 from .agent_text_extract import (
     extract_content_parts as _extract_content_parts,
 )
+from .agent_context import RewindResult
 from .agent_streaming import GraphStreamProcessor, compact_with_progress
 from .agent_compaction import COMPACTING_MESSAGE, CompactionManager
 from .agent_prune import PruneManager
@@ -3586,6 +3587,18 @@ class NymeriaAgent:
     ) -> int:
         from .agent_context import rewind_thread_exchanges
         return rewind_thread_exchanges(self, thread_id, steps=steps)
+
+    def rewind_thread(
+        self,
+        thread_id: str,
+        *,
+        steps: Optional[int] = None,
+        to_message_id: Optional[str] = None,
+    ) -> RewindResult:
+        from .agent_context import rewind_thread
+        return rewind_thread(
+            self, thread_id, steps=steps, to_message_id=to_message_id
+        )
 
     def _flush_memories_before_trim(
         self,

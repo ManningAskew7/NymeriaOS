@@ -53,13 +53,22 @@ class AttachmentLimitsResponse(BaseModel):
 
 
 class ThreadRewindRequest(BaseModel):
-    """Request model for rewinding the last N user+assistant exchanges."""
+    """Request model for rewinding thread state by count or by message id."""
 
     steps: int = Field(
         default=1,
         ge=1,
         le=100,
         description="Number of trailing exchanges to remove from thread state.",
+    )
+    to_message_id: str | None = Field(
+        default=None,
+        description=(
+            "LangGraph id of the user message to rewind to (inclusive): that "
+            "message and everything after it are removed. Takes precedence "
+            "over steps when set; 404 when the id is not a user message in "
+            "thread state."
+        ),
     )
 
 

@@ -23,6 +23,8 @@
   import { isTodoTool } from '$lib/utils/todoTools';
   import { isNonDesktopThreadId } from '$lib/utils/platform';
   import { refreshThreadSyncBaseline } from '$lib/stores/syncPoll.svelte';
+  import { errorsStore } from '$lib/stores/errors.svelte';
+  import { rewindToMessage } from '$lib/utils/rewind';
   import {
     isSkillMutationReloadSource,
     isSkillMutationToolName,
@@ -179,6 +181,15 @@
   async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
+    // Edit-and-resend (backlog #12): the composer was seeded from a prior
+    // user message; sending commits the deferred rewind, then streams the
+    // edited prompt as a fresh turn. Checked before the queue gate so an
+    // edit-send never silently queues behind a turn that started mid-edit.
+    if (chatStore.isEditing) {
+      await performEditResend(message, attachments);
+      return;
+    }
+
     const trimmed = message.trim();
     const slashRoot = trimmed.startsWith('/') ? trimmed.split(/\s+/)[0].toLowerCase() : '';
     const isChatStreamCommand = CHAT_STREAM_COMMAND_ROOTS.has(slashRoot);
@@ -233,6 +244,81 @@
       }
     }
 
+    await streamMessage(message, attachments);
+  }
+
+  /**
+   * Commit a deferred prompt edit: rewind to the edited message, then send
+   * the edited text (plus any carried image attachments) as a fresh turn.
+   * Refusals keep edit mode, and with it the composer content (InputBar's
+   * wasEditing guard skips the post-send clear), so nothing typed is lost.
+   */
+  // Reentrancy guard: the edit path deliberately keeps the composer populated
+  // (a refused send must not lose the draft), so unlike a normal send the
+  // Send button stays live during the rewind round-trip. A double submit
+  // would race two rewinds: the loser 404s and reloads the transcript over
+  // the winner's live stream.
+  let editResendInFlight = false;
+
+  async function performEditResend(message: string, attachments?: FileAttachment[]) {
+    if (editResendInFlight) return;
+    editResendInFlight = true;
+    try {
+      await performEditResendInner(message, attachments);
+    } finally {
+      editResendInFlight = false;
+    }
+  }
+
+  async function performEditResendInner(message: string, attachments?: FileAttachment[]) {
+    const threadId = threadsStore.currentThreadId;
+    const targetId = chatStore.editingMessageId;
+    if (!threadId || !targetId) {
+      chatStore.cancelEdit();
+      return;
+    }
+    // Slash commands are not prompts: an edit-send would bypass the command
+    // routing above (executeCommand vs chat-stream) and silently rewind
+    // before a config command. Refuse and keep the edit + composer intact.
+    if (message.trim().startsWith('/')) {
+      errorsStore.push({
+        kind: 'generic',
+        message:
+          'Slash commands cannot be sent as an edited prompt. Cancel the edit (Esc) to run a command.',
+      });
+      return;
+    }
+    if (chatStore.isStreaming || chatStore.isQueued) {
+      errorsStore.push({
+        kind: 'generic',
+        message: 'The agent is busy on this thread. Wait for the turn to finish, then send your edit.',
+      });
+      return;
+    }
+
+    const outcome = await rewindToMessage(threadId, targetId);
+    if (!outcome.ok) {
+      if (outcome.reason === 'stale_target') {
+        chatStore.cancelEdit();
+        errorsStore.push({
+          kind: 'generic',
+          message:
+            'The conversation changed on the backend, so it was reloaded and your edit was cancelled.',
+        });
+      } else {
+        errorsStore.push({
+          kind: 'generic',
+          message: humanizeErrorText(outcome.error, {
+            action: 'rewind',
+            resource: 'the conversation',
+          }),
+        });
+      }
+      return;
+    }
+
+    // rewindToMessage truncated the transcript and cleared edit state;
+    // stream the edited prompt as a normal fresh turn.
     await streamMessage(message, attachments);
   }
 

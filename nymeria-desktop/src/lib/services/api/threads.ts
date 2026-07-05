@@ -114,16 +114,50 @@ export class ThreadsApi extends ChatApi {
     return response.json();
   }
 
-  async getThreadHistory(threadId: string): Promise<ThreadHistory> {
+  /**
+   * Rewind thread state. Two addressing modes mirroring the backend:
+   * `toMessageId` removes that user message and everything after it (exact
+   * targeting, used by the edit/rewind bubble affordances); `steps` removes
+   * the last N exchanges (CLI parity). The backend answers 409 while a turn
+   * is running and 404 when the target id is no longer in thread state.
+   */
+  async rewindThread(
+    threadId: string,
+    target: { toMessageId?: string; steps?: number }
+  ): Promise<{ status: string; thread_id: string; steps: number; removed: number }> {
+    const body: Record<string, unknown> = {};
+    if (target.toMessageId) body.to_message_id = target.toMessageId;
+    if (target.steps) body.steps = target.steps;
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/rewind`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await this._extractError(response, 'Failed to rewind the conversation'));
+    }
+    return response.json();
+  }
+
+  async getThreadHistory(
+    threadId: string,
+    opts?: { showAutonomousPrompts?: boolean }
+  ): Promise<ThreadHistory> {
     // History filtering for autonomous wake-ups is driven by the global
     // localStorage toggle (default ON). A per-thread `show_autonomous_prompts`
     // value of true acts as a force-on override (e.g. when the global is off
     // but a specific thread should still show them). The backend honors the
     // query param when present; otherwise it falls back to the per-thread
-    // field (preserves behavior for MCP/CLI and older clients).
+    // field (preserves behavior for MCP/CLI and older clients). Callers that
+    // need the authoritative unfiltered view (rewind targeting) pass an
+    // explicit opts.showAutonomousPrompts override.
     const perThreadCfg = threadConfigStore.getConfig(threadId);
     const effectiveShowAutonomousPrompts =
-      configStore.showAutonomousPrompts || Boolean(perThreadCfg?.showAutonomousPrompts);
+      opts?.showAutonomousPrompts ??
+      (configStore.showAutonomousPrompts || Boolean(perThreadCfg?.showAutonomousPrompts));
     const params = new URLSearchParams({
       show_autonomous_prompts: String(effectiveShowAutonomousPrompts),
     });
@@ -168,6 +202,7 @@ export class ThreadsApi extends ChatApi {
               .filter((toolCall): toolCall is ToolCall => toolCall !== null)
           : undefined,
         attachments: m.attachments as Message['attachments'],
+        graphMessageId: m.message_id as string | undefined,
         contextSummary: (m.context_summary as string | undefined) || (m.contextSummary as string | undefined),
         messagesRemoved: (m.messages_removed as number | undefined) ?? (m.messagesRemoved as number | undefined),
         autoResumed: (m.auto_resumed as boolean | undefined) ?? (m.autoResumed as boolean | undefined),
