@@ -52,7 +52,9 @@ class _RetryableStreamError(RuntimeError):
     status_code = 500
 
 
-def _collect_processor_events(events, *, abort_event=None, response_parts=None, extra_events=None):
+def _collect_processor_events(
+    events, *, abort_event=None, response_parts=None, extra_events=None, tool_timeout=None
+):
     response_parts = response_parts if response_parts is not None else []
     abort_event = abort_event or threading.Event()
 
@@ -64,6 +66,7 @@ def _collect_processor_events(events, *, abort_event=None, response_parts=None, 
         response_parts=response_parts,
         clean_tool_result=lambda result: f"display:{result}",
         tool_result_extra_events=extra_events or (lambda *args: []),
+        tool_timeout=tool_timeout,
         llm_config=LLMConfig(
             provider="custom",
             model="primary",
@@ -188,6 +191,15 @@ def test_graph_stream_processor_converts_tool_events_and_model_end_fallback():
         extra_events=extra_events,
     )
 
+    # Server-side timing fields are wall-clock dependent; validate shape, then
+    # compare the rest exactly.
+    tool_call_started_at = chunks[0].pop("started_at")
+    tool_result_started_at = chunks[1].pop("started_at")
+    duration_ms = chunks[1].pop("duration_ms")
+    assert tool_call_started_at == tool_result_started_at
+    assert isinstance(tool_call_started_at, str) and tool_call_started_at
+    assert isinstance(duration_ms, int) and duration_ms >= 0
+
     assert chunks == [
         {
             "type": "tool_call",
@@ -215,6 +227,52 @@ def test_graph_stream_processor_converts_tool_events_and_model_end_fallback():
         {"configurable": {"thread_id": "thread-a"}},
         "v2",
     )]
+
+
+def test_tool_call_event_carries_timeout_budget_when_configured():
+    chunks, _, _ = _collect_processor_events(
+        [
+            {
+                "event": "on_tool_start",
+                "run_id": "call-1",
+                "name": "lookup",
+                "data": {"input": {}},
+            },
+        ],
+        tool_timeout=300,
+    )
+
+    assert chunks[0]["type"] == "tool_call"
+    assert chunks[0]["timeout_seconds"] == 300
+    assert isinstance(chunks[0]["started_at"], str) and chunks[0]["started_at"]
+
+
+def test_tool_result_carries_stream_measured_timing():
+    # Live timing is the processor's own on_tool_start -> on_tool_end diff,
+    # measured in the API process (the checkpointed node stamp is not visible
+    # on the callback output; it surfaces on history reload instead).
+    chunks, _, _ = _collect_processor_events(
+        [
+            {
+                "event": "on_tool_start",
+                "run_id": "call-1",
+                "name": "lookup",
+                "data": {"input": {}},
+            },
+            {
+                "event": "on_tool_end",
+                "run_id": "call-1",
+                "name": "lookup",
+                "data": {"output": "plain string result"},
+            },
+        ],
+    )
+
+    call_chunk = next(c for c in chunks if c["type"] == "tool_call")
+    result_chunk = next(c for c in chunks if c["type"] == "tool_result")
+    assert result_chunk["started_at"] == call_chunk["started_at"]
+    assert isinstance(result_chunk["duration_ms"], int)
+    assert result_chunk["duration_ms"] >= 0
 
 
 def test_graph_stream_processor_streams_reasoning_tool_delta_and_response_text():

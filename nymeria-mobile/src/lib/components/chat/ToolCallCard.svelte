@@ -56,11 +56,38 @@
   );
 
   let duration = $derived.by(() => {
-    if (!toolCall.startTime || !toolCall.endTime) return null;
-    const ms = toolCall.endTime.getTime() - toolCall.startTime.getTime();
+    // Prefer the server-measured execution time (tool_result.duration_ms);
+    // the startTime/endTime diff includes network/queue latency.
+    const ms =
+      toolCall.durationMs ??
+      (toolCall.startTime && toolCall.endTime
+        ? toolCall.endTime.getTime() - toolCall.startTime.getTime()
+        : null);
+    if (ms === null || ms === undefined) return null;
     if (ms < 1000) return `${ms}ms`;
     const s = ms / 1000;
     return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
+  });
+
+  // Live elapsed clock while the tool runs; paired with the backend's kill
+  // budget (tool_call.timeout_seconds) as "12s/300s" when known.
+  let elapsedSeconds = $state(0);
+  $effect(() => {
+    if (toolCall.status !== 'running' || !toolCall.startTime) return;
+    const start = toolCall.startTime.getTime();
+    const tick = () => {
+      elapsedSeconds = Math.max(0, Math.floor((Date.now() - start) / 1000));
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  });
+
+  let runningTimer = $derived.by(() => {
+    if (toolCall.status !== 'running' || !toolCall.startTime) return null;
+    return toolCall.timeoutSeconds
+      ? `${elapsedSeconds}s/${toolCall.timeoutSeconds}s`
+      : `${elapsedSeconds}s`;
   });
 
   function formatArgs(args: Record<string, unknown>): string {
@@ -104,6 +131,8 @@
           <span class="duration-badge cancelled-badge">Cancelled</span>
         {:else if toolCall.pendingApproval}
           <span class="duration-badge approval-badge">Awaiting approval</span>
+        {:else if runningTimer}
+          <span class="duration-badge running-badge">{runningTimer}</span>
         {/if}
       </div>
     {/snippet}
@@ -150,7 +179,7 @@
           <span>Started: {formatMessageTime(toolCall.startTime)}</span>
           {#if toolCall.endTime}
             <span>
-              Duration: {Math.round((toolCall.endTime.getTime() - toolCall.startTime.getTime()) / 1000)}s
+              Duration: {Math.round((toolCall.durationMs ?? (toolCall.endTime.getTime() - toolCall.startTime.getTime())) / 1000)}s
             </span>
           {/if}
         </div>
@@ -403,6 +432,12 @@
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     font-family: var(--font-mono);
+  }
+
+  .running-badge {
+    /* Ticking elapsed/max clock: keep digits fixed-width so it doesn't jitter. */
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .tool-details {

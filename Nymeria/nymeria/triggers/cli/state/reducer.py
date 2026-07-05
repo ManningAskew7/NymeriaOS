@@ -291,6 +291,7 @@ def _reduce_tool_result(
         started_at=existing.started_at if existing else timestamp,
         updated_at=timestamp,
         ended_at=timestamp,
+        duration_ms=event.duration_ms,
     )
     active = dict(state.active_tool_calls)
     active[tool_id] = step

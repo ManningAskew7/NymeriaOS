@@ -89,6 +89,9 @@ class ToolCallStep:
     started_at: float = 0.0
     updated_at: float = 0.0
     ended_at: float | None = None
+    # Server-measured execution time (tool_result.duration_ms); preferred over
+    # the started_at/ended_at diff, which is client event-arrival wall clock.
+    duration_ms: int | None = None
 
 
 MessageStep: TypeAlias = ThinkingStep | ResponseStep | ToolCallStep

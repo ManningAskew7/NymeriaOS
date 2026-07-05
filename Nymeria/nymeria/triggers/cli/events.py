@@ -92,6 +92,8 @@ class ToolResultEvent(CLIStreamEvent):
     name: str = ""
     result: Any = ""
     status: str = "success"
+    # Server-measured execution time; None on older backends.
+    duration_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -344,12 +346,18 @@ def normalize_stream_event(
         )
 
     if event_type == "tool_result":
+        raw_duration = _first(payload, "duration_ms", "durationMs")
         return ToolResultEvent(
             thread_id=thread_id,
             id=_text(_first(payload, "id", "tool_call_id", "toolCallId"), default=""),
             name=_text(_first(payload, "name", "tool_name", "toolName"), default=""),
             result=_first(payload, "result", "content", default=""),
             status=_text(_first(payload, "status"), default="success"),
+            duration_ms=(
+                int(raw_duration)
+                if isinstance(raw_duration, (int, float)) and not isinstance(raw_duration, bool)
+                else None
+            ),
             raw=raw,
         )
 

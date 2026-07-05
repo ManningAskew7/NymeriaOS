@@ -1402,6 +1402,7 @@ closing DNS-rebinding gaps.
 | `AGENT_MAX_ITERATIONS` | `500` | Max agent loop iterations per turn (10-10,000); a safety backstop, not a tuning knob. Callable threads use their own per-thread cap |
 | `TOOL_TIMEOUT` | `300` | Max seconds a tool or callable-thread invocation may run |
 | `TOOL_OUTPUT_MAX_CHARS` | `100000` | Max characters stored for one tool result. Larger outputs keep the first ~75k and last ~25k characters with a truncation marker. |
+| `TOOL_TIMING_IN_RESULTS` | `false` | Append each tool result's server-measured duration (for example `[Duration: 3.4s]`) to the result text the model sees. Costs a few tokens per tool call; gives the agent execution-time context. Timing is always emitted on the `tool_call`/`tool_result` SSE events and persisted for history reload regardless of this flag. |
 | `BASH_ENV_PASSTHROUGH` | `` | Comma-separated extra environment variable NAMES exposed to `bash_execute` commands beyond the base allowlist (`PATH, HOME, LANG, LC_ALL, TMPDIR`). Commands run under a deny-by-default scrubbed environment so backend secrets never leak into command output; name only what a command genuinely needs, never secret-bearing vars. Deployments behind an egress proxy or custom CA, or using a venv, typically need e.g. `HTTPS_PROXY,SSL_CERT_FILE,REQUESTS_CA_BUNDLE,VIRTUAL_ENV`; toolchain homes like `JAVA_HOME,GOPATH` are other common picks. |
 | `SEQUENTIAL_TOOL_EXECUTION` | `false` | Run a turn's tool calls one at a time in the order the model emitted them, instead of concurrently. Global default; overridable per-thread (a thread can force on or off, or inherit this). Slower for independent calls but avoids parallel-execution races. The `run_tools_in_order` tool still orders a single batch even when this is off. |
 | `HOOKS_ENABLED` | `true` | Master kill switch for lifecycle hooks. When off, no hook fires on any thread (a debug/escape hatch). Global default; overridable per-thread. Sits on top of each hook's own `enabled` flag and any per-thread per-hook override. See `docs/agent-systems/hooks.md`. |
@@ -1655,6 +1656,7 @@ AUDIT_LOG_ENABLED=true
 
 # Tool output safety
 # TOOL_OUTPUT_MAX_CHARS=100000     # Max stored characters per tool result
+# TOOL_TIMING_IN_RESULTS=false     # Append server-measured [Duration: ...] to tool results the model sees
 # BASH_ENV_PASSTHROUGH=            # Extra env var names for bash_execute (comma-separated; base allowlist is PATH,HOME,LANG,LC_ALL,TMPDIR)
 
 # Activity Log (optional)

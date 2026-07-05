@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from typing import (
     Any,
     AsyncGenerator,
@@ -169,6 +170,7 @@ class GraphStreamProcessor:
         tool_result_extra_events: Callable[[str, str, Any], Iterable[dict[str, Any]]],
         stream_logger: Optional[logging.Logger] = None,
         llm_config: Any = None,
+        tool_timeout: Optional[int] = None,
     ) -> None:
         self.thread_id = thread_id
         self.config = config
@@ -179,6 +181,9 @@ class GraphStreamProcessor:
         self.tool_result_extra_events = tool_result_extra_events
         self.logger = stream_logger or logger
         self.llm_config = llm_config
+        # Per-tool timeout budget (seconds) surfaced on tool_call events so
+        # clients can render elapsed/max. Same value SafeToolNode enforces.
+        self.tool_timeout = tool_timeout
 
         self._reset_graph_state()
 
@@ -275,6 +280,9 @@ class GraphStreamProcessor:
     def _reset_graph_state(self) -> None:
         self._emitted_tool_starts: set[Any] = set()
         self._emitted_tool_ends: set[Any] = set()
+        # run_id -> (monotonic start, wall-clock ISO start) for server-side
+        # tool timing on the live stream.
+        self._tool_call_started: dict[Any, tuple[float, str]] = {}
         self._reasoning_deduper = ReasoningChunkDeduper()
         self._emitted_tool_call_delta = False
         self._streamed_text_in_current_llm_call = False
@@ -358,12 +366,18 @@ class GraphStreamProcessor:
             tool_input,
             data_keys,
         )
-        return [{
+        started_at = datetime.now(timezone.utc).isoformat()
+        self._tool_call_started[run_id] = (time.monotonic(), started_at)
+        chunk: dict[str, Any] = {
             "type": "tool_call",
             "id": run_id,
             "name": tool_name,
             "args": tool_input,
-        }]
+            "started_at": started_at,
+        }
+        if self.tool_timeout:
+            chunk["timeout_seconds"] = int(self.tool_timeout)
+        return [chunk]
 
     def _handle_tool_end(self, event: dict[str, Any]) -> Iterable[dict[str, Any]]:
         run_id = event.get("run_id")
@@ -375,12 +389,23 @@ class GraphStreamProcessor:
         output = event.get("data", {}).get("output", "")
         raw_result = self._coerce_tool_result(output)
         display_result = self.clean_tool_result(raw_result)
-        events = [{
+        chunk: dict[str, Any] = {
             "type": "tool_result",
             "id": run_id,
             "name": tool_name,
             "result": display_result,
-        }]
+        }
+        # Server-authoritative live timing: diff our own monotonic clock from
+        # tool_start (measured in the API process, around the BaseTool run).
+        # The on_tool_end output is the pre-stamp inner ToolMessage, so
+        # SafeToolNode's checkpointed tool_timing stamp (a slightly wider
+        # bracket that also covers PRE/POST tool hooks) is not visible here;
+        # it surfaces on history reload via agent_history instead.
+        started = self._tool_call_started.pop(run_id, None)
+        if started is not None:
+            chunk["started_at"] = started[1]
+            chunk["duration_ms"] = max(0, int((time.monotonic() - started[0]) * 1000))
+        events = [chunk]
         events.extend(self.tool_result_extra_events(tool_name, raw_result, run_id))
         return events
 

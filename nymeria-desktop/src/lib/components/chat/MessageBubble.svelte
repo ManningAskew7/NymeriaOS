@@ -569,6 +569,8 @@
                   status: step.status || 'pending',
                   startTime: step.startTime,
                   endTime: step.endTime,
+                  durationMs: step.durationMs,
+                  timeoutSeconds: step.timeoutSeconds,
                   pendingApproval: step.pendingApproval
                 }} />
               {:else}
@@ -581,6 +583,8 @@
                   status: step.status || 'pending',
                   startTime: step.startTime,
                   endTime: step.endTime,
+                  durationMs: step.durationMs,
+                  timeoutSeconds: step.timeoutSeconds,
                   pendingApproval: step.pendingApproval
                 }} />
               {/if}

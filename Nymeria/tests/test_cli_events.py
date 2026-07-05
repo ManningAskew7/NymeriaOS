@@ -382,6 +382,23 @@ def test_missing_optional_fields_are_defensive() -> None:
     )
 
 
+def test_tool_result_parses_server_duration() -> None:
+    event = normalize_stream_event({
+        "type": "tool_result",
+        "id": "call-1",
+        "name": "search_memory",
+        "result": "ok",
+        "duration_ms": 2500,
+    })
+    assert isinstance(event, ToolResultEvent)
+    assert event.duration_ms == 2500
+
+    # Malformed values read as absent, never raise.
+    ignored = normalize_stream_event({"type": "tool_result", "duration_ms": "fast"})
+    assert isinstance(ignored, ToolResultEvent)
+    assert ignored.duration_ms is None
+
+
 def test_unknown_event_type_is_preserved_as_diagnostic() -> None:
     event = normalize_stream_event(
         {

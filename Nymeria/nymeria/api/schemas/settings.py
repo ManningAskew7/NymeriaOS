@@ -139,6 +139,7 @@ class ServerSettingsResponse(BaseModel):
     compact_model: Optional[str] = None
     sliding_window_cycles: int
     tool_output_max_chars: int
+    tool_timing_in_results: bool = False
     memory_char_limit: int = 8000
     memory_max_entries: int = 100
     memory_value_max_chars: int = 1000
@@ -710,6 +711,7 @@ class ServerSettingsUpdate(BaseModel):
     compact_model: Optional[str] = None
     sliding_window_cycles: Optional[int] = None
     tool_output_max_chars: Optional[int] = None
+    tool_timing_in_results: Optional[bool] = None
     memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
     memory_max_entries: Optional[int] = Field(default=None, ge=1, le=10_000)
     memory_value_max_chars: Optional[int] = Field(default=None, ge=50, le=100_000)

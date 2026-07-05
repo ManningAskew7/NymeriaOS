@@ -429,6 +429,22 @@ def test_tool_row_can_include_duration_when_enabled() -> None:
     assert cell_len(row) <= 100
 
 
+def test_tool_row_prefers_server_measured_duration() -> None:
+    # tool_result.duration_ms (server execution time) wins over the local
+    # event-arrival diff when the backend supplies it.
+    state = _tool_artifact_state()
+    tool = replace(state.active_tool_calls["call-1"], duration_ms=4500)
+
+    row = format_tool_row(
+        tool,
+        width=100,
+        options=ToolRowRenderOptions(show_duration=True),
+    )
+
+    assert "4.5s" in row
+    assert "2.0s" not in row
+
+
 def test_transcript_renderer_reuses_unchanged_message_blocks() -> None:
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "hello", now=0.1)

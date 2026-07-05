@@ -14,6 +14,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any, Callable, List, Literal, Optional, cast
 from langchain_core.callbacks.manager import (
     adispatch_custom_event,
@@ -1652,6 +1653,16 @@ def _auth_failure_guidance(tool_name: str, provider: str, status: str) -> str:
     )
 
 
+def format_tool_duration_ms(duration_ms: int) -> str:
+    """Compact human duration: 850ms, 3.4s, 42s (matches the client badge format)."""
+    if duration_ms < 1000:
+        return f"{duration_ms}ms"
+    seconds = duration_ms / 1000
+    if seconds < 10:
+        return f"{seconds:.1f}s"
+    return f"{round(seconds)}s"
+
+
 class SafeToolNode(ToolNode):
     """
     A ToolNode wrapper that catches exceptions and returns them as tool results,
@@ -1698,10 +1709,17 @@ class SafeToolNode(ToolNode):
     def _run_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
         from ...core import hooks
         config = tool_runtime.config
+        started_at = datetime.now(timezone.utc)
+        started_monotonic = time.monotonic()
         registry = self._hook_registry(config)
         if not hooks.tool_hooks_active(registry):
-            return self._augment_auth_failure(
-                super()._run_one(call, input_type, tool_runtime), call, config
+            return self._stamp_tool_timing(
+                self._augment_auth_failure(
+                    super()._run_one(call, input_type, tool_runtime), call, config
+                ),
+                started_at,
+                started_monotonic,
+                config,
             )
         from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -1737,15 +1755,27 @@ class SafeToolNode(ToolNode):
         # original result; scheduled off-turn, so they neither delay the tool
         # return nor count against the tool timeout budget.
         hooks.schedule_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
-        return self._augment_auth_failure(final, call, config)
+        return self._stamp_tool_timing(
+            self._augment_auth_failure(final, call, config),
+            started_at,
+            started_monotonic,
+            config,
+        )
 
     async def _arun_one(self, call: ToolCall, input_type, tool_runtime: ToolRuntime):
         from ...core import hooks
         config = tool_runtime.config
+        started_at = datetime.now(timezone.utc)
+        started_monotonic = time.monotonic()
         registry = self._hook_registry(config)
         if not hooks.tool_hooks_active(registry):
-            return await self._a_augment_auth_failure(
-                await super()._arun_one(call, input_type, tool_runtime), call, config
+            return self._stamp_tool_timing(
+                await self._a_augment_auth_failure(
+                    await super()._arun_one(call, input_type, tool_runtime), call, config
+                ),
+                started_at,
+                started_monotonic,
+                config,
             )
         from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -1781,7 +1811,12 @@ class SafeToolNode(ToolNode):
         # original result; scheduled off-turn (a loop task), so they neither
         # delay the tool return nor count against the tool timeout budget.
         hooks.schedule_observe(hooks.HookEvent.POST_TOOL_USE, post_ctx, registry=registry)
-        return await self._a_augment_auth_failure(final, call, config)
+        return self._stamp_tool_timing(
+            await self._a_augment_auth_failure(final, call, config),
+            started_at,
+            started_monotonic,
+            config,
+        )
 
     @staticmethod
     def _auth_failure_candidate(result) -> bool:
@@ -1847,6 +1882,56 @@ class SafeToolNode(ToolNode):
         if not self._auth_failure_candidate(result):
             return result
         return await asyncio.to_thread(self._augment_auth_failure, result, call, config)
+
+    @staticmethod
+    def _timing_in_results_enabled(config) -> bool:
+        """Read the per-turn tool_timing_in_results flag off the run config.
+
+        Stamped by ``agent_safety.graph_run_config`` from the global setting;
+        absent on read-only/no-source callers, which reads as disabled.
+        """
+        configurable = config.get("configurable") if isinstance(config, dict) else None
+        return bool((configurable or {}).get("tool_timing_in_results"))
+
+    def _stamp_tool_timing(self, result, started_at, started_monotonic, config):
+        """Attach server-measured timing to a completed tool result.
+
+        Stamps ``additional_kwargs["tool_timing"]`` ({"started_at": ISO-8601
+        UTC, "duration_ms": int}) onto each ToolMessage so timing persists
+        through checkpointing and surfaces on history reload. When the
+        per-turn ``tool_timing_in_results`` flag is on, also appends a
+        compact ``[Duration: ...]`` line to the content the model sees.
+        Best-effort: any failure returns the original result untouched;
+        Command results pass through unchanged.
+        """
+        try:
+            duration_ms = max(0, int((time.monotonic() - started_monotonic) * 1000))
+            include_in_content = self._timing_in_results_enabled(config)
+
+            def stamp(msg):
+                if not isinstance(msg, ToolMessage):
+                    return msg
+                additional = dict(msg.additional_kwargs or {})
+                additional["tool_timing"] = {
+                    "started_at": started_at.isoformat(),
+                    "duration_ms": duration_ms,
+                }
+                update: dict = {"additional_kwargs": additional}
+                if include_in_content:
+                    suffix = f"[Duration: {format_tool_duration_ms(duration_ms)}]"
+                    content = msg.content
+                    if isinstance(content, list):
+                        update["content"] = content + [{"type": "text", "text": suffix}]
+                    else:
+                        update["content"] = f"{content}\n\n{suffix}"
+                return msg.model_copy(update=update)
+
+            if isinstance(result, list):
+                return [stamp(m) for m in result]
+            return stamp(result)
+        except Exception:
+            logger.debug("tool timing stamp skipped", exc_info=True)
+            return result
 
     @staticmethod
     def _hook_registry(config):

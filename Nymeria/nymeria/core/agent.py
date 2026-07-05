@@ -2981,6 +2981,7 @@ class NymeriaAgent:
                 tool_result_extra_events=self._tool_result_extra_events,
                 stream_logger=logger,
                 llm_config=self._get_llm_config_for_thread(thread_id),
+                tool_timeout=getattr(self.settings, "tool_timeout", None),
             )
 
             try:

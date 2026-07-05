@@ -353,27 +353,30 @@ export class ChatApi extends CredentialsApi {
           };
 
         case 'tool_call':
-          // Nymeria sends: { type, id, name, args }
+          // Nymeria sends: { type, id, name, args, started_at, timeout_seconds }
           return {
             type: 'tool_call',
             data: {
               id: (data.id as string) || `${data.name}-${Date.now()}`,
               name: data.name as string,
-              arguments: (data.args as Record<string, unknown>) || {}
+              arguments: (data.args as Record<string, unknown>) || {},
+              timeoutSeconds:
+                typeof data.timeout_seconds === 'number' ? data.timeout_seconds : undefined
             },
             timestamp: new Date(),
             threadId
           };
 
         case 'tool_result':
-          // Nymeria sends: { type, id, name, result }
+          // Nymeria sends: { type, id, name, result, started_at, duration_ms }
           return {
             type: 'tool_result',
             data: {
               id: data.id as string | undefined,
               name: data.name as string,
               result: (data.result as string) || '',
-              status: 'success' as const
+              status: 'success' as const,
+              durationMs: typeof data.duration_ms === 'number' ? data.duration_ms : undefined
             },
             timestamp: new Date(),
             threadId
