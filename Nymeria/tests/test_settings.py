@@ -170,12 +170,6 @@ _BOT_TOKEN_ENV_VARS = (
     "DISCORD_BOT_TOKEN",
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
-    "MATRIX_ACCESS_TOKEN",
-    "MATRIX_PASSWORD",
-    "SIGNAL_HTTP_URL",
-    "SIGNAL_ACCOUNT",
-    "INSTAGRAM_ACCESS_TOKEN",
-    "INSTAGRAM_IG_USER_ID",
 )
 
 
@@ -189,7 +183,7 @@ def test_validate_runtime_warns_when_bot_token_set_without_provider_key(monkeypa
     settings = Settings(
         _env_file=None,
         slack_bot_token="xoxb-test",
-        instagram_access_token="ig-test",
+        twitch_bot_access_token="oauth:test",
     )
     # Force "no LLM key" regardless of ambient env so the bot-warning branch fires.
     monkeypatch.setattr(Settings, "get_api_key_for_provider", lambda self: "")
@@ -202,8 +196,8 @@ def test_validate_runtime_warns_when_bot_token_set_without_provider_key(monkeypa
         for w in warnings
     )
     assert any(
-        "INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_IG_USER_ID is set but no LLM API key configured.\n"
-        "  The Instagram bot will not be able to process messages." == w
+        "TWITCH_BOT_ACCESS_TOKEN is set but no LLM API key configured.\n"
+        "  The Twitch bot will not be able to process messages." == w
         for w in warnings
     )
     # A platform whose token is unset must not warn.

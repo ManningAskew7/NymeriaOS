@@ -1,15 +1,15 @@
 """Shared in-process Nymeria API adapter for the API-hosted webhook bot clients.
 
-The seven webhook bot routers (whatsapp, messenger, instagram, google_chat,
-webex, line, teams) all drive the agent through an identical adapter object: the
-native ``NymeriaXxxBot`` thin-client is constructed with this adapter as its
-``api`` and calls ``api.claim_*``/``api.chat_stream``/``api.stop`` etc. The seven
-class bodies were byte-identical apart from three per-platform axes, now injected:
+The webhook bot routers (whatsapp, teams) drive the agent through an identical
+adapter object: the native ``NymeriaXxxBot`` thin-client is constructed with
+this adapter as its ``api`` and calls
+``api.claim_*``/``api.chat_stream``/``api.stop`` etc. The class bodies were
+byte-identical apart from three per-platform axes, now injected:
 
 - ``origin_client_id``: the lowercase wire id stamped on outbound sync events
-  (e.g. ``"whatsapp"``, ``"googlechat"``).
+  (e.g. ``"whatsapp"``, ``"teams"``).
 - ``display_name``: the human-readable platform name used only in best-effort
-  ``logger.debug`` breadcrumbs (e.g. ``"WhatsApp"``, ``"Google Chat"``, ``"LINE"``).
+  ``logger.debug`` breadcrumbs (e.g. ``"WhatsApp"``, ``"Microsoft Teams"``).
 - ``error_cls``: the platform's own ``BotAPIError`` class (each native bot module
   defines its own and catches it with ``except BotAPIError``), so the adapter must
   raise that exact class for the native handler to keep matching.

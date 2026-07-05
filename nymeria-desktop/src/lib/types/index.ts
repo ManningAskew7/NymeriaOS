@@ -182,8 +182,8 @@ export interface ToolCall {
 }
 
 // Thread types
-export type ThreadPlatform = 'desktop' | 'cli' | 'callable' | 'discord' | 'telegram' | 'slack' | 'matrix' | 'whatsapp' | 'messenger' | 'instagram' | 'webex' | 'mattermost' | 'zulip' | 'rocketchat' | 'teams' | 'googlechat' | 'line' | 'signal' | 'twitch' | 'trigger';
-export type ChatAppProvider = 'discord' | 'telegram' | 'twitch' | 'slack' | 'matrix' | 'whatsapp' | 'messenger' | 'instagram' | 'webex' | 'mattermost' | 'zulip' | 'rocketchat' | 'teams' | 'googlechat' | 'line' | 'signal';
+export type ThreadPlatform = 'desktop' | 'cli' | 'callable' | 'discord' | 'telegram' | 'slack' | 'whatsapp' | 'teams' | 'twitch' | 'trigger';
+export type ChatAppProvider = 'discord' | 'telegram' | 'twitch' | 'slack' | 'whatsapp' | 'teams';
 
 export interface Thread {
   id: string;
@@ -1589,21 +1589,6 @@ export interface ServerSettingsUpdate {
   grist_api_key?: string | null;
   grist_base_url?: string | null;
   discord_base_url?: string | null;
-  webex_access_token?: string | null;
-  webex_base_url?: string | null;
-  webex_webhook_secret?: string | null;
-  webex_bot_person_id?: string | null;
-  webex_bot_email?: string | null;
-  webex_show_tool_events?: boolean | null;
-  mattermost_access_token?: string | null;
-  mattermost_base_url?: string | null;
-  mattermost_respond_mode?: string | null;
-  mattermost_show_tool_events?: boolean | null;
-  zulip_api_key?: string | null;
-  zulip_email?: string | null;
-  zulip_base_url?: string | null;
-  zulip_respond_mode?: string | null;
-  zulip_show_tool_events?: boolean | null;
   whatsapp_access_token?: string | null;
   whatsapp_business_account_id?: string | null;
   whatsapp_phone_number_id?: string | null;
@@ -1611,25 +1596,6 @@ export interface ServerSettingsUpdate {
   whatsapp_webhook_verify_token?: string | null;
   whatsapp_app_secret?: string | null;
   whatsapp_show_tool_events?: boolean | null;
-  messenger_page_access_token?: string | null;
-  messenger_page_id?: string | null;
-  messenger_webhook_verify_token?: string | null;
-  messenger_app_secret?: string | null;
-  messenger_graph_api_base_url?: string | null;
-  messenger_show_tool_events?: boolean | null;
-  instagram_access_token?: string | null;
-  instagram_ig_user_id?: string | null;
-  instagram_webhook_verify_token?: string | null;
-  instagram_app_secret?: string | null;
-  instagram_graph_api_base_url?: string | null;
-  instagram_show_tool_events?: boolean | null;
-  matrix_access_token?: string | null;
-  matrix_base_url?: string | null;
-  rocketchat_auth_token?: string | null;
-  rocketchat_user_id?: string | null;
-  rocketchat_base_url?: string | null;
-  rocketchat_respond_mode?: string | null;
-  rocketchat_show_tool_events?: boolean | null;
   teams_bot_app_id?: string | null;
   teams_bot_app_password?: string | null;
   teams_bot_tenant_id?: string | null;
@@ -1638,33 +1604,6 @@ export interface ServerSettingsUpdate {
   teams_bot_show_tool_events?: boolean | null;
   teams_bot_token_url?: string | null;
   teams_bot_openid_config_url?: string | null;
-  google_chat_service_account_json?: string | null;
-  google_chat_service_account_file?: string | null;
-  google_chat_project_number?: string | null;
-  google_chat_auth_audience?: string | null;
-  google_chat_auth_audience_type?: string | null;
-  google_chat_bot_name?: string | null;
-  google_chat_respond_mode?: string | null;
-  google_chat_validate_auth?: boolean | null;
-  google_chat_show_tool_events?: boolean | null;
-  google_chat_api_base_url?: string | null;
-  google_chat_use_adc?: boolean | null;
-  line_channel_access_token?: string | null;
-  line_channel_secret?: string | null;
-  line_bot_user_id?: string | null;
-  line_bot_name?: string | null;
-  line_respond_mode?: string | null;
-  line_validate_signature?: boolean | null;
-  line_show_tool_events?: boolean | null;
-  line_api_base_url?: string | null;
-  signal_http_url?: string | null;
-  signal_account?: string | null;
-  signal_account_uuid?: string | null;
-  signal_respond_mode?: string | null;
-  signal_allowed_users?: string | null;
-  signal_allowed_groups?: string | null;
-  signal_show_tool_events?: boolean | null;
-  signal_http_timeout?: number | null;
   google_books_api_key?: string | null;
   google_books_base_url?: string | null;
   youtube_api_key?: string | null;

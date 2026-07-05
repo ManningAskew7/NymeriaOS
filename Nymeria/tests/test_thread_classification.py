@@ -19,24 +19,14 @@ from nymeria.core.thread_classification import (
     parse_thread_metadata,
 )
 
-# The 17 de-prefixed native platform names (the source-of-truth literal the
+# The 7 de-prefixed native platform names (the source-of-truth literal the
 # derived NATIVE_THREAD_PLATFORMS frozenset must reproduce).
 _EXPECTED_NATIVE_PLATFORMS = {
     "discord",
     "telegram",
     "slack",
-    "matrix",
     "whatsapp",
-    "messenger",
-    "instagram",
-    "webex",
-    "mattermost",
-    "zulip",
-    "rocketchat",
     "teams",
-    "googlechat",
-    "line",
-    "signal",
     "twitch",
     "trigger",
 }
@@ -57,27 +47,9 @@ class TestClassifyPlatform:
             ("telegram_12345", "telegram"),
             ("telegram_-98765", "telegram"),
             ("slack_C01ABC", "slack"),
-            ("matrix_room", "matrix"),
             ("whatsapp_15551234567", "whatsapp"),
-            ("messenger_page_psid", "messenger"),
-            ("instagram_ig_user", "instagram"),
-            ("webex_room", "webex"),
-            ("webex_dm_person", "webex"),
-            ("mattermost_server_channel", "mattermost"),
-            ("mattermost_dm_server_user", "mattermost"),
-            ("zulip_realm_stream", "zulip"),
-            ("zulip_dm_realm_user", "zulip"),
-            ("rocketchat_server_room", "rocketchat"),
-            ("rocketchat_dm_server_user", "rocketchat"),
             ("teams_tenant_conversation", "teams"),
             ("teams_dm_tenant_user", "teams"),
-            ("googlechat_space", "googlechat"),
-            ("googlechat_dm_user", "googlechat"),
-            ("line_dm_user", "line"),
-            ("line_group_group", "line"),
-            ("line_room_room", "line"),
-            ("signal_dm_15551234567", "signal"),
-            ("signal_group_group", "signal"),
             ("twitch_mychannel", "twitch"),
             ("trigger-hourly-check", "trigger"),
             ("agent-my-agent-abc123", "callable"),
@@ -105,6 +77,23 @@ class TestClassifyPlatform:
     def test_imported_thread_is_desktop(self):
         assert classify_platform("imported-abc123") == "desktop"
 
+    def test_removed_platform_ids_are_desktop(self):
+        # The 2026-07-05 bot cull removed these platforms entirely; their
+        # historical thread ids must fall back to desktop, not crash.
+        for thread_id in (
+            "matrix_room",
+            "messenger_page_psid",
+            "instagram_ig_user",
+            "webex_room",
+            "mattermost_server_channel",
+            "zulip_realm_stream",
+            "rocketchat_server_room",
+            "googlechat_space",
+            "line_dm_user",
+            "signal_group_G123",
+        ):
+            assert classify_platform(thread_id) == "desktop"
+
 
 # ---------------------------------------------------------------------------
 # is_shared_channel
@@ -120,17 +109,8 @@ class TestIsSharedChannel:
             "telegram_-98765",
             "telegram_-100123456789",
             "slack_T123_C01ABC",
-            "matrix_room",
             "whatsapp_group_123",
-            "webex_room",
-            "mattermost_server_channel",
-            "zulip_realm_stream",
-            "rocketchat_server_room",
             "teams_tenant_conversation",
-            "googlechat_space",
-            "line_group_C123",
-            "line_room_R123",
-            "signal_group_G123",
             "twitch_mychannel",
         ],
     )
@@ -144,21 +124,17 @@ class TestIsSharedChannel:
             "telegram_12345",
             "slack_dm_T123_U123",
             "whatsapp_15551234567",
-            "messenger_page_psid",
-            "instagram_ig_user",
-            "webex_dm_person",
-            "mattermost_dm_server_user",
-            "zulip_dm_realm_user",
-            "rocketchat_dm_server_user",
             "teams_dm_tenant_user",
-            "googlechat_dm_user",
-            "line_dm_U123",
-            "signal_dm_15551234567",
             "trigger-hourly",
             "agent-my-agent",
             "spawned-task",
             "some-uuid",
             "",
+            # removed platforms: historical ids are no longer shared channels
+            "matrix_room",
+            "zulip_realm_stream",
+            "line_group_C123",
+            "signal_group_G123",
         ],
     )
     def test_non_shared(self, thread_id: str):
@@ -188,27 +164,9 @@ class TestIsNativePlatformThread:
             "telegram_12345",
             "telegram_-98765",
             "slack_C01ABC",
-            "matrix_room",
             "whatsapp_15551234567",
-            "messenger_page_psid",
-            "instagram_ig_user",
-            "webex_room",
-            "webex_dm_person",
-            "mattermost_server_channel",
-            "mattermost_dm_server_user",
-            "zulip_realm_stream",
-            "zulip_dm_realm_user",
-            "rocketchat_server_room",
-            "rocketchat_dm_server_user",
             "teams_tenant_conversation",
             "teams_dm_tenant_user",
-            "googlechat_space",
-            "googlechat_dm_user",
-            "line_group_C123",
-            "line_room_R123",
-            "line_dm_U123",
-            "signal_group_G123",
-            "signal_dm_15551234567",
             "twitch_mychannel",
             "trigger-hourly",
         ],
@@ -224,6 +182,11 @@ class TestIsNativePlatformThread:
             "some-uuid",
             "",
             "imported-abc123",
+            # removed platforms: historical ids no longer keep native routing
+            "matrix_room",
+            "webex_dm_person",
+            "rocketchat_server_room",
+            "googlechat_space",
         ],
     )
     def test_non_native_threads(self, thread_id: str):
@@ -244,18 +207,8 @@ class TestConstants:
             "discord",
             "telegram",
             "slack",
-            "matrix",
             "whatsapp",
-            "messenger",
-            "instagram",
-            "webex",
-            "mattermost",
-            "zulip",
-            "rocketchat",
             "teams",
-            "googlechat",
-            "line",
-            "signal",
             "twitch",
             "trigger",
         }
@@ -297,18 +250,8 @@ class TestPlatformSets:
         assert CHATAPP_BINDING_PLATFORMS == (
             "telegram",
             "slack",
-            "matrix",
             "whatsapp",
-            "messenger",
-            "instagram",
-            "webex",
-            "mattermost",
-            "zulip",
-            "rocketchat",
             "teams",
-            "googlechat",
-            "line",
-            "signal",
         )
 
     def test_binding_platforms_are_native(self):
@@ -348,30 +291,12 @@ class TestParseThreadMetadata:
             ("telegram_12345", {"platform": "telegram", "channel_id": "12345"}),
             ("telegram_-98765", {"platform": "telegram", "channel_id": "-98765"}),
             ("slack_C01ABC", {"platform": "slack", "channel_id": "C01ABC"}),
-            ("matrix_room", {"platform": "matrix", "channel_id": "room"}),
             ("whatsapp_15551234567", {"platform": "whatsapp", "channel_id": "15551234567"}),
             # whatsapp has no group sub-type in the metadata ladder
             ("whatsapp_group_123", {"platform": "whatsapp", "channel_id": "group_123"}),
-            ("messenger_page_psid", {"platform": "messenger", "channel_id": "page_psid"}),
-            ("instagram_ig_user", {"platform": "instagram", "channel_id": "ig_user"}),
             # dm-before-generic ordering
-            ("webex_dm_person", {"platform": "webex", "type": "dm", "channel_id": "person"}),
-            ("webex_room", {"platform": "webex", "type": "room", "channel_id": "room"}),
-            ("mattermost_dm_s_u", {"platform": "mattermost", "type": "dm", "channel_id": "s_u"}),
-            ("mattermost_s_c", {"platform": "mattermost", "type": "channel", "channel_id": "s_c"}),
-            ("zulip_dm_r_u", {"platform": "zulip", "type": "dm", "channel_id": "r_u"}),
-            ("zulip_r_s", {"platform": "zulip", "type": "stream", "channel_id": "r_s"}),
-            ("rocketchat_dm_s_u", {"platform": "rocketchat", "type": "dm", "channel_id": "s_u"}),
-            ("rocketchat_s_r", {"platform": "rocketchat", "type": "room", "channel_id": "s_r"}),
             ("teams_dm_t_u", {"platform": "teams", "type": "dm", "channel_id": "t_u"}),
             ("teams_t_c", {"platform": "teams", "type": "conversation", "channel_id": "t_c"}),
-            ("googlechat_dm_user", {"platform": "googlechat", "type": "dm", "channel_id": "user"}),
-            ("googlechat_space", {"platform": "googlechat", "type": "space", "channel_id": "space"}),
-            ("line_dm_user", {"platform": "line", "type": "dm", "channel_id": "user"}),
-            ("line_group_g", {"platform": "line", "type": "group", "channel_id": "g"}),
-            ("line_room_r", {"platform": "line", "type": "room", "channel_id": "r"}),
-            ("signal_dm_user", {"platform": "signal", "type": "dm", "channel_id": "user"}),
-            ("signal_group_g", {"platform": "signal", "type": "group", "channel_id": "g"}),
         ],
     )
     def test_known_prefixes(self, thread_id: str, expected: dict):
@@ -380,14 +305,22 @@ class TestParseThreadMetadata:
     @pytest.mark.parametrize(
         "thread_id",
         [
-            # bare line_/signal_ without dm/group/room have NO generic entry
-            "line_unknown",
-            "signal_unknown",
             # twitch/trigger/callable prefixes are not in the metadata ladder
             "twitch_mychannel",
             "trigger-hourly",
             "agent-my-agent",
             "spawned-task",
+            # removed platforms fall through to desktop
+            "matrix_room",
+            "webex_dm_person",
+            "mattermost_s_c",
+            "zulip_dm_r_u",
+            "rocketchat_s_r",
+            "messenger_page_psid",
+            "instagram_ig_user",
+            "googlechat_space",
+            "line_dm_user",
+            "signal_group_g",
             # plain desktop / unknown ids
             "some-uuid-1234",
             "imported-abc123",

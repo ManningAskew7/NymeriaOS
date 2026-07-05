@@ -10,18 +10,8 @@ ChatAppProvider = Literal[
     "telegram",
     "twitch",
     "slack",
-    "matrix",
     "whatsapp",
-    "messenger",
-    "instagram",
-    "webex",
-    "mattermost",
-    "zulip",
-    "rocketchat",
     "teams",
-    "googlechat",
-    "line",
-    "signal",
 ]
 
 
@@ -46,10 +36,16 @@ class PlatformLinkCodeRequest(ChatAppProviderField):
     """Request a code to link the caller's chat-app identity to their account."""
 
 
+# Response models use a plain str provider, not ChatAppProvider: the DB can
+# hold binding/link rows for platforms whose bots were later removed (e.g. the
+# 2026-07-05 bot cull), and reads must serialize those rows instead of 500ing.
+# Request models stay strictly validated via ChatAppProvider.
+
+
 class ChatAppBindingResponse(BaseModel):
     id: int
     thread_id: str
-    provider: ChatAppProvider
+    provider: str
     platform_chat_id: str
     created_at: str
     user_telegram_bot_id: int | None = None
@@ -58,7 +54,7 @@ class ChatAppBindingResponse(BaseModel):
 class AdminBindingLookupResponse(BaseModel):
     id: int
     thread_id: str
-    provider: ChatAppProvider
+    provider: str
     platform_chat_id: str
     user_id: str
     created_at: str
@@ -101,7 +97,7 @@ class AdminPlatformLinkClaimRequest(BaseModel):
 
 class AdminPlatformLinkClaimResponse(BaseModel):
     user_id: str
-    provider: ChatAppProvider
+    provider: str
     provider_user_id: str
     created_at: str
 

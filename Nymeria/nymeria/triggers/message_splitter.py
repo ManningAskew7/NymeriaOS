@@ -85,63 +85,13 @@ def split_slack_message(content: str, max_length: int = 3500) -> List[str]:
     return split_markdown_message(content, max_length)
 
 
-def split_matrix_message(content: str, max_length: int = 3500) -> List[str]:
-    """Split a message for Matrix clients' practical rendering limits."""
-    return split_markdown_message(content, max_length)
-
-
 def split_whatsapp_message(content: str, max_length: int = 4096) -> List[str]:
     """Split a message for WhatsApp Cloud API text body limits."""
     return split_markdown_message(content, max_length)
 
 
-def split_messenger_message(content: str, max_length: int = 2000) -> List[str]:
-    """Split a message for Messenger Send API text body limits."""
-    return split_markdown_message(content, max_length)
-
-
-def split_instagram_message(content: str, max_length: int = 1000) -> List[str]:
-    """Split a message for Instagram Messaging API text body limits."""
-    return split_markdown_message(content, max_length)
-
-
-def split_webex_message(content: str, max_length: int = 3500) -> List[str]:
-    """Split a message for Webex while staying below practical post limits."""
-    return split_markdown_message(content, max_length)
-
-
-def split_mattermost_message(content: str, max_length: int = 4000) -> List[str]:
-    """Split a message for Mattermost while staying below practical post limits."""
-    return split_markdown_message(content, max_length)
-
-
-def split_zulip_message(content: str, max_length: int = 4000) -> List[str]:
-    """Split a message for Zulip while staying below practical post limits."""
-    return split_markdown_message(content, max_length)
-
-
-def split_rocketchat_message(content: str, max_length: int = 4000) -> List[str]:
-    """Split a message for Rocket.Chat while staying below practical post limits."""
-    return split_markdown_message(content, max_length)
-
-
 def split_teams_message(content: str, max_length: int = 4000) -> List[str]:
     """Split a message for Microsoft Teams while staying below practical post limits."""
-    return split_markdown_message(content, max_length)
-
-
-def split_googlechat_message(content: str, max_length: int = 4000) -> List[str]:
-    """Split a message for Google Chat while staying below practical post limits."""
-    return split_markdown_message(content, max_length)
-
-
-def split_line_message(content: str, max_length: int = 5000) -> List[str]:
-    """Split a message for LINE text message limits."""
-    return split_markdown_message(content, max_length)
-
-
-def split_signal_message(content: str, max_length: int = 8000) -> List[str]:
-    """Split a message for Signal while staying below practical signal-cli limits."""
     return split_markdown_message(content, max_length)
 
 

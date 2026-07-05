@@ -21,9 +21,9 @@ This page covers four paths, ordered roughly from simplest to most powerful. **Y
 
 **This is the path most people overlook.** If your goal is "talk to my AI from anywhere," you don't need any of the network setup below. You just need a bot token.
 
-Nymeria ships ready-to-use outbound bot integrations for Telegram, Discord, Slack, Matrix, Signal, Mattermost, Zulip, and Rocket.Chat. Each one works by having a bot daemon make outbound connections to the chat platform's API: polling for Telegram, Socket Mode for Slack, Gateway for Discord, sync loop for Matrix, and so on. The chat platform routes messages between you and your bot.
+Nymeria ships ready-to-use outbound bot integrations for Telegram, Discord, and Slack. Each one works by having a bot daemon make outbound connections to the chat platform's API: polling for Telegram, Socket Mode for Slack, Gateway for Discord, and so on. The chat platform routes messages between you and your bot.
 
-Nymeria also supports API-hosted webhook runtimes for WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, and LINE. Those need one of the public URL options below because the chat platform must POST webhooks to your API.
+Nymeria also supports API-hosted webhook runtimes for WhatsApp and Microsoft Teams. Those need one of the public URL options below because the chat platform must POST webhooks to your API.
 
 For those outbound bot daemons, **no inbound network access is needed**. Your backend can sit behind any router, NAT, firewall, or ISP that allows outbound HTTPS. No domain, no port forwarding, no tunnel, no TLS certificate.
 
@@ -59,7 +59,7 @@ For those outbound bot daemons, **no inbound network access is needed**. Your ba
    python3 run.py users link-platform <email> telegram <telegram-user-id>
    ```
 
-For other chat platforms see [telegram-bot.md](chat-apps/telegram-bot.md), [discord-bot.md](chat-apps/discord-bot.md), [slack-bot.md](chat-apps/slack-bot.md), [matrix-bot.md](chat-apps/matrix-bot.md), [signal-bot.md](chat-apps/signal-bot.md), etc.
+For other chat platforms see [telegram-bot.md](chat-apps/telegram-bot.md), [discord-bot.md](chat-apps/discord-bot.md), and [slack-bot.md](chat-apps/slack-bot.md).
 
 ### When bots alone aren't enough
 

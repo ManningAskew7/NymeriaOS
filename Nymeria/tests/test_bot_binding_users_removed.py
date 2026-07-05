@@ -19,22 +19,13 @@ from pathlib import Path
 
 TRIGGERS_ROOT = Path(__file__).resolve().parent.parent / "nymeria" / "triggers"
 
-# The 13 bots that historically carried the dead map. The guard scans every
-# ``*_bot.py`` (so a brand-new bot is covered too); this set anchors the floor
-# test so the scan can never pass vacuously.
+# The surviving bots that historically carried the dead map (the 2026-07-05
+# bot cull removed the other ten). The guard scans every ``*_bot.py`` (so a
+# brand-new bot is covered too); this set anchors the floor test so the scan
+# can never pass vacuously.
 _HISTORICAL_BOTS = {
-    "rocketchat_bot.py",
-    "mattermost_bot.py",
-    "zulip_bot.py",
     "teams_bot.py",
-    "google_chat_bot.py",
-    "line_bot.py",
-    "matrix_bot.py",
     "slack_bot.py",
-    "signal_bot.py",
-    "instagram_bot.py",
-    "messenger_bot.py",
-    "webex_bot.py",
     "whatsapp_bot.py",
 }
 

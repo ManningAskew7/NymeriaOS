@@ -270,7 +270,7 @@ def test_unbind_cross_user_raises_injected_403():
         id=9, thread_id="t1", user_id="real-owner")
     with pytest.raises(_SentinelError) as exc:
         _run(api.unbind_chatapp_by_chat(
-            provider="line", platform_chat_id="chat", user_id="intruder"))
+            provider="whatsapp", platform_chat_id="chat", user_id="intruder"))
     assert exc.value.status_code == 403
     assert agent.chat_bindings_repo.deleted == []  # never deleted on the 403 path
 
@@ -278,7 +278,7 @@ def test_unbind_cross_user_raises_injected_403():
 def test_unbind_missing_binding_returns_unbound_false():
     api, agent = _make_adapter()
     agent.chat_bindings_repo.lookup_result = None
-    result = _run(api.unbind_chatapp_by_chat(provider="line", platform_chat_id="chat"))
+    result = _run(api.unbind_chatapp_by_chat(provider="whatsapp", platform_chat_id="chat"))
     assert result == {"unbound": False}
 
 
@@ -301,15 +301,15 @@ def test_authenticated_user_disabled_raises_injected_404():
 
 def test_chat_stream_stamps_origin_client_id_and_yields_done():
     events: list[dict] = []
-    api, agent = _make_adapter(origin="googlechat", events=events)
+    api, agent = _make_adapter(origin="teams", events=events)
     agent.thread_metadata_manager.auto_title = lambda user_id, thread_id, message: "A Title"
     chunks = _run(_collect(api.chat_stream("hi", "t1", "u1")))
     # the user message_added event is stamped first
     assert events[0]["event_type"] == "message_added"
-    assert events[0]["origin_client_id"] == "googlechat"
+    assert events[0]["origin_client_id"] == "teams"
     # auto-title thread_updated also stamped
     title_events = [e for e in events if e["event_type"] == "thread_updated"]
-    assert title_events and title_events[0]["origin_client_id"] == "googlechat"
+    assert title_events and title_events[0]["origin_client_id"] == "teams"
     # the stream forwards agent chunks then a terminal done dict
     assert chunks[:-1] == ["a", "b"]
     done = chunks[-1]
@@ -319,15 +319,15 @@ def test_chat_stream_stamps_origin_client_id_and_yields_done():
 
 
 def test_chat_stream_done_metadata_failure_logs_display_name(caplog):
-    api, agent = _make_adapter(display="Google Chat")
+    api, agent = _make_adapter(display="Microsoft Teams")
     agent._context_stats_raises = True
     with caplog.at_level(logging.DEBUG, logger="nymeria.api.routers._bot_inprocess"):
         _run(_collect(api.chat_stream("hi", "t1", "u1")))
-    assert any("Google Chat done metadata failed" in r.message for r in caplog.records)
+    assert any("Microsoft Teams done metadata failed" in r.message for r in caplog.records)
 
 
 def test_chat_stream_auto_title_failure_logs_display_name(caplog):
-    api, agent = _make_adapter(display="Webex")
+    api, agent = _make_adapter(display="WhatsApp")
 
     def boom(user_id, thread_id, message):
         raise RuntimeError("nope")
@@ -335,7 +335,7 @@ def test_chat_stream_auto_title_failure_logs_display_name(caplog):
     agent.thread_metadata_manager.auto_title = boom
     with caplog.at_level(logging.DEBUG, logger="nymeria.api.routers._bot_inprocess"):
         _run(_collect(api.chat_stream("hi", "t1", "u1")))
-    assert any("Webex auto-title failed" in r.message for r in caplog.records)
+    assert any("WhatsApp auto-title failed" in r.message for r in caplog.records)
 
 
 def test_publish_platform_sync_failure_logs_display_name(caplog):
@@ -352,11 +352,11 @@ def test_publish_platform_sync_failure_logs_display_name(caplog):
 
 def test_publish_platform_sync_uses_thread_list_platform(monkeypatch):
     events: list[dict] = []
-    api, agent = _make_adapter(origin="webex", events=events)
+    api, agent = _make_adapter(origin="whatsapp", events=events)
     monkeypatch.setattr(_bot_inprocess, "_thread_list_platform", lambda agent, tid, meta: "resolved")
     api._publish_platform_sync("t1", "u1")
     assert events[0]["data"] == {"platform": "resolved"}
-    assert events[0]["origin_client_id"] == "webex"
+    assert events[0]["origin_client_id"] == "whatsapp"
 
 
 # --- the trivial delegators / happy paths -----------------------------------
@@ -385,13 +385,13 @@ def test_list_chatapp_bindings_maps_fields():
     api, agent = _make_adapter()
     agent.chat_bindings_repo.global_bindings = [
         SimpleNamespace(
-            id=1, thread_id="t1", provider="line", platform_chat_id="c1",
+            id=1, thread_id="t1", provider="whatsapp", platform_chat_id="c1",
             user_id="u1", created_at="t0", user_telegram_bot_id=None,
         )
     ]
-    result = _run(api.list_chatapp_bindings("line"))
+    result = _run(api.list_chatapp_bindings("whatsapp"))
     assert result == [{
-        "id": 1, "thread_id": "t1", "provider": "line", "platform_chat_id": "c1",
+        "id": 1, "thread_id": "t1", "provider": "whatsapp", "platform_chat_id": "c1",
         "user_id": "u1", "created_at": "t0", "user_telegram_bot_id": None,
     }]
 

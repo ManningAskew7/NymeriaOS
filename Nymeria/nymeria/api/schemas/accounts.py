@@ -10,18 +10,8 @@ PlatformProvider = Literal[
     "telegram",
     "twitch",
     "slack",
-    "matrix",
     "whatsapp",
-    "messenger",
-    "instagram",
-    "webex",
-    "mattermost",
-    "zulip",
-    "rocketchat",
     "teams",
-    "googlechat",
-    "line",
-    "signal",
 ]
 
 
@@ -79,7 +69,11 @@ class RotatedTokensResponse(BaseModel):
 
 
 class PlatformIdentityResponse(BaseModel):
-    provider: PlatformProvider
+    # Deliberately a plain str, not PlatformProvider: the DB can hold identity
+    # rows for platforms whose bots were later removed (e.g. the 2026-07-05
+    # bot cull), and reads must serialize those rows instead of 500ing.
+    # Requests stay strictly validated via PlatformProvider.
+    provider: str
     provider_user_id: str
     created_at: str
 

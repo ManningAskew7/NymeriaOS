@@ -76,17 +76,8 @@ def test_threads_keeps_ownerless_metadata_recovery_rows(tmp_path: Path, api_clie
     [
         "telegram",
         "slack",
-        "matrix",
         "whatsapp",
-        "messenger",
-        "webex",
-        "mattermost",
-        "zulip",
-        "rocketchat",
         "teams",
-        "googlechat",
-        "line",
-        "signal",
     ],
 )
 def test_threads_use_bound_platform_for_desktop_threads(
@@ -120,17 +111,8 @@ def test_threads_use_bound_platform_for_desktop_threads(
     [
         "telegram",
         "slack",
-        "matrix",
         "whatsapp",
-        "messenger",
-        "webex",
-        "mattermost",
-        "zulip",
-        "rocketchat",
         "teams",
-        "googlechat",
-        "line",
-        "signal",
     ],
 )
 def test_threads_keep_bound_platform_for_callable_threads(

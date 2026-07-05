@@ -988,8 +988,8 @@ credentials use `raindrop.access_token`, `yourls.url`, and either
 credentials use `asana.access_token` and `linear.api_key`. IT support credentials
 use `freshservice.api_key` plus `freshservice.domain`, `servicenow.access_token`
 or `servicenow.username` plus `servicenow.password`, and `zammad.token` plus
-`zammad.base_url`. Chat credentials use `telegram.bot_token`,
-`webex.access_token`, and `whatsapp.access_token` with optional
+`zammad.base_url`. Chat credentials use `telegram.bot_token` and
+`whatsapp.access_token` with optional
 `whatsapp.business_account_id` and `whatsapp.phone_number_id`. Sales CRM credentials use `salesforce.access_token` plus
 `salesforce.instance_url`, `zoho_crm.access_token`, `freshworks_crm.api_key`
 plus `freshworks_crm.domain`, `salesmate.session_token` plus
@@ -1594,23 +1594,13 @@ Credential providers and fallback env vars:
 
 This batch includes:
 - `telegram_get_me()`, `telegram_get_chat(chat_id)`, `telegram_send_message(chat_id, text, ...)`, and `telegram_delete_message(chat_id, message_id)`. Reads are SAFE; send/delete are MODERATE.
-- `webex_list_rooms(...)`, `webex_get_room(room_id)`, `webex_list_messages(...)`, `webex_get_message(message_id)`, `webex_send_message(...)`, and `webex_delete_message(message_id)`. Reads are SAFE; send/delete are MODERATE.
 - `whatsapp_list_phone_numbers(...)`, `whatsapp_send_text_message(...)`, `whatsapp_send_template_message(...)`, `whatsapp_get_media_url(media_id)`, and `whatsapp_delete_media(media_id)`. Phone/media reads are SAFE; sends and deletes are MODERATE.
 - `discord_list_guild_channels(guild_id)`, `discord_get_channel(channel_id)`, `discord_get_channel_messages(channel_id, ...)`, `discord_send_channel_message(channel_id, content, ...)`, and `discord_delete_message(channel_id, message_id)`. Reads are SAFE; send/delete are MODERATE.
-- `mattermost_get_me()`, `mattermost_list_teams(...)`, `mattermost_list_channels(team_id, ...)`, `mattermost_list_channel_posts(channel_id, ...)`, `mattermost_create_post(channel_id, message, ...)`, and `mattermost_delete_post(post_id)`. Reads are SAFE; create/delete are MODERATE.
-- `matrix_whoami()`, `matrix_list_joined_rooms()`, `matrix_get_room_messages(room_id, ...)`, `matrix_send_room_message(room_id, body, ...)`, and `matrix_leave_room(room_id)`. Reads are SAFE; sending/leaving are MODERATE.
-- `rocketchat_get_me()`, `rocketchat_list_channels(...)`, `rocketchat_get_channel_history(...)`, `rocketchat_post_message(channel, text, ...)`, and `rocketchat_delete_message(room_id, message_id)`. Reads are SAFE; post/delete are MODERATE.
-- `zulip_get_profile()`, `zulip_list_streams(...)`, `zulip_get_messages(...)`, `zulip_send_message(message_type, to, content, ...)`, and `zulip_delete_message(message_id)`. Reads are SAFE; send/delete are MODERATE.
 
 Credential providers and fallback env vars:
 - Telegram: provider `telegram`, fields `bot_token`, `api_key`, `token`, or `value`; env fallback reuses `TELEGRAM_BOT_TOKEN`. Optional base override `TELEGRAM_API_BASE_URL`.
-- Webex: provider `webex`, fields `access_token`, `api_key`, `token`, or `value`; env fallback `WEBEX_ACCESS_TOKEN`. Optional base override `WEBEX_BASE_URL`.
 - WhatsApp Business Cloud: provider `whatsapp`, fields `access_token`, `business_account_id`, and `phone_number_id`; env fallbacks `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_PHONE_NUMBER_ID`, and `WHATSAPP_BASE_URL`.
 - Discord: provider `discord`, fields `bot_token`, `botToken`, `token`, or `value`; env fallback reuses `DISCORD_BOT_TOKEN`. Optional base override `DISCORD_BASE_URL`.
-- Mattermost: provider `mattermost`, fields `access_token`, `accessToken`, `api_token`, `token`, or `value`; env fallback `MATTERMOST_ACCESS_TOKEN`. Save `base_url` / `baseUrl` or set `MATTERMOST_BASE_URL`; the tool appends `/api/v4` when needed.
-- Matrix: provider `matrix`, fields `access_token`, `accessToken`, `token`, or `value`; env fallback `MATRIX_ACCESS_TOKEN`. Save `homeserverUrl` / `base_url` or set `MATRIX_BASE_URL`; the tool appends `/_matrix/client/v3` when needed.
-- Rocket.Chat: provider `rocketchat`, fields `auth_token`, `authKey`, `token`, or `value`, plus `user_id` / `userId`; env fallbacks `ROCKETCHAT_AUTH_TOKEN`, `ROCKETCHAT_USER_ID`, and `ROCKETCHAT_BASE_URL`.
-- Zulip: provider `zulip`, fields `api_key`, `apiKey`, `token`, or `value`, plus `email`; env fallbacks `ZULIP_API_KEY`, `ZULIP_EMAIL`, and `ZULIP_BASE_URL`.
 
 ### Microsoft Graph Service Tools
 

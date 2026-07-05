@@ -71,9 +71,9 @@ class TestResolveDisplayPlatform:
         )
 
     def test_binding_resolution_order_first_match_wins(self):
-        # slack precedes signal in CHATAPP_BINDING_PLATFORMS, but telegram
+        # slack precedes whatsapp in CHATAPP_BINDING_PLATFORMS, but telegram
         # precedes both, so telegram wins when all three are bound.
-        agent = _Agent(repo=_BindingRepo(bound={"signal", "slack", "telegram"}))
+        agent = _Agent(repo=_BindingRepo(bound={"whatsapp", "slack", "telegram"}))
         assert resolve_display_platform(agent, "desktop-thread") == "telegram"
 
     def test_native_by_thread_id(self):

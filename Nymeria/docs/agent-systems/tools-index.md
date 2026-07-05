@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1261 tools found.**
+**1234 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -674,17 +674,6 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `marketstack_get_eod` | `nymeria/tools/business_service_integrations.py` | Get Marketstack end-of-day stock market data. |
 | `marketstack_get_exchange` | `nymeria/tools/business_service_integrations.py` | Get Marketstack exchange metadata. |
 | `marketstack_get_ticker` | `nymeria/tools/business_service_integrations.py` | Get Marketstack ticker metadata. |
-| `matrix_get_room_messages` | `nymeria/tools/chat_platform_service_integrations.py` | Get Matrix room messages. |
-| `matrix_leave_room` | `nymeria/tools/chat_platform_service_integrations.py` | Leave a Matrix room. |
-| `matrix_list_joined_rooms` | `nymeria/tools/chat_platform_service_integrations.py` | List Matrix rooms the current account has joined. |
-| `matrix_send_room_message` | `nymeria/tools/chat_platform_service_integrations.py` | Send a Matrix room text message. |
-| `matrix_whoami` | `nymeria/tools/chat_platform_service_integrations.py` | Get the current Matrix account. |
-| `mattermost_create_post` | `nymeria/tools/chat_platform_service_integrations.py` | Create a Mattermost post. |
-| `mattermost_delete_post` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Mattermost post. |
-| `mattermost_get_me` | `nymeria/tools/chat_platform_service_integrations.py` | Get the current Mattermost user. |
-| `mattermost_list_channel_posts` | `nymeria/tools/chat_platform_service_integrations.py` | List posts in a Mattermost channel. |
-| `mattermost_list_channels` | `nymeria/tools/chat_platform_service_integrations.py` | List Mattermost channels in a team. |
-| `mattermost_list_teams` | `nymeria/tools/chat_platform_service_integrations.py` | List Mattermost teams. |
 | `mautic_add_contact_to_campaign` | `nymeria/tools/marketing_contact_service_integrations.py` | Add a Mautic contact to a campaign. |
 | `mautic_add_contact_to_company` | `nymeria/tools/marketing_contact_service_integrations.py` | Add a Mautic contact to a company. |
 | `mautic_add_contact_to_segment` | `nymeria/tools/marketing_contact_service_integrations.py` | Add a Mautic contact to a segment. |
@@ -948,11 +937,6 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `reload_all` | `nymeria/tools/runtime_admin.py` | Reload all tools, skills, and trigger sources. |
 | `request_credential` | `nymeria/tools/credential_prompt.py` | Open a secure in-chat prompt (modal / hosted form / OAuth dance) to |
 | `request_review` | `nymeria/tools/goal_tools.py` | Escalate a task to the supervisor for review (worker side). BLOCKS. |
-| `rocketchat_delete_message` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Rocket.Chat message. |
-| `rocketchat_get_channel_history` | `nymeria/tools/chat_platform_service_integrations.py` | Get Rocket.Chat channel history by room ID or room name. |
-| `rocketchat_get_me` | `nymeria/tools/chat_platform_service_integrations.py` | Get the current Rocket.Chat user. |
-| `rocketchat_list_channels` | `nymeria/tools/chat_platform_service_integrations.py` | List Rocket.Chat public channels. |
-| `rocketchat_post_message` | `nymeria/tools/chat_platform_service_integrations.py` | Post a Rocket.Chat message. |
 | `rss_feed_read` | `nymeria/tools/public_info_integrations.py` | Read an RSS or Atom feed URL. |
 | `run_tools_in_order` | `nymeria/tools/tool_order.py` | Run this whole batch of tool calls in the order listed, not concurrently. |
 | `rundeck_execute_job` | `nymeria/tools/operations_monitoring_service_integrations.py` | Execute a Rundeck job. |
@@ -1179,12 +1163,6 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `web_search_perplexity` | `nymeria/tools/web.py` | Search the web for current information using Perplexity (Sonar). |
 | `web_search_searxng` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using a self-hosted SearXNG instance. |
 | `web_search_tavily` | `nymeria/tools/web_search_integrations.py` | Search the web for current information using Tavily (agent-optimized retrieval). |
-| `webex_delete_message` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Webex message. |
-| `webex_get_message` | `nymeria/tools/chat_platform_service_integrations.py` | Get one Webex message. |
-| `webex_get_room` | `nymeria/tools/chat_platform_service_integrations.py` | Get Webex room metadata. |
-| `webex_list_messages` | `nymeria/tools/chat_platform_service_integrations.py` | List Webex messages. |
-| `webex_list_rooms` | `nymeria/tools/chat_platform_service_integrations.py` | List Webex rooms. |
-| `webex_send_message` | `nymeria/tools/chat_platform_service_integrations.py` | Send a Webex message to a room or person. |
 | `webflow_create_collection_item` | `nymeria/tools/content_management_service_integrations.py` | Create a Webflow CMS collection item. |
 | `webflow_delete_collection_item` | `nymeria/tools/content_management_service_integrations.py` | Delete a Webflow CMS collection item. |
 | `webflow_get_collection` | `nymeria/tools/content_management_service_integrations.py` | Get Webflow CMS collection metadata and fields. |
@@ -1263,8 +1241,3 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `zoom_get_meeting` | `nymeria/tools/event_meeting_service_integrations.py` | Get a Zoom meeting by ID. |
 | `zoom_list_meetings` | `nymeria/tools/event_meeting_service_integrations.py` | List Zoom meetings for the authenticated user. |
 | `zoom_update_meeting` | `nymeria/tools/event_meeting_service_integrations.py` | Update a Zoom meeting. |
-| `zulip_delete_message` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Zulip message. |
-| `zulip_get_messages` | `nymeria/tools/chat_platform_service_integrations.py` | Get Zulip messages. |
-| `zulip_get_profile` | `nymeria/tools/chat_platform_service_integrations.py` | Get the current Zulip user profile. |
-| `zulip_list_streams` | `nymeria/tools/chat_platform_service_integrations.py` | List Zulip streams. |
-| `zulip_send_message` | `nymeria/tools/chat_platform_service_integrations.py` | Send a Zulip message. |

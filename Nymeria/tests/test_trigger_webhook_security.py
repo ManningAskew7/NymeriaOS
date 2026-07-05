@@ -42,7 +42,7 @@ def _stamped(timestamp: object) -> _StampedMessage:
 
 def test_require_configured_secret_returns_stripped_value() -> None:
     assert require_configured_secret("  s3cret  ", "WHATSAPP_APP_SECRET") == "s3cret"
-    assert require_configured_secret("token", "WEBEX_WEBHOOK_SECRET") == "token"
+    assert require_configured_secret("token", "EXAMPLE_WEBHOOK_SECRET") == "token"
 
 
 def test_require_configured_secret_raises_503_when_unset() -> None:
@@ -112,7 +112,7 @@ def test_verify_meta_signature_rejects_tampered_body_or_secret() -> None:
     secret = "app-secret"
     good = _meta_signature(body, secret)
     # A signature computed for a different body or a different secret fails.
-    assert verify_meta_signature(b'{"object":"instagram"}', good, secret) is False
+    assert verify_meta_signature(b'{"object":"other"}', good, secret) is False
     assert verify_meta_signature(body, _meta_signature(body, "other-secret"), secret) is False
     assert verify_meta_signature(body, "sha256=bad", secret) is False
 
