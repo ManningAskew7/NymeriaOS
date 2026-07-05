@@ -6,7 +6,7 @@ Usage:
     python run.py cli          # Start CLI interface
     python run.py api          # Start REST API server
     python run.py api --port 8080  # Start API on custom port
-    python run.py slim         # Start single-process local launcher (API + MCP + watchdog)
+    python run.py slim         # Start single-process local launcher (API + ticker + MCP)
     python run.py doctor           # Diagnose local configuration
     python run.py worker           # Start worker (ticker only, for Docker)
     python run.py discord-bot     # Start Discord bot (gateway mode)
@@ -76,7 +76,6 @@ _SERVICE_TOKEN_REQUIRED_COMMANDS = {
     "discord-bot": "the Discord bot",
     "telegram-bot": "the Telegram bot",
     "slack-bot": "the Slack bot",
-    "watchdog": "the watchdog worker",
     "mcp": "the MCP thin client",
 }
 
@@ -130,9 +129,9 @@ _BOT_API_URL_HELP = "URL of running Nymeria API (e.g. http://localhost:8000)"
 def _resolve_api_url(args: argparse.Namespace) -> str:
     """Thin-client API URL: explicit ``--api-url``, else the Docker default.
 
-    Shared by the chat-platform bot runners and the watchdog. The worker
-    resolves its own URL (it also honours the ``NYMERIA_API_URL`` env var) and
-    the MCP server defers resolution, so neither routes through this helper.
+    Shared by the chat-platform bot runners. The worker resolves its own URL
+    (it also honours the ``NYMERIA_API_URL`` env var) and the MCP server
+    defers resolution, so neither routes through this helper.
     """
     return getattr(args, "api_url", None) or "http://nymeria-api:8000"
 
@@ -254,7 +253,7 @@ def _require_service_token(settings, role: str, *, stream=None) -> str:
 
     Falls back to the token the api self-mints onto the shared data volume
     (``data/SLIM_SERVICE_TOKEN.txt``) when ``NYMERIA_SERVICE_TOKEN`` is unset, so
-    thin clients that start after the api is healthy (watchdog, mcp, bots, and
+    thin clients that start after the api is healthy (mcp, bots, and
     the worker once it has waited for the API) pick it up with no operator
     provisioning.
     """
@@ -280,7 +279,7 @@ def _require_service_token(settings, role: str, *, stream=None) -> str:
 def _service_api_client(api_url: str, api_key: str, settings):
     """Build a thin-client API client with self-mint token refresh wired.
 
-    The refresher lets a long-running thin client (worker, watchdog, bots)
+    The refresher lets a long-running thin client (worker, bots)
     pick up an api re-mint of the shared service token on a 401 without a
     process restart. An operator-pinned NYMERIA_SERVICE_TOKEN makes the
     refresh a no-op, so this is safe for every launch path.
@@ -551,8 +550,8 @@ def _apply_slim_runtime_env(
     """Set env overrides for slim mode and return the loopback base URL.
 
     Slim mode collapses the Docker stack into one process: SQLite for
-    persistence, no Redis event bus, watchdog as an async task, and MCP
-    mounted on the same FastAPI app. The env values are set BEFORE
+    persistence, no Redis event bus, the watchdog sweep inside the in-process
+    ticker, and MCP mounted on the same FastAPI app. The env values are set BEFORE
     ``get_settings()`` is called so the cached Pydantic Settings instance
     sees the correct values. Any caller that has already imported settings
     must call ``get_settings.cache_clear()`` afterwards.
@@ -647,7 +646,7 @@ def _resolve_slim_port(args: argparse.Namespace) -> int:
 
 
 def run_slim(args: argparse.Namespace) -> None:
-    """Run the single-process slim launcher (API + ticker + MCP + watchdog)."""
+    """Run the single-process slim launcher (API + ticker + MCP)."""
     host = getattr(args, "host", None) or "127.0.0.1"
     port = _resolve_slim_port(args)
     data_dir = getattr(args, "data_dir", None)
@@ -657,6 +656,10 @@ def run_slim(args: argparse.Namespace) -> None:
     )
     enable_mcp = not getattr(args, "no_mcp", False)
     enable_watchdog = not getattr(args, "no_watchdog", False)
+    if not enable_watchdog:
+        # The watchdog is a ticker sub-loop now; the per-cycle env kill
+        # switch is the single mechanism, so the debug flag just sets it.
+        os.environ["NYMERIA_WATCHDOG_DISABLED"] = "1"
 
     base_url = _apply_slim_runtime_env(
         host,
@@ -686,7 +689,7 @@ def run_slim(args: argparse.Namespace) -> None:
         print("  - MCP: disabled (--no-mcp)")
     if settings.watchdog_enabled and enable_watchdog:
         print(
-            f"  - Watchdog: in-process (interval={settings.watchdog_interval_minutes}m, "
+            f"  - Watchdog: ticker sub-loop (interval={settings.watchdog_interval_minutes}m, "
             f"staleness={settings.todo_staleness_minutes}m)"
         )
     elif not settings.watchdog_enabled:
@@ -702,7 +705,6 @@ def run_slim(args: argparse.Namespace) -> None:
         slim_mode=True,
         slim_base_url=base_url,
         enable_slim_mcp=enable_mcp,
-        enable_slim_watchdog=enable_watchdog,
     )
 
 
@@ -940,6 +942,7 @@ def run_worker(args: argparse.Namespace) -> None:
                 ),
                 "poll_interval_seconds": settings.ticker_poll_interval,
                 "api_url": api_url,
+                "watchdog": ticker.watchdog_stats(),
             },
         )
 
@@ -1027,51 +1030,6 @@ def run_discord_bot(args: argparse.Namespace) -> None:
 
     print("\nConnecting to Discord...")
     bot.run(settings.discord_bot_token, log_handler=None)
-
-
-def run_watchdog(args: argparse.Namespace) -> None:
-    """
-    Run the watchdog worker (thin client).
-
-    Polls the Nymeria REST API for stale TODOs and POSTs nudges to /chat
-    with is_self_invoke=true. Owns no NymeriaAgent — the API handles all
-    agent execution and event publishing.
-    """
-    import asyncio
-
-    from nymeria.config import get_settings
-    from nymeria.triggers.watchdog_worker import WatchdogWorker
-
-    settings = get_settings()
-
-    if not settings.watchdog_enabled:
-        print("[Info] Watchdog is disabled (WATCHDOG_ENABLED=false). Exiting.")
-        sys.exit(0)
-
-    # Per-user act-as routing requires the admin service token.
-    api_url = _resolve_api_url(args)
-    api_key = _require_service_token(settings, "the watchdog worker")
-
-    print("Starting Nymeria Watchdog (thin client)...")
-    print(f"  - API: {api_url}")
-    print(f"  - Interval: {settings.watchdog_interval_minutes}m")
-    print(f"  - Staleness threshold: {settings.todo_staleness_minutes}m")
-    print("  - Auth: service token")
-
-    api = _service_api_client(api_url, api_key, settings)
-    worker = WatchdogWorker(client=api, settings=settings)
-
-    _install_exit_handlers(
-        "\nShutdown signal received, stopping watchdog worker...",
-        on_stop=worker.stop,
-        hard_exit=False,
-    )
-
-    try:
-        asyncio.run(worker.run())
-    except KeyboardInterrupt:
-        pass
-    print("Watchdog worker exited.")
 
 
 def run_telegram_bot(args: argparse.Namespace) -> None:
@@ -1481,7 +1439,7 @@ Examples:
     # Slim subcommand — single-process local launcher
     slim_parser = subparsers.add_parser(
         "slim",
-        help="Start single-process local launcher (API + ticker + MCP + watchdog)",
+        help="Start single-process local launcher (API + ticker + MCP)",
     )
     slim_parser.add_argument(
         "--host",
@@ -1527,7 +1485,10 @@ Examples:
     slim_parser.add_argument(
         "--no-watchdog",
         action="store_true",
-        help="Skip the in-process watchdog task even when WATCHDOG_ENABLED=true",
+        help=(
+            "Skip the watchdog ticker sub-loop even when WATCHDOG_ENABLED=true "
+            "(sets NYMERIA_WATCHDOG_DISABLED for this process)"
+        ),
     )
 
     # Worker subcommand
@@ -1601,19 +1562,6 @@ Examples:
         help="Start Slack bot (Socket Mode)",
     )
     _add_api_url_arg(slack_parser)
-
-    # Watchdog subcommand (thin client)
-    watchdog_parser = subparsers.add_parser(
-        "watchdog",
-        help="Start watchdog worker (thin client — polls API for stale TODOs)"
-    )
-    _add_api_url_arg(
-        watchdog_parser,
-        help_text=(
-            "URL of running Nymeria API (e.g. http://localhost:8000). "
-            "Defaults to http://nymeria-api:8000 for Docker deployments."
-        ),
-    )
 
     # MCP subcommand
     mcp_parser = subparsers.add_parser("mcp", help="Start MCP server for agent-to-agent communication")
@@ -1755,7 +1703,6 @@ COMMANDS: dict[str, _Command] = {
     "discord-bot": _Command(run_discord_bot, full_validation=True),
     "telegram-bot": _Command(run_telegram_bot, full_validation=True),
     "slack-bot": _Command(run_slack_bot, full_validation=True),
-    "watchdog": _Command(run_watchdog, full_validation=True),
     "mcp": _Command(run_mcp, full_validation=True),
     "claude-code-runner": _Command(run_claude_code_runner),
     "service": _Command(run_service),

@@ -26,7 +26,7 @@ several.
 |---|---|
 | API | Serves HTTP requests, runs the agent for each chat turn, holds open SSE connections to frontends |
 | Ticker | Polls scheduled TODOs and trigger sources, dispatches autonomous agent turns when something is due |
-| Watchdog | Nudges threads about stale TODOs (no update past the staleness window) and sends off-frontend alerts via the API |
+| Watchdog sweep | Ticker sub-loop that nudges threads about stale TODOs (no update past the staleness window) and sends off-frontend alerts |
 | MCP server | Exposes Nymeria as 52 tools to external LLM clients (Claude Desktop, etc.) |
 | Storage | Conversations, accounts, credentials, TODOs, memory, profiles |
 
@@ -236,13 +236,12 @@ out of the architecture:
   (`publish_autonomous_event`, `publish_agent_stream_chunk`,
   `publish_sync_event`). Do not import `RedisEventBus` directly. The
   in-memory and Redis buses are interchangeable behind that interface.
-- **Never assume a separate process exists.** In slim, the ticker, the
-  watchdog, the MCP server, and the API are all the same process. New
-  background loops should be registered as startup tasks gated on
-  `slim_mode` for the slim path, and as a separate container service
-  for Docker. The watchdog at
-  `nymeria/triggers/api.py` `_register_slim_watchdog_lifecycle`
-  is the template.
+- **Never assume a separate process exists.** In slim, the ticker
+  (including the watchdog sweep), the MCP server, and the API are all
+  the same process. New periodic background work should ride the ticker
+  as a sub-loop (`core/ticker.py` `_maybe_submit_*`; the watchdog sweep
+  at `core/watchdog_sweep.py` is the template), which lands it in the
+  right process in both shapes with zero shape-specific wiring.
 - **Branch on `settings.database_backend` only where Postgres is
   actually used.** The known sites are `checkpointer_config.py`,
   `thread_branch.py`, and `api/routers/threads.py`. Adding new branches

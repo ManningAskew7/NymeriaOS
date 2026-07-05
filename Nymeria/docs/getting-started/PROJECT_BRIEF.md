@@ -119,9 +119,9 @@ Triggers can perform actions:
 - `notify`
 - `create_todo`
 
-### Watchdog
+### Watchdog sweep
 
-Watchdog monitors stale TODOs and can nudge execution/notify channels.
+A supervisory ticker sub-loop monitors stale TODOs and can nudge execution/notify channels.
 
 ## Interfaces
 
@@ -188,7 +188,7 @@ lifecycle, network, haptics, and preference helpers.
 
 Current safety controls include:
 - per-user account bearer tokens plus admin service-token authentication for
-  trusted worker/watchdog/bot/MCP processes
+  trusted worker/bot/MCP processes
 - thread-level locking to avoid concurrent conversation collisions
 - constrained self-modification file scope + backups + syntax/import validation
 - optional per-user tool preference controls and category toggles

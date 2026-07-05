@@ -30,6 +30,7 @@ from .todo_schedule_db import ScheduledTodoEntry, TodoScheduleDB
 from .todo_manager import TodoManager, TodoStatus
 from .trigger_manager import TriggerManager
 from .turn_executor import TurnExecutor
+from .watchdog_sweep import WatchdogSweep
 
 if TYPE_CHECKING:
     from ..config.settings import Settings
@@ -333,6 +334,26 @@ class Ticker:
         self._dream_sweep_interval = DREAM_SWEEP_INTERVAL_SECONDS
         self._last_dream_sweep_check: float = 0.0
 
+        # Watchdog sweep: nudge threads about stale TODOs (the fold of the
+        # former standalone watchdog process). Supervisory role stays legible
+        # via its own enable flag, interval, and kill switches; detection
+        # runs on the housekeeping executor and nudge turns on the
+        # autonomous pool, like trigger fires.
+        self._watchdog_sweep: Optional[WatchdogSweep] = None
+        if getattr(settings, "watchdog_enabled", False):
+            self._watchdog_sweep = WatchdogSweep(
+                executor=executor,
+                settings=settings,
+                todo_manager=todo_manager,
+                thread_config_manager=thread_config_manager,
+            )
+        self._watchdog_sweep_interval = (
+            max(1, getattr(settings, "watchdog_interval_minutes", 5)) * 60
+        )
+        self._last_watchdog_sweep_check: float = 0.0
+        self._watchdog_sweep_running = False
+        self._watchdog_sweep_lock = threading.Lock()
+
         self._recovery_lock = threading.Lock()
         self._startup_recovery_prepared = False
         self._missed_work_policy = getattr(
@@ -492,6 +513,7 @@ class Ticker:
             self._maybe_submit_trigger_poll(now)
             self._maybe_submit_spawn_sweep(now)
             self._maybe_submit_dream_sweep(now)
+            self._maybe_submit_watchdog_sweep(now)
 
             # Sleep in small increments to allow fast shutdown
             sleep_increments = int(self.poll_interval * 10)
@@ -611,6 +633,53 @@ class Ticker:
 
         self._run_dream_sweep()
         return True
+
+    def _maybe_submit_watchdog_sweep(self, now: float) -> bool:
+        """Submit the stale-TODO watchdog sweep if due and not already running.
+
+        Detection (TODO listing + staleness filter) runs on the housekeeping
+        executor; the sweep submits each nudge turn to the autonomous worker
+        pool itself, so a slow LLM turn never occupies a housekeeping slot.
+        """
+        if self._watchdog_sweep is None:
+            return False
+        if now - self._last_watchdog_sweep_check < self._watchdog_sweep_interval:
+            return False
+
+        with self._watchdog_sweep_lock:
+            if self._watchdog_sweep_running:
+                return False
+            self._watchdog_sweep_running = True
+
+        try:
+            if self._housekeeping_executor:
+                self._housekeeping_executor.submit(self._run_watchdog_sweep)
+            else:
+                self._run_watchdog_sweep()
+        except Exception as e:
+            with self._watchdog_sweep_lock:
+                self._watchdog_sweep_running = False
+            logger.debug(f"Watchdog sweep submit skipped: {e}")
+            return False
+
+        self._last_watchdog_sweep_check = now
+        return True
+
+    def _run_watchdog_sweep(self) -> None:
+        """Execute the watchdog sweep with exception isolation."""
+        try:
+            self._watchdog_sweep.run_cycle(self._executor)  # type: ignore[union-attr]
+        except Exception as e:
+            logger.error(f"Watchdog sweep error: {e}", exc_info=True)
+        finally:
+            with self._watchdog_sweep_lock:
+                self._watchdog_sweep_running = False
+
+    def watchdog_stats(self) -> dict[str, Any]:
+        """Watchdog sweep counters for the worker heartbeat (or disabled)."""
+        if self._watchdog_sweep is None:
+            return {"enabled": False}
+        return self._watchdog_sweep.stats()
 
     def _run_dream_sweep(self) -> None:
         """Fire due dreams with exception isolation.

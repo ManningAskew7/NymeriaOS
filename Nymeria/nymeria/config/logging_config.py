@@ -207,7 +207,7 @@ LOG_PROFILES: Dict[str, List[tuple]] = {
     ],
     "ticker": [
         ("nymeria.core.ticker", logging.DEBUG),
-        ("nymeria.core.watchdog", logging.DEBUG),
+        ("nymeria.core.watchdog_sweep", logging.DEBUG),
     ],
     "triggers": [
         ("nymeria.core.trigger_manager", logging.DEBUG),

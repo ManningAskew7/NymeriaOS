@@ -530,3 +530,51 @@ def test_workflow_todo_error_envelope_engages_retry(tmp_path: Path, monkeypatch)
     assert len(errored) == 1
     assert "author_error" in errored[0]["data"]["error_message"]
     assert ticker._retry_counts.get(todo.id) == 1
+
+
+# ---------------------------------------------------------------------------
+# Watchdog sweep sub-loop (backlog #78 fold)
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_sweep_disabled_without_setting(tmp_path: Path):
+    """FakeSettings carries no watchdog_enabled, so the sub-loop stays off."""
+    ticker, _agent = _make_ticker(tmp_path)
+
+    assert ticker._watchdog_sweep is None
+    assert ticker._maybe_submit_watchdog_sweep(time.time()) is False
+    assert ticker.watchdog_stats() == {"enabled": False}
+
+
+def test_watchdog_sweep_cadence_and_running_guard(tmp_path: Path):
+    agent = FakeAgent(tmp_path)
+    agent.settings.watchdog_enabled = True
+    agent.settings.watchdog_interval_minutes = 5
+    agent.settings.todo_staleness_minutes = 20
+    ticker = Ticker(
+        executor=LocalAgentExecutor(agent),
+        settings=agent.settings,
+        schedule_db=agent._schedule_db,
+        todo_manager=agent.todo_manager,
+        thread_config_manager=agent.thread_config_manager,
+        profile_manager=agent.profile_manager,
+        busy_agent=agent,
+        spawn_sweeper=None,
+    )
+    assert ticker._watchdog_sweep is not None
+
+    calls: list = []
+    ticker._watchdog_sweep.run_cycle = lambda pool: calls.append(pool)  # type: ignore[method-assign]
+
+    now = time.time()
+    # First due check fires (no housekeeping executor -> runs inline).
+    assert ticker._maybe_submit_watchdog_sweep(now) is True
+    assert len(calls) == 1
+    # Within the interval: skipped.
+    assert ticker._maybe_submit_watchdog_sweep(now + 10) is False
+    assert len(calls) == 1
+    # Past the interval (5m): fires again.
+    assert ticker._maybe_submit_watchdog_sweep(now + 301) is True
+    assert len(calls) == 2
+    # Stats surface the sweep's counters via the ticker accessor.
+    assert ticker.watchdog_stats()["enabled"] is True

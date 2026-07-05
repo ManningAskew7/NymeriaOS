@@ -1,8 +1,8 @@
 # Nymeria SINGLE-CONTAINER SLIM stack.
 #
-# One container running `python run.py slim` (API + in-process ticker +
-# watchdog + embedded MCP) on SQLite. No Postgres, no Redis, no worker. This is
-# the containerized equivalent of bare-metal `python3 run.py slim`.
+# One container running `python run.py slim` (API + in-process ticker, incl.
+# the watchdog sweep, + embedded MCP) on SQLite. No Postgres, no Redis, no
+# worker. This is the containerized equivalent of bare-metal `python3 run.py slim`.
 #
 # Usage:
 #   docker compose -f docker-compose.single.yml up -d --build

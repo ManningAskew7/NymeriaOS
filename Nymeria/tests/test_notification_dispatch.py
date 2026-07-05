@@ -291,7 +291,7 @@ def test_autonomous_notification_with_task_id():
 
 # ── send_external_notifications (channel-registry profile dispatch) ──────────
 #
-# send_external_notifications now routes the watchdog's external delivery
+# send_external_notifications routes the watchdog sweep's external delivery
 # through the user's "default" notification profile (the same channel registry
 # the notify tool uses), instead of the old per-platform env senders.
 

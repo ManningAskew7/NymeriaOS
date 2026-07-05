@@ -1,6 +1,6 @@
 """Thin HTTP client for the Nymeria REST API.
 
-Used by bot thin clients (Discord, Telegram, Twitch), the watchdog
+Used by bot thin clients (Discord, Telegram, Twitch)
 worker, slash commands, and ``run.py`` helpers to interact with the
 Nymeria backend without running their own NymeriaAgent instance.
 All state lives in the API container — this is just a typed wrapper
@@ -48,7 +48,7 @@ class NymeriaAPIClient:
     routes the request as that user. Callers pass ``act_as=<user_id>`` on
     the underlying ``_get``/``_post``/... helpers; the header is the
     authoritative per-user identity honored on every per-user endpoint, so
-    shared infrastructure (bots, watchdog, slash commands) can act for any
+    shared infrastructure (bots, the worker, slash commands) can act for any
     user without holding that user's raw token.
     """
 
@@ -350,7 +350,7 @@ class NymeriaAPIClient:
         Yields dicts with 'type' key: thinking, response, tool_call,
         tool_result, error, done, etc.
 
-        For autonomous/trusted callers (watchdog worker, etc.), set
+        For autonomous/trusted callers, set
         is_self_invoke=True so the API treats the nudge as an internal
         message and routes it through the autonomous prompt path.
         trigger_override supplies the label (e.g. 'watchdog').
@@ -1603,7 +1603,7 @@ class NymeriaAPIClient:
         return data.get("items", [])
 
     async def list_users_with_todos(self) -> List[str]:
-        """List all user IDs that have TODO lists (for the watchdog worker)."""
+        """List all user IDs that have TODO lists."""
         data = await self._get("/todos/users")
         # Endpoint returns a JSON array directly
         if isinstance(data, list):
@@ -1619,7 +1619,7 @@ class NymeriaAPIClient:
     ) -> List[str]:
         """Deliver an off-frontend alert via the user's default notification
         profile (``POST /notifications/external``). The API holds the master
-        secrets key, so thin services (the Docker watchdog) can deliver
+        secrets key, so thin services holding only the service token can deliver
         without vault access. Returns the destination names that accepted
         delivery.
         """

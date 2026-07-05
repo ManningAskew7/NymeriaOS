@@ -25,7 +25,7 @@ DB file:
 | `credentials` / `credential_secret_fields` / `credential_bindings` | Encrypted reusable tool credentials and connection auth. Secret fields are Fernet ciphertext; public APIs return metadata only. See [`credentials.md`](credentials.md). |
 | `credential_audit_events` | Credential-vault audit log rows for create/update/test/delete and binding operations |
 
-Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header to call the API on behalf of another user - used by bots, the ticker, and the watchdog.
+Roles: `user` and `admin`. Admins can use the `X-Nymeria-Act-As` header to call the API on behalf of another user - used by bots and the worker ticker.
 
 ### Tokens
 
@@ -48,7 +48,7 @@ Token redaction is applied at the logging layer (`config/logging_config.py::_Tok
 |---|---|---|
 | Nymeria account token | Logging into the web UI/API as a user | `nym_...` |
 | Bootstrap token | First login for the auto-created `default` admin | `data/BOOTSTRAP_TOKEN.txt` |
-| Internal service token | Worker, watchdog, bots, MCP, and service act-as calls | `NYMERIA_SERVICE_TOKEN`, or `data/SLIM_SERVICE_TOKEN.txt` in slim mode |
+| Internal service token | Worker, bots, MCP, and service act-as calls | `NYMERIA_SERVICE_TOKEN`, or `data/SLIM_SERVICE_TOKEN.txt` in slim mode |
 | LLM provider key | Talking to Anthropic, OpenAI, OpenRouter, or another model provider | Provider-specific, usually `sk-...`, `sk-ant-...`, or `sk-or-...` |
 
 Do not paste provider keys into the web UI account-token field. If you need
@@ -80,7 +80,7 @@ etc.) so no data migration is needed for the first user.
 
 `python3 run.py slim` provisions a separate `bot-service` admin user and
 persists its raw token at `data/SLIM_SERVICE_TOKEN.txt` (mode `0600`). This
-token authenticates same-process MCP, watchdog, trigger-fire, and
+token authenticates same-process MCP, trigger-fire, and
 command-service calls; it is verified against the accounts repo on every
 boot and rotated automatically if invalid. It is an **internal service
 credential**, not a human bootstrap token - do not paste it into the Setup
@@ -226,7 +226,7 @@ Paste that into `NYMERIA_SERVICE_TOKEN` in `.env.docker`, then `docker compose u
 
 ## Service token
 
-Bots, the ticker, and the watchdog call the API as admin with `X-Nymeria-Act-As: <user_id>` to route per-user traffic without holding each user's raw token.
+Bots and the worker ticker call the API as admin with `X-Nymeria-Act-As: <user_id>` to route per-user traffic without holding each user's raw token.
 
 **Create the service user once** (on a fresh install):
 
@@ -240,9 +240,9 @@ Copy the printed token into `.env.docker`:
 NYMERIA_SERVICE_TOKEN=nym_...
 ```
 
-Then `docker compose --env-file .env.docker up -d` to propagate the variable into every container. Discord/Telegram/Watchdog print `Auth: service token` at startup when they pick it up - `NYMERIA_API_KEY` is retired, so the service token is now the only way for shared infrastructure to authenticate.
+Then `docker compose --env-file .env.docker up -d` to propagate the variable into every container. Discord/Telegram bots print `Auth: service token` at startup when they pick it up - `NYMERIA_API_KEY` is retired, so the service token is now the only way for shared infrastructure to authenticate.
 
-**How the header is honored:** Every authenticated route now resolves the caller via `verify_api_key`/`require_user`, which honors `X-Nymeria-Act-As: <user_id>` for admin callers. Non-admin callers sending it get 403; unknown/disabled targets get 404. Bots and the watchdog rely on this everywhere - they hold the admin service token and act-as the resolved per-user identity per request.
+**How the header is honored:** Every authenticated route now resolves the caller via `verify_api_key`/`require_user`, which honors `X-Nymeria-Act-As: <user_id>` for admin callers. Non-admin callers sending it get 403; unknown/disabled targets get 404. Bots and the worker rely on this everywhere - they hold the admin service token and act-as the resolved per-user identity per request.
 
 **What the bots send:**
 ```

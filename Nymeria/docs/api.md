@@ -501,7 +501,7 @@ subscribers using the same `client_id` can suppress their own echoes.
 | `user_id` | string | No | `"default"` | Legacy compatibility field. The backend ignores client-claimed user IDs and uses the bearer token or admin `X-Nymeria-Act-As` as the effective user. |
 | `attachments` | array | No | - | Optional multimodal attachments (images/documents) |
 | `force_unsupported_attachments` | bool | No | `false` | Send request even if model modality checks fail |
-| `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and mirrors supported stream events (`task_started`, `tool_call_delta`, `tool_call`, `tool_result`, `workspace_artifact`, `tool_reload`, `provider_retry`, `provider_fallback`, `thinking`, `response`, `context_attached`, `compacting`, `compacted`, `iteration_limit`, `task_completed`) to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the watchdog worker; gated by the same Bearer-auth check as any `/chat` call. |
+| `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and mirrors supported stream events (`task_started`, `tool_call_delta`, `tool_call`, `tool_result`, `workspace_artifact`, `tool_reload`, `provider_retry`, `provider_fallback`, `thinking`, `response`, `context_attached`, `compacting`, `compacted`, `iteration_limit`, `task_completed`) to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the Docker worker's relayed autonomous turns; gated by the same Bearer-auth check as any `/chat` call. |
 | `trigger_override` | string | No | - | Label for autonomous invocations (e.g. `"watchdog"`, `"ticker"`). Becomes part of `task_id` and the `source` field on emitted autonomous events. |
 | `trigger_id` | string | No | - | Trigger row ID for `trigger_override=="trigger"` calls. Surfaced on `task_started` and `task_completed` for frontend/bot classification. |
 | `trigger_name` | string | No | - | Human-readable trigger name for `trigger_override=="trigger"` calls. Surfaced on `task_started` and `task_completed`. |
@@ -1129,7 +1129,7 @@ All events include `thread_id` for correlation.
 
 ### Sub-Turn Steering (v1 same-process scope)
 
-When a new prompt (user chat, callable thread, MCP, watchdog, trigger,
+When a new prompt (user chat, callable thread, MCP, watchdog sweep, trigger,
 or scheduled TODO) arrives while a thread is mid-turn, it is queued
 per-thread; the running turn observes the queue at every
 post-tools boundary in its ReAct loop and halts to absorb the
@@ -1145,7 +1145,7 @@ events fan out to that mailbox, so a queuer's SSE connection sees the
 holder's response in real time once injection happens. The queuer's
 own stream emits `prompt_queued` first, then mirrors holder events,
 and ends with `prompt_absorbed`. Fire-and-forget queuers (triggers,
-ticker, watchdog) wait on a `threading.Event` and skip the mailbox.
+ticker, watchdog sweep) wait on a `threading.Event` and skip the mailbox.
 
 Queued prompts with attachments/images are rejected at enqueue time
 with `error.code=queue_attachments_unsupported` (the queue bypasses
@@ -1170,7 +1170,7 @@ endpoints, OAuth callbacks, or the device-code poller. Chat messages are never
 routed into an active credential prompt and never resolve/cancel that prompt.
 
 **v1 scope is process-local.** The pending-prompt queue and auth-prompt
-coordinator live in memory inside the API process. Docker worker/watchdog/bot
+coordinator live in memory inside the API process. Docker worker/bot
 services call back into the API as thin clients, so agent turns still execute
 where those in-memory structures are authoritative. A future Redis-backed
 backend can use the same queue/coordinator boundary if API agent execution is
@@ -2036,7 +2036,7 @@ GET /todos/users
 Authorization: Bearer <token>
 ```
 
-Returns all user IDs whose TODO file currently contains at least one TODO item. Empty legacy or stale TODO files are ignored so the watchdog worker does not poll no-op lists or try to impersonate deleted platform-only users.
+Returns all user IDs whose TODO file currently contains at least one TODO item. Empty legacy or stale TODO files are ignored so thin-client pollers do not poll no-op lists or try to impersonate deleted platform-only users.
 
 No query parameters.
 
@@ -2313,11 +2313,13 @@ Delivers `message` to the external destinations in the caller's `default`
 notification profile (no in-app feed row is written). Returns
 `{"delivered_to": ["<destination-name>", ...]}`.
 
-This is the vault-safe transport for thin services: the Docker watchdog
-holds only the service token (never the master secrets key), so it calls
-this endpoint with `X-Nymeria-Act-As: <user_id>` and the API performs the
-channel dispatch. Non-admin account tokens are pinned to their own user by
-Act-As resolution, so a regular user can only notify themselves.
+This is the vault-safe transport for thin services that hold only the
+service token (never the master secrets key): they call this endpoint with
+`X-Nymeria-Act-As: <user_id>` and the API performs the channel dispatch.
+(The watchdog sweep, its original caller, now dispatches in-process from
+the ticker; the endpoint remains the generic thin-client surface.)
+Non-admin account tokens are pinned to their own user by Act-As
+resolution, so a regular user can only notify themselves.
 
 The thread config endpoint also exposes a per-thread override:
 `PATCH /threads/{thread_id}/config` accepts `notification_profile` (string)

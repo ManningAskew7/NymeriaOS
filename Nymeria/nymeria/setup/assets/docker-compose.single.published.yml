@@ -3,7 +3,7 @@
 # Same shape as docker-compose.single.yml but pulls a PUBLISHED image instead of
 # building from a source checkout, and bakes the frontend/source into the image
 # (no live bind-mounts). This is the simplest clone-free Docker deployment: one
-# container running `python run.py slim` (API + in-process ticker + watchdog +
+# container running `python run.py slim` (API + in-process ticker, incl. the watchdog sweep, +
 # embedded MCP) on SQLite. No Postgres, no Redis, no separate worker.
 #
 # Usage (no git clone required):

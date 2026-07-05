@@ -1,8 +1,8 @@
 """Runtime health signals for non-API Docker services.
 
-The API has an HTTP ``/health`` route. Worker, bot, watchdog, and MCP
-containers do not all expose HTTP health endpoints, so they publish a small
-heartbeat file that Docker can validate from a separate process.
+The API has an HTTP ``/health`` route. Worker, bot, and MCP containers do
+not all expose HTTP health endpoints, so they publish a small heartbeat
+file that Docker can validate from a separate process.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ HEARTBEAT_INTERVAL_SECONDS = 15
 
 HEARTBEAT_SERVICES = {
     "worker",
-    "watchdog",
     "discord-bot",
     "slack-bot",
     "telegram-bot",
@@ -242,7 +241,7 @@ def check_service(
         _check_postgres(errors, settings)
         _check_redis(errors, settings)
 
-    if service in {"watchdog", "discord-bot", "slack-bot", "telegram-bot", "mcp"}:
+    if service in {"discord-bot", "slack-bot", "telegram-bot", "mcp"}:
         _check_api(api_url or "http://nymeria-api:8000", errors)
 
     if service == "mcp":

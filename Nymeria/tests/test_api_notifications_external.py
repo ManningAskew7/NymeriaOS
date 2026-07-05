@@ -1,10 +1,12 @@
 """Tests for POST /notifications/external and its api_client transport.
 
-The endpoint is the vault-safe delivery path for thin services: the Docker
-watchdog holds only the service token (never NYMERIA_SECRETS_KEY), so it
-sends off-frontend alerts through the API, which owns the key and does the
-actual channel dispatch. These tests pin the auth contract (Act-As scoping)
-and the request/response shapes on both sides of the wire.
+The endpoint is the vault-safe delivery path for thin services that hold
+only the service token (never NYMERIA_SECRETS_KEY): they send off-frontend
+alerts through the API, which owns the key and does the actual channel
+dispatch. (The watchdog sweep now dispatches in-process from the ticker;
+this endpoint remains the generic thin-client surface.) These tests pin the
+auth contract (Act-As scoping) and the request/response shapes on both
+sides of the wire.
 """
 
 from __future__ import annotations
@@ -104,7 +106,7 @@ def test_external_send_rejects_non_admin_act_as(
 def test_external_send_admin_act_as_targets_that_user(
     tmp_path, api_client_builder, monkeypatch
 ):
-    # The service token is admin-role, so this is the watchdog's exact path:
+    # The service token is admin-role, so this is the thin-client path:
     # admin credentials plus X-Nymeria-Act-As select the notified user.
     calls = _patch_dispatch(monkeypatch, result=["dest-a"])
     client, agent, token = _client(tmp_path, api_client_builder, role="admin")

@@ -19,7 +19,7 @@ New here? Read [shapes-explained.md](deployment-shapes-explained.md) first for a
 - One Python process
 - SQLite for all data
 - In-memory event bus
-- Embedded MCP endpoint at `/mcp` and an in-process watchdog task
+- Embedded MCP endpoint at `/mcp`; the watchdog sweep rides the in-process ticker
 - No external services required (no Postgres, no Redis)
 - Agent runs as the OS user that started it and has whatever filesystem access you do
 - Install: `cd Nymeria && python3 -m pip install --user -r requirements.txt && python3 run.py slim`
@@ -29,7 +29,7 @@ The slim shape is the **default** the codebase has always supported. It is how t
 See [slim.md](deployment-slim.md) for the full launcher reference, token-file map, and Docker-vs-slim caveats.
 
 ### Docker stack
-- Multi-container: `api`, `worker`, `watchdog`, `mcp`, `postgres`, `redis`, `caddy`, plus optional chat bots and voice services
+- Multi-container: `api`, `worker`, `mcp`, `postgres`, `redis`, `caddy`, plus optional chat bots and voice services
 - Postgres for durable app data and Redis pub/sub for cross-process events
 - Caddy reverse proxy with automatic Let's Encrypt TLS
 - Hardened: non-root/capability-dropped app containers, minimal thin-client env, network segmentation, read-only source bind mounts, resource limits

@@ -713,7 +713,7 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NYMERIA_API_KEY` | - | **Deprecated / ignored.** Formerly a shared bearer token; authentication now uses per-user account tokens. Safe to delete from `.env.docker`. See `docs/accounts.md`. |
-| `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `worker`, `discord-bot`, `telegram-bot`, `slack-bot`, `watchdog`, `mcp`, and `service`; local `api`, `cli`, and `users` development can still start without it. Created via `python3 run.py users add --role admin`. See `docs/accounts.md`. |
+| `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `discord-bot`, `telegram-bot`, `slack-bot`, `mcp`, and `service` (the worker resolves it after its API health wait); local `api`, `cli`, and `users` development can still start without it. Created via `python3 run.py users add --role admin`. See `docs/accounts.md`. |
 | `NYMERIA_SECRETS_KEY` | vault-required | 44-character Fernet key used to encrypt credential-vault secret fields, OAuth access/refresh tokens, and BYO bot tokens. Docker deployments must pass it through to the API/worker/MCP containers. If it is missing in the running API container, OAuth/device-code flows can complete at the provider but fail while saving the new credential. |
 | `ACCOUNT_TOKEN_TTL_DAYS` | `90` | Lifetime for newly issued Nymeria account tokens. Expired tokens are rejected and auto-revoked. |
 | `ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER` | `10` | Maximum non-revoked, non-expired account tokens a user may hold at once. |
@@ -1456,7 +1456,7 @@ registry, and REST API.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WATCHDOG_ENABLED` | `true` | Enable watchdog to monitor TODO staleness |
+| `WATCHDOG_ENABLED` | `true` | Enable the watchdog ticker sub-loop that monitors TODO staleness |
 | `WATCHDOG_INTERVAL_MINUTES` | `5` | Minutes between watchdog checks (1-60) |
 | `TODO_STALENESS_MINUTES` | `20` | Minutes without update before TODO is stale (5-1440) |
 | `TODO_AUTO_ARCHIVE_DAYS` | `7` | Days after completion before the ticker removes completed TODOs from the active TODO JSON list (1-30) |
@@ -1467,7 +1467,7 @@ registry, and REST API.
 | `DREAM_DEFAULT_MODEL` | - | Default model for dream turns; inherited when `dreaming.model` is blank, else the global active model is used |
 | `FCM_ENABLED` | `false` | Enable Firebase Cloud Messaging push notifications |
 | `FCM_CREDENTIALS_JSON` | - | Path to Firebase service account JSON |
-| `NYMERIA_WATCHDOG_DISABLED` | - | Set to `1` / `true` / `yes` at runtime to mute the watchdog without restarting. See also the file flag below. |
+| `NYMERIA_WATCHDOG_DISABLED` | - | Set to `1` / `true` / `yes` at runtime to mute the watchdog sweep without restarting (re-read every cycle). See also the file flag below. |
 
 The private server-side FCM credential is an operator-provided JSON file (for
 example `Nymeria/firebase-service-account.json`). It is supplied out of band,
@@ -1476,10 +1476,10 @@ never committed to the repository, and wired into Docker via
 
 **Watchdog runtime kill switches** (disable without restart):
 
-- **Env var**: `NYMERIA_WATCHDOG_DISABLED=1` (re-read on every poll cycle)
-- **File flag**: `{data_dir}/flags/watchdog-off`  -  persistent across container restarts because `/data` is a Docker volume. Create it with `docker exec nymeria-watchdog touch /data/flags/watchdog-off`; remove with `rm` to re-enable.
+- **Env var**: `NYMERIA_WATCHDOG_DISABLED=1` (re-read on every sweep cycle)
+- **File flag**: `{data_dir}/flags/watchdog-off`  -  persistent across container restarts because `/data` is a Docker volume. Create it with `docker exec nymeria-worker touch /data/flags/watchdog-off`; remove with `rm` to re-enable.
 
-In Docker deployments the watchdog runs in its own container (`nymeria-watchdog`, defined in `docker-compose.yml`). It's a thin client that calls the API over HTTP  -  no `NymeriaAgent` in the watchdog process. To disable it entirely, set `WATCHDOG_ENABLED=false` and restart, or simply don't start the service (`docker compose stop watchdog`). See `docs/architecture.md` §4.2 for details.
+The watchdog is a supervisory sub-loop of the ticker (`core/watchdog_sweep.py`): in Docker it runs inside the `nymeria-worker` container, in slim inside the single process. There is no separate watchdog container or `run.py watchdog` subcommand. To disable it entirely, set `WATCHDOG_ENABLED=false` and restart the worker (or slim process). See `docs/architecture.md` section 4.1 for details.
 
 ### Voice (TTS / STT)
 
@@ -1612,8 +1612,8 @@ DATABASE_BACKEND=sqlite
 # API Server
 # Authentication uses per-user account tokens; the bootstrap admin token is
 # written to <data_dir>/BOOTSTRAP_TOKEN.txt on first boot. See docs/accounts.md.
-# NYMERIA_SERVICE_TOKEN is the admin service token used by bots/ticker/watchdog
-# (with X-Nymeria-Act-As) for per-user routing.
+# NYMERIA_SERVICE_TOKEN is the admin service token used by bots and the worker
+# ticker (with X-Nymeria-Act-As) for per-user routing.
 NYMERIA_SERVICE_TOKEN=nym_<admin-service-token>
 # Public browser URL for one-time credential setup links in chat bots.
 # Localhost HTTP is fine for local development; production should use HTTPS.

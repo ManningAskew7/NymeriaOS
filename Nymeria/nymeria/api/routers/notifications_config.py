@@ -384,7 +384,7 @@ def create_notifications_config_router(
         (external destinations only; no in-app feed row is written).
 
         This is the transport for thin services that must not hold the
-        master secrets key: the Docker watchdog calls it with the service
+        master secrets key: a thin client calls it with the service
         token plus ``X-Nymeria-Act-As``, and the API (the key holder)
         decrypts destination secrets and dispatches. Non-admin account
         tokens are pinned to their own user by Act-As resolution, so a

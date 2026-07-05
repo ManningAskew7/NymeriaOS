@@ -83,17 +83,29 @@ def test_compose_timezone_defaults_are_consistent() -> None:
 
 
 def test_compose_watchdog_default_matches_documented_default() -> None:
+    """The watchdog sweep settings ride the api-env anchor (shared with the
+    worker, whose ticker hosts the sweep)."""
     services = _load_compose("docker-compose.yml")["services"]
     api_env = services["api"]["environment"]
 
     assert api_env["WATCHDOG_INTERVAL_MINUTES"] == "${WATCHDOG_INTERVAL_MINUTES:-5}"
+    # The env kill switch must pass through so operators can flip it
+    # per-deployment (the sweep re-reads it every cycle).
+    assert api_env["NYMERIA_WATCHDOG_DISABLED"] == "${NYMERIA_WATCHDOG_DISABLED:-}"
+
+
+def test_no_standalone_watchdog_service_remains() -> None:
+    """Backlog #78 folded the watchdog into the worker's ticker; a watchdog
+    service reappearing in compose means the fold regressed."""
+    services = _load_compose("docker-compose.yml")["services"]
+    assert "watchdog" not in services
 
 
 def test_nymeria_services_use_expected_runtime_images() -> None:
     services = _load_compose("docker-compose.yml")["services"]
 
     full_services = {"api", "worker"}
-    slim_services = {"watchdog", "discord-bot", "telegram-bot", "mcp"}
+    slim_services = {"discord-bot", "telegram-bot", "mcp"}
 
     for service_name in full_services:
         service = services[service_name]
@@ -121,7 +133,6 @@ def test_non_api_services_use_runtime_health_checks() -> None:
 
     for service_name in (
         "worker",
-        "watchdog",
         "discord-bot",
         "telegram-bot",
         "mcp",
@@ -143,7 +154,6 @@ def test_shared_dockerfile_has_no_built_in_healthcheck() -> None:
 
 AGENT_SERVICES = {"api", "worker"}
 THIN_CLIENT_SERVICES = {
-    "watchdog",
     "mcp",
     "discord-bot",
     "telegram-bot",
@@ -162,7 +172,7 @@ SOURCE_BIND_MOUNT_TARGETS = (
 
 
 def test_thin_client_services_use_read_only_rootfs_with_tmpfs() -> None:
-    """Thin-client containers (chat bots, watchdog, mcp) must lock down
+    """Thin-client containers (chat bots, mcp) must lock down
     their rootfs. They never spawn the agent or run bash_execute — there
     is no legitimate reason for them to write outside /tmp or the data
     volume, so an attacker who compromises one should not be able to
