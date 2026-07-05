@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -249,6 +249,7 @@ class _HistoryFormatContext:
     tool_results: Dict[str, Any]
     clean_tool_result: ToolResultCleaner
     extract_workspace_artifacts: WorkspaceArtifactExtractor
+    tool_timings: Dict[str, Any] = field(default_factory=dict)
     history: List[Dict[str, Any]] = field(default_factory=list)
     msg_counter: int = 0
     current_turn: Optional[Dict[str, Any]] = None
@@ -290,9 +291,13 @@ def format_conversation_history(
         )
 
     tool_results: Dict[str, Any] = {}
+    tool_timings: Dict[str, Any] = {}
     for msg in messages:
         if isinstance(msg, ToolMessage):
             tool_results[msg.tool_call_id] = msg.content
+            timing = (msg.additional_kwargs or {}).get("tool_timing")
+            if isinstance(timing, dict):
+                tool_timings[msg.tool_call_id] = timing
 
     ctx = _HistoryFormatContext(
         thread_id=thread_id,
@@ -302,6 +307,7 @@ def format_conversation_history(
         tool_results=tool_results,
         clean_tool_result=clean_tool_result,
         extract_workspace_artifacts=extract_workspace_artifacts,
+        tool_timings=tool_timings,
     )
 
     for msg in messages:
@@ -439,6 +445,7 @@ def _handle_ai_history_message(
             tool_results=ctx.tool_results,
             clean_tool_result=ctx.clean_tool_result,
             extract_workspace_artifacts=ctx.extract_workspace_artifacts,
+            tool_timings=ctx.tool_timings,
         )
         return
 
@@ -695,6 +702,7 @@ def _append_tool_call_steps(
     tool_results: Dict[str, Any],
     clean_tool_result: ToolResultCleaner,
     extract_workspace_artifacts: WorkspaceArtifactExtractor,
+    tool_timings: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Append response/tool-call steps from an AIMessage with tool calls."""
     if isinstance(msg.content, list):
@@ -712,6 +720,7 @@ def _append_tool_call_steps(
                     tool_results=tool_results,
                     clean_tool_result=clean_tool_result,
                     extract_workspace_artifacts=extract_workspace_artifacts,
+                    tool_timings=tool_timings,
                 )
             )
     else:
@@ -730,6 +739,7 @@ def _append_tool_call_steps(
                     tool_results=tool_results,
                     clean_tool_result=clean_tool_result,
                     extract_workspace_artifacts=extract_workspace_artifacts,
+                    tool_timings=tool_timings,
                 )
             )
 
@@ -741,6 +751,7 @@ def _content_block_to_steps(
     tool_results: Dict[str, Any],
     clean_tool_result: ToolResultCleaner,
     extract_workspace_artifacts: WorkspaceArtifactExtractor,
+    tool_timings: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Project a single AIMessage content block into history step dicts.
 
@@ -775,6 +786,7 @@ def _content_block_to_steps(
                 tool_results=tool_results,
                 clean_tool_result=clean_tool_result,
                 extract_workspace_artifacts=extract_workspace_artifacts,
+                tool_timings=tool_timings,
             )
         ]
     return []
@@ -787,6 +799,7 @@ def _tool_call_block_to_step(
     tool_results: Dict[str, Any],
     clean_tool_result: ToolResultCleaner,
     extract_workspace_artifacts: WorkspaceArtifactExtractor,
+    tool_timings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a tool_call step from a tool_use/function_call/custom_tool_call block.
 
@@ -816,6 +829,7 @@ def _tool_call_block_to_step(
         tool_results=tool_results,
         clean_tool_result=clean_tool_result,
         extract_workspace_artifacts=extract_workspace_artifacts,
+        tool_timings=tool_timings,
     )
 
 
@@ -827,6 +841,7 @@ def _tool_call_step(
     tool_results: Dict[str, Any],
     clean_tool_result: ToolResultCleaner,
     extract_workspace_artifacts: WorkspaceArtifactExtractor,
+    tool_timings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     step = {
         "type": "tool_call",
@@ -844,7 +859,33 @@ def _tool_call_step(
         artifacts = extract_workspace_artifacts(raw_tool_result_text)
         if artifacts:
             step["artifacts"] = artifacts
+    _apply_tool_timing_to_step(step, (tool_timings or {}).get(tool_call_id))
     return step
+
+
+def _apply_tool_timing_to_step(step: Dict[str, Any], timing: Any) -> None:
+    """Surface SafeToolNode's checkpointed tool_timing stamp on a history step.
+
+    Emits camelCase ``startTime``/``endTime`` ISO strings (the keys the
+    desktop/mobile history normalizers already parse) plus ``duration_ms``
+    for other API consumers. Best-effort: malformed stamps are ignored.
+    """
+    if not isinstance(timing, dict):
+        return
+    started_iso = timing.get("started_at")
+    duration_ms = timing.get("duration_ms")
+    if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool):
+        step["duration_ms"] = int(duration_ms)
+    if isinstance(started_iso, str) and started_iso:
+        step["startTime"] = started_iso
+        if "duration_ms" in step:
+            try:
+                started_dt = datetime.fromisoformat(started_iso)
+                step["endTime"] = (
+                    started_dt + timedelta(milliseconds=step["duration_ms"])
+                ).isoformat()
+            except ValueError:
+                pass  # unparseable startTime: clients fall back to duration_ms
 
 
 def _populate_legacy_turn_fields(turn: Dict[str, Any]) -> None:

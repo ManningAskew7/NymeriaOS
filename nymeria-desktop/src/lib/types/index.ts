@@ -98,6 +98,12 @@ export interface MessageStep {
   status?: ToolCallStatus;
   startTime?: Date;
   endTime?: Date;
+  // Server-authoritative execution time (tool_result.duration_ms); preferred
+  // over endTime-startTime, which includes network/queue latency.
+  durationMs?: number;
+  // Backend kill budget for the call (tool_call.timeout_seconds); lets the
+  // card render elapsed/max while running.
+  timeoutSeconds?: number;
   pendingApproval?: ToolApprovalRequest | null;
 }
 
@@ -178,6 +184,8 @@ export interface ToolCall {
   status: ToolCallStatus;
   startTime?: Date;
   endTime?: Date;
+  durationMs?: number;
+  timeoutSeconds?: number;
   pendingApproval?: ToolApprovalRequest | null;
 }
 
@@ -878,6 +886,7 @@ export interface ToolCallEvent {
     id: string;
     name: string;
     arguments: Record<string, unknown>;
+    timeoutSeconds?: number;
   };
 }
 
@@ -888,6 +897,7 @@ export interface ToolResultEvent {
     name: string;
     result: string;
     status: 'success' | 'error';
+    durationMs?: number;
   };
 }
 

@@ -450,7 +450,8 @@ export function createChatStore() {
     addToolCallStep(
       id: string,
       name: string,
-      args: Record<string, unknown>
+      args: Record<string, unknown>,
+      timeoutSeconds?: number
     ) {
       this._forceFlush();
       if (!isLastAssistantStreaming()) return;
@@ -464,7 +465,8 @@ export function createChatStore() {
           name,
           arguments: args,
           status: 'running',
-          startTime: new Date()
+          startTime: new Date(),
+          timeoutSeconds
         };
 
         // Add to active tool calls
@@ -477,7 +479,8 @@ export function createChatStore() {
           name,
           arguments: args,
           status: 'running',
-          startTime: new Date()
+          startTime: new Date(),
+          timeoutSeconds
         };
         const updatedSteps = [...(lastMessage.steps || []), newStep];
 
@@ -518,7 +521,12 @@ export function createChatStore() {
     /**
      * Update a tool call step with its result.
      */
-    updateToolCallStepResult(id: string, result: string, status: ToolCallStatus) {
+    updateToolCallStepResult(
+      id: string,
+      result: string,
+      status: ToolCallStatus,
+      durationMs?: number
+    ) {
       // Update active tool calls
       const existing = activeToolCalls.get(id);
       if (existing) {
@@ -526,7 +534,8 @@ export function createChatStore() {
           ...existing,
           result,
           status,
-          endTime: new Date()
+          endTime: new Date(),
+          durationMs
         };
         const newMap = new Map(activeToolCalls);
         newMap.set(id, updated);
@@ -538,7 +547,7 @@ export function createChatStore() {
         if (msg.role === 'assistant' && msg.steps) {
           const updatedSteps = msg.steps.map((step) => {
             if (step.type === 'tool_call' && step.id === id) {
-              return { ...step, result, status, endTime: new Date() };
+              return { ...step, result, status, endTime: new Date(), durationMs };
             }
             return step;
           });

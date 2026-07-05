@@ -1385,6 +1385,15 @@ class Settings(BaseSettings):
         le=2000000,
         description="Maximum characters stored for a single tool result; oversized results keep head and tail with a truncation marker"
     )
+    tool_timing_in_results: bool = Field(
+        default=False,
+        description=(
+            "Append each tool result's server-measured duration (e.g. "
+            "\"[Duration: 3.4s]\") to the result text the model sees. Off by "
+            "default; when on it costs a few tokens per tool call and gives "
+            "the agent execution-time context."
+        ),
+    )
     bash_env_passthrough: str = Field(
         default="",
         description=(

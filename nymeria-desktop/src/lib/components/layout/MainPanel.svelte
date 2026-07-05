@@ -440,8 +440,9 @@
           id: string;
           name: string;
           arguments: Record<string, unknown>;
+          timeoutSeconds?: number;
         };
-        chatStore.addToolCallStep(data.id, data.name, data.arguments);
+        chatStore.addToolCallStep(data.id, data.name, data.arguments, data.timeoutSeconds);
 
         // Refresh scheduled todos when self_invoke is called (legacy)
         if (data.name === 'self_invoke') {
@@ -457,9 +458,10 @@
           name: string;
           result: string;
           status: 'success' | 'error';
+          durationMs?: number;
         };
         if (data.id) {
-          chatStore.updateToolCallStepResult(data.id, data.result, data.status);
+          chatStore.updateToolCallStepResult(data.id, data.result, data.status, data.durationMs);
         } else {
           // Fallback: use legacy method if no ID provided
           chatStore.updateToolCallResultByName(data.name, data.result, data.status, data.id);

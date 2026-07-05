@@ -397,15 +397,26 @@
         break;
 
       case 'tool_call': {
-        const tc = event.data as { id: string; name: string; arguments: Record<string, unknown> };
-        chatStore.addToolCallStep(tc.id, tc.name, tc.arguments);
+        const tc = event.data as {
+          id: string;
+          name: string;
+          arguments: Record<string, unknown>;
+          timeoutSeconds?: number;
+        };
+        chatStore.addToolCallStep(tc.id, tc.name, tc.arguments, tc.timeoutSeconds);
         break;
       }
 
       case 'tool_result': {
-        const tr = event.data as { id?: string; name: string; result: string; status: string };
+        const tr = event.data as {
+          id?: string;
+          name: string;
+          result: string;
+          status: string;
+          durationMs?: number;
+        };
         if (tr.id) {
-          chatStore.updateToolCallStepResult(tr.id, tr.result, tr.status === 'error' ? 'error' : 'success');
+          chatStore.updateToolCallStepResult(tr.id, tr.result, tr.status === 'error' ? 'error' : 'success', tr.durationMs);
         } else {
           chatStore.updateToolCallResultByName(tr.name, tr.result, tr.status === 'error' ? 'error' : 'success');
         }

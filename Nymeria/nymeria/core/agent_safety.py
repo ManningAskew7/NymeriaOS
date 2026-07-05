@@ -191,6 +191,11 @@ def graph_run_config(
             "thread_id": thread_id,
             "user_id": user_id,
             "sequential_tools": sequential_tools,
+            # When on, SafeToolNode appends each tool result's server-measured
+            # duration to the text the model sees (global setting; per-turn read).
+            "tool_timing_in_results": bool(
+                getattr(settings, "tool_timing_in_results", False)
+            ),
         },
     }
     # Thread the turn source through to tool-event hooks. ``_build_tool_hook_ctx``

@@ -580,7 +580,8 @@ function createAutonomousStore() {
           chatStore.addToolCallStep(
             toolId,
             event.name as string,
-            (event.args as Record<string, unknown>) || {}
+            (event.args as Record<string, unknown>) || {},
+            typeof event.timeout_seconds === 'number' ? event.timeout_seconds : undefined
           );
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);
@@ -592,7 +593,8 @@ function createAutonomousStore() {
           chatStore.updateToolCallStepResult(
             event.id as string,
             event.result as string || '',
-            'success'
+            'success',
+            typeof event.duration_ms === 'number' ? event.duration_ms : undefined
           );
         } else if (isCurrentThread && isOurTask) {
           bufferPendingEvent(event);

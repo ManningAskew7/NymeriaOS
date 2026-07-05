@@ -79,7 +79,9 @@
         artifacts: step.artifacts,
         status: step.status || 'pending',
         startTime: step.startTime,
-        endTime: step.endTime
+        endTime: step.endTime,
+        durationMs: step.durationMs,
+        timeoutSeconds: step.timeoutSeconds
       }));
   }
 
@@ -447,6 +449,8 @@
                 status: step.status || 'pending',
                 startTime: step.startTime,
                 endTime: step.endTime,
+                durationMs: step.durationMs,
+                timeoutSeconds: step.timeoutSeconds,
                 pendingApproval: step.pendingApproval
               }} />
             </div>

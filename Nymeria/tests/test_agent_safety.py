@@ -100,13 +100,15 @@ def test_graph_run_config_uses_agent_facades():
     config = graph_run_config(cast(Any, agent), "thread-a", "user-b", callbacks)
 
     # The facade agent has no settings/thread_config_manager, so the Tier 2 flag
-    # resolves to its default (False) and is always present in configurable.
+    # and the tool-timing flag resolve to their defaults (False) and are always
+    # present in configurable.
     assert config == {
         "recursion_limit": 177,
         "configurable": {
             "thread_id": "thread-a",
             "user_id": "user-b",
             "sequential_tools": False,
+            "tool_timing_in_results": False,
         },
         "callbacks": callbacks,
     }
@@ -122,6 +124,13 @@ def test_graph_run_config_injects_resolved_sequential_flag():
     # No thread_config_manager -> the global default is used as-is.
     config = graph_run_config(cast(Any, agent), "thread-a", "user-b")
     assert config["configurable"]["sequential_tools"] is True
+
+
+def test_graph_run_config_stamps_tool_timing_flag_from_settings():
+    agent = _GraphConfigFacadeAgent()
+    agent.settings = SimpleNamespace(tool_timing_in_results=True)  # type: ignore[attr-defined]
+    config = graph_run_config(cast(Any, agent), "thread-a", "user-b")
+    assert config["configurable"]["tool_timing_in_results"] is True
 
 
 def test_graph_run_config_stamps_turn_source():

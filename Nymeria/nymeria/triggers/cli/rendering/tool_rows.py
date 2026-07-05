@@ -57,7 +57,11 @@ def format_tool_row(
         prefix_parts.append(status_label)
 
     if selected_options.show_duration and tool.status != "running":
-        duration = format_duration(tool.started_at, tool.ended_at)
+        # Prefer the server-measured execution time over the event-arrival diff.
+        if tool.duration_ms is not None:
+            duration = format_duration_from_ms(tool.duration_ms)
+        else:
+            duration = format_duration(tool.started_at, tool.ended_at)
         if duration:
             prefix_parts.append(duration)
 
@@ -183,6 +187,19 @@ def format_duration(started_at: float, ended_at: float | None) -> str:
     seconds = ended_at - started_at
     if seconds < 1:
         return f"{round(seconds * 1000):.0f}ms"
+    if seconds < 10:
+        return f"{seconds:.1f}s"
+    return f"{round(seconds):.0f}s"
+
+
+def format_duration_from_ms(duration_ms: int) -> str:
+    """Format a server-measured tool duration (tool_result.duration_ms)."""
+
+    if duration_ms < 0:
+        return ""
+    if duration_ms < 1000:
+        return f"{duration_ms}ms"
+    seconds = duration_ms / 1000
     if seconds < 10:
         return f"{seconds:.1f}s"
     return f"{round(seconds):.0f}s"

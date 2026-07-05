@@ -207,6 +207,12 @@ def _tool_step_from_history(
     )
     result = copy.deepcopy(step.get("result", ""))
     status = str(step.get("status") or ("success" if result not in (None, "") else "success"))
+    raw_duration = step.get("duration_ms")
+    duration_ms = (
+        int(raw_duration)
+        if isinstance(raw_duration, (int, float)) and not isinstance(raw_duration, bool)
+        else None
+    )
     return ToolCallStep(
         id=tool_id,
         name=name,
@@ -217,6 +223,7 @@ def _tool_step_from_history(
         started_at=_timestamp(step.get("started_at"), default=timestamp),
         updated_at=_timestamp(step.get("updated_at"), default=timestamp),
         ended_at=_timestamp(step.get("ended_at"), default=timestamp),
+        duration_ms=duration_ms,
     )
 
 

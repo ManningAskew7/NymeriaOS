@@ -1873,6 +1873,7 @@ def test_history_payload_converts_to_ordered_cli_state_and_renders_divider() -> 
                             "arguments": {"path": "README.md"},
                             "status": "success",
                             "result": "ok",
+                            "duration_ms": 2500,
                             "artifacts": [{"path": "/workspace/report.md"}],
                         },
                         {"type": "response", "content": "Done."},
@@ -1899,6 +1900,10 @@ def test_history_payload_converts_to_ordered_cli_state_and_renders_divider() -> 
         ToolCallStep,
         ResponseStep,
     ]
+    # Server-measured timing persists through history reload.
+    tool_step = assistant.steps[2]
+    assert isinstance(tool_step, ToolCallStep)
+    assert tool_step.duration_ms == 2500
     assert state.artifacts[0].path == "/workspace/report.md"
 
     output = CapturedRenderOutput()
