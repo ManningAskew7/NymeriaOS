@@ -163,3 +163,118 @@ class TestCandidateKeys:
         keys = pricing_table._candidate_keys("openrouter", "openai/gpt-4o-2024-08-06")
         assert "gpt-4o" in keys
         assert "openrouter/gpt-4o" in keys
+
+    def test_dotted_id_gains_hyphenated_variant_after_exact_forms(self):
+        """OpenRouter-style dotted ids must reach LiteLLM's hyphenated keys."""
+        keys = pricing_table._candidate_keys("", "anthropic/claude-sonnet-4.6")
+        assert "claude-sonnet-4-6" in keys
+        # Variants are fallbacks: every exact form stays ahead of them.
+        assert keys.index("claude-sonnet-4.6") < keys.index("claude-sonnet-4-6")
+
+    def test_hyphenated_id_gains_dotted_variant(self):
+        keys = pricing_table._candidate_keys("anthropic", "claude-opus-4-8")
+        assert "claude-opus-4.8" in keys
+
+    def test_word_separators_are_never_swapped(self):
+        """Only separators BETWEEN digits swap; word hyphens stay untouched."""
+        keys = pricing_table._candidate_keys("openai", "gpt-4o-mini")
+        assert keys == ["gpt-4o-mini", "openai/gpt-4o-mini"]
+
+
+class TestCatalogCapabilities:
+    def test_real_bundle_context_and_flags(self):
+        # Structural pins only (types, positivity, stable flags): exact token
+        # counts live upstream and would rot this test on a bundle refresh.
+        caps = pricing_table.get_catalog_capabilities("anthropic", "claude-opus-4-8")
+        assert caps is not None
+        assert isinstance(caps.max_input_tokens, int) and caps.max_input_tokens > 0
+        assert isinstance(caps.max_output_tokens, int) and caps.max_output_tokens > 0
+        assert caps.supports_vision is True
+        assert caps.supports_pdf_input is True
+
+    def test_dotted_id_resolves_via_separator_variant(self):
+        # The dotted OpenRouter-style spelling must land on the same entry as
+        # the hyphenated LiteLLM key.
+        dotted = pricing_table.get_catalog_capabilities("", "anthropic/claude-sonnet-4.6")
+        hyphenated = pricing_table.get_catalog_capabilities("anthropic", "claude-sonnet-4-6")
+        assert dotted is not None
+        assert dotted == hyphenated
+
+    def test_sparse_prefixed_entry_merges_with_bare_sibling(self, monkeypatch):
+        # Provider-prefixed entries are often sparser than their bare
+        # siblings; fields must merge along the candidate chain instead of
+        # the first field-bearing entry masking the richer one.
+        monkeypatch.setattr(
+            pricing_table,
+            "_litellm_cache",
+            {
+                "azure/o3-like": {"max_input_tokens": 200000},
+                "o3-like": {"supports_vision": True, "supports_pdf_input": True},
+            },
+        )
+        caps = pricing_table.get_catalog_capabilities("", "azure/o3-like")
+        assert caps is not None
+        assert caps.max_input_tokens == 200000
+        assert caps.supports_vision is True
+        assert caps.supports_pdf_input is True
+
+    def test_non_finite_numbers_are_treated_as_absent(self, monkeypatch):
+        # json.loads accepts NaN/Infinity literals; the refresh payload is
+        # untrusted upstream data and must not raise.
+        monkeypatch.setattr(
+            pricing_table,
+            "_litellm_cache",
+            {
+                "weird-inf": {"max_input_tokens": float("inf")},
+                "weird-nan": {"max_input_tokens": float("nan")},
+            },
+        )
+        assert pricing_table.get_catalog_capabilities("", "weird-inf") is None
+        assert pricing_table.get_catalog_capabilities("", "weird-nan") is None
+
+    def test_absent_flags_are_none_not_false(self, monkeypatch):
+        monkeypatch.setattr(
+            pricing_table,
+            "_litellm_cache",
+            {"model-x": {"max_input_tokens": 5000, "input_cost_per_token": 0.000001}},
+        )
+        caps = pricing_table.get_catalog_capabilities("", "model-x")
+        assert caps is not None
+        assert caps.max_input_tokens == 5000
+        assert caps.supports_vision is None
+        assert caps.supports_pdf_input is None
+        assert caps.max_output_tokens is None
+
+    def test_entry_without_capability_fields_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            pricing_table,
+            "_litellm_cache",
+            {"model-y": {"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}},
+        )
+        assert pricing_table.get_catalog_capabilities("", "model-y") is None
+
+    def test_junk_field_types_are_treated_as_absent(self, monkeypatch):
+        # sample_spec-style entries carry description strings in these fields.
+        monkeypatch.setattr(
+            pricing_table,
+            "_litellm_cache",
+            {"model-z": {"max_input_tokens": "lots", "supports_vision": "yes"}},
+        )
+        assert pricing_table.get_catalog_capabilities("", "model-z") is None
+
+    def test_unknown_and_empty_model_return_none(self):
+        assert pricing_table.get_catalog_capabilities("openai", "not-a-real-model-xyz") is None
+        assert pricing_table.get_catalog_capabilities("openai", "") is None
+
+    def test_lookup_never_triggers_network_refresh(self, monkeypatch):
+        calls = []
+
+        def fail(url, timeout):
+            calls.append(url)
+            raise AssertionError("unexpected network refresh")
+
+        monkeypatch.setattr(httpx, "get", fail)
+        # Force staleness: even then, capability reads must stay offline.
+        monkeypatch.setattr(pricing_table, "_last_fetch_ts", 0.0)
+        assert pricing_table.get_catalog_capabilities("openai", "gpt-4o") is not None
+        assert calls == []

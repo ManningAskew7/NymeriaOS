@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 
 from nymeria.config import model_capabilities as capabilities
+from nymeria.config import pricing_table as _pricing_table
 from nymeria.config.model_capabilities import ModelInfo
 
 
@@ -982,3 +983,187 @@ def test_f7_behavioral_spot_checks(monkeypatch):
     # Unlisted model: neither (no live metadata, no static match).
     assert not capabilities.supports_vision("acme/not-a-real-model")
     assert not capabilities.supports_documents("acme/not-a-real-model")
+
+
+# ============================================================================
+# Bundled-catalog tier (backlog #61): live caches > catalog > static tables
+# for context limits; curated tables > catalog for vision/document flags.
+# ============================================================================
+
+
+def _set_catalog(monkeypatch, entries: dict) -> None:
+    """Point the LiteLLM catalog cache at synthetic entries for one test."""
+    monkeypatch.setattr(_pricing_table, "_litellm_cache", entries)
+    monkeypatch.setattr(_pricing_table, "_loaded_from_bundle", True)
+
+
+def _offline(monkeypatch) -> None:
+    """Empty-but-populated live caches: no OpenRouter fetch, no live data."""
+    _set_model_cache(monkeypatch, {})
+    monkeypatch.setattr(capabilities, "_live_model_cache", {})
+
+
+def test_context_limit_resolves_from_catalog_when_live_metadata_missing(monkeypatch):
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {"future-model-q": {"max_input_tokens": 424242}})
+
+    assert capabilities.get_context_limit("future-model-q") == 424242
+    # CLIProxy-style effort suffixes are stripped before the catalog lookup.
+    assert capabilities.get_context_limit("future-model-q(xhigh)") == 424242
+
+
+def test_context_limit_exact_static_match_beats_catalog(monkeypatch):
+    # The curated table stores TOTAL context windows; the catalog's
+    # max_input_tokens is an input-only budget for some providers. An exact
+    # curated match must win over a divergent catalog value.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {"gpt-5.5": {"max_input_tokens": 999000}})
+
+    assert capabilities.get_context_limit("gpt-5.5") == 1050000
+
+
+def test_context_limit_catalog_beats_substring_fallback(monkeypatch):
+    # "custom-gpt-5.5-variant" has no exact curated entry; the substring
+    # fallback would fuzzily map it onto gpt-5.5 (1050000). Exact catalog
+    # data for the actual id must win over that guess.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {"custom-gpt-5.5-variant": {"max_input_tokens": 55555}})
+
+    assert capabilities.get_context_limit("custom-gpt-5.5-variant") == 55555
+
+
+def test_context_limit_live_metadata_beats_catalog(monkeypatch):
+    _set_model_cache(
+        monkeypatch,
+        {"openai/gpt-future": ModelInfo(id="openai/gpt-future", context_length=777777)},
+    )
+    monkeypatch.setattr(capabilities, "_live_model_cache", {})
+    _set_catalog(monkeypatch, {"gpt-future": {"max_input_tokens": 111111}})
+
+    assert capabilities.get_context_limit("gpt-future") == 777777
+
+
+def test_context_limit_static_table_still_covers_catalog_misses(monkeypatch):
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+
+    assert capabilities.get_context_limit("claude-opus-4-8") == 1000000
+    assert (
+        capabilities.get_context_limit("totally-unknown-model")
+        == capabilities.DEFAULT_CONTEXT_LIMITS["_default"]
+    )
+
+
+def test_context_limit_real_bundle_resolves_uncurated_model_offline(monkeypatch):
+    # claude-haiku-4-5 is absent from DEFAULT_CONTEXT_LIMITS; before the
+    # catalog tier it degraded to the 128k default whenever both live caches
+    # were cold. The real bundled snapshot must resolve it offline. The
+    # expected value comes from the catalog itself so a future bundle refresh
+    # cannot rot this test.
+    _offline(monkeypatch)
+
+    assert "claude-haiku-4-5" not in capabilities.DEFAULT_CONTEXT_LIMITS
+    hints = _pricing_table.get_catalog_capabilities("", "claude-haiku-4-5")
+    assert hints is not None and hints.max_input_tokens
+    assert capabilities.get_context_limit("claude-haiku-4-5") == hints.max_input_tokens
+    assert (
+        capabilities.get_context_limit("claude-haiku-4-5")
+        != capabilities.DEFAULT_CONTEXT_LIMITS["_default"]
+    )
+
+
+def test_supports_vision_from_catalog_for_uncurated_model(monkeypatch):
+    _offline(monkeypatch)
+    _set_catalog(
+        monkeypatch,
+        {
+            "sighted-model": {"supports_vision": True},
+            "blind-model": {"supports_vision": False},
+        },
+    )
+
+    assert capabilities.supports_vision("sighted-model") is True
+    assert capabilities.supports_vision("blind-model") is False
+
+
+def test_supports_documents_from_catalog_for_uncurated_model(monkeypatch):
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {"filing-model": {"supports_pdf_input": True}})
+
+    assert capabilities.supports_documents("filing-model") is True
+
+
+def test_curated_vision_only_verdict_beats_catalog_pdf_flag(monkeypatch):
+    # The real bundle claims supports_pdf_input for the codex family, but the
+    # curated tables deliberately classify codex as vision-only. The curated
+    # verdict must win in both directions for any model the tables know.
+    _offline(monkeypatch)
+
+    assert capabilities.supports_vision("gpt-5.2-codex") is True
+    assert capabilities.supports_documents("gpt-5.2-codex") is False
+
+
+def test_catalog_absent_flag_falls_through_not_false(monkeypatch):
+    _offline(monkeypatch)
+    # Catalog knows the context window but carries no vision flag; the model
+    # is uncurated, so vision resolves to the conservative False.
+    _set_catalog(monkeypatch, {"opaque-model": {"max_input_tokens": 32000}})
+
+    assert capabilities.supports_vision("opaque-model") is False
+    assert capabilities.get_context_limit("opaque-model") == 32000
+
+
+def test_max_output_tokens_from_catalog_with_safety_cap(monkeypatch):
+    _offline(monkeypatch)
+    _set_catalog(
+        monkeypatch,
+        {
+            "chatty-model": {"max_input_tokens": 10000, "max_output_tokens": 9000},
+            "modest-model": {"max_input_tokens": 100000, "max_output_tokens": 8000},
+        },
+    )
+
+    # 9000 exceeds 50% of the 10000-token context; capped to 5000.
+    assert capabilities.get_max_output_tokens("chatty-model") == 5000
+    assert capabilities.get_max_output_tokens("modest-model") == 8000
+    assert capabilities.get_max_output_tokens("absent-model") is None
+
+
+def test_anthropic_gateway_fallback_uses_catalog_for_uncurated_model(monkeypatch):
+    # A capabilities-less gateway response for a model the curated tables do
+    # not know: the catalog supplies the modality bits for the live cache.
+    _offline(monkeypatch)
+    _set_catalog(
+        monkeypatch,
+        {"claude-newline-9": {"supports_vision": True, "supports_pdf_input": True}},
+    )
+
+    sample_response = {
+        "data": [
+            {
+                "id": "claude-newline-9",
+                "display_name": "Claude Newline 9",
+                "max_input_tokens": 500000,
+            }
+        ]
+    }
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return sample_response
+
+    monkeypatch.setattr(capabilities.httpx, "get", lambda *a, **k: _FakeResponse())
+
+    count = capabilities.refresh_anthropic_models(
+        base_url="http://cli-proxy-api:8317",
+        api_key="sk-test",
+    )
+
+    assert count == 1
+    info = capabilities._lookup_model("claude-newline-9")
+    assert info is not None
+    assert "image" in info.input_modalities
+    assert "file" in info.input_modalities

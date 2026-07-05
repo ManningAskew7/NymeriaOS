@@ -1,7 +1,8 @@
 """Model capability registry for Nymeria.
 
-Fetches model capabilities dynamically from OpenRouter API.
-Falls back to static lists if API is unavailable.
+Fetches model capabilities dynamically from OpenRouter API. Unknown models
+fall back to the bundled LiteLLM catalog (via pricing_table, offline), then
+to the static lists in this module.
 """
 
 import logging
@@ -11,9 +12,12 @@ import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import time
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, TypedDict
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Set, TypedDict
 
 import httpx
+
+if TYPE_CHECKING:
+    from .pricing_table import CatalogCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -798,11 +802,11 @@ def _fetch_anthropic_models(
         # without a capabilities block. Do NOT assert text-only in that case: it
         # would mark every vision-capable Claude model as non-vision in the live
         # cache (which is authoritative over the static fallback) and silently
-        # disable all image input. Defer to the static capability sets for any
+        # disable all image input. Defer to the catalog/static fallbacks for any
         # modality the provider did not explicitly report.
-        if not image_reported and _fallback_check(model_id, VISION_CAPABLE_MODELS):
+        if not image_reported and _vision_fallback(model_id):
             input_modalities.add("image")
-        if not pdf_reported and _fallback_check(model_id, DOCUMENT_CAPABLE_MODELS):
+        if not pdf_reported and _documents_fallback(model_id):
             input_modalities.add("file")
         reasoning_efforts = parse_anthropic_reasoning_capabilities(capabilities_obj)
 
@@ -1168,6 +1172,82 @@ def _fallback_check(model_id: str, model_set: Set[str]) -> bool:
 
 
 # ============================================================================
+# Bundled-catalog tier (LiteLLM snapshot via pricing_table)
+# ============================================================================
+#
+# Live runtime caches (the configured provider's /models data plus the
+# OpenRouter catalog fetch) always resolve first: they are authoritative for
+# the deployment (e.g. OpenRouter serving limits legitimately diverge from
+# native ones). Below them, the bundled LiteLLM catalog (~2,700 models,
+# offline, refreshed daily in memory by the pricing path) fills the gap the
+# curated data leaves, but the curated data OUTRANKS the catalog on both
+# axes, for two different reasons:
+#
+# - Context limits: exact ``DEFAULT_CONTEXT_LIMITS`` matches beat the
+#   catalog because the two sources measure different things for some
+#   providers: the curated table stores TOTAL context windows while LiteLLM's
+#   ``max_input_tokens`` is an input-only budget (e.g. gpt-5 is 400000 total
+#   but 272000 input in the catalog). The catalog then beats the fuzzy
+#   substring guess and the 128k default below it: exact catalog data for an
+#   uncurated model is far better than either.
+# - Vision/document flags: a vision-listed model is a complete curated
+#   opinion on both axes (listed vision-only means a deliberate "no
+#   documents"). LiteLLM's ``supports_pdf_input`` tracks API-level file
+#   plumbing, not native document modality, and contradicts the curated
+#   tables for e.g. the codex and image-generation families. The catalog
+#   answers only for models the curated tables do not know at all; uncurated
+#   siblings of curated families (e.g. "codex-mini-latest") take the catalog
+#   verdict, which beats a blanket False.
+#
+# The catalog's per-effort-level booleans are deliberately NOT wired into the
+# reasoning-effort ladders: those stay on the curated family tables, which
+# encode wire-level knowledge a single supports_reasoning flag cannot.
+
+
+def _catalog_capabilities(model_id: str) -> "Optional[CatalogCapabilities]":
+    """Read context/capability hints for ``model_id`` from the LiteLLM catalog.
+
+    Read-only and offline-safe (never triggers the catalog's network refresh).
+    The import is function-local because ``pricing_table`` imports this module
+    at top level.
+    """
+    if not model_id:
+        return None
+    from . import pricing_table
+
+    normalized = _REASONING_SUFFIX_RE.sub("", model_id.strip().lower())
+    if not normalized:
+        return None
+    return pricing_table.get_catalog_capabilities("", normalized)
+
+
+def _vision_fallback(model_id: str) -> bool:
+    """Vision capability with no live metadata cached: curated, then catalog."""
+    if _fallback_check(model_id, VISION_CAPABLE_MODELS):
+        return True
+    catalog = _catalog_capabilities(model_id)
+    if catalog is not None and catalog.supports_vision is not None:
+        return catalog.supports_vision
+    return False
+
+
+def _documents_fallback(model_id: str) -> bool:
+    """Document capability with no live metadata cached: curated, then catalog.
+
+    Membership in the VISION set marks a model as curated at all (document is
+    a pinned subset of vision), so for those models the DOCUMENT set is the
+    curated verdict in both directions and the catalog is not consulted (see
+    the tiering note above).
+    """
+    if _fallback_check(model_id, VISION_CAPABLE_MODELS):
+        return _fallback_check(model_id, DOCUMENT_CAPABLE_MODELS)
+    catalog = _catalog_capabilities(model_id)
+    if catalog is not None and catalog.supports_pdf_input is not None:
+        return catalog.supports_pdf_input
+    return False
+
+
+# ============================================================================
 # Public API — existing functions (same signatures, same behavior)
 # ============================================================================
 
@@ -1176,7 +1256,7 @@ def supports_vision(model_id: str) -> bool:
     result = _check_modality(model_id, "image")
     if result is not None:
         return result
-    return _fallback_check(model_id, VISION_CAPABLE_MODELS)
+    return _vision_fallback(model_id)
 
 
 def supports_documents(model_id: str) -> bool:
@@ -1184,7 +1264,7 @@ def supports_documents(model_id: str) -> bool:
     result = _check_modality(model_id, "file")
     if result is not None:
         return result
-    return _fallback_check(model_id, DOCUMENT_CAPABLE_MODELS)
+    return _documents_fallback(model_id)
 
 
 def get_model_modalities(model_id: str) -> Set[str]:
@@ -1299,12 +1379,20 @@ def get_context_limit(model_id: str) -> int:
     if info is not None and info.context_length > 0:
         return info.context_length
 
-    # Fallback to static defaults
+    # Exact curated matches first: the curated table stores TOTAL context
+    # windows while the catalog's max_input_tokens is an input-only budget
+    # for some providers (see the tiering note above _catalog_capabilities).
     candidates = _model_id_candidates(model_id)
     for candidate in candidates:
         limit = DEFAULT_CONTEXT_LIMITS.get(candidate)
         if limit:
             return limit
+
+    # Catalog tier: exact-candidate catalog data beats the fuzzy substring
+    # guess and the 128k default below.
+    catalog = _catalog_capabilities(model_id)
+    if catalog is not None and catalog.max_input_tokens:
+        return catalog.max_input_tokens
 
     model_lower = model_id.lower()
     for known_model, limit in _DEFAULT_CONTEXT_LIMITS_BY_LEN:
@@ -1320,10 +1408,13 @@ def get_max_output_tokens(model_id: str) -> Optional[int]:
         return None
 
     info = _lookup_model(model_id)
-    if info is None or info.max_completion_tokens is None:
+    raw_max_output = info.max_completion_tokens if info is not None else None
+    if raw_max_output is None:
+        # Catalog tier: same fallback order as get_context_limit.
+        catalog = _catalog_capabilities(model_id)
+        raw_max_output = catalog.max_output_tokens if catalog is not None else None
+    if raw_max_output is None:
         return None
-
-    raw_max_output = info.max_completion_tokens
 
     # Safety cap: never exceed 50% of context window.
     context_limit = get_context_limit(model_id)
