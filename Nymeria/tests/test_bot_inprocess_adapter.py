@@ -394,3 +394,79 @@ def test_list_chatapp_bindings_maps_fields():
         "id": 1, "thread_id": "t1", "provider": "line", "platform_chat_id": "c1",
         "user_id": "u1", "created_at": "t0", "user_telegram_bot_id": None,
     }]
+
+
+# --- execute_command (backend slash-command passthrough) ---------------------
+
+class _FakeCommandService:
+    def __init__(self, result) -> None:
+        self.result = result
+        self.calls: list[tuple] = []
+
+    async def execute(self, ctx, command, *, api=None):
+        self.calls.append((ctx, command, api))
+        return self.result
+
+
+def _patch_command_service(monkeypatch, result):
+    from nymeria.core.command_service import CommandResult
+
+    service = _FakeCommandService(
+        result
+        if result is not None
+        else CommandResult(True, "**ok**", "status", level="success", data={"x": 1})
+    )
+    monkeypatch.setattr(_bot_inprocess, "get_command_service", lambda: service)
+    return service
+
+
+def test_execute_command_dispatches_in_process_with_origin_surface(monkeypatch):
+    api, agent = _make_adapter(origin="whatsapp")
+    service = _patch_command_service(monkeypatch, None)
+
+    result = _run(api.execute_command("/status", thread_id="t1", user_id="u1"))
+
+    # Return shape mirrors POST /commands/execute (and the HTTP client).
+    assert result == {
+        "success": True,
+        "markdown": "**ok**",
+        "command": "status",
+        "level": "success",
+        "data": {"x": 1},
+    }
+    ctx, command, backend = service.calls[0]
+    assert command == "/status"
+    assert ctx.user_id == "u1"
+    assert ctx.thread_id == "t1"
+    assert ctx.source == "user"
+    # Surface defaults to the adapter's origin_client_id, which matches the
+    # CommandSurface literal for every webhook platform.
+    assert ctx.surface == "whatsapp"
+    assert ctx.is_admin is False
+    assert ctx.via_act_as is True
+    # The command executor gets the in-process backend, bound to this agent.
+    assert backend.agent is agent
+
+
+def test_execute_command_honors_explicit_surface_and_admin_role(monkeypatch):
+    api, agent = _make_adapter(origin="teams")
+    agent.accounts_repo.user.role = "admin"
+    service = _patch_command_service(monkeypatch, None)
+
+    _run(api.execute_command("/hook log", user_id="u1", surface="telegram", actor="user"))
+
+    ctx, _command, _backend = service.calls[0]
+    assert ctx.surface == "telegram"
+    assert ctx.actor == "user"
+    assert ctx.is_admin is True
+
+
+def test_execute_command_unknown_user_raises_injected_error(monkeypatch):
+    api, agent = _make_adapter()
+    agent.accounts_repo.user = None
+    service = _patch_command_service(monkeypatch, None)
+
+    with pytest.raises(_SentinelError) as exc:
+        _run(api.execute_command("/status", user_id="ghost"))
+    assert exc.value.status_code == 404
+    assert service.calls == []

@@ -32,6 +32,30 @@ class FakeAPI:
         self.unbound: list[dict] = []
         self.stopped: list[dict] = []
         self.last_resolve: dict | None = None
+        self.command_calls: list[dict] = []
+        self.command_result: dict = {"success": True, "markdown": "**backend says hi**"}
+
+    async def execute_command(
+        self,
+        command,
+        *,
+        thread_id=None,
+        source="user",
+        actor=None,
+        surface=None,
+        user_id=None,
+    ):
+        self.command_calls.append(
+            {
+                "command": command,
+                "thread_id": thread_id,
+                "source": source,
+                "actor": actor,
+                "surface": surface,
+                "user_id": user_id,
+            }
+        )
+        return self.command_result
 
     async def resolve_platform_user(self, platform: str, platform_user_id: str):
         self.last_resolve = {
@@ -299,3 +323,119 @@ def test_link_and_bind_commands_claim_codes():
     ]
     assert "Linked this Slack account" in client.posts[0]["text"]
     assert "Bound this Slack conversation" in client.posts[1]["text"]
+
+
+def _dm_event(text: str, *, ts: str = "171.500") -> dict:
+    return {
+        "type": "message",
+        "channel": "D1",
+        "channel_type": "im",
+        "user": "U1",
+        "team": "T1",
+        "ts": ts,
+        "text": text,
+    }
+
+
+def test_dm_slash_command_is_forwarded_to_backend():
+    bot, api, client = make_bot()
+
+    asyncio.run(bot.handle_slack_event(_dm_event("/status"), source="message"))
+
+    assert api.command_calls == [
+        {
+            "command": "/status",
+            "thread_id": "slack_dm_T1_U1",
+            "source": "user",
+            "actor": "user",
+            "surface": "slack",
+            "user_id": "user-1",
+        }
+    ]
+    # The command was handled by the backend registry, not the agent.
+    assert api.chat_stream_calls == []
+    # Result markdown is rendered through the normal Slack send path (mrkdwn).
+    assert client.posts == [{"channel": "D1", "text": "*backend says hi*", "mrkdwn": True}]
+
+
+def test_channel_slash_command_forwards_clean_text_without_platform_prefix():
+    bot, api, client = make_bot()
+
+    asyncio.run(
+        bot.handle_slack_event(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "user": "U1",
+                "team": "T1",
+                "ts": "171.600",
+                "text": "<@UBOT> /todos list",
+            },
+            source="app_mention",
+        )
+    )
+
+    assert len(api.command_calls) == 1
+    # No "[Slack ...]" chat prefix on the forwarded command.
+    assert api.command_calls[0]["command"] == "/todos list"
+    assert api.command_calls[0]["surface"] == "slack"
+    assert api.chat_stream_calls == []
+
+
+def test_chat_stream_kind_slash_command_falls_through_to_chat():
+    bot, api, client = make_bot()
+    api.command_result = {
+        "success": False,
+        "markdown": "**Error:** `/skill` is handled outside the command service.",
+        "data": {"execution_kind": "chat_stream"},
+    }
+
+    asyncio.run(bot.handle_slack_event(_dm_event("/skill research"), source="message"))
+
+    # The refusal marker re-routes the raw text into the normal chat path.
+    assert len(api.command_calls) == 1
+    assert len(api.chat_stream_calls) == 1
+    assert api.chat_stream_calls[0]["message"] == "/skill research"
+    assert client.posts[-1]["text"] == "hello from Nymeria"
+
+
+def test_bang_prefix_is_normalized_to_slash_for_slack():
+    # Slack's client swallows leading-"/" messages as Slack-native slash
+    # commands, so "!" is the reachable DM prefix; it forwards as "/".
+    bot, api, client = make_bot()
+
+    asyncio.run(bot.handle_slack_event(_dm_event("!todos list"), source="message"))
+
+    assert len(api.command_calls) == 1
+    assert api.command_calls[0]["command"] == "/todos list"
+    assert api.chat_stream_calls == []
+
+
+def test_bang_without_command_word_is_ordinary_chat():
+    bot, api, client = make_bot()
+
+    asyncio.run(bot.handle_slack_event(_dm_event("!! nice work"), source="message"))
+
+    assert api.command_calls == []
+    assert len(api.chat_stream_calls) == 1
+    assert api.chat_stream_calls[0]["message"] == "!! nice work"
+
+
+def test_local_stop_command_still_wins_over_passthrough():
+    bot, api, client = make_bot()
+
+    asyncio.run(bot.handle_slack_event(_dm_event("/stop"), source="message"))
+
+    assert api.stopped == [{"thread_id": "slack_dm_T1_U1", "user_id": "user-1"}]
+    assert api.command_calls == []
+
+
+def test_unlinked_user_slash_command_is_rejected_without_backend_call():
+    bot, api, client = make_bot(FakeAPI(resolved_user=None))
+
+    asyncio.run(bot.handle_slack_event(_dm_event("/status"), source="message"))
+
+    assert api.command_calls == []
+    assert api.chat_stream_calls == []
+    assert "not linked" in client.posts[0]["text"]

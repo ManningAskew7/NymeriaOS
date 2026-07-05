@@ -102,6 +102,15 @@ Plain text commands handled by the WhatsApp bot:
 | `unbind` | Remove the current WhatsApp chat binding. |
 | `stop` | Abort the current Nymeria run for this WhatsApp chat. |
 
+Any other message starting with `/` is forwarded verbatim to the backend
+slash-command registry (the same catalog desktop, mobile, the CLI, Telegram,
+and Discord use) and the command's markdown result is sent back in chat, so
+`/status`, `/todos list`, `/hook log`, and every future registered command
+work without bot changes. Per-surface menus and admin gating apply
+(`surface="whatsapp"`). Commands that execute as chat turns (`/skill`,
+`/kit`) fall through to the normal chat path automatically. The local
+commands above are matched first (with or without a leading `/`).
+
 Other text, button, and interactive-reply messages are sent to Nymeria as chat turns.
 
 ## Limitations

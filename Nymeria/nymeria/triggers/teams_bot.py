@@ -9,6 +9,7 @@ import re
 import time
 from collections.abc import AsyncIterable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Optional, Protocol
 from urllib.parse import quote
 
@@ -16,7 +17,7 @@ import httpx
 import jwt
 from jwt import InvalidTokenError, PyJWKClient
 
-from .bot_helpers import SeenEventCache, safe_id as _safe_id
+from .bot_helpers import SeenEventCache, forward_backend_command, safe_id as _safe_id
 from .message_splitter import split_teams_message as split_message
 from .sse_consumer import consume_sse_stream
 
@@ -79,6 +80,18 @@ class TeamsNymeriaAPI(Protocol):
         ...
 
     async def stop(self, thread_id: str, user_id: Optional[str] = None) -> dict[str, Any]:
+        ...
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: Optional[str] = None,
+        source: str = "user",
+        actor: Optional[str] = None,
+        surface: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict[str, Any]:
         ...
 
     def chat_stream(
@@ -558,6 +571,25 @@ class NymeriaTeamsBot:
             return
 
         thread_id = self._resolve_thread_id(activity)
+
+        # Generic backend slash-command passthrough. Local commands
+        # (link/bind/unbind/stop) were consumed above; any other "/" text is a
+        # backend command, except chat_stream-kind commands (e.g. /skill),
+        # which fall through to the normal chat path below.
+        stripped_text = clean_text.strip()
+        if stripped_text.startswith("/"):
+            handled = await forward_backend_command(
+                self.api,
+                stripped_text,
+                thread_id=thread_id,
+                user_id=user_id,
+                surface="teams",
+                send=partial(self._send_text, target),
+                logger=logger,
+            )
+            if handled:
+                return
+
         sender = activity.from_name or activity.from_id
         if activity.is_direct:
             prompt = clean_text

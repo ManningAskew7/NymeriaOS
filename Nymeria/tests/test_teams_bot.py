@@ -46,6 +46,33 @@ class FakeTeamsAPI:
         self.claimed_binds: list[dict[str, str]] = []
         self.unbound: list[dict[str, str | None]] = []
         self.stopped: list[dict[str, str | None]] = []
+        self.command_calls: list[dict[str, Any]] = []
+        self.command_result: dict[str, Any] = {
+            "success": True,
+            "markdown": "**backend says hi**",
+        }
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: str | None = None,
+        source: str = "user",
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.command_calls.append(
+            {
+                "command": command,
+                "thread_id": thread_id,
+                "source": source,
+                "actor": actor,
+                "surface": surface,
+                "user_id": user_id,
+            }
+        )
+        return self.command_result
 
     async def resolve_platform_user(self, provider: str, provider_user_id: str) -> str | None:
         self.resolve_calls.append(
@@ -340,6 +367,98 @@ def test_unlinked_sender_is_rejected_without_agent_call() -> None:
 
     asyncio.run(bot.handle_payload(payload(text="hello")))
 
+    assert api.chat_stream_calls == []
+    assert "not linked to a Nymeria user" in client.sent[0]["text"]
+
+
+def test_dm_slash_command_is_forwarded_to_backend() -> None:
+    api = FakeTeamsAPI()
+    client = FakeTeamsClient()
+    bot = NymeriaTeamsBot(api=api, teams_client=client)
+
+    asyncio.run(bot.handle_payload(payload(text="/status")))
+
+    assert api.command_calls == [
+        {
+            "command": "/status",
+            "thread_id": "teams_dm_tenant-1_aad-1",
+            "source": "user",
+            "actor": "user",
+            "surface": "teams",
+            "user_id": "user-1",
+        }
+    ]
+    # Handled by the backend registry, not the agent chat path.
+    assert api.chat_stream_calls == []
+    assert client.sent[0]["text"] == "**backend says hi**"
+
+
+def test_channel_slash_command_forwards_clean_text_without_platform_prefix() -> None:
+    api = FakeTeamsAPI()
+    client = FakeTeamsClient()
+    bot = NymeriaTeamsBot(api=api, teams_client=client)
+
+    asyncio.run(
+        bot.handle_payload(
+            payload(
+                text="<at>Nymeria</at> /todos list",
+                conversation_id="19:channel;messageid=root-1",
+                conversation_type="channel",
+                mentioned=True,
+            )
+        )
+    )
+
+    assert len(api.command_calls) == 1
+    # No "[Microsoft Teams ...]" chat prefix on the forwarded command.
+    assert api.command_calls[0]["command"] == "/todos list"
+    assert api.command_calls[0]["thread_id"] == "teams_tenant-1_19-channel_thread_root-1"
+    assert api.chat_stream_calls == []
+
+
+def test_chat_stream_kind_slash_command_falls_through_to_chat() -> None:
+    api = FakeTeamsAPI()
+    client = FakeTeamsClient()
+    bot = NymeriaTeamsBot(api=api, teams_client=client)
+    api.command_result = {
+        "success": False,
+        "markdown": "**Error:** `/skill` is handled outside the command service.",
+        "data": {"execution_kind": "chat_stream"},
+    }
+
+    asyncio.run(bot.handle_payload(payload(text="/skill research")))
+
+    # The refusal marker re-routes the raw text into the chat path.
+    assert len(api.command_calls) == 1
+    assert api.chat_stream_calls == [
+        {
+            "message": "/skill research",
+            "thread_id": "teams_dm_tenant-1_aad-1",
+            "user_id": "user-1",
+        }
+    ]
+    assert client.sent[0]["text"] == "teams reply"
+
+
+def test_local_stop_command_still_wins_over_passthrough() -> None:
+    api = FakeTeamsAPI()
+    client = FakeTeamsClient()
+    bot = NymeriaTeamsBot(api=api, teams_client=client)
+
+    asyncio.run(bot.handle_payload(payload(text="/stop")))
+
+    assert api.stopped == [{"thread_id": "teams_dm_tenant-1_aad-1", "user_id": "user-1"}]
+    assert api.command_calls == []
+
+
+def test_unlinked_slash_command_is_rejected_without_backend_call() -> None:
+    api = FakeTeamsAPI(resolved_user=None)
+    client = FakeTeamsClient()
+    bot = NymeriaTeamsBot(api=api, teams_client=client)
+
+    asyncio.run(bot.handle_payload(payload(text="/status")))
+
+    assert api.command_calls == []
     assert api.chat_stream_calls == []
     assert "not linked to a Nymeria user" in client.sent[0]["text"]
 

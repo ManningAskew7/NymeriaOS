@@ -2167,6 +2167,9 @@ class CommandService:
                 level="error",
             )
         if not definition.executable:
+            # data carries the execution kind so generic bot passthroughs can
+            # detect chat_stream commands structurally (no string matching)
+            # and re-route them into the normal chat path.
             return CommandResult(
                 False,
                 (
@@ -2175,6 +2178,7 @@ class CommandService:
                 ).strip(),
                 command_label,
                 level="error",
+                data={"execution_kind": definition.execution_kind},
             )
 
         if definition.id == "help":

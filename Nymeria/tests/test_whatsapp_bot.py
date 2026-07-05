@@ -34,6 +34,33 @@ class FakeNymeriaAPI:
         self.stop_calls: list[tuple[str, str | None]] = []
         self.chat_stream_calls: list[tuple[str, str, str]] = []
         self.chat_calls: list[tuple[str, str, str]] = []
+        self.command_calls: list[dict[str, Any]] = []
+        self.command_result: dict[str, Any] = {
+            "success": True,
+            "markdown": "**backend says hi**",
+        }
+
+    async def execute_command(
+        self,
+        command: str,
+        *,
+        thread_id: str | None = None,
+        source: str = "user",
+        actor: str | None = None,
+        surface: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.command_calls.append(
+            {
+                "command": command,
+                "thread_id": thread_id,
+                "source": source,
+                "actor": actor,
+                "surface": surface,
+                "user_id": user_id,
+            }
+        )
+        return self.command_result
 
     async def resolve_platform_user(self, provider: str, provider_user_id: str) -> str | None:
         return self.resolved.get((provider, provider_user_id))
@@ -288,6 +315,114 @@ def test_webhook_dedupes_messages_and_streams_to_bound_thread() -> None:
         assert second == {"processed": 0, "skipped": 1}
         assert api.chat_stream_calls == [("hello", "desktop-thread", "owner")]
         assert cloud.sent == [("15551234567", "Hello from Nymeria")]
+
+    asyncio.run(run())
+
+
+def test_slash_command_is_forwarded_to_backend() -> None:
+    async def run() -> None:
+        api = FakeNymeriaAPI()
+        api.resolved[("whatsapp", "15551234567")] = "owner"
+        cloud = FakeWhatsAppCloud()
+        bot = NymeriaWhatsAppBot(api, cloud)
+
+        await bot.handle_message(
+            WhatsAppInboundMessage(
+                message_id="wamid.1",
+                sender_id="15551234567",
+                text="/status",
+                message_type="text",
+            )
+        )
+
+        assert api.command_calls == [
+            {
+                "command": "/status",
+                "thread_id": "whatsapp_15551234567",
+                "source": "user",
+                "actor": "user",
+                "surface": "whatsapp",
+                "user_id": "owner",
+            }
+        ]
+        # Handled by the backend registry, not the agent chat path.
+        assert api.chat_stream_calls == []
+        assert cloud.sent == [("15551234567", "**backend says hi**")]
+
+    asyncio.run(run())
+
+
+def test_chat_stream_kind_slash_command_falls_through_to_chat() -> None:
+    async def run() -> None:
+        api = FakeNymeriaAPI()
+        api.resolved[("whatsapp", "15551234567")] = "owner"
+        api.command_result = {
+            "success": False,
+            "markdown": "**Error:** `/skill` is handled outside the command service.",
+            "data": {"execution_kind": "chat_stream"},
+        }
+        cloud = FakeWhatsAppCloud()
+        bot = NymeriaWhatsAppBot(api, cloud)
+
+        await bot.handle_message(
+            WhatsAppInboundMessage(
+                message_id="wamid.1",
+                sender_id="15551234567",
+                text="/skill research",
+                message_type="text",
+            )
+        )
+
+        # The refusal marker re-routes the raw text into the chat path.
+        assert len(api.command_calls) == 1
+        assert api.chat_stream_calls == [
+            ("/skill research", "whatsapp_15551234567", "owner")
+        ]
+        assert cloud.sent == [("15551234567", "Hello from Nymeria")]
+
+    asyncio.run(run())
+
+
+def test_local_stop_command_still_wins_over_passthrough() -> None:
+    async def run() -> None:
+        api = FakeNymeriaAPI()
+        api.resolved[("whatsapp", "15551234567")] = "owner"
+        cloud = FakeWhatsAppCloud()
+        bot = NymeriaWhatsAppBot(api, cloud)
+
+        await bot.handle_message(
+            WhatsAppInboundMessage(
+                message_id="wamid.1",
+                sender_id="15551234567",
+                text="/stop",
+                message_type="text",
+            )
+        )
+
+        assert api.stop_calls == [("whatsapp_15551234567", "owner")]
+        assert api.command_calls == []
+
+    asyncio.run(run())
+
+
+def test_unlinked_slash_command_is_rejected_without_backend_call() -> None:
+    async def run() -> None:
+        api = FakeNymeriaAPI()
+        cloud = FakeWhatsAppCloud()
+        bot = NymeriaWhatsAppBot(api, cloud)
+
+        await bot.handle_message(
+            WhatsAppInboundMessage(
+                message_id="wamid.1",
+                sender_id="15551234567",
+                text="/status",
+                message_type="text",
+            )
+        )
+
+        assert api.command_calls == []
+        assert api.chat_stream_calls == []
+        assert "not linked" in cloud.sent[0][1]
 
     asyncio.run(run())
 

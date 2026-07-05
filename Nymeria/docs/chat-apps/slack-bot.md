@@ -128,6 +128,24 @@ Plain text commands handled by the Slack bot:
 | `unbind` | Remove the current Slack conversation binding. |
 | `stop` | Abort the current Nymeria run for this Slack conversation. |
 
+Any other message starting with `/` is forwarded verbatim to the backend
+slash-command registry (the same catalog desktop, mobile, the CLI, Telegram,
+and Discord use) and the command's markdown result is posted back in chat, so
+`/status`, `/todos list`, `/hook log`, and every future registered command
+work without bot changes. Per-surface menus and admin gating apply
+(`surface="slack"`). Commands that execute as chat turns (`/skill`, `/kit`)
+fall through to the normal chat path automatically. The local commands above
+are matched first (with or without a leading `/`).
+
+Slack itself intercepts messages that start with `/` as Slack-native slash
+commands, and unregistered ones never reach the bot. Use `!command` instead
+(`!status`, `!todos list`), which the bot normalizes to `/command` before
+forwarding; in channels, the mention form (`@Nymeria /status`) also arrives
+intact because the `/` is not at the start of the raw message. Any message
+starting with `!` immediately followed by a letter is treated as a command
+attempt, so chat that begins that way (`!important ...`) returns an unknown
+command error; reword it or drop the leading `!`.
+
 Other messages are sent to Nymeria as chat turns.
 
 ## Notes

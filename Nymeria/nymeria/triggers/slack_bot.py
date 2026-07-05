@@ -13,13 +13,20 @@ import json as _json
 import logging
 import re
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Dict, List, Mapping, Optional
 
 import httpx
 
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
-from .bot_helpers import SeenEventCache, UserResolver, http_error_detail, safe_id as _safe_id
+from .bot_helpers import (
+    SeenEventCache,
+    UserResolver,
+    forward_backend_command,
+    http_error_detail,
+    safe_id as _safe_id,
+)
 from .message_splitter import split_slack_message as split_message
 from .sse_consumer import consume_sse_stream
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -394,6 +401,30 @@ class NymeriaSlackBot:
             is_dm=is_dm,
             thread_ts=reply_thread_ts,
         )
+
+        # Generic backend slash-command passthrough. Local commands
+        # (link/bind/unbind/stop) were consumed above; any other "/" text is a
+        # backend command, except chat_stream-kind commands (e.g. /skill),
+        # which fall through to the normal chat path below. Slack's client
+        # intercepts leading-"/" messages as Slack-native slash commands
+        # (unregistered ones never reach the bot), so "!command" is accepted
+        # as an alternative prefix and normalized before forwarding; the
+        # mention-then-command form ("@bot /status") arrives intact.
+        stripped_text = clean_text.strip()
+        if re.match(r"^![A-Za-z]", stripped_text):
+            stripped_text = "/" + stripped_text[1:]
+        if stripped_text.startswith("/"):
+            handled = await forward_backend_command(
+                self.api,
+                stripped_text,
+                thread_id=thread_id,
+                user_id=user_id,
+                surface="slack",
+                send=partial(self._send_text, target),
+                logger=logger,
+            )
+            if handled:
+                return
 
         if active_key:
             self._remember_active_thread(active_key)
