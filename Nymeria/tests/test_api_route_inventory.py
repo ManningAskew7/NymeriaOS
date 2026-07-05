@@ -143,6 +143,7 @@ EXPECTED_ROUTES = [
     ('/notifications/destinations/{dest_id}', ('GET',)),
     ('/notifications/destinations/{dest_id}', ('PATCH',)),
     ('/notifications/destinations/{dest_id}/test', ('POST',)),
+    ('/notifications/external', ('POST',)),
     ('/notifications/preferences', ('GET',)),
     ('/notifications/preferences', ('PATCH',)),
     ('/notifications/profiles', ('GET',)),

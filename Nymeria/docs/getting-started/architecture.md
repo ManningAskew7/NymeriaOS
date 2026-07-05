@@ -331,8 +331,10 @@ watchdog container (run.py watchdog)
           publishes task_started/tool_call/.../task_completed to
           /autonomous/stream subscribers
           ↓
-          Watchdog also fires a Telegram/Discord/Slack notification
-          via `core.notification_dispatch.send_external_notifications()`.
+          POST /notifications/external with X-Nymeria-Act-As: X
+          → the API (the master secrets key holder) delivers an
+            off-frontend alert via the user's default notification
+            profile; the watchdog itself never touches the vault.
 ```
 
 **State:** The worker keeps per-(user, todo_id) "last nudge time" and "last-seen updated_at" in memory. Nudge eligibility resets naturally on the next poll whenever `updated_at > last_seen`  -  no cross-process callbacks required. State is lost on restart, which is fine: stale TODOs will simply re-nudge on the next cycle.

@@ -26,7 +26,7 @@ several.
 |---|---|
 | API | Serves HTTP requests, runs the agent for each chat turn, holds open SSE connections to frontends |
 | Ticker | Polls scheduled TODOs and trigger sources, dispatches autonomous agent turns when something is due |
-| Watchdog | Detects stuck or stale threads and nudges them along |
+| Watchdog | Nudges threads about stale TODOs (no update past the staleness window) and sends off-frontend alerts via the API |
 | MCP server | Exposes Nymeria as 52 tools to external LLM clients (Claude Desktop, etc.) |
 | Storage | Conversations, accounts, credentials, TODOs, memory, profiles |
 

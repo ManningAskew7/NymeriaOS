@@ -101,3 +101,14 @@ class NotificationPreferencesResponse(BaseModel):
 
 class NotificationPreferencesUpdateRequest(BaseModel):
     default_profile: Optional[str] = Field(default=None, min_length=1, max_length=120)
+
+
+class ExternalNotificationRequest(BaseModel):
+    """Body for ``POST /notifications/external`` (off-frontend delivery)."""
+
+    message: str = Field(..., min_length=1, max_length=4000)
+    thread_id: str = Field(default="", max_length=200)
+
+
+class ExternalNotificationResponse(BaseModel):
+    delivered_to: List[str] = Field(default_factory=list)

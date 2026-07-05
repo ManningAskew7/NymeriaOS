@@ -2299,6 +2299,26 @@ GET    /notifications/preferences
 PATCH  /notifications/preferences
 ```
 
+### Send an external notification
+
+```http
+POST /notifications/external
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"message": "2 TODO(s) stale on thread th-1", "thread_id": "th-1"}
+```
+
+Delivers `message` to the external destinations in the caller's `default`
+notification profile (no in-app feed row is written). Returns
+`{"delivered_to": ["<destination-name>", ...]}`.
+
+This is the vault-safe transport for thin services: the Docker watchdog
+holds only the service token (never the master secrets key), so it calls
+this endpoint with `X-Nymeria-Act-As: <user_id>` and the API performs the
+channel dispatch. Non-admin account tokens are pinned to their own user by
+Act-As resolution, so a regular user can only notify themselves.
+
 The thread config endpoint also exposes a per-thread override:
 `PATCH /threads/{thread_id}/config` accepts `notification_profile` (string)
 and `clear_notification_profile` (bool).

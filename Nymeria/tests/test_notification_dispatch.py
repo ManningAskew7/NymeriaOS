@@ -324,7 +324,7 @@ def test_external_notifications_dispatches_via_default_profile(tmp_path, monkeyp
     repo.create_profile(user_id="u1", name="default", destination_names=["fake-dest"])
 
     results = send_external_notifications("hello", _settings(), user_id="u1")
-    assert results == ["Sent to fake-dest"]
+    assert results == ["fake-dest"]
 
 
 def test_external_notifications_empty_when_no_profile(tmp_path, monkeypatch):

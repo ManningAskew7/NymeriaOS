@@ -10,6 +10,7 @@ and notifications routes do.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -17,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from ...core.accounts import AuthenticatedUser
+from ...core.notification_dispatch import send_external_notifications
 from ...core.notification_channels import (
     SendContext,
     ensure_seeded_destinations,
@@ -40,6 +42,8 @@ from ..schemas.notifications_config import (
     DestinationTestRequest,
     DestinationTestResponse,
     DestinationUpdateRequest,
+    ExternalNotificationRequest,
+    ExternalNotificationResponse,
     NotificationPreferencesResponse,
     NotificationPreferencesUpdateRequest,
     ProfileCreateRequest,
@@ -364,6 +368,41 @@ def create_notifications_config_router(
         if not repo.delete_profile(user_id=user_id, profile_id=profile_id):
             raise HTTPException(status_code=404, detail="Profile not found")
         return {"status": "ok", "profile_id": profile_id}
+
+    # -- external send -------------------------------------------------------
+
+    @router.post(
+        "/notifications/external",
+        response_model=ExternalNotificationResponse,
+    )
+    async def send_external_notification_endpoint(
+        request: ExternalNotificationRequest,
+        user_id: str = Depends(authed_user_id),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Deliver a message to the user's default notification profile
+        (external destinations only; no in-app feed row is written).
+
+        This is the transport for thin services that must not hold the
+        master secrets key: the Docker watchdog calls it with the service
+        token plus ``X-Nymeria-Act-As``, and the API (the key holder)
+        decrypts destination secrets and dispatches. Non-admin account
+        tokens are pinned to their own user by Act-As resolution, so a
+        regular user can only notify themselves (same exposure as the
+        per-destination test endpoint above).
+        """
+        settings = get_settings_fn()
+        # The dispatch stack is synchronous httpx; run it off the event
+        # loop so a slow destination cannot stall the API (or, in slim,
+        # the whole process).
+        delivered = await asyncio.to_thread(
+            send_external_notifications,
+            request.message,
+            settings,
+            user_id=user_id,
+            thread_id=request.thread_id,
+        )
+        return ExternalNotificationResponse(delivered_to=delivered)
 
     # -- preferences -------------------------------------------------------
 

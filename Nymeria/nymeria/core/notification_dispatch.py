@@ -318,9 +318,9 @@ def send_external_notifications(
     uses).
 
     Unlike :func:`send_via_profile`, this does NOT write an in-app notification
-    row: the watchdog (the only caller) wants external delivery only. Returns
-    one ``"Sent to <destination>"`` string per delivered destination so the
-    caller can log them; per-destination failures are isolated inside
+    row: the callers (the watchdog path via ``POST /notifications/external``)
+    want external delivery only. Returns the destination names that accepted
+    delivery; per-destination failures are isolated inside
     :func:`dispatch_to_profile` and simply omitted from the result.
     """
     from .notification_channels import (
@@ -345,8 +345,6 @@ def send_external_notifications(
         logger.debug("External notifications via profile failed: %s", e)
         return []
 
-    results: List[str] = []
     for name in result.delivered_to:
         logger.info("External notification delivered via destination %s", name)
-        results.append(f"Sent to {name}")
-    return results
+    return list(result.delivered_to)
