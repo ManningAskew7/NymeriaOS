@@ -7,24 +7,14 @@ import {
   isPlatformNativeThreadId
 } from './platform';
 
-// The 16 chat platforms, each id prefix paired with its platform name (the
+// The 6 chat platforms, each id prefix paired with its platform name (the
 // prefix without the trailing underscore).
 const CHAT_PLATFORMS: ReadonlyArray<[string, ThreadPlatform]> = [
   ['discord_', 'discord'],
   ['telegram_', 'telegram'],
   ['slack_', 'slack'],
-  ['matrix_', 'matrix'],
   ['whatsapp_', 'whatsapp'],
-  ['messenger_', 'messenger'],
-  ['instagram_', 'instagram'],
-  ['webex_', 'webex'],
-  ['mattermost_', 'mattermost'],
-  ['zulip_', 'zulip'],
-  ['rocketchat_', 'rocketchat'],
   ['teams_', 'teams'],
-  ['googlechat_', 'googlechat'],
-  ['line_', 'line'],
-  ['signal_', 'signal'],
   ['twitch_', 'twitch']
 ];
 

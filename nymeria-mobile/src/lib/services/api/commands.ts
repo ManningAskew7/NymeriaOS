@@ -2,7 +2,7 @@ import type { CommandExecuteResponse, SlashCommandInfo } from '$lib/types';
 import { WorkflowsApi } from './workflows';
 
 type CommandActor = 'user' | 'agent' | 'system';
-type CommandSurface = 'desktop' | 'mobile' | 'cli' | 'discord' | 'telegram' | 'slack' | 'matrix' | 'whatsapp' | 'messenger' | 'instagram' | 'webex' | 'mattermost' | 'zulip' | 'rocketchat' | 'teams' | 'googlechat' | 'line' | 'signal' | 'twitch' | 'api' | 'agent';
+type CommandSurface = 'desktop' | 'mobile' | 'cli' | 'discord' | 'telegram' | 'slack' | 'whatsapp' | 'teams' | 'twitch' | 'api' | 'agent';
 type CommandWindow = Window & {
   __TAURI__?: unknown;
   __TAURI_INTERNALS__?: unknown;

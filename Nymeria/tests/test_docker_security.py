@@ -148,11 +148,6 @@ THIN_CLIENT_SERVICES = {
     "discord-bot",
     "telegram-bot",
     "slack-bot",
-    "matrix-bot",
-    "mattermost-bot",
-    "zulip-bot",
-    "rocketchat-bot",
-    "signal-bot",
 }
 INFRA_SERVICES = {"postgres", "redis"}
 # Services not subject to the standard hardening contract (operator-installed

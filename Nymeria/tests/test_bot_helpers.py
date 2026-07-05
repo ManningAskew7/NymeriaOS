@@ -196,7 +196,7 @@ def test_safe_id_sanitizes_charset_and_trims_hyphens() -> None:
 def test_safe_id_falls_back_to_unknown_for_empty_or_falsy_input() -> None:
     # The canonical helper standardizes on the str(value or "") superset: empty
     # strings and any falsy/None input map to "unknown" rather than a literal
-    # "None"/"0", matching what the messenger/instagram bots already did.
+    # "None"/"0" (the convention the Meta-style webhook bots established).
     assert safe_id("") == "unknown"
     assert safe_id("!!!") == "unknown"
     assert safe_id(None) == "unknown"

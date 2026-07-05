@@ -43,18 +43,8 @@ Provider = Literal[
     "telegram",
     "twitch",
     "slack",
-    "matrix",
     "whatsapp",
-    "messenger",
-    "instagram",
-    "webex",
-    "mattermost",
-    "zulip",
-    "rocketchat",
     "teams",
-    "googlechat",
-    "line",
-    "signal",
 ]
 
 

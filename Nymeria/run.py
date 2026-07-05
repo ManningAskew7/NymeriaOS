@@ -12,11 +12,6 @@ Usage:
     python run.py discord-bot     # Start Discord bot (gateway mode)
     python run.py telegram-bot    # Start Telegram bot (polling mode)
     python run.py slack-bot       # Start Slack bot (Socket Mode)
-    python run.py matrix-bot      # Start Matrix bot (sync loop)
-    python run.py mattermost-bot  # Start Mattermost bot (WebSocket mode)
-    python run.py zulip-bot       # Start Zulip bot (event queue mode)
-    python run.py rocketchat-bot  # Start Rocket.Chat bot (realtime mode)
-    python run.py signal-bot      # Start Signal bot (signal-cli SSE mode)
     python run.py mcp              # Start MCP server (stdio mode)
     python run.py mcp --http       # Start MCP server (HTTP mode)
     python run.py mcp --port 8001  # MCP HTTP mode on custom port
@@ -81,11 +76,6 @@ _SERVICE_TOKEN_REQUIRED_COMMANDS = {
     "discord-bot": "the Discord bot",
     "telegram-bot": "the Telegram bot",
     "slack-bot": "the Slack bot",
-    "matrix-bot": "the Matrix bot",
-    "mattermost-bot": "the Mattermost bot",
-    "zulip-bot": "the Zulip bot",
-    "rocketchat-bot": "the Rocket.Chat bot",
-    "signal-bot": "the Signal bot",
     "watchdog": "the watchdog worker",
     "mcp": "the MCP thin client",
 }
@@ -1185,253 +1175,6 @@ def run_slack_bot(args: argparse.Namespace) -> None:
     bot.run()
 
 
-def run_matrix_bot(args: argparse.Namespace) -> None:
-    """
-    Run the Matrix bot (Client-Server API sync loop).
-
-    Thin client architecture: the bot calls the Nymeria REST API for all
-    operations instead of running its own NymeriaAgent.
-    """
-    from nymeria.config import get_settings
-    from nymeria.triggers.matrix_bot import NymeriaMatrixBot
-
-    settings = get_settings()
-
-    if not settings.matrix_homeserver:
-        print("\n[Error] MATRIX_HOMESERVER is not set.")
-        print("  Example: MATRIX_HOMESERVER=https://matrix.example.org")
-        sys.exit(1)
-    if not settings.matrix_access_token and not (
-        settings.matrix_user_id and settings.matrix_password
-    ):
-        print("\n[Error] Matrix authentication is not configured.")
-        print("  Set MATRIX_ACCESS_TOKEN, or MATRIX_USER_ID + MATRIX_PASSWORD.")
-        sys.exit(1)
-
-    api_url = _resolve_api_url(args)
-    api_key = _require_service_token(settings, "the Matrix bot")
-    free_response_rooms = [
-        room.strip()
-        for room in (settings.matrix_free_response_rooms or "").split(",")
-        if room.strip()
-    ]
-
-    print("Starting Nymeria Matrix Bot (thin client)...")
-    print("  - Mode: Client-Server API sync")
-    print(f"  - Homeserver: {settings.matrix_homeserver}")
-    print(f"  - Respond mode: {settings.matrix_respond_mode}")
-    print(f"  - Auto-join invites: {settings.matrix_auto_join}")
-    print(f"  - API: {api_url}")
-    print("  - Auth: service token")
-
-    api = _service_api_client(api_url, api_key, settings)
-    bot = NymeriaMatrixBot(
-        api=api,
-        homeserver=settings.matrix_homeserver,
-        access_token=settings.matrix_access_token,
-        user_id=settings.matrix_user_id,
-        password=settings.matrix_password,
-        device_id=settings.matrix_device_id,
-        respond_mode=settings.matrix_respond_mode,
-        free_response_rooms=free_response_rooms,
-        auto_join=settings.matrix_auto_join,
-    )
-
-    _install_exit_handlers("\nShutdown signal received, stopping Matrix bot...")
-
-    print("\nConnecting to Matrix...")
-    bot.run()
-
-
-def run_mattermost_bot(args: argparse.Namespace) -> None:
-    """
-    Run the Mattermost bot (WebSocket mode).
-
-    Thin client architecture: the bot calls the Nymeria REST API for all
-    operations instead of running its own NymeriaAgent.
-    """
-    from nymeria.config import get_settings
-    from nymeria.triggers.mattermost_bot import NymeriaMattermostBot
-
-    settings = get_settings()
-
-    if not settings.mattermost_base_url:
-        print("\n[Error] MATTERMOST_BASE_URL is not set.")
-        print("  Example: MATTERMOST_BASE_URL=https://mattermost.example.com")
-        sys.exit(1)
-    if not settings.mattermost_access_token:
-        print("\n[Error] MATTERMOST_ACCESS_TOKEN is not set.")
-        print("  Create a Mattermost bot account and copy its generated access token.")
-        sys.exit(1)
-
-    api_url = _resolve_api_url(args)
-    api_key = _require_service_token(settings, "the Mattermost bot")
-
-    print("Starting Nymeria Mattermost Bot (thin client)...")
-    print("  - Mode: WebSocket")
-    print(f"  - Server: {settings.mattermost_base_url}")
-    print(f"  - Respond mode: {settings.mattermost_respond_mode}")
-    print(f"  - API: {api_url}")
-    print("  - Auth: service token")
-
-    api = _service_api_client(api_url, api_key, settings)
-    bot = NymeriaMattermostBot(
-        api=api,
-        base_url=settings.mattermost_base_url,
-        access_token=settings.mattermost_access_token,
-        respond_mode=settings.mattermost_respond_mode,
-        show_tool_events=settings.mattermost_show_tool_events,
-    )
-
-    _install_exit_handlers("\nShutdown signal received, stopping Mattermost bot...")
-
-    print("\nConnecting to Mattermost...")
-    bot.run()
-
-
-def run_zulip_bot(args: argparse.Namespace) -> None:
-    """
-    Run the Zulip bot (event queue mode).
-
-    Thin client architecture: the bot calls the Nymeria REST API for all
-    operations instead of running its own NymeriaAgent.
-    """
-    from nymeria.config import get_settings
-    from nymeria.triggers.zulip_bot import NymeriaZulipBot
-
-    settings = get_settings()
-
-    if not settings.zulip_base_url:
-        print("\n[Error] ZULIP_BASE_URL is not set.")
-        print("  Example: ZULIP_BASE_URL=https://your-org.zulipchat.com")
-        sys.exit(1)
-    if not settings.zulip_email:
-        print("\n[Error] ZULIP_EMAIL is not set.")
-        print("  Set it to the Zulip bot email address.")
-        sys.exit(1)
-    if not settings.zulip_api_key:
-        print("\n[Error] ZULIP_API_KEY is not set.")
-        print("  Copy the bot API key from Zulip Personal settings > Bots.")
-        sys.exit(1)
-
-    api_url = _resolve_api_url(args)
-    api_key = _require_service_token(settings, "the Zulip bot")
-
-    print("Starting Nymeria Zulip Bot (thin client)...")
-    print("  - Mode: Events API long-poll")
-    print(f"  - Realm: {settings.zulip_base_url}")
-    print(f"  - Respond mode: {settings.zulip_respond_mode}")
-    print(f"  - API: {api_url}")
-    print("  - Auth: service token")
-
-    api = _service_api_client(api_url, api_key, settings)
-    bot = NymeriaZulipBot(
-        api=api,
-        base_url=settings.zulip_base_url,
-        email=settings.zulip_email,
-        api_key=settings.zulip_api_key,
-        respond_mode=settings.zulip_respond_mode,
-        show_tool_events=settings.zulip_show_tool_events,
-    )
-
-    _install_exit_handlers("\nShutdown signal received, stopping Zulip bot...")
-
-    print("\nConnecting to Zulip...")
-    bot.run()
-
-
-def run_rocketchat_bot(args: argparse.Namespace) -> None:
-    """
-    Run the Rocket.Chat bot (realtime mode).
-
-    Thin client architecture: the bot calls the Nymeria REST API for all
-    operations instead of running its own NymeriaAgent.
-    """
-    from nymeria.config import get_settings
-    from nymeria.triggers.rocketchat_bot import NymeriaRocketChatBot
-
-    settings = get_settings()
-
-    if not settings.rocketchat_base_url:
-        print("\n[Error] ROCKETCHAT_BASE_URL is not set.")
-        print("  Example: ROCKETCHAT_BASE_URL=https://chat.example.com")
-        sys.exit(1)
-    if not settings.rocketchat_user_id:
-        print("\n[Error] ROCKETCHAT_USER_ID is not set.")
-        print("  Use the user ID shown when generating the Rocket.Chat personal access token.")
-        sys.exit(1)
-    if not settings.rocketchat_auth_token:
-        print("\n[Error] ROCKETCHAT_AUTH_TOKEN is not set.")
-        print("  Create a Rocket.Chat bot/user personal access token and save it here.")
-        sys.exit(1)
-
-    api_url = _resolve_api_url(args)
-    api_key = _require_service_token(settings, "the Rocket.Chat bot")
-
-    print("Starting Nymeria Rocket.Chat Bot (thin client)...")
-    print("  - Mode: realtime room stream")
-    print(f"  - Server: {settings.rocketchat_base_url}")
-    print(f"  - Respond mode: {settings.rocketchat_respond_mode}")
-    print(f"  - API: {api_url}")
-    print("  - Auth: service token")
-
-    api = _service_api_client(api_url, api_key, settings)
-    bot = NymeriaRocketChatBot(
-        api=api,
-        base_url=settings.rocketchat_base_url,
-        auth_token=settings.rocketchat_auth_token,
-        user_id=settings.rocketchat_user_id,
-        respond_mode=settings.rocketchat_respond_mode,
-        show_tool_events=settings.rocketchat_show_tool_events,
-    )
-
-    _install_exit_handlers("\nShutdown signal received, stopping Rocket.Chat bot...")
-
-    print("\nConnecting to Rocket.Chat...")
-    bot.run()
-
-
-def run_signal_bot(args: argparse.Namespace) -> None:
-    """
-    Run the Signal bot via signal-cli-rest-api SSE/JSON-RPC mode.
-
-    Thin client architecture: the bot calls the Nymeria REST API for all
-    operations instead of running its own NymeriaAgent.
-    """
-    from nymeria.config import get_settings
-    from nymeria.triggers.signal_bot import create_signal_bot_from_settings
-
-    settings = get_settings()
-
-    if not settings.signal_http_url:
-        print("\n[Error] SIGNAL_HTTP_URL is not set.")
-        print("  Example: SIGNAL_HTTP_URL=http://signal-cli-rest-api:8080")
-        sys.exit(1)
-    if not settings.signal_account:
-        print("\n[Error] SIGNAL_ACCOUNT is not set.")
-        print("  Example: SIGNAL_ACCOUNT=+15551234567")
-        sys.exit(1)
-
-    api_url = _resolve_api_url(args)
-    api_key = _require_service_token(settings, "the Signal bot")
-
-    print("Starting Nymeria Signal Bot (thin client)...")
-    print("  - Mode: signal-cli-rest-api SSE/JSON-RPC")
-    print(f"  - Signal daemon: {settings.signal_http_url}")
-    print(f"  - Account: {settings.signal_account}")
-    print(f"  - Respond mode: {settings.signal_respond_mode}")
-    print(f"  - API: {api_url}")
-    print("  - Auth: service token")
-
-    api = _service_api_client(api_url, api_key, settings)
-    bot = create_signal_bot_from_settings(api, settings=settings)
-
-    _install_exit_handlers("\nShutdown signal received, stopping Signal bot...")
-
-    print("\nConnecting to Signal...")
-    bot.run()
-
-
 def run_mcp(args: argparse.Namespace) -> None:
     """Run the MCP server."""
     from nymeria.mcp_server import run_stdio, run_http
@@ -1859,41 +1602,6 @@ Examples:
     )
     _add_api_url_arg(slack_parser)
 
-    # Matrix bot subcommand
-    matrix_parser = subparsers.add_parser(
-        "matrix-bot",
-        help="Start Matrix bot (sync loop)",
-    )
-    _add_api_url_arg(matrix_parser)
-
-    # Mattermost bot subcommand
-    mattermost_parser = subparsers.add_parser(
-        "mattermost-bot",
-        help="Start Mattermost bot (WebSocket mode)",
-    )
-    _add_api_url_arg(mattermost_parser)
-
-    # Zulip bot subcommand
-    zulip_parser = subparsers.add_parser(
-        "zulip-bot",
-        help="Start Zulip bot (event queue mode)",
-    )
-    _add_api_url_arg(zulip_parser)
-
-    # Rocket.Chat bot subcommand
-    rocketchat_parser = subparsers.add_parser(
-        "rocketchat-bot",
-        help="Start Rocket.Chat bot (realtime mode)",
-    )
-    _add_api_url_arg(rocketchat_parser)
-
-    # Signal bot subcommand
-    signal_parser = subparsers.add_parser(
-        "signal-bot",
-        help="Start Signal bot (signal-cli SSE mode)",
-    )
-    _add_api_url_arg(signal_parser)
-
     # Watchdog subcommand (thin client)
     watchdog_parser = subparsers.add_parser(
         "watchdog",
@@ -2047,11 +1755,6 @@ COMMANDS: dict[str, _Command] = {
     "discord-bot": _Command(run_discord_bot, full_validation=True),
     "telegram-bot": _Command(run_telegram_bot, full_validation=True),
     "slack-bot": _Command(run_slack_bot, full_validation=True),
-    "matrix-bot": _Command(run_matrix_bot, full_validation=True),
-    "mattermost-bot": _Command(run_mattermost_bot, full_validation=True),
-    "zulip-bot": _Command(run_zulip_bot, full_validation=True),
-    "rocketchat-bot": _Command(run_rocketchat_bot, full_validation=True),
-    "signal-bot": _Command(run_signal_bot, full_validation=True),
     "watchdog": _Command(run_watchdog, full_validation=True),
     "mcp": _Command(run_mcp, full_validation=True),
     "claude-code-runner": _Command(run_claude_code_runner),

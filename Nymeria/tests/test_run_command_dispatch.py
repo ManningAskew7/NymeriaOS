@@ -47,11 +47,6 @@ def test_full_validation_set_matches_server_and_bot_commands():
             "discord-bot",
             "telegram-bot",
             "slack-bot",
-            "matrix-bot",
-            "mattermost-bot",
-            "zulip-bot",
-            "rocketchat-bot",
-            "signal-bot",
             "watchdog",
         }
     )

@@ -501,12 +501,6 @@ Set the API key for your chosen provider:
 | `COCKPIT_BASE_URL` | Cockpit | Cockpit site or API base URL fallback |
 | `COCKPIT_ACCESS_TOKEN` | Cockpit | Optional Cockpit access token fallback; credential vault provider `cockpit` is preferred |
 | `TELEGRAM_API_BASE_URL` | Telegram | Optional Telegram Bot API base URL override |
-| `WEBEX_ACCESS_TOKEN` | Webex | Optional Webex access token fallback; credential vault provider `webex` is preferred |
-| `WEBEX_BASE_URL` | Webex | Optional Webex API base URL override |
-| `WEBEX_WEBHOOK_SECRET` | Webex | Required shared secret for `X-Spark-Signature` webhook verification |
-| `WEBEX_BOT_PERSON_ID` | Webex | Optional Webex bot person ID override; otherwise resolved via `/people/me` |
-| `WEBEX_BOT_EMAIL` | Webex | Optional Webex bot email override for mention stripping |
-| `WEBEX_SHOW_TOOL_EVENTS` | Webex | `true` posts compact tool-call/result messages in Webex replies; default `false` |
 | `WHATSAPP_ACCESS_TOKEN` | WhatsApp Business Cloud | Optional WhatsApp access token fallback; credential vault provider `whatsapp` is preferred |
 | `WHATSAPP_BUSINESS_ACCOUNT_ID` | WhatsApp Business Cloud | Optional WhatsApp business account ID fallback |
 | `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Business Cloud | Optional WhatsApp sender phone number ID fallback |
@@ -514,30 +508,7 @@ Set the API key for your chosen provider:
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | WhatsApp Business Cloud | Verification token for `GET /integrations/whatsapp/webhook` challenge-response setup |
 | `WHATSAPP_APP_SECRET` | WhatsApp Business Cloud | Required Meta app secret for `X-Hub-Signature-256` webhook verification |
 | `WHATSAPP_SHOW_TOOL_EVENTS` | WhatsApp Business Cloud | `true` posts compact tool-call/result messages in WhatsApp replies; default `false` |
-| `MESSENGER_PAGE_ACCESS_TOKEN` | Messenger Platform | Page access token for Messenger Send API webhook replies |
-| `MESSENGER_PAGE_ID` | Messenger Platform | Optional Facebook Page ID fallback for Messenger replies |
-| `MESSENGER_WEBHOOK_VERIFY_TOKEN` | Messenger Platform | Verification token for `GET /integrations/messenger/webhook` challenge-response setup |
-| `MESSENGER_APP_SECRET` | Messenger Platform | Required Meta app secret for `X-Hub-Signature-256` webhook verification |
-| `MESSENGER_GRAPH_API_BASE_URL` | Messenger Platform | Messenger Graph API base URL override |
-| `MESSENGER_SHOW_TOOL_EVENTS` | Messenger Platform | `true` posts compact tool-call/result messages in Messenger replies; default `false` |
-| `INSTAGRAM_ACCESS_TOKEN` | Instagram Messaging | Access token for Instagram webhook replies |
-| `INSTAGRAM_IG_USER_ID` | Instagram Messaging | Optional Instagram professional account ID used to scope replies and bindings |
-| `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | Instagram Messaging | Verification token for `GET /integrations/instagram/webhook` challenge-response setup |
-| `INSTAGRAM_APP_SECRET` | Instagram Messaging | Required Meta app secret for `X-Hub-Signature-256` webhook verification |
-| `INSTAGRAM_GRAPH_API_BASE_URL` | Instagram Messaging | Instagram Graph API base URL override |
-| `INSTAGRAM_SHOW_TOOL_EVENTS` | Instagram Messaging | `true` posts compact tool-call/result messages in Instagram replies; default `false` |
 | `DISCORD_BASE_URL` | Discord | Optional Discord REST API base URL override |
-| `MATTERMOST_ACCESS_TOKEN` | Mattermost | Optional Mattermost access token fallback for native tools and the Mattermost bot; credential vault provider `mattermost` is preferred for tools |
-| `MATTERMOST_BASE_URL` | Mattermost | Mattermost server base URL for native tools and the Mattermost bot |
-| `MATTERMOST_RESPOND_MODE` | Mattermost | Bot channel behavior: `mention` (DMs and @mentions) or `all`; default `mention` |
-| `MATTERMOST_SHOW_TOOL_EVENTS` | Mattermost | `true` posts compact tool-call/result messages in Mattermost replies; default `false` |
-| `MATRIX_ACCESS_TOKEN` | Matrix | Optional Matrix access token fallback; credential vault provider `matrix` is preferred |
-| `MATRIX_BASE_URL` | Matrix | Optional Matrix homeserver or client API base URL override |
-| `ROCKETCHAT_AUTH_TOKEN` | Rocket.Chat | Optional Rocket.Chat auth token fallback for native tools and the Rocket.Chat bot; credential vault provider `rocketchat` is preferred for tools |
-| `ROCKETCHAT_USER_ID` | Rocket.Chat | Optional Rocket.Chat user ID fallback for native tools and the Rocket.Chat bot |
-| `ROCKETCHAT_BASE_URL` | Rocket.Chat | Rocket.Chat server base URL for native tools and the Rocket.Chat bot |
-| `ROCKETCHAT_RESPOND_MODE` | Rocket.Chat | Bot room behavior: `mention` (DMs and @mentions) or `all`; default `mention` |
-| `ROCKETCHAT_SHOW_TOOL_EVENTS` | Rocket.Chat | `true` posts compact tool-call/result messages in Rocket.Chat replies; default `false` |
 | `TEAMS_BOT_APP_ID` | Microsoft Teams | Bot Framework app ID for Teams webhook replies |
 | `TEAMS_BOT_APP_PASSWORD` | Microsoft Teams | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | Microsoft Teams | Optional tenant ID used during Azure setup |
@@ -546,38 +517,6 @@ Set the API key for your chosen provider:
 | `TEAMS_BOT_SHOW_TOOL_EVENTS` | Microsoft Teams | `true` posts compact tool-call/result messages in Teams replies; default `false` |
 | `TEAMS_BOT_TOKEN_URL` | Microsoft Teams | Bot Framework OAuth token URL override |
 | `TEAMS_BOT_OPENID_CONFIG_URL` | Microsoft Teams | Bot Framework OpenID metadata URL override for webhook JWT validation |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` | Google Chat | Service-account JSON content or path for Google Chat webhook replies |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | Google Chat | Service-account JSON file path for Google Chat webhook replies |
-| `GOOGLE_CHAT_PROJECT_NUMBER` | Google Chat | Project number used when `GOOGLE_CHAT_AUTH_AUDIENCE_TYPE=project-number` |
-| `GOOGLE_CHAT_AUTH_AUDIENCE` | Google Chat | Optional request-auth audience override; defaults to the webhook URL in app-url mode |
-| `GOOGLE_CHAT_AUTH_AUDIENCE_TYPE` | Google Chat | `app-url` or `project-number`; default `app-url` |
-| `GOOGLE_CHAT_BOT_NAME` | Google Chat | Bot display name used for mention stripping; default `Nymeria` |
-| `GOOGLE_CHAT_RESPOND_MODE` | Google Chat | Bot space behavior: `mention` (DMs and app mentions) or `all`; default `mention` |
-| `GOOGLE_CHAT_VALIDATE_AUTH` | Google Chat | Deprecated and ignored; Google Chat bearer-token validation is always enforced |
-| `GOOGLE_CHAT_SHOW_TOOL_EVENTS` | Google Chat | `true` posts compact tool-call/result messages in Google Chat replies; default `false` |
-| `GOOGLE_CHAT_API_BASE_URL` | Google Chat | Google Chat REST API base URL override |
-| `GOOGLE_CHAT_USE_ADC` | Google Chat | `true` allows Application Default Credentials for replies; default `false` |
-| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API | Channel access token for LINE webhook replies |
-| `LINE_CHANNEL_SECRET` | LINE Messaging API | Channel secret used to validate `x-line-signature` webhook HMACs |
-| `LINE_BOT_USER_ID` | LINE Messaging API | Optional LINE bot user ID for mention matching; webhook `destination` is used when unset |
-| `LINE_BOT_NAME` | LINE Messaging API | Bot display name used for mention stripping; default `Nymeria` |
-| `LINE_RESPOND_MODE` | LINE Messaging API | Bot group/room behavior: `mention` (DMs and bot mentions) or `all`; default `mention` |
-| `LINE_VALIDATE_SIGNATURE` | LINE Messaging API | Deprecated and ignored; LINE webhook signature validation is always enforced |
-| `LINE_SHOW_TOOL_EVENTS` | LINE Messaging API | `true` posts compact tool-call/result messages in LINE replies; default `false` |
-| `LINE_API_BASE_URL` | LINE Messaging API | LINE Messaging API base URL override |
-| `SIGNAL_HTTP_URL` | Signal | signal-cli-rest-api base URL for the Signal bot |
-| `SIGNAL_ACCOUNT` | Signal | Signal account phone number used by signal-cli-rest-api, usually E.164 |
-| `SIGNAL_ACCOUNT_UUID` | Signal | Optional Signal account UUID for self-message and mention matching |
-| `SIGNAL_RESPOND_MODE` | Signal | Bot group behavior: `mention` (DMs and mentions) or `all`; default `mention` |
-| `SIGNAL_ALLOWED_USERS` | Signal | Optional comma-separated sender allowlist; entries are phone numbers, `uuid:<id>`, or `*` |
-| `SIGNAL_ALLOWED_GROUPS` | Signal | Optional comma-separated Signal group ID allowlist; blank allows all groups that pass mention/respond mode |
-| `SIGNAL_SHOW_TOOL_EVENTS` | Signal | `true` posts compact tool-call/result messages in Signal replies; default `false` |
-| `SIGNAL_HTTP_TIMEOUT` | Signal | HTTP timeout for signal-cli-rest-api requests; default `30.0` seconds |
-| `ZULIP_API_KEY` | Zulip | Optional Zulip API key fallback for native tools and the Zulip bot; credential vault provider `zulip` is preferred for tools |
-| `ZULIP_EMAIL` | Zulip | Optional Zulip bot/user email fallback |
-| `ZULIP_BASE_URL` | Zulip | Zulip organization base URL for native tools and the Zulip bot |
-| `ZULIP_RESPOND_MODE` | Zulip | Bot channel behavior: `mention` (DMs and mentions) or `all`; default `mention` |
-| `ZULIP_SHOW_TOOL_EVENTS` | Zulip | `true` posts compact tool-call/result messages in Zulip replies; default `false` |
 | `GOOGLE_BOOKS_API_KEY` | Google Books | Optional Google Books API key fallback; credential vault provider `google_books` is preferred |
 | `GOOGLE_BOOKS_BASE_URL` | Google Books | Optional Google Books API base URL override |
 | `YOUTUBE_API_KEY` | YouTube Data API | YouTube Data API key fallback; credential vault provider `youtube` is preferred |
@@ -774,7 +713,7 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NYMERIA_API_KEY` | - | **Deprecated / ignored.** Formerly a shared bearer token; authentication now uses per-user account tokens. Safe to delete from `.env.docker`. See `docs/accounts.md`. |
-| `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `worker`, `discord-bot`, `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`, `rocketchat-bot`, `signal-bot`, `watchdog`, `mcp`, and `service`; local `api`, `cli`, and `users` development can still start without it. Created via `python3 run.py users add --role admin`. See `docs/accounts.md`. |
+| `NYMERIA_SERVICE_TOKEN` | mode-required | Admin-role Nymeria account token used by bots, ticker, watchdog, trigger-fires, slash commands, and the public MCP thin client for X-Nymeria-Act-As calls. `run.py` fails fast without it for `worker`, `discord-bot`, `telegram-bot`, `slack-bot`, `watchdog`, `mcp`, and `service`; local `api`, `cli`, and `users` development can still start without it. Created via `python3 run.py users add --role admin`. See `docs/accounts.md`. |
 | `NYMERIA_SECRETS_KEY` | vault-required | 44-character Fernet key used to encrypt credential-vault secret fields, OAuth access/refresh tokens, and BYO bot tokens. Docker deployments must pass it through to the API/worker/MCP containers. If it is missing in the running API container, OAuth/device-code flows can complete at the provider but fail while saving the new credential. |
 | `ACCOUNT_TOKEN_TTL_DAYS` | `90` | Lifetime for newly issued Nymeria account tokens. Expired tokens are rejected and auto-revoked. |
 | `ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER` | `10` | Maximum non-revoked, non-expired account tokens a user may hold at once. |
@@ -933,12 +872,6 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `TELEGRAM_BOT_TOKEN` | - | Telegram bot token from @BotFather |
 | `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | Telegram Bot API base URL for native Telegram tools |
 | `TELEGRAM_DEFAULT_CHAT_ID` | - | Default Telegram chat ID for notifications |
-| `WEBEX_ACCESS_TOKEN` | - | Webex access token fallback for native Webex tools |
-| `WEBEX_BASE_URL` | `https://webexapis.com/v1` | Webex API base URL |
-| `WEBEX_WEBHOOK_SECRET` | - | Required shared secret for Webex webhook signature verification |
-| `WEBEX_BOT_PERSON_ID` | - | Optional Webex bot person ID override |
-| `WEBEX_BOT_EMAIL` | - | Optional Webex bot email override |
-| `WEBEX_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Webex bot replies |
 | `WHATSAPP_ACCESS_TOKEN` | - | WhatsApp Business Cloud access token fallback |
 | `WHATSAPP_BUSINESS_ACCOUNT_ID` | - | WhatsApp business account ID fallback |
 | `WHATSAPP_PHONE_NUMBER_ID` | - | WhatsApp sender phone number ID fallback |
@@ -946,18 +879,6 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | - | WhatsApp Cloud webhook challenge token |
 | `WHATSAPP_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
 | `WHATSAPP_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in WhatsApp bot replies |
-| `MESSENGER_PAGE_ACCESS_TOKEN` | - | Messenger Page access token for webhook replies |
-| `MESSENGER_PAGE_ID` | - | Facebook Page ID fallback for Messenger replies |
-| `MESSENGER_WEBHOOK_VERIFY_TOKEN` | - | Messenger webhook challenge token |
-| `MESSENGER_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
-| `MESSENGER_GRAPH_API_BASE_URL` | `https://graph.facebook.com/v23.0` | Messenger Graph API base URL |
-| `MESSENGER_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Messenger bot replies |
-| `INSTAGRAM_ACCESS_TOKEN` | - | Instagram Messaging access token for webhook replies |
-| `INSTAGRAM_IG_USER_ID` | - | Instagram professional account ID fallback |
-| `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | - | Instagram webhook challenge token |
-| `INSTAGRAM_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
-| `INSTAGRAM_GRAPH_API_BASE_URL` | `https://graph.instagram.com/v23.0` | Instagram Graph API base URL |
-| `INSTAGRAM_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Instagram bot replies |
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook URL for notifications |
 | `DISCORD_BOT_TOKEN` | - | Discord bot token for two-way communication |
 | `DISCORD_MODE` | `gateway` | Discord connection mode: `gateway` or `webhook` |
@@ -967,28 +888,6 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `SLACK_APP_TOKEN` | - | Slack app-level token for Socket Mode (`xapp-...`, requires `connections:write`) |
 | `SLACK_RESPOND_MODE` | `mention` | Slack channel behavior: `mention` (DMs and @mentions) or `all` |
 | `SLACK_SHOW_TOOL_EVENTS` | `false` | Show compact Slack tool call/result messages during streamed replies |
-| `MATRIX_HOMESERVER` | - | Matrix homeserver URL for the Matrix bot |
-| `MATRIX_ACCESS_TOKEN` | - | Matrix access token for token auth |
-| `MATRIX_USER_ID` | - | Matrix bot user ID for password auth or explicit token identity |
-| `MATRIX_PASSWORD` | - | Matrix bot password fallback when no access token is set |
-| `MATRIX_DEVICE_ID` | - | Optional stable Matrix device ID for password login |
-| `MATRIX_RESPOND_MODE` | `mention` | Matrix room behavior: `mention` or `all` |
-| `MATRIX_FREE_RESPONSE_ROOMS` | - | Comma-separated Matrix room IDs that respond without bot mention |
-| `MATRIX_AUTO_JOIN` | `false` | Auto-join Matrix room invites |
-| `MATTERMOST_BASE_URL` | - | Mattermost server URL for native Mattermost tools and the Mattermost bot |
-| `MATTERMOST_ACCESS_TOKEN` | - | Mattermost bot account access token |
-| `MATTERMOST_RESPOND_MODE` | `mention` | Mattermost channel behavior: `mention` or `all` |
-| `MATTERMOST_SHOW_TOOL_EVENTS` | `false` | Show compact Mattermost tool call/result messages during streamed replies |
-| `ZULIP_BASE_URL` | - | Zulip realm URL for native Zulip tools and the Zulip bot |
-| `ZULIP_EMAIL` | - | Zulip bot email |
-| `ZULIP_API_KEY` | - | Zulip bot API key |
-| `ZULIP_RESPOND_MODE` | `mention` | Zulip channel behavior: `mention` or `all` |
-| `ZULIP_SHOW_TOOL_EVENTS` | `false` | Show compact Zulip tool call/result messages during streamed replies |
-| `ROCKETCHAT_BASE_URL` | - | Rocket.Chat server URL for native Rocket.Chat tools and the Rocket.Chat bot |
-| `ROCKETCHAT_USER_ID` | - | Rocket.Chat bot/user ID |
-| `ROCKETCHAT_AUTH_TOKEN` | - | Rocket.Chat bot/user token |
-| `ROCKETCHAT_RESPOND_MODE` | `mention` | Rocket.Chat room behavior: `mention` or `all` |
-| `ROCKETCHAT_SHOW_TOOL_EVENTS` | `false` | Show compact Rocket.Chat tool call/result messages during streamed replies |
 | `TEAMS_BOT_APP_ID` | - | Bot Framework app ID for Teams webhook replies |
 | `TEAMS_BOT_APP_PASSWORD` | - | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | - | Optional Azure tenant ID used during setup |
@@ -997,33 +896,6 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `TEAMS_BOT_SHOW_TOOL_EVENTS` | `false` | Show compact Teams tool call/result messages during streamed replies |
 | `TEAMS_BOT_TOKEN_URL` | `https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token` | Bot Framework OAuth token URL |
 | `TEAMS_BOT_OPENID_CONFIG_URL` | `https://login.botframework.com/v1/.well-known/openidconfiguration` | Bot Framework OpenID metadata URL |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` | - | Service-account JSON content or path for Google Chat webhook replies |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | - | Service-account JSON file path for Google Chat webhook replies |
-| `GOOGLE_CHAT_PROJECT_NUMBER` | - | Project number for project-number auth audience mode |
-| `GOOGLE_CHAT_AUTH_AUDIENCE` | - | Google Chat request-auth audience override |
-| `GOOGLE_CHAT_AUTH_AUDIENCE_TYPE` | `app-url` | Google Chat auth audience mode: `app-url` or `project-number` |
-| `GOOGLE_CHAT_BOT_NAME` | `Nymeria` | Google Chat bot display name used for mention stripping |
-| `GOOGLE_CHAT_RESPOND_MODE` | `mention` | Google Chat space behavior: `mention` or `all` |
-| `GOOGLE_CHAT_VALIDATE_AUTH` | ignored | Deprecated. Google Chat bearer-token validation is always enforced |
-| `GOOGLE_CHAT_SHOW_TOOL_EVENTS` | `false` | Show compact Google Chat tool call/result messages during streamed replies |
-| `GOOGLE_CHAT_API_BASE_URL` | `https://chat.googleapis.com/v1` | Google Chat REST API base URL |
-| `GOOGLE_CHAT_USE_ADC` | `false` | Allow Application Default Credentials for Google Chat replies |
-| `LINE_CHANNEL_ACCESS_TOKEN` | - | LINE Messaging API channel access token for webhook replies |
-| `LINE_CHANNEL_SECRET` | - | LINE Messaging API channel secret for webhook signature validation |
-| `LINE_BOT_USER_ID` | - | Optional LINE bot user ID for mention matching |
-| `LINE_BOT_NAME` | `Nymeria` | LINE bot display name used for mention stripping |
-| `LINE_RESPOND_MODE` | `mention` | LINE group/room behavior: `mention` or `all` |
-| `LINE_VALIDATE_SIGNATURE` | ignored | Deprecated. `x-line-signature` validation is always enforced |
-| `LINE_SHOW_TOOL_EVENTS` | `false` | Show compact LINE tool call/result messages during streamed replies |
-| `LINE_API_BASE_URL` | `https://api.line.me/v2/bot` | LINE Messaging API base URL |
-| `SIGNAL_HTTP_URL` | - | signal-cli-rest-api base URL for the Signal bot |
-| `SIGNAL_ACCOUNT` | - | Signal account phone number used by signal-cli-rest-api |
-| `SIGNAL_ACCOUNT_UUID` | - | Optional Signal account UUID for self-message and mention matching |
-| `SIGNAL_RESPOND_MODE` | `mention` | Signal group behavior: `mention` or `all` |
-| `SIGNAL_ALLOWED_USERS` | - | Optional comma-separated sender allowlist |
-| `SIGNAL_ALLOWED_GROUPS` | - | Optional comma-separated Signal group allowlist |
-| `SIGNAL_SHOW_TOOL_EVENTS` | `false` | Show compact Signal tool call/result messages during streamed replies |
-| `SIGNAL_HTTP_TIMEOUT` | `30.0` | signal-cli-rest-api HTTP timeout in seconds |
 | `TEAMS_TEAM_ID` | - | Microsoft Teams team ID for notifications |
 | `TEAMS_CHANNEL_ID` | - | Microsoft Teams channel ID for notifications |
 | `TEAMS_ACCOUNT_ID` | - | Outlook account ID for Teams (must have ChannelMessage.Send) |
@@ -1390,12 +1262,6 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `COCKPIT_BASE_URL` | - | Cockpit site or API base URL fallback |
 | `COCKPIT_ACCESS_TOKEN` | - | Cockpit access token fallback |
 | `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | Telegram Bot API base URL |
-| `WEBEX_ACCESS_TOKEN` | - | Webex access token fallback |
-| `WEBEX_BASE_URL` | `https://webexapis.com/v1` | Webex API base URL |
-| `WEBEX_WEBHOOK_SECRET` | - | Required shared secret for Webex webhook signature verification |
-| `WEBEX_BOT_PERSON_ID` | - | Optional Webex bot person ID override |
-| `WEBEX_BOT_EMAIL` | - | Optional Webex bot email override |
-| `WEBEX_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Webex bot replies |
 | `WHATSAPP_ACCESS_TOKEN` | - | WhatsApp Business Cloud access token fallback |
 | `WHATSAPP_BUSINESS_ACCOUNT_ID` | - | WhatsApp business account ID fallback |
 | `WHATSAPP_PHONE_NUMBER_ID` | - | WhatsApp sender phone number ID fallback |
@@ -1403,30 +1269,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | - | WhatsApp Cloud webhook challenge token |
 | `WHATSAPP_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
 | `WHATSAPP_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in WhatsApp bot replies |
-| `MESSENGER_PAGE_ACCESS_TOKEN` | - | Messenger Page access token for webhook replies |
-| `MESSENGER_PAGE_ID` | - | Facebook Page ID fallback for Messenger replies |
-| `MESSENGER_WEBHOOK_VERIFY_TOKEN` | - | Messenger webhook challenge token |
-| `MESSENGER_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
-| `MESSENGER_GRAPH_API_BASE_URL` | `https://graph.facebook.com/v23.0` | Messenger Graph API base URL |
-| `MESSENGER_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Messenger bot replies |
-| `INSTAGRAM_ACCESS_TOKEN` | - | Instagram Messaging access token for webhook replies |
-| `INSTAGRAM_IG_USER_ID` | - | Instagram professional account ID fallback |
-| `INSTAGRAM_WEBHOOK_VERIFY_TOKEN` | - | Instagram webhook challenge token |
-| `INSTAGRAM_APP_SECRET` | - | Required Meta app secret for webhook signature verification |
-| `INSTAGRAM_GRAPH_API_BASE_URL` | `https://graph.instagram.com/v23.0` | Instagram Graph API base URL |
-| `INSTAGRAM_SHOW_TOOL_EVENTS` | `false` | Show compact tool-call events in Instagram bot replies |
 | `DISCORD_BASE_URL` | `https://discord.com/api/v10` | Discord REST API base URL |
-| `MATTERMOST_ACCESS_TOKEN` | - | Mattermost access token fallback for native tools and the Mattermost bot |
-| `MATTERMOST_BASE_URL` | - | Mattermost server base URL |
-| `MATTERMOST_RESPOND_MODE` | `mention` | Mattermost channel behavior: `mention` or `all` |
-| `MATTERMOST_SHOW_TOOL_EVENTS` | `false` | Show compact Mattermost tool call/result messages during streamed replies |
-| `MATRIX_ACCESS_TOKEN` | - | Matrix access token fallback |
-| `MATRIX_BASE_URL` | `https://matrix-client.matrix.org/_matrix/client/v3` | Matrix Client-Server API base URL |
-| `ROCKETCHAT_AUTH_TOKEN` | - | Rocket.Chat auth token fallback for native tools and the Rocket.Chat bot |
-| `ROCKETCHAT_USER_ID` | - | Rocket.Chat user ID fallback for native tools and the Rocket.Chat bot |
-| `ROCKETCHAT_BASE_URL` | - | Rocket.Chat server base URL |
-| `ROCKETCHAT_RESPOND_MODE` | `mention` | Rocket.Chat room behavior: `mention` or `all` |
-| `ROCKETCHAT_SHOW_TOOL_EVENTS` | `false` | Show compact Rocket.Chat tool call/result messages during streamed replies |
 | `TEAMS_BOT_APP_ID` | - | Bot Framework app ID for Teams webhook replies |
 | `TEAMS_BOT_APP_PASSWORD` | - | Bot Framework client secret for Teams webhook replies |
 | `TEAMS_BOT_TENANT_ID` | - | Optional Azure tenant ID used during setup |
@@ -1435,38 +1278,6 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `TEAMS_BOT_SHOW_TOOL_EVENTS` | `false` | Show compact Teams tool call/result messages during streamed replies |
 | `TEAMS_BOT_TOKEN_URL` | `https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token` | Bot Framework OAuth token URL |
 | `TEAMS_BOT_OPENID_CONFIG_URL` | `https://login.botframework.com/v1/.well-known/openidconfiguration` | Bot Framework OpenID metadata URL |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` | - | Service-account JSON content or path for Google Chat webhook replies |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | - | Service-account JSON file path for Google Chat webhook replies |
-| `GOOGLE_CHAT_PROJECT_NUMBER` | - | Project number for project-number auth audience mode |
-| `GOOGLE_CHAT_AUTH_AUDIENCE` | - | Google Chat request-auth audience override |
-| `GOOGLE_CHAT_AUTH_AUDIENCE_TYPE` | `app-url` | Google Chat auth audience mode: `app-url` or `project-number` |
-| `GOOGLE_CHAT_BOT_NAME` | `Nymeria` | Google Chat bot display name used for mention stripping |
-| `GOOGLE_CHAT_RESPOND_MODE` | `mention` | Google Chat space behavior: `mention` or `all` |
-| `GOOGLE_CHAT_VALIDATE_AUTH` | ignored | Deprecated. Google Chat bearer-token validation is always enforced |
-| `GOOGLE_CHAT_SHOW_TOOL_EVENTS` | `false` | Show compact Google Chat tool call/result messages during streamed replies |
-| `GOOGLE_CHAT_API_BASE_URL` | `https://chat.googleapis.com/v1` | Google Chat REST API base URL |
-| `GOOGLE_CHAT_USE_ADC` | `false` | Allow Application Default Credentials for Google Chat replies |
-| `LINE_CHANNEL_ACCESS_TOKEN` | - | LINE Messaging API channel access token for webhook replies |
-| `LINE_CHANNEL_SECRET` | - | LINE Messaging API channel secret for webhook signature validation |
-| `LINE_BOT_USER_ID` | - | Optional LINE bot user ID for mention matching |
-| `LINE_BOT_NAME` | `Nymeria` | LINE bot display name used for mention stripping |
-| `LINE_RESPOND_MODE` | `mention` | LINE group/room behavior: `mention` or `all` |
-| `LINE_VALIDATE_SIGNATURE` | ignored | Deprecated. `x-line-signature` validation is always enforced |
-| `LINE_SHOW_TOOL_EVENTS` | `false` | Show compact LINE tool call/result messages during streamed replies |
-| `LINE_API_BASE_URL` | `https://api.line.me/v2/bot` | LINE Messaging API base URL |
-| `SIGNAL_HTTP_URL` | - | signal-cli-rest-api base URL for the Signal bot |
-| `SIGNAL_ACCOUNT` | - | Signal account phone number used by signal-cli-rest-api |
-| `SIGNAL_ACCOUNT_UUID` | - | Optional Signal account UUID for self-message and mention matching |
-| `SIGNAL_RESPOND_MODE` | `mention` | Signal group behavior: `mention` or `all` |
-| `SIGNAL_ALLOWED_USERS` | - | Optional comma-separated sender allowlist |
-| `SIGNAL_ALLOWED_GROUPS` | - | Optional comma-separated Signal group allowlist |
-| `SIGNAL_SHOW_TOOL_EVENTS` | `false` | Show compact Signal tool call/result messages during streamed replies |
-| `SIGNAL_HTTP_TIMEOUT` | `30.0` | signal-cli-rest-api HTTP timeout in seconds |
-| `ZULIP_API_KEY` | - | Zulip API key fallback for native tools and the Zulip bot |
-| `ZULIP_EMAIL` | - | Zulip bot/user email fallback |
-| `ZULIP_BASE_URL` | - | Zulip organization base URL |
-| `ZULIP_RESPOND_MODE` | `mention` | Zulip channel behavior: `mention` or `all` |
-| `ZULIP_SHOW_TOOL_EVENTS` | `false` | Show compact Zulip tool call/result messages during streamed replies |
 | `GOOGLE_BOOKS_API_KEY` | - | Optional Google Books API key fallback |
 | `GOOGLE_BOOKS_BASE_URL` | `https://www.googleapis.com/books/v1` | Google Books API base URL |
 | `YOUTUBE_API_KEY` | - | YouTube Data API key fallback |

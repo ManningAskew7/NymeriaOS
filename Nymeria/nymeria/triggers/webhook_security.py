@@ -25,10 +25,10 @@ class _TimestampedMessage(Protocol):
 def require_configured_secret(value: str | None, setting_name: str) -> str:
     """Return a configured webhook secret, or raise 503 when it is unset.
 
-    Shared by the Meta-style webhook routers (WhatsApp, Messenger, Instagram)
-    and Webex, which each gate signature verification on a server-configured
-    secret. The error detail names the missing setting verbatim so the
-    per-router tests (e.g. ``WHATSAPP_APP_SECRET is required``) stay exact.
+    Used by webhook routers that gate signature verification on a
+    server-configured secret (currently the WhatsApp router). The error detail
+    names the missing setting verbatim so the per-router tests
+    (e.g. ``WHATSAPP_APP_SECRET is required``) stay exact.
     """
     secret = (value or "").strip()
     if not secret:
@@ -45,9 +45,9 @@ def reject_stale_messages(
     """Raise 403 if any inbound message timestamp is outside the replay window.
 
     ``extract_messages`` is the platform's ``extract_inbound_messages`` and
-    ``unit`` is the platform's timestamp unit (WhatsApp emits seconds; Messenger
-    and Instagram emit milliseconds). A payload with no inbound messages is a
-    no-op, matching the prior per-router behavior.
+    ``unit`` is the platform's timestamp unit (WhatsApp emits seconds). A
+    payload with no inbound messages is a no-op, matching the prior
+    per-router behavior.
     """
     for message in extract_messages(payload):
         if not webhook_timestamp_is_fresh(message.timestamp, unit=unit):
@@ -61,9 +61,9 @@ def verify_meta_signature(
 ) -> bool:
     """Verify Meta's X-Hub-Signature-256 header.
 
-    Canonical HMAC-SHA256 verifier shared by the Messenger, Instagram, and
-    WhatsApp webhook bots. Returns ``False`` (never raises) when the app secret
-    or header is missing or malformed, and uses a constant-time comparison.
+    Canonical HMAC-SHA256 verifier for Meta-style webhooks (currently the
+    WhatsApp bot). Returns ``False`` (never raises) when the app secret or
+    header is missing or malformed, and uses a constant-time comparison.
     """
     if not app_secret:
         return False

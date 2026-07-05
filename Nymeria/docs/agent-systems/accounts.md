@@ -319,29 +319,12 @@ A thread becomes owned in one of four ways:
 | `telegram_<positive_id>` | Personal Telegram DM | Yes |
 | `slack_dm_<team>_<user>` | Personal Slack DM | Yes |
 | `whatsapp_<sender>` | Personal WhatsApp customer chat | Yes |
-| `messenger_<page>_<psid>` | Personal Messenger customer chat | Yes |
-| `instagram_<ig>_<sender>` | Personal Instagram DM | Yes |
-| `webex_dm_<person_id>` | Personal Webex DM | Yes |
-| `mattermost_dm_<server>_<user>` | Personal Mattermost DM | Yes |
-| `zulip_dm_<realm>_<user>` | Personal Zulip DM | Yes |
-| `rocketchat_dm_<server>_<user>` | Personal Rocket.Chat DM | Yes |
 | `teams_dm_<tenant>_<user>` | Personal Teams DM | Yes |
-| `googlechat_dm_<user>` | Personal Google Chat DM | Yes |
-| `line_dm_<user>` | Personal LINE DM | Yes |
-| `signal_dm_<user>` / `signal_<user>` | Personal Signal DM | Yes |
 | `discord_<guild_id>_<channel_id>` | Shared Discord guild channel | **No** (400 from `/claim`) |
 | `telegram_-<group_id>` | Shared Telegram group/supergroup | **No** |
 | `slack_<team>_<channel>` | Shared Slack channel/group DM | **No** |
-| `matrix_<room_id>` | Shared Matrix room | **No** |
 | `whatsapp_group_<id>` | Shared WhatsApp group | **No** |
-| `webex_<room_id>` | Shared Webex room | **No** |
-| `mattermost_<server>_<channel>` | Shared Mattermost channel/group DM | **No** |
-| `zulip_<realm>_<stream>` | Shared Zulip stream/topic | **No** |
-| `rocketchat_<server>_<room>` | Shared Rocket.Chat room | **No** |
 | `teams_<tenant>_<conversation>` | Shared Teams chat/channel | **No** |
-| `googlechat_<space>` | Shared Google Chat space/group chat | **No** |
-| `line_group_<group>` / `line_room_<room>` | Shared LINE group or room | **No** |
-| `signal_group_<group>` | Shared Signal group | **No** |
 
 Shared-channel threads are inherently multi-user - per-user ownership rows would just claim-jack to whichever user spoke first. The bot service token routes per-user attribution through `X-Nymeria-Act-As` instead (act-as targets arrive with `role="user"` plus `via_act_as=true` and bypass shared-channel owner claiming). Direct non-admin API calls to a shared-channel thread without admin act-as return 404.
 

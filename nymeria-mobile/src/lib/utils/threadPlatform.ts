@@ -10,18 +10,8 @@ const CHAT_PLATFORMS = [
   ['discord_', 'discord'],
   ['telegram_', 'telegram'],
   ['slack_', 'slack'],
-  ['matrix_', 'matrix'],
   ['whatsapp_', 'whatsapp'],
-  ['messenger_', 'messenger'],
-  ['instagram_', 'instagram'],
-  ['webex_', 'webex'],
-  ['mattermost_', 'mattermost'],
-  ['zulip_', 'zulip'],
-  ['rocketchat_', 'rocketchat'],
   ['teams_', 'teams'],
-  ['googlechat_', 'googlechat'],
-  ['line_', 'line'],
-  ['signal_', 'signal'],
   ['twitch_', 'twitch'],
 ] as const satisfies ReadonlyArray<readonly [string, ThreadPlatform]>;
 

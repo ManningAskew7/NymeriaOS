@@ -9,18 +9,8 @@ const CHAT_PLATFORMS = [
   ['discord_', 'discord'],
   ['telegram_', 'telegram'],
   ['slack_', 'slack'],
-  ['matrix_', 'matrix'],
   ['whatsapp_', 'whatsapp'],
-  ['messenger_', 'messenger'],
-  ['instagram_', 'instagram'],
-  ['webex_', 'webex'],
-  ['mattermost_', 'mattermost'],
-  ['zulip_', 'zulip'],
-  ['rocketchat_', 'rocketchat'],
   ['teams_', 'teams'],
-  ['googlechat_', 'googlechat'],
-  ['line_', 'line'],
-  ['signal_', 'signal'],
   ['twitch_', 'twitch'],
 ] as const satisfies ReadonlyArray<readonly [string, ThreadPlatform]>;
 
@@ -54,7 +44,7 @@ export function detectThreadPlatform(threadId: string): ThreadPlatform {
 // from a runtime Set, so the literal union is maintained by hand.
 export function isNativeDisplayPlatform(
   platform?: ThreadPlatform
-): platform is 'discord' | 'telegram' | 'slack' | 'matrix' | 'whatsapp' | 'messenger' | 'instagram' | 'webex' | 'mattermost' | 'zulip' | 'rocketchat' | 'teams' | 'googlechat' | 'line' | 'signal' | 'twitch' | 'trigger' {
+): platform is 'discord' | 'telegram' | 'slack' | 'whatsapp' | 'teams' | 'twitch' | 'trigger' {
   return platform !== undefined && NATIVE_DISPLAY_PLATFORMS.has(platform);
 }
 

@@ -464,8 +464,8 @@ def test_unlinked_slash_command_is_rejected_without_backend_call() -> None:
 
 
 def test_active_chats_set_stays_bounded(monkeypatch) -> None:
-    # F7: the active-conversation set must not grow without bound, mirroring
-    # the rocketchat/mattermost _remember_active_thread cap-and-evict.
+    # F7: the active-conversation set must not grow without bound (the
+    # _remember_active_thread cap-and-evict pattern).
     monkeypatch.setattr("nymeria.triggers.teams_bot.ACTIVE_CHAT_MAX", 10)
     bot = NymeriaTeamsBot(api=FakeTeamsAPI(), teams_client=FakeTeamsClient())
 

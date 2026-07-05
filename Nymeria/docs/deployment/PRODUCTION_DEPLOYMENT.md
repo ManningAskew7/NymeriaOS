@@ -52,12 +52,10 @@ Docker Compose builds two Nymeria application images:
   browser-capable tools. The worker is a scheduler/trigger relay that POSTs
   turns to the API, but it currently shares the full image in Compose.
 - `nymeria-slim:local` from `Dockerfile.slim` for `watchdog`, `discord-bot`,
-  `telegram-bot`, `slack-bot`, `matrix-bot`, `mattermost-bot`, `zulip-bot`,
-  `rocketchat-bot`, `signal-bot`, and `mcp`.
+  `telegram-bot`, `slack-bot`, and `mcp`.
   These processes are HTTP thin clients over the API and do not construct their
   own `NymeriaAgent`.
-  WhatsApp Cloud API, Messenger Platform, Instagram Messaging, Webex Messaging,
-  Microsoft Teams, Google Chat, and LINE webhooks are handled by the API
+  WhatsApp Cloud API and Microsoft Teams webhooks are handled by the API
   container.
 
 Both images install runtime requirements only. Install `requirements-dev.txt`
@@ -111,7 +109,7 @@ Worker, watchdog, and profiled chat bot processes write runtime heartbeat files
 under `/tmp/nymeria-health/`. Those checks fail when the heartbeat is stale,
 the heartbeat PID is gone, the service reports an unhealthy client/ticker loop,
 or a service-specific dependency check fails. The worker validates PostgreSQL
-and Redis access; watchdog, Discord, Slack, Matrix, Telegram, and MCP validate
+and Redis access; watchdog, Discord, Slack, Telegram, and MCP validate
 API `/health`; MCP also validates its local TCP listener.
 
 Use `docker compose --env-file .env.docker ps` for the container health summary.
@@ -193,32 +191,11 @@ PERPLEXITY_API_KEY=pplx-<token>  # Web search
 TELEGRAM_BOT_TOKEN=<token>       # Telegram notifications
 DISCORD_WEBHOOK_URL=<url>        # Discord notifications
 SLACK_WEBHOOK_URL=<url>          # Slack notifications
-MATTERMOST_BASE_URL=<url>        # Mattermost bot/tools server URL
-MATTERMOST_ACCESS_TOKEN=<token>  # Mattermost bot account token
-ZULIP_BASE_URL=<url>             # Zulip realm URL
-ZULIP_EMAIL=<email>              # Zulip bot email
-ZULIP_API_KEY=<token>            # Zulip bot API key
-ROCKETCHAT_BASE_URL=<url>        # Rocket.Chat server URL
-ROCKETCHAT_USER_ID=<user-id>     # Rocket.Chat bot/user ID
-ROCKETCHAT_AUTH_TOKEN=<token>    # Rocket.Chat bot/user token
-SIGNAL_HTTP_URL=<url>            # signal-cli-rest-api base URL
-SIGNAL_ACCOUNT=+15551234567      # Signal bot account phone number
-WEBEX_ACCESS_TOKEN=<token>       # Webex webhook replies
-WEBEX_WEBHOOK_SECRET=<secret>    # Webex webhook HMAC secret
 TEAMS_BOT_APP_ID=<app-id>        # Microsoft Teams Bot Framework app ID
 TEAMS_BOT_APP_PASSWORD=<secret>  # Microsoft Teams Bot Framework client secret
-GOOGLE_CHAT_SERVICE_ACCOUNT_FILE=/run/secrets/google-chat-service-account.json # Google Chat replies
-LINE_CHANNEL_ACCESS_TOKEN=<token> # LINE Messaging API webhook replies
-LINE_CHANNEL_SECRET=<secret>     # LINE webhook HMAC secret
 WHATSAPP_ACCESS_TOKEN=<token>    # WhatsApp Cloud API webhook replies
 WHATSAPP_PHONE_NUMBER_ID=<id>    # WhatsApp Cloud API sender
 WHATSAPP_WEBHOOK_VERIFY_TOKEN=<token> # Meta webhook challenge token
-MESSENGER_PAGE_ACCESS_TOKEN=<token> # Messenger Send API webhook replies
-MESSENGER_PAGE_ID=<page-id>      # Facebook Page ID
-MESSENGER_WEBHOOK_VERIFY_TOKEN=<token> # Messenger webhook challenge token
-INSTAGRAM_ACCESS_TOKEN=<token>   # Instagram Messaging webhook replies
-INSTAGRAM_IG_USER_ID=<id>        # Instagram professional account ID
-INSTAGRAM_WEBHOOK_VERIFY_TOKEN=<token> # Instagram webhook challenge token
 ```
 
 ### CORS for Remote Access
@@ -235,41 +212,21 @@ refuses to start when wildcard origins are configured.
 
 ### Messaging Integrations
 
-Telegram, Discord, Slack, Matrix, Mattermost, Zulip, Rocket.Chat, and Signal
+Telegram, Discord, and Slack
 bots run as dedicated profiled containers. Configure their tokens in
 `.env.docker` and enable their Docker Compose profiles; those clients do not
 need external webhook URLs. See
-`chat-apps/telegram-bot.md`, `chat-apps/discord-bot.md`,
-`chat-apps/slack-bot.md`, `chat-apps/matrix-bot.md`, `chat-apps/mattermost-bot.md`,
-`chat-apps/zulip-bot.md`, `chat-apps/rocketchat-bot.md`, and `chat-apps/signal-bot.md`.
-Signal additionally requires a separately managed
-`signal-cli-rest-api` daemon in JSON-RPC/SSE mode.
+`chat-apps/telegram-bot.md`, `chat-apps/discord-bot.md`, and
+`chat-apps/slack-bot.md`.
 
-WhatsApp, Messenger, Instagram, Webex, Microsoft Teams, Google Chat, and LINE are API-hosted webhook integrations.
+WhatsApp and Microsoft Teams are API-hosted webhook integrations.
 WhatsApp uses the official WhatsApp Business Cloud API at
 `/integrations/whatsapp/webhook`; configure a public HTTPS callback URL in Meta
 and set `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, and
-`WHATSAPP_WEBHOOK_VERIFY_TOKEN`; see `chat-apps/whatsapp-bot.md`. Messenger uses
-Meta Messenger Platform webhooks at `/integrations/messenger/webhook`;
-configure a public HTTPS callback URL in Meta and set
-`MESSENGER_PAGE_ACCESS_TOKEN`, `MESSENGER_PAGE_ID`, and
-`MESSENGER_WEBHOOK_VERIFY_TOKEN`; see `chat-apps/messenger-bot.md`. Instagram uses
-Meta Instagram Messaging webhooks at `/integrations/instagram/webhook`;
-configure a public HTTPS callback URL in Meta and set
-`INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_IG_USER_ID`, and
-`INSTAGRAM_WEBHOOK_VERIFY_TOKEN`; see `chat-apps/instagram-bot.md`. Webex uses Webex
-Messaging webhooks at `/integrations/webex/webhook`; configure a public HTTPS
-callback URL in Webex and set `WEBEX_ACCESS_TOKEN` and optionally
-`WEBEX_WEBHOOK_SECRET`; see `chat-apps/webex-bot.md`. Microsoft Teams uses Bot
+`WHATSAPP_WEBHOOK_VERIFY_TOKEN`; see `chat-apps/whatsapp-bot.md`. Microsoft Teams uses Bot
 Framework message activities at `/integrations/teams/webhook`; configure that
 URL as the bot messaging endpoint and set `TEAMS_BOT_APP_ID` and
-`TEAMS_BOT_APP_PASSWORD`; see `chat-apps/teams-bot.md`. Google Chat uses interaction
-events at `/integrations/google-chat/webhook`; configure that URL as the Chat
-app endpoint and set `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` or
-`GOOGLE_CHAT_SERVICE_ACCOUNT_JSON`; see `chat-apps/google-chat-bot.md`. LINE uses
-Messaging API webhooks at `/integrations/line/webhook`; configure that URL in
-the LINE Developers Console and set `LINE_CHANNEL_ACCESS_TOKEN` and
-`LINE_CHANNEL_SECRET`; see `chat-apps/line-bot.md`.
+`TEAMS_BOT_APP_PASSWORD`; see `chat-apps/teams-bot.md`.
 
 For event-driven automations from external services (IFTTT, Zapier, etc.),
 use the trigger system: `POST /triggers/fire/{trigger_id}`. See `docs/triggers.md`.

@@ -53,17 +53,8 @@
       case 'discord': return 'Discord';
       case 'telegram': return 'Telegram';
       case 'slack': return 'Slack';
-      case 'matrix': return 'Matrix';
       case 'whatsapp': return 'WhatsApp';
-      case 'messenger': return 'Messenger';
-      case 'webex': return 'Webex';
-      case 'mattermost': return 'Mattermost';
-      case 'zulip': return 'Zulip';
-      case 'rocketchat': return 'Rocket.Chat';
       case 'teams': return 'Teams';
-      case 'googlechat': return 'Google Chat';
-      case 'line': return 'LINE';
-      case 'signal': return 'Signal';
       case 'twitch': return 'Twitch';
       case 'callable': return 'Agent';
       case 'trigger': return 'Trigger';

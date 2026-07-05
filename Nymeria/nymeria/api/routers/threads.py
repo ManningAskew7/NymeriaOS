@@ -382,8 +382,7 @@ def create_threads_router(
         Get platform metadata for a thread.
 
         Parses the thread ID to detect platform origin (desktop, discord,
-        telegram, slack, matrix, whatsapp, messenger, instagram, webex, mattermost, zulip, rocketchat,
-        teams, googlechat, line, signal) and returns relevant metadata.
+        telegram, slack, whatsapp, teams) and returns relevant metadata.
         """
         require_thread_access_fn(user, thread_id, claim=False)
         return parse_thread_metadata(thread_id)

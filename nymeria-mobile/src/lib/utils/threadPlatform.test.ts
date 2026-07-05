@@ -11,18 +11,8 @@ describe('platformFromThreadId', () => {
     expect(platformFromThreadId('discord_123')).toBe('discord');
     expect(platformFromThreadId('telegram_123')).toBe('telegram');
     expect(platformFromThreadId('slack_123')).toBe('slack');
-    expect(platformFromThreadId('matrix_123')).toBe('matrix');
     expect(platformFromThreadId('whatsapp_123')).toBe('whatsapp');
-    expect(platformFromThreadId('messenger_123')).toBe('messenger');
-    expect(platformFromThreadId('instagram_123')).toBe('instagram');
-    expect(platformFromThreadId('webex_123')).toBe('webex');
-    expect(platformFromThreadId('mattermost_123')).toBe('mattermost');
-    expect(platformFromThreadId('zulip_123')).toBe('zulip');
-    expect(platformFromThreadId('rocketchat_123')).toBe('rocketchat');
     expect(platformFromThreadId('teams_123')).toBe('teams');
-    expect(platformFromThreadId('googlechat_123')).toBe('googlechat');
-    expect(platformFromThreadId('line_123')).toBe('line');
-    expect(platformFromThreadId('signal_123')).toBe('signal');
     expect(platformFromThreadId('twitch_123')).toBe('twitch');
   });
 
@@ -65,18 +55,8 @@ describe('isPlatformNativeThreadId', () => {
       'discord_1',
       'telegram_1',
       'slack_1',
-      'matrix_1',
       'whatsapp_1',
-      'messenger_1',
-      'instagram_1',
-      'webex_1',
-      'mattermost_1',
-      'zulip_1',
-      'rocketchat_1',
       'teams_1',
-      'googlechat_1',
-      'line_1',
-      'signal_1',
       'twitch_1',
       'trigger-1',
     ];

@@ -160,60 +160,15 @@ Two-way Discord integration in gateway mode.
 
 Two-way Slack integration via Socket Mode.
 
-### Matrix Bot (`run.py matrix-bot`)
-
-Two-way Matrix integration via Client-Server API sync.
-
-### Mattermost Bot (`run.py mattermost-bot`)
-
-Two-way Mattermost integration via `/api/v4/websocket` and REST replies.
-
-### Zulip Bot (`run.py zulip-bot`)
-
-Two-way Zulip integration via Events API long-polling and REST replies.
-
-### Rocket.Chat Bot (`run.py rocketchat-bot`)
-
-Two-way Rocket.Chat integration via realtime room streams and REST replies.
-
-### Signal Bot (`run.py signal-bot`)
-
-Two-way Signal integration via a user-managed `signal-cli-rest-api` daemon in JSON-RPC/SSE mode.
-
 ### WhatsApp Webhook (API-hosted)
 
 Two-way WhatsApp Business Cloud API integration via
 `/integrations/whatsapp/webhook`. There is no separate `run.py` entry point.
 
-### Messenger Webhook (API-hosted)
-
-Two-way Meta Messenger Platform integration via
-`/integrations/messenger/webhook`. There is no separate `run.py` entry point.
-
-### Instagram Webhook (API-hosted)
-
-Two-way Instagram Messaging integration via
-`/integrations/instagram/webhook`. There is no separate `run.py` entry point.
-
-### Webex Webhook (API-hosted)
-
-Two-way Webex Messaging integration via `/integrations/webex/webhook`. There
-is no separate `run.py` entry point.
-
 ### Microsoft Teams Webhook (API-hosted)
 
 Two-way Microsoft Teams Bot Framework integration via
 `/integrations/teams/webhook`. There is no separate `run.py` entry point.
-
-### Google Chat Webhook (API-hosted)
-
-Two-way Google Chat HTTPS integration via
-`/integrations/google-chat/webhook`. There is no separate `run.py` entry point.
-
-### LINE Webhook (API-hosted)
-
-Two-way LINE Messaging API integration via `/integrations/line/webhook`. There
-is no separate `run.py` entry point.
 
 ## Frontends
 

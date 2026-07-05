@@ -27,11 +27,6 @@ HEARTBEAT_SERVICES = {
     "watchdog",
     "discord-bot",
     "slack-bot",
-    "matrix-bot",
-    "mattermost-bot",
-    "zulip-bot",
-    "rocketchat-bot",
-    "signal-bot",
     "telegram-bot",
 }
 
@@ -247,7 +242,7 @@ def check_service(
         _check_postgres(errors, settings)
         _check_redis(errors, settings)
 
-    if service in {"watchdog", "discord-bot", "slack-bot", "matrix-bot", "telegram-bot", "mcp"}:
+    if service in {"watchdog", "discord-bot", "slack-bot", "telegram-bot", "mcp"}:
         _check_api(api_url or "http://nymeria-api:8000", errors)
 
     if service == "mcp":

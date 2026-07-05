@@ -133,17 +133,8 @@ def test_chat_app_code_routes_accept_shared_bot_providers(
 
     for provider in (
         "slack",
-        "matrix",
         "whatsapp",
-        "messenger",
-        "webex",
-        "mattermost",
-        "zulip",
-        "rocketchat",
         "teams",
-        "googlechat",
-        "line",
-        "signal",
     ):
         platform_code = client.post(
             "/me/platform-link-codes",
@@ -161,6 +152,46 @@ def test_chat_app_code_routes_accept_shared_bot_providers(
         assert platform_code.json()["deep_link"] is None
         assert thread_code.status_code == 200
         assert thread_code.json()["deep_link"] is None
+
+
+def test_legacy_removed_provider_rows_still_serialize_on_reads(
+    tmp_path: Path,
+    api_client_builder,
+):
+    # The 2026-07-05 bot cull removed ten platforms from the request Literals,
+    # but existing DBs can still hold link/binding rows for them. Read
+    # endpoints must return those rows (plain-str provider), not 500.
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    agent.accounts_repo.claim_thread("desktop-thread", "owner")
+    headers = api_client_builder.auth(token)
+
+    agent.accounts_repo.link_platform("signal", "sig-user-1", "owner")
+    agent.chat_bindings_repo.create_thread_binding(
+        thread_id="desktop-thread",
+        provider="webex",
+        platform_chat_id="legacy-room",
+        user_id="owner",
+    )
+
+    platforms = client.get("/me/platforms", headers=headers)
+    bindings = client.get(
+        "/threads/desktop-thread/chatapp/bindings",
+        headers=headers,
+    )
+
+    assert platforms.status_code == 200
+    assert {row["provider"] for row in platforms.json()} == {"signal"}
+    assert bindings.status_code == 200
+    assert [row["provider"] for row in bindings.json()] == ["webex"]
+
+    # New requests for removed providers stay rejected by the request schema.
+    rejected = client.post(
+        "/me/platform-link-codes",
+        headers=headers,
+        json={"provider": "signal"},
+    )
+    assert rejected.status_code == 422
 
 
 def test_admin_claim_rejects_mismatched_identity_without_consuming_code(

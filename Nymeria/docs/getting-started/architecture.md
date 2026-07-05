@@ -352,12 +352,11 @@ workstation image for every process:
   image. These processes keep the Kali tools, browser runtime, and CLI-oriented
   environment that shell-capable tools may call.
 - `nymeria-slim:local` (`Dockerfile.slim`) runs Watchdog, Discord, Telegram,
-  Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, and MCP. Those services are
+  Slack, and MCP. Those services are
   HTTP thin clients over the API and do not execute local agent tools, so they
   omit Kali packages, Playwright browsers, Node.js, Claude Code CLI, and
-  dev/test dependencies. WhatsApp Cloud API, Messenger Platform, Instagram
-  Messaging, Webex Messaging, Microsoft Teams Bot Framework, Google Chat, and
-  LINE webhooks are hosted by the API service rather than separate bot
+  dev/test dependencies. WhatsApp Cloud API and Microsoft Teams Bot Framework
+  webhooks are hosted by the API service rather than separate bot
   containers.
 
 Both images install the same runtime Python requirements so thin-client imports
@@ -642,65 +641,15 @@ Input interfaces and event-driven adapters that route messages to the agent:
 - DMs always respond; channels respond to app mentions by default
 - Supports linked-user enforcement, chat-app bind codes, thread-aware replies, and SSE streaming through the API
 
-**Matrix Bot** (`matrix_bot.py`):
-- Client-Server API sync-loop thin client
-- Performs baseline sync before processing new room events
-- Supports linked-user enforcement, chat-app bind codes, mention/free-room gating, plaintext replies, and SSE streaming through the API
-
-**Mattermost Bot** (`mattermost_bot.py`):
-- WebSocket thin client using Mattermost `/api/v4/websocket` plus REST posting
-- DMs always respond; channels respond to `@bot` mentions by default
-- Supports linked-user enforcement, chat-app bind codes, thread-aware replies, inbound dedupe, and SSE streaming through the API
-
-**Zulip Bot** (`zulip_bot.py`):
-- Events API long-poll thin client using Zulip `/api/v1/register` and `/events`
-- Direct messages always respond; channels respond to bot mentions by default
-- Supports linked-user enforcement, chat-app bind codes, stream-topic routing, queue re-registration, and SSE streaming through the API
-
-**Rocket.Chat Bot** (`rocketchat_bot.py`):
-- Realtime thin client using Rocket.Chat `stream-room-messages` plus REST posting
-- DMs always respond; rooms respond to `@bot` mentions by default
-- Supports linked-user enforcement, chat-app bind codes, thread-aware replies, inbound dedupe, and SSE streaming through the API
-
-**Signal Bot** (`signal_bot.py`):
-- Thin client for a user-managed `signal-cli-rest-api` daemon in JSON-RPC/SSE mode
-- Direct messages always respond; groups respond to Signal mentions by default
-- Supports linked-user enforcement, chat-app bind codes, native Signal thread IDs, inbound dedupe, and SSE streaming through the API
-
 **WhatsApp Bot** (`api/routers/whatsapp_bot.py`, `whatsapp_bot.py`):
 - API-hosted WhatsApp Business Cloud webhook client; no standalone polling process
 - Handles Meta webhook challenge/signature verification and sends replies through the Graph messages endpoint
 - Supports linked-user enforcement, chat-app bind codes, inbound dedupe, direct-chat thread IDs, and SSE streaming through the in-process agent
 
-**Messenger Bot** (`api/routers/messenger_bot.py`, `messenger_bot.py`):
-- API-hosted Meta Messenger webhook client; no standalone polling process
-- Handles Meta webhook challenge/signature verification and sends replies through the Messenger Send API
-- Supports linked-user enforcement, Page-scoped chat-app bind codes, inbound dedupe, direct-chat thread IDs, and SSE streaming through the in-process agent
-
-**Instagram Bot** (`api/routers/instagram_bot.py`, `instagram_bot.py`):
-- API-hosted Meta Instagram Messaging webhook client; no standalone polling process
-- Handles Meta webhook challenge/signature verification and sends replies through the Instagram Messaging API
-- Supports linked-user enforcement, account-scoped chat-app bind codes, inbound dedupe, direct-chat thread IDs, and SSE streaming through the in-process agent
-
-**Webex Bot** (`api/routers/webex_bot.py`, `webex_bot.py`):
-- API-hosted Webex Messaging webhook client; no standalone polling process
-- Verifies optional `X-Spark-Signature`, fetches message details through Webex, and sends replies through `POST /messages`
-- Supports linked-user enforcement, chat-app bind codes, self-message filtering, direct/group thread IDs, and SSE streaming through the in-process agent
-
 **Microsoft Teams Bot** (`api/routers/teams_bot.py`, `teams_bot.py`):
 - API-hosted Teams Bot Framework webhook client; no standalone polling process
 - Validates Bot Framework bearer tokens when enabled and replies through the Bot Connector REST API
 - Supports linked-user enforcement, chat-app bind codes, mention-gated group/channel routing, native Teams thread IDs, inbound dedupe, and SSE streaming through the in-process agent
-
-**Google Chat Bot** (`api/routers/google_chat_bot.py`, `google_chat_bot.py`):
-- API-hosted Google Chat HTTPS webhook client; no standalone polling process
-- Validates Google Chat bearer tokens when enabled and replies through the Google Chat REST API with app authentication
-- Supports linked-user enforcement, chat-app bind codes, mention-gated space/group routing, native Google Chat thread IDs, inbound dedupe, and SSE streaming through the in-process agent
-
-**LINE Bot** (`api/routers/line_bot.py`, `line_bot.py`):
-- API-hosted LINE Messaging API webhook client; no standalone polling process
-- Validates raw-body `x-line-signature` HMACs when enabled and replies through LINE push messages
-- Supports linked-user enforcement, chat-app bind codes, mention-gated group/room routing, native LINE thread IDs, inbound dedupe, and SSE streaming through the in-process agent
 
 **Event-Driven Trigger Sources** (`triggers/sources/`):
 - `base.py`  -  Abstract `BaseTriggerSource` with rich metadata (category, icon, setup_guide, template_variables, example_config, requires_auth, get_sample_event())

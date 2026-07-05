@@ -82,8 +82,8 @@ The default install is lean. Optional chat-platform bots and heavy integrations
 install as extras, for example `uv tool install "nymeriaos[discord]"` (or
 `pipx install "nymeriaos[discord]"`). Use `nymeriaos[bots]` for every chat platform,
 or combine extras like `nymeriaos[postgres,redis,voice]`. Available extras:
-`discord`, `telegram`, `slack`, `mattermost`, `rocketchat`, `matrix`, `zulip`,
-`signal`, `bots`, `postgres`, `redis`, `voice`, `browser`, `firebase`, `all`.
+`discord`, `telegram`, `slack`, `bots`, `postgres`, `redis`, `voice`,
+`browser`, `firebase`, `all`.
 
 `nymeria init` opens an interactive setup wizard. The first screen picks the
 setup depth. Quickstart (the recommended default) asks only the essentials:

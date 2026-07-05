@@ -343,20 +343,10 @@ total).
 - HTML formatting, inline stop button, privacy mode
 - File delivery: images inline, documents downloadable (50MB max)
 
-### Slack, Matrix, Mattermost, Zulip, Rocket.Chat, Signal, WhatsApp, Messenger, Instagram, Webex, Teams, Google Chat & LINE Bots
+### Slack, WhatsApp & Teams Bots
 - Two-way Slack Socket Mode client with linked-user enforcement, bind codes, and thread-aware replies
-- Two-way Matrix Client-Server API sync client with mention/free-room gating and bind codes
-- Two-way Mattermost WebSocket client with linked-user enforcement, bind codes, and thread-aware replies
-- Two-way Zulip Events API client with linked-user enforcement, bind codes, and stream-topic routing
-- Two-way Rocket.Chat realtime client with linked-user enforcement, bind codes, and thread-aware replies
-- Two-way Signal client via signal-cli-rest-api SSE/JSON-RPC with linked-user enforcement, group mention gating, and bind codes
 - WhatsApp Business Cloud API webhook client hosted by the API service, with linked-user enforcement and direct-chat thread binding
-- Messenger Platform webhook client hosted by the API service, with linked-user enforcement, Page-scoped direct-chat thread binding, and bind codes
-- Instagram Messaging webhook client hosted by the API service, with linked-user enforcement, account-scoped direct-chat thread binding, and bind codes
-- Webex Messaging webhook client hosted by the API service, with linked-user enforcement, direct/group thread routing, and bind codes
 - Microsoft Teams Bot Framework webhook client hosted by the API service, with linked-user enforcement, mention-gated group/channel routing, and bind codes
-- Google Chat HTTPS webhook client hosted by the API service, with linked-user enforcement, mention-gated space/group routing, and bind codes
-- LINE Messaging API webhook client hosted by the API service, with linked-user enforcement, mention-gated group/room routing, and bind codes
 
 ### Slack & Teams Trigger Sources
 - Channel monitoring via trigger sources
@@ -435,7 +425,7 @@ total).
 ### Docker Compose Stack
 | Container | Port | Purpose |
 |-----------|------|---------|
-| nymeria-api | 8000 | FastAPI REST API + SSE streaming (also hosts WhatsApp/Messenger/Instagram/Webex/Teams/Google Chat/LINE webhook runtimes) |
+| nymeria-api | 8000 | FastAPI REST API + SSE streaming (also hosts WhatsApp/Teams webhook runtimes) |
 | nymeria-worker |  -  | Ticker daemon for autonomous tasks |
 | nymeria-watchdog |  -  | Thin-client watchdog worker |
 | nymeria-mcp | 8001 | MCP server (HTTP mode) |
@@ -445,11 +435,6 @@ total).
 | nymeria-discord-bot |  -  | Discord gateway bot |
 | nymeria-telegram-bot |  -  | Telegram bot |
 | nymeria-slack-bot |  -  | Slack bot |
-| nymeria-matrix-bot |  -  | Matrix bot |
-| nymeria-mattermost-bot |  -  | Mattermost bot |
-| nymeria-zulip-bot |  -  | Zulip bot |
-| nymeria-rocketchat-bot |  -  | Rocket.Chat bot |
-| nymeria-signal-bot |  -  | Signal bot |
 | nymeria-speaches | 8970 (loopback) | Local voice sidecar: faster-whisper STT + Kokoro TTS (profile `voice`) |
 | nymeria-qwen3-tts |  -  | GPU TTS service (profile `voice-gpu`) |
 
@@ -547,4 +532,3 @@ Framing: `=== START ===` / `=== END ===` / `=== ERROR ===` with thread ID, elaps
 | Discord messages | 2000 chars | No |
 | Telegram messages | 4096 chars | No |
 | Teams messages | 4000 chars | No |
-| Signal messages | 8000 chars | No |

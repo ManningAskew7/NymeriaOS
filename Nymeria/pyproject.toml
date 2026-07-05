@@ -149,24 +149,11 @@ slack = [
   "slack-bolt>=1.22.0",
   "slack-sdk>=3.35.0",
 ]
-mattermost = [
-  "websockets>=12.0",
-]
-rocketchat = [
-  "websockets>=12.0",
-]
-# matrix/zulip/signal talk to their servers over httpx (already in core), so
-# these extras carry no extra deps. They exist so install commands and docs can
-# reference nymeria[<platform>] uniformly across every chat platform.
-matrix = []
-zulip = []
-signal = []
 bots = [
   "discord.py>=2.3.0",
   "python-telegram-bot[rate-limiter]>=22.0",
   "slack-bolt>=1.22.0",
   "slack-sdk>=3.35.0",
-  "websockets>=12.0",
 ]
 dev = [
   "pytest>=8.0.0",
@@ -193,7 +180,6 @@ all = [
   "python-telegram-bot[rate-limiter]>=22.0",
   "slack-bolt>=1.22.0",
   "slack-sdk>=3.35.0",
-  "websockets>=12.0",
   "pytest>=8.0.0",
   "pytest-cov>=7.0.0",
   "pytest-asyncio>=0.26.0",
@@ -271,8 +257,6 @@ replace-imports-with-any = [
     "discord.*",
     "telegram",
     "telegram.*",
-    "websockets",
-    "websockets.*",
     # Web page fetch + content extraction libs (lazy-imported in tools/web_fetch.py).
     "trafilatura",
     "trafilatura.*",

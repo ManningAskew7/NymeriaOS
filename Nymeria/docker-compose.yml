@@ -325,20 +325,6 @@ services:
       SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
       SLACK_RESPOND_MODE: ${SLACK_RESPOND_MODE:-mention}
       SLACK_SHOW_TOOL_EVENTS: ${SLACK_SHOW_TOOL_EVENTS:-false}
-      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-}
-      MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
-      MATRIX_USER_ID: ${MATRIX_USER_ID:-}
-      MATRIX_PASSWORD: ${MATRIX_PASSWORD:-}
-      MATRIX_DEVICE_ID: ${MATRIX_DEVICE_ID:-}
-      MATRIX_RESPOND_MODE: ${MATRIX_RESPOND_MODE:-mention}
-      MATRIX_FREE_RESPONSE_ROOMS: ${MATRIX_FREE_RESPONSE_ROOMS:-}
-      MATRIX_AUTO_JOIN: ${MATRIX_AUTO_JOIN:-false}
-      WEBEX_ACCESS_TOKEN: ${WEBEX_ACCESS_TOKEN:-}
-      WEBEX_BASE_URL: ${WEBEX_BASE_URL:-https://webexapis.com/v1}
-      WEBEX_WEBHOOK_SECRET: ${WEBEX_WEBHOOK_SECRET:-}
-      WEBEX_BOT_PERSON_ID: ${WEBEX_BOT_PERSON_ID:-}
-      WEBEX_BOT_EMAIL: ${WEBEX_BOT_EMAIL:-}
-      WEBEX_SHOW_TOOL_EVENTS: ${WEBEX_SHOW_TOOL_EVENTS:-false}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_BUSINESS_ACCOUNT_ID: ${WHATSAPP_BUSINESS_ACCOUNT_ID:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
@@ -346,18 +332,6 @@ services:
       WHATSAPP_WEBHOOK_VERIFY_TOKEN: ${WHATSAPP_WEBHOOK_VERIFY_TOKEN:-}
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
       WHATSAPP_SHOW_TOOL_EVENTS: ${WHATSAPP_SHOW_TOOL_EVENTS:-false}
-      MESSENGER_PAGE_ACCESS_TOKEN: ${MESSENGER_PAGE_ACCESS_TOKEN:-}
-      MESSENGER_PAGE_ID: ${MESSENGER_PAGE_ID:-}
-      MESSENGER_WEBHOOK_VERIFY_TOKEN: ${MESSENGER_WEBHOOK_VERIFY_TOKEN:-}
-      MESSENGER_APP_SECRET: ${MESSENGER_APP_SECRET:-}
-      MESSENGER_GRAPH_API_BASE_URL: ${MESSENGER_GRAPH_API_BASE_URL:-https://graph.facebook.com/v23.0}
-      MESSENGER_SHOW_TOOL_EVENTS: ${MESSENGER_SHOW_TOOL_EVENTS:-false}
-      INSTAGRAM_ACCESS_TOKEN: ${INSTAGRAM_ACCESS_TOKEN:-}
-      INSTAGRAM_IG_USER_ID: ${INSTAGRAM_IG_USER_ID:-}
-      INSTAGRAM_WEBHOOK_VERIFY_TOKEN: ${INSTAGRAM_WEBHOOK_VERIFY_TOKEN:-}
-      INSTAGRAM_APP_SECRET: ${INSTAGRAM_APP_SECRET:-}
-      INSTAGRAM_GRAPH_API_BASE_URL: ${INSTAGRAM_GRAPH_API_BASE_URL:-https://graph.instagram.com/v23.0}
-      INSTAGRAM_SHOW_TOOL_EVENTS: ${INSTAGRAM_SHOW_TOOL_EVENTS:-false}
       TEAMS_BOT_APP_ID: ${TEAMS_BOT_APP_ID:-}
       TEAMS_BOT_APP_PASSWORD: ${TEAMS_BOT_APP_PASSWORD:-}
       TEAMS_BOT_TENANT_ID: ${TEAMS_BOT_TENANT_ID:-}
@@ -366,33 +340,6 @@ services:
       TEAMS_BOT_SHOW_TOOL_EVENTS: ${TEAMS_BOT_SHOW_TOOL_EVENTS:-false}
       TEAMS_BOT_TOKEN_URL: ${TEAMS_BOT_TOKEN_URL:-https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token}
       TEAMS_BOT_OPENID_CONFIG_URL: ${TEAMS_BOT_OPENID_CONFIG_URL:-https://login.botframework.com/v1/.well-known/openidconfiguration}
-      GOOGLE_CHAT_SERVICE_ACCOUNT_JSON: ${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON:-}
-      GOOGLE_CHAT_SERVICE_ACCOUNT_FILE: ${GOOGLE_CHAT_SERVICE_ACCOUNT_FILE:-}
-      GOOGLE_CHAT_PROJECT_NUMBER: ${GOOGLE_CHAT_PROJECT_NUMBER:-}
-      GOOGLE_CHAT_AUTH_AUDIENCE: ${GOOGLE_CHAT_AUTH_AUDIENCE:-}
-      GOOGLE_CHAT_AUTH_AUDIENCE_TYPE: ${GOOGLE_CHAT_AUTH_AUDIENCE_TYPE:-app-url}
-      GOOGLE_CHAT_BOT_NAME: ${GOOGLE_CHAT_BOT_NAME:-Nymeria}
-      GOOGLE_CHAT_RESPOND_MODE: ${GOOGLE_CHAT_RESPOND_MODE:-mention}
-      GOOGLE_CHAT_VALIDATE_AUTH: ${GOOGLE_CHAT_VALIDATE_AUTH:-true}
-      GOOGLE_CHAT_SHOW_TOOL_EVENTS: ${GOOGLE_CHAT_SHOW_TOOL_EVENTS:-false}
-      GOOGLE_CHAT_API_BASE_URL: ${GOOGLE_CHAT_API_BASE_URL:-https://chat.googleapis.com/v1}
-      GOOGLE_CHAT_USE_ADC: ${GOOGLE_CHAT_USE_ADC:-false}
-      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:-}
-      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:-}
-      LINE_BOT_USER_ID: ${LINE_BOT_USER_ID:-}
-      LINE_BOT_NAME: ${LINE_BOT_NAME:-Nymeria}
-      LINE_RESPOND_MODE: ${LINE_RESPOND_MODE:-mention}
-      LINE_VALIDATE_SIGNATURE: ${LINE_VALIDATE_SIGNATURE:-true}
-      LINE_SHOW_TOOL_EVENTS: ${LINE_SHOW_TOOL_EVENTS:-false}
-      LINE_API_BASE_URL: ${LINE_API_BASE_URL:-https://api.line.me/v2/bot}
-      SIGNAL_HTTP_URL: ${SIGNAL_HTTP_URL:-}
-      SIGNAL_ACCOUNT: ${SIGNAL_ACCOUNT:-}
-      SIGNAL_ACCOUNT_UUID: ${SIGNAL_ACCOUNT_UUID:-}
-      SIGNAL_RESPOND_MODE: ${SIGNAL_RESPOND_MODE:-mention}
-      SIGNAL_ALLOWED_USERS: ${SIGNAL_ALLOWED_USERS:-}
-      SIGNAL_ALLOWED_GROUPS: ${SIGNAL_ALLOWED_GROUPS:-}
-      SIGNAL_SHOW_TOOL_EVENTS: ${SIGNAL_SHOW_TOOL_EVENTS:-false}
-      SIGNAL_HTTP_TIMEOUT: ${SIGNAL_HTTP_TIMEOUT:-30.0}
       # Google OAuth
       GOOGLE_OAUTH_CREDENTIALS: ${GOOGLE_OAUTH_CREDENTIALS:-}
       # Microsoft Teams notifications
@@ -614,183 +561,6 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "slack-bot", "--api-url", "http://nymeria-api:8000"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    networks:
-      - edge
-
-  # Matrix Bot for two-way communication
-  matrix-bot:
-    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
-    container_name: nymeria-matrix-bot
-    restart: unless-stopped
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    command: ["python", "run.py", "matrix-bot", "--api-url", "http://nymeria-api:8000"]
-    profiles:
-      - matrix  # Only starts when explicitly enabled: docker compose --profile matrix up -d
-    environment:
-      <<: *thin-client-env
-      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-}
-      MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
-      MATRIX_USER_ID: ${MATRIX_USER_ID:-}
-      MATRIX_PASSWORD: ${MATRIX_PASSWORD:-}
-      MATRIX_DEVICE_ID: ${MATRIX_DEVICE_ID:-}
-      MATRIX_RESPOND_MODE: ${MATRIX_RESPOND_MODE:-mention}
-      MATRIX_FREE_RESPONSE_ROOMS: ${MATRIX_FREE_RESPONSE_ROOMS:-}
-      MATRIX_AUTO_JOIN: ${MATRIX_AUTO_JOIN:-false}
-    volumes:
-      - nymeria_data:/data
-      - ./nymeria:/app/nymeria:ro
-      - ./run.py:/app/run.py:ro
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "matrix-bot", "--api-url", "http://nymeria-api:8000"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    networks:
-      - edge
-
-  # Mattermost Bot for two-way communication
-  mattermost-bot:
-    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
-    container_name: nymeria-mattermost-bot
-    restart: unless-stopped
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    command: ["python", "run.py", "mattermost-bot", "--api-url", "http://nymeria-api:8000"]
-    profiles:
-      - mattermost  # Only starts when explicitly enabled: docker compose --profile mattermost up -d
-    environment:
-      <<: *thin-client-env
-      MATTERMOST_BASE_URL: ${MATTERMOST_BASE_URL:-}
-      MATTERMOST_ACCESS_TOKEN: ${MATTERMOST_ACCESS_TOKEN:-}
-      MATTERMOST_RESPOND_MODE: ${MATTERMOST_RESPOND_MODE:-mention}
-      MATTERMOST_SHOW_TOOL_EVENTS: ${MATTERMOST_SHOW_TOOL_EVENTS:-false}
-    volumes:
-      - nymeria_data:/data
-      - ./nymeria:/app/nymeria:ro
-      - ./run.py:/app/run.py:ro
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "mattermost-bot", "--api-url", "http://nymeria-api:8000"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    networks:
-      - edge
-
-  # Zulip Bot for two-way communication
-  zulip-bot:
-    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
-    container_name: nymeria-zulip-bot
-    restart: unless-stopped
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    command: ["python", "run.py", "zulip-bot", "--api-url", "http://nymeria-api:8000"]
-    profiles:
-      - zulip  # Only starts when explicitly enabled: docker compose --profile zulip up -d
-    environment:
-      <<: *thin-client-env
-      ZULIP_BASE_URL: ${ZULIP_BASE_URL:-}
-      ZULIP_EMAIL: ${ZULIP_EMAIL:-}
-      ZULIP_API_KEY: ${ZULIP_API_KEY:-}
-      ZULIP_RESPOND_MODE: ${ZULIP_RESPOND_MODE:-mention}
-      ZULIP_SHOW_TOOL_EVENTS: ${ZULIP_SHOW_TOOL_EVENTS:-false}
-    volumes:
-      - nymeria_data:/data
-      - ./nymeria:/app/nymeria:ro
-      - ./run.py:/app/run.py:ro
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "zulip-bot", "--api-url", "http://nymeria-api:8000"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    networks:
-      - edge
-
-  # Rocket.Chat Bot for two-way communication
-  rocketchat-bot:
-    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
-    container_name: nymeria-rocketchat-bot
-    restart: unless-stopped
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    command: ["python", "run.py", "rocketchat-bot", "--api-url", "http://nymeria-api:8000"]
-    profiles:
-      - rocketchat  # Only starts when explicitly enabled: docker compose --profile rocketchat up -d
-    environment:
-      <<: *thin-client-env
-      ROCKETCHAT_BASE_URL: ${ROCKETCHAT_BASE_URL:-}
-      ROCKETCHAT_USER_ID: ${ROCKETCHAT_USER_ID:-}
-      ROCKETCHAT_AUTH_TOKEN: ${ROCKETCHAT_AUTH_TOKEN:-}
-      ROCKETCHAT_RESPOND_MODE: ${ROCKETCHAT_RESPOND_MODE:-mention}
-      ROCKETCHAT_SHOW_TOOL_EVENTS: ${ROCKETCHAT_SHOW_TOOL_EVENTS:-false}
-    volumes:
-      - nymeria_data:/data
-      - ./nymeria:/app/nymeria:ro
-      - ./run.py:/app/run.py:ro
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "rocketchat-bot", "--api-url", "http://nymeria-api:8000"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    networks:
-      - edge
-
-  # Signal Bot for two-way communication through signal-cli-rest-api
-  signal-bot:
-    <<: [*security-hardening, *thin-client-fs, *limits-slim, *nymeria-slim-image]
-    container_name: nymeria-signal-bot
-    restart: unless-stopped
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    command: ["python", "run.py", "signal-bot", "--api-url", "http://nymeria-api:8000"]
-    profiles:
-      - signal  # Only starts when explicitly enabled: docker compose --profile signal up -d
-    environment:
-      <<: *thin-client-env
-      SIGNAL_HTTP_URL: ${SIGNAL_HTTP_URL:-}
-      SIGNAL_ACCOUNT: ${SIGNAL_ACCOUNT:-}
-      SIGNAL_ACCOUNT_UUID: ${SIGNAL_ACCOUNT_UUID:-}
-      SIGNAL_RESPOND_MODE: ${SIGNAL_RESPOND_MODE:-mention}
-      SIGNAL_ALLOWED_USERS: ${SIGNAL_ALLOWED_USERS:-}
-      SIGNAL_ALLOWED_GROUPS: ${SIGNAL_ALLOWED_GROUPS:-}
-      SIGNAL_SHOW_TOOL_EVENTS: ${SIGNAL_SHOW_TOOL_EVENTS:-false}
-      SIGNAL_HTTP_TIMEOUT: ${SIGNAL_HTTP_TIMEOUT:-30.0}
-    volumes:
-      - nymeria_data:/data
-      - ./nymeria:/app/nymeria:ro
-      - ./run.py:/app/run.py:ro
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-m", "nymeria.core.service_health", "check", "signal-bot", "--api-url", "http://nymeria-api:8000"]
       interval: 30s
       timeout: 10s
       start_period: 30s
