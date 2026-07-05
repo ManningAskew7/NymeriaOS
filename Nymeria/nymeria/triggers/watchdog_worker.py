@@ -7,7 +7,9 @@ is_self_invoke=true so the API routes them through the autonomous prompt path.
 
 All event publishing (task_started/task_completed, tool calls, response) is
 handled by the API handler automatically when is_self_invoke=true, so this
-worker only needs to care about scheduling and bookkeeping.
+worker only needs to care about scheduling and bookkeeping. Off-frontend
+alerts are likewise routed through the API (POST /notifications/external),
+so the worker never needs the master secrets key.
 """
 
 from __future__ import annotations
@@ -25,6 +27,24 @@ from ..config.settings import Settings
 from .api_client import NymeriaAPIClient
 
 logger = logging.getLogger(__name__)
+
+# Give the API a moment to finish booting before the first poll.
+STARTUP_DELAY_SECONDS = 5
+
+# TODO task text is truncated to this many characters in nudge messages
+# and external alerts.
+TASK_PREVIEW_CHARS = 80
+
+# TODOs from before per-thread scoping carry no thread_id; group them under
+# this bucket so they still nudge one deterministic thread.
+FALLBACK_THREAD_ID = "legacy"
+
+# A failed nudge turn (transport error, or an error event with no response)
+# retries on the next cycle. After this many consecutive failures the TODO is
+# marked nudged anyway, so a deterministically broken thread does not burn an
+# LLM turn plus an error notification every cycle forever. Activity on the
+# TODO (updated_at advancing) re-arms it as usual.
+MAX_NUDGE_FAILURES = 3
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
@@ -59,9 +79,16 @@ class WatchdogWorker:
         # API is the source of truth for TODO state.
         self._nudged: Dict[Tuple[str, str], float] = {}
         self._timestamps: Dict[Tuple[str, str], datetime] = {}
+        self._nudge_failures: Dict[Tuple[str, str], int] = {}
 
         # Track in-flight per-thread nudges so we don't pile up
         self._in_flight: set[str] = set()
+
+        # Lifetime delivery counters, surfaced via the health heartbeat so
+        # operators can see whether external notifications actually deliver.
+        self._nudges_sent = 0
+        self._notifications_sent = 0
+        self._notification_failures = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -76,9 +103,11 @@ class WatchdogWorker:
         try:
             # Short initial delay to let the API finish booting
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=5)
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=STARTUP_DELAY_SECONDS
+                )
             except asyncio.TimeoutError:
-                pass  # poll timeout is expected idle behavior
+                pass  # startup delay elapsed without stop(); begin polling
 
             while not self._stop.is_set():
                 try:
@@ -91,7 +120,7 @@ class WatchdogWorker:
                         self._stop.wait(), timeout=self.interval_minutes * 60
                     )
                 except asyncio.TimeoutError:
-                    pass  # startup wait timeout is expected
+                    pass  # poll interval elapsed; run the next cycle
         finally:
             health_task.cancel()
             await asyncio.gather(health_task, return_exceptions=True)
@@ -110,6 +139,10 @@ class WatchdogWorker:
                     "interval_minutes": self.interval_minutes,
                     "staleness_minutes": self.staleness_minutes,
                     "in_flight": len(self._in_flight),
+                    "nudges_sent": self._nudges_sent,
+                    "notifications_sent": self._notifications_sent,
+                    "notification_failures": self._notification_failures,
+                    "tracked_todos": len(self._timestamps),
                 },
             )
             try:
@@ -192,6 +225,15 @@ class WatchdogWorker:
             logger.warning("Failed to fetch TODOs for %s: %s", user_id, e)
             return
 
+        # Prune nudge/timestamp state for this user's TODOs that no longer
+        # exist (deleted or archived), so a long-lived process does not
+        # accumulate dead keys. Only safe after a successful listing.
+        live_keys = {(user_id, todo.get("id", "")) for todo in items}
+        for state in (self._nudged, self._timestamps, self._nudge_failures):
+            dead = [k for k in state if k[0] == user_id and k not in live_keys]
+            for key in dead:
+                del state[key]
+
         # Build the list of stale TODOs the user hasn't been nudged about yet.
         stale_by_thread: Dict[str, List[Dict[str, Any]]] = {}
         for todo in items:
@@ -207,13 +249,14 @@ class WatchdogWorker:
             last_seen = self._timestamps.get(key)
             if updated_at and (last_seen is None or updated_at > last_seen):
                 self._nudged.pop(key, None)
+                self._nudge_failures.pop(key, None)
             if updated_at:
                 self._timestamps[key] = updated_at
 
             if key in self._nudged:
                 continue
 
-            thread_id = todo.get("thread_id") or "legacy"
+            thread_id = todo.get("thread_id") or FALLBACK_THREAD_ID
             stale_by_thread.setdefault(thread_id, []).append(todo)
 
         if not stale_by_thread:
@@ -245,6 +288,7 @@ class WatchdogWorker:
             )
 
             had_response = False
+            had_error = False
             try:
                 async for chunk in self.client.chat_stream(
                     message=message,
@@ -259,6 +303,7 @@ class WatchdogWorker:
                     if ctype == "response":
                         had_response = True
                     elif ctype == "error":
+                        had_error = True
                         logger.error(
                             "[WATCHDOG] API error for thread %s: %s",
                             thread_id,
@@ -267,21 +312,37 @@ class WatchdogWorker:
                     elif ctype == "done":
                         break
             except httpx.HTTPError as e:
+                # Transport failure: the nudge never reached the agent.
+                # Leave the TODOs unmarked so the next cycle retries.
                 logger.error("[WATCHDOG] /chat failed for thread %s: %s", thread_id, e)
+                self._record_nudge_failures(user_id, stale_todos)
                 return
 
-            # Mark as nudged regardless of whether the agent produced a response —
-            # the attempt was made, and we'll retry naturally if updated_at advances.
+            if had_error and not had_response:
+                # The turn errored before the agent produced anything; treat
+                # it as undelivered and retry next cycle.
+                logger.warning(
+                    "[WATCHDOG] thread=%s nudge turn errored with no response; "
+                    "will retry next cycle",
+                    thread_id,
+                )
+                self._record_nudge_failures(user_id, stale_todos)
+                return
+
+            # Mark as nudged: the turn completed (or at least produced a
+            # response before erroring). Nudge state clears when updated_at
+            # advances, so the TODO becomes eligible again after activity.
             now = datetime.now(timezone.utc).timestamp()
             for todo in stale_todos:
                 key = (user_id, todo.get("id", ""))
                 self._nudged[key] = now
+                self._nudge_failures.pop(key, None)
+            self._nudges_sent += 1
 
             # Best-effort off-frontend alert via the user's "default"
-            # notification profile. Only delivers where the running process
-            # holds the master secrets key (slim); the thin Docker watchdog
-            # does not, so it no-ops there. See _send_external_notifications.
-            self._send_external_notifications(user_id, thread_id, stale_todos)
+            # notification profile, routed through the API (the master
+            # secrets key holder) so it delivers in every runtime shape.
+            await self._send_external_notifications(user_id, thread_id, stale_todos)
 
             logger.info(
                 "[WATCHDOG] thread=%s nudge complete (response=%s)",
@@ -290,6 +351,31 @@ class WatchdogWorker:
             )
         finally:
             self._in_flight.discard(thread_id)
+
+    def _record_nudge_failures(
+        self, user_id: str, stale_todos: List[Dict[str, Any]]
+    ) -> None:
+        """Count a failed nudge attempt; give up after MAX_NUDGE_FAILURES.
+
+        Giving up means marking the TODO nudged without a delivered turn, the
+        pre-retry behavior: it stays quiet until its updated_at advances (or
+        it disappears), instead of burning an errored LLM turn every cycle.
+        """
+        now = datetime.now(timezone.utc).timestamp()
+        for todo in stale_todos:
+            key = (user_id, todo.get("id", ""))
+            count = self._nudge_failures.get(key, 0) + 1
+            if count >= MAX_NUDGE_FAILURES:
+                self._nudged[key] = now
+                self._nudge_failures.pop(key, None)
+                logger.warning(
+                    "[WATCHDOG] giving up on todo %s after %d failed nudge "
+                    "attempts; suppressed until it is updated",
+                    todo.get("id", ""),
+                    count,
+                )
+            else:
+                self._nudge_failures[key] = count
 
     def _build_nudge_message(self, stale_todos: List[Dict[str, Any]]) -> str:
         lines = [
@@ -304,7 +390,7 @@ class WatchdogWorker:
             elapsed = (now - updated).total_seconds() / 60 if updated else 0
             status = (todo.get("status") or "pending").lower()
             icon = "[>]" if status == "in_progress" else "[ ]"
-            task = (todo.get("task") or "")[:80]
+            task = (todo.get("task") or "")[:TASK_PREVIEW_CHARS]
             lines.append(f"  {icon} [{todo.get('id', '')}] {task} (stale for {elapsed:.0f}min)")
 
         lines.append("")
@@ -316,37 +402,41 @@ class WatchdogWorker:
         )
         return "\n".join(lines)
 
-    def _send_external_notifications(
+    async def _send_external_notifications(
         self, user_id: str, thread_id: str, stale_todos: List[Dict[str, Any]]
     ) -> None:
         """Best-effort off-frontend delivery of the stale-TODO alert.
 
-        Dispatches in-process through the notification-profile system, which
-        decrypts per-destination secrets with the per-deployment master
-        ``NYMERIA_SECRETS_KEY``. That key is present only when the watchdog
-        shares the API process (slim); the Docker watchdog is a thin client
-        and deliberately does NOT hold it, so this is a graceful no-op there.
-
-        TO BE COMPLETED: route this through the API (the key holder) so the
-        Docker watchdog can deliver too, instead of dispatching in-process.
-        Tracked in dev-todo.md / dev-ledger.md ("watchdog external
-        notifications via API"). The notification system itself is not yet
-        finalized, so this is intentionally left minimal for now.
+        Routed through ``POST /notifications/external`` so the API (the
+        master secrets key holder) decrypts destination secrets and
+        dispatches via the user's default notification profile. The worker
+        stays a thin client with no vault access, and delivery works in
+        both runtime shapes (slim in-process and the thin Docker container).
         """
-        try:
-            from ..core.notification_dispatch import send_external_notifications
-        except Exception as e:
-            logger.debug("Notification dispatch unavailable: %s", e)
-            return
-
         msg = (
             f"[Nymeria Watchdog] {len(stale_todos)} TODO(s) stale "
             f"(no update for {self.staleness_minutes}m+) on thread {thread_id}:\n"
-            + "\n".join(f"- {(t.get('task') or '')[:80]}" for t in stale_todos)
+            + "\n".join(
+                f"- {(t.get('task') or '')[:TASK_PREVIEW_CHARS]}"
+                for t in stale_todos
+            )
         )
 
-        results = send_external_notifications(
-            msg, self.settings, user_id=user_id, thread_id=thread_id,
-        )
-        for result in results:
-            logger.info("Watchdog notification sent: %s", result)
+        try:
+            delivered = await self.client.send_external_notification(
+                user_id, msg, thread_id=thread_id,
+            )
+        except Exception as e:
+            # Deliberately broad: a notification failure must never break
+            # the nudge loop; the nudge itself already reached the agent.
+            self._notification_failures += 1
+            logger.warning(
+                "[WATCHDOG] external notification failed for thread %s: %s",
+                thread_id,
+                e,
+            )
+            return
+
+        self._notifications_sent += len(delivered)
+        for name in delivered:
+            logger.info("[WATCHDOG] notification sent to %s", name)

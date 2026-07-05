@@ -137,12 +137,12 @@ Autonomous tasks use `[ASTREAM]` with `holder=autonomous`, even when the caller 
 [LLM STREAM] async_complete chunks=42 text_chunks=18 text_chars=300 reasoning_chunks=12 reasoning_chars=900 tool_call_chunk_events=1 first_chunk_ms=650 elapsed_ms=5200
 [ASTREAM DIAG] graph_done thread=todo-thread autonomous=True model_calls=2 model_stream_events=43 model_end_without_stream=0 model_end_fallbacks=0 elapsed_ms=9000
 [STREAM_BRIDGE] end thread=todo-thread chunks=25 elapsed_ms=12300
-[WATCHDOG] === START === thread=todo-thread, stale_todos=2
+[WATCHDOG] nudging thread=todo-thread user=default stale=2
 ...
-[WATCHDOG] === END === thread=todo-thread, chunks=5, response_len=200, elapsed=12.3s
+[WATCHDOG] thread=todo-thread nudge complete (response=True)
 [ASTREAM] === END === thread=todo-thread, elapsed=12.5s
 ```
-Note the nested framing: `[WATCHDOG]` wraps the high-level nudge, `[ASTREAM]` wraps the inner agent execution.
+Note the nesting: the `[WATCHDOG]` nudging/complete pair brackets the high-level nudge (the watchdog process logs it), while `[ASTREAM]` frames the inner agent execution in the API process.
 
 If autonomous output looks batched, compare these diagnostics:
 - `[LLM STREAM] chunks=1` with a large `text_chars` value means the provider or LangChain model wrapper only delivered one coarse async chunk.

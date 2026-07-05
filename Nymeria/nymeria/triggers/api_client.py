@@ -1610,6 +1610,28 @@ class NymeriaAPIClient:
             return data
         return []
 
+    async def send_external_notification(
+        self,
+        user_id: str,
+        message: str,
+        *,
+        thread_id: str = "",
+    ) -> List[str]:
+        """Deliver an off-frontend alert via the user's default notification
+        profile (``POST /notifications/external``). The API holds the master
+        secrets key, so thin services (the Docker watchdog) can deliver
+        without vault access. Returns the destination names that accepted
+        delivery.
+        """
+        data = await self._post(
+            "/notifications/external",
+            json={"message": message, "thread_id": thread_id},
+            act_as=user_id,
+        )
+        if isinstance(data, dict) and isinstance(data.get("delivered_to"), list):
+            return [str(name) for name in data["delivered_to"]]
+        return []
+
     async def add_todo(
         self,
         user_id: str,
