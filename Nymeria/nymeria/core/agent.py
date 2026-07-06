@@ -29,7 +29,14 @@ from .agent_text_extract import (
 )
 from .agent_context import RewindResult
 from .agent_streaming import GraphStreamProcessor, compact_with_progress
-from .agent_compaction import COMPACTING_MESSAGE, CompactionManager
+from .agent_turn_loops import (
+    build_queued_prompt_messages,
+    run_subturn_compact_loop,
+    run_subturn_compact_loop_sync,
+    run_tool_reload_loop,
+    run_tool_reload_loop_sync,
+)
+from .agent_compaction import CompactionManager
 from .agent_prune import PruneManager
 from .ticker import Ticker, set_ticker
 from .todo_manager import TodoManager
@@ -1988,8 +1995,8 @@ class NymeriaAgent:
             PendingPromptQueueClosingError,
             get_pending_queue,
             make_pending_prompt,
-            queued_prompt_header,
-            _SENTINEL_PROMPT_ABSORBED,
+            notify_batch_absorbed,
+            notify_batch_error,
         )
 
         if source is None:
@@ -2183,50 +2190,31 @@ class NymeriaAgent:
                 # flagged a new tool, rebuild a fresh graph with it bound and
                 # continue via an internal resume message. See
                 # MAX_TOOL_RELOADS_PER_TURN and docs/tools.md.
-                reload_count = 0
-                while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
-                    reload_info = self._pending_tool_reload.pop(thread_id, None)
-                    if not reload_info:
-                        break
-                    reload_count += 1
-                    self._turn_reload_count[thread_id] = reload_count
-                    new_tools = reload_info.get("new_tools", [])
-                    logger.info(
-                        f"[CHAT] Thread {thread_id}: tool reload #{reload_count} — "
-                        f"{len(new_tools)} new tool(s): {', '.join(new_tools)}"
-                    )
-                    self.invalidate_thread_config_cache(thread_id)
-                    reload_graph = self._get_graph_for_user(
-                        user_id, thread_id=thread_id
-                    )
-                    resume_msg = self._create_tool_reload_resume_message(reload_info)
-                    result = reload_graph.invoke(
-                        {"messages": [resume_msg]}, config=config
-                    )
-                    messages = result.get("messages", [])
-                    graph = reload_graph
+                graph, reloaded_messages = run_tool_reload_loop_sync(
+                    self,
+                    graph=graph,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    config=config,
+                    context_label="tool reload",
+                )
+                if reloaded_messages is not None:
+                    messages = reloaded_messages
                 self._pending_tool_reload.pop(thread_id, None)
 
                 # Sub-turn auto-compaction halt (sync mirror). route_after_tools
                 # flagged that the running context crossed the trigger mid-loop;
                 # compact and re-invoke {"messages": []} to continue. Capped per
                 # turn by should_halt_for_subturn_compaction.
-                while thread_id in self._subturn_compact_requested:
-                    self._subturn_compact_requested.discard(thread_id)
-                    compact_result = self._compaction._do_compact_sync(thread_id, user_id)
-                    if not (compact_result and compact_result.get("success")):
-                        logger.warning(
-                            f"[CHAT] Thread {thread_id}: sub-turn compaction "
-                            f"skipped/failed: "
-                            f"{compact_result.get('reason') if compact_result else 'none'}"
-                        )
-                        break
-                    self._compactions_this_turn[thread_id] = (
-                        self._compactions_this_turn.get(thread_id, 0) + 1
-                    )
-                    result = graph.invoke({"messages": []}, config=config)
-                    messages = result.get("messages", [])
-                self._subturn_compact_requested.discard(thread_id)
+                compacted_messages = run_subturn_compact_loop_sync(
+                    self,
+                    graph=graph,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    config=config,
+                )
+                if compacted_messages is not None:
+                    messages = compacted_messages
 
                 # Sync drain loop. If a prompt was queued mid-turn,
                 # route_after_tools halted the graph; drain, inject as
@@ -2239,64 +2227,34 @@ class NymeriaAgent:
                     pending_batch = backend.drain(thread_id)
                     if not pending_batch:
                         break
-                    new_messages = [
-                        _create_human_message(
-                            f"{queued_prompt_header(p)}\n\n{p.message}",
-                            internal=p.is_autonomous,
-                            internal_type="autonomous_wakeup" if p.is_autonomous else None,
-                        )
-                        for p in pending_batch
-                    ]
+                    new_messages = build_queued_prompt_messages(pending_batch)
                     try:
                         graph.update_state(config, {"messages": new_messages})
                         result = graph.invoke({"messages": []}, config=config)
                         messages = result.get("messages", [])
 
-                        reload_count = 0
-                        while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
-                            reload_info = self._pending_tool_reload.pop(thread_id, None)
-                            if not reload_info:
-                                break
-                            reload_count += 1
-                            self._turn_reload_count[thread_id] = reload_count
-                            new_tools = reload_info.get("new_tools", [])
-                            logger.info(
-                                f"[CHAT] Thread {thread_id}: queued prompt tool reload "
-                                f"#{reload_count} — {len(new_tools)} new tool(s): "
-                                f"{', '.join(new_tools)}"
-                            )
-                            self.invalidate_thread_config_cache(thread_id)
-                            reload_graph = self._get_graph_for_user(
-                                user_id,
-                                thread_id=thread_id,
-                            )
-                            resume_msg = self._create_tool_reload_resume_message(reload_info)
-                            result = reload_graph.invoke(
-                                {"messages": [resume_msg]},
-                                config=config,
-                            )
-                            messages = result.get("messages", [])
-                            graph = reload_graph
+                        graph, reloaded_messages = run_tool_reload_loop_sync(
+                            self,
+                            graph=graph,
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            config=config,
+                            context_label="queued prompt tool reload",
+                        )
+                        if reloaded_messages is not None:
+                            messages = reloaded_messages
                     except Exception as e:
                         logger.warning(
                             f"Thread {thread_id}: chat() drain inject failed: {e}",
                             exc_info=True,
                         )
-                        for p in pending_batch:
-                            if p.fanout_mailbox is not None:
-                                p.fanout_mailbox.put({
-                                    "type": "error",
-                                    "code": "inject_failed",
-                                    "content": f"Failed to inject queued prompt: {e}",
-                                })
-                                p.fanout_mailbox.close()
-                            p.notify_event.set()
+                        notify_batch_error(
+                            pending_batch,
+                            code="inject_failed",
+                            content=f"Failed to inject queued prompt: {e}",
+                        )
                         break
-                    for p in pending_batch:
-                        if p.fanout_mailbox is not None:
-                            p.fanout_mailbox.put({"type": _SENTINEL_PROMPT_ABSORBED})
-                            p.fanout_mailbox.close()
-                        p.notify_event.set()
+                    notify_batch_absorbed(pending_batch)
                     backend.consume_halt_observation(thread_id)
 
                 # Extract the final AI response
@@ -2390,14 +2348,7 @@ class NymeriaAgent:
                         pending_batch = backend.drain(thread_id)
                         if not pending_batch:
                             break
-                    new_messages = [
-                        _create_human_message(
-                            f"{queued_prompt_header(p)}\n\n{p.message}",
-                            internal=p.is_autonomous,
-                            internal_type="autonomous_wakeup" if p.is_autonomous else None,
-                        )
-                        for p in pending_batch
-                    ]
+                    new_messages = build_queued_prompt_messages(pending_batch)
                     try:
                         graph.update_state(config, {"messages": new_messages})
                         result = graph.invoke({"messages": []}, config=config)
@@ -2407,15 +2358,11 @@ class NymeriaAgent:
                             f"Thread {thread_id}: final chat() queued prompt drain failed: {e}",
                             exc_info=True,
                         )
-                        for p in pending_batch:
-                            if p.fanout_mailbox is not None:
-                                p.fanout_mailbox.put({
-                                    "type": "error",
-                                    "code": "inject_failed",
-                                    "content": f"Failed to inject queued prompt: {e}",
-                                })
-                                p.fanout_mailbox.close()
-                            p.notify_event.set()
+                        notify_batch_error(
+                            pending_batch,
+                            code="inject_failed",
+                            content=f"Failed to inject queued prompt: {e}",
+                        )
                         # begin_release is deferred (see the loop header), so on this
                         # early break the enqueue window may still be open and the turn
                         # ends completed_normally=True (skipping the finally's defensive
@@ -2430,11 +2377,7 @@ class NymeriaAgent:
                                 "post-inject-failure queue clear failed", exc_info=True
                             )
                         break
-                    for p in pending_batch:
-                        if p.fanout_mailbox is not None:
-                            p.fanout_mailbox.put({"type": _SENTINEL_PROMPT_ABSORBED})
-                            p.fanout_mailbox.close()
-                        p.notify_event.set()
+                    notify_batch_absorbed(pending_batch)
                     for msg in reversed(messages):
                         if isinstance(msg, AIMessage) and msg.content:
                             response, _ = _extract_content_parts(msg.content)
@@ -2994,54 +2937,26 @@ class NymeriaAgent:
                 # In-turn tool reload: if tool_manage(action="enable") added a
                 # genuinely new tool during the first pass, rebuild a fresh
                 # graph with the new tools bound and resume. See docs/tools.md.
-                reload_count = 0
-                while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
-                    if abort_event.is_set():
-                        break
-                    reload_info = self._pending_tool_reload.pop(thread_id, None)
-                    if not reload_info:
-                        break
-                    reload_count += 1
-                    self._turn_reload_count[thread_id] = reload_count
-                    new_tools = reload_info.get("new_tools", [])
-                    ttl_key = reload_info.get("ttl", "2h")
-                    ttl_seconds = reload_info.get("ttl_seconds")
-                    source = reload_info.get("source") or "tool_search"
-                    skill_name = reload_info.get("skill_name")
-                    reason = reload_info.get("reason")
-
-                    logger.info(
-                        f"[ASTREAM] Thread {thread_id}: tool reload #{reload_count} — "
-                        f"{len(new_tools)} new tool(s): {', '.join(new_tools)} (ttl={ttl_key})"
-                    )
-                    yield {
-                        "type": "tool_reload",
-                        "tools": new_tools,
-                        "ttl": ttl_key,
-                        "ttl_seconds": ttl_seconds,
-                        "source": source,
-                        "skill_name": skill_name,
-                        "reason": reason,
-                    }
-
-                    # Build a fresh graph — invalidate_thread_config_cache was
-                    # already called by the enable tool, but we invalidate
-                    # again defensively in case something else cached in between.
-                    self.invalidate_thread_config_cache(thread_id)
-                    reload_graph = self._get_async_graph_for_user(
-                        user_id, thread_id=thread_id
-                    )
-
-                    resume_msg = self._create_tool_reload_resume_message(reload_info)
-                    resume_state = {"messages": [resume_msg]}
-
-                    async for evt in stream_processor.drive(reload_graph, resume_state):
-                        yield evt
-
+                # (The helper keeps the reload's `source` field local, so the
+                # turn-source variable `source` used by DONE hooks below is no
+                # longer clobbered by a reload.)
+                _reload_graphs: List[Any] = []
+                async for evt in run_tool_reload_loop(
+                    self,
+                    stream_processor=stream_processor,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    abort_event=abort_event,
+                    pending_batch=None,
+                    context_label="tool reload",
+                    graph_sink=_reload_graphs,
+                ):
+                    yield evt
+                if _reload_graphs:
                     # Reassign for the rest of astream (token tracking,
                     # dangling-tool-call patching in finally, etc.) so they
                     # see the most recent graph.
-                    graph = reload_graph
+                    graph = _reload_graphs[-1]
 
                 # Drain any residual flag so a stale entry doesn't leak
                 # into the next turn.
@@ -3057,37 +2972,18 @@ class NymeriaAgent:
                 # loop repeats until it doesn't, capped by
                 # should_halt_for_subturn_compaction (MAX_COMPACTIONS_PER_TURN).
                 # ---------------------------------------------------------
-                while (
-                    thread_id in self._subturn_compact_requested
-                    and not abort_event.is_set()
+                _compact_graphs: List[Any] = []
+                async for evt in run_subturn_compact_loop(
+                    self,
+                    stream_processor=stream_processor,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    abort_event=abort_event,
+                    graph_sink=_compact_graphs,
                 ):
-                    self._subturn_compact_requested.discard(thread_id)
-                    yield {"type": "compacting", "message": COMPACTING_MESSAGE}
-                    compact_result = await self._do_auto_compact(thread_id, user_id)
-                    if not (compact_result and compact_result.get("success")):
-                        logger.warning(
-                            f"[ASTREAM] Thread {thread_id}: sub-turn compaction "
-                            f"skipped/failed: "
-                            f"{compact_result.get('reason') if compact_result else 'none'}"
-                        )
-                        break
-                    self._compactions_this_turn[thread_id] = (
-                        self._compactions_this_turn.get(thread_id, 0) + 1
-                    )
-                    yield {
-                        "type": "compacted",
-                        "messages_removed": compact_result.get("messages_removed", 0),
-                        "auto_resumed": True,
-                        "summary": compact_result.get("summary"),
-                        "subturn": True,
-                    }
-                    resume_graph = self._get_async_graph_for_user(
-                        user_id, thread_id=thread_id
-                    )
-                    async for evt in stream_processor.drive(resume_graph, {"messages": []}):
-                        yield evt
-                    graph = resume_graph
-                self._subturn_compact_requested.discard(thread_id)
+                    yield evt
+                if _compact_graphs:
+                    graph = _compact_graphs[-1]
 
                 # ---------------------------------------------------------
                 # Sub-turn prompt-queue drain loop.
@@ -3099,8 +2995,8 @@ class NymeriaAgent:
                 # queue. See docs/api.md "Sub-Turn Steering".
                 # ---------------------------------------------------------
                 from .pending_prompt_queue import (
-                    queued_prompt_header as _queued_prompt_header,
-                    _SENTINEL_PROMPT_ABSORBED,
+                    notify_batch_absorbed,
+                    notify_batch_error,
                 )
                 from .agent_streaming import drive_with_fanout
 
@@ -3156,19 +3052,15 @@ class NymeriaAgent:
                             break
                     rejected_batch = [p for p in pending_batch if p.user_id != user_id]
                     if rejected_batch:
-                        for p in rejected_batch:
-                            if p.fanout_mailbox is not None:
-                                p.fanout_mailbox.put({
-                                    "type": "error",
-                                    "code": "cross_user_queue_unsupported",
-                                    "content": (
-                                        "This thread is busy with another user's turn. "
-                                        "Retry once the current turn finishes."
-                                    ),
-                                })
-                                p.fanout_mailbox.close()
-                            p.abandoned = True
-                            p.notify_event.set()
+                        notify_batch_error(
+                            rejected_batch,
+                            code="cross_user_queue_unsupported",
+                            content=(
+                                "This thread is busy with another user's turn. "
+                                "Retry once the current turn finishes."
+                            ),
+                            abandoned=True,
+                        )
                         pending_batch = [p for p in pending_batch if p.user_id == user_id]
                         if not pending_batch:
                             continue
@@ -3187,14 +3079,7 @@ class NymeriaAgent:
                     # per-prompt visibility/history semantics survive
                     # the absorption (autonomous prompts stay
                     # internal=True; user prompts stay visible).
-                    new_messages = [
-                        _create_human_message(
-                            f"{_queued_prompt_header(p)}\n\n{p.message}",
-                            internal=p.is_autonomous,
-                            internal_type="autonomous_wakeup" if p.is_autonomous else None,
-                        )
-                        for p in pending_batch
-                    ]
+                    new_messages = build_queued_prompt_messages(pending_batch)
 
                     try:
                         await graph.aupdate_state(config, {"messages": new_messages})
@@ -3215,55 +3100,20 @@ class NymeriaAgent:
                         # A queued prompt can itself enable tools. Process
                         # reloads before absorbing the prompt so its SSE
                         # consumer sees the reload event and resumed stream.
-                        reload_count = 0
-                        while reload_count < self.MAX_TOOL_RELOADS_PER_TURN:
-                            if abort_event.is_set():
-                                break
-                            reload_info = self._pending_tool_reload.pop(thread_id, None)
-                            if not reload_info:
-                                break
-                            reload_count += 1
-                            self._turn_reload_count[thread_id] = reload_count
-                            new_tools = reload_info.get("new_tools", [])
-                            ttl_key = reload_info.get("ttl", "2h")
-                            ttl_seconds = reload_info.get("ttl_seconds")
-                            reload_source = reload_info.get("source") or "tool_search"
-                            skill_name = reload_info.get("skill_name")
-                            reason = reload_info.get("reason")
-
-                            logger.info(
-                                f"[ASTREAM] Thread {thread_id}: queued prompt tool reload "
-                                f"#{reload_count} — {len(new_tools)} new tool(s): "
-                                f"{', '.join(new_tools)} (ttl={ttl_key})"
-                            )
-                            reload_evt = {
-                                "type": "tool_reload",
-                                "tools": new_tools,
-                                "ttl": ttl_key,
-                                "ttl_seconds": ttl_seconds,
-                                "source": reload_source,
-                                "skill_name": skill_name,
-                                "reason": reason,
-                            }
-                            yield reload_evt
-                            for p in pending_batch:
-                                if p.fanout_mailbox is not None:
-                                    p.fanout_mailbox.put(reload_evt)
-
-                            self.invalidate_thread_config_cache(thread_id)
-                            reload_graph = self._get_async_graph_for_user(
-                                user_id,
-                                thread_id=thread_id,
-                            )
-                            resume_msg = self._create_tool_reload_resume_message(reload_info)
-                            async for evt in drive_with_fanout(
-                                stream_processor,
-                                reload_graph,
-                                {"messages": [resume_msg]},
-                                pending_batch,
-                            ):
-                                yield evt
-                            graph = reload_graph
+                        _drain_reload_graphs: List[Any] = []
+                        async for evt in run_tool_reload_loop(
+                            self,
+                            stream_processor=stream_processor,
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            abort_event=abort_event,
+                            pending_batch=pending_batch,
+                            context_label="queued prompt tool reload",
+                            graph_sink=_drain_reload_graphs,
+                        ):
+                            yield evt
+                        if _drain_reload_graphs:
+                            graph = _drain_reload_graphs[-1]
                     except Exception as e:
                         logger.warning(
                             "Thread %s: queued prompt drive failed: %s",
@@ -3272,25 +3122,17 @@ class NymeriaAgent:
                             exc_info=True,
                         )
                         # Wake queuers with an error so they don't hang.
-                        for p in pending_batch:
-                            if p.fanout_mailbox is not None:
-                                p.fanout_mailbox.put({
-                                    "type": "error",
-                                    "code": "inject_failed",
-                                    "content": f"Failed to inject queued prompt: {e}",
-                                })
-                                p.fanout_mailbox.close()
-                            p.notify_event.set()
+                        notify_batch_error(
+                            pending_batch,
+                            code="inject_failed",
+                            content=f"Failed to inject queued prompt: {e}",
+                        )
                         raise
                     else:
                         # Signal absorption: sentinel into each mailbox (so
                         # fanout consumers exit), then wake any
                         # notify_event waiters.
-                        for p in pending_batch:
-                            if p.fanout_mailbox is not None:
-                                p.fanout_mailbox.put({"type": _SENTINEL_PROMPT_ABSORBED})
-                                p.fanout_mailbox.close()
-                            p.notify_event.set()
+                        notify_batch_absorbed(pending_batch)
 
                     # Another batch may have piled up during the
                     # re-drive; the halt counter will hold any new
