@@ -81,21 +81,24 @@ def test_transcript_snapshot_renders_desktop_like_steps() -> None:
     text = render_transcript(_tool_artifact_state(), width=100)
     lines = text.splitlines()
 
-    assert lines[0].startswith("---- You ")
-    assert lines[1] == "  inspect the project"
-    assert lines[2] == ""
-    assert lines[3].startswith("---- Nymeria ")
-    assert lines[4] == "  ................................"
-    assert lines[5] == "  | I should inspect files."
-    assert lines[7].startswith("  - filesystem_read ok 2.0s ")
-    assert "-> line line" in lines[7]
-    assert "[artifact: cli-tui-" in lines[7]
-    assert lines[9] == "  ................................"
-    assert lines[11] == "  I found the task."
-    assert lines[12] == ""
-    assert lines[13].strip() == "- It needs a transcript renderer."
-    assert lines[14] == ""
-    assert lines[15] == "  ................................"
+    # The user turn echoes the composer: rule, "> prompt", rule.
+    assert lines[0] == "-" * 100
+    assert lines[1] == "> inspect the project"
+    assert lines[2] == "-" * 100
+    assert lines[3] == ""
+    assert lines[4] == "  | I should inspect files."
+    assert lines[5] == ""
+    assert lines[6].startswith("  - filesystem_read(path=")
+    assert "2.0s" in lines[6]
+    assert "-> line line" in lines[6]
+    assert "[artifact: cli-tui-" in lines[6]
+    assert lines[7] == ""
+    assert lines[8] == "  I found the task."
+    assert lines[9] == ""
+    assert lines[10].strip() == "- It needs a transcript renderer."
+    assert "You" not in text
+    assert "Nymeria" not in text
+    assert "ok" not in text.split()
 
 
 def test_transcript_classifies_preamble_and_final_response_steps() -> None:
@@ -145,9 +148,6 @@ def test_transcript_classifies_preamble_and_final_response_steps() -> None:
 
     records = render_transcript_lines(state, width=100)
     preamble = [line.text.strip() for line in records if line.kind == "preamble"]
-    dividers = [
-        line.text.strip() for line in records if line.kind == "assistant_divider"
-    ]
     final = [line.text.strip() for line in records if line.kind == "final"]
     tools = [line.text.strip() for line in records if line.kind == "tool"]
 
@@ -155,9 +155,8 @@ def test_transcript_classifies_preamble_and_final_response_steps() -> None:
         "I'll check the main sources first.",
         "I have news; checking tasks.",
     ]
-    assert dividers == ["................................"] * 4
-    assert tools[0].startswith("- web_search ok 1.0s query=\"AI news\" -> 3 results")
-    assert tools[1].startswith("- nym_todo ok 1.0s action=list -> 4 pending")
+    assert tools[0].startswith('- web_search(query="AI news") 1.0s -> 3 results')
+    assert tools[1].startswith("- nym_todo(action=list) 1.0s -> 4 pending")
     assert final[:5] == [
         "Sunday briefing, 10 May",
         "-----------------------",
@@ -205,12 +204,11 @@ def test_transcript_does_not_divide_adjacent_tool_rows() -> None:
     )
 
     records = render_transcript_lines(state, width=80)
-    dividers = [line for line in records if line.kind == "assistant_divider"]
     tool_indexes = [
         index for index, line in enumerate(records) if line.kind == "tool"
     ]
 
-    assert len(dividers) == 3
+    # Adjacent tool rows pack tightly, with no blank or divider between them.
     assert tool_indexes[1] == tool_indexes[0] + 1
 
 
@@ -244,86 +242,49 @@ def test_terminal_markdown_is_left_aligned_and_ascii_safe() -> None:
     assert all(cell_len(line) <= 40 for line in lines)
 
 
-def test_transcript_uses_unicode_separators_and_tool_symbols_when_enabled() -> None:
+def test_transcript_uses_unicode_frame_and_tool_icon_when_enabled() -> None:
     text = render_transcript(
         _tool_artifact_state(),
         width=100,
         options=TranscriptRenderOptions(ascii_only=False),
     )
+    lines = text.splitlines()
 
-    assert text.splitlines()[0].startswith("\u2500\u2500\u2500\u2500 You ")
-    assert "\n\u2500\u2500\u2500\u2500 Nymeria " in text
-    assert "  \u2713 filesystem_read ok 2.0s " in text
+    assert lines[0] == "\u2500" * 100
+    assert lines[1] == "\u203a inspect the project"
+    assert lines[2] == "\u2500" * 100
+    assert "  \u2756 filesystem_read(path=" in text
+    assert "Nymeria" not in text
 
 
-def test_streaming_assistant_header_shows_activity_text() -> None:
-    state = create_initial_state(thread_id="thread-1", now=0.0)
-    state = start_turn(state, "think", now=0.1)
-
+def test_transcript_tool_icon_is_configurable() -> None:
     text = render_transcript(
-        state,
-        width=80,
+        _tool_artifact_state(),
+        width=100,
         options=TranscriptRenderOptions(
             ascii_only=False,
-            assistant_activity_label="\u280b Thinking... 0.0s",
+            tool_row_options=ToolRowRenderOptions(show_duration=True, icon="\u2748"),
         ),
     )
 
-    assert "\n\u2500\u2500\u2500\u2500 Nymeria \u00b7 \u280b Thinking... 0.0s " in text
-    assert max_line_width(text) <= 80
+    assert "  \u2748 filesystem_read(path=" in text
+    assert "\u2756" not in text
 
 
-def test_completed_assistant_header_ignores_activity_label() -> None:
+def test_user_frame_lines_are_full_width_rules() -> None:
     state = create_initial_state(thread_id="thread-1", now=0.0)
-    state = start_turn(state, "hello", now=0.1)
-    state = reduce_stream_event(
+    state = start_turn(state, "hello there", now=0.1)
+
+    records = render_transcript_lines(
         state,
-        {"type": "response", "content": "Done."},
-        now=1.0,
+        width=40,
+        options=TranscriptRenderOptions(ascii_only=False),
     )
-    state = reduce_stream_event(state, {"type": "done"}, now=1.1)
+    frames = [line for line in records if line.kind == "user_frame"]
+    prompts = [line for line in records if line.kind == "user_text"]
 
-    text = render_transcript(
-        state,
-        width=80,
-        options=TranscriptRenderOptions(
-            ascii_only=False,
-            assistant_activity_label="\u280b Thinking... 0.0s",
-        ),
-    )
-
-    assert "\n\u2500\u2500\u2500\u2500 Nymeria " in text
-    assert "Nymeria \u00b7 \u280b Thinking..." not in text
-
-
-def test_ascii_assistant_header_uses_plain_activity_separator() -> None:
-    state = create_initial_state(thread_id="thread-1", now=0.0)
-    state = start_turn(state, "think", now=0.1)
-
-    text = render_transcript(
-        state,
-        width=80,
-        options=TranscriptRenderOptions(assistant_activity_label="| Thinking... 0.0s"),
-    )
-
-    assert "\n---- Nymeria - | Thinking... 0.0s " in text
-
-
-def test_activity_header_is_bounded_at_narrow_width() -> None:
-    state = create_initial_state(thread_id="thread-1", now=0.0)
-    state = start_turn(state, "think", now=0.1)
-
-    text = render_transcript(
-        state,
-        width=30,
-        options=TranscriptRenderOptions(
-            ascii_only=False,
-            assistant_activity_label="\u280b Processing results... 1.2s",
-        ),
-    )
-
-    assert "Processi..." in text
-    assert max_line_width(text) <= 30
+    assert [line.text for line in frames] == ["\u2500" * 40, "\u2500" * 40]
+    assert prompts[0].text == "\u203a hello there"
 
 
 def test_long_tool_result_is_previewed_not_dumped() -> None:
@@ -351,14 +312,13 @@ def test_standard_transcript_shows_thinking_as_one_line_preview() -> None:
 
     assert "  | private reasoning with a second line that stays collapsed" in default_lines
     assert "Thinking:" not in default_text
-    assert not default_text.endswith("................................")
 
     complete = reduce_stream_event(state, {"type": "done"}, now=2.0)
     complete_text = render_transcript(complete, width=80)
 
     assert "Thought:" not in complete_text
     assert "  | private reasoning with a second line that stays collapsed" in complete_text
-    assert complete_text.endswith("  ................................")
+    assert "...." not in complete_text
     assert all(line.count("private reasoning") <= 1 for line in default_lines)
 
 

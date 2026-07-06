@@ -3,7 +3,6 @@ from __future__ import annotations
 from nymeria.triggers.cli.rendering.shared_helpers import (
     _assistant_response_lengths,
     _dispatch_reference_text,
-    _needs_assistant_divider,
 )
 from nymeria.triggers.cli.state import AssistantMessage, CLIUIState, ResponseStep
 
@@ -39,21 +38,3 @@ class TestAssistantResponseLengths:
 
     def test_empty_state_yields_empty_map(self) -> None:
         assert _assistant_response_lengths(CLIUIState()) == {}
-
-
-class TestNeedsAssistantDivider:
-    def test_true_only_when_leaving_a_tool_block(self) -> None:
-        assert _needs_assistant_divider("final", previous_block="tool") is True
-        assert _needs_assistant_divider("preamble", previous_block="tool") is True
-
-    def test_false_when_staying_in_or_entering_tool(self) -> None:
-        assert _needs_assistant_divider("tool", previous_block="tool") is False
-        assert _needs_assistant_divider("tool", previous_block="final") is False
-        assert _needs_assistant_divider("final", previous_block="thinking") is False
-
-    def test_accepts_block_kinds_outside_the_transcript_literal(self) -> None:
-        # The Rich renderer passes wider block-kind strings (e.g. "dispatch",
-        # "assistant_divider") than the transcript renderer's four-value set, so
-        # the shared helper must keep the str signature.
-        assert _needs_assistant_divider("dispatch", previous_block="tool") is True
-        assert _needs_assistant_divider("assistant_divider", previous_block="preamble") is False

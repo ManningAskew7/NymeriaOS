@@ -14,8 +14,11 @@ from ..state.selectors import (
     select_running_tool_calls,
 )
 from .markdown import coerce_width
+from .tool_rows import format_args_preview
 
 ActivityPhase = AssistantActivityPhase
+
+RUNNING_TOOL_ARGS_LIMIT = 48
 
 QUIET_TO_FORMULATING_MS = int(QUIET_TO_FORMULATING_SECONDS * 1000)
 FRAME_INTERVAL_SECONDS = 0.1
@@ -194,7 +197,9 @@ def activity_state_from_ui_state(
 
     return ActivityState(
         phase=phase,
-        detail=detail if detail is not None else _phase_detail(state, phase),
+        detail=detail
+        if detail is not None
+        else _phase_detail(state, phase, now=current_time),
         started_at=started_at,
         updated_at=updated_at,
     )
@@ -248,14 +253,28 @@ def truncate_text(text: str, width: int) -> str:
     return f"{text[: width - 3].rstrip()}..."
 
 
-def _phase_detail(state: CLIUIState, phase: ActivityPhase) -> str:
+def _phase_detail(
+    state: CLIUIState,
+    phase: ActivityPhase,
+    *,
+    now: float | None = None,
+) -> str:
     if phase != "waiting":
         return ""
     running = select_running_tool_calls(state)
     if not running:
         return ""
-    names = [call.name or "tool" for call in running]
-    return ", ".join(names)
+    parts = []
+    for call in running:
+        label = call.name or "tool"
+        args = format_args_preview(call.arguments, limit=RUNNING_TOOL_ARGS_LIMIT)
+        if args:
+            label = f"{label}({args})"
+        # Whole-second live clock, matching the desktop card's running timer.
+        if now is not None and 0 < call.started_at <= now:
+            label = f"{label} {int(now - call.started_at)}s"
+        parts.append(label)
+    return ", ".join(parts)
 
 
 def _queue_detail(state: CLIUIState) -> str:

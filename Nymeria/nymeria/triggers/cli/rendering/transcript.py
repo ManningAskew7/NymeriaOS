@@ -28,7 +28,7 @@ from .markdown import (
     truncate_cell_width,
     wrap_plain_text,
 )
-from .shared_helpers import _dispatch_reference_text, _needs_assistant_divider
+from .shared_helpers import _dispatch_reference_text
 from .tool_rows import ToolRowRenderOptions, format_artifact_line, format_tool_row
 
 DEFAULT_TRANSCRIPT_WIDTH = 80
@@ -42,13 +42,12 @@ EPOCH_TIMESTAMP_FLOOR = 1_000_000_000
 
 TranscriptLineKind = Literal[
     "blank",
-    "user_header",
+    "user_frame",
     "user_text",
     "assistant_header",
     "autonomous_header",
     "thinking",
     "preamble",
-    "assistant_divider",
     "tool",
     "tool_detail",
     "final",
@@ -83,7 +82,6 @@ class TranscriptRenderOptions:
     verbose: bool = False
     ascii_only: bool = True
     include_artifacts: bool = True
-    assistant_activity_label: str = ""
     # API base URL used to build /workspace/download links for image artifacts.
     base_url: str = ""
     tool_row_options: ToolRowRenderOptions = field(
@@ -130,27 +128,15 @@ class TranscriptRenderer:
         records: list[TranscriptLine] = []
         attached_artifacts: set[str] = set()
         seen_message_ids: set[str] = set()
-        autonomous_label = ""
         for message in state.messages:
             seen_message_ids.add(message.id)
-            assistant_label = (
-                autonomous_label if isinstance(message, AssistantMessage) else ""
-            )
             rendered = self._render_cached_message(
                 message,
                 width=selected_width,
                 options=selected_options,
-                assistant_label=assistant_label,
             )
             _append_message_records(records, rendered)
             attached_artifacts.update(_message_artifact_keys(message))
-
-            if isinstance(message, SystemMessage) and message.kind == "autonomous":
-                autonomous_label = _autonomous_label(message, selected_options)
-            elif isinstance(message, AssistantMessage) and autonomous_label:
-                autonomous_label = ""
-            elif isinstance(message, UserMessage):
-                autonomous_label = ""
 
         if selected_options.include_artifacts:
             orphan_artifacts = [
@@ -211,9 +197,8 @@ class TranscriptRenderer:
         *,
         width: int,
         options: TranscriptRenderOptions,
-        assistant_label: str = "",
     ) -> tuple[TranscriptLine, ...]:
-        signature = _message_signature(message, options, assistant_label)
+        signature = _message_signature(message, options)
         cached = self._message_cache.get(message.id)
         if cached and cached[0] == signature:
             return cached[1]
@@ -223,7 +208,6 @@ class TranscriptRenderer:
                 message,
                 width=width,
                 options=options,
-                assistant_label=assistant_label,
             )
         )
         self._message_cache[message.id] = (signature, rendered)
@@ -272,7 +256,6 @@ def render_message_lines(
     *,
     width: int | None = None,
     options: TranscriptRenderOptions | None = None,
-    assistant_label: str = "",
 ) -> list[TranscriptLine]:
     """Render one transcript message into styled bounded terminal lines."""
 
@@ -281,12 +264,7 @@ def render_message_lines(
     if isinstance(message, UserMessage):
         return _user_lines(message, selected_width, selected_options)
     if isinstance(message, AssistantMessage):
-        return _assistant_lines(
-            message,
-            selected_width,
-            selected_options,
-            assistant_label=assistant_label,
-        )
+        return _assistant_lines(message, selected_width, selected_options)
     if isinstance(message, SystemMessage):
         return _system_lines(message, selected_width, selected_options)
     return []
@@ -297,19 +275,28 @@ def _user_lines(
     width: int,
     options: TranscriptRenderOptions,
 ) -> list[TranscriptLine]:
-    records = [
-        TranscriptLine(
-            format_turn_separator(
-                _header_text("You", message.timestamp),
-                width=width,
-                ascii_only=options.ascii_only,
-            ),
-            "user_header",
-        )
-    ]
-    body_width = max(1, width - len(INDENT))
+    """Echo the submitted prompt styled like the composer.
+
+    The echo (rule, ``› prompt``, rule) doubles as the turn boundary; there
+    is no "You"/"Nymeria" label chrome around turns.
+    """
+
+    frame = TranscriptLine(_user_frame_rule(width, options), "user_frame")
+    prompt_prefix = "> " if options.ascii_only else "› "
+    records = [frame]
+    body_width = max(1, width - len(prompt_prefix))
+    first_line = True
     for line in wrap_plain_text(message.content, width=body_width):
-        records.append(_indented_record(line, "user_text", width))
+        if first_line:
+            records.append(
+                TranscriptLine(
+                    truncate_cell_width(f"{prompt_prefix}{line}", width),
+                    "user_text",
+                )
+            )
+            first_line = False
+        else:
+            records.append(_indented_record(line, "user_text", width))
     if message.attachments:
         label = "attachment" if len(message.attachments) == 1 else "attachments"
         records.append(
@@ -327,31 +314,21 @@ def _user_lines(
                 width,
             )
         )
+    records.append(frame)
     return records
+
+
+def _user_frame_rule(width: int, options: TranscriptRenderOptions) -> str:
+    rule = "-" if options.ascii_only else "─"
+    return rule * max(1, width)
 
 
 def _assistant_lines(
     message: AssistantMessage,
     width: int,
     options: TranscriptRenderOptions,
-    *,
-    assistant_label: str = "",
 ) -> list[TranscriptLine]:
-    label = _assistant_header_label(message, options, assistant_label)
-    header_kind: TranscriptLineKind = (
-        "autonomous_header" if assistant_label else "assistant_header"
-    )
-    records = [
-        TranscriptLine(
-            format_turn_separator(
-                _header_text(label, message.timestamp),
-                width=width,
-                ascii_only=options.ascii_only,
-            ),
-            header_kind,
-        )
-    ]
-    records.append(_assistant_divider_record(width, options))
+    records: list[TranscriptLine] = []
     dispatch_text = _dispatch_reference_text(message)
     if dispatch_text:
         records.append(_indented_record(dispatch_text, "assistant_header", width))
@@ -383,8 +360,6 @@ def _assistant_lines(
             step_records,
             block_kind=block_kind,
             previous_block=previous_block,
-            width=width,
-            options=options,
         )
         previous_block = block_kind
 
@@ -392,22 +367,7 @@ def _assistant_lines(
         tools = ", ".join(message.tool_reload_info.tools)
         text = f"Tools reloaded: {tools}" if tools else "Tools reloaded."
         records.extend(_indented_plain_block(text, kind="system", width=width))
-    if message.status == "complete" and _has_assistant_body(records):
-        _append_assistant_end_divider(records, width, options)
     return records
-
-
-def _assistant_header_label(
-    message: AssistantMessage,
-    options: TranscriptRenderOptions,
-    assistant_label: str,
-) -> str:
-    label = assistant_label or "Nymeria"
-    activity = " ".join(str(options.assistant_activity_label or "").split())
-    if assistant_label or message.status != "streaming" or not activity:
-        return label
-    separator = " - " if options.ascii_only else " \u00b7 "
-    return f"{label}{separator}{activity}"
 
 
 def _thinking_lines(
@@ -522,55 +482,11 @@ def _append_assistant_block(
     *,
     block_kind: Literal["thinking", "preamble", "tool", "final"],
     previous_block: Literal["thinking", "preamble", "tool", "final"] | None,
-    width: int,
-    options: TranscriptRenderOptions,
 ) -> None:
     if previous_block is not None and previous_block != block_kind:
         if records and records[-1].kind != "blank":
             records.append(TranscriptLine("", "blank"))
-        if _needs_assistant_divider(
-            block_kind,
-            previous_block=previous_block,
-        ):
-            records.append(_assistant_divider_record(width, options))
-            records.append(TranscriptLine("", "blank"))
     records.extend(incoming)
-
-
-def _assistant_divider_record(
-    width: int,
-    options: TranscriptRenderOptions,
-) -> TranscriptLine:
-    body_width = max(1, width - len(INDENT))
-    divider_width = min(body_width, 32)
-    glyph = "." if options.ascii_only else "\u00b7"
-    return TranscriptLine(
-        truncate_cell_width(f"{INDENT}{glyph * divider_width}", width),
-        "assistant_divider",
-    )
-
-
-def _append_assistant_end_divider(
-    records: list[TranscriptLine],
-    width: int,
-    options: TranscriptRenderOptions,
-) -> None:
-    if records and records[-1].kind != "blank":
-        records.append(TranscriptLine("", "blank"))
-    if records and records[-1].kind == "blank":
-        records.append(_assistant_divider_record(width, options))
-
-
-def _has_assistant_body(records: list[TranscriptLine]) -> bool:
-    return any(
-        record.kind not in {
-            "assistant_header",
-            "autonomous_header",
-            "blank",
-            "assistant_divider",
-        }
-        for record in records
-    )
 
 
 def _system_lines(
@@ -579,13 +495,13 @@ def _system_lines(
     options: TranscriptRenderOptions,
 ) -> list[TranscriptLine]:
     if message.kind == "autonomous":
+        # One minimal marker line: autonomous turns have no composer echo
+        # preceding them, so this is their only turn boundary.
+        marker = "-" if options.ascii_only else options.tool_row_options.icon
+        label = _header_text(_autonomous_label(message, options), message.timestamp)
         records = [
             TranscriptLine(
-                format_turn_separator(
-                    _header_text(_autonomous_label(message, options), message.timestamp),
-                    width=width,
-                    ascii_only=options.ascii_only,
-                ),
+                truncate_cell_width(f"{marker} {label}", width),
                 "autonomous_header",
             )
         ]
@@ -779,7 +695,6 @@ def format_turn_separator(
 def _message_signature(
     message: TranscriptMessage,
     options: TranscriptRenderOptions,
-    assistant_label: str,
 ) -> object:
     if isinstance(message, UserMessage):
         return (
@@ -790,7 +705,6 @@ def _message_signature(
             message.context_summary,
             options.verbose,
             options.ascii_only,
-            assistant_label,
         )
     if isinstance(message, SystemMessage):
         return (
@@ -802,7 +716,7 @@ def _message_signature(
             message.auto_resumed,
             _stable_repr(message.details),
             options.ascii_only,
-            assistant_label,
+            options.tool_row_options.icon,
         )
     if isinstance(message, AssistantMessage):
         return (
@@ -813,7 +727,6 @@ def _message_signature(
             tuple(_step_signature(step) for step in message.steps),
             _stable_repr(message.tool_reload_info),
             options,
-            assistant_label,
         )
     return repr(message)
 

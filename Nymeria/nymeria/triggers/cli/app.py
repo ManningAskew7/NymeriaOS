@@ -40,7 +40,7 @@ from .rendering.rich_repl import RichReplRenderer
 from .state import CLIState, create_initial_state
 from .temporary_model import apply_temporary_model, restore_temporary_model
 from .statusbar_config import StatusBarLayout
-from .theme import CLITheme, load_cli_theme
+from .theme import CLITheme, DEFAULT_TOOL_ICON, load_cli_theme, load_tool_icon
 from .transport.base import AgentClient, Attachment
 from .transport.disconnected import is_disconnected_client
 from .transport.in_process import InProcessAgentClient
@@ -148,6 +148,7 @@ class CLIApp:
         self._header_refresh_pending = False
         self._startup_history_thread_id: str | None = None
         self.theme = load_cli_theme()
+        self.tool_icon = load_tool_icon()
         self._register_all_commands()
 
     def _register_all_commands(self) -> None:
@@ -171,6 +172,7 @@ class CLIApp:
             system,
             theme,
             todos,
+            toolicon,
             tools,
             triggers,
         )
@@ -197,6 +199,7 @@ class CLIApp:
         artifacts.register(self.registry)
         doctor.register(self.registry)
         theme.register(self.registry)
+        toolicon.register(self.registry)
         statusbar.register(self.registry)
         export.register(self.registry)
         clipboard.register(self.registry)
@@ -679,6 +682,7 @@ class CLIApp:
                 getattr(self.runtime_config, "rich_scroll_region", False)
             ),
             download_base_url=getattr(self._client, "base_url", "") or "",
+            tool_icon=self.tool_icon,
         )
 
     def _repl_loop(
@@ -1005,6 +1009,12 @@ class CLIApp:
                     )
                     runtime.invalidate()
                 refresh_header = True
+        elif action_type == "tool_icon_updated":
+            icon = str(action.get("icon") or "") or DEFAULT_TOOL_ICON
+            self.tool_icon = icon
+            renderer = self._active_repl_renderer
+            if renderer is not None and hasattr(renderer, "set_tool_icon"):
+                renderer.set_tool_icon(icon)
         elif action_type == "statusbar_updated":
             layout = action.get("layout")
             if isinstance(layout, StatusBarLayout):
