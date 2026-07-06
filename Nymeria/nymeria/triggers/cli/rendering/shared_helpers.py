@@ -2,13 +2,8 @@
 
 These were byte-identical (or annotation-only divergent) copies in rich_repl.py,
 plain.py, and transcript.py. Centralizing them keeps a fix to one renderer's
-assistant-divider rule, dispatch-reference text, or response-length map from
-drifting out of sync with the others. Dependency-light: only the CLI state model.
-
-`_needs_assistant_divider` keeps the wider `str` parameter type (not a Literal):
-the Rich renderer also passes block kinds outside the transcript renderer's
-four-value set (e.g. "dispatch", "assistant_divider"), and the body only does
-string comparisons.
+dispatch-reference text or response-length map from drifting out of sync with
+the others. Dependency-light: only the CLI state model.
 """
 
 from __future__ import annotations
@@ -35,7 +30,3 @@ def _assistant_response_lengths(state: CLIUIState) -> dict[str, int]:
         for message in state.messages
         if isinstance(message, AssistantMessage)
     }
-
-
-def _needs_assistant_divider(block_kind: str, *, previous_block: str) -> bool:
-    return previous_block == "tool" and block_kind != "tool"

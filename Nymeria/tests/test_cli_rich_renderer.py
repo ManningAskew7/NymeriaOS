@@ -449,14 +449,14 @@ def test_rich_renderer_renders_transcript_from_reducer_state() -> None:
 
     renderer.render_state()
 
-    assert "──── You " in output.stdout_text
-    assert "  use a tool" in output.stdout_text
-    assert "──── Nymeria " in output.stdout_text
-    assert "✓ search_memory ok 1.0s query=\"project status\" -> Found 2 matching notes." in (
+    assert "─" * 100 in output.stdout_text
+    assert "› use a tool" in output.stdout_text
+    assert "Nymeria" not in output.stdout_text
+    assert "❖ search_memory(query=\"project status\") 1.0s -> Found 2 matching notes." in (
         output.stdout_text
     )
     assert "I found the notes." in output.stdout_text
-    assert "································" in output.stdout_text
+    assert "····" not in output.stdout_text
 
 
 def test_update_terminal_width_changes_all_widths() -> None:
@@ -497,14 +497,14 @@ def test_update_terminal_width_affects_rendering() -> None:
 
     renderer.render_state()
     narrow_rule = next(
-        line for line in output.stdout_text.splitlines() if " You " in line
+        line for line in output.stdout_text.splitlines() if set(line) == {"─"}
     )
 
     output.clear()
     renderer.update_terminal_width(120)
     renderer.render_state()
     wide_rule = next(
-        line for line in output.stdout_text.splitlines() if " You " in line
+        line for line in output.stdout_text.splitlines() if set(line) == {"─"}
     )
 
     assert len(narrow_rule) == 60
@@ -1323,16 +1323,15 @@ def test_rich_renderer_streams_via_state_diffs_and_compact_tool_rows() -> None:
         now=1.0,
     )
 
-    assert "──── You " in output.stdout_text
-    assert "  use a tool" in output.stdout_text
-    assert "──── Nymeria " in output.stdout_text
+    assert "─" * 100 in output.stdout_text
+    assert "› use a tool" in output.stdout_text
+    assert "Nymeria" not in output.stdout_text
     assert "│ checking" in output.stdout_text
     assert "I will check memory." in output.stdout_text
-    assert "✓ search_memory ok 0ms query=\"project status\" -> Found 2 matching notes." in (
+    assert "❖ search_memory(query=\"project status\") 0ms -> Found 2 matching notes." in (
         output.stdout_text
     )
     assert "Done with markdown." in output.stdout_text
-    assert "──────────" in output.stdout_text
 
 
 def test_rich_renderer_verbose_thinking_streams_deltas() -> None:
@@ -1747,10 +1746,16 @@ def test_rich_renderer_renders_autonomous_turns_with_distinct_header() -> None:
         now=1.0,
     )
 
-    assert "Nymeria · autonomous · scheduler" in output.stdout_text
+    assert "❖ Nymeria · autonomous · scheduler" in output.stdout_text
     assert "Autonomous TODO started: Run a CLI smoke test" in output.stdout_text
     assert "Smoke test passed." in output.stdout_text
-    assert "──────────" in output.stdout_text
+    # The autonomous marker is a turn boundary: the response is separated from
+    # it by a blank line, matching the transcript replay (no gluing).
+    _assert_blank_line_between(
+        output.stdout_text,
+        "Autonomous TODO started",
+        "Smoke",
+    )
 
 
 def test_rich_renderer_shows_user_attachment_count() -> None:
@@ -1769,7 +1774,7 @@ def test_rich_renderer_shows_user_attachment_count() -> None:
         now=0.0,
     )
 
-    assert "  summarize this" in output.stdout_text
+    assert "› summarize this" in output.stdout_text
     assert "  1 attachment" in output.stdout_text
 
 
@@ -1822,7 +1827,7 @@ def test_rich_renderer_keeps_dispatched_turn_in_assistant_pipeline() -> None:
     assert "──── System " not in text
     assert "I will check the requested thread before answering" in text
     assert "Checking first." in text
-    assert "✓ memory_read ok" in text
+    assert "❖ memory_read(scope=thread)" in text
     assert "Done." in text
 
 
@@ -1917,11 +1922,14 @@ def test_history_payload_converts_to_ordered_cli_state_and_renders_divider() -> 
     renderer.render_state()
 
     lines = output.stdout_text.splitlines()
-    header_index = next(index for index, line in enumerate(lines) if "──── Nymeria " in line)
-    divider_index = next(
-        index for index, line in enumerate(lines) if "················" in line
+    prompt_index = next(
+        index for index, line in enumerate(lines) if line.startswith("› Inspect")
     )
-    assert header_index < divider_index
+    tool_index = next(
+        index for index, line in enumerate(lines) if "❖ filesystem_read" in line
+    )
+    assert prompt_index < tool_index
+    assert "2.5s" in lines[tool_index]
     assert "Context compacted." in output.stdout_text
 
 

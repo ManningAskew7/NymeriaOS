@@ -181,8 +181,9 @@ def test_waiting_and_processing_results_labels_match_activity_indicator() -> Non
 
     waiting = renderer.render_text(state, capabilities=caps, now=1.2)
     assert "Waiting..." in waiting
-    assert "search_memory" in waiting
-    assert "private" not in waiting
+    # The running-tool detail mirrors the transcript tool row: name, args
+    # preview, and a whole-second elapsed clock.
+    assert 'search_memory(query=private) 0s' in waiting
 
     state = reduce_stream_event(
         state,

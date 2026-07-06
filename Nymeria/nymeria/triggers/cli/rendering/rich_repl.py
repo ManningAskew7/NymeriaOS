@@ -8,7 +8,6 @@ from typing import Any, TextIO
 
 from rich.console import Console
 from rich.cells import cell_len
-from rich.rule import Rule
 from rich.text import Text
 
 from ..state import (
@@ -25,7 +24,7 @@ from ..state import (
     select_response_content,
     start_turn,
 )
-from ..theme import CLITheme, DEFAULT_CLI_THEME, rich_style
+from ..theme import CLITheme, DEFAULT_CLI_THEME, DEFAULT_TOOL_ICON, rich_style
 from .markdown import (
     BLOCKQUOTE_RE,
     BULLET_RE,
@@ -41,20 +40,19 @@ from .markdown import (
     wrap_plain_text,
     wrap_rich_lines,
 )
-from .plain import (
-    truncate_plain,
-)
 from .rich_markdown import MarkdownBlock, MarkdownStreamBuffer, print_rich_markdown
 from .shared_helpers import (
     _assistant_response_lengths,
     _dispatch_reference_text,
-    _needs_assistant_divider,
 )
-from .tool_rows import ToolRowRenderOptions, format_tool_row
+from .tool_rows import (
+    ToolRowRenderOptions,
+    ToolRowSegment,
+    format_tool_row_segments,
+)
 from .transcript import (
     TranscriptLine,
     TranscriptRenderOptions,
-    format_turn_separator,
     render_message_lines,
     render_transcript_lines,
 )
@@ -82,11 +80,13 @@ class RichReplRenderer:
         theme: CLITheme | None = None,
         stream_rich_response_lines: bool = False,
         download_base_url: str = "",
+        tool_icon: str = DEFAULT_TOOL_ICON,
     ) -> None:
         self.state = state or create_initial_state()
         self.capabilities = capabilities
         self._download_base_url = download_base_url
         self.theme = theme or DEFAULT_CLI_THEME
+        self.tool_icon = tool_icon or DEFAULT_TOOL_ICON
         self.width = coerce_width(width or getattr(capabilities, "width", 80))
         self.console = console or _make_console(
             capabilities,
@@ -124,6 +124,11 @@ class RichReplRenderer:
         """Update colors for future transcript output."""
 
         self.theme = theme
+
+    def set_tool_icon(self, icon: str) -> None:
+        """Update the tool-row ornament glyph for future transcript output."""
+
+        self.tool_icon = icon or DEFAULT_TOOL_ICON
 
     def update_terminal_width(self, width: int) -> bool:
         """Update render width for future Rich transcript output."""
@@ -196,16 +201,6 @@ class RichReplRenderer:
         ):
             self._render_user_message(self.state.messages[-2])
             self.console.print()
-        if self.state.messages and isinstance(
-            self.state.messages[-1],
-            AssistantMessage,
-        ):
-            assistant = self.state.messages[-1]
-            self._render_assistant_header_frame(
-                "Nymeria",
-                style=_style_for_line_kind("assistant_header", self.theme),
-            )
-            self._rendered_assistant_headers.add(assistant.id)
         return self.state
 
     def render_event(self, event: Any, *, now: float | None = None) -> CLIUIState:
@@ -265,14 +260,7 @@ class RichReplRenderer:
             if isinstance(message, UserMessage):
                 self._render_user_message(message)
             elif isinstance(message, AssistantMessage):
-                self._render_assistant_message(
-                    message,
-                    label=_assistant_label_for_message(
-                        state,
-                        message,
-                        ascii_only=False,
-                    ),
-                )
+                self._render_assistant_message(message)
             elif isinstance(message, SystemMessage):
                 for line in render_message_lines(
                     message,
@@ -406,6 +394,7 @@ class RichReplRenderer:
                     width=self.width,
                     ascii_only=self._ascii_only(),
                     theme=self.theme,
+                    icon=self.tool_icon,
                 )
             )
             self._rendered_tool_results.add(tool.id)
@@ -421,6 +410,8 @@ class RichReplRenderer:
             if message.id in self._rendered_system_ids:
                 continue
             self.flush_response()
+            if self._last_rendered_block is not None:
+                self.console.print()
             for line in render_message_lines(
                 message,
                 width=self.width,
@@ -428,7 +419,11 @@ class RichReplRenderer:
             ):
                 self._render_transcript_line(line)
             self._rendered_system_ids.add(message.id)
-            self._last_rendered_block = None
+            # Sentinel (not None) so the shared blank-line guards separate the
+            # marker from whatever follows: the assistant response after an
+            # autonomous marker, or a second consecutive system message. This
+            # mirrors the transcript replay, which always inserts that blank.
+            self._last_rendered_block = "system"
             self._last_markdown_block = None
             self._turn_seen_tool = False
             printed = True
@@ -464,31 +459,45 @@ class RichReplRenderer:
         return printed
 
     def _render_user_message(self, message: UserMessage) -> None:
-        self._render_separator(
-            "You",
-            style=_style_for_line_kind("user_header", self.theme),
-        )
+        """Echo the submitted prompt styled like the composer.
+
+        The echo (rule, ``› prompt``, rule) doubles as the turn boundary:
+        there is no "You"/"Nymeria" label chrome around turns.
+        """
+
+        ascii_only = self._ascii_only()
+        border_style = rich_style(self.theme, "input_border")
+        prompt_style = rich_style(self.theme, "prompt")
         user_style = _style_for_line_kind("user_text", self.theme)
-        body_width = max(1, self.width - 2)
-        if not self._ascii_only():
-            for line in (message.content or "").splitlines() or [""]:
-                if not line.strip():
-                    self.console.print()
-                    continue
-                for wrapped in wrap_rich_lines(line, width=self.width, theme=self.theme):
-                    self.console.print(wrapped)
-        else:
-            for line in wrap_plain_text(message.content, width=body_width):
-                rendered = f"  {line}" if line else ""
-                self.console.print(Text(rendered, style=user_style))
+        rule_char = "-" if ascii_only else "─"
+        prompt_prefix = "> " if ascii_only else "› "
+        border = Text(rule_char * max(1, self.width), style=border_style)
+
+        self.console.print(border)
+        body_width = max(1, self.width - len(prompt_prefix))
+        first_line = True
+        for raw_line in (message.content or "").splitlines() or [""]:
+            wrapped_lines = wrap_plain_text(raw_line, width=body_width) or [""]
+            for line in wrapped_lines:
+                if first_line:
+                    rendered = Text(prompt_prefix, style=prompt_style)
+                    rendered.append(line, style=user_style)
+                    first_line = False
+                else:
+                    rendered = Text(
+                        f"{' ' * len(prompt_prefix)}{line}".rstrip(),
+                        style=user_style,
+                    )
+                self.console.print(rendered)
         if message.attachments:
             label = "attachment" if len(message.attachments) == 1 else "attachments"
             self.console.print(
                 Text(
-                    f"  {len(message.attachments)} {label}",
+                    f"{' ' * len(prompt_prefix)}{len(message.attachments)} {label}",
                     style=_style_for_line_kind("artifact", self.theme),
                 )
             )
+        self.console.print(border)
 
     def _render_thinking_delta(self, state: CLIUIState) -> None:
         for message in state.messages:
@@ -719,18 +728,7 @@ class RichReplRenderer:
         if rendered:
             self._flush_console_file()
 
-    def _render_assistant_message(
-        self,
-        message: AssistantMessage,
-        *,
-        label: str = "Nymeria",
-    ) -> None:
-        header_style = (
-            _style_for_line_kind("autonomous_header", self.theme)
-            if label != "Nymeria"
-            else _style_for_line_kind("assistant_header", self.theme)
-        )
-        self._render_assistant_header_frame(label, style=header_style)
+    def _render_assistant_message(self, message: AssistantMessage) -> None:
         self._turn_seen_tool = False
         rendered_body = False
         dispatch_text = _dispatch_reference_text(message)
@@ -758,6 +756,7 @@ class RichReplRenderer:
                         width=self.width,
                         ascii_only=self._ascii_only(),
                         theme=self.theme,
+                        icon=self.tool_icon,
                     )
                 )
                 self._turn_seen_tool = True
@@ -786,101 +785,29 @@ class RichReplRenderer:
                 rendered_body = True
         if message.status == "complete" and rendered_body:
             self.console.print()
-            self._render_assistant_divider()
-            self._last_rendered_block = "assistant_divider"
+            self._last_rendered_block = None
             self._last_markdown_block = None
-
-    def _render_system_message(self, message: SystemMessage) -> None:
-        self._render_separator(
-            "System",
-            style=_style_for_line_kind("diagnostic", self.theme),
-        )
-        if message.kind == "compaction_notice":
-            text = "Context compacted."
-            if message.context_summary:
-                text = f"{text} {message.context_summary}"
-            self.console.print(
-                Text(
-                    truncate_plain(text, self.width),
-                    style=_style_for_line_kind("assistant_header", self.theme),
-                )
-            )
-            return
-        if message.kind == "iteration_limit":
-            self.console.print(
-                Text(
-                    message.content or "Reached turn safety limit.",
-                    style=_style_for_line_kind("tool", self.theme),
-                )
-            )
-            return
-        if message.kind == "error":
-            self.error_console.print(
-                Text(
-                    f"Error: {message.content}",
-                    style=_style_for_line_kind("error", self.theme),
-                )
-            )
-            return
-        self.console.print(
-            Text(
-                message.content or message.kind.replace("_", " ").title(),
-                style=_style_for_line_kind("diagnostic", self.theme),
-            )
-        )
-
-    def _render_separator(self, label: str, *, style: str) -> None:
-        if not self._ascii_only():
-            self.console.print(
-                Rule(title=label, style=style, characters="─")
-            )
-        else:
-            self.console.print(
-                Text(
-                    format_turn_separator(
-                        label,
-                        width=self.width,
-                        ascii_only=True,
-                    ),
-                    style=style,
-                )
-            )
 
     def _ensure_assistant_header(
         self,
         state: CLIUIState,
         message: AssistantMessage,
     ) -> None:
+        """Reset per-message bookkeeping when an assistant message starts.
+
+        There is no assistant header chrome anymore: user-initiated turns are
+        bounded by the composer echo, and autonomous turns get their one-line
+        marker from the preceding autonomous SystemMessage.
+        """
+
         if message.id in self._rendered_assistant_headers:
             return
-        label = _assistant_label_for_message(
-            state,
-            message,
-            ascii_only=self._ascii_only(),
-        )
-        style = (
-            _style_for_line_kind("autonomous_header", self.theme)
-            if label != "Nymeria"
-            else _style_for_line_kind("assistant_header", self.theme)
-        )
         if self._last_rendered_block is not None:
             self.console.print()
-        self._render_assistant_header_frame(label, style=style)
+            self._last_rendered_block = None
+            self._last_markdown_block = None
         self._rendered_assistant_headers.add(message.id)
         self._turn_seen_tool = False
-
-    def _render_assistant_header_frame(self, label: str, *, style: str) -> None:
-        self._render_separator(label, style=style)
-        self._render_assistant_divider()
-        self._last_rendered_block = "assistant_divider"
-        self._last_markdown_block = None
-
-    def _render_assistant_divider(self) -> None:
-        style = _style_for_line_kind("assistant_divider", self.theme)
-        if not self._ascii_only():
-            self.console.print(Rule(style=style, characters="\u00b7"))
-        else:
-            self.console.print(Text("." * max(1, self.width), style=style))
 
     def _begin_assistant_block(
         self,
@@ -921,12 +848,6 @@ class RichReplRenderer:
         ):
             self._last_markdown_block = None
             self.console.print()
-            if _needs_assistant_divider(
-                block_kind,
-                previous_block=self._last_rendered_block,
-            ):
-                self._render_assistant_divider()
-                self.console.print()
         self._last_rendered_block = block_kind
 
     def _flush_complete_stream_lines(self, block_kind: str) -> None:
@@ -1050,9 +971,8 @@ class RichReplRenderer:
         if not _assistant_has_renderable_body(message):
             return
         self.console.print()
-        self._render_assistant_divider()
         self._rendered_turn_end_ids.add(message.id)
-        self._last_rendered_block = "assistant_divider"
+        self._last_rendered_block = None
         self._last_markdown_block = None
 
     def _render_transcript_line(self, line: TranscriptLine) -> None:
@@ -1065,6 +985,11 @@ class RichReplRenderer:
             verbose=self.transcript_verbose,
             ascii_only=self._ascii_only(),
             base_url=self._download_base_url,
+            tool_row_options=ToolRowRenderOptions(
+                show_duration=True,
+                ascii_only=self._ascii_only(),
+                icon=self.tool_icon,
+            ),
         )
 
     def _ascii_only(self) -> bool:
@@ -1077,22 +1002,59 @@ def render_tool_row(
     width: int | None = None,
     ascii_only: bool = False,
     theme: CLITheme | None = None,
+    icon: str = DEFAULT_TOOL_ICON,
 ) -> Text:
-    """Return a Rich compact tool row."""
+    """Return a Rich compact tool row styled per segment.
+
+    Desktop ToolCallCard header shape: bright icon + name, dim args,
+    duration, and result preview; error turns the icon and name red.
+    """
 
     selected_theme = theme or DEFAULT_CLI_THEME
     width = coerce_width(width)
-    row = format_tool_row(
+    segments = format_tool_row_segments(
         tool,
         width=max(1, width - 2),
-        options=ToolRowRenderOptions(show_duration=True, ascii_only=ascii_only),
+        options=ToolRowRenderOptions(
+            show_duration=True,
+            ascii_only=ascii_only,
+            icon=icon,
+        ),
     )
-    style = (
-        _style_for_line_kind("error", selected_theme)
-        if tool.status == "error"
-        else _style_for_line_kind("tool", selected_theme)
-    )
-    return Text(f"  {row}", style=style)
+    row = Text("  ")
+    for segment in segments:
+        row.append(
+            segment.text,
+            style=_tool_segment_style(segment, tool.status, selected_theme),
+        )
+    row.truncate(width)
+    return row
+
+
+def _tool_segment_style(
+    segment: ToolRowSegment,
+    status: str,
+    theme: CLITheme,
+) -> str:
+    is_error = status == "error"
+    if segment.kind == "marker":
+        if is_error:
+            return rich_style(theme, "error")
+        if status == "cancelled":
+            return _style_for_line_kind("tool_detail", theme)
+        return rich_style(theme, "tool_icon")
+    if segment.kind == "name":
+        if is_error:
+            return rich_style(theme, "error", bold=True)
+        return rich_style(theme, "tool", bold=True)
+    if segment.kind == "status":
+        if is_error:
+            return rich_style(theme, "error")
+        return _style_for_line_kind("tool_detail", theme)
+    if segment.kind == "artifact":
+        return _style_for_line_kind("artifact", theme)
+    # args, duration, result: dim metadata around the bright head.
+    return _style_for_line_kind("tool_detail", theme)
 
 
 def _make_console(
@@ -1151,30 +1113,6 @@ def _message_for_tool(state: CLIUIState, tool_id: str) -> AssistantMessage | Non
     return None
 
 
-def _assistant_label_for_message(
-    state: CLIUIState,
-    message: AssistantMessage,
-    *,
-    ascii_only: bool,
-) -> str:
-    messages = list(state.messages)
-    try:
-        index = messages.index(message)
-    except ValueError:
-        return "Nymeria"
-    if index <= 0:
-        return "Nymeria"
-    previous = messages[index - 1]
-    if not isinstance(previous, SystemMessage) or previous.kind != "autonomous":
-        return "Nymeria"
-    parts = ["Nymeria", "autonomous"]
-    source = str(previous.details.get("source") or "").strip()
-    if source:
-        parts.append(source)
-    separator = " - " if ascii_only else " \u00b7 "
-    return separator.join(parts)
-
-
 def _clean_stream_delta(delta: str) -> str:
     """Strip common inline markdown markers while preserving streamed text."""
 
@@ -1208,13 +1146,12 @@ def _thinking_preview_is_ready(content: str, *, width: int) -> bool:
 def _style_for_line_kind(kind: str, theme: CLITheme | None = None) -> str:
     selected_theme = theme or DEFAULT_CLI_THEME
     return {
-        "user_header": rich_style(selected_theme, "user_header", bold=True),
+        "user_frame": rich_style(selected_theme, "input_border"),
         "user_text": rich_style(selected_theme, "user_text"),
         "assistant_header": rich_style(selected_theme, "assistant_header", bold=True),
         "autonomous_header": rich_style(selected_theme, "artifact", bold=True),
         "thinking": rich_style(selected_theme, "thinking", italic=True),
         "preamble": "",
-        "assistant_divider": rich_style(selected_theme, "separator"),
         "tool": rich_style(selected_theme, "tool"),
         "tool_detail": rich_style(selected_theme, "diagnostic"),
         "final": "",

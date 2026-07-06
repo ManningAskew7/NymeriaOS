@@ -118,7 +118,9 @@ def test_queued_state_renders_waiting_without_thinking_content() -> None:
     assert "do not show this" not in rendered.text
 
 
-def test_running_tool_names_are_safe_waiting_details() -> None:
+def test_running_tool_detail_shows_args_preview_and_elapsed() -> None:
+    # The footer mirrors the transcript tool row (which prints the same args
+    # on completion): name(args preview) plus a whole-second live clock.
     caps = FakeTerminalCapabilities(supports_unicode=False)
     indicator = ActivityIndicator()
     state = create_initial_state(thread_id="thread-1", now=0.0)
@@ -129,18 +131,17 @@ def test_running_tool_names_are_safe_waiting_details() -> None:
             "type": "tool_call",
             "id": "call-1",
             "name": "search_memory",
-            "args": {"query": "private"},
+            "args": {"query": "project status"},
         },
         now=1.1,
     )
 
-    rendered = indicator.render_from_state(state, capabilities=caps, now=1.2)
+    rendered = indicator.render_from_state(state, capabilities=caps, now=3.2)
 
     assert rendered is not None
     assert rendered.phase == "waiting"
-    assert rendered.detail == "search_memory"
+    assert rendered.detail == 'search_memory(query="project status") 2s'
     assert rendered.frame in ASCII_FRAMES
-    assert "private" not in rendered.text
 
 
 def test_spinner_frames_follow_unicode_ascii_and_off_capabilities() -> None:

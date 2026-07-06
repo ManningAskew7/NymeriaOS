@@ -11,6 +11,7 @@ from urllib.parse import quote
 from rich.cells import cell_len
 
 from ..state import ToolCallStep, WorkspaceArtifact
+from ..theme import DEFAULT_TOOL_ICON
 from .markdown import collapse_inline, coerce_width, truncate_cell_width
 
 DEFAULT_ARGS_LIMIT = 80
@@ -26,19 +27,45 @@ class ToolRowRenderOptions:
     result_limit: int = DEFAULT_RESULT_LIMIT
     include_artifacts: bool = True
     ascii_only: bool = True
+    icon: str = DEFAULT_TOOL_ICON
 
 
-def format_tool_row(
+@dataclass(frozen=True, slots=True)
+class ToolRowSegment:
+    """One styled slice of a compact tool row.
+
+    ``kind`` is one of: marker, name, args, status, duration, result,
+    artifact. Segment texts carry their own separators, so joining the
+    texts in order reproduces the plain row exactly.
+    """
+
+    kind: str
+    text: str
+
+
+def format_tool_row_segments(
     tool: ToolCallStep,
     *,
     width: int | None = None,
     options: ToolRowRenderOptions | None = None,
-) -> str:
-    """Return a single bounded row summarizing one tool call."""
+) -> tuple[ToolRowSegment, ...]:
+    """Return one tool row as styleable segments.
+
+    Desktop ToolCallCard header shape: ``icon name(args) duration -> result``.
+    Success carries no status word (the marker + duration say it); error,
+    cancelled, pending, and running keep theirs.
+
+    The args/result split targets ``width`` but does not hard-guarantee it: the
+    per-part floors can overshoot at very small widths. Callers render the
+    joined text through ``truncate_cell_width`` / ``Text.truncate`` (see
+    ``format_tool_row`` and ``render_tool_row``), which is the authoritative
+    width clamp.
+    """
 
     selected_width = coerce_width(width)
     selected_options = options or ToolRowRenderOptions()
     name = truncate_cell_width(tool.name or "tool", max(8, selected_width // 4))
+    marker = _status_marker(tool, options=selected_options)
 
     args_preview = format_args_preview(
         tool.arguments,
@@ -51,57 +78,87 @@ def format_tool_row(
     )
 
     status_label = _status_label(tool)
-    marker = _status_marker(tool, ascii_only=selected_options.ascii_only)
-    prefix_parts = [f"{marker} {name}"]
-    if status_label:
-        prefix_parts.append(status_label)
-
+    duration = ""
     if selected_options.show_duration and tool.status != "running":
         # Prefer the server-measured execution time over the event-arrival diff.
         if tool.duration_ms is not None:
             duration = format_duration_from_ms(tool.duration_ms)
         else:
             duration = format_duration(tool.started_at, tool.ended_at)
-        if duration:
-            prefix_parts.append(duration)
 
-    suffixes: list[str] = []
+    artifacts = ""
     if selected_options.include_artifacts:
         artifacts = format_artifacts_preview(tool.artifacts)
         if artifacts:
-            suffixes.append(
-                truncate_cell_width(artifacts, max(10, selected_width // 4))
-            )
+            artifacts = truncate_cell_width(artifacts, max(10, selected_width // 4))
 
-    prefix = " ".join(prefix_parts)
-    suffix = " ".join(suffixes)
-    suffix_width = cell_len(suffix) + (1 if suffix else 0)
+    head = f"{marker} {name}"
+    status_part = f" {status_label}" if status_label else ""
+    duration_part = f" {duration}" if duration else ""
+    artifact_part = f" {artifacts}" if artifacts else ""
+    paren_overhead = 2 if args_preview else 0
+    arrow_overhead = len(" -> ") if result_preview else 0
+
+    fixed_width = (
+        cell_len(head)
+        + paren_overhead
+        + cell_len(status_part)
+        + cell_len(duration_part)
+        + cell_len(artifact_part)
+        + arrow_overhead
+    )
+    dynamic_width = max(8, selected_width - fixed_width)
+    if result_preview and args_preview:
+        args_need = cell_len(args_preview)
+        result_need = cell_len(result_preview)
+        if args_need + result_need > dynamic_width:
+            # Split the row budget, letting the shorter side donate its slack.
+            half = dynamic_width // 2
+            if args_need <= half:
+                args_width = args_need
+            elif result_need <= half:
+                args_width = dynamic_width - result_need
+            else:
+                args_width = half
+            args_width = min(args_width, selected_options.args_limit)
+            result_width = max(8, dynamic_width - args_width)
+            args_preview = truncate_cell_width(args_preview, max(8, args_width))
+            result_preview = truncate_cell_width(result_preview, result_width)
+    elif result_preview:
+        result_preview = truncate_cell_width(result_preview, dynamic_width)
+    elif args_preview:
+        args_preview = truncate_cell_width(args_preview, dynamic_width)
+
+    segments = [
+        ToolRowSegment("marker", marker),
+        ToolRowSegment("name", f" {name}"),
+    ]
+    if args_preview:
+        segments.append(ToolRowSegment("args", f"({args_preview})"))
+    if status_part:
+        segments.append(ToolRowSegment("status", status_part))
+    if duration_part:
+        segments.append(ToolRowSegment("duration", duration_part))
     if result_preview:
-        fixed_width = cell_len(prefix) + len(" -> ") + suffix_width
-        dynamic_width = max(8, selected_width - fixed_width)
-        if args_preview:
-            args_width = min(
-                selected_options.args_limit,
-                max(8, min(cell_len(args_preview), dynamic_width // 2)),
-            )
-            result_width = max(8, dynamic_width - args_width - 1)
-            args_preview = truncate_cell_width(args_preview, args_width)
-        else:
-            result_width = dynamic_width
-        result_preview = truncate_cell_width(result_preview, result_width)
-        row = f"{prefix}"
-        if args_preview:
-            row = f"{row} {args_preview}"
-        row = f"{row} -> {result_preview}"
-    else:
-        fixed_width = cell_len(prefix) + suffix_width + (1 if args_preview else 0)
-        args_width = max(1, selected_width - fixed_width)
-        row = prefix
-        if args_preview:
-            row = f"{row} {truncate_cell_width(args_preview, args_width)}"
+        segments.append(ToolRowSegment("result", f" -> {result_preview}"))
+    if artifact_part:
+        segments.append(ToolRowSegment("artifact", artifact_part))
+    return tuple(segments)
 
-    if suffix:
-        row = f"{row} {suffix}"
+
+def format_tool_row(
+    tool: ToolCallStep,
+    *,
+    width: int | None = None,
+    options: ToolRowRenderOptions | None = None,
+) -> str:
+    """Return a single bounded row summarizing one tool call."""
+
+    selected_width = coerce_width(width)
+    row = "".join(
+        segment.text
+        for segment in format_tool_row_segments(tool, width=width, options=options)
+    )
     return truncate_cell_width(row, selected_width)
 
 
@@ -219,8 +276,9 @@ def format_size(size_bytes: int) -> str:
 
 
 def _status_label(tool: ToolCallStep) -> str:
+    # Success carries no word: the marker + duration already say it.
     labels = {
-        "success": "ok",
+        "success": "",
         "pending": "pending",
         "running": "running",
         "error": "error",
@@ -229,8 +287,8 @@ def _status_label(tool: ToolCallStep) -> str:
     return labels.get(tool.status, tool.status or "")
 
 
-def _status_marker(tool: ToolCallStep, *, ascii_only: bool) -> str:
-    if ascii_only:
+def _status_marker(tool: ToolCallStep, *, options: ToolRowRenderOptions) -> str:
+    if options.ascii_only:
         markers = {
             "success": "-",
             "pending": "-",
@@ -238,15 +296,10 @@ def _status_marker(tool: ToolCallStep, *, ascii_only: bool) -> str:
             "error": "x",
             "cancelled": "!",
         }
-    else:
-        markers = {
-            "success": "\u2713",
-            "pending": "\u25cb",
-            "running": "\u25cb",
-            "error": "\u00d7",
-            "cancelled": "!",
-        }
-    return markers.get(tool.status, "-" if ascii_only else "\u25cb")
+        return markers.get(tool.status, "-")
+    if tool.status == "cancelled":
+        return "!"
+    return options.icon
 
 
 def _stringify_argument(value: Any) -> str:
@@ -269,6 +322,7 @@ def _stringify(value: Any) -> str:
 
 __all__ = [
     "ToolRowRenderOptions",
+    "ToolRowSegment",
     "format_args_preview",
     "format_artifact_line",
     "format_artifacts_preview",
@@ -276,4 +330,5 @@ __all__ = [
     "format_result_preview",
     "format_size",
     "format_tool_row",
+    "format_tool_row_segments",
 ]
