@@ -161,6 +161,32 @@ class PendingPrompt:
     abandoned: bool = field(default=False)
 
 
+def _wake_prompt(
+    prompt: PendingPrompt,
+    *,
+    abandoned: bool,
+    error_code: Optional[str] = None,
+    error_content: Optional[str] = None,
+) -> None:
+    """Wake one prompt's waiters: optional error into the mailbox, close, set.
+
+    ``abandoned`` is stamped before ``notify_event`` fires so a woken waiter
+    reads the final value. Shared by the backend's evict/clear paths and the
+    module-level batch helpers below.
+    """
+    if abandoned:
+        prompt.abandoned = True
+    if prompt.fanout_mailbox is not None:
+        if error_code:
+            prompt.fanout_mailbox.put({
+                "type": "error",
+                "code": error_code,
+                "content": error_content or "Queued prompt was not processed.",
+            })
+        prompt.fanout_mailbox.close()
+    prompt.notify_event.set()
+
+
 class PendingPromptQueueBackend(Protocol):
     """Pluggable storage protocol for the pending-prompt queue.
 
@@ -304,17 +330,12 @@ class InMemoryPendingPromptQueue:
         error_code: Optional[str] = None,
         error_content: Optional[str] = None,
     ) -> None:
-        if abandoned:
-            prompt.abandoned = True
-        if prompt.fanout_mailbox is not None:
-            if error_code:
-                prompt.fanout_mailbox.put({
-                    "type": "error",
-                    "code": error_code,
-                    "content": error_content or "Queued prompt was not processed.",
-                })
-            prompt.fanout_mailbox.close()
-        prompt.notify_event.set()
+        _wake_prompt(
+            prompt,
+            abandoned=abandoned,
+            error_code=error_code,
+            error_content=error_content,
+        )
 
 
 def create_pending_queue(settings: Optional["Settings"] = None) -> PendingPromptQueueBackend:
@@ -452,3 +473,48 @@ PENDING_QUEUE_META_EVENT_TYPES = frozenset({
     EVENT_TURN_HALTED,
     EVENT_FANOUT_DROPPED,
 })
+
+
+# ---------------------------------------------------------------------------
+# Batch wake helpers, shared by the chat()/astream() drain call sites so the
+# per-prompt mailbox choreography lives next to the protocol it implements.
+# ---------------------------------------------------------------------------
+
+
+def notify_batch_absorbed(prompts: List[PendingPrompt]) -> None:
+    """Signal absorption for a drained batch.
+
+    Pushes the absorbed sentinel into each prompt's fanout mailbox (so
+    stream-observing queuers exit their fan-in loop and report
+    ``prompt_absorbed``), closes the mailbox, then wakes any
+    ``notify_event`` waiters. This is the success-path sibling of
+    ``InMemoryPendingPromptQueue._wake_prompt`` (which handles the error
+    shapes and has no sentinel).
+    """
+    for prompt in prompts:
+        if prompt.fanout_mailbox is not None:
+            prompt.fanout_mailbox.put({"type": _SENTINEL_PROMPT_ABSORBED})
+            prompt.fanout_mailbox.close()
+        prompt.notify_event.set()
+
+
+def notify_batch_error(
+    prompts: List[PendingPrompt],
+    *,
+    code: str,
+    content: str,
+    abandoned: bool = False,
+) -> None:
+    """Wake a drained batch with an error so blocked queuers do not hang.
+
+    ``abandoned=True`` additionally marks each prompt abandoned (set before
+    ``notify_event`` fires, so a woken waiter reads the final value); the
+    cross-user rejection path uses it, the inject-failure paths do not.
+    """
+    for prompt in prompts:
+        _wake_prompt(
+            prompt,
+            abandoned=abandoned,
+            error_code=code,
+            error_content=content,
+        )
