@@ -19,7 +19,7 @@ j() { printf '%s' "$input" | jq -r "$1"; }
 name=$(j '.model.display_name // "unknown"')
 mid=$(j '.model.id // ""')
 effort=$(j '.effort.level // empty')
-cost_usd=$(j '.cost.total_cost_usd // 0')
+tpath=$(j '.transcript_path // ""')
 dir=$(j '.workspace.current_dir // .cwd // ""')
 used=$(j '.context_window.total_input_tokens // 0')
 size=$(j '.context_window.context_window_size // 0')
@@ -107,11 +107,21 @@ if [ "$added" -gt 0 ] || [ "$removed" -gt 0 ]; then
   out="${out}${sep}${green}+${added}${reset}/${red}-${removed}${reset}"
 fi
 
-# session credit estimate (metered model only): Claude Code's whole-session
-# cost at list rates; subagent turns bill the plan pools instead, so read it
-# as a ceiling on credit burn, not an exact meter
-if [ "$model_c" = "$orange" ] && awk -v c="$cost_usd" 'BEGIN{exit !(c>=0.01)}'; then
-  out="${out}${sep}${grey}cr ${reset}${orange}~\$$(printf '%.2f' "$cost_usd")${reset}"
+# session credit estimate (metered model only): sums this transcript's
+# credit-billed (fable) assistant turns at list rates ($10 in / $50 out,
+# cache write $12.50 5m / $20 1h, cache read $1, per Mtok), deduped by
+# message id (one API turn spans several JSONL lines, last line wins).
+# Subagent turns live in separate sidechain transcripts on in-plan models,
+# so unlike cost.total_cost_usd this counts only usage-credit traffic.
+if [ "$model_c" = "$orange" ] && [ -r "$tpath" ]; then
+  cr_usd=$(grep -a '"type":"assistant"' "$tpath" 2>/dev/null \
+    | jq -r 'select((.message.model // "") | ascii_downcase | contains("fable"))
+        | .message.usage as $u
+        | ($u.cache_creation.ephemeral_1h_input_tokens // 0) as $c1
+        | ($u.cache_creation.ephemeral_5m_input_tokens // ($u.cache_creation_input_tokens // 0)) as $c5
+        | "\(.message.id // "x") \((($u.input_tokens // 0)*10) + (($u.output_tokens // 0)*50) + ($c5*12.5) + ($c1*20) + (($u.cache_read_input_tokens // 0)*1))"' 2>/dev/null \
+    | awk '{v[$1]=$2} END{s=0; for(k in v) s+=v[k]; if (s>=10000) printf "%.2f", s/1e6}')
+  [ -n "$cr_usd" ] && out="${out}${sep}${grey}cr ${reset}${orange}~\$${cr_usd}${reset}"
 fi
 
 # subscription usage pools (Max plan; absent until the first API response)
