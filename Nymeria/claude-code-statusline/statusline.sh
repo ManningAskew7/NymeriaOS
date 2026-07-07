@@ -111,8 +111,12 @@ fi
 # credit-billed (fable) assistant turns at list rates ($10 in / $50 out,
 # cache write $12.50 5m / $20 1h, cache read $1, per Mtok), deduped by
 # message id (one API turn spans several JSONL lines, last line wins).
-# Subagent turns live in separate sidechain transcripts on in-plan models,
-# so unlike cost.total_cost_usd this counts only usage-credit traffic.
+# The model filter is what excludes subagent turns (they are pinned to
+# in-plan models via CLAUDE_CODE_SUBAGENT_MODEL; current versions also
+# keep them out of this file entirely), so unlike cost.total_cost_usd
+# this counts only usage-credit traffic. The transcript format is
+# internal to Claude Code and can change between versions; if parsing
+# fails the segment silently disappears rather than erroring.
 if [ "$model_c" = "$orange" ] && [ -r "$tpath" ]; then
   cr_usd=$(grep -a '"type":"assistant"' "$tpath" 2>/dev/null \
     | jq -r 'select((.message.model // "") | ascii_downcase | contains("fable"))
