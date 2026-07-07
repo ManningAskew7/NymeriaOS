@@ -66,6 +66,50 @@ def protected_path_error(path: Path) -> Optional[str]:
     return None
 
 
+# Credential stores under the data dir that the file tools refuse to touch
+# (resource-filesystem-layout plan, decision 7). Matched against the first
+# path component relative to data_dir: "auth_tokens" covers the whole OAuth
+# token-cache subtree; the "accounts.db" prefix also covers SQLite sidecars
+# (accounts.db-wal / -shm / -journal). This is a tool-layer policy, not a
+# security boundary: bash_execute is not path-checkable and the sanctioned
+# credential surfaces are auth_write / auth_test.
+_SECRET_STORE_DIRS = {"auth_tokens"}
+_SECRET_STORE_FILE_PREFIXES = ("accounts.db",)
+
+
+def secrets_path_error(path: Path) -> Optional[str]:
+    """Return an error message if ``path`` targets a credential store,
+    else ``None``.
+
+    Shared by ``file_read`` (which has no other denylist), ``file_write``,
+    and ``file_edit``. The message is returned without an ``[Error]:``
+    prefix; callers format it for their own contract.
+    """
+    try:
+        data_dir = get_settings().data_dir.resolve()
+    except Exception:
+        logger.debug("Failed to resolve data dir for secrets check", exc_info=True)
+        return None
+    try:
+        rel = path.resolve().relative_to(data_dir)
+    except (ValueError, OSError):
+        return None  # outside the data dir; not a credential store
+    parts = rel.parts
+    if not parts:
+        return None
+    head = parts[0]
+    if head in _SECRET_STORE_DIRS or head.startswith(_SECRET_STORE_FILE_PREFIXES):
+        logger.warning("Blocked file-tool access to credential store: %s", rel)
+        return (
+            f"Cannot access credential storage: {rel} holds Nymeria account "
+            "credentials and is excluded from the file tools. Credential "
+            "values are write-only by design: use auth_write to store or "
+            "rotate a secret and auth_test to verify it (the "
+            "credential-management skill has the full flow)."
+        )
+    return None
+
+
 def get_workspace_dir() -> Path:
     """Return the only filesystem root where mutating file tools may write."""
     return Path(os.environ.get("NYMERIA_WORKSPACE_DIR", "/workspace")).resolve()
@@ -247,6 +291,10 @@ def file_read(
     try:
         path = resolve_tool_path(file_path)
 
+        secrets_error = secrets_path_error(path)
+        if secrets_error:
+            return f"[Error]: {secrets_error}", {}
+
         if not path.exists():
             return f"[Error]: File not found: {file_path}", {}
 
@@ -351,6 +399,11 @@ def file_write(
         protected_error = protected_path_error(path)
         if protected_error:
             return f"[Error]: {protected_error}"
+
+        # Credential stores are excluded from the file tools entirely.
+        secrets_error = secrets_path_error(path)
+        if secrets_error:
+            return f"[Error]: {secrets_error}"
 
         # Create parent directories if requested
         if create_directories:

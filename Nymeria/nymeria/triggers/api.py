@@ -1011,6 +1011,11 @@ def create_api_app(
     # can hit the 300s tool-execution timeout.
     _register_tool_index_warm_lifecycle(app)
 
+    # Refresh the on-disk resource map (data README + schemas) once at
+    # startup. Same unconditional reasoning: the API process is where the
+    # agent's file tools run, and the writer is write-if-changed.
+    _register_resource_map_startup(app)
+
     # Expire stale nym.approve pending records. Unconditional for the same
     # reason as the warm loop: workflows execute in the API process in both
     # shapes, so the expiry (which runs the declined continuation) must too.
@@ -1371,6 +1376,37 @@ async def _drain_observe_hooks() -> None:
 # reconciles any change signal missed before the loop registered.
 TOOL_INDEX_WARM_STARTUP_DELAY_SECONDS = 20.0
 TOOL_INDEX_WARM_HEARTBEAT_SECONDS = 300.0
+
+
+def _register_resource_map_startup(app: FastAPI) -> None:
+    """Write the resource-root map artifacts once at startup.
+
+    ``data/README.md`` and ``data/schema/`` are generated (write-if-changed)
+    so the on-disk index the file tools point agents at always matches the
+    running code. Best-effort and off the event loop; a failure is logged,
+    never fatal.
+    """
+    import asyncio
+
+    async def _write_map() -> None:
+        from ..core.resource_map import write_resource_map
+
+        try:
+            # Resolve the root through this module's get_settings (the seam
+            # tests monkeypatch), not the resource_root() default, so a test
+            # app never writes into a live data dir.
+            root = Path(get_settings().data_dir)
+            written = await asyncio.to_thread(write_resource_map, root)
+        except Exception:  # noqa: BLE001 - startup must survive a map failure
+            logger.exception("Resource map startup write failed")
+            return
+        if written:
+            logger.info(
+                "Resource map refreshed: %s",
+                ", ".join(sorted(p.name for p in written)),
+            )
+
+    app.router.add_event_handler("startup", _write_map)
 
 
 def _register_tool_index_warm_lifecycle(app: FastAPI) -> None:

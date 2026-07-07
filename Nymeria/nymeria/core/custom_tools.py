@@ -20,8 +20,10 @@ import asyncio
 import json
 import logging
 import re
+import threading
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple, cast
 
 import httpx
 from langchain_core.tools import BaseTool, StructuredTool
@@ -56,6 +58,10 @@ class CustomToolLoader:
     them to LangChain tools that can be registered with the agent.
     """
 
+    # Minimum seconds between external-edit stat scans (hot-load debounce).
+    # Class attribute so tests can zero it.
+    EXTERNAL_REFRESH_INTERVAL_SECONDS: float = 2.0
+
     def __init__(self, tools_dir: Optional[Path] = None):
         """Initialize the custom tool loader.
 
@@ -67,11 +73,26 @@ class CustomToolLoader:
         self.tools_dir = tools_dir or settings.custom_tools_dir
         self.tools_dir.mkdir(parents=True, exist_ok=True)
 
+        # Guards the caches and the disk-fingerprint bookkeeping below.
+        self._lock = threading.RLock()
+
         # Cache of loaded tool definitions
         self._definitions: Dict[str, CustomToolDefinition] = {}
 
         # Cache of created LangChain tools
         self._tools: Dict[str, BaseTool] = {}
+
+        # Hot-load bookkeeping (resource-filesystem-layout plan, slice 2).
+        # _disk_sigs: filename -> (st_mtime_ns, st_size) recorded whenever a
+        # definition file is parsed through this loader, so manager-driven
+        # writes never register as external edits. _file_ids maps filename ->
+        # the definition id it produced (a raw edit may change the id inside
+        # the file). _pending_registry_sync collects ids whose BaseTool
+        # changed via an external edit; the agent drains it to re-register.
+        self._disk_sigs: Dict[str, Tuple[int, int]] = {}
+        self._file_ids: Dict[str, str] = {}
+        self._pending_registry_sync: Set[str] = set()
+        self._last_freshness_check = 0.0
 
     @property
     def mcp_manager(self) -> "MCPServerManager":
@@ -86,21 +107,105 @@ class CustomToolLoader:
         Returns:
             List of LangChain tools created from definitions.
         """
-        self._definitions.clear()
-        self._tools.clear()
-        clear_custom_tool_metadata()
+        with self._lock:
+            self._definitions.clear()
+            self._tools.clear()
+            self._disk_sigs.clear()
+            self._file_ids.clear()
+            self._pending_registry_sync.clear()
+            clear_custom_tool_metadata()
 
-        tools = []
-        for json_file in self.tools_dir.glob("*.json"):
-            try:
-                tool = self._load_tool_file(json_file)
-                if tool:
-                    tools.append(tool)
-            except Exception as e:
-                logger.error(f"Failed to load tool from {json_file}: {e}")
+            tools = []
+            for json_file in self.tools_dir.glob("*.json"):
+                try:
+                    tool = self._load_tool_file(json_file)
+                    if tool:
+                        tools.append(tool)
+                except Exception as e:
+                    logger.error(f"Failed to load tool from {json_file}: {e}")
 
         logger.info(f"Loaded {len(tools)} custom tool(s) from {self.tools_dir}")
         return tools
+
+    def refresh_if_stale(self, force: bool = False) -> List[str]:
+        """Pick up external (non-manager) edits to the definition files.
+
+        Stat-scans the tools dir (debounced) and re-parses only files whose
+        (mtime_ns, size) fingerprint changed, dropping definitions whose
+        files disappeared. Returns the affected tool ids; the corresponding
+        registry re-sync is the agent's job (see ``drain_registry_sync`` and
+        ``agent_tools.sync_external_resource_edits``).
+        """
+        now = time.monotonic()
+        with self._lock:
+            if not force and now - self._last_freshness_check < self.EXTERNAL_REFRESH_INTERVAL_SECONDS:
+                return []
+            self._last_freshness_check = now
+
+        try:
+            current: Dict[str, Tuple[int, int]] = {}
+            for json_file in self.tools_dir.glob("*.json"):
+                try:
+                    st = json_file.stat()
+                except OSError:
+                    continue
+                current[json_file.name] = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return []
+
+        changed_ids: List[str] = []
+        with self._lock:
+            stale = [name for name, sig in current.items() if self._disk_sigs.get(name) != sig]
+            removed = [name for name in self._disk_sigs if name not in current]
+            if not stale and not removed:
+                return []
+
+            for name in removed:
+                self._disk_sigs.pop(name, None)
+                tool_id = self._file_ids.pop(name, None)
+                if tool_id:
+                    self._definitions.pop(tool_id, None)
+                    self._tools.pop(tool_id, None)
+                    unregister_custom_tool_metadata(tool_id)
+                    changed_ids.append(tool_id)
+            for name in stale:
+                old_id = self._file_ids.pop(name, None)
+                if old_id:
+                    self._definitions.pop(old_id, None)
+                    self._tools.pop(old_id, None)
+                    unregister_custom_tool_metadata(old_id)
+                    changed_ids.append(old_id)
+                self._load_tool_file(self.tools_dir / name)
+                new_id = self._file_ids.get(name)
+                if new_id and new_id not in changed_ids:
+                    changed_ids.append(new_id)
+
+            self._pending_registry_sync.update(changed_ids)
+            logger.info(
+                "Custom tool store: external edit detected (%d changed, %d removed "
+                "file(s)); refreshed ids %s",
+                len(stale), len(removed), sorted(changed_ids),
+            )
+
+        _mark_tool_search_dirty_safely()
+        _log_external_edit_safely(
+            "custom_tools",
+            f"{len(stale)} changed, {len(removed)} removed file(s); "
+            f"tool ids {sorted(changed_ids)}",
+        )
+        return changed_ids
+
+    def drain_registry_sync(self) -> Set[str]:
+        """Return and clear the tool ids awaiting agent registry re-sync."""
+        with self._lock:
+            pending = self._pending_registry_sync
+            self._pending_registry_sync = set()
+            return pending
+
+    def get_tool(self, tool_id: str) -> Optional[BaseTool]:
+        """Get the cached BaseTool for a definition id (no freshness check)."""
+        with self._lock:
+            return self._tools.get(tool_id)
 
     def _load_tool_file(self, file_path: Path) -> Optional[BaseTool]:
         """Load a single tool definition file.
@@ -112,8 +217,38 @@ class CustomToolLoader:
             LangChain tool or None if loading failed.
         """
         try:
+            st = file_path.stat()
+            self._disk_sigs[file_path.name] = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            pass  # Unreadable stat: the refresh sweep will retry the file.
+        try:
             data = json.loads(file_path.read_text(encoding="utf-8"))
             definition = CustomToolDefinition(**data)
+        except Exception as e:  # noqa: BLE001 - unparseable file, quarantine it
+            from .storage_paths import quarantine_corrupt_file
+
+            quarantine = quarantine_corrupt_file(file_path)
+            if quarantine is not None:
+                self._disk_sigs.pop(file_path.name, None)
+                self._file_ids.pop(file_path.name, None)
+            logger.error(
+                "Error loading tool from %s: %s (%s)",
+                file_path,
+                e,
+                f"corrupt file preserved at {quarantine}"
+                if quarantine
+                else "quarantine rename failed; file left in place",
+                exc_info=True,
+            )
+            _log_external_edit_safely(
+                "custom_tools",
+                f"corrupt file {file_path.name} "
+                + (f"quarantined as quarantine/{quarantine.name}" if quarantine
+                   else "could not be quarantined"),
+            )
+            return None
+        try:
+            self._file_ids[file_path.name] = definition.id
 
             if not definition.enabled:
                 logger.debug(f"Skipping disabled tool: {definition.id}")
@@ -140,6 +275,9 @@ class CustomToolLoader:
             return tool
 
         except Exception as e:
+            # The file parsed; the tool object could not be built. Keep the
+            # file in place (it may be valid for a newer/older codebase) and
+            # skip it.
             logger.error(f"Error loading tool from {file_path}: {e}", exc_info=True)
             return None
 
@@ -287,7 +425,7 @@ class CustomToolLoader:
         )
 
     def get_definition(self, tool_id: str) -> Optional[CustomToolDefinition]:
-        """Get a tool definition by ID.
+        """Get a tool definition by ID (picking up external file edits).
 
         Args:
             tool_id: The tool identifier.
@@ -295,15 +433,19 @@ class CustomToolLoader:
         Returns:
             The tool definition or None.
         """
-        return self._definitions.get(tool_id)
+        self.refresh_if_stale()
+        with self._lock:
+            return self._definitions.get(tool_id)
 
     def get_all_definitions(self) -> List[CustomToolDefinition]:
-        """Get all loaded tool definitions.
+        """Get all loaded tool definitions (picking up external file edits).
 
         Returns:
             List of all tool definitions.
         """
-        return list(self._definitions.values())
+        self.refresh_if_stale()
+        with self._lock:
+            return list(self._definitions.values())
 
     def save_definition(self, definition: CustomToolDefinition) -> Path:
         """Save a tool definition to a JSON file.
@@ -318,16 +460,18 @@ class CustomToolLoader:
         definition.updated_at = utc_now()
 
         file_path = self.tools_dir / f"{definition.id}.json"
-        file_path.write_text(
-            definition.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
+        with self._lock:
+            file_path.write_text(
+                definition.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
 
-        # Reload to update cache
-        self._definitions.pop(definition.id, None)
-        self._tools.pop(definition.id, None)
-        unregister_custom_tool_metadata(definition.id)
-        self._load_tool_file(file_path)
+            # Reload to update cache (also re-fingerprints the file, so this
+            # manager-driven write never registers as an external edit).
+            self._definitions.pop(definition.id, None)
+            self._tools.pop(definition.id, None)
+            unregister_custom_tool_metadata(definition.id)
+            self._load_tool_file(file_path)
 
         _mark_tool_search_dirty_safely()
         logger.info(f"Saved tool definition: {definition.id}")
@@ -347,12 +491,15 @@ class CustomToolLoader:
         if not file_path.exists():
             return False
 
-        file_path.unlink()
+        with self._lock:
+            file_path.unlink()
 
-        # Remove from caches
-        self._definitions.pop(tool_id, None)
-        self._tools.pop(tool_id, None)
-        unregister_custom_tool_metadata(tool_id)
+            # Remove from caches
+            self._definitions.pop(tool_id, None)
+            self._tools.pop(tool_id, None)
+            self._disk_sigs.pop(file_path.name, None)
+            self._file_ids.pop(file_path.name, None)
+            unregister_custom_tool_metadata(tool_id)
 
         _mark_tool_search_dirty_safely()
         logger.info(f"Deleted tool definition: {tool_id}")
@@ -747,6 +894,16 @@ def _mark_tool_search_dirty_safely() -> None:
         mark_tool_search_dirty()
     except Exception:
         logger.debug("Failed to mark tool search index dirty", exc_info=True)
+
+
+def _log_external_edit_safely(store: str, detail: str, user_id: str = "default") -> None:
+    """Best-effort external-edit audit line (never raises into a load path)."""
+    try:
+        from .activity_log import log_external_edit
+
+        log_external_edit(store, detail, user_id=user_id)
+    except Exception:
+        logger.debug("Failed to record external-edit audit line", exc_info=True)
 
 
 def shutdown_custom_tools() -> None:

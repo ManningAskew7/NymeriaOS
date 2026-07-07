@@ -180,7 +180,7 @@ def test_corrupt_file_is_quarantined_not_destroyed(manager, tmp_path):
     path.write_text(corrupt_bytes, encoding="utf-8")
     assert manager.get_hooks("u1") == []
     # The original bytes survive under a quarantine name for manual recovery.
-    quarantined = list(path.parent.glob(f"{path.stem}.corrupt-*.json"))
+    quarantined = list((path.parent / "quarantine").glob(f"{path.stem}.corrupt-*.json"))
     assert len(quarantined) == 1
     assert quarantined[0].read_text(encoding="utf-8") == corrupt_bytes
     assert not path.exists()
@@ -194,7 +194,7 @@ def test_save_after_corrupt_load_does_not_clobber_quarantine(manager, tmp_path):
     # quarantined original keeps its bytes.
     h = manager.add_hook("u1", name="n", event="done", text="fresh")
     assert manager.get_hook("u1", h.id) is not None
-    quarantined = list(path.parent.glob(f"{path.stem}.corrupt-*.json"))
+    quarantined = list((path.parent / "quarantine").glob(f"{path.stem}.corrupt-*.json"))
     assert len(quarantined) == 1
     assert quarantined[0].read_text(encoding="utf-8") == corrupt_bytes
 
@@ -217,13 +217,13 @@ def test_corrupt_load_waits_for_user_lock(manager):
         time.sleep(0.2)
         # The reader is blocked on the lock: no quarantine has happened yet.
         assert path.exists()
-        assert not list(path.parent.glob(f"{path.stem}.corrupt-*.json"))
+        assert not list((path.parent / "quarantine").glob(f"{path.stem}.corrupt-*.json"))
     finally:
         lock.release()
     reader.join(timeout=5)
     assert results == [[]]
     assert not path.exists()
-    assert len(list(path.parent.glob(f"{path.stem}.corrupt-*.json"))) == 1
+    assert len(list((path.parent / "quarantine").glob(f"{path.stem}.corrupt-*.json"))) == 1
 
 
 def test_mtime_cache_refreshes_on_write(manager):

@@ -31,6 +31,7 @@ class ExecutionEnvironment:
     available_shells: tuple[str, ...]
     in_container: bool
     path_separator: str
+    resource_root: str = ""
 
 
 def default_tool_cwd() -> Path:
@@ -39,6 +40,21 @@ def default_tool_cwd() -> Path:
         return get_settings().project_root.resolve()
     except Exception:
         return Path.cwd().resolve()
+
+
+def resource_root(user_id: str | None = None) -> Path:
+    """Root of the Nymeria resource stores (the runtime data dir).
+
+    v1 is single-user: the acting user id is accepted but ignored so that a
+    future per-user resource root is a one-function change. Callers that know
+    the acting user should pass it (multi-user principle, see
+    docs/private/plans/resource-filesystem-layout.md section 5).
+    """
+    del user_id  # v1: one shared root for all users.
+    try:
+        return get_settings().data_dir.resolve()
+    except Exception:
+        return (default_tool_cwd() / "data").resolve()
 
 
 def resolve_tool_path(raw_path: str | os.PathLike[str]) -> Path:
@@ -81,6 +97,7 @@ def detect_execution_environment() -> ExecutionEnvironment:
         available_shells=available_shells,
         in_container=_detect_container(),
         path_separator=os.sep,
+        resource_root=str(resource_root()),
     )
 
 
@@ -131,6 +148,7 @@ def _shell_description(base: str, env: ExecutionEnvironment) -> str:
         f"- Available shells: {shell_names}.\n"
         f"- Path separator: {env.path_separator!r}.\n"
         f"- {syntax_hint}\n"
+        f"{_resource_root_line(env)}"
         "- Cwd is not stateful between calls; use working_directory for one-off directory changes."
     )
 
@@ -141,7 +159,18 @@ def _file_description(base: str, env: ExecutionEnvironment) -> str:
         "Runtime path context:\n"
         f"- Relative file_path values resolve from: {env.default_cwd}.\n"
         "- Absolute paths are accepted, subject to each tool's safety checks.\n"
+        f"{_resource_root_line(env)}"
         "- Shell cd commands do not change file tool paths; cwd is not stateful."
+    )
+
+
+def _resource_root_line(env: ExecutionEnvironment) -> str:
+    """One-line pointer to the Nymeria resource stores, if a root is known."""
+    if not env.resource_root:
+        return ""
+    return (
+        f"- Nymeria resource root (config and resource stores; map: "
+        f"README.md there, or the nymeria-resources skill): {env.resource_root}.\n"
     )
 
 

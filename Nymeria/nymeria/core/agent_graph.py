@@ -767,6 +767,14 @@ def get_graph_for_user_impl(
     The system prompt is source-invariant, so autonomous and interactive
     turns share the same cached graph for a given (user_id, thread_id).
     """
+    # Hot-load chokepoint: pick up raw on-disk edits to the custom-tool /
+    # MCP stores before any cache-freshness decision, so an external edit
+    # reaches this very build (debounced stat scans; usually a no-op).
+    try:
+        agent._sync_external_resource_edits()
+    except Exception as exc:  # noqa: BLE001 - freshness must never break a turn
+        logger.warning("External resource-edit sync failed: %s", exc)
+
     if thread_id:
         try:
             agent._clear_expired_llm_fallback_if_idle(thread_id)

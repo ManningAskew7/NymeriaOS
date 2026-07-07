@@ -89,9 +89,14 @@ RUN groupadd -r -g 999 nymeria \
 # Set up Python symlinks
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
 
-# Create directories
+# Create directories. The /app/data symlink gives Docker the same
+# "data/ under the project root" layout as bare metal, so relative
+# data/... paths from agent tools land on the /data volume instead of
+# the read-only code tree (resource-filesystem-layout plan, slice 1).
+# data/ is dockerignored, so the link cannot collide with copied code.
 WORKDIR /app
 RUN mkdir -p /data /workspace \
+    && { [ -e /app/data ] || ln -s /data /app/data; } \
     && chown -R nymeria:nymeria /app /data /workspace
 
 # Install Python dependencies as root first (for system packages)

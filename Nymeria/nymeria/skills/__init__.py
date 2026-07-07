@@ -24,8 +24,9 @@ import logging
 import re
 import shutil
 import threading
+import time
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -299,6 +300,10 @@ class SkillManager:
     index of the installed pool.
     """
 
+    # Minimum seconds between external-edit stat scans (hot-load debounce).
+    # Class attribute so tests can zero it.
+    EXTERNAL_REFRESH_INTERVAL_SECONDS: float = 2.0
+
     def __init__(
         self,
         bundled_dir: Path,
@@ -316,6 +321,14 @@ class SkillManager:
         self._global: Dict[str, Skill] = {}
         self._per_user: Dict[str, Dict[str, Skill]] = {}
         self._embedding_index = embedding_index
+
+        # Hot-load bookkeeping (resource-filesystem-layout plan, slice 2):
+        # SKILL.md path str -> (st_mtime_ns, st_size) captured at scan time,
+        # so raw file edits are detected without an explicit reload().
+        self._scan_sigs: Dict[str, Tuple[int, int]] = {}
+        self._last_freshness_check = 0.0
+        self._embed_rebuild_running = False
+        self._embed_rebuild_dirty = False
 
         self._ensure_dirs()
         self.reload()
@@ -353,6 +366,44 @@ class SkillManager:
 
     def reload(self) -> None:
         """Rescan all four scope layers from disk."""
+        self._rescan_from_disk()
+        # Refresh the installed embedding index if one is attached. Inline on
+        # purpose: reload() callers are the explicit install/uninstall/write
+        # paths and tests, which expect the index current on return. The
+        # hot-load refresh path uses the background variant instead.
+        self._rebuild_embedding_index_now()
+
+    def _collect_scan_sigs(self) -> Dict[str, Tuple[int, int]]:
+        """Stat every SKILL.md across the scope roots (no parsing)."""
+        sigs: Dict[str, Tuple[int, int]] = {}
+        roots: List[Path] = [self._bundled_dir, self._global_dir]
+        try:
+            if self._users_dir.is_dir():
+                roots.extend(p for p in self._users_dir.iterdir() if p.is_dir())
+        except OSError:
+            pass  # Unreadable users dir: scan the fixed roots only.
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                entries = list(root.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                skill_md = entry / "SKILL.md"
+                try:
+                    st = skill_md.stat()
+                except OSError:
+                    continue
+                sigs[str(skill_md)] = (st.st_mtime_ns, st.st_size)
+        return sigs
+
+    def _rescan_from_disk(self) -> None:
+        """Rebuild the in-memory caches (and scan fingerprints) from disk."""
+        # Collect fingerprints BEFORE parsing: a file changing mid-scan then
+        # reads newer content against an older fingerprint, so the next
+        # freshness check re-detects it (never misses).
+        sigs = self._collect_scan_sigs()
         with self._lock:
             self._bundled = self._scan_dir(self._bundled_dir, scope="bundled")
             self._global = self._scan_dir(self._global_dir, scope="global")
@@ -363,6 +414,7 @@ class SkillManager:
                         self._per_user[user_dir.name] = self._scan_dir(
                             user_dir, scope="user", user_id=user_dir.name,
                         )
+            self._scan_sigs = sigs
         total = len(self._bundled) + len(self._global) + sum(len(v) for v in self._per_user.values())
         logger.info(
             "SkillManager loaded %d skills (bundled=%d global=%d users=%d)",
@@ -370,28 +422,118 @@ class SkillManager:
             sum(len(v) for v in self._per_user.values()),
         )
 
-        # Refresh the installed embedding index if one is attached.
-        if self._embedding_index is not None:
+    def refresh_if_stale(self, force: bool = False) -> bool:
+        """Pick up external (non-manager) SKILL.md edits, adds, and removals.
+
+        Debounced stat scan across the scope roots; on any change, rescans
+        the caches and schedules a background embedding rebuild (never
+        inline: a raw edit must not pay the embed cost on the turn path).
+        Returns True when a change was applied.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if not force and now - self._last_freshness_check < self.EXTERNAL_REFRESH_INTERVAL_SECONDS:
+                return False
+            self._last_freshness_check = now
+
+        sigs = self._collect_scan_sigs()
+        with self._lock:
+            if sigs == self._scan_sigs:
+                return False
+            old = dict(self._scan_sigs)
+        logger.info("Skill store: external edit detected; rescanning")
+        self._rescan_from_disk()
+        self._schedule_embedding_rebuild()
+        self._audit_external_change(old, sigs)
+        return True
+
+    def _audit_external_change(
+        self, old: Dict[str, Tuple[int, int]], new: Dict[str, Tuple[int, int]]
+    ) -> None:
+        """User-attributed audit line(s) for raw skill-file changes."""
+        changed = (set(old) ^ set(new)) | {
+            key for key in set(old) & set(new) if old[key] != new[key]
+        }
+        if not changed:
+            return
+        by_user: Dict[str, List[str]] = {}
+        users_root = str(self._users_dir)
+        for key in changed:
+            path = Path(key)
+            user = "default"
             try:
-                # De-dupe by name with user > global > bundled precedence so the
-                # index matches what `get()` would resolve for any user.
+                rel = path.relative_to(users_root)
+                user = rel.parts[0] if rel.parts else "default"
+            except ValueError:
+                pass  # Not under users/: a global or bundled skill.
+            by_user.setdefault(user, []).append(path.parent.name)
+        try:
+            from ..core.activity_log import log_external_edit
+
+            for user, names in by_user.items():
+                log_external_edit("skills", f"skill dirs {sorted(names)}", user_id=user)
+        except Exception:  # noqa: BLE001 - audit must never break a scan
+            logger.debug("Failed to record skills external-edit audit", exc_info=True)
+
+    def _rebuild_embedding_index_now(self) -> None:
+        """Rebuild the installed-skills embedding index inline (best-effort)."""
+        if self._embedding_index is None:
+            return
+        try:
+            # De-dupe by name with user > global > bundled precedence so the
+            # index matches what `get()` would resolve for any user.
+            with self._lock:
                 merged: Dict[str, Skill] = {}
                 merged.update(self._bundled)
                 merged.update(self._global)
                 for user_map in self._per_user.values():
                     merged.update(user_map)
-                summary = self._embedding_index.rebuild(
-                    namespace="installed",
-                    items=list(merged.values()),
-                )
-                logger.info(
-                    "skills index rebuilt: fts=%d semantic=%d%s",
-                    summary.get("fts_indexed", 0),
-                    summary.get("semantic_indexed", 0),
-                    f" warning={summary.get('warning')!r}" if summary.get("warning") else "",
-                )
-            except Exception as e:
-                logger.warning("skills embedding index rebuild failed: %s", e)
+                items = list(merged.values())
+            summary = self._embedding_index.rebuild(
+                namespace="installed",
+                items=items,
+            )
+            logger.info(
+                "skills index rebuilt: fts=%d semantic=%d%s",
+                summary.get("fts_indexed", 0),
+                summary.get("semantic_indexed", 0),
+                f" warning={summary.get('warning')!r}" if summary.get("warning") else "",
+            )
+        except Exception as e:
+            logger.warning("skills embedding index rebuild failed: %s", e)
+
+    def _schedule_embedding_rebuild(self) -> None:
+        """Rebuild the embedding index on a background thread, coalescing.
+
+        A rebuild embeds every installed skill, so the hot-load path must not
+        run it inline. The dirty flag coalesces bursts: changes that land
+        while a rebuild is running trigger exactly one follow-up pass.
+        """
+        if self._embedding_index is None:
+            return
+        with self._lock:
+            self._embed_rebuild_dirty = True
+            if self._embed_rebuild_running:
+                return
+            self._embed_rebuild_running = True
+
+        def _run() -> None:
+            try:
+                while True:
+                    with self._lock:
+                        if not self._embed_rebuild_dirty:
+                            self._embed_rebuild_running = False
+                            return
+                        self._embed_rebuild_dirty = False
+                    self._rebuild_embedding_index_now()
+            except Exception:  # noqa: BLE001 - daemon thread must not die noisily
+                with self._lock:
+                    self._embed_rebuild_running = False
+                logger.exception("Background skills index rebuild failed")
+
+        threading.Thread(
+            target=_run, name="skills-embed-rebuild", daemon=True
+        ).start()
 
     def _user_scope(self, user_id: Optional[str]) -> Dict[str, Skill]:
         if not user_id:
@@ -403,6 +545,7 @@ class SkillManager:
 
         Precedence for name collisions: user > global > bundled.
         """
+        self.refresh_if_stale()
         with self._lock:
             merged: Dict[str, Skill] = {}
             merged.update(self._bundled)
@@ -410,17 +553,91 @@ class SkillManager:
             merged.update(self._user_scope(user_id))
             return sorted(merged.values(), key=lambda s: s.name)
 
+    def _resolve_cached(self, name: str, user_id: Optional[str]) -> Optional[Skill]:
+        """Precedence resolution against the in-memory caches (caller locks)."""
+        user_skills = self._user_scope(user_id)
+        if name in user_skills:
+            return user_skills[name]
+        if name in self._global:
+            return self._global[name]
+        if name in self._bundled:
+            return self._bundled[name]
+        return None
+
     def get(self, name: str, user_id: Optional[str] = None) -> Optional[Skill]:
-        """Resolve a skill by name, honoring precedence."""
+        """Resolve a skill by name, honoring precedence.
+
+        Reads through to disk: the debounced scan runs first so newly created
+        directories appear (including a higher-precedence same-name skill
+        shadowing the cached resolution), then a raw edit to the resolved
+        skill's SKILL.md is reparsed on the spot (one stat when unchanged).
+        """
+        self.refresh_if_stale()
         with self._lock:
-            user_skills = self._user_scope(user_id)
-            if name in user_skills:
-                return user_skills[name]
-            if name in self._global:
-                return self._global[name]
-            if name in self._bundled:
-                return self._bundled[name]
+            skill = self._resolve_cached(name, user_id)
+        if skill is None:
             return None
+        return self._fresh_skill(skill, user_id)
+
+    def _fresh_skill(self, skill: Skill, user_id: Optional[str]) -> Optional[Skill]:
+        """Return ``skill``, reparsing its directory if the file changed."""
+        skill_md = skill.path / "SKILL.md"
+        key = str(skill_md)
+        try:
+            st = skill_md.stat()
+        except OSError:
+            # Deleted or unreadable out-of-band: rescan so a lower-precedence
+            # skill of the same name (or None) resolves.
+            self.refresh_if_stale(force=True)
+            with self._lock:
+                return self._resolve_cached(skill.name, user_id)
+        sig = (st.st_mtime_ns, st.st_size)
+        with self._lock:
+            if self._scan_sigs.get(key) == sig:
+                return skill
+
+        reloaded = load_skill_directory(
+            skill.path, scope=skill.scope, user_id=skill.user_id
+        )
+        if reloaded is None:
+            # The edited file no longer parses: keep serving the cached copy
+            # (matching load-time skip-on-bad-file behavior) but record the
+            # fingerprint so every call does not re-parse the broken file.
+            with self._lock:
+                self._scan_sigs[key] = sig
+            logger.warning(
+                "skill %r changed on disk but no longer parses; serving the "
+                "cached copy", skill.name,
+            )
+            return skill
+        if reloaded.name != skill.name:
+            # Renamed in frontmatter: the cheap in-place swap would leave the
+            # old name dangling, so do a full rescan.
+            self._rescan_from_disk()
+            self._schedule_embedding_rebuild()
+            with self._lock:
+                return self._resolve_cached(skill.name, user_id)
+
+        with self._lock:
+            self._scan_sigs[key] = sig
+            if skill.scope == "bundled":
+                self._bundled[skill.name] = reloaded
+            elif skill.scope == "global":
+                self._global[skill.name] = reloaded
+            elif skill.user_id:
+                self._per_user.setdefault(skill.user_id, {})[skill.name] = reloaded
+        self._schedule_embedding_rebuild()
+        try:
+            from ..core.activity_log import log_external_edit
+
+            log_external_edit(
+                "skills",
+                f"skill {skill.name!r} reparsed after a raw edit",
+                user_id=skill.user_id or "default",
+            )
+        except Exception:  # noqa: BLE001 - audit must never break a read
+            logger.debug("Failed to record skill external-edit audit", exc_info=True)
+        return reloaded
 
     def list_for_thread(
         self,
@@ -435,6 +652,7 @@ class SkillManager:
         thread_disabled_skills, with each name resolved via get()
         (user > global > bundled precedence).
         """
+        self.refresh_if_stale()
         active_names: List[str] = []
         seen = set()
         configured_names = list(enabled_global_skills) + list(thread_enabled_skills)
