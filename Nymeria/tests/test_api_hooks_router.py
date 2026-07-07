@@ -729,3 +729,64 @@ def test_admin_may_resolve_another_users_approval(approvals_env, waiter_loop):
     result = _await_result(waiter_loop, future)
     assert result["approved"] is False
     assert result["resolved_by"] == "boss"
+
+
+# --- Definition-level fire gate (fire_conditions + once) ----------------------
+
+def test_create_with_fire_gate_roundtrips(client_env):
+    client, _agent, headers, _b = client_env
+    resp = _create(
+        client, headers,
+        name="advisory", event="post_tool_use",
+        text="wrap up ({context_pct_of_trigger}%)",
+        fire_conditions=[
+            {"field": "context_pct_of_trigger", "operator": "gte", "value": "85"}
+        ],
+        once=True,
+    )
+    assert resp.status_code == 201
+    hook = resp.json()
+    assert hook["once"] is True
+    assert hook["fire_conditions"][0]["operator"] == "gte"
+    got = client.get(f"/hooks/{hook['id']}", headers=headers).json()
+    assert got["once"] is True
+    assert got["fire_conditions"][0]["field"] == "context_pct_of_trigger"
+
+
+def test_patch_fire_gate(client_env):
+    client, _agent, headers, _b = client_env
+    hook = _create(client, headers).json()
+    resp = client.patch(
+        f"/hooks/{hook['id']}", headers=headers,
+        json={
+            "once": True,
+            "fire_conditions": [
+                {"field": "final_text", "operator": "contains", "value": "error"}
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["once"] is True
+    assert body["fire_conditions"][0]["field"] == "final_text"
+
+
+def test_create_rejects_bad_fire_gate_operator(client_env):
+    client, _agent, headers, _b = client_env
+    resp = _create(
+        client, headers,
+        fire_conditions=[{"field": "x", "operator": "sideways", "value": "1"}],
+    )
+    assert resp.status_code == 422  # pydantic rejects the unknown operator
+
+
+def test_schema_exposes_fire_gate_and_numeric_operators(client_env):
+    client, _agent, headers, _b = client_env
+    schema = client.get("/hooks/schema", headers=headers).json()
+    for op in ("gt", "gte", "lt", "lte"):
+        assert op in schema["operators"]
+    gate = schema["fire_gate"]
+    assert gate["fields"] == ["fire_conditions", "once"]
+    assert "context_pct_of_trigger" in gate["context_fields"]
+    assert "tool_name" in gate["meta_fields"]
+    assert gate["args_prefix"] == "args."

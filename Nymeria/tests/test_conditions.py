@@ -42,6 +42,32 @@ def test_bad_regex_is_non_match_not_raise():
     assert not evaluate_conditions({"cmd": "anything"}, [_c("cmd", "matches_regex", "(")])
 
 
+# --- numeric operators --------------------------------------------------------
+
+def test_numeric_operators():
+    data = {"pct": 87.3, "count": 5}
+    assert evaluate_conditions(data, [_c("pct", "gt", "85")])
+    assert evaluate_conditions(data, [_c("pct", "gte", "87.3")])
+    assert not evaluate_conditions(data, [_c("pct", "lt", "85")])
+    assert evaluate_conditions(data, [_c("pct", "lte", "87.3")])
+    assert evaluate_conditions(data, [_c("count", "gte", "5")])
+    assert not evaluate_conditions(data, [_c("count", "gt", "5")])
+
+
+def test_numeric_operators_accept_string_numbers():
+    # A stringly-typed field (e.g. a webhook event) still compares numerically.
+    assert evaluate_conditions({"pct": "90"}, [_c("pct", "gte", "85")])
+    assert not evaluate_conditions({"pct": "80"}, [_c("pct", "gte", "85")])
+
+
+def test_numeric_operators_non_numeric_is_non_match():
+    # Non-numeric on either side degrades to a non-match, never a raise.
+    assert not evaluate_conditions({"pct": "high"}, [_c("pct", "gte", "85")])
+    assert not evaluate_conditions({"pct": 90}, [_c("pct", "gte", "lots")])
+    assert not evaluate_conditions({}, [_c("pct", "gte", "85")])  # absent field
+    assert not evaluate_conditions({"pct": None}, [_c("pct", "gte", "85")])
+
+
 # --- AND logic + empty ------------------------------------------------------
 
 def test_and_logic():

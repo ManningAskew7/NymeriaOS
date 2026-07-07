@@ -132,7 +132,9 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   (create/update/delete) and `hook_info` (list/detail/test/log). The action is picked with
   `hook_action` (default `inject_context`); text actions take `text`, the guardrail
   actions take a `params` dict (`{"conditions": [...], "reason": ...}` /
-  `{"conditions": [...], "updates": {...}}`). A create auto-binds the current thread for
+  `{"conditions": [...], "updates": {...}}`); the definition-level fire gate is
+  authored via `fire_conditions` (a list of condition objects) + `once` on both
+  create and update. A create auto-binds the current thread for
   `scope="thread"` (including the real `default` thread); `test` renders/describes the
   hook without firing; `log` reads the execution log (below). The `hook-management`
   bundled skill front-loads these. Like every surface, `scope` is create-only
@@ -151,8 +153,10 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   path that does not depend on the model calling the tool. The grammar is flag-based (a
   single line, so it round-trips through chat surfaces): `/hook create <name> --event E
   --action A [--text ..|--url ..|--cond "field op value"..|--reason ..|--set arg=value..]
-  [--matcher A|B] [--scope thread|global] [--disabled]`; `--cond`/`--set` repeat; `edit`
-  takes `key=value` scalars plus `--cond`/`--set`. It reuses the same flat-field mapping
+  [--fire-cond "field op value"]... [--once] [--matcher A|B] [--scope thread|global]
+  [--disabled]`; `--cond`/`--set`/`--fire-cond` repeat; `edit`
+  takes `key=value` scalars (incl. `once=true|false`) plus `--cond`/`--set`/
+  `--fire-cond`. It reuses the same flat-field mapping
   (`params_from_fields` / `build_update_kwargs` in `core/hook_manager.py`) as the REST
   surface, so the three authoring paths cannot drift. The mutating subcommands are
   `agent_allowed=False` (the agent authors via the tool) and hidden from chat command menus
@@ -164,11 +168,14 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   `GET /hooks/approvals` + `POST /hooks/approvals/{record_id}/resolve` (the
   `require_approval` resolve surface), and
   `GET /hooks/schema` (the machine-readable taxonomy: per-event legal actions,
-  per-action plane/events/params JSON schema, condition operators, the cap; derived
+  per-action plane/events/params JSON schema, condition operators, the
+  `fire_gate` field surface, the cap; derived
   from `core/hook_spec.py` so clients can render authoring forms from data). The
   request carries `action` plus the flat per-action fields
-  (`text` / `conditions` / `reason` / `updates` / `url` / `command` / `timeout_seconds`); the
-  response exposes the full `logic` object (discriminated on `action`). Every handler pins
+  (`text` / `conditions` / `reason` / `updates` / `url` / `command` / `timeout_seconds`)
+  and the definition-level `fire_conditions` / `once`; the
+  response exposes the full `logic` object (discriminated on `action`) plus the
+  fire-gate fields. Every handler pins
   `user_id` to the authenticated caller; scoped creates pass through the thread-access gate;
   authoring (or switching to) `run_command` is rejected for non-admins (403) or when the
   deployment flag is off (400), and any behavior edit of an existing `run_command` hook
@@ -182,6 +189,82 @@ a single adaptive **HookForm** modal whose fields reflow by event and action) au
 edits, tests, and toggles hooks; a per-thread **Hooks** tab drives the enable model
 below. The action families are category-coded (Guardrails / Context / Reactions) so the
 feed and form read as three families rather than one flat list.
+
+### The fire gate: fire_conditions and once (the WHEN layer)
+
+Every hook definition carries an optional engine-level fire gate, evaluated by the
+bridge BEFORE the hook's logic runs, on any event and around any action (and any
+future logic substrate, e.g. `nym` workflows). It is the declarative WHEN layer:
+the platform ships the firing semantics, the logic slot stays swappable. Distinct
+from the guardrail actions' per-logic `conditions`, which match tool args and are
+part of that logic's semantics.
+
+- `fire_conditions`: a list of `{"field", "operator", "value"}` conditions, ANDed
+  (`core/conditions.py`, shared with triggers); empty = always fire. Evaluated
+  against a per-event data dict (`bridge.fire_condition_data`):
+  - Meta fields (top level): `event`, `thread_id`, `user_id`, `is_autonomous`,
+    `holder_kind`, `trigger_label`, `tool_name`, `tool_status`, `prompt`,
+    `final_text`.
+  - Tool args, nested under `args.` (dotted paths resolve): `args.command`.
+  - Context-usage signal (raw numbers; ABSENT when unknown, so a numeric
+    condition on an unknown signal is a non-match, never a compare against 0):
+    `context_tokens` (current occupancy), `context_limit` (model window),
+    `compact_trigger_tokens` (resolved auto-compact trigger; absent unless
+    `context_management=auto_compact`), and the derived
+    `context_pct_of_trigger` / `context_pct_of_limit` percentages.
+- Numeric operators: `gt` / `gte` / `lt` / `lte` join the string operators
+  (`equals`, `not_equals`, `contains`, `starts_with`, `matches_regex`). Both
+  sides coerce via `float()`; non-numeric on either side is a non-match, never a
+  raise. Being shared, the trigger stack gains them too.
+- `once`: fire once per gate crossing. After firing, the hook stays silent while
+  `fire_conditions` keep matching and re-arms when they stop matching (e.g. a
+  context warning re-arms after compaction drops occupancy). With no
+  `fire_conditions`, `once` fires once per thread. State is a per-thread scratch
+  sentinel (`hook_once:<hook_id>`), written through the contract's
+  `scratch_patch` channel, in-memory (a restart re-arms). `once` is best-effort,
+  not a transactional guarantee: on the observe plane two near-simultaneous
+  off-turn fires can race the sentinel, and on the mutate plane a concurrent
+  same-turn tool batch can double-fire (each tool call's dispatch snapshots the
+  scratch before the other writes the sentinel). Both directions are benign:
+  the worst case is one duplicate fire; re-arm is unaffected. An action that
+  raises (or returns an illegal outcome type) does not consume the shot; the
+  hook re-fires on the next matching event.
+- Malformed `fire_conditions` make the hook a no-op (never a fail-closed block),
+  the same posture as the guardrail actions. A gate that does not fire records a
+  `no_op` in the execution log; a heavily-gated global tool hook therefore churns
+  the 200-entry log while idle (working as intended: the log is what tells
+  "gated" apart from "never fired").
+
+The context-usage signal also feeds `{placeholder}` templating: `inject_context`
+(and every text action) can render `{context_tokens}`, `{context_limit}`,
+`{compact_trigger_tokens}`, `{context_pct_of_trigger}`, `{context_pct_of_limit}`
+(empty string when unknown). Signal sources per event: `prompt_submit`/`done`
+read the token tracker (`agent_compaction.hook_context_stats`); `pre`/
+`post_tool_use` read the freshest mid-turn occupancy from the running state's
+last AI message (the same source as sub-turn compaction), falling back to the
+turn-entry stamp in `graph_run_config`. Stats are stamped only when the turn has
+enabled hooks, so the zero-hook hot path is unchanged.
+
+### Recipe: context checkpoint advisory (backlog #72)
+
+The flagship fire-gate recipe: warn the agent once per approach to the
+auto-compaction trigger so it checkpoints working state (memory/notepad or a
+file) before the context is summarized. Fires on `post_tool_use` so a long
+tool-heavy turn still gets warned mid-turn; `once` + re-arm gives one advisory
+per crossing (compaction drops occupancy, which re-arms it; a concurrent tool
+batch can rarely duplicate the advisory, which is harmless).
+
+```
+/hook create context-checkpoint-advisory --event post_tool_use \
+  --action inject_context --scope global --once \
+  --fire-cond "context_pct_of_trigger gte 85" \
+  --text "[Context advisory] Approaching auto-compaction: {context_tokens} of {compact_trigger_tokens} trigger tokens ({context_pct_of_trigger}%). Older messages will soon be summarized. Persist important working state now: durable facts via memory_add(scope=global), in-flight task state via memory_add(scope=thread) or a checkpoint file. Then continue naturally; do not rush to finish before compaction."
+```
+
+Tune the threshold by editing the condition (`/hook edit <id> --fire-cond
+"context_pct_of_trigger gte 90"`). The same shape works on `prompt_submit`
+(warns at turn entry instead of mid-turn), and a sibling `notify` hook with the
+same gate can push the human a heads-up.
 
 ### Recipes: bash guardrails
 
@@ -275,7 +358,9 @@ turn, so recording adds no file I/O to a tool call. Surfaced through
 A hook has three parts:
 
 - **WHEN** (the trigger): one of a fixed set of lifecycle events, plus an optional
-  matcher (e.g. a tool-name filter).
+  matcher (a tool-name filter) and the definition-level fire gate
+  (`fire_conditions` + `once`, above), all declarative and engine-evaluated
+  before any logic runs.
 - **LOGIC** (the middle): a callable that, given the event context, returns a typed
   outcome (or `None`). In the spine this is any in-process Python callable; later it
   can be a ready-made parameterized action or a sandboxed `nym` workflow.
@@ -343,7 +428,10 @@ and reasons concatenate.
 - `HookContext` is **primitives only** (no live agent/thread objects), so it can later
   clone across an out-of-process sandbox boundary. Cross-event scratch state is passed
   as a read-only snapshot on the context (`ctx.scratch`) and written back via
-  `scratch_patch` on the outcome, never as a live handle.
+  `scratch_patch` on the outcome, never as a live handle. The context-usage signal
+  (`context_tokens` / `context_limit` / `compact_trigger_tokens`, optional ints,
+  best-effort) rides the same contract, so a future workflow-substrate hook
+  receives it unchanged.
 - Outcome families: `PromptOutcome`, `PreToolOutcome`, `PostToolOutcome`,
   `DoneOutcome`. An outcome must match its event or the engine drops it.
 - `HookProvenance` carries the DONE-continuation loop-guard state from day one.
@@ -429,9 +517,11 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `_observe_dispatch_pool` + the queue-wait-vs-execution timeout split; reports each run to
   the recorder and, on the mutate plane, to an optional `emit` sink for in-chat lines),
   `actions.py` (the eight actions incl. `require_approval` + `run_command`; per-event planes via the spec's
-  `plane_for`/`plane_by_event`), `bridge.py` (definitions → per-turn registry, registering
+  `plane_for`/`plane_by_event`; `context_usage_fields` + the context template vars),
+  `bridge.py` (definitions → per-turn registry, registering
   each on its per-event plane with its `definition_id`, a per-registration timeout, + the
-  recorder).
+  recorder; the `_FireGate` wrapper evaluating `fire_conditions`/`once` against
+  `fire_condition_data` before any logic runs).
 - `core/hook_spec.py`: the taxonomy single source (`ActionSpec`: base plane, legal events,
   `observe_events` for per-event plane flips, text-action flag; `plane_for`/`plane_by_event`).
   `EVENT_ACTIONS`/`TEXT_ACTIONS` (store) and `ACTION_PLANES` (engine) derive from it;
@@ -457,7 +547,8 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `abort_thread` is wired into the turn-abort cascade), and the `hook_approval` /
   `hook_approval_resolved` autonomous-event + notification + push announcers.
 - `core/conditions.py`: `HookCondition` + `evaluate_conditions` (shared with triggers,
-  which re-export `TriggerCondition`).
+  which re-export `TriggerCondition`); string operators plus the numeric
+  `gt`/`gte`/`lt`/`lte` (float coercion, non-numeric = non-match).
 - `core/text_format.py`: `safe_format` template substitution (shared with triggers).
 - Authoring: `tools/hooks.py` (`hook_config`/`hook_info`), `api/routers/hooks.py`
   (`/hooks` CRUD), `skills_bundled/hook-management/`.

@@ -35,7 +35,12 @@ logger = logging.getLogger(__name__)
 
 class TriggerConditionRequest(BaseModel):
     field: str
-    operator: Literal["equals", "contains", "starts_with", "matches_regex", "not_equals"] = "contains"
+    # Mirrors core/conditions.py::ConditionOperator (shared evaluator); keep in
+    # sync so the REST surface accepts everything the evaluator supports.
+    operator: Literal[
+        "equals", "contains", "starts_with", "matches_regex", "not_equals",
+        "gt", "gte", "lt", "lte",
+    ] = "contains"
     value: str = ""
     case_sensitive: bool = False
 

@@ -25,12 +25,17 @@ def _logic(action, text):
     return SimpleNamespace(action=action, model_dump=lambda **kw: {"text": text})
 
 
-def _defn(id_, event, text, *, action="inject_context", matcher=None, name=None, logic=None):
+def _defn(
+    id_, event, text, *, action="inject_context", matcher=None, name=None, logic=None,
+    fire_conditions=None, once=False,
+):
     return SimpleNamespace(
         id=id_,
         name=name or id_,
         event=event,
         matcher=matcher,
+        fire_conditions=fire_conditions,
+        once=once,
         logic=logic if logic is not None else _logic(action, text),
     )
 
@@ -255,3 +260,151 @@ def test_non_run_command_hook_has_no_timeout_override():
     reg = build_registry([_defn("a", "done", "hi")])
     regs = reg.matching(HookEvent.DONE, _ctx(HookEvent.DONE))
     assert regs[0].timeout is None
+
+
+# --- Definition-level fire gate (fire_conditions + once) ----------------------
+
+from nymeria.core.conditions import HookCondition  # noqa: E402
+from nymeria.core.hooks.bridge import fire_condition_data  # noqa: E402
+
+
+def _cond(field, op, value):
+    return HookCondition(field=field, operator=op, value=value)
+
+
+def test_fire_conditions_gate_blocks_and_allows():
+    reg = build_registry([
+        _defn("a", "prompt_submit", "warned",
+              fire_conditions=[_cond("prompt", "contains", "deploy")]),
+    ])
+    fn = reg.matching(HookEvent.PROMPT_SUBMIT, _ctx(HookEvent.PROMPT_SUBMIT))[0].fn
+    assert fn(_ctx(HookEvent.PROMPT_SUBMIT, prompt="ship it")) is None
+    out = fn(_ctx(HookEvent.PROMPT_SUBMIT, prompt="deploy now"))
+    assert isinstance(out, PromptOutcome)
+    assert out.inject_context == "warned"
+
+
+def test_fire_conditions_numeric_context_gate():
+    conds = [_cond("context_pct_of_trigger", "gte", "85")]
+    reg = build_registry([_defn("a", "prompt_submit", "wrap up", fire_conditions=conds)])
+    fn = reg.matching(HookEvent.PROMPT_SUBMIT, _ctx(HookEvent.PROMPT_SUBMIT))[0].fn
+    below = _ctx(
+        HookEvent.PROMPT_SUBMIT, context_tokens=160_000, compact_trigger_tokens=200_000
+    )
+    above = _ctx(
+        HookEvent.PROMPT_SUBMIT, context_tokens=172_000, compact_trigger_tokens=200_000
+    )
+    unknown = _ctx(HookEvent.PROMPT_SUBMIT)  # no signal -> numeric op is a non-match
+    assert fn(below) is None
+    assert fn(unknown) is None
+    out = fn(above)
+    assert isinstance(out, PromptOutcome)
+    assert out.inject_context == "wrap up"
+
+
+def test_fire_conditions_match_tool_args_under_args_namespace():
+    conds = [_cond("args.command", "contains", "rm -rf")]
+    reg = build_registry([_defn("a", "post_tool_use", "careful", fire_conditions=conds)])
+    ctx_hit = _ctx(
+        HookEvent.POST_TOOL_USE, tool_name="bash", tool_args={"command": "rm -rf /"}
+    )
+    ctx_miss = _ctx(HookEvent.POST_TOOL_USE, tool_name="bash", tool_args={"command": "ls"})
+    fn = reg.matching(HookEvent.POST_TOOL_USE, ctx_hit)[0].fn
+    assert fn(ctx_miss) is None
+    assert fn(ctx_hit).additional_context == "careful"
+
+
+def test_malformed_fire_conditions_make_hook_noop():
+    reg = build_registry([
+        _defn("a", "prompt_submit", "x", fire_conditions="garbage-not-a-list"),
+    ])
+    fn = reg.matching(HookEvent.PROMPT_SUBMIT, _ctx(HookEvent.PROMPT_SUBMIT))[0].fn
+    assert fn(_ctx(HookEvent.PROMPT_SUBMIT, prompt="anything")) is None
+
+
+def test_once_fires_once_then_stays_silent_and_rearms():
+    conds = [_cond("context_pct_of_trigger", "gte", "85")]
+    reg = build_registry([
+        _defn("ck1", "prompt_submit", "advice", fire_conditions=conds, once=True),
+    ])
+    fn = reg.matching(HookEvent.PROMPT_SUBMIT, _ctx(HookEvent.PROMPT_SUBMIT))[0].fn
+
+    def ctx(tokens, scratch=None):
+        return _ctx(
+            HookEvent.PROMPT_SUBMIT,
+            context_tokens=tokens,
+            compact_trigger_tokens=200_000,
+            scratch=scratch or {},
+        )
+
+    # First crossing: fires and asks for the sentinel to be set.
+    out = fn(ctx(172_000))
+    assert out.inject_context == "advice"
+    assert out.scratch_patch == {"hook_once:ck1": True}
+    # Sentinel set (as the dispatcher would): silent while still above.
+    fired = {"hook_once:ck1": True}
+    assert fn(ctx(180_000, scratch=fired)) is None
+    # Dropped below (compaction): a state-only outcome re-arms the sentinel.
+    rearm = fn(ctx(100_000, scratch=fired))
+    assert isinstance(rearm, PromptOutcome)
+    assert not rearm.inject_context
+    assert rearm.scratch_patch == {"hook_once:ck1": False}
+    # Re-armed: the next crossing fires again.
+    out2 = fn(ctx(190_000, scratch={"hook_once:ck1": False}))
+    assert out2.inject_context == "advice"
+
+
+def test_once_without_conditions_fires_once_per_thread():
+    reg = build_registry([_defn("o1", "prompt_submit", "hello once", once=True)])
+    fn = reg.matching(HookEvent.PROMPT_SUBMIT, _ctx(HookEvent.PROMPT_SUBMIT))[0].fn
+    out = fn(_ctx(HookEvent.PROMPT_SUBMIT))
+    assert out.inject_context == "hello once"
+    assert out.scratch_patch == {"hook_once:o1": True}
+    assert fn(_ctx(HookEvent.PROMPT_SUBMIT, scratch={"hook_once:o1": True})) is None
+
+
+def test_once_stamps_sentinel_even_when_logic_noops():
+    # The gate fired but the logic returned None (e.g. empty template): the
+    # sentinel must still set via a no-op outcome, or the hook re-fires forever.
+    logic = SimpleNamespace(
+        action="inject_context", model_dump=lambda **kw: {"text": "{holder_kind}"}
+    )
+    reg = build_registry([_defn("n1", "prompt_submit", None, logic=logic, once=True)])
+    fn = reg.matching(HookEvent.PROMPT_SUBMIT, _ctx(HookEvent.PROMPT_SUBMIT))[0].fn
+    out = fn(_ctx(HookEvent.PROMPT_SUBMIT))  # holder_kind None -> renders empty -> None
+    assert isinstance(out, PromptOutcome)
+    assert not out.inject_context
+    assert out.scratch_patch == {"hook_once:n1": True}
+
+
+def test_fire_condition_data_shapes():
+    ctx = _ctx(
+        HookEvent.POST_TOOL_USE,
+        tool_name="bash",
+        tool_status="success",
+        tool_args={"command": "ls"},
+        context_tokens=150_000,
+        context_limit=400_000,
+        compact_trigger_tokens=200_000,
+    )
+    data = fire_condition_data(ctx)
+    assert data["event"] == "post_tool_use"
+    assert data["tool_name"] == "bash"
+    assert data["args"] == {"command": "ls"}
+    assert data["context_tokens"] == 150_000
+    assert data["context_pct_of_trigger"] == 75.0
+    assert data["context_pct_of_limit"] == 37.5
+    # Unknown signal fields are ABSENT (numeric ops must not compare vs 0).
+    bare = fire_condition_data(_ctx(HookEvent.PROMPT_SUBMIT))
+    assert "context_tokens" not in bare
+    assert "context_pct_of_trigger" not in bare
+
+
+def test_gateless_definitions_take_the_ungated_path():
+    # No fire_conditions and once=False: the registered fn is the bare action
+    # closure (the hot path is unchanged).
+    reg = build_registry([_defn("a", "prompt_submit", "hi")])
+    fn = reg.matching(HookEvent.PROMPT_SUBMIT, _ctx(HookEvent.PROMPT_SUBMIT))[0].fn
+    out = fn(_ctx(HookEvent.PROMPT_SUBMIT))
+    assert out.inject_context == "hi"
+    assert out.scratch_patch is None

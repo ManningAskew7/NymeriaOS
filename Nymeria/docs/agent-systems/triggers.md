@@ -196,7 +196,12 @@ Filter events before they trigger actions. All conditions use AND logic.
 }
 ```
 
-Operators: `equals`, `not_equals`, `contains`, `starts_with`, `matches_regex`.
+Operators: `equals`, `not_equals`, `contains`, `starts_with`, `matches_regex`,
+plus the numeric comparisons `gt`, `gte`, `lt`, `lte` (both sides coerce via
+`float()`; a non-numeric value on either side is a non-match, never an error).
+The condition model is shared with the lifecycle-hooks stack
+(`core/conditions.py`), so hook fire conditions and trigger conditions
+serialize identically.
 
 ## Creating Triggers
 

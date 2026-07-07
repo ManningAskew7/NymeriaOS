@@ -64,6 +64,15 @@ class HookContext:
     trigger_label: Optional[str] = None    # "User Message"/"Scheduled TODO"/trigger name
     provenance: HookProvenance = field(default_factory=HookProvenance)
     scratch: Mapping[str, object] = field(default_factory=dict)
+    # Context-usage signal (best-effort, populated by the fire points; None when
+    # unknown). ``context_tokens`` is the thread's current context occupancy
+    # (fresh mid-turn at the tool events), ``context_limit`` the model's window,
+    # ``compact_trigger_tokens`` the resolved auto-compact trigger (None when
+    # context_management != auto_compact). Primitive ints so the contract stays
+    # cloneable across the future sandbox boundary.
+    context_tokens: Optional[int] = None
+    context_limit: Optional[int] = None
+    compact_trigger_tokens: Optional[int] = None
     # PROMPT_SUBMIT
     prompt: Optional[str] = None
     # PRE/POST_TOOL_USE

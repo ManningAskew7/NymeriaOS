@@ -61,6 +61,22 @@ class HookCreateRequest(BaseModel):
         ),
     )
     matcher: Optional[str] = Field(default=None, description="Tool-name filter (tool events)")
+    fire_conditions: Optional[List[HookCondition]] = Field(
+        default=None,
+        description=(
+            "Definition-level fire gate (any event/action), evaluated before "
+            "the logic runs: meta fields, args.* tool args, context-usage "
+            "numbers (context_tokens/context_pct_of_trigger/...); empty = "
+            "always fire"
+        ),
+    )
+    once: bool = Field(
+        default=False,
+        description=(
+            "Fire once per gate crossing; re-arms when fire_conditions stop "
+            "matching"
+        ),
+    )
     scope: Literal["global", "thread"] = Field(default="thread")
     thread_id: Optional[str] = Field(default=None)
     enabled: bool = Field(default=True)
@@ -78,6 +94,8 @@ class HookUpdateRequest(BaseModel):
     command: Optional[str] = None
     timeout_seconds: Optional[float] = None
     matcher: Optional[str] = None
+    fire_conditions: Optional[List[HookCondition]] = None
+    once: Optional[bool] = None
     enabled: Optional[bool] = None
     # Note: no `scope`/`thread_id` here. Re-scoping a hook to a thread needs a
     # thread_id (and its access gate), which a partial PATCH cannot supply
@@ -102,6 +120,8 @@ class HookResponse(BaseModel):
     logic: dict
     text: str = ""
     matcher: Optional[str] = None
+    fire_conditions: List[dict] = Field(default_factory=list)
+    once: bool = False
     enabled: bool
     scope: str
     thread_id: str = ""
@@ -120,6 +140,8 @@ class HookResponse(BaseModel):
             logic=logic,
             text=logic.get("text", "") or "",
             matcher=h.matcher,
+            fire_conditions=[c.model_dump() for c in h.fire_conditions],
+            once=h.once,
             enabled=h.enabled,
             scope=h.scope,
             thread_id=h.thread_id,
@@ -215,6 +237,8 @@ def create_hook_router(
                 action=body.action,
                 params=params,
                 matcher=body.matcher,
+                fire_conditions=body.fire_conditions,
+                once=body.once,
                 scope=body.scope,
                 thread_id=thread_id,
                 enabled=body.enabled,
@@ -274,6 +298,11 @@ def create_hook_router(
                 "gated": name in GATED_ACTIONS,
                 "params_schema": schema,
             }
+        from ...core.hooks.bridge import (
+            FIRE_CONDITION_CONTEXT_FIELDS,
+            FIRE_CONDITION_META_FIELDS,
+        )
+
         return {
             "events": {
                 e: {"tool_event": e in TOOL_EVENTS, "actions": sorted(legality[e])}
@@ -281,6 +310,16 @@ def create_hook_router(
             },
             "actions": actions,
             "operators": list(get_args(ConditionOperator)),
+            # Definition-level fire gate (any event/action): fire_conditions
+            # evaluate against these fields (tool args under "args.<name>";
+            # numeric context fields take the gt/gte/lt/lte operators), and
+            # `once` fires once per gate crossing with automatic re-arm.
+            "fire_gate": {
+                "fields": ["fire_conditions", "once"],
+                "meta_fields": list(FIRE_CONDITION_META_FIELDS),
+                "context_fields": list(FIRE_CONDITION_CONTEXT_FIELDS),
+                "args_prefix": "args.",
+            },
             "max_hooks": HookStore.model_fields["MAX_HOOKS"].default,
         }
 

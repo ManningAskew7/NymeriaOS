@@ -641,6 +641,10 @@ class NymeriaAgent:
             return f"{time_context}\n\n{guidance}\n\n{message}"
         return f"{time_context}\n\n{message}"
 
+    def _hook_context_stats(self, thread_id: str) -> Dict[str, Optional[int]]:
+        from .agent_compaction import hook_context_stats
+        return hook_context_stats(self, thread_id)
+
     def _prompt_submit_context(
         self,
         *,
@@ -650,9 +654,23 @@ class NymeriaAgent:
         is_autonomous: bool,
         holder_kind: Optional[str],
         trigger_label: Optional[str],
+        registry=None,
     ):
-        """Build the PROMPT_SUBMIT hook context for a turn-entry seam."""
+        """Build the PROMPT_SUBMIT hook context for a turn-entry seam.
+
+        The context-usage stats are computed only when ``registry`` (the turn's
+        resolved per-turn registry) is non-None: resolving them costs a full
+        LLM-config resolve (vault reads included), so the zero-hook hot path
+        skips it, mirroring ``graph_run_config``'s stamp guard.
+        """
         from .hooks import HookContext, HookEvent
+        # getattr (not a direct call) so a minimal facade agent that binds only
+        # the hook-seam methods loses the context signal, not the dispatch
+        # (mirrors graph_run_config's stamp resolution).
+        stats = None
+        if registry is not None:
+            stats_fn = getattr(self, "_hook_context_stats", None)
+            stats = stats_fn(thread_id) if callable(stats_fn) else None
         return HookContext(
             event=HookEvent.PROMPT_SUBMIT,
             thread_id=thread_id,
@@ -661,6 +679,7 @@ class NymeriaAgent:
             holder_kind=holder_kind,
             trigger_label=trigger_label,
             prompt=message,
+            **(stats if isinstance(stats, dict) else {}),
         )
 
     @staticmethod
@@ -682,9 +701,21 @@ class NymeriaAgent:
         completed_normally: bool,
         final_text: str,
         provenance=None,
+        registry=None,
     ):
-        """Build the DONE hook context for a turn-termination seam."""
+        """Build the DONE hook context for a turn-termination seam.
+
+        Same stats gate as ``_prompt_submit_context``: computed only when
+        ``registry`` is non-None so a zero-hook turn never pays the LLM-config
+        resolve.
+        """
         from .hooks import HookContext, HookEvent, HookProvenance
+        # getattr, mirroring _prompt_submit_context: a facade agent without the
+        # stats helper loses the context signal, not the DONE dispatch.
+        stats = None
+        if registry is not None:
+            stats_fn = getattr(self, "_hook_context_stats", None)
+            stats = stats_fn(thread_id) if callable(stats_fn) else None
         return HookContext(
             event=HookEvent.DONE,
             thread_id=thread_id,
@@ -694,6 +725,7 @@ class NymeriaAgent:
             provenance=provenance or HookProvenance(),
             completed_normally=completed_normally,
             final_text=final_text,
+            **(stats if isinstance(stats, dict) else {}),
         )
 
     @staticmethod
@@ -719,6 +751,7 @@ class NymeriaAgent:
         holder_kind: Optional[str],
         final_text: str,
         continuation_depth: int,
+        registry=None,
     ):
         """Build the DONE HookContext for a mutate dispatch, stamping loop lineage."""
         from .hooks import HookProvenance
@@ -733,6 +766,7 @@ class NymeriaAgent:
                 done_continuation_active=continuation_depth > 0,
                 continuation_depth=continuation_depth,
             ),
+            registry=registry,
         )
 
     def _deliver_hook_user_message(
@@ -824,6 +858,7 @@ class NymeriaAgent:
                     holder_kind=holder_kind,
                     final_text=final_text,
                     continuation_depth=continuation_depth,
+                    registry=reg,
                 ),
                 registry=reg,
             )
@@ -878,6 +913,7 @@ class NymeriaAgent:
                     holder_kind=holder_kind,
                     final_text=final_text,
                     continuation_depth=continuation_depth,
+                    registry=reg,
                 ),
                 registry=reg,
             )
@@ -914,6 +950,7 @@ class NymeriaAgent:
         """
         try:
             from .hooks import HookEvent, schedule_observe
+            _reg = self._hook_registry_for_turn(thread_id, user_id)
             schedule_observe(
                 HookEvent.DONE,
                 self._done_context(
@@ -923,8 +960,9 @@ class NymeriaAgent:
                     holder_kind=holder_kind,
                     completed_normally=completed_normally,
                     final_text=final_text or "",
+                    registry=_reg,
                 ),
-                registry=self._hook_registry_for_turn(thread_id, user_id),
+                registry=_reg,
             )
         except Exception:
             logger.debug("DONE observe hook dispatch failed (sync)", exc_info=True)
@@ -947,6 +985,7 @@ class NymeriaAgent:
         """
         try:
             from .hooks import HookEvent, schedule_observe
+            _reg = self._hook_registry_for_turn(thread_id, user_id)
             schedule_observe(
                 HookEvent.DONE,
                 self._done_context(
@@ -956,8 +995,9 @@ class NymeriaAgent:
                     holder_kind=holder_kind,
                     completed_normally=completed_normally,
                     final_text=final_text or "",
+                    registry=_reg,
                 ),
-                registry=self._hook_registry_for_turn(thread_id, user_id),
+                registry=_reg,
             )
         except Exception:
             logger.debug("DONE observe hook dispatch failed (async)", exc_info=True)
@@ -2118,6 +2158,7 @@ class NymeriaAgent:
             # dispatch isolates hook faults, and the seam swallows setup errors.
             try:
                 from .hooks import HookEvent, dispatch as _hook_dispatch
+                _ps_reg = self._hook_registry_for_turn(thread_id, user_id)
                 _ps_out = _hook_dispatch(
                     HookEvent.PROMPT_SUBMIT,
                     self._prompt_submit_context(
@@ -2127,8 +2168,9 @@ class NymeriaAgent:
                         is_autonomous=is_autonomous_source,
                         holder_kind=source,
                         trigger_label=_trigger_override,
+                        registry=_ps_reg,
                     ),
-                    registry=self._hook_registry_for_turn(thread_id, user_id),
+                    registry=_ps_reg,
                 )
                 _ps_injected = self._wrap_prompt_injection(_ps_out)
                 if _ps_injected:
@@ -2810,6 +2852,7 @@ class NymeriaAgent:
             _ps_activity: list = []
             try:
                 from .hooks import HookEvent, adispatch as _hook_adispatch
+                _ps_reg = self._hook_registry_for_turn(thread_id, user_id)
                 _ps_out = await _hook_adispatch(
                     HookEvent.PROMPT_SUBMIT,
                     self._prompt_submit_context(
@@ -2819,8 +2862,9 @@ class NymeriaAgent:
                         is_autonomous=is_autonomous_source,
                         holder_kind=source,
                         trigger_label=_trigger_override,
+                        registry=_ps_reg,
                     ),
-                    registry=self._hook_registry_for_turn(thread_id, user_id),
+                    registry=_ps_reg,
                     emit=_ps_activity.append,
                 )
                 _ps_injected = self._wrap_prompt_injection(_ps_out)

@@ -218,6 +218,20 @@ def graph_run_config(
     hook_registry = resolve_hooks(thread_id, user_id) if callable(resolve_hooks) else None
     if hook_registry is not None:
         config["configurable"]["hook_registry"] = hook_registry
+        # Context-usage signal for tool-event hooks: the model window and the
+        # resolved auto-compact trigger are turn-stable, so stamp them once
+        # here; occupancy is stamped as the turn-entry fallback and refreshed
+        # mid-turn by ``_build_tool_hook_ctx`` from the latest AIMessage usage.
+        # Computed ONLY when a hook registry exists, so the zero-hook hot path
+        # stays byte-identical.
+        stats_fn = getattr(agent, "_hook_context_stats", None)
+        stats = stats_fn(thread_id) if callable(stats_fn) else None
+        if isinstance(stats, dict):
+            config["configurable"]["hook_context_tokens"] = stats.get("context_tokens")
+            config["configurable"]["hook_context_limit"] = stats.get("context_limit")
+            config["configurable"]["hook_compact_trigger_tokens"] = stats.get(
+                "compact_trigger_tokens"
+            )
     if callbacks is not None:
         config["callbacks"] = callbacks
     return config
