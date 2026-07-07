@@ -2,12 +2,14 @@
 # Claude Code status line - single line, color.
 #
 # Segments: model/effort | cwd | git branch + uncommitted count + commits-behind |
-#           context as tokens (used/window) | code churn | subscription usage
+#           context as tokens (used/window) | code churn | credit estimate
+#           (metered models only) | subscription usage
 #
 # Palette (Nymeria theme): accent periwinkle #bbddfb = live gauge numbers;
-# white = model name; lavender = location/identity (dir, branch); grey =
-# chrome (labels, separators, effort, reset time); green/red = churn;
-# yellow/orange/red = threshold alerts only.
+# white = model name (orange when the model bills usage credits, e.g. Fable);
+# lavender = location/identity (dir, branch); grey = chrome (labels,
+# separators, effort, reset time); green/red = churn; yellow/orange/red =
+# threshold alerts only.
 # Reads the JSON Claude Code pipes on stdin. Null-safe throughout.
 
 input=$(cat)
@@ -15,7 +17,9 @@ input=$(cat)
 j() { printf '%s' "$input" | jq -r "$1"; }
 
 name=$(j '.model.display_name // "unknown"')
+mid=$(j '.model.id // ""')
 effort=$(j '.effort.level // empty')
+cost_usd=$(j '.cost.total_cost_usd // 0')
 dir=$(j '.workspace.current_dir // .cwd // ""')
 used=$(j '.context_window.total_input_tokens // 0')
 size=$(j '.context_window.context_window_size // 0')
@@ -32,6 +36,10 @@ grey=$'\033[38;2;138;147;163m'     # #8a93a3 - chrome (labels, separators)
 white=$'\033[97m'
 green=$'\033[32m'; yellow=$'\033[1;33m'; orange=$'\033[38;5;208m'; red=$'\033[31m'
 reset=$'\033[0m'
+
+# metered-model cue: Fable bills to usage credits, not the plan pools
+model_c=$white
+case "${mid,,} ${name,,}" in *fable*) model_c=$orange ;; esac
 
 # 12345 -> 12k ; 1000000 -> 1.0M
 humanize() {
@@ -53,7 +61,7 @@ case "$effort" in
   low) eff=l ;; medium) eff=m ;; high) eff=h ;; xhigh) eff=xh ;; max) eff=mx ;; *) eff="" ;;
 esac
 
-out="${accent}✦ ${white}${name}${reset}"
+out="${accent}✦ ${model_c}${name}${reset}"
 [ -n "$eff" ] && out="${out}${grey}/${eff}${reset}"
 [ -n "$dir" ] && out="${out}${sep}${lavender}${dir##*/}${reset}"
 
@@ -97,6 +105,13 @@ fi
 # code churn
 if [ "$added" -gt 0 ] || [ "$removed" -gt 0 ]; then
   out="${out}${sep}${green}+${added}${reset}/${red}-${removed}${reset}"
+fi
+
+# session credit estimate (metered model only): Claude Code's whole-session
+# cost at list rates; subagent turns bill the plan pools instead, so read it
+# as a ceiling on credit burn, not an exact meter
+if [ "$model_c" = "$orange" ] && awk -v c="$cost_usd" 'BEGIN{exit !(c>=0.01)}'; then
+  out="${out}${sep}${grey}cr ${reset}${orange}~\$$(printf '%.2f' "$cost_usd")${reset}"
 fi
 
 # subscription usage pools (Max plan; absent until the first API response)
