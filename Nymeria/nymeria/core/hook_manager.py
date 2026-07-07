@@ -33,7 +33,12 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from .conditions import HookCondition
 from .hook_spec import TOOL_EVENTS, event_actions, text_actions
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import (
+    quarantine_corrupt_file,
+    read_store_fingerprint,
+    record_store_fingerprint,
+    safe_path_segment,
+)
 from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -567,8 +572,14 @@ class HookManager:
     def __init__(self, data_dir: Path):
         self.hooks_dir = Path(data_dir) / "hooks"
         self.hooks_dir.mkdir(parents=True, exist_ok=True)
-        # mtime-keyed read cache for the hot per-turn path: (mtime_ns, hooks).
-        self._read_cache: Dict[str, Tuple[int, List[HookDefinition]]] = {}
+        # Fingerprint-keyed read cache for the hot per-turn path:
+        # ((mtime_ns, size) or None, hooks). Size is part of the key because
+        # the kernel's file-timestamp clock is coarse: a write landing in the
+        # same granule as the previous one would be invisible to an
+        # mtime-only key.
+        self._read_cache: Dict[
+            str, Tuple[Optional[Tuple[int, int]], List[HookDefinition]]
+        ] = {}
         # Write-behind execution-log buffer (drained by the shared log executor).
         self._pending_executions: Dict[str, List[HookExecution]] = {}
         self._pending_lock = threading.Lock()
@@ -615,19 +626,13 @@ class HookManager:
 
         Without this, the load falls back to an empty store and the next save
         overwrites the original file: a user's whole hook set silently vanishes.
-        Returns the quarantine path, or ``None`` if the rename failed (which
-        degrades to the old replace-with-empty behavior; loading still never
-        raises into a turn).
+        Delegates to the shared ``quarantine_corrupt_file`` helper (a
+        ``quarantine/`` sibling directory), which every file-backed resource
+        store now uses. Returns the quarantine path, or ``None`` if the rename
+        failed (which degrades to the old replace-with-empty behavior; loading
+        still never raises into a turn).
         """
-        try:
-            stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
-            target = path.with_name(
-                f"{path.stem}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}.json"
-            )
-            path.rename(target)
-            return target
-        except OSError:
-            return None
+        return quarantine_corrupt_file(path)
 
     def _load(self, user_id: str) -> HookStore:
         path = self._path_for(user_id)
@@ -652,6 +657,18 @@ class HookManager:
                     if quarantine
                     else "quarantine rename failed; file left in place",
                 )
+                try:
+                    from .activity_log import log_external_edit
+
+                    log_external_edit(
+                        "hooks",
+                        "corrupt hook store "
+                        + (f"quarantined as quarantine/{quarantine.name}" if quarantine
+                           else "could not be quarantined"),
+                        user_id=user_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed to record hooks quarantine audit", exc_info=True)
                 return HookStore(user_id=user_id)
 
     def _save(self, store: HookStore) -> bool:
@@ -665,6 +682,10 @@ class HookManager:
                 encoding="utf-8",
             )
             temp.replace(path)
+            # Record the write in the shared .sig sidecar so loaders (in any
+            # instance or process) can tell manager writes from raw on-disk
+            # edits (resource-filesystem-layout plan, slice 4).
+            record_store_fingerprint(path)
             return True
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to save hooks for %s: %s", store.user_id, e)
@@ -805,23 +826,45 @@ class HookManager:
         return self._load(user_id).get_hook(hook_id)
 
     def get_hooks_cached(self, user_id: str) -> List[HookDefinition]:
-        """All hooks for a user, mtime-cached for the hot per-turn resolve path.
+        """All hooks for a user, fingerprint-cached for the hot per-turn path.
 
-        Reparses only when the backing file's mtime changed, so a turn that
-        resolves the registry several times (and cross-instance writes from the
-        tool/REST layers) both stay correct without a disk read every turn.
+        Reparses only when the backing file's (mtime_ns, size) fingerprint
+        changed, so a turn that resolves the registry several times (and
+        cross-instance writes from the tool/REST layers) both stay correct
+        without a disk read every turn.
         """
         path = self._path_for(user_id)
         try:
-            mtime = path.stat().st_mtime_ns if path.exists() else 0
+            st = path.stat() if path.exists() else None
         except OSError:
-            mtime = 0
+            st = None
+        sig = (st.st_mtime_ns, st.st_size) if st is not None else None
         with self._get_lock(user_id):
             cached = self._read_cache.get(user_id)
-            if cached is not None and cached[0] == mtime:
+            if cached is not None and cached[0] == sig:
                 return cached[1]
+            # A file fingerprint differing from the recorded manager write is
+            # a raw on-disk edit: audit it (a written hook is a standing
+            # prompt injection, so this is the one durable record it changed
+            # outside the tool chokepoints). The .sig sidecar is shared across
+            # manager instances and processes (authoring goes through the
+            # tools/REST managers, this engine instance only reads), and
+            # re-recording it here acknowledges the edit so it is audited
+            # once, not once per reader. An absent sidecar (no manager write
+            # on record) means no audit: fail-safe, never false-positive.
+            expected = read_store_fingerprint(path)
+            if expected is not None and sig is not None and sig != expected:
+                try:
+                    from .activity_log import log_external_edit
+
+                    log_external_edit(
+                        "hooks", "hook store file edited on disk", user_id=user_id
+                    )
+                except Exception:  # noqa: BLE001 - audit must never break a turn
+                    logger.debug("Failed to record hooks external-edit audit", exc_info=True)
+                record_store_fingerprint(path)
             hooks = list(self._load(user_id).hooks)
-            self._read_cache[user_id] = (mtime, hooks)
+            self._read_cache[user_id] = (sig, hooks)
             return hooks
 
     # -- execution log (write-behind) ---------------------------------------

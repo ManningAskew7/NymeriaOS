@@ -452,8 +452,11 @@ def workflow_execution_gate(
         )
     if config.approved_revision:
         return (
-            "this workflow changed since its approval; the new revision must be "
-            "approved by an admin before it can run"
+            "this workflow changed since its approval (its source or parameters "
+            "differ from the approved revision; raw on-disk edits count and "
+            "leave it inert by design). Next: an admin approves the new "
+            "revision (tool_create publish, /workflows approvals, or the "
+            "dashboard Workflows card) before it can run"
         )
     return (
         "this workflow revision is not approved yet; an admin must approve it "

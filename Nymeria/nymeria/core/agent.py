@@ -448,6 +448,10 @@ class NymeriaAgent:
         self._invocations_lock = threading.Lock()
         # Lock for graph cache dict mutations
         self._graph_cache_lock = threading.Lock()
+        # Non-blocking guard for the external resource-edit sync chokepoint
+        # (agent_tools.sync_external_resource_edits); deliberately a plain
+        # Lock so a re-entrant call from a triggered graph rebuild skips.
+        self._external_sync_lock = threading.Lock()
 
         # Cache for user+thread-specific graphs ((user_id, thread_id) -> (memory_hash, graph))
         self._user_graphs: Dict[tuple, tuple] = {}
@@ -1635,6 +1639,11 @@ class NymeriaAgent:
     ) -> None:
         from .agent_graph import store_cached_graph_entry
         store_cached_graph_entry(self, cache, cache_key, memory_hash, graph)
+
+    def _sync_external_resource_edits(self) -> None:
+        """Propagate raw on-disk tool-store edits into the runtime."""
+        from .agent_tools import sync_external_resource_edits
+        sync_external_resource_edits(self)
 
     def _get_graph_for_user_impl(
         self,

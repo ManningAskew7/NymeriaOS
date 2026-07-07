@@ -530,8 +530,10 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   the logic variants, the frontend `HOOK_EVENT_ACTIONS`) in lockstep.
 - `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (eight
   variants) + `HookStore` records + the per-user `HookManager` (store-only, no engine
-  import; a corrupt store file is quarantined to `<user>.corrupt-*.json`, never
-  silently overwritten), plus the execution log (`HookExecution`,
+  import; a corrupt store file is quarantined to
+  `hooks/quarantine/<user>.corrupt-*.json` via the shared
+  `core/storage_paths.py::quarantine_corrupt_file` helper, never silently
+  overwritten), plus the execution log (`HookExecution`,
   `log_execution`/`get_executions` write-behind on a single worker,
   `make_execution_recorder`). Observe actions reuse `core/notifications.py` +
   `core/fcm.py` (notify), `core/todo_manager.py` (create_todo), and

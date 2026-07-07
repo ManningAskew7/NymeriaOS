@@ -61,6 +61,7 @@ class ActivityType(str, Enum):
     TRIGGER_COMPLETED = "trigger_completed"
     USER_MESSAGE = "user_message"
     NOTIFICATION_SENT = "notification_sent"
+    EXTERNAL_EDIT = "external_edit"
 
 
 class ActivityEntry(BaseModel):
@@ -432,3 +433,25 @@ def log_activity(
         thread_id=thread_id,
         metadata=metadata,
     )
+
+
+def log_external_edit(store: str, detail: str, *, user_id: str = "default") -> None:
+    """Record that a resource store file changed on disk outside its manager.
+
+    The user-attributed audit line for raw filesystem edits
+    (resource-filesystem-layout plan, slice 4): the only durable record that
+    a standing-injection-capable file (a hook, a trigger, a tool definition)
+    changed without going through the tool chokepoints. Attribute the store
+    owner where the file path declares one (hooks/<user>.json,
+    skills/users/<id>/); global stores fall back to "default". Best-effort:
+    never raises into a load path.
+    """
+    try:
+        log_activity(
+            ActivityType.EXTERNAL_EDIT,
+            f"Resource files edited on disk ({store}): {detail}"[:500],
+            user_id=user_id,
+            metadata={"store": store},
+        )
+    except Exception:  # noqa: BLE001 - audit must never break a store load
+        logger.debug("Failed to record external-edit audit line", exc_info=True)

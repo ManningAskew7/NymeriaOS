@@ -136,10 +136,15 @@ def python_execution_gate(
         return None
     if config.approved_revision:
         return (
-            "this python tool changed since its approval; an admin must "
-            "re-publish it before it can run"
+            "this python tool changed since its approval (its source or "
+            "parameters differ from the approved revision; raw on-disk edits "
+            "count and leave it inert by design). Next: an admin re-publishes "
+            "it via tool_create to approve the new revision"
         )
-    return "this python tool is not approved; an admin must publish it before it can run"
+    return (
+        "this python tool is not approved; an admin must publish it "
+        "(tool_create) before it can run"
+    )
 
 
 def validate_python_tool_static(

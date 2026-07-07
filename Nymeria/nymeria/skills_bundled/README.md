@@ -10,6 +10,7 @@ Built-in SKILL.md bundles shipped with Nymeria. Each subdirectory contains a SKI
 - `goal-supervisor/`  -  internal kit: supervises goal-worker threads
 - `goal-worker/`  -  internal kit: executes a goal under supervision
 - `mcp-management/`  -  kit: find, install, test, and manage MCP servers
+- `nymeria-resources/`  -  guidance skill: map of the on-disk resource stores and the rules for editing them directly as files (not default-on; pointed at by the file-tool descriptions and `data/README.md`)
 - `orchestrate/`  -  internal kit: multi-thread orchestration
 - `regression-noop/`  -  no-op skill used as a regression test fixture
 - `self-improve/`  -  guidance skill: capability-expansion philosophy and routing to the kits below

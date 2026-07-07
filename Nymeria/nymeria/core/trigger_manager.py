@@ -23,7 +23,12 @@ from pydantic import BaseModel, Field, field_validator
 from .conditions import HookCondition as TriggerCondition  # re-export (shared model)
 from .conditions import evaluate_conditions
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import (
+    quarantine_corrupt_file,
+    read_store_fingerprint,
+    record_store_fingerprint,
+    safe_path_segment,
+)
 from .time_utils import ensure_aware_utc, utc_now
 
 if TYPE_CHECKING:
@@ -197,8 +202,47 @@ class TriggerManager:
 
     def _load(self, user_id: str) -> TriggerStore:
         path = self._path_for(user_id)
-        if path.exists():
+        # Read + parse + quarantine run under the per-user lock (an RLock, so
+        # atomic_update re-enters freely): an unlocked reader could otherwise
+        # parse a stale corrupt file, lose the race to a repairing _save, and
+        # quarantine-rename the freshly written valid store aside (the
+        # hook_manager._load invariant).
+        with self._get_lock(user_id):
+            if not path.exists():
+                return TriggerStore(user_id=user_id)
             try:
+                # A file fingerprint differing from the recorded manager
+                # write is a raw on-disk edit: audit it once (a written
+                # trigger is scheduled autonomous action). The .sig sidecar
+                # is shared across manager instances and processes (trigger
+                # authoring runs in the API while fire-state saves happen in
+                # the ticker, a separate process in the Docker shape), so
+                # neither side mis-audits the other's saves; re-recording it
+                # after the audit acknowledges the edit so it is logged once,
+                # not once per poll or per instance. An absent sidecar (no
+                # manager write on record) means no audit: fail-safe.
+                expected = read_store_fingerprint(path)
+                if expected is not None:
+                    try:
+                        st = path.stat()
+                        sig = (st.st_mtime_ns, st.st_size)
+                    except OSError:
+                        sig = expected
+                    if sig != expected:
+                        record_store_fingerprint(path)
+                        try:
+                            from .activity_log import log_external_edit
+
+                            log_external_edit(
+                                "triggers",
+                                "trigger store file edited on disk",
+                                user_id=user_id,
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.debug(
+                                "Failed to record triggers external-edit audit",
+                                exc_info=True,
+                            )
                 data = json.loads(path.read_text(encoding="utf-8"))
                 store = TriggerStore.model_validate(data)
                 # Migrate: backfill thread_id for existing triggers
@@ -210,10 +254,34 @@ class TriggerManager:
                 if migrated:
                     self._save(store)
                 return store
-            except Exception as e:
-                logger.error(f"Failed to load triggers for {user_id}: {e}")
+            except Exception as e:  # noqa: BLE001 - never let a bad file break a turn
+                # Quarantine, never leave in place: atomic_update saves on
+                # exit, so a corrupt file left here would be overwritten with
+                # an empty store by the next mutating poll.
+                quarantine = quarantine_corrupt_file(path)
+                logger.error(
+                    "Failed to load triggers for %s: %s (%s)",
+                    user_id,
+                    e,
+                    f"corrupt file preserved at {quarantine}"
+                    if quarantine
+                    else "quarantine rename failed; file left in place",
+                )
+                try:
+                    from .activity_log import log_external_edit
+
+                    log_external_edit(
+                        "triggers",
+                        "corrupt trigger store "
+                        + (f"quarantined as quarantine/{quarantine.name}" if quarantine
+                           else "could not be quarantined"),
+                        user_id=user_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Failed to record triggers quarantine audit", exc_info=True
+                    )
                 return TriggerStore(user_id=user_id)
-        return TriggerStore(user_id=user_id)
 
     def _save(self, store: TriggerStore) -> bool:
         path = self._path_for(store.user_id)
@@ -226,6 +294,10 @@ class TriggerManager:
                 encoding="utf-8",
             )
             temp.replace(path)
+            # Record the write in the shared .sig sidecar so loaders (in any
+            # instance or process) can tell manager writes from raw on-disk
+            # edits (resource-filesystem-layout plan, slice 4).
+            record_store_fingerprint(path)
             return True
         except Exception as e:
             logger.error(f"Failed to save triggers for {store.user_id}: {e}")

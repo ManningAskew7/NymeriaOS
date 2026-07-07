@@ -19,7 +19,7 @@ from typing import Dict, Iterator, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import quarantine_corrupt_file, safe_path_segment
 from .time_utils import ensure_aware_utc, utc_now
 from .user_profile import migrate_tool_names
 
@@ -396,8 +396,15 @@ class ThreadConfigManager:
                 with open(config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 return ThreadConfig.model_validate(data)
-            except Exception as e:
-                logger.error(f"Failed to load thread config for {thread_id}: {e}")
+            except FileNotFoundError:
+                return None
+            except Exception as e:  # noqa: BLE001 - never let a bad file break a turn
+                # Quarantine, never leave in place: save_config writes this
+                # exact path on the next config mutation, which would replace
+                # the corrupt (but recoverable) file wholesale.
+                self._quarantine_scan_file(
+                    config_path, config_path.name, thread_id, str(e)
+                )
                 return None
 
     def save_config(self, config: ThreadConfig) -> bool:
@@ -500,14 +507,45 @@ class ThreadConfigManager:
             except FileNotFoundError:
                 self._callable_scan_cache.pop(cache_key, None)
                 return None
-            except Exception as e:
-                logger.error(f"Failed to load thread config for {stem}: {e}")
+            except Exception as e:  # noqa: BLE001 - never let a bad file break a scan
+                self._quarantine_scan_file(config_path, cache_key, stem, str(e))
                 return None
             if not isinstance(data, dict):
-                logger.error(f"Failed to load thread config for {stem}: not a JSON object")
+                self._quarantine_scan_file(
+                    config_path, cache_key, stem, "not a JSON object"
+                )
                 return None
             self._callable_scan_cache[cache_key] = (sig, data)
             return data
+
+    def _quarantine_scan_file(
+        self, config_path: Path, cache_key: str, stem: str, reason: str
+    ) -> None:
+        """Quarantine a corrupt config file (caller holds the per-key lock)."""
+        quarantine = quarantine_corrupt_file(config_path)
+        if quarantine is not None:
+            self._callable_scan_cache.pop(cache_key, None)
+        logger.error(
+            "Failed to load thread config for %s: %s (%s)",
+            stem,
+            reason,
+            f"corrupt file preserved at {quarantine}"
+            if quarantine
+            else "quarantine rename failed; file left in place",
+        )
+        try:
+            from .activity_log import log_external_edit
+
+            log_external_edit(
+                "thread_configs",
+                f"corrupt config for thread {stem!r} "
+                + (f"quarantined as quarantine/{quarantine.name}" if quarantine
+                   else "could not be quarantined"),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Failed to record thread-config quarantine audit", exc_info=True
+            )
 
     def _iter_callable_configs(
         self,

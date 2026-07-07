@@ -15,7 +15,11 @@ from typing import Any, Literal, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, ValidationError
 
-from .filesystem import protected_path_error, resolve_workspace_write_path
+from .filesystem import (
+    protected_path_error,
+    resolve_workspace_write_path,
+    secrets_path_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +411,15 @@ def file_edit(
             return _error_result(
                 "protected_path",
                 protected_error,
+                file_path=str(path),
+                dry_run=dry_run,
+            )
+
+        secrets_error = secrets_path_error(path)
+        if secrets_error:
+            return _error_result(
+                "secrets_path",
+                secrets_error,
                 file_path=str(path),
                 dry_run=dry_run,
             )

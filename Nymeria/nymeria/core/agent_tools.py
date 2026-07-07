@@ -371,6 +371,67 @@ def rebuild_default_graphs(agent: "NymeriaAgent") -> None:
     agent._default_async_graph = agent._build_async_graph_with_prompt(agent._base_system_prompt)
 
 
+def sync_external_resource_edits(agent: "NymeriaAgent") -> None:
+    """Propagate raw on-disk edits of tool stores into the agent runtime.
+
+    Slice 2 of the resource-filesystem-layout plan: the custom-tool loader
+    and MCP registry detect external file edits themselves (debounced
+    mtime+size scans in ``refresh_if_stale``); this chokepoint, called on
+    every graph lookup, drains their pending-sync state and re-runs the same
+    registry re-registration + graph rebuild the authoring tools run, so a
+    raw edit reaches the next graph build exactly like a ``tool_create``
+    edit. Skills need no step here: their manager reads through to disk and
+    the skills fingerprint feeds the graph cache key directly.
+
+    Non-blocking and re-entrancy safe: if another thread is already syncing
+    (or this thread re-enters via a graph rebuild), skip; the next lookup
+    picks up whatever remains.
+    """
+    lock = getattr(agent, "_external_sync_lock", None)
+    if lock is None or not lock.acquire(blocking=False):
+        return
+    try:
+        from .custom_tools import get_custom_tool_loader
+        from .mcp_servers import get_mcp_server_registry
+
+        rebuild_needed = False
+
+        loader = get_custom_tool_loader()
+        loader.refresh_if_stale()
+        pending = loader.drain_registry_sync()
+        if pending:
+            for tool_id in sorted(pending):
+                agent.tool_registry.unregister(tool_id)
+                fresh = loader.get_tool(tool_id)
+                if fresh is not None:
+                    agent.tool_registry.register(fresh)
+            rebuild_needed = True
+            logger.info(
+                "External custom-tool edits synced into the registry: %s",
+                sorted(pending),
+            )
+
+        registry = get_mcp_server_registry()
+        registry.refresh_if_stale()
+        if registry.drain_registry_sync():
+            load_mcp_server_tools(agent)
+            rebuild_needed = True
+            logger.info("External MCP server edits synced into the registry")
+
+        if rebuild_needed:
+            agent._rebuild_default_graphs()
+            try:
+                from .tool_search_index import mark_tool_search_dirty
+
+                mark_tool_search_dirty()
+            except Exception:
+                logger.debug("Failed to mark tool search index dirty", exc_info=True)
+    except Exception:  # noqa: BLE001 - freshness must never break a turn
+        logger.exception("External resource-edit sync failed")
+    finally:
+        lock.release()
+
+
 def reload_custom_tools(agent: "NymeriaAgent") -> List[str]:
     """Reload only custom tools.
 

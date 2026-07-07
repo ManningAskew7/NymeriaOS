@@ -44,6 +44,7 @@ WORKDIR /app
 RUN groupadd -r -g 999 nymeria \
     && useradd -r -g nymeria -u 999 -m -s /bin/bash nymeria \
     && mkdir -p /data /workspace \
+    && { [ -e /app/data ] || ln -s /data /app/data; } \
     && chown -R nymeria:nymeria /app /data /workspace
 
 # requirements.txt already includes requirements-sqlite.txt (sqlite-vec,
