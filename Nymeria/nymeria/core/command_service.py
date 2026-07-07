@@ -453,9 +453,13 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
     timeout, args, e11 = _consume_option(args, "--timeout", default="")
     conds, args, e8 = _consume_all(args, "--cond")
     sets, args, e9 = _consume_all(args, "--set")
+    fire_conds, args, e12 = _consume_all(args, "--fire-cond")
     disabled, args = _consume_flag(args, "--disabled")
     case_sensitive, args = _consume_flag(args, "--case-sensitive")
-    error = next((e for e in (e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11) if e), "")
+    once, args = _consume_flag(args, "--once")
+    error = next(
+        (e for e in (e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12) if e), ""
+    )
     if error:
         return {}, error
     # Any leftover ``--token`` is a misspelled/unknown option; folding it into the
@@ -476,6 +480,8 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
         "timeout": timeout,
         "conds": conds,
         "sets": sets,
+        "fire_conds": fire_conds,
+        "once": once,
         "disabled": disabled,
         "case_sensitive": case_sensitive,
     }, ""
@@ -3300,6 +3306,11 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         conditions, cerr = _parse_hook_conditions(parsed["conds"], parsed["case_sensitive"])
         if cerr:
             return f"[Error]: {cerr}"
+        fire_conditions, ferr = _parse_hook_conditions(
+            parsed["fire_conds"], parsed["case_sensitive"]
+        )
+        if ferr:
+            return f"[Error]: {ferr}"
         updates_map, uerr = _parse_hook_sets(parsed["sets"])
         if uerr:
             return f"[Error]: {uerr}"
@@ -3333,6 +3344,8 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
                 action=action,
                 params=params,
                 matcher=parsed["matcher"] or None,
+                fire_conditions=fire_conditions or None,
+                once=parsed["once"],
                 scope=scope,
                 thread_id=thread_id,
                 enabled=not parsed["disabled"],
@@ -3539,14 +3552,15 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         rest_args = args[1:]
         conds_raw, rest_args, e1 = _consume_all(rest_args, "--cond")
         sets_raw, rest_args, e2 = _consume_all(rest_args, "--set")
+        fire_conds_raw, rest_args, e3 = _consume_all(rest_args, "--fire-cond")
         case_sensitive, rest_args = _consume_flag(rest_args, "--case-sensitive")
-        flag_error = e1 or e2
+        flag_error = e1 or e2 or e3
         if flag_error:
             return f"[Error]: {flag_error}"
         # Remaining tokens are key=value scalar edits.
         edit_keys = {
             "name", "enabled", "event", "matcher", "action", "text", "url", "reason",
-            "command", "timeout",
+            "command", "timeout", "once",
         }
         kv: dict[str, str] = {}
         for token in rest_args:
@@ -3568,6 +3582,8 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
             touched.add("conditions")
         if sets_raw:
             touched.add("updates")
+        if fire_conds_raw:
+            touched.add("fire_conditions")
         requested_action = kv["action"].strip().lower() if "action" in kv else None
         gate_on = gated_update_action(hook.logic.action, requested_action, touched)
         if gate_on is not None:
@@ -3577,6 +3593,9 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         conditions, cerr = _parse_hook_conditions(conds_raw, case_sensitive)
         if cerr:
             return f"[Error]: {cerr}"
+        fire_conditions, ferr = _parse_hook_conditions(fire_conds_raw, case_sensitive)
+        if ferr:
+            return f"[Error]: {ferr}"
         updates_map, uerr = _parse_hook_sets(sets_raw)
         if uerr:
             return f"[Error]: {uerr}"
@@ -3592,6 +3611,13 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
             scalars["matcher"] = kv["matcher"] or None
         if "enabled" in kv:
             scalars["enabled"] = coerce_value(kv["enabled"])
+        if "once" in kv:
+            # Raw coerced value (same idiom as enabled=): update_hook re-runs
+            # model_validate, whose lax bool coercion handles yes/no/1/0 and
+            # rejects garbage instead of bool("no") silently being True.
+            scalars["once"] = coerce_value(kv["once"])
+        if fire_conds_raw:
+            scalars["fire_conditions"] = fire_conditions
         update_kwargs = build_update_kwargs(
             hook,
             action=kv.get("action"),

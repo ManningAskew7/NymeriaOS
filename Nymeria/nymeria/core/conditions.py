@@ -28,8 +28,14 @@ from pydantic import BaseModel, Field
 _MISSING = object()
 
 ConditionOperator = Literal[
-    "equals", "not_equals", "contains", "starts_with", "matches_regex"
+    "equals", "not_equals", "contains", "starts_with", "matches_regex",
+    "gt", "gte", "lt", "lte",
 ]
+
+# Numeric comparison operators. Both sides coerce via float(); when either side
+# is not a number the condition is a NON-MATCH (never a raise), mirroring how a
+# bad regex degrades to a non-match.
+_NUMERIC_OPERATORS = frozenset({"gt", "gte", "lt", "lte"})
 
 
 class HookCondition(BaseModel):
@@ -66,6 +72,22 @@ def _resolve_field(data: dict, field: str):
     return _MISSING
 
 
+def _numeric_compare(raw, operator: str, value: str) -> bool:
+    """Evaluate a numeric operator; non-numeric on either side is a non-match."""
+    try:
+        left = float(raw)  # type: ignore[arg-type]
+        right = float(value)
+    except (TypeError, ValueError):
+        return False
+    if operator == "gt":
+        return left > right
+    if operator == "gte":
+        return left >= right
+    if operator == "lt":
+        return left < right
+    return left <= right  # lte
+
+
 def evaluate_conditions(data: dict, conditions: Iterable) -> bool:
     """Return True if ALL conditions pass (AND logic); empty = always True.
 
@@ -75,6 +97,14 @@ def evaluate_conditions(data: dict, conditions: Iterable) -> bool:
     """
     for cond in conditions:
         raw = _resolve_field(data, cond.field)
+        if cond.operator in _NUMERIC_OPERATORS:
+            # Numeric ops compare the RAW value (absent -> non-match), skipping
+            # the string coercion/case-folding below.
+            if not _numeric_compare(
+                raw if raw is not _MISSING else None, cond.operator, cond.value
+            ):
+                return False
+            continue
         event_value = str(raw) if raw is not _MISSING else ""
         compare_value = cond.value
         if not cond.case_sensitive:

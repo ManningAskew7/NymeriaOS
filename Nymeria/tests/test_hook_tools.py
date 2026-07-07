@@ -476,3 +476,83 @@ def test_run_command_update_enabled_toggle_allowed_for_non_admin(store, monkeypa
     updated = store.get_hooks("u1")[0]
     assert updated.enabled is False
     assert updated.logic.command == "echo hi"
+
+
+# --- Definition-level fire gate (fire_conditions + once) ----------------------
+
+def test_create_with_fire_gate(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {
+            "action": "create", "name": "advisory", "event": "post_tool_use",
+            "text": "wrap up ({context_pct_of_trigger}% of trigger)",
+            "fire_conditions": [
+                {"field": "context_pct_of_trigger", "operator": "gte", "value": "85"}
+            ],
+            "once": True, "scope": "global",
+        },
+        _cfg(),
+    )
+    assert "[Success]" in out
+    h = store.get_hooks("u1")[0]
+    assert h.once is True
+    assert h.fire_conditions[0].operator == "gte"
+
+
+def test_create_rejects_non_list_fire_conditions(store):
+    # The @tool args schema rejects a non-list at the invoke boundary (the
+    # agent sees a tool-arg validation error); nothing reaches the store.
+    with pytest.raises(Exception):
+        _invoke(
+            hook_tools.hook_config,
+            {
+                "action": "create", "name": "n", "event": "done", "text": "x",
+                "fire_conditions": "not-a-list",
+            },
+            _cfg(),
+        )
+    assert store.get_hooks("u1") == []
+
+
+def test_update_fire_gate(store):
+    _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "n", "event": "done", "text": "x"},
+        _cfg(),
+    )
+    hook_id = store.get_hooks("u1")[0].id
+    out = _invoke(
+        hook_tools.hook_config,
+        {
+            "action": "update", "hook_id": hook_id, "once": True,
+            "fire_conditions": [
+                {"field": "final_text", "operator": "contains", "value": "FAIL"}
+            ],
+        },
+        _cfg(),
+    )
+    assert "[Success]" in out
+    h = store.get_hook("u1", hook_id)
+    assert h.once is True
+    assert h.fire_conditions[0].value == "FAIL"
+
+
+def test_detail_renders_fire_gate(store):
+    _invoke(
+        hook_tools.hook_config,
+        {
+            "action": "create", "name": "n", "event": "done", "text": "x",
+            "once": True,
+            "fire_conditions": [
+                {"field": "context_pct_of_trigger", "operator": "gte", "value": "85"}
+            ],
+        },
+        _cfg(),
+    )
+    hook_id = store.get_hooks("u1")[0].id
+    detail = _invoke(
+        hook_tools.hook_info, {"action": "detail", "hook_id": hook_id}, _cfg()
+    )
+    assert "fire_conditions" in detail
+    assert "context_pct_of_trigger" in detail
+    assert "once: True" in detail

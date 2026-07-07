@@ -635,6 +635,7 @@ def register_default_commands(service: "CommandService") -> None:
             "/hook create <name> --event E --action A "
             '[--text ..|--url ..|--cond "f op v"..|--reason ..|--set arg=val..'
             "|--command ..|--timeout N] "
+            '[--fire-cond "f op v"]... [--once] '
             "[--matcher A|B] [--scope thread|global] [--disabled]"
         ),
         aliases=("hook_create",),
@@ -647,7 +648,10 @@ def register_default_commands(service: "CommandService") -> None:
         "hook edit",
         description="Edit a hook (key=value scalars and/or --cond/--set)",
         category="Automation",
-        usage='/hook edit <id> [key=value]... [--cond "f op v"]... [--set arg=val]...',
+        usage=(
+            '/hook edit <id> [key=value]... [--cond "f op v"]... '
+            '[--fire-cond "f op v"]... [--set arg=val]... [once=true|false]'
+        ),
         aliases=("hook_edit",),
         surfaces=_hook_sub_surfaces,
         mutates_state=True,

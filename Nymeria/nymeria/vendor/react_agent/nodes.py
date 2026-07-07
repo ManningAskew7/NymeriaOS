@@ -1726,7 +1726,9 @@ class SafeToolNode(ToolNode):
         pre_activity: list = []
         pre = hooks.dispatch(
             hooks.HookEvent.PRE_TOOL_USE,
-            self._build_tool_hook_ctx(hooks.HookEvent.PRE_TOOL_USE, call, config),
+            self._build_tool_hook_ctx(
+                hooks.HookEvent.PRE_TOOL_USE, call, config, state=tool_runtime.state
+            ),
             registry=registry,
             emit=pre_activity.append,
         )
@@ -1743,6 +1745,7 @@ class SafeToolNode(ToolNode):
             hooks.HookEvent.POST_TOOL_USE, call, config,
             result_text=self._tool_result_text(result),
             tool_status=self._tool_result_status(result),
+            state=tool_runtime.state,
         )
         post_activity: list = []
         post = hooks.dispatch(
@@ -1782,7 +1785,9 @@ class SafeToolNode(ToolNode):
         pre_activity: list = []
         pre = await hooks.adispatch(
             hooks.HookEvent.PRE_TOOL_USE,
-            self._build_tool_hook_ctx(hooks.HookEvent.PRE_TOOL_USE, call, config),
+            self._build_tool_hook_ctx(
+                hooks.HookEvent.PRE_TOOL_USE, call, config, state=tool_runtime.state
+            ),
             registry=registry,
             emit=pre_activity.append,
         )
@@ -1799,6 +1804,7 @@ class SafeToolNode(ToolNode):
             hooks.HookEvent.POST_TOOL_USE, call, config,
             result_text=self._tool_result_text(result),
             tool_status=self._tool_result_status(result),
+            state=tool_runtime.state,
         )
         post_activity: list = []
         post = await hooks.adispatch(
@@ -1945,14 +1951,48 @@ class SafeToolNode(ToolNode):
         configurable = config.get("configurable") if isinstance(config, dict) else None
         return (configurable or {}).get("hook_registry") or hooks.default_registry
 
-    def _build_tool_hook_ctx(self, event, call, config, *, result_text=None, tool_status=None):
+    @staticmethod
+    def _state_messages(state) -> list:
+        """Best-effort message list from a graph state (list/dict/model shapes)."""
+        if isinstance(state, list):
+            return state
+        if isinstance(state, dict):
+            messages = state.get("messages")
+            return messages if isinstance(messages, list) else []
+        messages = getattr(state, "messages", None)
+        return messages if isinstance(messages, list) else []
+
+    @classmethod
+    def _fresh_context_tokens(cls, state, configurable: dict):
+        """Current context occupancy for a tool-event hook, or None.
+
+        Freshest signal first: the most recent AIMessage's provider-reported
+        input tokens from the running state (the same source
+        ``should_subturn_compact`` reads, so a long tool loop sees occupancy
+        grow mid-turn). Falls back to the turn-entry stamp from
+        ``graph_run_config``. Never raises.
+        """
+        try:
+            from ...core.token_usage import extract_last_from_messages
+            input_tokens, _ = extract_last_from_messages(cls._state_messages(state))
+            if input_tokens:
+                return int(input_tokens)
+        except Exception:  # noqa: BLE001 - a stats read must never break a tool call
+            logger.debug("hook context-token extraction failed", exc_info=True)
+        return configurable.get("hook_context_tokens")
+
+    def _build_tool_hook_ctx(
+        self, event, call, config, *, result_text=None, tool_status=None, state=None
+    ):
         """Build a PRE/POST tool HookContext from the call + run config.
 
         thread_id/user_id come from the run config's ``configurable``; turn-source
         fields (``hook_is_autonomous``/``hook_holder_kind``/``hook_trigger_label``)
         are stamped there by ``agent_safety.graph_run_config`` for graph-run turns
         and default when absent (e.g. a read-only state fetch), so a tool hook can
-        scope by autonomous-vs-interactive / holder / trigger.
+        scope by autonomous-vs-interactive / holder / trigger. The context-usage
+        fields combine the turn-stable stamps (window, compact trigger) with the
+        freshest occupancy from ``state`` (see ``_fresh_context_tokens``).
         """
         from ...core import hooks
 
@@ -1972,6 +2012,9 @@ class SafeToolNode(ToolNode):
             tool_args=args if isinstance(args, dict) else None,
             tool_result_text=result_text,
             tool_status=tool_status,
+            context_tokens=self._fresh_context_tokens(state, configurable),
+            context_limit=configurable.get("hook_context_limit"),
+            compact_trigger_tokens=configurable.get("hook_compact_trigger_tokens"),
         )
 
     @staticmethod

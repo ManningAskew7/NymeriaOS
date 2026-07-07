@@ -79,6 +79,43 @@ def _coerce_conditions(raw) -> Optional[list]:
     return out
 
 
+def context_usage_fields(ctx: HookContext) -> Dict[str, object]:
+    """Raw numeric context-usage fields for fire-gate data and templating.
+
+    Only fields with a known value are present, so a numeric fire condition on
+    an unknown signal is a non-match rather than a compare against zero. The
+    percent fields are derived here (one place) so the gate and the template
+    map cannot drift.
+    """
+    out: Dict[str, object] = {}
+    tokens = ctx.context_tokens
+    if tokens is not None:
+        out["context_tokens"] = tokens
+    if ctx.context_limit:
+        out["context_limit"] = ctx.context_limit
+        if tokens is not None:
+            out["context_pct_of_limit"] = round(tokens / ctx.context_limit * 100, 1)
+    if ctx.compact_trigger_tokens:
+        out["compact_trigger_tokens"] = ctx.compact_trigger_tokens
+        if tokens is not None:
+            out["context_pct_of_trigger"] = round(
+                tokens / ctx.compact_trigger_tokens * 100, 1
+            )
+    return out
+
+
+# Context-usage template keys, always present in the substitution map (empty
+# string when the signal is unknown) so ``{context_tokens}``-style placeholders
+# render empty instead of surviving literally in the injected text.
+_CONTEXT_VAR_KEYS = (
+    "context_tokens",
+    "context_limit",
+    "compact_trigger_tokens",
+    "context_pct_of_trigger",
+    "context_pct_of_limit",
+)
+
+
 def _template_vars(ctx: HookContext) -> Dict[str, str]:
     """Build the string substitution map from a HookContext.
 
@@ -90,7 +127,7 @@ def _template_vars(ctx: HookContext) -> Dict[str, str]:
         tool_args = json.dumps(ctx.tool_args, default=str) if ctx.tool_args else ""
     except Exception:  # noqa: BLE001 - templating must never raise
         tool_args = ""
-    return {
+    vars_ = {
         "event": ctx.event.value if isinstance(ctx.event, HookEvent) else str(ctx.event),
         "thread_id": ctx.thread_id or "",
         "user_id": ctx.user_id or "",
@@ -104,6 +141,9 @@ def _template_vars(ctx: HookContext) -> Dict[str, str]:
         "tool_args": tool_args,
         "final_text": ctx.final_text or "",
     }
+    vars_.update(dict.fromkeys(_CONTEXT_VAR_KEYS, ""))
+    vars_.update({k: str(v) for k, v in context_usage_fields(ctx).items()})
+    return vars_
 
 
 def inject_context(ctx: HookContext, params: dict) -> Optional[HookOutcome]:

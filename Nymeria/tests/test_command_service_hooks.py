@@ -686,3 +686,47 @@ def test_hook_approve_scopes_to_owner_for_non_admin(
     result = _run(f"/hook approve {foreign['record_id']}")
     assert result.success is False
     assert "No pending approval" in result.markdown
+
+
+# --- Definition-level fire gate (--fire-cond / --once) -------------------------
+
+def test_create_with_fire_cond_and_once(manager):
+    result = _run(
+        '/hook create advisory --event post_tool_use --action inject_context '
+        '--text "wrap up now" --scope global '
+        '--fire-cond "context_pct_of_trigger gte 85" --once'
+    )
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.once is True
+    assert len(hook.fire_conditions) == 1
+    cond = hook.fire_conditions[0]
+    assert (cond.field, cond.operator, cond.value) == (
+        "context_pct_of_trigger", "gte", "85"
+    )
+
+
+def test_create_rejects_bad_fire_cond_operator(manager):
+    result = _run(
+        '/hook create n --event done --action inject_context --text x '
+        '--fire-cond "pct sideways 85"'
+    )
+    assert result.success is False
+    assert "invalid condition operator" in result.markdown
+    assert manager.get_hooks("alice") == []
+
+
+def test_edit_fire_gate(manager):
+    _run('/hook create n --event done --action inject_context --text x --scope global')
+    hook = _only(manager)
+    result = _run(
+        f'/hook edit {hook.id} once=true --fire-cond "final_text contains FAIL"'
+    )
+    assert result.success is True, result.markdown
+    updated = manager.get_hook("alice", hook.id)
+    assert updated.once is True
+    assert updated.fire_conditions[0].value == "FAIL"
+    # And back off.
+    result = _run(f"/hook edit {hook.id} once=false")
+    assert result.success is True, result.markdown
+    assert manager.get_hook("alice", hook.id).once is False

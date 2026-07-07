@@ -106,7 +106,15 @@ def _summary(h: HookDefinition) -> str:
     state = "ON" if h.enabled else "OFF"
     scope = "global" if h.scope == "global" else f"thread:{h.thread_id or '?'}"
     matcher = f" matcher={h.matcher}" if h.matcher else ""
-    return f"- {h.id} [{state}] {h.event}{matcher} ({scope}) :: {h.name} -> {_logic_preview(h.logic)}"
+    gate = ""
+    if h.fire_conditions:
+        gate += f" gate={len(h.fire_conditions)} cond(s)"
+    if h.once:
+        gate += " once"
+    return (
+        f"- {h.id} [{state}] {h.event}{matcher}{gate} ({scope}) :: "
+        f"{h.name} -> {_logic_preview(h.logic)}"
+    )
 
 
 def _gated_action_error(hook_action: str, config: RunnableConfig) -> Optional[str]:
@@ -189,6 +197,20 @@ def _merge_require_approval_params(
     return out or None
 
 
+def _coerce_fire_conditions(raw) -> Optional[list]:
+    """Normalize a caller-supplied fire_conditions list to condition dicts.
+
+    Accepts a list of dicts (the wire shape). Returns None when nothing was
+    supplied; raises ``ValueError`` on a non-list shape so the surface reports
+    a clear authoring error instead of persisting garbage.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("fire_conditions must be a list of condition objects")
+    return [dict(c) if isinstance(c, dict) else c for c in raw]
+
+
 def _hook_create(
     *,
     name: str,
@@ -197,6 +219,8 @@ def _hook_create(
     text: Optional[str],
     params: Optional[dict],
     matcher: Optional[str],
+    fire_conditions: Optional[list],
+    once: Optional[bool],
     scope: Optional[str],
     config: RunnableConfig,
 ) -> str:
@@ -220,6 +244,8 @@ def _hook_create(
             params=dict(params) if params else None,
             text=text,
             matcher=matcher,
+            fire_conditions=_coerce_fire_conditions(fire_conditions),
+            once=bool(once),
             scope=scope_value,
             thread_id=thread_id,
             created_by="agent",
@@ -245,6 +271,8 @@ def _hook_update(
     text: Optional[str],
     params: Optional[dict],
     matcher: Optional[str],
+    fire_conditions: Optional[list],
+    once: Optional[bool],
     enabled: Optional[bool],
     scope: Optional[str],
     config: RunnableConfig,
@@ -272,6 +300,13 @@ def _hook_update(
         updates["text"] = text
     if matcher is not None:
         updates["matcher"] = matcher or None
+    if fire_conditions is not None:
+        try:
+            updates["fire_conditions"] = _coerce_fire_conditions(fire_conditions)
+        except ValueError as e:
+            return f"[Error]: {e}"
+    if once is not None:
+        updates["once"] = bool(once)
     if enabled is not None:
         updates["enabled"] = enabled
     if not updates:
@@ -317,6 +352,11 @@ def render_hook_detail(hook: HookDefinition) -> str:
         f"  event: {hook.event}",
         f"  enabled: {hook.enabled}",
         f"  matcher: {hook.matcher or '(any tool)'}",
+        f"  fire_conditions: "
+        f"{[c.model_dump() for c in hook.fire_conditions] or '(always)'}",
+        f"  once: {hook.once}"
+        + (" (fires once per crossing, re-arms when the gate stops matching)"
+           if hook.once else ""),
         f"  scope: {hook.scope}"
         + (f" (thread {hook.thread_id})" if hook.scope == "thread" else ""),
         f"  action: {logic.action}",
@@ -462,6 +502,8 @@ def hook_config(
     text: Optional[str] = None,
     params: Optional[dict] = None,
     matcher: Optional[str] = None,
+    fire_conditions: Optional[list] = None,
+    once: Optional[bool] = None,
     scope: Optional[str] = None,
     enabled: Optional[bool] = None,
     command: Optional[str] = None,
@@ -501,10 +543,26 @@ def hook_config(
             require_approval: {"conditions": [...], "prompt": "...",
             "timeout_seconds": 180} (all optional; empty conditions = always ask).
             webhook: {"url": "https://...", "text": "..."}.
-            Operators: equals, not_equals, contains, starts_with, matches_regex.
+            Operators: equals, not_equals, contains, starts_with, matches_regex,
+            plus the numeric gt, gte, lt, lte.
             Conditions match the tool call's ARGS (field is an arg name).
         matcher: Pipe-list tool-NAME filter for pre_tool_use/post_tool_use, e.g.
             "Edit|Write" (omit to match every tool). Ignored on other events.
+        fire_conditions: Definition-level fire gate (any event, any action): a
+            list of {"field","operator","value"} conditions ANDed and evaluated
+            BEFORE the hook's logic runs; empty/omitted = always fire. Fields:
+            meta (event, tool_name, tool_status, is_autonomous, holder_kind,
+            trigger_label, prompt, final_text), tool args as "args.<name>", and
+            context usage (context_tokens, context_limit,
+            compact_trigger_tokens, context_pct_of_trigger,
+            context_pct_of_limit). Operators add gt/gte/lt/lte for numeric
+            compares, e.g. {"field": "context_pct_of_trigger", "operator":
+            "gte", "value": "85"}.
+        once: Fire once per gate crossing: after firing, the hook stays silent
+            while fire_conditions keep matching and re-arms when they stop
+            (e.g. a context warning that fires once per approach to the
+            compaction trigger). Without fire_conditions, fires once per
+            thread.
         scope: "thread" (default; only the current thread) or "global" (all your
             threads). Create only; to re-scope, delete and re-create the hook.
         enabled: Enable/disable an existing hook on update.
@@ -549,7 +607,8 @@ def hook_config(
             return f"[Error]: {hook_action_key} requires params."
         return _hook_create(
             name=name, event=event, action=hook_action_key, text=text, params=params,
-            matcher=matcher, scope=scope, config=config,
+            matcher=matcher, fire_conditions=fire_conditions, once=once, scope=scope,
+            config=config,
         )
 
     if action_key == "update":
@@ -568,6 +627,7 @@ def hook_config(
                 "name": name, "event": event, "text": text, "params": params,
                 "matcher": matcher, "scope": scope, "enabled": enabled,
                 "command": command, "timeout_seconds": timeout_seconds,
+                "fire_conditions": fire_conditions, "once": once,
             }.items()
             if value is not None
         }
@@ -596,7 +656,8 @@ def hook_config(
         return _hook_update(
             hook_id=hook_id, name=name, event=event,
             action=(hook_action_key if hook_action is not None else None),
-            text=text, params=params, matcher=matcher, enabled=enabled, scope=scope,
+            text=text, params=params, matcher=matcher,
+            fire_conditions=fire_conditions, once=once, enabled=enabled, scope=scope,
             config=config,
         )
 

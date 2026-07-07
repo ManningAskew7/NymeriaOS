@@ -536,3 +536,55 @@ def test_make_execution_recorder_never_raises(manager):
     # An invalid status fails pydantic validation; the recorder swallows it.
     recorder(reg, ctx, status="bogus-status", detail="", duration=0.0)
     assert manager.get_executions("u1") == []
+
+
+# --- Definition-level fire gate: fire_conditions + once ------------------------
+
+def test_fire_gate_fields_default_and_roundtrip(manager):
+    # Legacy shape (no gate fields) parses with inert defaults.
+    legacy = HookDefinition.model_validate({
+        "id": "old1", "name": "n", "event": "done",
+        "logic": {"action": "inject_context", "text": "hi"},
+    })
+    assert legacy.fire_conditions == []
+    assert legacy.once is False
+    # Authored gate persists through the store and reloads.
+    hook = manager.add_hook(
+        "u1", name="advisory", event="post_tool_use", text="wrap up",
+        fire_conditions=[
+            {"field": "context_pct_of_trigger", "operator": "gte", "value": "85"}
+        ],
+        once=True, scope="global",
+    )
+    reloaded = manager.get_hook("u1", hook.id)
+    assert reloaded.once is True
+    assert len(reloaded.fire_conditions) == 1
+    cond = reloaded.fire_conditions[0]
+    assert (cond.field, cond.operator, cond.value) == (
+        "context_pct_of_trigger", "gte", "85"
+    )
+
+
+def test_fire_gate_updates_via_update_hook(manager):
+    hook = manager.add_hook("u1", name="n", event="done", text="x", scope="global")
+    assert manager.update_hook(
+        "u1", hook.id,
+        fire_conditions=[{"field": "final_text", "operator": "contains", "value": "error"}],
+        once=True,
+    )
+    updated = manager.get_hook("u1", hook.id)
+    assert updated.once is True
+    assert updated.fire_conditions[0].field == "final_text"
+    # Clearing the gate works too.
+    assert manager.update_hook("u1", hook.id, fire_conditions=[], once=False)
+    cleared = manager.get_hook("u1", hook.id)
+    assert cleared.fire_conditions == []
+    assert cleared.once is False
+
+
+def test_fire_gate_invalid_operator_rejected(manager):
+    with pytest.raises((ValidationError, ValueError)):
+        manager.add_hook(
+            "u1", name="n", event="done", text="x", scope="global",
+            fire_conditions=[{"field": "x", "operator": "sideways", "value": "1"}],
+        )

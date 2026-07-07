@@ -314,6 +314,26 @@ class HookDefinition(BaseModel):
         default=None,
         description="Pipe-list tool-name filter (tool events only), e.g. 'Edit|Write'",
     )
+    # Definition-level fire gate (the WHEN layer). Evaluated by the engine
+    # BEFORE the logic runs, so it gates every logic substrate uniformly
+    # (canned actions now, the workflow substrate later). Distinct from the
+    # guardrail actions' per-logic ``conditions``, which match tool args and
+    # are part of that logic's semantics.
+    fire_conditions: List[HookCondition] = Field(
+        default_factory=list,
+        description=(
+            "AND-ed engine-level fire gate evaluated against the event's "
+            "context data (meta fields, args.* tool args, context-usage "
+            "numbers) before the logic runs; empty = always fire"
+        ),
+    )
+    once: bool = Field(
+        default=False,
+        description=(
+            "Fire once per gate crossing: after firing, stays silent while "
+            "fire_conditions keep matching and re-arms when they stop matching"
+        ),
+    )
     logic: HookLogic
     enabled: bool = Field(default=True, description="Per-hook global default (see enable model)")
     scope: Literal["global", "thread"] = Field(
@@ -662,6 +682,8 @@ class HookManager:
         params: Optional[dict] = None,
         text: Optional[str] = None,
         matcher: Optional[str] = None,
+        fire_conditions: Optional[List[HookCondition]] = None,
+        once: bool = False,
         scope: str = "thread",
         thread_id: Optional[str] = None,
         enabled: bool = True,
@@ -686,6 +708,8 @@ class HookManager:
             name=name,
             event=event,  # type: ignore[arg-type]
             matcher=matcher,
+            fire_conditions=fire_conditions or [],
+            once=once,
             logic=logic,  # type: ignore[arg-type]
             enabled=enabled,
             scope=scope,  # type: ignore[arg-type]

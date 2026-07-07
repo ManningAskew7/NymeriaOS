@@ -236,6 +236,35 @@ def _accept(
     return "ok"
 
 
+def _apply_observe_patch(
+    event: HookEvent,
+    reg: Registration,
+    outcome: Optional[HookOutcome],
+    ctx: HookContext,
+    scratch: ScratchStore,
+) -> None:
+    """Apply a legal observe outcome's scratch patch; the outcome itself stays ignored.
+
+    The observe plane is fire-and-forget for TURN effects, but scratch is engine
+    state: the definition-level fire gate's ``once`` sentinel (and any observe
+    hook's own patch) must persist or a once-gated observe hook would re-fire on
+    every event. Mirrors the mutate plane's ``_accept`` patch handling; never
+    raises (the observe runners' fault handling wraps the call).
+    """
+    if outcome is None or not _legal(event, outcome):
+        return
+    patch = getattr(outcome, "scratch_patch", None)
+    if not patch:
+        return
+    if isinstance(patch, Mapping):
+        scratch.apply_patch(ctx.thread_id, patch)
+    else:
+        logger.error(
+            "observe hook %r scratch_patch is not a mapping (%s); ignoring",
+            reg.name, type(patch).__name__,
+        )
+
+
 def _fault_status(exc: BaseException) -> str:
     """Execution-log status for a hook fault."""
     if isinstance(exc, _HookTimeout):
@@ -263,7 +292,11 @@ def _outcome_detail(outcome: Optional[HookOutcome]) -> str:
         note = getattr(outcome, "note", None)
         return f"allow: {note}" if note else "allow"
     if isinstance(outcome, PromptOutcome):
-        return f"inject {len(outcome.inject_context or '')} chars"
+        # An outcome with no text is a state-only carrier (e.g. a fire gate's
+        # once/re-arm scratch patch); report it inert so no activity line fires.
+        if not outcome.inject_context:
+            return "no change"
+        return f"inject {len(outcome.inject_context)} chars"
     if isinstance(outcome, PostToolOutcome):
         parts = []
         if outcome.updated_result_text is not None:
@@ -609,7 +642,8 @@ async def adispatch_observe(
         status = "ok"
         error: Optional[BaseException] = None
         try:
-            await _arun_hook(reg, ctx, reg.timeout or timeout, _observe_pool)
+            outcome = await _arun_hook(reg, ctx, reg.timeout or timeout, _observe_pool)
+            _apply_observe_patch(event, reg, outcome, ctx, scratch)
         except Exception as exc:  # noqa: BLE001 - observe never affects the turn
             logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
             error, status = exc, _fault_status(exc)
@@ -639,7 +673,8 @@ def dispatch_observe(
         status = "ok"
         error: Optional[BaseException] = None
         try:
-            _run_hook_sync(reg, ctx, reg.timeout or timeout, _observe_pool)
+            outcome = _run_hook_sync(reg, ctx, reg.timeout or timeout, _observe_pool)
+            _apply_observe_patch(event, reg, outcome, ctx, scratch)
         except Exception as exc:  # noqa: BLE001 - observe never affects the turn
             logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
             error, status = exc, _fault_status(exc)

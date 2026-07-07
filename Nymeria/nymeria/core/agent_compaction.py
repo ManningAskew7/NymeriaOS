@@ -26,6 +26,44 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def hook_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Optional[int]]:
+    """Best-effort context-usage numbers for lifecycle-hook fire points.
+
+    Returns ``context_tokens`` (current occupancy; None when unknown or the
+    tracker has no measurement yet), ``context_limit`` (the thread's effective
+    model window), and ``compact_trigger_tokens`` (the resolved auto-compact
+    trigger; None when context_management != auto_compact). Reads the same
+    sources as ``get_context_stats``/``should_auto_compact_now`` but never
+    rehydrates from the checkpoint and never raises: hooks are best-effort
+    consumers and a stats failure must not touch a turn.
+    """
+    empty: Dict[str, Optional[int]] = {
+        "context_tokens": None,
+        "context_limit": None,
+        "compact_trigger_tokens": None,
+    }
+    try:
+        usage = agent._token_tracker.get_usage(thread_id)
+        tokens = int(usage.context_tokens) if usage.context_tokens > 0 else None
+        llm_config = agent._get_llm_config_for_thread(thread_id)
+        model_limit = get_context_limit(llm_config.model)
+        trigger = None
+        if model_limit and agent.settings.context_management == "auto_compact":
+            mode, pct, abs_tokens = agent._compaction._resolve_threshold_config(thread_id)
+            trigger = agent._compact_trigger_tokens(
+                model_limit, pct, mode=mode, tokens=abs_tokens
+            )
+        return {
+            "context_tokens": tokens,
+            "context_limit": int(model_limit) if model_limit else None,
+            "compact_trigger_tokens": int(trigger) if trigger else None,
+        }
+    except Exception:  # noqa: BLE001 - a stats failure must never touch a turn
+        logger.debug("hook context stats unavailable for %s", thread_id, exc_info=True)
+        return empty
+
+
 COMPACTION_TIMEOUT_SECONDS = 900
 COMPACTING_MESSAGE = "Compacting thread context..."
 CompactionStartCallback = Callable[[], Any]
