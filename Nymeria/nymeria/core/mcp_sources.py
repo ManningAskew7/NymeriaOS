@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import uuid
 from dataclasses import dataclass
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -56,13 +55,55 @@ SAFE_STDIO_COMMANDS = {
 ENV_ASSIGNMENT_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 
 
+def _clean_mcp_slug(slug: str) -> str:
+    """Drop redundant ``mcp``/``mcp-server`` boilerplate so a server named
+    ``mcp-server-github`` slugs to ``github``, and never leave a bare ``mcp``.
+
+    Readability, and defense-in-depth against a future non-``mcp__`` naming
+    scheme: the tool name always keeps the tested-clean ``mcp__`` prefix (guarded
+    in ``format_mcp_tool_name``), but a clean, non-``mcp``-leading id keeps that
+    invariant obvious.
+    """
+    for prefix in ("mcp-server-", "mcp-"):
+        if slug.startswith(prefix) and len(slug) > len(prefix):
+            return slug[len(prefix):].strip("-")
+    if slug == "mcp":
+        return "server"
+    return slug
+
+
 def slugify_mcp_name(raw: str) -> str:
     slug = SLUG_PATTERN.sub("-", raw.strip().lower()).strip("-")
-    return slug or "mcp"
+    return _clean_mcp_slug(slug) or "server"
 
 
-def new_mcp_server_id(name: str) -> str:
-    return f"{slugify_mcp_name(name)}-{uuid.uuid4().hex[:6]}"
+def new_mcp_server_id(name: str, existing_ids: Optional[set[str]] = None) -> str:
+    """Return a clean, collision-free server id derived from *name*.
+
+    Drops the old ``-<uuid6>`` suffix in favor of a readable slug
+    (``mcp__notion__search`` reads for the model and the user; the internal id is
+    the shared, single name). Collisions are disambiguated deterministically
+    (``notion``, ``notion-2``, ...). ``existing_ids`` defaults to the current
+    registry so callers need not thread it through.
+    """
+    if existing_ids is None:
+        try:
+            from .mcp_servers import get_mcp_server_registry
+
+            existing_ids = {s.id for s in get_mcp_server_registry().get_all_servers()}
+        except Exception:  # noqa: BLE001 - registry unavailable at some call sites
+            # Can't check collisions; fall back to a uuid-suffixed id so we never
+            # silently overwrite another server's definition.
+            import uuid
+
+            return f"{slugify_mcp_name(name)}-{uuid.uuid4().hex[:6]}"
+    base = slugify_mcp_name(name)
+    if base not in existing_ids:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in existing_ids:
+        suffix += 1
+    return f"{base}-{suffix}"
 
 
 def extract_install_source(source: str) -> str:

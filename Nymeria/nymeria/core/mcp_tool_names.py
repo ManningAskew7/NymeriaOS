@@ -11,6 +11,36 @@ from typing import Any
 
 MCP_TOOL_PREFIX = "mcp__"
 
+# Leading forms that Claude OAuth classifies as third-party MCP app usage and
+# rejects with a 400 "Third-party apps now draw from your extra usage" BEFORE
+# the model runs. Tested table: docs/private/cliproxy.md "Claude OAuth MCP
+# tool-name classifier". The DOUBLE-underscore ``mcp__`` prefix is tested-clean,
+# so a tool name must start with ``mcp__`` and never ``mcp`` + a single
+# separator. This guard is what keeps a future naming refactor (or an
+# "mcp"-leading server id) from silently breaking every Claude-OAuth thread
+# that has any MCP tool bound.
+_CLIPROXY_UNSAFE_PREFIXES = ("mcp.", "mcp/", "mcp-")
+
+
+def is_cliproxy_unsafe(name: str) -> bool:
+    """True when *name* would trip the Claude OAuth third-party-MCP classifier."""
+    value = str(name)
+    if value.startswith(_CLIPROXY_UNSAFE_PREFIXES):
+        return True
+    # ``mcp_x`` fails but ``mcp__x`` passes: a single underscore is the hazard.
+    return value.startswith("mcp_") and not value.startswith("mcp__")
+
+
+def assert_cliproxy_safe(name: str) -> str:
+    """Return *name*, or raise if it would trip the Claude OAuth classifier."""
+    if is_cliproxy_unsafe(name):
+        raise ValueError(
+            f"MCP tool name {name!r} would trip the Claude OAuth third-party-MCP "
+            "classifier (leading 'mcp' + single separator). It must start with "
+            "'mcp__'. See docs/private/cliproxy.md."
+        )
+    return name
+
 
 def _field(obj: Any, name: str, default: Any = "") -> Any:
     if isinstance(obj, Mapping):
@@ -19,9 +49,15 @@ def _field(obj: Any, name: str, default: Any = "") -> Any:
 
 
 def format_mcp_tool_name(server_id: str, tool_name: str) -> str:
-    """Return the internal Nymeria wrapper name for one MCP server tool."""
+    """Return the internal Nymeria wrapper name for one MCP server tool.
 
-    return f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}"
+    Always ``mcp__<server_id>__<tool_name>`` (the tested-clean double-underscore
+    namespace). The result is asserted CLIProxy-safe so a future change to this
+    format, or an ``mcp``-leading server id, fails loudly instead of silently
+    tripping the classifier at request time.
+    """
+
+    return assert_cliproxy_safe(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}")
 
 
 def is_mcp_tool_name(name: str) -> bool:
