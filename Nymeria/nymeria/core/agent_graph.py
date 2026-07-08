@@ -453,6 +453,17 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
                 if reg_tool:
                     tools.append(reg_tool)
 
+    # Token optimization: when unbound direct calls are allowed (dynamic binding
+    # only), the resident tool_invoke tool is redundant because the model can
+    # call unbound tools directly, so drop it from the BOUND schema to save its
+    # tokens every request. It stays in the dispatch superset, so an explicit
+    # tool_invoke call is still gated (excluded) rather than silently running.
+    _settings = getattr(agent, "settings", None)
+    if bool(getattr(_settings, "allow_unbound_tool_calls", False)) and bool(
+        getattr(_settings, "dynamic_tool_binding", False)
+    ):
+        tools = [t for t in tools if getattr(t, "name", None) != "tool_invoke"]
+
     skill_tool = agent._build_skill_meta_tool(user_id, tc, tools)
     if skill_tool is not None:
         tools.append(skill_tool)

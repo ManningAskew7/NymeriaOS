@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
-import { getToolSummary } from './toolSummary';
+import { deferredToolTargetName, getToolSummary } from './toolSummary';
+
+describe('deferredToolTargetName', () => {
+  it('returns the target tool name for a tool_invoke call', () => {
+    expect(deferredToolTargetName('tool_invoke', { name: 'web_search', arguments: { q: 'x' } })).toBe(
+      'web_search',
+    );
+  });
+
+  it('returns null for a normal (non-deferred) tool call', () => {
+    expect(deferredToolTargetName('bash_execute', { command: 'ls' })).toBeNull();
+  });
+
+  it('returns null when the target name is missing or not a string', () => {
+    expect(deferredToolTargetName('tool_invoke', { arguments: {} })).toBeNull();
+    expect(deferredToolTargetName('tool_invoke', { name: 42 })).toBeNull();
+    expect(deferredToolTargetName('tool_invoke', undefined)).toBeNull();
+    expect(deferredToolTargetName('tool_invoke', { name: '' })).toBeNull();
+  });
+});
 
 describe('getToolSummary', () => {
   it('uses a self-describing query argument', () => {

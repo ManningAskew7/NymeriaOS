@@ -99,9 +99,9 @@ def test_graph_run_config_uses_agent_facades():
 
     config = graph_run_config(cast(Any, agent), "thread-a", "user-b", callbacks)
 
-    # The facade agent has no settings/thread_config_manager, so the Tier 2 flag
-    # and the tool-timing flag resolve to their defaults (False) and are always
-    # present in configurable.
+    # The facade agent has no settings/thread_config_manager, so the Tier 2 flag,
+    # the tool-timing flag, and the unbound-call flag resolve to their defaults
+    # (False) and are always present in configurable.
     assert config == {
         "recursion_limit": 177,
         "configurable": {
@@ -109,6 +109,7 @@ def test_graph_run_config_uses_agent_facades():
             "user_id": "user-b",
             "sequential_tools": False,
             "tool_timing_in_results": False,
+            "allow_unbound_tool_calls": False,
         },
         "callbacks": callbacks,
     }

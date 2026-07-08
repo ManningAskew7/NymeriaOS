@@ -99,10 +99,36 @@ def _show(user_id: str, admin: bool, workflow_id: str) -> str:
         f"author={entry.get('author')}, entrypoint={entry.get('entrypoint')}, "
         f"continuations={entry.get('continuations') or []}",
         f"parameters={entry.get('parameter_names') or []}",
-        "source:",
-        source + truncated,
     ]
+    schema_line = _workflow_args_schema_line(workflow_id)
+    if schema_line:
+        lines.append(schema_line)
+    lines.append("source:")
+    lines.append(source + truncated)
     return "\n".join(lines)
+
+
+def _workflow_args_schema_line(workflow_id: str) -> str:
+    """Compact args schema of the live workflow tool, for deferred invocation.
+
+    A published workflow is a registry-backed tool, so it can be run one-off via
+    ``tool_invoke``; this line gives the model its exact call arguments. Returns
+    '' for drafts (no live tool yet) or when the tool cannot be resolved.
+    """
+    try:
+        from ..core.agent import get_current_agent
+        from .schema_render import render_tool_args_schema
+
+        agent = get_current_agent()
+        registry = getattr(agent, "tool_registry", None) if agent else None
+        tool_obj = registry.get_tool(workflow_id) if registry else None
+        if tool_obj is None:
+            return ""
+        schema = render_tool_args_schema(tool_obj)
+        return f"arguments schema (for tool_invoke): {schema}" if schema else ""
+    except Exception:  # noqa: BLE001 - schema line is optional enrichment
+        logger.debug("Failed to render workflow args schema for %s", workflow_id, exc_info=True)
+        return ""
 
 
 def _log(user_id: str, admin: bool, workflow_id: str, limit: int) -> str:

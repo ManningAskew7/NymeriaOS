@@ -513,6 +513,20 @@ class Settings(BaseSettings):
             "control tool; overridable per-thread."
         ),
     )
+    allow_unbound_tool_calls: bool = Field(
+        default=False,
+        description=(
+            "When True (dynamic binding only), let the model dispatch a tool by "
+            "emitting a call for it even if the tool is not in its bound list, so "
+            "long as the tool passes the same deferred gates as tool_invoke "
+            "(management denylist, role gates, disabled_tools). Enabling this also "
+            "drops the resident tool_invoke tool from the bound schema to save "
+            "tokens, since direct unbound calls make it redundant. Off by default: "
+            "a call for an unbound tool is refused with a redirect to tool_invoke "
+            "(one-off) or tool_manage (bind). Only enable it on providers that "
+            "reliably emit calls for tools not present in the schema."
+        ),
+    )
     hooks_enabled: bool = Field(
         default=True,
         description=(

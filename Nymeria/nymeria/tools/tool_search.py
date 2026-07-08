@@ -235,6 +235,28 @@ def _get_thread_status(thread_id: str) -> Tuple[set, dict, set]:
     return set(tc.enabled_tools), dict(tc.temporary_tools), set(tc.disabled_tools)
 
 
+def _render_result_schema(name: str, agent) -> str:
+    """Render a search result's args schema line, or '' when unavailable.
+
+    Resolves the live tool object (the search index holds no args schema) and
+    renders it compactly for deferred use via ``tool_invoke``. Best-effort: any
+    failure yields an empty string so the search result still renders.
+    """
+    try:
+        from .schema_render import render_tool_args_schema
+
+        tool_obj = _resolve_tool_object(name, agent)
+        if tool_obj is None:
+            return ""
+        schema = render_tool_args_schema(tool_obj)
+        if not schema:
+            return ""
+        return f"\n    Schema: {schema}"
+    except Exception:  # noqa: BLE001 - schema rendering is optional enrichment
+        logger.debug("Failed to render schema for %r", name, exc_info=True)
+        return ""
+
+
 def _search(
     query: str,
     category: str,
@@ -243,6 +265,7 @@ def _search(
     *,
     top_k: int = 15,
     include_status: bool = True,
+    include_schemas: bool = False,
 ) -> str:
     if not query and not category:
         return "[Error]: Provide a query, a category, or both."
@@ -306,6 +329,14 @@ def _search(
             f"\n    {c.description}"
             f"\n    Enable hint: {c.enable_hint}"
             + _auth_line(c)
+            + (_render_result_schema(c.name, agent) if include_schemas else "")
+        )
+
+    if include_schemas:
+        lines.append(
+            "\n[Deferred vs bind]: run any result once via "
+            "tool_invoke(name, arguments) without binding it (cache-safe); "
+            "bind repeat-use tools first-class with tool_manage(action=\"enable\")."
         )
 
     return "\n".join(lines)
@@ -1310,21 +1341,31 @@ def tool_search(
     config: Annotated[RunnableConfig, InjectedToolArg],
     top_k: int = 15,
     include_status: bool = True,
+    include_schemas: bool = False,
 ) -> str:
     """
-    Search available tools by keyword/category; enable results with tool_manage.
+    Search available tools by keyword/category.
+
+    To USE a result: run it once without binding via tool_invoke(name,
+    arguments) (cache-safe, best for one-off or while exploring), or bind it
+    first-class for repeated use with tool_manage(action="enable").
 
     Args:
         query: Search keyword.
         category: Optional category filter (e.g. "email", "twitch").
         top_k: Max results to return, capped at 50.
         include_status: Include current-thread enabled/disabled annotations.
+        include_schemas: Append each result's argument schema (a compact JSON
+            of its call arguments) so you can call it via tool_invoke without
+            binding. Off by default to keep browsing cheap; turn on once you
+            know which tool you want to run.
 
     Returns:
         "[Tool Search]: N result(s)" header + per result: name
         (category, security_level) [ENABLED/DISABLED], description,
         enable hint, and for tools needing a credential an Auth line
-        (connected / pending / needs_setup / optional).
+        (connected / pending / needs_setup / optional). With
+        include_schemas, each result also carries a Schema line.
         "[No results]: ..." when empty.
     """
     thread_id = get_thread_id(config)
@@ -1332,7 +1373,8 @@ def tool_search(
     user_role = caller_role(user_id)
     logger.info(
         f"tool_search: query={query!r}, category={category!r}, "
-        f"top_k={top_k!r}, include_status={include_status!r}"
+        f"top_k={top_k!r}, include_status={include_status!r}, "
+        f"include_schemas={include_schemas!r}"
     )
     return _search(
         query,
@@ -1341,6 +1383,7 @@ def tool_search(
         user_role=user_role,
         top_k=top_k,
         include_status=include_status,
+        include_schemas=include_schemas,
     )
 
 

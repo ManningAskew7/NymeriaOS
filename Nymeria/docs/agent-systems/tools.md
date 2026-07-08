@@ -892,10 +892,13 @@ notify(message: str, profile: Optional[str] = None)
 ### tool_search
 
 Search available tools by keyword/category. This is search-only; mutations live
-in `tool_manage`.
+in `tool_manage`. To USE a result, either run it once without binding via
+`tool_invoke` (cache-safe) or bind it first-class with
+`tool_manage(action="enable")` (see [tool_invoke](#tool_invoke) and
+[tool-hot-loading.md](./tool-hot-loading.md)).
 
 ```python
-tool_search(query: str = "", category: str = "", top_k: int = 15, include_status: bool = True)
+tool_search(query: str = "", category: str = "", top_k: int = 15, include_status: bool = True, include_schemas: bool = False)
 ```
 
 **Parameters:**
@@ -903,6 +906,9 @@ tool_search(query: str = "", category: str = "", top_k: int = 15, include_status
 - `category` (`str`): Optional category filter (e.g. `"email"`, `"slack"`).
 - `top_k` (`int`): Result count, default 15 and capped at 50.
 - `include_status` (`bool`): Include current-thread enabled/disabled annotations.
+- `include_schemas` (`bool`): Append each result's argument schema (compact JSON
+  of its call arguments) so it can be run via `tool_invoke` without binding. Off
+  by default to keep browsing cheap; turn on once the target is chosen.
 
 `tool_search` uses the shared backend search service behind
 `GET /users/{user_id}/tools/search`. The indexed catalog includes core tools,
@@ -940,6 +946,35 @@ The same backend ranking is used by one-shot command searches:
 Desktop and mobile typeahead filtering stays local for responsiveness, but uses
 the shared frontend `utils/toolSearch.ts` fuzzy scorer over tool names, snake
 case tokens, categories, descriptions, tags, and implementation/type fields.
+
+### tool_invoke
+
+Run one tool by name WITHOUT binding it to the thread (cache-safe deferred
+execution). A resident seed tool, always available.
+
+```python
+tool_invoke(name: str, arguments: dict | str | None = None)
+```
+
+**Parameters:**
+- `name` (`str`): The exact tool name to run (as shown by `tool_search`).
+- `arguments` (`dict` or JSON string): The target tool's arguments. Omit or pass
+  an empty object for a no-argument tool.
+
+Use `tool_invoke` for a one-off call or while choosing among candidate tools: it
+does not mutate the thread tool list, so the prompt cache is preserved. Prefer
+`tool_manage(action="enable")` for repeated use or when arguments must be exactly
+right (a bound tool's arguments are grammar-constrained). It resolves any tool in
+the dispatch superset (catalog, MCP, custom, workflow) and enforces the SAME
+gates as binding (management denylist, admin/developer role gates, and the
+thread's authoritative `disabled_tools`), resolving credentials as the calling
+user. Arguments are validated against the target's real schema server-side; on a
+mismatch it echoes the correct schema so the model self-corrects. `Skill`,
+`run_tools_in_order`, `install_skill`, `install_mcp_server`, and `tool_invoke`
+itself cannot be called through it (the installers bind + reload, so they belong
+on the binding surface). See
+[tool-hot-loading.md](./tool-hot-loading.md) for the full deferred-execution and
+unbound-call-enforcement model.
 
 ## Service Integration Tools (Optional)
 
