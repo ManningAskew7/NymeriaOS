@@ -298,6 +298,7 @@ class MCPServerRegistry:
             working_directory=defn.working_directory,
             idle_timeout_seconds=defn.idle_timeout_seconds,
             startup_timeout_seconds=defn.startup_timeout_seconds,
+            call_timeout_seconds=defn.call_timeout_seconds,
         )
 
         # Connect and fetch full tool records (name/description/inputSchema) via the
@@ -415,6 +416,7 @@ class MCPServerRegistry:
             working_directory=defn.working_directory,
             idle_timeout_seconds=defn.idle_timeout_seconds,
             startup_timeout_seconds=defn.startup_timeout_seconds,
+            call_timeout_seconds=defn.call_timeout_seconds,
         )
 
         manager = get_mcp_manager()

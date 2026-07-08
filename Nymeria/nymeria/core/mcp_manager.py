@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -102,6 +103,27 @@ def _should_enforce_stdio_launch_allowlist() -> bool:
 INIT_TIMEOUT_DEFAULT = 10
 LIST_TIMEOUT_DEFAULT = 30
 CALL_TIMEOUT_DEFAULT = 60
+
+# MCP tool calls run on this dedicated, bounded pool rather than the asyncio
+# default executor, so a burst of slow/hung MCP calls cannot starve every other
+# ``run_in_executor(None, ...)``/``to_thread`` user on the loop. Blocking-I/O
+# bound (each thread waits on a subprocess/HTTP round trip), so a modest cap is
+# plenty; overflow queues.
+_MCP_CALL_EXECUTOR_MAX_WORKERS = 16
+_mcp_call_executor: Optional[ThreadPoolExecutor] = None
+_mcp_call_executor_lock = threading.Lock()
+
+
+def _get_mcp_call_executor() -> ThreadPoolExecutor:
+    """Return the process-wide bounded executor for MCP tool calls."""
+    global _mcp_call_executor
+    with _mcp_call_executor_lock:
+        if _mcp_call_executor is None:
+            _mcp_call_executor = ThreadPoolExecutor(
+                max_workers=_MCP_CALL_EXECUTOR_MAX_WORKERS,
+                thread_name_prefix="mcp-call",
+            )
+        return _mcp_call_executor
 
 
 @dataclass
@@ -201,6 +223,11 @@ class MCPServerManager:
                     logger.info(f"MCP server {conn.server_id} died, removing connection")
                     self._shutdown_connection(conn)
                     to_remove.append(key)
+                    continue
+                # A tool call in flight holds the io lock; never reap it even if
+                # last_used looks stale (a single call can outlast the idle
+                # window). Mirrors shutdown_server's skip_if_active guard.
+                if conn._io_lock.locked():
                     continue
                 if conn.is_idle(conn.config.idle_timeout_seconds):
                     logger.info(
@@ -454,9 +481,17 @@ class MCPServerManager:
         request: Dict[str, Any],
         timeout: int,
     ) -> Dict[str, Any]:
-        if conn.config.transport == "http":
-            return self._http_send_request(conn, request, timeout)
-        return self._stdio_send_request(conn, request, timeout)
+        # Stamp activity at both ends so last_used reflects the call, not just
+        # connection acquisition: the start touch covers a call that queues on
+        # the io lock, the end touch restarts the idle window from completion so
+        # a long call is not immediately reaped by the next sweep.
+        conn.touch()
+        try:
+            if conn.config.transport == "http":
+                return self._http_send_request(conn, request, timeout)
+            return self._stdio_send_request(conn, request, timeout)
+        finally:
+            conn.touch()
 
     def _send_notification(self, conn: MCPConnection, notification: Dict[str, Any]) -> None:
         if conn.config.transport == "http":
@@ -688,7 +723,80 @@ class MCPServerManager:
 
     async def call_tool(self, config: MCPToolConfig, params: Dict[str, Any]) -> str:
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.call_tool_sync, config, params)
+        try:
+            return await loop.run_in_executor(
+                _get_mcp_call_executor(), self.call_tool_sync, config, params
+            )
+        except asyncio.CancelledError:
+            # The turn was aborted. The executor thread can't be interrupted, so
+            # tear down the in-flight subprocess to unblock its pipe read; the
+            # orphaned thread then finishes fast and frees its pool slot. The
+            # reap runs on its own daemon thread (see _abort_in_flight), so this
+            # never blocks the event loop while the child is being killed.
+            self._abort_in_flight(config)
+            raise
+
+    def _abort_in_flight(self, config: MCPToolConfig) -> Optional[threading.Thread]:
+        """Kill the connection for *config* iff a call is in flight on it.
+
+        Detaches the connection from the pool synchronously under ``self._lock``
+        (the orphaned worker holds only ``_io_lock``, so no lock-ordering
+        deadlock), then reaps the subprocess on a throwaway daemon thread. The
+        reap must not run inline: this is called on the single agent event loop
+        from ``call_tool``'s cancel handler, and ``_shutdown_connection`` blocks
+        up to 5s in ``process.wait`` before escalating to SIGKILL. The SIGTERM
+        that actually unblocks the orphaned worker's pipe read goes out at the
+        top of that reap, so the loop is freed immediately; the wait/reap just
+        finishes off-loop. The teardown never runs on the mcp-call pool (whose
+        workers may be the very calls we are unblocking).
+
+        Only fires when ``_io_lock`` is held, i.e. a call is genuinely
+        mid-flight; a warm idle connection is left alone. This is a stdio-only
+        teardown: http calls never take ``_io_lock`` (``.locked()`` is always
+        False for them) and are bounded by ``_effective_call_timeout`` instead,
+        so there is nothing to kill. MCP stdio serializes calls per connection,
+        so at most one call is in flight. The connection is shared per server,
+        not per turn, so under a cancellation-vs-completion race the reaped call
+        may be a co-tenant turn's (a queued call, or briefly its freshly-started
+        one) rather than the aborted turn's own; the co-tenant degrades to a
+        clear "process died" ``[Error]`` string and retries, never hangs, which
+        is the right outcome under a turn abort.
+
+        Returns the reaper thread (or None when nothing was in flight) so
+        callers/tests can join it; the production cancel path ignores it.
+        """
+        key = self._get_config_key(config)
+        with self._lock:
+            conn = self._connections.get(key)
+            if conn is None or not conn._io_lock.locked():
+                return None
+            # Detach synchronously so no later call reuses this connection.
+            self._connections.pop(key, None)
+        logger.info("Aborting in-flight MCP call: tearing down %s", conn.server_id)
+        reaper = threading.Thread(
+            target=self._shutdown_connection,
+            args=(conn,),
+            name=f"mcp-abort-{conn.server_id}",
+            daemon=True,
+        )
+        reaper.start()
+        return reaper
+
+    def _effective_call_timeout(self, config: MCPToolConfig) -> int:
+        """Per-call timeout, clamped to the global tool_timeout ceiling.
+
+        A server's ``call_timeout_seconds`` must never exceed the turn-level
+        ``tool_timeout`` (the wider bracket SafeToolNode enforces), so a
+        misconfigured server can't out-wait its own tool call.
+        """
+        call_timeout = getattr(config, "call_timeout_seconds", 0) or CALL_TIMEOUT_DEFAULT
+        try:
+            from ..config import get_settings
+
+            ceiling = int(getattr(get_settings(), "tool_timeout", 0) or 0)
+        except Exception:
+            ceiling = 0
+        return min(call_timeout, ceiling) if ceiling > 0 else call_timeout
 
     def call_tool_sync(self, config: MCPToolConfig, params: Dict[str, Any]) -> str:
         try:
@@ -705,7 +813,9 @@ class MCPServerManager:
                 "params": {"name": config.tool_name, "arguments": params},
             }
 
-            response = self._send_request(conn, request, timeout=CALL_TIMEOUT_DEFAULT)
+            response = self._send_request(
+                conn, request, timeout=self._effective_call_timeout(config)
+            )
 
             if "error" in response:
                 error = response["error"]
@@ -902,9 +1012,15 @@ def get_mcp_manager() -> MCPServerManager:
 
 def shutdown_mcp_manager() -> None:
     """Shutdown and clear the process-wide MCP server manager, if it exists."""
-    global _shared_mcp_manager
+    global _shared_mcp_manager, _mcp_call_executor
     with _shared_mcp_manager_lock:
         manager = _shared_mcp_manager
         _shared_mcp_manager = None
     if manager is not None:
         manager.shutdown_all()
+    with _mcp_call_executor_lock:
+        executor = _mcp_call_executor
+        _mcp_call_executor = None
+    if executor is not None:
+        # Don't block shutdown on a wedged MCP call; the process is exiting.
+        executor.shutdown(wait=False, cancel_futures=True)

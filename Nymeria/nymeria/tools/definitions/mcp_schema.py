@@ -54,6 +54,10 @@ class MCPServerDefinition(BaseModel):
     working_directory: Optional[str] = None
     idle_timeout_seconds: int = 300
     startup_timeout_seconds: int = 30
+    # Per-call ceiling for a single tools/call, clamped to the global
+    # tool_timeout at dispatch. Bounds a hung/slow MCP call independently of the
+    # idle window.
+    call_timeout_seconds: int = 60
     enabled: bool = True
     discovered_tools: List[MCPDiscoveredTool] = []
     install_status: MCPInstallStatus = "ready"
@@ -85,6 +89,27 @@ class MCPServerDefinition(BaseModel):
             raise ValueError("server_command is required when transport is 'stdio'")
         if self.transport == "http" and not self.url:
             raise ValueError("url is required when transport is 'http'")
+        return self
+
+    @model_validator(mode="after")
+    def _clamp_timeouts(self) -> "MCPServerDefinition":
+        """Normalize timeout fields into the bounds MCPToolConfig enforces.
+
+        The definition is the persisted, raw-editable surface (resource
+        filesystem hot-load); MCPToolConfig applies Field bounds. Without this,
+        an out-of-range raw edit parses here but raises at MCPToolConfig
+        construction in ``mcp_servers``, which swallows the error per tool and
+        makes every tool on the server silently vanish. Clamping degrades
+        gracefully (server keeps working with a sane value) instead. Bounds must
+        mirror the MCPToolConfig Field constraints exactly.
+        """
+
+        def _clamp(value: int, lo: int, hi: int) -> int:
+            return max(lo, min(hi, value))
+
+        self.idle_timeout_seconds = _clamp(self.idle_timeout_seconds, 30, 3600)
+        self.startup_timeout_seconds = _clamp(self.startup_timeout_seconds, 5, 120)
+        self.call_timeout_seconds = _clamp(self.call_timeout_seconds, 5, 900)
         return self
 
 
@@ -162,6 +187,12 @@ class MCPToolConfig(BaseModel):
         ge=5,
         le=120,
         description="Seconds to wait for server initialization",
+    )
+    call_timeout_seconds: int = Field(
+        default=60,
+        ge=5,
+        le=900,
+        description="Seconds a single tools/call may run before being aborted (clamped to tool_timeout at dispatch)",
     )
 
     @model_validator(mode="after")
