@@ -1873,7 +1873,7 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 124
+    assert len(service._commands) == 125
     assert sum(cmd.executable for cmd in service._commands.values()) == 110
 
     help_cmd = by_name["help"]
@@ -1891,6 +1891,15 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     assert skill.note == "Handled by the chat stream endpoint."
 
     assert by_name["compact"].agent_allowed is False
+
+    # /quick is a chat-stream command (handled by the /chat endpoint, so
+    # non-executable via the command service) and gated off for agents.
+    quick = by_name["quick"]
+    assert quick.execution_kind == "chat_stream"
+    assert quick.executable is False
+    assert quick.requires_thread is True
+    assert quick.agent_allowed is False
+    assert quick.note == "Handled by the chat stream endpoint."
 
     # /thread management subtree: read verbs stay agent-allowed, mutating and
     # navigation verbs are gated off, delete matches the "dangerous" pattern,
