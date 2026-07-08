@@ -30,6 +30,7 @@ from .agent_text_extract import (
     extract_reasoning_text_from_block,
     strip_inline_thinking_text,
 )
+from .mcp_tool_names import parse_mcp_tool_name
 from .pending_prompt_queue import PendingPrompt
 
 
@@ -283,6 +284,9 @@ class GraphStreamProcessor:
         # run_id -> (monotonic start, wall-clock ISO start) for server-side
         # tool timing on the live stream.
         self._tool_call_started: dict[Any, tuple[float, str]] = {}
+        # server_id -> resolved human server name, so an MCP tool's start and
+        # end events share a single registry lookup for provenance.
+        self._mcp_server_names: dict[str, str] = {}
         self._reasoning_deduper = ReasoningChunkDeduper()
         self._emitted_tool_call_delta = False
         self._streamed_text_in_current_llm_call = False
@@ -350,6 +354,37 @@ class GraphStreamProcessor:
             event.get("run_id"),
         )
 
+    def _mcp_provenance(self, tool_name: str) -> dict[str, Any]:
+        """Return SSE provenance fields for a managed MCP tool, or ``{}``.
+
+        Keyed off the internal ``mcp__<server_id>__<tool>`` name so the client
+        can badge the call with its origin server. Only MCP tools touch the
+        registry (to resolve the human server name); everything else short
+        circuits on a pure string parse. Best-effort: a registry miss or error
+        falls back to the server id, and non-MCP tools contribute nothing.
+        """
+        parsed = parse_mcp_tool_name(tool_name)
+        if parsed is None:
+            return {}
+        server_id, _ = parsed
+        server_name = self._mcp_server_names.get(server_id)
+        if server_name is None:
+            server_name = server_id
+            try:
+                from .mcp_servers import get_mcp_server_registry
+
+                defn = get_mcp_server_registry().get_server(server_id)
+                if defn is not None and getattr(defn, "name", ""):
+                    server_name = defn.name
+            except Exception:  # noqa: BLE001 - provenance is best-effort UI metadata
+                pass
+            self._mcp_server_names[server_id] = server_name
+        return {
+            "tool_type": "mcp_server",
+            "server_id": server_id,
+            "server_name": server_name,
+        }
+
     def _handle_tool_start(self, event: dict[str, Any]) -> Iterable[dict[str, Any]]:
         run_id = event.get("run_id")
         if not run_id or run_id in self._emitted_tool_starts:
@@ -377,6 +412,7 @@ class GraphStreamProcessor:
         }
         if self.tool_timeout:
             chunk["timeout_seconds"] = int(self.tool_timeout)
+        chunk.update(self._mcp_provenance(tool_name))
         return [chunk]
 
     def _handle_tool_end(self, event: dict[str, Any]) -> Iterable[dict[str, Any]]:
@@ -395,6 +431,7 @@ class GraphStreamProcessor:
             "name": tool_name,
             "result": display_result,
         }
+        chunk.update(self._mcp_provenance(tool_name))
         # Server-authoritative live timing: diff our own monotonic clock from
         # tool_start (measured in the API process, around the BaseTool run).
         # The on_tool_end output is the pre-stamp inner ToolMessage, so

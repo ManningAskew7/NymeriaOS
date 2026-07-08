@@ -44,6 +44,13 @@ class UnifiedToolResponse(BaseModel):
     group_label: str | None = None
     service: str | None = None
     service_label: str | None = None
+    # MCP provenance (mcp_server tools only; None otherwise). The tool name
+    # stays the clean internal mcp__server__tool the model sees; these let the
+    # client badge the call with its origin server. display_name is a compact
+    # "server / tool" label for lists.
+    server_id: str | None = None
+    server_name: str | None = None
+    display_name: str | None = None
     # Credential axis (provider-mapped tools only; None = no credential
     # required): connected / pending / needs_setup / optional.
     auth_status: str | None = None

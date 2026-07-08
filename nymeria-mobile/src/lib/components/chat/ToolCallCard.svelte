@@ -5,7 +5,7 @@
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { formatFileSize } from '$lib/utils/fileProcessing';
-  import { getToolSummary, deferredToolTargetName } from '$lib/utils/toolSummary';
+  import { getToolSummary, deferredToolTargetName, mcpServerBadge } from '$lib/utils/toolSummary';
   import { formatMessageTime } from '$lib/utils/time';
   import { configStore } from '$lib/stores/config.svelte';
   import WorkspaceArtifactModal from './WorkspaceArtifactModal.svelte';
@@ -55,6 +55,9 @@
   // tool_invoke envelope stays visible in the expanded args.
   let deferredTarget = $derived(deferredToolTargetName(toolCall.name, toolCall.arguments));
   let displayName = $derived(deferredTarget ?? toolCall.name);
+  // MCP provenance badge, parsed from the (clean) internal mcp__server__tool
+  // name so it renders the same on the live stream and on history reload.
+  let mcpBadge = $derived(mcpServerBadge(displayName));
   let summaryArgs = $derived.by(() => {
     if (!deferredTarget) return toolCall.arguments;
     // Some providers stringify object-typed tool args, so parse a JSON string
@@ -139,6 +142,13 @@
     {#snippet header()}
       <div class="tool-header">
         <span class="tool-name">{displayName}</span>
+        {#if mcpBadge}
+          <span
+            class="mcp-badge"
+            title={`Model Context Protocol server: ${mcpBadge.server}`}
+            aria-label={`MCP server: ${mcpBadge.server}`}
+          >MCP · {mcpBadge.server}</span>
+        {/if}
         {#if deferredTarget}
           <span class="deferred-badge" title="Run once via tool_invoke without binding it">deferred</span>
         {/if}
@@ -423,6 +433,20 @@
     color: var(--text-secondary);
     background: var(--bg-elevated-2);
     border: 1px solid var(--border-subtle);
+  }
+
+  /* Origin-server provenance for a managed MCP tool. Accent-tinted so it reads
+     as a source tag, distinct from the neutral "deferred" marker beside it. */
+  .mcp-badge {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-elevated-2));
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 35%, transparent);
   }
 
   /* Plain-English label next to the tool name. Takes the middle space and

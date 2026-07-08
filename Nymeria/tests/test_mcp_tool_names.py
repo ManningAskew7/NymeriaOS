@@ -7,6 +7,7 @@ from nymeria.core.mcp_tool_names import (
     display_mcp_tool_names,
     format_mcp_tool_name,
     is_cliproxy_unsafe,
+    mcp_auth_status_for_install,
     mcp_tool_display_name,
     parse_mcp_tool_name,
     registered_mcp_tool_names,
@@ -92,3 +93,20 @@ def test_format_mcp_tool_name_is_always_cliproxy_safe():
 def test_assert_cliproxy_safe_raises_on_unsafe_name():
     with pytest.raises(ValueError):
         assert_cliproxy_safe("mcp_search")
+
+
+@pytest.mark.parametrize(
+    "install_status,expected",
+    [
+        ("ready", "connected"),
+        ("discovering", "connected"),
+        ("needs_config", "needs_setup"),
+        ("failed", "needs_setup"),
+        ("draft", None),
+        ("preparing", None),
+        ("disabled", None),
+        ("", None),
+    ],
+)
+def test_mcp_auth_status_for_install_maps_setup_axis(install_status, expected):
+    assert mcp_auth_status_for_install(install_status) == expected

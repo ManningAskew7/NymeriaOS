@@ -245,6 +245,28 @@ export function deferredToolTargetName(
   return typeof target === 'string' && target ? target : null;
 }
 
+/**
+ * MCP-server provenance for the tool-call card badge. Managed MCP tools carry
+ * the internal name `mcp__<server>__<tool>` (the same clean name the model
+ * sees); this parses the origin server so the card can badge it "MCP ·
+ * <server>". Derived from the name alone, so it works identically on the live
+ * stream and on history reload with no per-event plumbing. Returns null for a
+ * non-MCP name.
+ */
+export function mcpServerBadge(
+  name: string,
+): { server: string; tool: string } | null {
+  const prefix = 'mcp__';
+  if (!name.startsWith(prefix)) return null;
+  const body = name.slice(prefix.length);
+  const sep = body.indexOf('__');
+  if (sep <= 0) return null;
+  const server = body.slice(0, sep);
+  const tool = body.slice(sep + 2);
+  if (!server || !tool) return null;
+  return { server, tool };
+}
+
 export function getToolSummary(
   name: string,
   args: Record<string, unknown> | undefined,

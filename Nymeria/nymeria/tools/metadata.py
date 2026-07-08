@@ -1109,6 +1109,7 @@ def register_mcp_server_tool_metadata(
     live: bool = True,
     enabled: bool = True,
     server_id: str = "",
+    server_name: str = "",
     install_status: str = "",
 ) -> ToolMetadata:
     """Register metadata for an MCP server tool."""
@@ -1122,11 +1123,49 @@ def register_mcp_server_tool_metadata(
         enabled=enabled,
         metadata={
             "server_id": server_id,
+            "server_name": server_name,
             "install_status": install_status,
         },
     )
     MCP_SERVER_TOOL_METADATA[tool_name] = metadata
     return metadata
+
+
+def mcp_tool_surface_fields(tool_name: str) -> Dict[str, Any]:
+    """Provenance + setup axis for a managed MCP tool, for REST/search surfaces.
+
+    Returns ``server_id`` / ``server_name`` / ``display_name`` / ``auth_status``
+    from the live MCP metadata registry so every surface (unified tools list,
+    ``/tools/defaults``, tool search) badges MCP calls with their origin server
+    the same way. ``auth_status`` maps the server's install status onto the
+    shared credential-axis vocabulary; MCP tools have no credential provider, so
+    callers leave ``auth_provider`` None. Returns ``{}`` for a non-MCP name.
+    """
+    from ..core.mcp_tool_names import (
+        mcp_auth_status_for_install,
+        mcp_tool_display_label,
+        parse_mcp_tool_name,
+    )
+
+    meta = MCP_SERVER_TOOL_METADATA.get(tool_name)
+    if meta is None:
+        return {}
+    extra = meta.metadata or {}
+    server_id = str(extra.get("server_id") or "")
+    server_name = str(extra.get("server_name") or "") or server_id
+    install_status = str(extra.get("install_status") or "")
+    parsed = parse_mcp_tool_name(tool_name)
+    raw_tool = parsed[1] if parsed else tool_name
+    return {
+        "server_id": server_id,
+        "server_name": server_name,
+        "display_name": mcp_tool_display_label(
+            server_id=server_id,
+            server_name=server_name,
+            tool_name=raw_tool,
+        ),
+        "auth_status": mcp_auth_status_for_install(install_status),
+    }
 
 
 def unregister_mcp_server_tool_metadata(tool_name: str) -> bool:

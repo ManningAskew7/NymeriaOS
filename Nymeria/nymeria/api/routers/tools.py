@@ -98,8 +98,11 @@ def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
             })
             seen.add(name)
 
+    from ...tools.metadata import mcp_tool_surface_fields
+
     for name, meta in MCP_SERVER_TOOL_METADATA.items():
         if name not in seen:
+            provenance = mcp_tool_surface_fields(name)
             tools_out.append({
                 "name": name,
                 "description": meta.description,
@@ -107,6 +110,11 @@ def serialize_default_tools(agent: Any, *, user_id: str, role: str) -> dict:
                 "security_level": "moderate",
                 "is_optional": True,
                 "is_default": name in default_set,
+                "server_id": provenance.get("server_id"),
+                "server_name": provenance.get("server_name"),
+                "display_name": provenance.get("display_name"),
+                # Setup axis from install status; setdefault below preserves it.
+                "auth_status": provenance.get("auth_status"),
             })
             seen.add(name)
 

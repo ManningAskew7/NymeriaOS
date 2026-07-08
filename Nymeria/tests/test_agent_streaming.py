@@ -229,6 +229,82 @@ def test_graph_stream_processor_converts_tool_events_and_model_end_fallback():
     )]
 
 
+def test_mcp_tool_events_carry_server_provenance(monkeypatch):
+    # An MCP tool's start and end events gain tool_type/server_id/server_name so
+    # the client can badge the call with its origin server. The human name comes
+    # from the registry; a plain (non-MCP) tool contributes none of these.
+    fake_registry = SimpleNamespace(
+        get_server=lambda server_id: (
+            SimpleNamespace(name="Notion") if server_id == "notion" else None
+        )
+    )
+    monkeypatch.setattr(
+        "nymeria.core.mcp_servers.get_mcp_server_registry",
+        lambda: fake_registry,
+    )
+
+    chunks, _, _ = _collect_processor_events(
+        [
+            {
+                "event": "on_tool_start",
+                "run_id": "call-1",
+                "name": "mcp__notion__search",
+                "data": {"input": {"q": "notes"}},
+            },
+            {
+                "event": "on_tool_end",
+                "run_id": "call-1",
+                "name": "mcp__notion__search",
+                "data": {"output": "hit"},
+            },
+            {
+                "event": "on_tool_start",
+                "run_id": "call-2",
+                "name": "web_search",
+                "data": {"input": {}},
+            },
+        ]
+    )
+
+    tool_call = next(c for c in chunks if c["type"] == "tool_call" and c["id"] == "call-1")
+    tool_result = next(c for c in chunks if c["type"] == "tool_result")
+    plain_call = next(c for c in chunks if c["id"] == "call-2")
+
+    assert tool_call["tool_type"] == "mcp_server"
+    assert tool_call["server_id"] == "notion"
+    assert tool_call["server_name"] == "Notion"
+    assert tool_result["tool_type"] == "mcp_server"
+    assert tool_result["server_id"] == "notion"
+    assert tool_result["server_name"] == "Notion"
+    assert "tool_type" not in plain_call
+    assert "server_id" not in plain_call
+
+
+def test_mcp_provenance_falls_back_to_server_id_when_unresolved(monkeypatch):
+    # Registry miss (unknown server) or a raising registry must not break the
+    # stream: provenance still carries, with server_name defaulting to the id.
+    def boom():
+        raise RuntimeError("registry offline")
+
+    monkeypatch.setattr("nymeria.core.mcp_servers.get_mcp_server_registry", boom)
+
+    chunks, _, _ = _collect_processor_events(
+        [
+            {
+                "event": "on_tool_start",
+                "run_id": "call-1",
+                "name": "mcp__ghost__do",
+                "data": {"input": {}},
+            },
+        ]
+    )
+
+    tool_call = chunks[0]
+    assert tool_call["tool_type"] == "mcp_server"
+    assert tool_call["server_id"] == "ghost"
+    assert tool_call["server_name"] == "ghost"
+
+
 def test_tool_call_event_carries_timeout_budget_when_configured():
     chunks, _, _ = _collect_processor_events(
         [

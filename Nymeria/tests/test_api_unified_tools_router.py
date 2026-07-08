@@ -427,3 +427,61 @@ def test_unified_tool_response_schema_accepts_auth_fields():
     dumped = resp.model_dump()
     assert dumped["auth_status"] == "needs_setup"
     assert dumped["auth_provider"] == "todoist"
+
+
+def test_unified_mcp_tools_carry_server_provenance_and_setup_axis(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    from nymeria.tools.metadata import (
+        register_mcp_server_tool_metadata,
+        unregister_mcp_server_tool_metadata,
+    )
+
+    client, agent, _loader = _client(tmp_path, api_client_builder, monkeypatch)
+    token = _create_user(agent, "owner")
+
+    ready = "mcp__notion__search_docs"
+    unconfigured = "mcp__linear__list_issues"
+    register_mcp_server_tool_metadata(
+        ready,
+        "Search Notion docs",
+        live=True,
+        enabled=True,
+        server_id="notion",
+        server_name="Notion",
+        install_status="ready",
+    )
+    register_mcp_server_tool_metadata(
+        unconfigured,
+        "List Linear issues",
+        live=False,
+        enabled=True,
+        server_id="linear",
+        server_name="Linear",
+        install_status="needs_config",
+    )
+    try:
+        response = client.get(
+            "/users/owner/tools/unified",
+            headers=api_client_builder.auth(token),
+        )
+        assert response.status_code == 200
+        tools = {tool["id"]: tool for tool in response.json()["tools"]}
+
+        assert tools[ready]["tool_type"] == "mcp_server"
+        assert tools[ready]["server_id"] == "notion"
+        assert tools[ready]["server_name"] == "Notion"
+        assert tools[ready]["display_name"] == "Notion / search_docs"
+        # The name the model calls stays the clean internal identifier.
+        assert tools[ready]["name"] == ready
+        assert tools[ready]["auth_status"] == "connected"
+        # No credential provider for MCP; the axis rides install status alone.
+        assert tools[ready]["auth_provider"] is None
+
+        assert tools[unconfigured]["server_name"] == "Linear"
+        assert tools[unconfigured]["auth_status"] == "needs_setup"
+    finally:
+        unregister_mcp_server_tool_metadata(ready)
+        unregister_mcp_server_tool_metadata(unconfigured)

@@ -60,6 +60,26 @@ def format_mcp_tool_name(server_id: str, tool_name: str) -> str:
     return assert_cliproxy_safe(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}")
 
 
+# Map an MCP server's install status onto the shared credential-axis
+# vocabulary (connected / pending / needs_setup / optional) that the tool
+# surfaces already render. MCP has no credential provider; its "auth" is
+# really "is the server configured and reachable", so a server missing
+# required config reads as needs_setup and a live one as connected. Statuses
+# absent here (draft/preparing/disabled/approved) contribute no axis signal.
+_MCP_INSTALL_STATUS_AUTH = {
+    "ready": "connected",
+    "discovering": "connected",
+    "needs_config": "needs_setup",
+    "failed": "needs_setup",
+}
+
+
+def mcp_auth_status_for_install(install_status: str) -> str | None:
+    """Return the credential-axis status for an MCP server's install status."""
+
+    return _MCP_INSTALL_STATUS_AUTH.get(str(install_status or ""))
+
+
 def is_mcp_tool_name(name: str) -> bool:
     """Return true when a tool name uses Nymeria's managed MCP namespace."""
 
