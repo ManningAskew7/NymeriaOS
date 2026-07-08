@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .future_rendezvous import FutureRendezvous, safe_set_result
+from .storage_paths import mtime_sort_key
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +122,7 @@ def list_pending(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     if not base.is_dir():
         return []
     records: List[Dict[str, Any]] = []
-    for path in sorted(
-        base.glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True
-    ):
+    for path in sorted(base.glob("*.json"), key=mtime_sort_key, reverse=True):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

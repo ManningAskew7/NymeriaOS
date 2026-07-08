@@ -54,6 +54,26 @@ def safe_path_segment(value: str, *, default: str = "default") -> str:
     return "".join(c for c in value if c.isalnum() or c in _ALLOWED_EXTRA) or default
 
 
+def mtime_sort_key(path: Path) -> Tuple[int, str]:
+    """Sort key ordering store files by mtime (newest first under ``reverse=True``).
+
+    The file-backed stores in this package list a directory with ``glob()`` and
+    then ``sorted(..., key=...)``. ``sorted`` evaluates the key eagerly for every
+    globbed path, so a file removed between the ``glob`` and the key evaluation (a
+    normal store race: an approval resolving, a sweep, a prune, a claim rename)
+    would raise ``FileNotFoundError`` (an ``OSError``) straight out of ``sorted``.
+
+    This key guards the ``stat`` so a vanished path ranks oldest (``mtime_ns`` 0)
+    and is simply skipped by the read/prune loop that follows, instead of crashing
+    the whole listing. The filename tiebreak keeps ordering deterministic when two
+    files share a coarse mtime. Never raises.
+    """
+    try:
+        return (path.stat().st_mtime_ns, path.name)
+    except OSError:
+        return (0, path.name)
+
+
 def quarantine_corrupt_file(path: Path) -> Optional[Path]:
     """Move an unparseable store file into a ``quarantine/`` sibling directory.
 

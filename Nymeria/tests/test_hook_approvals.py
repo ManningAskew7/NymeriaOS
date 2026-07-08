@@ -119,6 +119,35 @@ async def test_sweep_removes_only_stale_records():
     assert load_record(fresh["record_id"]) is not None
 
 
+@pytest.mark.asyncio
+async def test_list_pending_survives_record_deleted_mid_sort(monkeypatch):
+    """A record removed between the glob and the mtime sort (a resolver, the
+    hourly sweep, or another mint racing this one) must not crash list_pending:
+    otherwise create_pending_approval propagates the error and require_approval
+    fails CLOSED, silently denying a tool call the user wanted approved.
+    """
+    from pathlib import Path
+
+    import nymeria.core.hook_approvals as ha
+
+    keep, _ = _mint(tool_call_id="keep")
+    victim, _ = _mint(tool_call_id="victim")
+    victim_path = ha._record_path(victim["record_id"])
+    victim_path.unlink()  # gone on disk...
+
+    real_glob = Path.glob
+
+    def glob_with_ghost(self, pattern, *args, **kwargs):
+        # ...but the glob still yields it (captured a beat before deletion),
+        # so the unguarded sort key used to stat() a vanished path and raise.
+        return [*real_glob(self, pattern, *args, **kwargs), victim_path]
+
+    monkeypatch.setattr(Path, "glob", glob_with_ghost)
+
+    pending = list_pending("u1")  # must not raise
+    assert [e["record_id"] for e in pending] == [keep["record_id"]]
+
+
 # --- coordinator ------------------------------------------------------------
 
 

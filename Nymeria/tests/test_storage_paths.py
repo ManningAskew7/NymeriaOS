@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from nymeria.core.storage_paths import safe_path_segment, write_text_atomic
+from nymeria.core.storage_paths import (
+    mtime_sort_key,
+    safe_path_segment,
+    write_text_atomic,
+)
 
 
 def _legacy(value: str, default: str = "default") -> str:
@@ -59,6 +63,37 @@ class TestSafePathSegment:
 
     def test_whitespace_is_dropped(self):
         assert safe_path_segment("U S E R") == "USER"
+
+
+class TestMtimeSortKey:
+    """mtime_sort_key guards stat() so a store file removed between the glob and
+    the sort (a resolve/sweep/prune/claim race) ranks oldest instead of raising
+    FileNotFoundError out of sorted()."""
+
+    def test_returns_mtime_ns_and_name(self, tmp_path: Path):
+        f = tmp_path / "rec.json"
+        f.write_text("{}", encoding="utf-8")
+        assert mtime_sort_key(f) == (f.stat().st_mtime_ns, "rec.json")
+
+    def test_missing_file_ranks_oldest_without_raising(self, tmp_path: Path):
+        ghost = tmp_path / "gone.json"  # never created
+        assert mtime_sort_key(ghost) == (0, "gone.json")
+
+    def test_newest_first_with_ghost_sorted_last(self, tmp_path: Path):
+        import os
+
+        old = tmp_path / "old.json"
+        old.write_text("{}", encoding="utf-8")
+        new = tmp_path / "new.json"
+        new.write_text("{}", encoding="utf-8")
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+        ghost = tmp_path / "ghost.json"  # missing -> (0, name), i.e. oldest
+
+        # The exact shape of every store's listing: glob yields a since-deleted
+        # path, and the sort must place it last (where the read loop skips it).
+        ordered = sorted([old, new, ghost], key=mtime_sort_key, reverse=True)
+        assert ordered == [new, old, ghost]
 
 
 @pytest.mark.parametrize(
