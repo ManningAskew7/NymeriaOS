@@ -66,6 +66,48 @@ def test_reslug_migration_renames_and_is_one_shot(tmp_path: Path, monkeypatch):
     assert reslug_legacy_mcp_server_ids() == []
 
 
+def test_delete_removes_differently_named_file_and_no_resurrection(tmp_path: Path):
+    """A file whose NAME differs from the id it declares must delete cleanly.
+
+    delete_server used to unlink only ``<id>.json``; a hot-loaded / raw-planted
+    file named otherwise (or two files declaring the same id) survived the
+    unlink and resurrected the server on the next registry reload. Delete now
+    resolves the on-disk file(s) by cache value.
+    """
+    planted = tmp_path / "planted.json"
+    planted.write_text(
+        _legacy_server("realid", "Real").model_dump_json(), encoding="utf-8"
+    )
+
+    reg = MCPServerRegistry(servers_dir=tmp_path)
+    assert reg.get_server("realid") is not None  # loaded by its declared id
+
+    assert reg.delete_server("realid") is True
+    assert not planted.exists()  # the actual on-disk file was removed
+
+    # A fresh registry (reload / restart) must NOT bring it back.
+    reg2 = MCPServerRegistry(servers_dir=tmp_path)
+    assert reg2.get_server("realid") is None
+
+    # Deleting a genuinely absent server still reports False.
+    assert reg2.delete_server("nope") is False
+
+
+def test_save_server_redacts_secret_shaped_last_error(tmp_path: Path):
+    """Secret-shaped text captured into last_error is redacted before persist."""
+    reg = MCPServerRegistry(servers_dir=tmp_path)
+    defn = _legacy_server("svc", "Svc")
+    defn.last_error = "startup failed: OPENAI_API_KEY=sk-abcdef0123456789ABCD leaked"
+    reg.save_server(defn)
+
+    saved = reg.get_server("svc")
+    assert saved is not None
+    assert "sk-abcdef0123456789ABCD" not in saved.last_error
+    assert "${credential:redacted}" in saved.last_error
+    # The on-disk JSON carries no plaintext secret either.
+    assert "sk-abcdef0123456789ABCD" not in (tmp_path / "svc.json").read_text(encoding="utf-8")
+
+
 def test_reslug_disambiguates_same_named_servers(tmp_path: Path, monkeypatch):
     reg = MCPServerRegistry(servers_dir=tmp_path)
     monkeypatch.setattr(mcp_servers_module, "get_mcp_server_registry", lambda: reg)

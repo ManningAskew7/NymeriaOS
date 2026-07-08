@@ -82,6 +82,33 @@ def quarantine_corrupt_file(path: Path) -> Optional[Path]:
         return None
 
 
+def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> Path:
+    """Write ``content`` to ``path`` atomically (sibling temp file + rename).
+
+    A bare ``path.write_text`` can leave a torn or truncated file if the process
+    dies mid-write, which the file-backed store loaders then quarantine as
+    corrupt (losing the prior good bytes). Writing to a temp file in the SAME
+    directory and renaming it into place makes the on-disk file flip atomically
+    from the old contents to the new: a crash leaves either the old file or the
+    new one, never a partial. Same-directory keeps the rename on one filesystem
+    so it stays atomic. The temp name carries a random suffix so concurrent
+    writers to the same target do not collide, and is unlinked if the write or
+    rename raises (a hard kill between the two can leave an orphan ``.tmp``,
+    which is harmless litter: the loaders glob only ``*.json``). Returns ``path``.
+    """
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(content, encoding=encoding)
+        tmp.replace(path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass  # best-effort temp cleanup; re-raise the original error
+        raise
+    return path
+
+
 def store_fingerprint_path(path: Path) -> Path:
     """The ``<name>.sig`` sidecar that records a store file's fingerprint."""
     return path.with_name(path.name + ".sig")

@@ -1729,6 +1729,19 @@ Successful installs reload MCP server tools, enable discovered
 `source="mcp_install"`. Installing MCP servers remains admin-only at execution
 time because stdio servers can launch local commands.
 
+A high-risk install or retry (Git, bundle, local-path, or unknown command)
+cannot be approved by the agent itself: `confirmed`/`confirmed_risk_ids` are
+model-supplied arguments, so honoring them would let a prompt-injected admin
+thread self-approve an arbitrary launch. For a confirmation-required plan both
+the `install` and `retry` actions always return the plan without running it, and
+a human admin confirms out of band via the desktop app (Settings > MCP) or the
+authenticated `POST /mcp-servers/install` and `POST /mcp-servers/{id}/retry`
+(whose `confirmed` comes from the admin's own request). Low-risk installs still
+run directly from the agent. The direct `POST /mcp-servers` create route is the
+deliberate trusted-admin path: the admin authors the launch command themselves,
+so it skips the risk/preview pipeline and is not reachable through agent act-as
+delegation.
+
 The agent cannot receive plaintext MCP secrets. If an install needs secret
 material, `manage_mcp(action="configure_credentials")` creates pending
 credential-vault records and tells the user to finish in Settings >

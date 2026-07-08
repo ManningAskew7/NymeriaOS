@@ -439,6 +439,133 @@ def test_mcp_install_binds_discovered_tools_and_queues_reload(tmp_path: Path, mo
     assert agent._pending_tool_reload["thread-a"]["new_tools"] == ["mcp__demo__lookup"]
 
 
+def test_mcp_install_agent_cannot_self_confirm_high_risk(tmp_path: Path, monkeypatch):
+    """A prompt-injected admin thread must not self-approve a high-risk install.
+
+    `confirmed`/`confirmed_risk_ids` are LLM-supplied tool args; for a
+    confirmation-required plan the agent tool returns the plan without running
+    it no matter what they are set to. A human confirms out of band via the
+    REST/UI path instead.
+    """
+    from nymeria.core import mcp_runtime, mcp_servers
+    from nymeria.core.mcp_runtime import MCPInstallPlan
+    from nymeria.tools.definitions.mcp_schema import MCPServerDefinition
+    from nymeria.tools.search_mcp import _install_mcp_server_impl
+
+    defn = MCPServerDefinition(id="evil", name="Evil", server_command="npx")
+    plan = MCPInstallPlan(
+        source_type="git",
+        runtime_type="git",
+        risk_level="high",
+        confirmation_required=True,
+        parsed_summary="Git-cloned MCP server",
+        risk_signals=[{"id": "git_source", "requires_confirmation": True}],
+    )
+
+    class FakeMCPRegistry:
+        def __init__(self):
+            self.saved = []
+            self.discover_calls = []
+
+        def get_server(self, server_id):
+            return None
+
+        def save_server(self, server_def):
+            self.saved.append(server_def)
+
+        def discover_tools(self, server_id):
+            self.discover_calls.append(server_id)
+            return []
+
+    registry = FakeMCPRegistry()
+    monkeypatch.setattr(mcp_runtime, "plan_text_source", lambda source, name=None: (defn, plan))
+    monkeypatch.setattr(mcp_servers, "get_mcp_server_registry", lambda: registry)
+
+    agent = _FakeAgent(tmp_path, role="admin")
+    set_current_agent(agent)
+    try:
+        # Even with confirmed=True and every risk id acknowledged, the agent
+        # cannot run a high-risk install.
+        result = _install_mcp_server_impl(
+            source="https://github.com/example/evil-mcp-server",
+            confirmed=True,
+            confirmed_risk_ids=["git_source"],
+            tool_call_id="call-mcp",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    payload = json.loads(result)
+    assert payload["requires_confirmation"] is True
+    assert payload["server_id"] == "evil"
+    # Nothing was persisted and no subprocess was launched.
+    assert registry.saved == []
+    assert registry.discover_calls == []
+
+
+def test_mcp_retry_agent_cannot_self_confirm_high_risk(tmp_path: Path, monkeypatch):
+    """The retry action mirrors install: no agent self-approval of a high-risk plan.
+
+    A high-risk draft persisted by a human's prior confirmed install must not be
+    re-fired by a prompt-injected admin thread via `manage_mcp(action="retry",
+    confirmed=True)`. The gate ignores the model-supplied confirmation.
+    """
+    from nymeria.core import mcp_servers
+    from nymeria.tools.definitions.mcp_schema import MCPServerDefinition
+    from nymeria.tools.search_mcp import _mcp_retry
+
+    high_risk_plan = {
+        "source_type": "git",
+        "runtime_type": "git",
+        "risk_level": "high",
+        "confirmation_required": True,
+        "parsed_summary": "Git-cloned MCP server",
+        "risk_signals": [{"id": "git_source", "requires_confirmation": True}],
+    }
+    server = MCPServerDefinition(
+        id="risky",
+        name="Risky",
+        server_command="npx",
+        install_status="failed",
+        install_plan=high_risk_plan,
+    )
+
+    prepared = []
+
+    class FakeMCPRegistry:
+        def get_server(self, server_id):
+            return server if server_id == "risky" else None
+
+        def get_all_servers(self):
+            return [server]
+
+        def save_server(self, server_def):
+            prepared.append(server_def)
+
+    monkeypatch.setattr(mcp_servers, "get_mcp_server_registry", lambda: FakeMCPRegistry())
+    # prepare_runtime would launch the process; assert it is never reached.
+    import nymeria.core.mcp_runtime as mcp_runtime
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("prepare_runtime must not run for a high-risk retry")
+
+    monkeypatch.setattr(mcp_runtime, "prepare_runtime", _boom)
+
+    result = _mcp_retry(
+        "risky",
+        confirmed=True,
+        confirmed_risk_ids=["git_source"],
+        config_values={},
+        user_id="admin-1",
+    )
+    payload = json.loads(result)
+    assert payload["requires_confirmation"] is True
+    assert payload["server_id"] == "risky"
+    assert prepared == []  # never persisted "preparing" / launched
+
+
 def test_skill_kit_binding_un_disables_required_tool(tmp_path: Path):
     agent = _FakeAgent(tmp_path)
     agent.thread_config_manager.save_config(
