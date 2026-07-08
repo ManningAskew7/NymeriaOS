@@ -157,6 +157,30 @@ async def test_list_filters_by_user():
     assert [r["record_id"] for r in list_pending_approvals(user_id="bob")] == ["run-b"]
 
 
+async def test_list_survives_record_deleted_mid_sort(monkeypatch):
+    """A pending record removed between the glob and the mtime sort (a claim,
+    the hourly expiry sweep, or a concurrent mint) must not crash the listing;
+    the surviving records still come back."""
+    from pathlib import Path
+
+    _mint("run-keep")
+    _mint("run-victim")
+    victim_path = approvals_module._record_path("run-victim")
+    victim_path.unlink()  # gone on disk...
+
+    real_glob = Path.glob
+
+    def glob_with_ghost(self, pattern, *args, **kwargs):
+        # ...but the glob still yields it, so the unguarded sort key used to
+        # stat() a vanished path and raise FileNotFoundError out of sorted().
+        return [*real_glob(self, pattern, *args, **kwargs), victim_path]
+
+    monkeypatch.setattr(Path, "glob", glob_with_ghost)
+
+    pending = list_pending_approvals()  # must not raise
+    assert [r["record_id"] for r in pending] == ["run-keep"]
+
+
 async def test_pending_cap_per_workflow():
     for i in range(MAX_PENDING_PER_WORKFLOW):
         _mint(f"run-{i}")

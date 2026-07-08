@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ...config import get_settings
+from ..storage_paths import mtime_sort_key
 from .envelope import (
     KIND_RESUME_INVALID,
     WorkflowError,
@@ -138,9 +139,7 @@ def list_pending_approvals(user_id: Optional[str] = None) -> List[Dict[str, Any]
     if not base.is_dir():
         return []
     records: List[Dict[str, Any]] = []
-    for path in sorted(
-        base.glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True
-    ):
+    for path in sorted(base.glob("*.json"), key=mtime_sort_key, reverse=True):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

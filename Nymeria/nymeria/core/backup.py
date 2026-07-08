@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from .storage_paths import mtime_sort_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -149,7 +151,7 @@ class BackupManager:
             return None
 
         # Sort by modification time (newest first)
-        backups.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        backups.sort(key=mtime_sort_key, reverse=True)
         return backups[0]
 
     def list_backups(self, file_path: Path) -> List[Path]:
@@ -172,7 +174,7 @@ class BackupManager:
         backups = list(backup_subdir.glob(pattern))
 
         # Sort by modification time (newest first)
-        backups.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        backups.sort(key=mtime_sort_key, reverse=True)
         return backups
 
     def _cleanup_old_backups(self, file_path: Path) -> int:

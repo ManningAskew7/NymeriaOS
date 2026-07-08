@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional
 
+from ..storage_paths import mtime_sort_key
+
 logger = logging.getLogger(__name__)
 
 MAX_RUN_RECORDS_PER_WORKFLOW = 200
@@ -162,11 +164,7 @@ def read_run_records(
         runs_dir = Path(get_settings().data_dir) / "workflows" / "runs" / workflow_id
         if not runs_dir.is_dir():
             return []
-        paths = sorted(
-            runs_dir.glob("*.json"),
-            key=lambda p: (p.stat().st_mtime_ns, p.name),
-            reverse=True,
-        )
+        paths = sorted(runs_dir.glob("*.json"), key=mtime_sort_key, reverse=True)
         records: List[dict] = []
         for path in paths:
             if len(records) >= max(1, limit):
@@ -212,15 +210,7 @@ def read_recent_run_records(
         if not runs_root.is_dir():
             return []
 
-        def _sort_key(p: Path):
-            # A concurrently pruned file must not blow up the whole sort;
-            # rank it oldest and let the read loop skip it.
-            try:
-                return (p.stat().st_mtime_ns, p.name)
-            except OSError:
-                return (0, p.name)
-
-        paths = sorted(runs_root.glob("*/*.json"), key=_sort_key, reverse=True)
+        paths = sorted(runs_root.glob("*/*.json"), key=mtime_sort_key, reverse=True)
         records: List[dict] = []
         for scanned, path in enumerate(paths):
             if len(records) >= max(1, limit):
@@ -248,11 +238,7 @@ def _prune(runs_dir: Path, cap: Optional[int] = None) -> None:
     cap = MAX_RUN_RECORDS_PER_WORKFLOW if cap is None else cap
     # Nanosecond mtime with the filename as a tiebreak, so rapid successive
     # runs (equal coarse mtime) prune deterministically newest-first.
-    records = sorted(
-        runs_dir.glob("*.json"),
-        key=lambda p: (p.stat().st_mtime_ns, p.name),
-        reverse=True,
-    )
+    records = sorted(runs_dir.glob("*.json"), key=mtime_sort_key, reverse=True)
     for stale in records[cap:]:
         try:
             stale.unlink()

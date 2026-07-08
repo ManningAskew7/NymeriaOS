@@ -35,6 +35,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
 from ..http_policy import SECRET_PATTERNS
+from ..storage_paths import mtime_sort_key
 from ..time_utils import utc_now
 from .budget import WorkflowBudget
 
@@ -509,9 +510,7 @@ def retain_source_revision(tool_id: str, revision_hash: str, source: str) -> Non
         path = base / f"{revision_hash[:16]}.py"
         if not path.exists():
             path.write_text(source, encoding="utf-8")
-        revisions = sorted(
-            base.glob("*.py"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True
-        )
+        revisions = sorted(base.glob("*.py"), key=mtime_sort_key, reverse=True)
         for stale in revisions[MAX_SOURCE_REVISIONS:]:
             stale.unlink(missing_ok=True)
     except Exception:
