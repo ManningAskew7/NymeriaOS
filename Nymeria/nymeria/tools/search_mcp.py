@@ -201,9 +201,12 @@ def _install_mcp_server_impl(
         auto_enable: If True (default), the server is saved with enabled=True
             so its tools are immediately available. Set False to save but not
             activate.
-        confirmed: Required for Git, bundle, local-path, or unknown command
-            installs. When False, the tool returns the install plan without
-            running it.
+        confirmed: Retained for API compatibility. High-risk installs (Git,
+            bundle, local-path, or unknown command) can NO LONGER be approved by
+            the agent: whatever this is set to, the tool returns the install
+            plan without running it and a human admin must confirm via the
+            desktop app (Settings -> MCP) or POST /mcp-servers/install. Only
+            low-risk installs run directly from the agent.
         config_values: Optional required config values. Sensitive values are
             encrypted with NYMERIA_SECRETS_KEY before saving.
 
@@ -255,18 +258,25 @@ def _install_mcp_server_impl(
         logger.exception("install_mcp_server parse failed")
         return f"[error] {type(e).__name__}: {e}"
 
-    required_risks = {
-        str(signal.get("id"))
-        for signal in plan.risk_signals
-        if signal.get("requires_confirmation")
-    }
-    if plan.confirmation_required and not (
-        confirmed or required_risks <= set(confirmed_risk_ids or [])
-    ):
+    # A high-risk install must be confirmed by a HUMAN out of band, never by the
+    # acting agent. `confirmed`/`confirmed_risk_ids` are LLM-supplied tool args,
+    # so honoring them here would let a prompt-injected admin thread self-approve
+    # an arbitrary stdio launch (the role gate only ever blocks a NON-admin, not
+    # the acting agent). For a confirmation-required plan we therefore ALWAYS
+    # return the plan without running it and route the human to the authenticated
+    # REST/UI approve path (POST /mcp-servers/install or Settings -> MCP), whose
+    # `confirmed` comes from an admin's own request rather than the model. This
+    # holds regardless of `nymeria_allow_unsandboxed_mcp_install`. Low-risk
+    # installs (confirmation_required=False) still run directly from the agent.
+    if plan.confirmation_required:
         return json.dumps(
             {
                 "requires_confirmation": True,
-                "message": "This MCP install needs admin confirmation before Nymeria runs it.",
+                "message": (
+                    "This MCP install is high-risk and cannot be approved by the "
+                    "agent itself. A human admin must review and confirm it in the "
+                    "desktop app (Settings -> MCP) or via POST /mcp-servers/install."
+                ),
                 "server_id": defn.id,
                 "plan": plan.to_dict(),
                 "risk_signals": plan.risk_signals,
@@ -507,18 +517,22 @@ def _mcp_retry(
     from ..core.mcp_auth_bridge import apply_mcp_auth_presets
 
     plan = MCPInstallPlan.from_dict(server.install_plan)
-    required_risks = {
-        str(signal.get("id"))
-        for signal in plan.risk_signals
-        if signal.get("requires_confirmation")
-    }
-    if plan.confirmation_required and not (
-        confirmed or required_risks <= set(confirmed_risk_ids or [])
-    ):
+    # Same rule as the install path: a high-risk (confirmation-required) retry
+    # cannot be approved by the agent. `confirmed`/`confirmed_risk_ids` are
+    # LLM-supplied, so honoring them would let a prompt-injected admin thread
+    # re-fire a high-risk launch a human authored once. Route the human to the
+    # authenticated REST retry (POST /mcp-servers/{id}/retry), whose `confirmed`
+    # comes from an admin's own request.
+    if plan.confirmation_required:
         return json_result(
             requires_confirmation=True,
             server_id=server.id,
             plan=plan.to_dict(),
+            message=(
+                "This retry is high-risk and cannot be approved by the agent. "
+                "A human admin must confirm it in the desktop app (Settings -> "
+                "MCP) or via POST /mcp-servers/{id}/retry."
+            ),
         )
 
     logs: list[str] = []

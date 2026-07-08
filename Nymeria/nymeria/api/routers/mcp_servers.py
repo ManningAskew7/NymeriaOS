@@ -277,6 +277,17 @@ def create_mcp_servers_router(
         ``_require_thread_access`` below then runs ownership against that
         target (admin direct still bypasses because admin role survives
         act-as for admin-as-admin).
+
+        This is the deliberate trusted-admin DIRECT-create path: the admin
+        authors the launch command themselves, so it intentionally skips the
+        risk/preview/confirmation pipeline that guards the agent-facing
+        ``install_mcp_server`` tool and the ``/mcp-servers/install`` flow.
+        Authorization is the caller's own admin account token (``require_admin_caller``
+        resolves the caller, not the act-as target, so act-as only retargets the
+        thread binding). It is NOT reachable through agent act-as delegation: the
+        MCP thin client exposes no server-management tool and an agent holds no
+        admin account token. Keep it that way — do not expose this route to the
+        agent tool surface.
         """
         registry = get_mcp_server_registry()
 

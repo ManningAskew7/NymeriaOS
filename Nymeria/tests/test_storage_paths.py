@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from nymeria.core.storage_paths import safe_path_segment
+from nymeria.core.storage_paths import safe_path_segment, write_text_atomic
 
 
 def _legacy(value: str, default: str = "default") -> str:
@@ -85,6 +85,47 @@ def test_equivalence_with_legacy_idiom(value):
     assert safe_path_segment(value) == _legacy(value)
     assert safe_path_segment(value, default="") == _legacy(value, "")
     assert safe_path_segment(value, default="x") == _legacy(value, "x")
+
+
+class TestWriteTextAtomic:
+    def test_writes_content_and_returns_path(self, tmp_path: Path):
+        target = tmp_path / "store.json"
+        result = write_text_atomic(target, '{"a": 1}')
+        assert result == target
+        assert target.read_text(encoding="utf-8") == '{"a": 1}'
+
+    def test_overwrite_replaces_prior_contents(self, tmp_path: Path):
+        target = tmp_path / "store.json"
+        write_text_atomic(target, "old")
+        write_text_atomic(target, "new")
+        assert target.read_text(encoding="utf-8") == "new"
+
+    def test_leaves_no_temp_files_behind(self, tmp_path: Path):
+        target = tmp_path / "store.json"
+        write_text_atomic(target, "x")
+        assert [p.name for p in tmp_path.iterdir()] == ["store.json"]
+
+    def test_failed_write_preserves_old_file_and_cleans_temp(self, tmp_path: Path, monkeypatch):
+        target = tmp_path / "store.json"
+        write_text_atomic(target, "good")
+
+        # Simulate a crash after the temp is written but before the rename.
+        import pathlib
+
+        original_replace = pathlib.Path.replace
+
+        def boom(self, *args, **kwargs):
+            if self.name.endswith(".tmp"):
+                raise OSError("simulated crash before rename")
+            return original_replace(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "replace", boom)
+        with pytest.raises(OSError):
+            write_text_atomic(target, "bad")
+
+        # Old file intact (never torn), and the temp was cleaned up.
+        assert target.read_text(encoding="utf-8") == "good"
+        assert [p.name for p in tmp_path.iterdir()] == ["store.json"]
 
 
 # (manager class, path-builder method name, dir attribute) for each migrated

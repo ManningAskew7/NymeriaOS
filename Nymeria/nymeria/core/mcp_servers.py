@@ -224,9 +224,22 @@ class MCPServerRegistry:
         """
         defn.updated_at = utc_now()
         stamp_mcp_approval(defn)
+        # Redact secret-shaped text (stderr tails, exception strings) captured
+        # into last_error before it is persisted where the model and admins can
+        # read it. One chokepoint here covers every last_error assignment site
+        # (runtime drafts, REST error paths, /mcp discover). mcp_runtime is
+        # imported function-locally: no import cycle.
+        if defn.last_error:
+            from .mcp_runtime import _redact_secret_like_text
+
+            defn.last_error = _redact_secret_like_text(defn.last_error)
+        from .storage_paths import write_text_atomic
+
         file_path = self.servers_dir / f"{defn.id}.json"
         with self._lock:
-            file_path.write_text(defn.model_dump_json(indent=2), encoding="utf-8")
+            # Atomic write: a crash mid-save must not leave a torn JSON file
+            # that the loader then quarantines, losing the prior definition.
+            write_text_atomic(file_path, defn.model_dump_json(indent=2))
             self._definitions[defn.id] = defn
             self._file_ids[file_path.name] = defn.id
             try:
@@ -238,25 +251,47 @@ class MCPServerRegistry:
         return file_path
 
     def delete_server(self, server_id: str) -> bool:
-        """Delete a server definition and its tools."""
-        file_path = self.servers_dir / f"{server_id}.json"
-        if not file_path.exists():
-            return False
+        """Delete a server definition and its tools.
 
+        Resolves the on-disk file(s) by cache VALUE, not by an assumed
+        ``<id>.json`` name. A hot-loaded / raw-planted file whose filename
+        differs from the id it declares (or two files declaring the same id)
+        would otherwise survive an ``<id>.json``-only unlink and resurrect the
+        definition on the next reload. We therefore unlink every file this
+        registry maps to ``server_id`` (plus the canonical ``<id>.json`` for
+        safety) and drop all matching cache entries. Returns True when a cached
+        definition or an on-disk file was removed, False when nothing matched.
+        """
         with self._lock:
-            # Remove tools from cache
             defn = self._definitions.get(server_id)
+            # Every filename this registry has associated with the id, plus the
+            # canonical name in case the file was never loaded into _file_ids.
+            filenames = {
+                name for name, sid in self._file_ids.items() if sid == server_id
+            }
+            filenames.add(f"{server_id}.json")
+
+            removed = server_id in self._definitions
+            for name in filenames:
+                fp = self.servers_dir / name
+                try:
+                    if fp.exists():
+                        fp.unlink()
+                        removed = True
+                except OSError:
+                    logger.warning("Failed to unlink MCP server file %s", name)
+                self._disk_sigs.pop(name, None)
+                self._file_ids.pop(name, None)
+
             if defn:
                 for dt in defn.discovered_tools:
                     tool_name = format_mcp_tool_name(server_id, dt.name)
                     self._tools.pop(tool_name, None)
-
-            file_path.unlink()
             self._definitions.pop(server_id, None)
-            self._disk_sigs.pop(file_path.name, None)
-            self._file_ids.pop(file_path.name, None)
-        logger.info(f"Deleted MCP server definition: {server_id}")
-        return True
+
+        if removed:
+            logger.info(f"Deleted MCP server definition: {server_id}")
+        return removed
 
     def get_server(self, server_id: str) -> Optional[MCPServerDefinition]:
         """Get a server definition by ID (picking up external file edits)."""
@@ -278,28 +313,31 @@ class MCPServerRegistry:
         Returns the list of discovered tools.
         Raises RuntimeError if connection or discovery fails.
         """
-        defn = self._definitions.get(server_id)
-        if not defn:
-            raise ValueError(f"MCP server not found: {server_id}")
+        # Snapshot the launch surface under the lock; the network/subprocess
+        # round trip below must NOT hold it (it would serialize every reader of
+        # the cache behind a slow server). Build a temporary MCPToolConfig to
+        # trigger connection.
+        with self._lock:
+            defn = self._definitions.get(server_id)
+            if not defn:
+                raise ValueError(f"MCP server not found: {server_id}")
+            config = MCPToolConfig(
+                transport=defn.transport,
+                server_command=defn.server_command,
+                server_args=defn.server_args,
+                url=defn.url,
+                headers=defn.headers,
+                tool_name="__discovery__",  # placeholder
+                server_id=defn.id,
+                env_vars=defn.env_vars,
+                encrypted_env_vars=defn.encrypted_env_vars,
+                working_directory=defn.working_directory,
+                idle_timeout_seconds=defn.idle_timeout_seconds,
+                startup_timeout_seconds=defn.startup_timeout_seconds,
+                call_timeout_seconds=defn.call_timeout_seconds,
+            )
 
         manager = get_mcp_manager()
-
-        # Build a temporary MCPToolConfig to trigger connection
-        config = MCPToolConfig(
-            transport=defn.transport,
-            server_command=defn.server_command,
-            server_args=defn.server_args,
-            url=defn.url,
-            headers=defn.headers,
-            tool_name="__discovery__",  # placeholder
-            server_id=defn.id,
-            env_vars=defn.env_vars,
-            encrypted_env_vars=defn.encrypted_env_vars,
-            working_directory=defn.working_directory,
-            idle_timeout_seconds=defn.idle_timeout_seconds,
-            startup_timeout_seconds=defn.startup_timeout_seconds,
-            call_timeout_seconds=defn.call_timeout_seconds,
-        )
 
         # Connect and fetch full tool records (name/description/inputSchema) via the
         # manager's public discovery API rather than reaching into its connection internals.
@@ -312,11 +350,15 @@ class MCPServerRegistry:
             for tool_info in manager.list_tools_detailed(config)
         ]
 
-        # Update definition and save
-        defn.discovered_tools = discovered
-        defn.registered_tool_names = registered_mcp_tool_names(defn, discovered)
-        defn.updated_at = utc_now()
-        self.save_server(defn)
+        # Re-acquire the lock to mutate + persist. Re-fetch the definition: a
+        # concurrent reload may have swapped the cached object while we did I/O,
+        # so mutate whatever is current (falling back to our snapshot). save_server
+        # re-enters the RLock and stamps updated_at.
+        with self._lock:
+            current = self._definitions.get(server_id) or defn
+            current.discovered_tools = discovered
+            current.registered_tool_names = registered_mcp_tool_names(current, discovered)
+            self.save_server(current)
 
         logger.info(f"Discovered {len(discovered)} tools from MCP server '{server_id}'")
         return discovered
@@ -326,9 +368,9 @@ class MCPServerRegistry:
 
         Returns a dict with status info.
         """
-        defn = self._definitions.get(server_id)
-        if not defn:
-            raise ValueError(f"MCP server not found: {server_id}")
+        with self._lock:
+            if server_id not in self._definitions:
+                raise ValueError(f"MCP server not found: {server_id}")
 
         try:
             tools = self.discover_tools(server_id)
