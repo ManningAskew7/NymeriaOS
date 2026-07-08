@@ -536,3 +536,55 @@ def reload_mcp_server_registry() -> MCPServerRegistry:
     global _registry
     _registry = MCPServerRegistry()
     return _registry
+
+
+def reslug_legacy_mcp_server_ids() -> List[str]:
+    """One-time re-slug of servers to clean, name-derived ids.
+
+    Replaces the old ``<slug>-<uuid6>`` ids with the readable slug (``notion``
+    rather than ``notion-a1b2c3``), so the shared model/user tool name reads
+    ``mcp__notion__search``. Renames the file, updates the id, and regenerates
+    ``registered_tool_names``; collisions disambiguate deterministically
+    (``notion-2``). Guarded by a marker so it runs once. It intentionally does
+    NOT rewrite per-thread ``enabled_tools`` / ``default_thread_tools``
+    references, so a thread that had a re-slugged MCP tool enabled must re-enable
+    it, a one-time transitional cost (existing installs are dev/test at this
+    stage). Historical checkpoint tool-call names keep their old ids.
+    """
+    from .mcp_sources import slugify_mcp_name
+
+    registry = get_mcp_server_registry()
+    marker = registry.servers_dir / ".reslug.done"
+    if marker.exists():
+        return []
+    logs: List[str] = []
+    servers = registry.get_all_servers()
+    taken = {s.id for s in servers}
+    for defn in servers:
+        desired = slugify_mcp_name(defn.name)
+        if not desired or desired == defn.id:
+            continue
+        others = taken - {defn.id}
+        new_id = desired
+        if new_id in others:
+            suffix = 2
+            while f"{desired}-{suffix}" in others:
+                suffix += 1
+            new_id = f"{desired}-{suffix}"
+        old_id = defn.id
+        if new_id == old_id:
+            # Already at its clean/disambiguated id (e.g. a second run after a
+            # lost marker): renaming to itself would save-then-delete the file.
+            continue
+        defn.id = new_id
+        defn.registered_tool_names = registered_mcp_tool_names(defn)
+        registry.save_server(defn)  # writes new_id.json + stamps approval
+        registry.delete_server(old_id)  # removes old_id.json + old tool cache
+        taken.discard(old_id)
+        taken.add(new_id)
+        logs.append(f"Re-slugged MCP server '{old_id}' -> '{new_id}'")
+    try:
+        marker.write_text("", encoding="utf-8")
+    except OSError as exc:
+        logs.append(f"Failed to write MCP re-slug marker: {exc}")
+    return logs

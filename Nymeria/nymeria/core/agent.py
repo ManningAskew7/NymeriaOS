@@ -299,6 +299,13 @@ class NymeriaAgent:
                 logger.info(line)
         except Exception as e:  # noqa: BLE001
             logger.warning("MCP execution-gate backfill failed (non-fatal): %s", e)
+        try:
+            from .mcp_servers import reslug_legacy_mcp_server_ids
+
+            for line in reslug_legacy_mcp_server_ids():
+                logger.info(line)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("MCP server id re-slug migration failed (non-fatal): %s", e)
 
         # Initialize user profile manager
         self.profile_manager = UserProfileManager(self.settings.data_dir)
