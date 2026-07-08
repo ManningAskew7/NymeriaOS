@@ -2462,7 +2462,8 @@ Authorization: Bearer <token>
     "server_command": "npx",
     "server_args": ["-y", "@anthropic/mcp-server-filesystem", "/path"],
     "tool_name": "read_file",
-    "idle_timeout_seconds": 300
+    "idle_timeout_seconds": 300,
+    "call_timeout_seconds": 60
   },
   "enabled": true
 }
