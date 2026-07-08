@@ -70,6 +70,12 @@ class MCPServerDefinition(BaseModel):
     registered_tool_names: List[str] = []
     risk_level: str = "low"
     confirmation_required: bool = False
+    # Execution-trust gate (core/mcp_execution_gate.py): content hash over the
+    # launch surface, stamped on every save_server persist. A raw on-disk edit
+    # that never calls save_server leaves this stale and the server inert.
+    approved_revision: str = ""
+    approved_by: str = ""
+    approved_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

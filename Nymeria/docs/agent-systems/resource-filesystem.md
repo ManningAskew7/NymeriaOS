@@ -62,19 +62,24 @@ identical byte size can be missed (touch the file again).
   fail soft (skipped at scan; the cached copy keeps serving on a bad edit)
   and no manager ever rewrites them.
 - **Secrets denylist** (`tools/filesystem.py::secrets_path_error`): the file
-  tools refuse the credential stores under the data dir (the account vault
-  and its SQLite sidecars, and the OAuth token caches), pointing at
-  `auth_write`/`auth_test` instead. `file_read` gained its first denylist
-  here. This is tool-layer policy, not a security boundary: `bash_execute`
-  cannot be path-confined (the honest limit recorded in the plan; the
-  execution sandbox is the shared future dependency).
+  tools refuse the sensitive stores under the data dir (the account vault
+  and its SQLite sidecars, the OAuth token caches, and `mcp_servers/` since a
+  server definition carries the launch command a server runs), pointing at
+  `auth_write`/`auth_test` (or `manage_mcp`) instead. `file_read` gained its
+  first denylist here. This is tool-layer policy, not a security boundary:
+  `bash_execute` cannot be path-confined (the honest limit recorded in the
+  plan; the execution sandbox is the shared future dependency).
 
 ## Approval gates and audit
 
-- Python custom tools and workflow definitions stay content-hash gated at
-  execution time: a raw source edit leaves them inert until an admin
-  re-approves. The refusal text now says so and names the next step
-  (`python_execution_gate` / `workflow_execution_gate`).
+- Python custom tools, workflow definitions, and MCP servers stay content-hash
+  gated at execution time: a raw edit leaves them inert until re-approved
+  through the sanctioned path. The refusal text says so and names the next step
+  (`python_execution_gate` / `workflow_execution_gate` / `mcp_execution_gate`).
+  The MCP gate hashes the launch surface (transport/command/args/url/workdir,
+  not credentials) and is stamped on every `save_server`, so any definition
+  persisted through Nymeria's code is approved while a hot-loaded raw edit is
+  not.
 - Raw (non-manager) edits are recorded user-attributed in the activity log
   (`ActivityType.EXTERNAL_EDIT`, `core/activity_log.py::log_external_edit`):
   refresh detections for custom tools / MCP / skills, hook and trigger store

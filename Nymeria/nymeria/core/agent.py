@@ -292,6 +292,13 @@ class NymeriaAgent:
                 logger.info(line)
         except Exception as e:  # noqa: BLE001
             logger.warning("Credential vault MCP secret migration failed (non-fatal): %s", e)
+        try:
+            from .mcp_execution_gate import backfill_mcp_gate_approvals
+
+            for line in backfill_mcp_gate_approvals(self.settings.mcp_servers_dir):
+                logger.info(line)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("MCP execution-gate backfill failed (non-fatal): %s", e)
 
         # Initialize user profile manager
         self.profile_manager = UserProfileManager(self.settings.data_dir)

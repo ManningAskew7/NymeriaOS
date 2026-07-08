@@ -227,8 +227,12 @@ class Settings(BaseSettings):
         description="Allow managed MCP installs that execute downloaded package code without an external sandbox",
     )
     nymeria_enforce_mcp_stdio_allowlist: bool = Field(
-        default=False,
-        description="Restrict MCP stdio launches to the curated SAFE_STDIO_COMMANDS allowlist",
+        default=True,
+        description="Restrict MCP stdio launches to the SAFE_STDIO_COMMANDS allowlist (plus nymeria_mcp_extra_stdio_commands)",
+    )
+    nymeria_mcp_extra_stdio_commands: str = Field(
+        default="",
+        description="Comma-separated extra launcher basenames to add to the MCP stdio allowlist (e.g. 'docker,podman')",
     )
     nymeria_confine_file_to_workspace: bool = Field(
         default=False,

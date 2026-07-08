@@ -55,14 +55,27 @@ _UNSAFE_EVAL_FLAGS = {
 }
 
 
+def _extra_stdio_commands() -> set[str]:
+    """Admin-configured launcher basenames added to the stdio allowlist."""
+    from ..config import get_settings
+
+    try:
+        raw = getattr(get_settings(), "nymeria_mcp_extra_stdio_commands", "") or ""
+    except Exception:
+        logger.debug("Failed to read extra MCP stdio commands", exc_info=True)
+        return set()
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
 def _validate_stdio_launch(command: str, args: List[str]) -> None:
     from .mcp_sources import SAFE_STDIO_COMMANDS
 
+    allowlist = SAFE_STDIO_COMMANDS | _extra_stdio_commands()
     basename = Path(command).name.lower()
     if re.fullmatch(r"python3(?:\.\d+)?", basename):
         basename = "python3"
-    if basename not in SAFE_STDIO_COMMANDS:
-        allowed = ", ".join(sorted(SAFE_STDIO_COMMANDS))
+    if basename not in allowlist:
+        allowed = ", ".join(sorted(allowlist))
         raise RuntimeError(
             f"MCP stdio command '{command}' is not allowed. Allowed launchers: {allowed}"
         )
