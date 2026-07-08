@@ -66,14 +66,19 @@ def protected_path_error(path: Path) -> Optional[str]:
     return None
 
 
-# Credential stores under the data dir that the file tools refuse to touch
+# Sensitive stores under the data dir that the file tools refuse to touch
 # (resource-filesystem-layout plan, decision 7). Matched against the first
 # path component relative to data_dir: "auth_tokens" covers the whole OAuth
 # token-cache subtree; the "accounts.db" prefix also covers SQLite sidecars
-# (accounts.db-wal / -shm / -journal). This is a tool-layer policy, not a
-# security boundary: bash_execute is not path-checkable and the sanctioned
-# credential surfaces are auth_write / auth_test.
-_SECRET_STORE_DIRS = {"auth_tokens"}
+# (accounts.db-wal / -shm / -journal). "mcp_servers" holds managed MCP server
+# definitions: they carry residual credential material and, more importantly,
+# the launch command a server runs, so letting the file tools plant/edit one
+# would re-open an arbitrary-execution path (the sanctioned surface is
+# manage_mcp / the MCP admin API, gated by the execution-trust hash). This is a
+# tool-layer policy, not a security boundary: bash_execute is not
+# path-checkable and the sanctioned credential surfaces are auth_write /
+# auth_test.
+_SECRET_STORE_DIRS = {"auth_tokens", "mcp_servers"}
 _SECRET_STORE_FILE_PREFIXES = ("accounts.db",)
 
 

@@ -738,7 +738,8 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | `NYMERIA_CONFINE_FILE_TO_WORKSPACE` | `false` | When true, `file_write` and `file_edit` reject write targets outside `NYMERIA_WORKSPACE_DIR`. False keeps broad personal-assistant file access and relies on deployment sandboxing |
 | `NYMERIA_ALLOW_SELF_EDIT` | `true` | Enables admin-only `self_file_write`, `self_file_delete`, and `self_reload`; set false to disable self-modifying maintenance tools |
 | `NYMERIA_ALLOW_UNSANDBOXED_MCP_INSTALL` | `true` | Enables managed MCP installs that execute downloaded package/bundle code inside the current backend environment. Set false to require an external sandbox/maintenance workflow |
-| `NYMERIA_ENFORCE_MCP_STDIO_ALLOWLIST` | `false` | When true, MCP stdio launches are restricted to the curated `SAFE_STDIO_COMMANDS` allowlist and unsafe eval flags are rejected |
+| `NYMERIA_ENFORCE_MCP_STDIO_ALLOWLIST` | `true` | Restricts MCP stdio launches to the `SAFE_STDIO_COMMANDS` allowlist (`uvx`/`uv`/`npx`/`npm`/`node`/`python`/`deno`/`bun`) plus `NYMERIA_MCP_EXTRA_STDIO_COMMANDS`, and rejects unsafe eval flags. Set false to allow any launcher |
+| `NYMERIA_MCP_EXTRA_STDIO_COMMANDS` | `` (empty) | Comma-separated extra launcher basenames added to the MCP stdio allowlist (e.g. `docker,podman`) |
 
 Project-root auto-detection first honors `NYMERIA_PROJECT_ROOT`. Source
 launches walk upward looking for Nymeria backend markers such as `run.py`,

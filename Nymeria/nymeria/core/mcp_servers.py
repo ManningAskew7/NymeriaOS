@@ -20,6 +20,7 @@ from ..tools.definitions.mcp_schema import (
     MCPServerDefinition,
     MCPToolConfig,
 )
+from .mcp_execution_gate import mcp_execution_gate, stamp_mcp_approval
 from .mcp_manager import get_mcp_manager
 from .mcp_tool_names import format_mcp_tool_name, registered_mcp_tool_names
 from .time_utils import utc_now
@@ -180,8 +181,14 @@ class MCPServerRegistry:
     # ---- CRUD ----
 
     def save_server(self, defn: MCPServerDefinition) -> Path:
-        """Save a server definition to disk."""
+        """Save a server definition to disk.
+
+        Stamps the execution-trust approval hash (core/mcp_execution_gate.py):
+        any definition persisted through Nymeria's code is approved, while a
+        raw-disk / hot-loaded file that never reaches this method stays inert.
+        """
         defn.updated_at = utc_now()
+        stamp_mcp_approval(defn)
         file_path = self.servers_dir / f"{defn.id}.json"
         with self._lock:
             file_path.write_text(defn.model_dump_json(indent=2), encoding="utf-8")
@@ -313,6 +320,12 @@ class MCPServerRegistry:
             for defn in self._definitions.values():
                 if not defn.enabled or defn.install_status not in {"ready", "discovering"}:
                     continue
+                gate_reason = mcp_execution_gate(defn)
+                if gate_reason:
+                    logger.warning(
+                        "Skipping unapproved MCP server '%s': %s", defn.id, gate_reason
+                    )
+                    continue
                 for dt in defn.discovered_tools:
                     tool_name = format_mcp_tool_name(defn.id, dt.name)
                     try:
@@ -349,11 +362,40 @@ class MCPServerRegistry:
         )
 
         manager = get_mcp_manager()
+        server_id = defn.id
+
+        def _runtime_gate() -> Optional[str]:
+            """Re-check the live definition's approval right before dispatch.
+
+            The closure above captured a config snapshot; re-reading the live
+            definition here makes an edit-after-wrap (or a hot-loaded raw edit)
+            inert. Fails open only on an infra error (the wrap-time filter
+            already vetted approval), closed on an actual gate verdict.
+            """
+            try:
+                live = get_mcp_server_registry().get_server(server_id)
+            except Exception:
+                logger.warning(
+                    "MCP execution gate: registry lookup failed for %s",
+                    server_id,
+                    exc_info=True,
+                )
+                return None
+            if live is None:
+                return f"[Error]: MCP server '{server_id}' is no longer available."
+            reason = mcp_execution_gate(live)
+            return f"[Error]: {reason}" if reason else None
 
         async def execute_mcp(**kwargs: Any) -> str:
+            blocked = _runtime_gate()
+            if blocked:
+                return blocked
             return await manager.call_tool(config, kwargs)
 
         def execute_mcp_sync(**kwargs: Any) -> str:
+            blocked = _runtime_gate()
+            if blocked:
+                return blocked
             return manager.call_tool_sync(config, kwargs)
 
         # Build args schema from discovered input_schema
