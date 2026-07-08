@@ -108,7 +108,15 @@ If a provider rejects a turn because the request is already over the context win
 3. Walk up to 50 checkpoints back and select a checkpoint roughly four user turns earlier.
 4. Fork the active thread state from that checkpoint and add an internal context_rewind marker.
 5. Run the normal compact_now() / _do_compact_sync() flow on the shorter state.
-6. If no suitable checkpoint exists, RemoveMessage trims the oldest prefix until the state is below a conservative target, then compacts.
+6. If no suitable checkpoint exists, RemoveMessage trims the oldest prefix down
+   to a conservative target, then compacts. The trim cuts ONLY on a user-turn
+   (HumanMessage) boundary so the retained head stays a valid turn start: a
+   ToolMessage head (orphaned tool_result) or first-message assistant turn is a
+   provider 400, and the trim is committed to the durable checkpoint before the
+   summary call runs. If the removable range has no such boundary (e.g. a single
+   autonomous wake-up driving one long tool loop), recovery declines to trim and
+   reports failure rather than persist an invalid head; the thread is left
+   oversized but intact (a manual /prune can still shrink it).
 ```
 
 For async `/chat` streaming, the client receives `compacting` after recovery reaches the compaction step, then `compacted` on success. After overflow recovery the thread holds the retained resume tail; the next user message continues from it.

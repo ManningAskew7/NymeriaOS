@@ -1421,13 +1421,26 @@ class CompactionManager:
             return 0
 
         max_prefix = len(messages) - min_messages
+        # Only cut on a HumanMessage boundary so the retained head starts a clean
+        # user turn. Any other head is a provider 400 that recovery would then
+        # commit to the durable checkpoint: a ToolMessage head is an orphaned
+        # tool_result (no preceding tool_use), and an AIMessage head both breaks
+        # the "first message must be user" rule and can split a parallel tool
+        # batch. A HumanMessage head is universally valid (providers merge the
+        # consecutive user turn it forms with the appended compaction prompt).
         boundaries = [
             idx
             for idx in range(1, max_prefix + 1)
-            if idx == max_prefix or isinstance(messages[idx], HumanMessage)
+            if isinstance(messages[idx], HumanMessage)
         ]
         if not boundaries:
-            boundaries = list(range(1, max_prefix + 1))
+            # No clean turn boundary within the removable range (e.g. a single
+            # autonomous wake-up driving one long tool loop). Trimming anywhere
+            # here would strand an invalid head, so decline: recovery reports a
+            # clean failure and leaves the oversized-but-valid state intact (a
+            # manual /prune can still shrink it) rather than persisting a thread
+            # that 400s on every future turn.
+            return 0
 
         target_tokens = self._recovery_target_tokens(thread_id)
         model = self._model_for(thread_id)
