@@ -167,6 +167,7 @@ from .outlook_attachments import OUTLOOK_ATTACHMENT_TOOLS
 from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_order import run_tools_in_order
+from .tool_invoke import tool_invoke, TOOL_INVOKE_TOOLS
 from .tool_search import tool_manage, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
@@ -1565,6 +1566,9 @@ SEED_TOOLS = [
     slash_command,
     # Ordered same-turn tool execution (inert marker; see tool_order.py)
     run_tools_in_order,
+    # Cache-safe deferred execution: run any discoverable tool by name without
+    # binding it to the thread (see tool_invoke.py).
+    tool_invoke,
 ]
 
 
@@ -2818,6 +2822,8 @@ __all__ = [
     "slash_command",
     "run_tools_in_order",
     "SLASH_COMMAND_TOOLS",
+    "tool_invoke",
+    "TOOL_INVOKE_TOOLS",
     "tool_search",
     "tool_manage",
     "TOOL_SEARCH_TOOLS",

@@ -300,6 +300,19 @@ def _ensure_marketplace_indexed(agent, source: str) -> tuple[str, str | None]:
     return namespace, None
 
 
+# Next-step guidance stamped onto search results so the model knows how to act
+# on a hit. An installed skill is loadable immediately by name (even if it is
+# not enabled on this thread); a marketplace skill must be installed first.
+_INSTALLED_NEXT_STEP = (
+    'Load any of these now with Skill(name="<name>") — no install or enable '
+    "needed, an installed skill loads by exact name."
+)
+_MARKETPLACE_NEXT_STEP = (
+    'These are not installed yet. Install one with install_skill(name="<name>"), '
+    'then load it with Skill(name="<name>").'
+)
+
+
 @tool
 def search_skills(
     query: str,
@@ -323,9 +336,12 @@ def search_skills(
         top_k: Max number of results to return (default 8).
 
     Returns:
-        JSON string with ``{count, mode, results, warning?}``:
+        JSON string with ``{count, mode, next_step, results, warning?}``:
             - ``mode`` is "semantic" (best), "bm25" (keyword fallback), or
               "substring" (final safety net)
+            - ``next_step`` tells you how to use a hit: an installed result
+              loads immediately with Skill(name=...); a marketplace result must
+              be install_skill'd first.
             - ``warning`` is only present when search is running in degraded
               mode. Surface its message to the user so they can set up a
               better configuration (typically set EMBEDDING_API_KEY).
@@ -356,6 +372,7 @@ def search_skills(
                 "count": len(matches),
                 "mode": "substring",
                 "warning": "embedding index unavailable; using substring match",
+                "next_step": _INSTALLED_NEXT_STEP,
                 "results": matches[:top_k],
             }, indent=2)
 
@@ -364,6 +381,7 @@ def search_skills(
         # Annotate that results are drawn from the installed pool.
         for r in out["results"]:
             r.setdefault("source", "installed")
+        out["next_step"] = _INSTALLED_NEXT_STEP
         return json.dumps(out, indent=2)
 
     if source == "anthropic":
@@ -385,6 +403,7 @@ def search_skills(
                 "count": len(matches),
                 "mode": "substring",
                 "warning": "embedding index unavailable; using keyword match on marketplace list",
+                "next_step": _MARKETPLACE_NEXT_STEP,
                 "results": matches,
             }, indent=2)
 
@@ -396,6 +415,7 @@ def search_skills(
             out["warning"] = f"{existing}; {mp_warning}" if existing else mp_warning
         for r in out["results"]:
             r.setdefault("source", "anthropic")
+        out["next_step"] = _MARKETPLACE_NEXT_STEP
         return json.dumps(out, indent=2)
 
     return json.dumps({"error": f"unknown source: {source!r}"})

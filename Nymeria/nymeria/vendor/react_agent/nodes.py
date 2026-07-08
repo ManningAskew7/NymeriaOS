@@ -1692,6 +1692,12 @@ class SafeToolNode(ToolNode):
         self._json_arg_expectations: dict[str, dict[str, set[str]]] = {}
         self._dynamic_tool_resolver = dynamic_tool_resolver
         self._dynamic_tool_lock = threading.RLock()
+        # The thread's EFFECTIVE (gated, visible) tool-name set, refreshed per
+        # batch from the resolver in ``_parse_input``. Used to tell a bound call
+        # from an unbound one at dispatch. ``None`` = dynamic binding off or the
+        # resolver was unavailable, in which case unbound-call enforcement is
+        # skipped (the dispatch table is already the exact bound set).
+        self._effective_tool_names: Optional[set[str]] = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle hooks: PRE_TOOL_USE / POST_TOOL_USE seam.
@@ -1711,6 +1717,9 @@ class SafeToolNode(ToolNode):
         config = tool_runtime.config
         started_at = datetime.now(timezone.utc)
         started_monotonic = time.monotonic()
+        unbound = self._unbound_call_message(call, config)
+        if unbound is not None:
+            return self._stamp_tool_timing(unbound, started_at, started_monotonic, config)
         registry = self._hook_registry(config)
         if not hooks.tool_hooks_active(registry):
             return self._stamp_tool_timing(
@@ -1770,6 +1779,9 @@ class SafeToolNode(ToolNode):
         config = tool_runtime.config
         started_at = datetime.now(timezone.utc)
         started_monotonic = time.monotonic()
+        unbound = self._unbound_call_message(call, config)
+        if unbound is not None:
+            return self._stamp_tool_timing(unbound, started_at, started_monotonic, config)
         registry = self._hook_registry(config)
         if not hooks.tool_hooks_active(registry):
             return self._stamp_tool_timing(
@@ -2117,9 +2129,31 @@ class SafeToolNode(ToolNode):
             logger.info("Dynamically registered tool for dispatch: %s", tool.name)
 
     def _ensure_dynamic_tools_for_calls(self, tool_calls: list[ToolCall]) -> None:
-        """Refresh dynamic tools when a call targets a post-build tool."""
+        """Refresh the dispatch table AND the effective-name set per batch.
+
+        The resolver returns the thread's EFFECTIVE (gated, visible) tool set.
+        Its names are stashed so ``_unbound_call_message`` can tell a bound call
+        from an unbound one, and any effective tool missing from the superset
+        dispatch table (a post-build newly enabled or created tool) is
+        registered so it can dispatch. A resolver failure fails OPEN (clears the
+        effective set) so a transient error never wrongly rejects a real call.
+        """
         if self._dynamic_tool_resolver is None:
+            self._effective_tool_names = None
             return
+        try:
+            resolved_tools, _cache_key = self._dynamic_tool_resolver()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Dynamic tool resolver failed while refreshing tools",
+                exc_info=True,
+            )
+            self._effective_tool_names = None
+            return
+        resolved = resolved_tools or []
+        self._effective_tool_names = {
+            t.name for t in resolved if getattr(t, "name", None)
+        }
         missing = {
             str(call.get("name") or "")
             for call in tool_calls
@@ -2129,18 +2163,75 @@ class SafeToolNode(ToolNode):
         missing.discard("")
         if not missing:
             return
-        try:
-            resolved_tools, _cache_key = self._dynamic_tool_resolver()
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Dynamic tool resolver failed while refreshing missing tools %s",
-                sorted(missing),
-                exc_info=True,
-            )
-            return
-        for tool in resolved_tools or []:
+        for tool in resolved:
             if getattr(tool, "name", None) in missing:
                 self._register_dynamic_tool(tool)
+
+    def _unbound_call_message(self, call: ToolCall, config) -> Optional[ToolMessage]:
+        """Return an error result rejecting a call for a tool not bound here.
+
+        Enforcement is dynamic-mode only (an effective-name set exists). A name
+        in the effective set dispatches normally; a name absent from the
+        superset too is left to the parent's standard invalid-tool error; only a
+        real-but-unbound tool is gated. Returns None to allow the call.
+        """
+        names = self._effective_tool_names
+        if names is None:
+            return None
+        name = call.get("name")
+        if not isinstance(name, str) or not name or name in names:
+            return None
+        if name not in self.tools_by_name:
+            # Unknown even to the dispatch superset: the parent ToolNode emits
+            # the canonical "not a valid tool" error, so do not shadow it here.
+            return None
+        return self._gate_unbound_call(name, call, config)
+
+    def _gate_unbound_call(self, name: str, call: ToolCall, config) -> Optional[ToolMessage]:
+        """Apply the unbound-call policy for a real-but-unbound tool.
+
+        Strict (default): refuse with a redirect to tool_invoke (one-off) or
+        tool_manage (bind). Permissive (``allow_unbound_tool_calls``): apply the
+        SAME deferred gates as tool_invoke and dispatch on pass, refuse on gate
+        failure. Returns None only when a permissive call passes the gates.
+        """
+        configurable = (config or {}).get("configurable") or {}
+        tool_call_id = call.get("id", "unknown")
+        if not bool(configurable.get("allow_unbound_tool_calls")):
+            return ToolMessage(
+                content=(
+                    f"[Error]: {name!r} is not enabled on this thread, so it "
+                    "cannot be called directly. To run it once without binding "
+                    f'it, use tool_invoke(name="{name}", arguments={{...}}) '
+                    "(cache-safe). To use it repeatedly, bind it first with "
+                    f'tool_manage(action="enable", tools=["{name}"], ttl="2h").'
+                ),
+                name=name,
+                tool_call_id=tool_call_id,
+                status="error",
+            )
+        # Permissive: the direct path becomes a policy-equivalent twin of
+        # tool_invoke. Reuse its single deferred gate so the two never diverge.
+        try:
+            from ...tools.tool_invoke import deferred_gate_reason
+            from ...tools.utils import caller_role, current_agent
+
+            agent = current_agent()
+            user_id = str(configurable.get("user_id") or "")
+            thread_id = str(configurable.get("thread_id") or "")
+            role = caller_role(user_id, agent=agent)
+            reason = deferred_gate_reason(agent, name, user_id, thread_id, role)
+        except Exception:  # noqa: BLE001 - fail closed on a gate-check error
+            logger.warning("Unbound-call gate check failed for %s", name, exc_info=True)
+            reason = "the deferred gate check failed"
+        if reason:
+            return ToolMessage(
+                content=f"[Error]: {name!r} cannot be called: {reason}",
+                name=name,
+                tool_call_id=tool_call_id,
+                status="error",
+            )
+        return None
 
     @staticmethod
     def _resolve_json_schema_ref(ref: str, root_schema: dict[str, Any]) -> dict[str, Any] | None:

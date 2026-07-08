@@ -59,6 +59,70 @@ routes to `END` when the latest tool-result batch contains that marker;
 otherwise it routes back to the agent normally. This guards the reload boundary
 even when LangGraph also sees a regular post-tools edge.
 
+## Deferred Execution: `tool_invoke` (cache-safe alternative to binding)
+
+Binding a tool (`tool_manage(action="enable")` or a Skill Kit) mutates the
+thread's tool list, which lives in the cached tools/system prefix, so the next
+request re-pays the whole input as a cache miss. That is the right trade for a
+tool used repeatedly over a long conversation and the wrong trade for a tool
+needed once.
+
+`tool_invoke(name, arguments)` is a single resident seed tool that runs any
+discoverable catalog / MCP / custom / workflow tool by name WITHOUT writing
+thread config, so the cached prefix never changes (Nymeria's provider-agnostic
+emulation of Anthropic's deferred tool loading). The target's schema rides in
+conversation history, delivered by `tool_search(include_schemas=true)`, a hook,
+the user, or echoed back by `tool_invoke` on a validation error, which is
+cache-safe.
+
+- Same gates as binding: the management denylist
+  (`PROTECTED_MANAGEMENT_TOOL_NAMES`), admin/developer role gates, and the
+  thread's authoritative `disabled_tools`, resolving credentials as the calling
+  user. The deferred path is never a gate bypass. It shares one gate
+  (`tools/tool_invoke.py::deferred_gate_reason`) and one invocation envelope
+  (`core/workflows/verbs_tools.py::invoke_resolved_tool`) with the `nym.tools.*`
+  workflow dispatcher.
+- Arguments are validated against the target's real schema server-side but,
+  unlike a bound tool, are NOT grammar-constrained as the model types them.
+  `tool_invoke` pre-checks the args against the target's call schema and, on a
+  mismatch, returns that compact schema so the model self-corrects in one retry.
+  A validation error raised inside the tool's own body (not by the args) surfaces
+  as a plain failure, not as a misleading "fix your arguments" echo.
+- Excluded from the deferred path: `Skill` (its own resident tool; returns a
+  `Command`), `run_tools_in_order` (an inert ordering marker), `tool_invoke`
+  itself (no self-nesting), and `install_skill` / `install_mcp_server` (their job
+  is to bind and reload the tool set, so they belong on the binding surface).
+- `Skill(name=..., defer=true)` is the kit-level expression: it loads the kit's
+  instructions plus its tools' argument schemas and binds nothing, for use via
+  `tool_invoke`. `ttl` (bind) and `defer` are mutually exclusive.
+
+Frontends attribute a `tool_invoke` call to the TARGET tool (the tool-call card
+title is the target name with a small "deferred" marker), so a deferred call
+reads like a real call to that tool rather than an opaque meta-call.
+
+### Unbound-call enforcement and `allow_unbound_tool_calls`
+
+In dynamic-binding mode the tool executor's dispatch table is the SUPERSET
+(`compute_tool_superset`), which includes every catalog tool and applies no role
+or `disabled_tools` gates. Without enforcement, a model that emits a call for a
+tool NOT in its bound list would execute it ungated. `SafeToolNode` closes this:
+it stashes the thread's EFFECTIVE (gated, visible) tool-name set per batch from
+the resolver and, for a call whose tool exists but is not in that set:
+
+- Strict (default): refuses with an error redirecting the model to `tool_invoke`
+  (one-off) or `tool_manage` (bind). A truly unknown name (absent from the
+  superset too) still gets the parent's canonical "not a valid tool" error.
+- Permissive (`allow_unbound_tool_calls=true`, dynamic binding only): applies the
+  SAME deferred gates as `tool_invoke` and dispatches on pass, refuses on gate
+  failure. This makes the direct unbound call a policy-equivalent twin of
+  `tool_invoke`, and graph build drops `tool_invoke` from the bound schema to save
+  its tokens (direct calls make it redundant). Only enable it on providers that
+  reliably emit calls for tools not present in the schema.
+
+Enforcement is skipped entirely in legacy rebuild mode (no resolver: the dispatch
+table is already the exact bound set) and fails OPEN on a resolver error (a
+transient failure never wrongly rejects a real call).
+
 ## Tool-Call Argument Boundary
 
 Some model/provider paths can emit a list-typed tool-call argument as a

@@ -100,36 +100,27 @@ def _wants_injected_tool_call_id(tool: Any) -> bool:
     return False
 
 
-async def dispatch_tool_by_name(
+async def invoke_resolved_tool(
     *,
-    agent: Any,
+    tool: Any,
+    tool_name: str,
     user_id: str,
     thread_id: str,
-    tool_name: str,
     args: dict,
     tool_call_id: str,
     workflow_depth: int = 0,
 ) -> Any:
-    """Resolve and invoke one tool as the calling user; raises VerbError.
+    """Invoke an already-resolved, already-gated tool as the calling user.
 
-    The shared primitive: denylist, role gates, effective-tool-set lookup, then
-    ``ainvoke`` with the standard configurable so per-user credentials and
-    thread scoping resolve exactly as they do for an in-turn tool call. Tools
-    that declare an injected ``tool_call_id`` are invoked with a full ToolCall
-    envelope carrying a synthesized id (workflow calls have no LLM tool_call to
-    inherit one from).
+    The shared invocation envelope: ``ainvoke`` with the standard configurable
+    so per-user credentials and thread scoping resolve exactly as they do for an
+    in-turn tool call. Tools that declare an injected ``tool_call_id`` are
+    invoked with a full ToolCall envelope carrying a synthesized id (workflow
+    and deferred calls have no LLM tool_call to inherit one from). Raises the
+    tool's own exception on failure (callers normalize it); no gate or
+    resolution logic lives here so both the workflow verb and ``tool_invoke``
+    share one call path.
     """
-    role = _caller_role(user_id)
-    reason = _gate_reason(tool_name, role)
-    if reason:
-        raise VerbError(reason)
-
-    tool = _find_tool(agent, user_id, thread_id, tool_name)
-    if tool is None:
-        raise VerbError(
-            f"tool {tool_name!r} is not enabled for this thread"
-        )
-
     # workflow_depth makes workflow-calls-workflow nesting bounded: a workflow
     # custom tool dispatched from inside a run reads it from its configurable
     # and refuses past budget.max_depth (core/workflows/tool_runtime.py).
@@ -143,23 +134,62 @@ async def dispatch_tool_by_name(
     call_args = {k: v for k, v in (args or {}).items() if k != "tool_call_id"}
     # A tool that declares an InjectedToolCallId arg must be invoked with a full
     # ToolCall envelope (langchain's contract), with a synthesized id since a
-    # workflow call has no LLM tool_call to inherit one from. Detection is by
-    # signature, so the id is supplied preemptively, never as a retry after a
-    # partial side effect.
+    # workflow/deferred call has no LLM tool_call to inherit one from. Detection
+    # is by signature, so the id is supplied preemptively, never as a retry
+    # after a partial side effect.
+    if _wants_injected_tool_call_id(tool):
+        # ToolCall envelope form: langchain populates the InjectedToolCallId
+        # arg from the ``id`` field and returns a ToolMessage, so hand the
+        # caller its ``content`` rather than the message wrapper.
+        invocation = {
+            "args": call_args,
+            "name": tool_name,
+            "type": "tool_call",
+            "id": tool_call_id,
+        }
+        raw = await tool.ainvoke(invocation, config)
+        return getattr(raw, "content", raw)
+    return await tool.ainvoke(call_args, config)
+
+
+async def dispatch_tool_by_name(
+    *,
+    agent: Any,
+    user_id: str,
+    thread_id: str,
+    tool_name: str,
+    args: dict,
+    tool_call_id: str,
+    workflow_depth: int = 0,
+) -> Any:
+    """Resolve and invoke one tool as the calling user; raises VerbError.
+
+    The workflow-side dispatcher: denylist, role gates, effective-tool-set
+    lookup, then the shared ``invoke_resolved_tool`` envelope. Resolution is the
+    thread's EFFECTIVE set (``select_tools_for_graph``), so ``disabled_tools``
+    is enforced by the lookup itself.
+    """
+    role = _caller_role(user_id)
+    reason = _gate_reason(tool_name, role)
+    if reason:
+        raise VerbError(reason)
+
+    tool = _find_tool(agent, user_id, thread_id, tool_name)
+    if tool is None:
+        raise VerbError(
+            f"tool {tool_name!r} is not enabled for this thread"
+        )
+
     try:
-        if _wants_injected_tool_call_id(tool):
-            # ToolCall envelope form: langchain populates the InjectedToolCallId
-            # arg from the ``id`` field and returns a ToolMessage, so hand the
-            # author its ``content`` rather than the message wrapper.
-            invocation = {
-                "args": call_args,
-                "name": tool_name,
-                "type": "tool_call",
-                "id": tool_call_id,
-            }
-            raw = await tool.ainvoke(invocation, config)
-            return getattr(raw, "content", raw)
-        return await tool.ainvoke(call_args, config)
+        return await invoke_resolved_tool(
+            tool=tool,
+            tool_name=tool_name,
+            user_id=user_id,
+            thread_id=thread_id,
+            args=args,
+            tool_call_id=tool_call_id,
+            workflow_depth=workflow_depth,
+        )
     except VerbError:
         raise
     except Exception as exc:  # noqa: BLE001 - normalize tool failures

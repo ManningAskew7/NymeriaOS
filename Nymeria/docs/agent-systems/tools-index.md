@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1234 tools found.**
+**1235 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -1098,8 +1098,9 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `todoist_list_tasks` | `nymeria/tools/productivity_service_integrations.py` | List Todoist tasks. |
 | `todoist_update_task` | `nymeria/tools/productivity_service_integrations.py` | Update a Todoist task. |
 | `tool_create` | `nymeria/tools/tool_create.py` | Draft, test, publish, list, or delete agent-created custom tools. |
+| `tool_invoke` | `nymeria/tools/tool_invoke.py` | Run one tool by name WITHOUT binding it to this thread (cache-safe). |
 | `tool_manage` | `nymeria/tools/tool_search.py` | Manage current-thread tool bindings: enable, disable, prune, list_categories, status. |
-| `tool_search` | `nymeria/tools/tool_search.py` | Search available tools by keyword/category; enable results with tool_manage. |
+| `tool_search` | `nymeria/tools/tool_search.py` | Search available tools by keyword/category. |
 | `totp_generate_code` | `nymeria/tools/transform_utility_integrations.py` | Generate a time-based one-time password from the saved TOTP secret. |
 | `totp_verify_code` | `nymeria/tools/transform_utility_integrations.py` | Verify a time-based one-time password against the saved TOTP secret. |
 | `travisci_cancel_build` | `nymeria/tools/build_ci_service_integrations.py` | Cancel a Travis CI build. |

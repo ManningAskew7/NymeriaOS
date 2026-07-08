@@ -29,22 +29,46 @@ need to be built?
 - A documented HTTP/API endpoint the user will reuse -> Path 2 (probe, then wrap).
 - A small deterministic transform -> Path 2 (a Python helper tool).
 
-## Path 1: Find and Enable Existing Tools
+## Path 1: Find and Use Existing Tools
 
-Flow: `tool_search` -> `tool_manage(action="enable", ttl=...)`.
+Flow: `tool_search` -> then either RUN it once (`tool_invoke`) or BIND it
+(`tool_manage(action="enable", ttl=...)`).
 
 1. Search by the user-visible task, not by guessed tool names. `tool_search`
-   matches on intent; describe what the user wants to do.
-2. Enable only the exact tools you need. Enable a whole category only when the
-   entire category genuinely fits the task.
-3. Pass a deliberate `ttl` on every `tool_manage(action="enable")` call (see TTL
-   reasoning below). Never default it blindly.
+   matches on intent; describe what the user wants to do. Add
+   `include_schemas=true` once you know which result you want, to get its
+   argument schema in the result.
+2. Decide how to execute it (see "Defer vs bind" below): run it once through
+   `tool_invoke` for a one-off, or enable it for repeated use.
+3. When binding, enable only the exact tools you need, and pass a deliberate
+   `ttl` on every `tool_manage(action="enable")` call (see TTL reasoning below).
+   Never default it blindly. Enable a whole category only when the entire
+   category genuinely fits the task.
 4. If enabling queues a tool reload, stop after that tool result and continue only
    after the automatic resume.
 
 If the tool exists but fails because it needs authentication (an API key, OAuth
 login, or other secret), switch to `credential-management` to request and bind the
 credential, then retry.
+
+### Defer vs bind
+
+Two ways to execute a tool that is not already on the thread:
+
+- DEFER (cache-safe): `tool_invoke(name, arguments)` runs the tool once without
+  adding it to your tool list. Nothing is bound, so the prompt cache is
+  preserved. Best for a one-off call, a short horizon, or while you are still
+  choosing among several candidate tools. Get the argument schema from
+  `tool_search(include_schemas=true)`; `tool_invoke` validates your arguments
+  and, if they are wrong, echoes the correct schema back so you can retry. Note:
+  deferred arguments are validated but NOT grammar-constrained as you type them,
+  so format them carefully from the schema.
+- BIND (first-class): `tool_manage(action="enable", ttl=...)` adds the tool to
+  the thread so the model can call it directly with grammar-constrained
+  arguments. Best for repeated use over a longer conversation, or when the
+  arguments are complex or fragile. Binding changes the cached tool prefix once.
+
+When unsure: one call now -> defer; several calls over a real task -> bind.
 
 ## Path 2: Build a New Tool
 

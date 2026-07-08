@@ -230,6 +230,21 @@ function firstPresent(
   return null;
 }
 
+/**
+ * Deferred-execution attribution. When the model runs a tool once via
+ * `tool_invoke` (cache-safe, no binding), the tool-call card should read as a
+ * call to the TARGET tool rather than the opaque `tool_invoke` wrapper. Returns
+ * the target tool name for a deferred call, else null.
+ */
+export function deferredToolTargetName(
+  name: string,
+  args: Record<string, unknown> | undefined | null,
+): string | null {
+  if (name !== 'tool_invoke') return null;
+  const target = args?.name;
+  return typeof target === 'string' && target ? target : null;
+}
+
 export function getToolSummary(
   name: string,
   args: Record<string, unknown> | undefined,

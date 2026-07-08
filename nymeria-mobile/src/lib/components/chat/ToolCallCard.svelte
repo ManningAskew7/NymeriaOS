@@ -5,7 +5,7 @@
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { chatStore } from '$lib/stores/chat.svelte';
   import { formatFileSize } from '$lib/utils/fileProcessing';
-  import { getToolSummary } from '$lib/utils/toolSummary';
+  import { getToolSummary, deferredToolTargetName } from '$lib/utils/toolSummary';
   import { formatMessageTime } from '$lib/utils/time';
   import { configStore } from '$lib/stores/config.svelte';
   import WorkspaceArtifactModal from './WorkspaceArtifactModal.svelte';
@@ -49,9 +49,30 @@
     (toolCall.artifacts ?? []).filter((a) => a.mimeType.startsWith('image/'))
   );
 
+  // Deferred execution (tool_invoke): the model ran a tool by name without
+  // binding it. Attribute the card to the TARGET tool so a deferred call reads
+  // like a real call to that tool, with a small "deferred" marker; the raw
+  // tool_invoke envelope stays visible in the expanded args.
+  let deferredTarget = $derived(deferredToolTargetName(toolCall.name, toolCall.arguments));
+  let displayName = $derived(deferredTarget ?? toolCall.name);
+  let summaryArgs = $derived.by(() => {
+    if (!deferredTarget) return toolCall.arguments;
+    // Some providers stringify object-typed tool args, so parse a JSON string
+    // form before falling back, keeping the deferred card's summary informative.
+    let inner: unknown = toolCall.arguments?.arguments;
+    if (typeof inner === 'string') {
+      try {
+        inner = JSON.parse(inner);
+      } catch {
+        inner = undefined;
+      }
+    }
+    return inner && typeof inner === 'object' ? (inner as Record<string, unknown>) : {};
+  });
+
   let summary = $derived(
     configStore.describeToolCalls
-      ? getToolSummary(toolCall.name, toolCall.arguments)
+      ? getToolSummary(displayName, summaryArgs)
       : null
   );
 
@@ -114,10 +135,13 @@
 </script>
 
 <div class="tool-call-card" class:running={toolCall.status === 'running'} class:cancelled={toolCall.status === 'cancelled'}>
-  <Collapsible title={toolCall.name} chevronIcon="terminal" chevronSize={20}>
+  <Collapsible title={displayName} chevronIcon="terminal" chevronSize={20}>
     {#snippet header()}
       <div class="tool-header">
-        <span class="tool-name">{toolCall.name}</span>
+        <span class="tool-name">{displayName}</span>
+        {#if deferredTarget}
+          <span class="deferred-badge" title="Run once via tool_invoke without binding it">deferred</span>
+        {/if}
         {#if summary}
           <span class="tool-summary" title={summary}>
             <span class="tool-summary-paren">(</span>
@@ -387,6 +411,18 @@
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     flex-shrink: 0;
+  }
+
+  /* Marker that this call was run once via tool_invoke without binding. */
+  .deferred-badge {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-subtle);
   }
 
   /* Plain-English label next to the tool name. Takes the middle space and

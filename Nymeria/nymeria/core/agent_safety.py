@@ -196,6 +196,12 @@ def graph_run_config(
             "tool_timing_in_results": bool(
                 getattr(settings, "tool_timing_in_results", False)
             ),
+            # When on (dynamic binding only), SafeToolNode lets the model
+            # dispatch an unbound tool directly if it passes the deferred gates,
+            # instead of refusing with a redirect to tool_invoke/tool_manage.
+            "allow_unbound_tool_calls": bool(
+                getattr(settings, "allow_unbound_tool_calls", False)
+            ),
         },
     }
     # Thread the turn source through to tool-event hooks. ``_build_tool_hook_ctx``

@@ -194,6 +194,27 @@ Three layers:
 This is what lets a user keep dozens of skills installed without context
 bloat  -  the agent pays tokens only for the skills it actually activates.
 
+### Loadability: any installed skill, not just the visible ones
+
+The `<available_skills>` index carries only the skills ENABLED on the thread
+(`(enabled_global_skills ∪ thread_enabled_skills) − thread_disabled_skills`),
+which controls whose name/description the agent sees every turn. It does NOT
+gate loading: `Skill(name=...)` loads the body of ANY installed skill by exact
+name, including one the agent found via `search_skills` that is not enabled on
+this thread. This is deliberate: thread enablement decides visibility (which
+frontmatter rides in context), not reachability. A skill that is not installed
+at all (e.g. a marketplace result) must be `install_skill`'d first;
+`search_skills` results carry a `next_step` hint saying which case applies.
+
+### Deferred Skill Kits (`defer=true`)
+
+For a Skill Kit, `Skill(name=..., defer=true)` loads the kit's instructions plus
+its tools' argument schemas but binds NOTHING to the thread; the agent then runs
+those tools by name via `tool_invoke` (cache-safe). This is the kit-level
+expression of defer-vs-bind: use `defer` for a one-off, use `ttl` (bind) for
+repeated use. `defer` and `ttl` are mutually exclusive (passing both ignores
+`ttl`). See [tool-hot-loading.md](./tool-hot-loading.md#deferred-execution-tool_invoke-cache-safe-alternative-to-binding).
+
 ## Where skills live on disk
 
 Four scope layers, in precedence order (name collisions: user > global > bundled):

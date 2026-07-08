@@ -722,6 +722,92 @@ def test_skill_meta_tool_ttl_on_plain_skill_reports_no_effect(tmp_path: Path):
     assert "no effect" in result
 
 
+def test_skill_meta_tool_defer_binds_nothing_and_lists_schemas(tmp_path: Path):
+    """defer=true loads the kit body plus its tools' schemas without binding."""
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool([skill])
+        result = skill_tool.func(
+            "hello-kit",
+            defer=True,
+            tool_call_id="call-1",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "Hello Kit" in result
+    assert "Skill Kit deferred" in result
+    assert "tool_invoke" in result
+    assert "hello_test args:" in result
+    # Nothing bound: no config written, no reload queued.
+    assert agent.thread_config_manager.get_config("thread-a") is None
+    assert agent._pending_tool_reload == {}
+
+
+def test_skill_meta_tool_defer_ignores_ttl(tmp_path: Path):
+    skill_dir = _write_skill(tmp_path, "hello-kit", KIT_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    agent = _FakeAgent(tmp_path / "data")
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool([skill])
+        result = skill_tool.func(
+            "hello-kit",
+            ttl="2h",
+            defer=True,
+            tool_call_id="call-1",
+            config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "ttl was ignored" in result
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_skill_meta_tool_defer_plain_skill_is_noop(tmp_path: Path):
+    skill_dir = _write_skill(tmp_path, "plain-skill", PLAIN_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    skill_tool = create_skill_meta_tool([skill])
+
+    result = skill_tool.func(
+        "plain-skill",
+        defer=True,
+        tool_call_id="call-1",
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+    assert isinstance(result, str)
+    assert "Plain Skill" in result
+    assert "binds no Skill Kit tools" in result
+
+
+def test_skill_meta_tool_not_found_copy_points_to_install(tmp_path: Path):
+    skill_dir = _write_skill(tmp_path, "plain-skill", PLAIN_MD)
+    skill = load_skill_directory(skill_dir, scope="bundled")
+    assert skill is not None
+    skill_tool = create_skill_meta_tool([skill])
+
+    result = skill_tool.func(
+        "no-such-skill",
+        tool_call_id="call-1",
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+    assert isinstance(result, str)
+    assert "No installed skill named" in result
+    assert "install_skill" in result
+
+
 def test_memory_hash_evicts_expired_temporary_tools(tmp_path: Path):
     agent = object.__new__(NymeriaAgent)
     agent.thread_config_manager = ThreadConfigManager(tmp_path)
