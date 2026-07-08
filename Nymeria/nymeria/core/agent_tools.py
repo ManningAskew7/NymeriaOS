@@ -275,6 +275,7 @@ def load_mcp_server_tools(agent: "NymeriaAgent") -> int:
                     live=tool_name in live_names,
                     enabled=bool(defn.enabled),
                     server_id=defn.id,
+                    server_name=defn.name,
                     install_status=defn.install_status,
                 )
         agent._prune_mcp_tool_bindings(live_names)
@@ -322,6 +323,7 @@ def reload_mcp_server_tools(agent: "NymeriaAgent") -> List[str]:
                     live=tool_name in live_names,
                     enabled=bool(defn.enabled),
                     server_id=defn.id,
+                    server_name=defn.name,
                     install_status=defn.install_status,
                 )
         agent._prune_mcp_tool_bindings(live_names)

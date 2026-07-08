@@ -327,7 +327,8 @@ def _search(
         lines.append(
             f"  {c.name} ({c.category}, {c.security_level}){status}"
             f"\n    {c.description}"
-            f"\n    Enable hint: {c.enable_hint}"
+            + _server_line(c)
+            + f"\n    Enable hint: {c.enable_hint}"
             + _auth_line(c)
             + (_render_result_schema(c.name, agent) if include_schemas else "")
         )
@@ -349,13 +350,35 @@ _AUTH_LINE_BY_STATUS = {
     "optional": "works without a credential (optional override available)",
 }
 
+# MCP servers have no credential provider; their "auth" axis is really whether
+# the server is configured and reachable, so the copy differs from the
+# credential wording above.
+_MCP_SETUP_LINE_BY_STATUS = {
+    "connected": "server configured and ready",
+    "needs_setup": "server needs configuration before its tools can run",
+}
+
+
+def _server_line(c: Any) -> str:
+    """Render the origin-server provenance line for an MCP-server result."""
+    if getattr(c, "tool_type", "") != "mcp_server":
+        return ""
+    server = getattr(c, "server_name", None) or getattr(c, "server_id", None)
+    if not server:
+        return ""
+    return f"\n    Server: {server} (MCP)"
+
 
 def _auth_line(c: Any) -> str:
-    """Render the per-result credential axis; absent = no credential required."""
-    if not getattr(c, "auth_status", None):
+    """Render the per-result credential / setup axis; absent = nothing needed."""
+    status = getattr(c, "auth_status", None)
+    if not status:
         return ""
-    detail = _AUTH_LINE_BY_STATUS.get(c.auth_status, c.auth_status)
-    return f"\n    Auth: {c.auth_provider} {c.auth_status} ({detail})"
+    if getattr(c, "tool_type", "") == "mcp_server":
+        detail = _MCP_SETUP_LINE_BY_STATUS.get(status, status)
+        return f"\n    Setup: {status} ({detail})"
+    detail = _AUTH_LINE_BY_STATUS.get(status, status)
+    return f"\n    Auth: {c.auth_provider} {status} ({detail})"
 
 
 def _validate_and_gate_tools(

@@ -43,6 +43,76 @@ def test_bm25_fallback_without_embedding_key_finds_browser_tools():
     assert any(result.name.startswith("browser_") for result in response.results)
 
 
+def test_mcp_server_result_carries_provenance_and_setup_axis():
+    from nymeria.tools.metadata import (
+        register_mcp_server_tool_metadata,
+        unregister_mcp_server_tool_metadata,
+    )
+
+    name = "mcp__notion__search_docs"
+    register_mcp_server_tool_metadata(
+        name,
+        "Search Notion documents by keyword",
+        live=True,
+        enabled=True,
+        server_id="notion",
+        server_name="Notion",
+        install_status="ready",
+    )
+    try:
+        index = ToolSearchIndex(openai_api_key=None)
+        response = index.search(
+            "notion search documents",
+            user_id="default",
+            top_k=15,
+            include_status=True,
+        )
+        result = next(r for r in response.results if r.name == name)
+        assert result.tool_type == "mcp_server"
+        assert result.server_id == "notion"
+        assert result.server_name == "Notion"
+        # Compact list label; the callable name stays the clean internal name.
+        assert result.display_name == "Notion / search_docs"
+        # install_status "ready" maps onto the shared credential-axis vocab.
+        assert result.auth_status == "connected"
+        payload = result.to_json()
+        assert payload["server_name"] == "Notion"
+        assert payload["auth_status"] == "connected"
+    finally:
+        unregister_mcp_server_tool_metadata(name)
+
+
+def test_mcp_server_result_setup_axis_flags_unconfigured_server():
+    from nymeria.tools.metadata import (
+        register_mcp_server_tool_metadata,
+        unregister_mcp_server_tool_metadata,
+    )
+
+    name = "mcp__linear__list_issues"
+    register_mcp_server_tool_metadata(
+        name,
+        "List Linear issues assigned to you",
+        live=False,
+        enabled=True,
+        server_id="linear",
+        server_name="Linear",
+        install_status="needs_config",
+    )
+    try:
+        index = ToolSearchIndex(openai_api_key=None)
+        response = index.search(
+            "linear list issues",
+            user_id="default",
+            top_k=15,
+            include_status=True,
+        )
+        result = next(r for r in response.results if r.name == name)
+        assert result.server_name == "Linear"
+        assert result.auth_status == "needs_setup"
+    finally:
+        unregister_mcp_server_tool_metadata(name)
+
+
 def test_cliproxy_gatekeeper_key_does_not_hit_embeddings():
     index = ToolSearchIndex(openai_api_key="cpx-local-test")
 

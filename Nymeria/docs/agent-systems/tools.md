@@ -938,6 +938,16 @@ provider-mapped tool whose credential is not connected, the result appends a
 per-provider `[Credential]:` nudge pointing at the credential-management
 kit.
 
+Managed MCP results (the `mcp__<server>__<tool>` namespace) also carry origin
+provenance: a `Server: <name> (MCP)` line in the agent-facing text and
+`server_id`/`server_name`/`display_name` fields on the REST payload. Their
+`auth_status` is reused as a setup axis mapped from the server's install
+status (`ready` -> `connected`, `needs_config` -> `needs_setup`), rendered as
+a `Setup:` line rather than the credential `Auth:` line, with `auth_provider`
+`null` (MCP has no credential provider). The tool name stays the clean
+`mcp__server__tool` the model calls; desktop and mobile chat cards render the
+server as an `MCP - <server>` badge parsed from that name.
+
 The same backend ranking is used by one-shot command searches:
 - CLI/plain slash: `/tools <query>` and `/tools search <query>`
 - Discord: `/tools search query:<text>`

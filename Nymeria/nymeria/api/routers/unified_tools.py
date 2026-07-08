@@ -128,11 +128,14 @@ def create_unified_tools_router(
                     )
                 )
 
+        from ...tools.metadata import mcp_tool_surface_fields
+
         for tool_name, meta in MCP_SERVER_TOOL_METADATA.items():
             if tool_name in seen:
                 continue
             enabled = tool_name in dtt_set
             live = bool(getattr(meta, "live", True))
+            provenance = mcp_tool_surface_fields(tool_name)
             unified_tools.append(
                 UnifiedToolResponse(
                     id=tool_name,
@@ -156,6 +159,12 @@ def create_unified_tools_router(
                     configurable=False,
                     live=live,
                     globally_disabled=not live,
+                    server_id=provenance.get("server_id"),
+                    server_name=provenance.get("server_name"),
+                    display_name=provenance.get("display_name"),
+                    # Setup axis from install status; the credential overlay
+                    # below only writes provider-mapped tools, so this survives.
+                    auth_status=provenance.get("auth_status"),
                     created_at=None,
                     updated_at=None,
                 )

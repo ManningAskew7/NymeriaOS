@@ -109,6 +109,11 @@ class ToolSearchResult:
     # catalog document. dev-todo #7.
     auth_status: Optional[str] = None
     auth_provider: Optional[str] = None
+    # MCP provenance (mcp_server results only; None otherwise). The name stays
+    # the clean internal mcp__server__tool; these badge the origin server.
+    server_id: Optional[str] = None
+    server_name: Optional[str] = None
+    display_name: Optional[str] = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -127,6 +132,9 @@ class ToolSearchResult:
             "service_label": self.service_label,
             "auth_status": self.auth_status,
             "auth_provider": self.auth_provider,
+            "server_id": self.server_id,
+            "server_name": self.server_name,
+            "display_name": self.display_name,
         }
 
 
@@ -911,6 +919,25 @@ class ToolSearchIndex:
 
             grouping = get_integration_grouping(doc.name)
 
+        # MCP provenance + setup axis is user-invariant but reads the live
+        # install status, so derive it at result time rather than baking mutable
+        # state into the cached catalog doc (same rationale as `status`/`auth`).
+        # Provenance (server_id/server_name/display_name) is always emitted; the
+        # setup axis rides `auth_status`, so it is gated on `include_status` to
+        # match the credential axis (empty auth_map when status isn't requested).
+        auth_provider = auth[0] if auth else None
+        auth_status = auth[1] if auth else None
+        server_id = server_name = display_name = None
+        if doc.tool_type == "mcp_server":
+            from ..tools.metadata import mcp_tool_surface_fields
+
+            mcp = mcp_tool_surface_fields(doc.name)
+            server_id = mcp.get("server_id")
+            server_name = mcp.get("server_name")
+            display_name = mcp.get("display_name")
+            if include_status and auth_status is None:
+                auth_status = mcp.get("auth_status")
+
         return ToolSearchResult(
             name=doc.name,
             description=doc.description,
@@ -925,8 +952,11 @@ class ToolSearchIndex:
             group_label=grouping["group_label"] if grouping else None,
             service=grouping["service"] if grouping else None,
             service_label=grouping["service_label"] if grouping else None,
-            auth_provider=auth[0] if auth else None,
-            auth_status=auth[1] if auth else None,
+            auth_provider=auth_provider,
+            auth_status=auth_status,
+            server_id=server_id,
+            server_name=server_name,
+            display_name=display_name,
         )
 
 

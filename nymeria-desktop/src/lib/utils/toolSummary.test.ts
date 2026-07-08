@@ -1,6 +1,35 @@
 import { describe, expect, it } from 'vitest';
 
-import { deferredToolTargetName, getToolSummary } from './toolSummary';
+import { deferredToolTargetName, getToolSummary, mcpServerBadge } from './toolSummary';
+
+describe('mcpServerBadge', () => {
+  it('parses the origin server and tool from a managed MCP name', () => {
+    expect(mcpServerBadge('mcp__notion__search_docs')).toEqual({
+      server: 'notion',
+      tool: 'search_docs',
+    });
+  });
+
+  it('keeps the full remainder as the tool when it contains more separators', () => {
+    expect(mcpServerBadge('mcp__github__repos__list')).toEqual({
+      server: 'github',
+      tool: 'repos__list',
+    });
+  });
+
+  it('returns null for a non-MCP tool name', () => {
+    expect(mcpServerBadge('web_search')).toBeNull();
+    expect(mcpServerBadge('bash_execute')).toBeNull();
+  });
+
+  it('returns null for a malformed MCP name (missing server or tool)', () => {
+    expect(mcpServerBadge('mcp__')).toBeNull();
+    expect(mcpServerBadge('mcp__notion__')).toBeNull();
+    expect(mcpServerBadge('mcp____tool')).toBeNull();
+    // Single separator only (no tool segment): not a managed MCP name.
+    expect(mcpServerBadge('mcp__notion')).toBeNull();
+  });
+});
 
 describe('deferredToolTargetName', () => {
   it('returns the target tool name for a tool_invoke call', () => {
