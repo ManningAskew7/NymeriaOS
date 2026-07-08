@@ -424,10 +424,16 @@
     {:else}
       <!-- Assistant message: render steps in arrival order for proper interleaving -->
       {#if message.dispatchInfo}
-        <div class="dispatch-badge">
+        <button
+          type="button"
+          class="dispatch-badge"
+          onclick={() => message.dispatchInfo && threadsStore.selectThread(message.dispatchInfo.threadId)}
+          aria-label={`Open thread: ${message.dispatchInfo.title || message.dispatchInfo.threadId}`}
+        >
           <Icon name="info" size={14} />
           <span>Response from {message.dispatchInfo.title || message.dispatchInfo.threadId}</span>
-        </div>
+          <span class="dispatch-jump"><Icon name="chevronRight" size={14} /></span>
+        </button>
       {/if}
 
       {#if hasSteps}
@@ -679,12 +685,42 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
+    width: 100%;
     margin-bottom: var(--spacing-sm);
-    padding-bottom: var(--spacing-xs);
+    padding: 0 0 var(--spacing-xs);
+    background: none;
+    border: none;
     border-bottom: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent);
     color: var(--accent-primary);
+    font-family: inherit;
     font-size: var(--font-size-xs);
     font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .dispatch-badge:hover {
+    color: color-mix(in srgb, var(--accent-primary) 82%, var(--text-secondary));
+    border-bottom-color: color-mix(in srgb, var(--accent-primary) 50%, transparent);
+  }
+
+  .dispatch-badge:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  .dispatch-jump {
+    display: inline-flex;
+    align-items: center;
+    margin-left: auto;
+    opacity: 0.65;
+    transition: opacity var(--transition-fast);
+  }
+
+  .dispatch-badge:hover .dispatch-jump {
+    opacity: 1;
   }
 
   .provider-status-step {

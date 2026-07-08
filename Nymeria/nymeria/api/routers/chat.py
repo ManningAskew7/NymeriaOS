@@ -253,6 +253,78 @@ def _mention_ambiguity_error(
     }
 
 
+def _create_quick_thread(
+    agent: Any,
+    user_id: str,
+    parent_thread_id: str,
+    publish_sync_event_fn: Callable[..., Any],
+) -> str:
+    """Create a fresh, clean-context temporary thread for a ``/quick`` query.
+
+    No ``ThreadConfig`` is written, so the thread resolves to global defaults
+    (the wanted clean context: no current-thread history, tools, or persona
+    bleed). It is flagged ``lifetime=temporary`` so the idle sweep reaps it if
+    the user never continues it, and claimed to the user so ``@<id>`` and
+    ``/thread switch`` resolve it. Returns the new thread id; raises on the
+    metadata/claim write so the caller can surface an error.
+    """
+    from ...core.time_utils import utc_now as _utc_now
+    from ...tools.spawn_thread import (
+        DEFAULT_IDLE_TIMEOUT_HOURS,
+        PLATFORM_META_IDLE_TIMEOUT,
+        PLATFORM_META_LAST_ACTIVE,
+        PLATFORM_META_LIFETIME,
+    )
+
+    quick_thread_id = f"spawned-quick-{uuid.uuid4().hex[:8]}"
+    platform_meta = {
+        PLATFORM_META_LIFETIME: "temporary",
+        PLATFORM_META_IDLE_TIMEOUT: str(DEFAULT_IDLE_TIMEOUT_HOURS),
+        PLATFORM_META_LAST_ACTIVE: _utc_now().isoformat(),
+        "spawn_parent": parent_thread_id,
+    }
+    agent.thread_metadata_manager.upsert_thread(
+        user_id,
+        quick_thread_id,
+        title="Quick query",
+        title_source="auto",
+        platform_meta=platform_meta,
+    )
+    agent.accounts_repo.claim_thread(quick_thread_id, user_id)
+    try:
+        publish_sync_event_fn(
+            event_type="thread_created",
+            thread_id=quick_thread_id,
+            user_id=user_id,
+            data={
+                "title": "Quick query",
+                "title_source": "auto",
+                "platform_meta": platform_meta,
+            },
+            # Empty origin (not the caller's client id): the caller did not
+            # optimistically create this thread, so it MUST receive the
+            # thread_created event, otherwise the sync origin filter would hide
+            # the new thread from the very client that ran /quick.
+            origin_client_id="",
+        )
+    except Exception:
+        logger.warning(
+            "Failed to publish thread_created for /quick thread %s",
+            quick_thread_id,
+            exc_info=True,
+        )
+    return quick_thread_id
+
+
+def _quick_continue_footer(quick_thread_id: str) -> str:
+    """Display-only footer appended to a /quick thread's first response."""
+    return (
+        f"\n\n---\nContinue this thread: start a message with "
+        f"`@{quick_thread_id}` on any surface, or "
+        f"`/thread switch {quick_thread_id}` in the CLI or a chat app."
+    )
+
+
 def create_chat_router(
     verify_api_key: Callable[..., Any],
     get_agent_fn: Callable[[], Any],
@@ -292,6 +364,9 @@ def create_chat_router(
         original_thread_id = thread_id
         message = request.message
         dispatched_target: MentionTarget | None = None
+        # Set by the /quick intercept below: this turn runs in a fresh throwaway
+        # thread and its response should carry a "continue this thread" footer.
+        is_quick = False
         # Ignore client-claimed user_id in the body; derive from auth instead.
         user_id = user.id
         require_thread_access_fn(user, thread_id)
@@ -536,6 +611,52 @@ def create_chat_router(
                 media_type="text/event-stream",
                 headers=SSE_RESPONSE_HEADERS,
             )
+
+        # Handle /quick slash command (chat_stream execution).
+        # /quick <prompt> runs the prompt in a brand-new, clean-context thread
+        # and streams the answer INLINE on the current thread, reusing the
+        # @<thread> dispatch + SSE re-tag path (nothing is written to the
+        # current thread's context). The fresh thread persists as a temporary,
+        # continuable thread (idle-swept if abandoned), and its first response
+        # carries a "continue this thread" footer. A fresh id with no
+        # ThreadConfig resolves to global defaults, which is the wanted clean
+        # context.
+        quick_tokens = msg_stripped.split(maxsplit=1)
+        if not request.is_self_invoke and quick_tokens and quick_tokens[0] == "/quick":
+            raw_parts = message.strip().split(maxsplit=1)
+            quick_prompt = raw_parts[1].strip() if len(raw_parts) > 1 else ""
+            if not quick_prompt:
+                return _slash_sse_response(
+                    "[Error]: Usage: `/quick <prompt>` — runs a one-off query "
+                    "in a fresh, clean-context thread and shows the answer "
+                    "here without leaving the current thread.",
+                    thread_id,
+                )
+
+            try:
+                quick_thread_id = _create_quick_thread(
+                    agent,
+                    user_id,
+                    original_thread_id,
+                    publish_sync_event_fn,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Failed to create /quick thread")
+                return _slash_sse_response(
+                    f"[Error]: Could not start a quick thread: {exc}",
+                    thread_id,
+                )
+
+            dispatched_target = MentionTarget(
+                thread_id=quick_thread_id,
+                title="Quick query",
+                reference="quick",
+                message=quick_prompt,
+            )
+            thread_id = quick_thread_id
+            message = quick_prompt
+            display_message = quick_prompt
+            is_quick = True
 
         # Handle /skill and /kit slash commands (chat_stream execution).
         # /skill <name> [prompt] activates a markdown-only skill, prepends
@@ -1023,6 +1144,17 @@ def create_chat_router(
                     }
                     yield f"data: {json.dumps(dispatch_event)}\n\n"
 
+                # Reset the idle-timeout clock when a user interactively runs a
+                # turn on a temporary spawned thread (e.g. continuing a /quick
+                # thread). Without this, only the callable-invoke path refreshes
+                # activity, so an actively-continued quick thread could be
+                # reaped by the idle sweep despite being in use. No-ops for
+                # permanent threads (self-guards on lifetime=temporary).
+                if not request.is_self_invoke and thread_id.startswith("spawned-"):
+                    from ...tools.spawn_thread import refresh_thread_activity
+
+                    refresh_thread_activity(agent, user_id, thread_id)
+
                 async for chunk in agent.astream(
                     message,
                     thread_id=thread_id,
@@ -1105,6 +1237,29 @@ def create_chat_router(
 
                 # Only send done event if client is still connected
                 if not client_disconnected and not await http_request.is_disconnected():
+                    # For /quick, append a display-only footer telling the user
+                    # how to continue the fresh thread. Emitted as a trailing
+                    # `response` chunk (re-tagged to the caller thread) BEFORE
+                    # `done`, so it accumulates into the same assistant bubble
+                    # on every surface and is never written to any checkpoint.
+                    if is_quick:
+                        quick_footer = _quick_continue_footer(thread_id)
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "response",
+                                    "content": quick_footer,
+                                    "thread_id": original_thread_id,
+                                    **_dispatch_stream_fields(
+                                        dispatched_target,
+                                        original_thread_id,
+                                    ),
+                                }
+                            )
+                            + "\n\n"
+                        )
+
                     # Get context stats and model info for UI
                     try:
                         context_stats = agent.get_context_stats(thread_id)
@@ -1255,6 +1410,38 @@ def create_chat_router(
                 message = mention_resolution.message
 
         msg_stripped = message.strip().lower()
+
+        # /quick <prompt>: run in a fresh, clean-context temporary thread and
+        # return the answer with a continue-this-thread footer. Sync parity
+        # with the streaming /quick intercept above.
+        is_quick = False
+        quick_tokens = msg_stripped.split(maxsplit=1)
+        if not request.is_self_invoke and quick_tokens and quick_tokens[0] == "/quick":
+            raw_parts = message.strip().split(maxsplit=1)
+            quick_prompt = raw_parts[1].strip() if len(raw_parts) > 1 else ""
+            if not quick_prompt:
+                return ChatResponse(
+                    response=(
+                        "[Error]: Usage: `/quick <prompt>` — runs a one-off "
+                        "query in a fresh, clean-context thread."
+                    ),
+                    thread_id=thread_id,
+                    tool_call_count=0,
+                )
+            try:
+                thread_id = _create_quick_thread(
+                    agent, user_id, thread_id, publish_sync_event_fn
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Failed to create /quick thread")
+                return ChatResponse(
+                    response=f"[Error]: Could not start a quick thread: {exc}",
+                    thread_id=thread_id,
+                    tool_call_count=0,
+                )
+            message = quick_prompt
+            is_quick = True
+
         skill_tokens = msg_stripped.split(maxsplit=1)
         if skill_tokens and skill_tokens[0] in {"/skill", "/kit"}:
             from ...core.command_service import prepare_skill_slash_command
@@ -1290,6 +1477,14 @@ def create_chat_router(
             if request.images
             else None
         )
+        # Reset the idle clock when interactively continuing a temporary
+        # spawned thread (mirrors the streaming path). No-op for permanent
+        # threads.
+        if not request.is_self_invoke and thread_id.startswith("spawned-"):
+            from ...tools.spawn_thread import refresh_thread_activity
+
+            refresh_thread_activity(agent, user_id, thread_id)
+
         response = agent.chat(
             message,
             thread_id=thread_id,
@@ -1304,6 +1499,8 @@ def create_chat_router(
             source_label=prompt_source_label or user_id,
         )
         tool_call_count = getattr(agent, "_last_chat_tool_calls", 0)
+        if is_quick:
+            response = f"{response}{_quick_continue_footer(thread_id)}"
         return ChatResponse(
             response=response,
             thread_id=thread_id,

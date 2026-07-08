@@ -11,13 +11,59 @@ from typing import Any
 from nymeria.core.accounts import AccountsRepo
 
 
+class _FakeThreadMeta:
+    def __init__(
+        self,
+        *,
+        title: str | None = None,
+        title_source: str | None = None,
+        platform: str | None = None,
+        platform_meta: dict[str, Any] | None = None,
+    ) -> None:
+        self.title = title
+        self.title_source = title_source
+        self.platform = platform
+        self.platform_meta = dict(platform_meta or {})
+
+
 class FakeThreadMetadataManager:
     def __init__(self) -> None:
         self.auto_title_calls: list[tuple[str, str, str]] = []
+        self.threads: dict[tuple[str, str], _FakeThreadMeta] = {}
 
     def auto_title(self, user_id: str, thread_id: str, message: str) -> str:
         self.auto_title_calls.append((user_id, thread_id, message))
         return "Auto Title"
+
+    def upsert_thread(
+        self,
+        user_id: str,
+        thread_id: str,
+        *,
+        title: str | None = None,
+        title_source: str | None = None,
+        platform: str | None = None,
+        platform_meta: dict[str, Any] | None = None,
+    ) -> _FakeThreadMeta:
+        # Merge semantics mirror the real ThreadMetadataManager: only provided
+        # fields are written, so a title-less platform_meta upsert (e.g. the
+        # idle-clock refresh) preserves the existing title.
+        meta = self.threads.get((user_id, thread_id))
+        if meta is None:
+            meta = _FakeThreadMeta()
+            self.threads[(user_id, thread_id)] = meta
+        if title is not None:
+            meta.title = title
+        if title_source is not None:
+            meta.title_source = title_source
+        if platform is not None:
+            meta.platform = platform
+        if platform_meta is not None:
+            meta.platform_meta = dict(platform_meta)
+        return meta
+
+    def get_thread(self, user_id: str, thread_id: str) -> _FakeThreadMeta | None:
+        return self.threads.get((user_id, thread_id))
 
 
 class FakeChatAgent:
@@ -299,3 +345,189 @@ def test_chat_stream_compact_forwards_focus_instruction(
     ) as response:
         _ = "".join(response.iter_text())
     assert agent.compact_calls[-1]["priority"] is None
+
+
+def _quick_thread_id_from_events(events: list[dict[str, Any]]) -> str:
+    for event in events:
+        if event.get("type") == "dispatched":
+            return event["target_thread_id"]
+    raise AssertionError(f"no dispatched event in {events}")
+
+
+def test_quick_stream_creates_temporary_thread_and_streams_inline(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/quick summarize the news", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    events = _sse_events(body)
+    quick_id = _quick_thread_id_from_events(events)
+    assert quick_id.startswith("spawned-quick-")
+
+    # The turn runs on the fresh thread with the mention prefix stripped.
+    assert agent.astream_calls == [
+        {
+            "message": "summarize the news",
+            "thread_id": quick_id,
+            "user_id": "alice",
+            "attachments": None,
+            "images": None,
+            "force_unsupported_attachments": False,
+            "_is_self_invoke": False,
+            "_trigger_override": None,
+            "source": "user",
+            "source_id": None,
+            "source_label": "alice",
+        }
+    ]
+
+    # Every streamed event is re-tagged to the caller thread (inline display),
+    # while the dispatch envelope points at the fresh thread.
+    dispatched = next(e for e in events if e["type"] == "dispatched")
+    assert dispatched["thread_id"] == "caller-1"
+    assert dispatched["target_thread_id"] == quick_id
+    for event in events:
+        if event["type"] in {"thinking", "response", "done"}:
+            assert event["thread_id"] == "caller-1"
+
+    # The continue-footer is a trailing response chunk, before done, that names
+    # the fresh thread so the user can resume it.
+    assert [e["type"] for e in events][-1] == "done"
+    footer = events[-2]
+    assert footer["type"] == "response"
+    assert "Continue this thread" in footer["content"]
+    assert quick_id in footer["content"]
+    assert footer["thread_id"] == "caller-1"
+
+    # The fresh thread persists as a temporary (idle-swept) thread owned by the
+    # user; nothing runs on the caller thread.
+    meta = agent.thread_metadata_manager.get_thread("alice", quick_id)
+    assert meta is not None
+    assert meta.platform_meta["lifetime"] == "temporary"
+    assert meta.platform_meta["idle_timeout_hours"] == "24"
+    assert meta.platform_meta["last_active_at"]
+    assert agent.accounts_repo.get_thread_owner(quick_id) == "alice"
+    assert all(call["thread_id"] == quick_id for call in agent.astream_calls)
+
+
+def test_quick_stream_empty_prompt_errors_without_creating_thread(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/quick", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    events = _sse_events(body)
+    assert any(
+        e["type"] == "response" and "Usage: `/quick" in e["content"] for e in events
+    )
+    assert agent.astream_calls == []
+    assert agent.thread_metadata_manager.threads == {}
+
+
+def test_quick_sync_creates_thread_and_appends_footer(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    response = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "/quick hello there", "thread_id": "caller-1"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    quick_id = data["thread_id"]
+    assert quick_id.startswith("spawned-quick-")
+    assert data["response"].startswith("sync response")
+    assert "Continue this thread" in data["response"]
+    assert quick_id in data["response"]
+    assert agent.chat_calls == [
+        {
+            "message": "hello there",
+            "thread_id": quick_id,
+            "user_id": "alice",
+            "attachments": None,
+            "images": None,
+            "force_unsupported_attachments": False,
+            "_is_self_invoke": False,
+            "_trigger_override": None,
+            "source": "user",
+            "source_id": None,
+            "source_label": "alice",
+        }
+    ]
+    meta = agent.thread_metadata_manager.get_thread("alice", quick_id)
+    assert meta is not None
+    assert meta.platform_meta["lifetime"] == "temporary"
+    assert agent.accounts_repo.get_thread_owner(quick_id) == "alice"
+
+
+def test_quick_sync_empty_prompt_errors(tmp_path: Path, api_client_builder):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    response = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "/quick", "thread_id": "caller-1"},
+    )
+
+    assert response.status_code == 200
+    assert "Usage: `/quick" in response.json()["response"]
+    assert agent.chat_calls == []
+    assert agent.thread_metadata_manager.threads == {}
+
+
+def test_interactive_turn_on_temporary_spawned_thread_refreshes_idle_clock(
+    tmp_path: Path,
+    api_client_builder,
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    # A temporary spawned thread with a stale activity timestamp.
+    stale = "2000-01-01T00:00:00+00:00"
+    agent.thread_metadata_manager.upsert_thread(
+        "alice",
+        "spawned-quick-existing",
+        title="Quick query",
+        title_source="auto",
+        platform_meta={
+            "lifetime": "temporary",
+            "idle_timeout_hours": "24",
+            "last_active_at": stale,
+        },
+    )
+
+    # Continuing it with a normal (non-/quick) turn must reset the idle clock,
+    # otherwise the sweep could reap an actively-used thread.
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "keep going", "thread_id": "spawned-quick-existing"},
+    ) as response:
+        _ = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    meta = agent.thread_metadata_manager.get_thread("alice", "spawned-quick-existing")
+    assert meta is not None
+    assert meta.platform_meta["last_active_at"] != stale
+    assert meta.platform_meta["lifetime"] == "temporary"

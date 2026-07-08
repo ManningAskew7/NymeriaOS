@@ -177,7 +177,7 @@
     activeMcpToolCount !== null || activeSkillCount !== null ||
     triggerCount > 0 || hasInstructions || isCallable
   );
-  const chatStreamCommandRoots = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit']);
+  const chatStreamCommandRoots = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit', '/quick']);
 
   async function handleSend(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
@@ -392,9 +392,18 @@
         chatStore.addResponseStep((event.data as { content: string }).content);
         break;
 
-      case 'dispatched':
-        chatStore.setLastAssistantDispatchInfo(event.data as DispatchInfo);
+      case 'dispatched': {
+        const dispatch = event.data as DispatchInfo;
+        chatStore.setLastAssistantDispatchInfo(dispatch);
+        // The dispatch target (e.g. a fresh /quick thread) may not be in the
+        // local list yet: the originating client is filtered out of its own
+        // thread_created sync event, so ensure it exists here so the inline
+        // "Response from <thread>" jump button can select it immediately.
+        if (dispatch?.threadId) {
+          threadsStore.ensureThread(dispatch.threadId, dispatch.title || dispatch.threadId);
+        }
         break;
+      }
 
       case 'tool_call': {
         const tc = event.data as {

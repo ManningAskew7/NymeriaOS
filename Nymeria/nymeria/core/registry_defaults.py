@@ -1025,6 +1025,22 @@ def register_default_commands(service: "CommandService") -> None:
         note="Handled by the chat stream endpoint.",
     )
     service.register(
+        "quick",
+        description=(
+            "Run a one-off query in a fresh, clean-context thread and show the "
+            "answer inline here, without leaving the current thread. The scratch "
+            "thread persists so you can continue it later via @<id> or "
+            "/thread switch."
+        ),
+        category="Thread",
+        usage="/quick <prompt>",
+        requires_thread=True,
+        mutates_state=True,
+        agent_allowed=False,
+        execution_kind="chat_stream",
+        note="Handled by the chat stream endpoint.",
+    )
+    service.register(
         "goal",
         description=(
             "Start a supervised goal. The worker (this thread) decomposes "

@@ -552,11 +552,25 @@ data: {"type": "dispatched", "thread_id": "caller123", "target_thread_id": "targ
 Subsequent stream events keep `thread_id` set to the caller thread for client
 rendering and include `dispatched_to` metadata for the target. Clients use this
 metadata to show a `Response from <thread>` reference line inside the same
-assistant turn, not as a separate system message. The rest of the stream remains
-normal: `thinking`, pre-tool `response` preamble, `tool_call`, `tool_result`,
-post-tool `response`, artifacts, errors, and `done` all flow through the same
-rendering pipeline as a non-dispatched chat turn. The target thread owns the
-persisted checkpoint history.
+assistant turn, not as a separate system message. In the desktop and mobile
+clients that reference line is a clickable control that switches the active
+thread to `target_thread_id`. The rest of the stream remains normal: `thinking`,
+pre-tool `response` preamble, `tool_call`, `tool_result`, post-tool `response`,
+artifacts, errors, and `done` all flow through the same rendering pipeline as a
+non-dispatched chat turn. The target thread owns the persisted checkpoint
+history.
+
+**`/quick <prompt>`** reuses this exact dispatch contract. Instead of resolving
+an existing thread, the backend mints a fresh, clean-context thread (id prefixed
+`spawned-quick-`, no per-thread config so it runs on global defaults), runs the
+prompt there, and re-tags the stream to the caller thread so the answer appears
+inline without entering the caller thread's context. The fresh thread persists
+as a temporary thread (idle-swept after ~24h if never continued, its clock reset
+whenever it is used again), so the user can resume it later via `@<id>` or
+`/thread switch <id>`. The quick thread's first response carries a trailing,
+display-only `response` chunk with that continue hint (never written to any
+checkpoint). `/quick` is registered with `execution_kind: "chat_stream"`, so
+clients route it to `/chat` like `/skill`, `/kit`, and `/orchestrate`.
 
 ---
 
@@ -1110,7 +1124,7 @@ Returns the callable thread tools actually available from that caller thread aft
 | `workflow_step` | One completed `nym.*` verb dispatch in a running workflow (live progress; best-effort and unordered, sort by `step`). Lean by design: args/result summaries live in the persisted run record, not on the wire | `workflow_id`, `run_id`, `step`, `verb`, `status`, `duration_ms`, optional `error_kind` |
 | `workflow_run_finished` | A workflow run ended (fires for every run, including adhoc test runs that persist nothing) | `workflow_id`, `run_id`, `status` |
 | `cli_config` | Agent-pushed CLI configuration command (`cli_statusbar_*` tools). User-scoped: every connected terminal CLI applies and persists it locally, then POSTs its outcome to `POST /cli-config/{command_id}/result`; the first ack resolves the awaiting tool. `script:` segment refs are rejected on this channel by both the tool and the client (script segments execute on the user's machine, so they are installed locally via `/statusbar` only). Non-CLI clients ignore the event. | `command_id`, `command_type` (`statusbar_get`/`statusbar_set`), `args`, `timeout_seconds` |
-| `dispatched` | Leading `@thread` mention routed the turn to another thread | `target_thread_id`, `title`, `matched_ref`, `dispatched_to` |
+| `dispatched` | Leading `@thread` mention (or `/quick`) routed the turn to another thread; the answer streams inline on the caller thread | `target_thread_id`, `title`, `matched_ref`, `dispatched_to` |
 | `response` | Visible assistant text chunk. May appear before a `tool_call` as preamble/commentary, or after tools as the final answer. | `content` |
 | `context_attached` | Previous context summary attached to this message | `summary` |
 | `compacting` | Context summary generation has started after the compaction path passes its start checks | `message` |

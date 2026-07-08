@@ -176,7 +176,7 @@
   // kickoff in one round-trip. Keep this list in sync with the
   // `execution_kind="chat_stream"` registrations in command_service.py.
   // TODO: make this data-driven via api.listCommands() with execution_kind.
-  const CHAT_STREAM_COMMAND_ROOTS = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit']);
+  const CHAT_STREAM_COMMAND_ROOTS = new Set(['/compact', '/orchestrate', '/goal', '/skill', '/kit', '/quick']);
 
   async function handleSendMessage(message: string, attachments?: FileAttachment[]) {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
@@ -582,7 +582,15 @@
       }
 
       case 'dispatched': {
-        chatStore.setLastAssistantDispatchInfo(event.data as DispatchInfo);
+        const dispatch = event.data as DispatchInfo;
+        chatStore.setLastAssistantDispatchInfo(dispatch);
+        // The dispatch target (e.g. a fresh /quick thread) may not be in the
+        // local list yet: the originating client is filtered out of its own
+        // thread_created sync event, so ensure it exists here so the inline
+        // "Response from <thread>" jump button can select it immediately.
+        if (dispatch?.threadId) {
+          threadsStore.ensureThread(dispatch.threadId, dispatch.title || dispatch.threadId);
+        }
         break;
       }
 
