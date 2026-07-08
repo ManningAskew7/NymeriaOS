@@ -6,10 +6,32 @@ surfaces should use the display helpers instead of showing the raw identifier.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 MCP_TOOL_PREFIX = "mcp__"
+
+# Provider tool-name budget. Anthropic and the OpenAI-compatible gateways accept
+# function names matching ^[A-Za-z0-9_-]{1,64}$. The internal
+# ``mcp__<server>__<tool>`` name is what gets bound to the model, so a raw MCP
+# tool name with dots, spaces, or unicode would reach the provider as a
+# turn-killing 400 BEFORE the model runs. We sanitize the tool component into
+# that charset and cap the whole name; the RAW tool name is carried separately
+# (on the discovered tool / MCPToolConfig) for the actual ``tools/call``.
+MAX_MCP_TOOL_NAME_LEN = 64
+_TOOL_COMPONENT_DISALLOWED = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def sanitize_tool_component(raw: str) -> str:
+    """Map a raw MCP tool name onto the provider-safe ``[A-Za-z0-9_-]`` charset.
+
+    Every disallowed character becomes ``_``. An all-invalid name collapses to
+    underscores (representable), and only a truly empty name yields ``""`` (the
+    caller treats that as unrepresentable and skips the tool).
+    """
+
+    return _TOOL_COMPONENT_DISALLOWED.sub("_", str(raw))
 
 # Leading forms that Claude OAuth classifies as third-party MCP app usage and
 # rejects with a 400 "Third-party apps now draw from your extra usage" BEFORE
@@ -52,12 +74,28 @@ def format_mcp_tool_name(server_id: str, tool_name: str) -> str:
     """Return the internal Nymeria wrapper name for one MCP server tool.
 
     Always ``mcp__<server_id>__<tool_name>`` (the tested-clean double-underscore
-    namespace). The result is asserted CLIProxy-safe so a future change to this
-    format, or an ``mcp``-leading server id, fails loudly instead of silently
-    tripping the classifier at request time.
+    namespace), with the tool component sanitized to the provider charset and
+    the whole name capped at ``MAX_MCP_TOOL_NAME_LEN`` (the tool component is
+    truncated, never the server segment, so ``parse_mcp_tool_name`` still
+    round-trips). The result is asserted CLIProxy-safe so a future change to
+    this format, or an ``mcp``-leading server id, fails loudly instead of
+    silently tripping the classifier at request time.
     """
 
-    return assert_cliproxy_safe(f"{MCP_TOOL_PREFIX}{server_id}__{tool_name}")
+    safe_tool = sanitize_tool_component(tool_name)
+    prefix = f"{MCP_TOOL_PREFIX}{server_id}__"
+    name = f"{prefix}{safe_tool}"
+    if len(name) > MAX_MCP_TOOL_NAME_LEN:
+        budget = MAX_MCP_TOOL_NAME_LEN - len(prefix)
+        if budget > 0:
+            name = f"{prefix}{safe_tool[:budget]}"
+        else:
+            # Pathological: the server id alone exhausts the budget (a re-slug
+            # concern upstream). Hard-cap the whole name so it can never reach
+            # the provider over-length; parse round-trip is best-effort past
+            # this point, but the name stays mcp__-prefixed and CLIProxy-safe.
+            name = name[:MAX_MCP_TOOL_NAME_LEN]
+    return assert_cliproxy_safe(name)
 
 
 # Map an MCP server's install status onto the shared credential-axis
@@ -132,15 +170,28 @@ def mcp_tool_display_name(
 
 
 def registered_mcp_tool_names(server: Any, tools: Iterable[Any] | None = None) -> list[str]:
-    """Build internal tool names for a server definition or lookalike."""
+    """Build internal tool names for a server definition or lookalike.
+
+    Mirrors the wrap-loop guards in ``MCPServerRegistry.get_all_tools`` so the
+    registered list matches what is actually bound: whitespace-empty raw names
+    are skipped and names that sanitize to the same internal name are deduped
+    (first wins), avoiding a dead UI toggle or a duplicate entry.
+    """
 
     discovered = tools if tools is not None else _field(server, "discovered_tools", [])
     server_id = str(_field(server, "id", ""))
-    return [
-        format_mcp_tool_name(server_id, str(_field(tool, "name", "")))
-        for tool in discovered
-        if server_id and str(_field(tool, "name", ""))
-    ]
+    names: list[str] = []
+    seen: set[str] = set()
+    for tool in discovered:
+        raw = str(_field(tool, "name", ""))
+        if not server_id or not raw.strip():
+            continue
+        internal = format_mcp_tool_name(server_id, raw)
+        if internal in seen:
+            continue
+        seen.add(internal)
+        names.append(internal)
+    return names
 
 
 def display_mcp_tool_names(server: Any, tools: Iterable[Any] | None = None) -> list[str]:

@@ -48,6 +48,8 @@ Nymeria has a three-tier tool system: **seed tools** (the code-level default for
 
 > **CLIProxy OAuth note:** Installed server tools keep the safe dynamic namespace `mcp__<server>__<tool>`. Nymeria-owned helper tools must avoid the `mcp_<name>`, `mcp.<name>`, and `mcp/<name>` namespaces because Claude OAuth classifies those as third-party MCP apps. The consolidated facade is named `manage_mcp`; legacy helpers remain `search_mcp` and `install_mcp_server` for compatibility.
 
+> **Untrusted-input hardening:** A third-party server's tool names, descriptions, and argument schemas are treated as untrusted. The tool-name component is sanitized to the provider charset `[A-Za-z0-9_-]` and the whole `mcp__<server>__<tool>` name is length-capped, so a dotted/spaced/over-long name cannot reach the provider as a turn-killing 400 (the raw name is still dispatched to the server); two names that sanitize alike keep the first and skip the rest. Descriptions are capped and framed as external text ("MCP server '<name>' describes this tool as: ...") to blunt prompt injection. Arg schemas resolve intra-document `$ref`/`$defs` (cycle-guarded) so nested shapes keep structure, ignore Draft-4 boolean `exclusiveMinimum`/`Maximum`, apply numeric/string constraints only to matching types, and fall back to a constraint-free schema rather than dropping the tool when a schema is malformed.
+
 ### Optional: Trigger Tools (2)
 
 Not loaded by default. Enable per-thread via thread config, or use through SelfModifyAgent.
