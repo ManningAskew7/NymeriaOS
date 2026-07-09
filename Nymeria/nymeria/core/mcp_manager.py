@@ -149,6 +149,13 @@ class MCPConnection:
     # JSON-RPC frames and manifest as "Invalid JSON response" or hangs past
     # the call timeout.
     _io_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Count of requests currently in flight on this connection. stdio is already
+    # serialized by ``_io_lock`` (held for the whole write+read cycle), but http
+    # calls never take it, so this counter is what keeps the idle reaper and the
+    # credential-rotation shutdown from tearing an http connection down mid-call.
+    # A counter (not a lock) so concurrent http calls to one server are not
+    # serialized.
+    _inflight: int = 0
     _request_id: int = 0
     _stderr_thread: Optional[threading.Thread] = None
     _stderr_tail: List[str] = field(default_factory=list)
@@ -162,6 +169,28 @@ class MCPConnection:
 
     def touch(self) -> None:
         self.last_used = time.time()
+
+    def begin_request(self) -> None:
+        """Mark a request in flight and stamp activity.
+
+        The idle reaper and ``shutdown_server`` skip a connection with an
+        in-flight request. The start stamp covers a call that queues on the io
+        lock; ``end_request`` restarts the idle window from completion.
+        """
+        with self._lock:
+            self._inflight += 1
+        self.last_used = time.time()
+
+    def end_request(self) -> None:
+        """Clear one in-flight request and restart the idle window from now."""
+        with self._lock:
+            if self._inflight > 0:
+                self._inflight -= 1
+        self.last_used = time.time()
+
+    def has_active_request(self) -> bool:
+        with self._lock:
+            return self._inflight > 0
 
     def is_alive(self) -> bool:
         if self.config.transport == "http":
@@ -224,10 +253,11 @@ class MCPServerManager:
                     self._shutdown_connection(conn)
                     to_remove.append(key)
                     continue
-                # A tool call in flight holds the io lock; never reap it even if
-                # last_used looks stale (a single call can outlast the idle
-                # window). Mirrors shutdown_server's skip_if_active guard.
-                if conn._io_lock.locked():
+                # A tool call in flight must never be reaped even if last_used
+                # looks stale (a single call can outlast the idle window): stdio
+                # holds the io lock for the whole cycle, http tracks an in-flight
+                # counter. Mirrors shutdown_server's skip_if_active guard.
+                if conn._io_lock.locked() or conn.has_active_request():
                     continue
                 if conn.is_idle(conn.config.idle_timeout_seconds):
                     logger.info(
@@ -481,17 +511,21 @@ class MCPServerManager:
         request: Dict[str, Any],
         timeout: int,
     ) -> Dict[str, Any]:
-        # Stamp activity at both ends so last_used reflects the call, not just
-        # connection acquisition: the start touch covers a call that queues on
-        # the io lock, the end touch restarts the idle window from completion so
-        # a long call is not immediately reaped by the next sweep.
-        conn.touch()
+        # Mark the call in flight (and stamp activity) at both ends so neither
+        # the idle reaper nor a credential-rotation shutdown tears the
+        # connection down mid-call. stdio is protected by _io_lock (held for the
+        # whole write+read cycle); http never takes it, so a call outlasting the
+        # idle window would otherwise be reaped and its client closed under the
+        # active request. begin_request also stamps last_used (covering a call
+        # queued on the io lock) and end_request restarts the idle window from
+        # completion so a long call is not immediately reaped by the next sweep.
+        conn.begin_request()
         try:
             if conn.config.transport == "http":
                 return self._http_send_request(conn, request, timeout)
             return self._stdio_send_request(conn, request, timeout)
         finally:
-            conn.touch()
+            conn.end_request()
 
     def _send_notification(self, conn: MCPConnection, notification: Dict[str, Any]) -> None:
         if conn.config.transport == "http":
@@ -958,9 +992,11 @@ class MCPServerManager:
                 conn = self._connections.get(key)
                 if conn is None:
                     continue
-                if skip_if_active and conn._io_lock.locked():
+                if skip_if_active and (
+                    conn._io_lock.locked() or conn.has_active_request()
+                ):
                     logger.info(
-                        "shutdown_server skipping %s: io_lock held by in-flight call",
+                        "shutdown_server skipping %s: call in flight",
                         server_id,
                     )
                     results.append("skipped_in_use")

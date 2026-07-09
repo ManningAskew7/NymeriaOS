@@ -134,20 +134,25 @@ def test_list_tools_detailed_returns_empty_without_result(monkeypatch):
 class _FakeIdleConn:
     """Minimal connection stand-in for the idle-sweep logic."""
 
-    def __init__(self, *, alive=True, idle=True, locked=False):
+    def __init__(self, *, alive=True, idle=True, locked=False, inflight=False,
+                 transport="stdio"):
         self._alive = alive
         self._idle = idle
+        self._inflight = inflight
         self.server_id = "fake"
         self._io_lock = threading.Lock()
         if locked:
             self._io_lock.acquire()
-        self.config = SimpleNamespace(idle_timeout_seconds=300, transport="stdio")
+        self.config = SimpleNamespace(idle_timeout_seconds=300, transport=transport)
 
     def is_alive(self):
         return self._alive
 
     def is_idle(self, timeout_seconds):
         return self._idle
+
+    def has_active_request(self):
+        return self._inflight
 
 
 def test_idle_sweep_skips_connection_with_call_in_flight(mcp_manager_instance, monkeypatch):
@@ -167,6 +172,105 @@ def test_idle_sweep_skips_connection_with_call_in_flight(mcp_manager_instance, m
     manager._cleanup_idle_connections()
     assert "k" not in manager._connections
     assert shut_down == [conn]
+
+
+def test_idle_sweep_skips_http_connection_with_inflight_request(
+    mcp_manager_instance, monkeypatch
+):
+    """An http call in flight never holds the io lock, so the in-flight counter
+    is what keeps the idle reaper from closing the client under the active
+    request (a call can legitimately outlast the idle window)."""
+    manager = mcp_manager_instance
+    shut_down = []
+    monkeypatch.setattr(
+        manager, "_shutdown_connection", lambda conn: shut_down.append(conn)
+    )
+
+    conn = MCPConnection(
+        config=MCPToolConfig(transport="http", url="http://x", tool_name="t")
+    )
+    conn.http_client = SimpleNamespace(close=lambda: None)  # is_alive() -> True
+    conn.last_used = time.time() - 10_000  # idle by the clock
+    manager._connections["k"] = conn
+
+    # A call is in flight: must NOT be reaped even though it looks idle.
+    conn.begin_request()
+    manager._cleanup_idle_connections()
+    assert "k" in manager._connections
+    assert shut_down == []
+
+    # Call finished (end_request restarts the idle window from completion, so
+    # re-age the connection to simulate the idle timeout then elapsing).
+    conn.end_request()
+    conn.last_used = time.time() - 10_000
+    manager._cleanup_idle_connections()
+    assert "k" not in manager._connections
+    assert shut_down == [conn]
+
+
+def test_send_request_reports_inflight_during_http_call(
+    mcp_manager_instance, monkeypatch
+):
+    """_send_request marks the connection in flight for the whole dispatch, so a
+    concurrent idle sweep sees has_active_request() and skips it."""
+    manager = mcp_manager_instance
+    conn = MCPConnection(
+        config=MCPToolConfig(transport="http", url="http://x", tool_name="t")
+    )
+    seen = {}
+
+    def _fake_http(c, r, t):
+        seen["inflight"] = c.has_active_request()
+        return {"result": {}}
+
+    monkeypatch.setattr(manager, "_http_send_request", _fake_http)
+    manager._send_request(conn, {"method": "tools/call"}, timeout=5)
+
+    assert seen["inflight"] is True
+    # The counter is released once the call completes.
+    assert conn.has_active_request() is False
+
+
+def test_begin_end_request_counter(mcp_manager_instance):
+    """The in-flight counter supports concurrent http calls and never underflows."""
+    conn = MCPConnection(
+        config=MCPToolConfig(transport="http", url="http://x", tool_name="t")
+    )
+    assert conn.has_active_request() is False
+    conn.begin_request()
+    conn.begin_request()  # two concurrent calls to the same server
+    assert conn.has_active_request() is True
+    conn.end_request()
+    assert conn.has_active_request() is True
+    conn.end_request()
+    assert conn.has_active_request() is False
+    conn.end_request()  # extra end must not go negative
+    assert conn.has_active_request() is False
+
+
+def test_shutdown_server_skips_http_connection_with_inflight_request(
+    mcp_manager_instance,
+):
+    """Credential-rotation shutdown must also skip an http connection with a
+    call in flight: return skipped_in_use and leave the live client open."""
+    manager = mcp_manager_instance
+    closed = []
+    config = MCPToolConfig(
+        transport="http", url="http://x", tool_name="t", server_id="srv-http"
+    )
+    conn = MCPConnection(config=config)
+    conn.http_client = SimpleNamespace(close=lambda: closed.append(True))
+    key = manager._get_config_key(config)
+    manager._connections[key] = conn
+
+    conn.begin_request()
+    assert manager.shutdown_server("srv-http") == "skipped_in_use"
+    assert key in manager._connections
+    assert closed == []
+
+    conn.end_request()
+    assert manager.shutdown_server("srv-http") == "shutdown"
+    assert key not in manager._connections
 
 
 def test_send_request_touches_at_both_ends(mcp_manager_instance, monkeypatch):
