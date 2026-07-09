@@ -878,6 +878,37 @@ def _reasoning_details_for_payload(details: Any) -> Any:
     return cleaned
 
 
+def _capture_reasoning_into(container: Any, additional_kwargs: dict) -> None:
+    """Lift OpenAI-compatible reasoning fields into ``additional_kwargs``.
+
+    Single source of truth shared by the streaming chunk converter (which
+    passes a ``delta`` mapping) and the non-streaming result path (which passes
+    a full assistant ``message`` mapping). Both chat-completions wire shapes
+    carry the same keys, so capturing them in one place stops the two sites
+    from drifting: the prior split lived only on the streaming converter, so
+    ``graph.invoke()`` callers silently dropped reasoning (see the optimization
+    scan's F3 duplication note).
+
+    Storage only. Whether captured reasoning is replayed on the wire is decided
+    separately and per-provider by ``_get_request_payload``, so capturing here
+    never changes what is sent to a completions-only provider.
+    """
+    if not isinstance(container, dict):
+        return
+    reasoning_details = container.get("reasoning_details")
+    reasoning = (
+        container.get("reasoning_content")
+        or container.get("reasoning")
+        or _extract_reasoning_text_from_reasoning_details(reasoning_details)
+    )
+    if reasoning:
+        additional_kwargs["reasoning_content"] = reasoning
+    if reasoning_details:
+        additional_kwargs["reasoning_details"] = _reasoning_details_for_storage(
+            reasoning_details
+        )
+
+
 def _normalize_openai_base_url(base_url: str) -> str:
     """Normalize OpenAI-compatible CLIProxy URLs to include the required /v1 path."""
     clean = base_url.strip().rstrip("/")
@@ -1080,6 +1111,49 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
 
         return payload
 
+    def _create_chat_result(
+        self,
+        response: Any,
+        generation_info: dict | None = None,
+    ) -> Any:
+        """Capture reasoning on the non-streaming chat-completions path.
+
+        ``super()._create_chat_result`` builds the final ``AIMessage`` for
+        ``.invoke()``/``.ainvoke()`` but, like base LangChain, drops provider
+        reasoning fields. The streaming converter captures them for
+        ``astream()``; without this override the sync ``graph.invoke()`` callers
+        (``/chat/sync``, the in-process bot non-streaming fallback, compaction
+        summaries) persist an ``AIMessage`` with no reasoning, so a later
+        Responses-mode turn on the same thread has nothing to replay. Capture
+        here mirrors the streaming path via the shared helper; the wire-send
+        decision stays in ``_get_request_payload``. Responses mode takes a
+        different constructor (``_construct_lc_result_from_responses_api``) that
+        already preserves reasoning items, so it does not reach this method.
+        """
+        result = super()._create_chat_result(response, generation_info)
+        try:
+            if isinstance(response, dict):
+                response_dict = response
+            else:
+                response_dict = response.model_dump(
+                    exclude={"choices": {"__all__": {"message": {"parsed"}}}}
+                )
+            choices = response_dict.get("choices") or []
+        except Exception:
+            logger.debug(
+                "reasoning capture: could not introspect non-streaming response",
+                exc_info=True,
+            )
+            return result
+        for generation, choice in zip(getattr(result, "generations", []), choices):
+            message = getattr(generation, "message", None)
+            if not isinstance(message, AIMessage) or not isinstance(choice, dict):
+                continue
+            raw_message = choice.get("message")
+            if isinstance(raw_message, dict):
+                _capture_reasoning_into(raw_message, message.additional_kwargs)
+        return result
+
     def _convert_chunk_to_generation_chunk(
         self, chunk, default_chunk_class, base_generation_info
     ):
@@ -1096,22 +1170,9 @@ class ChatOpenAIWithReasoning(_LangChainChatOpenAI):
             )
             if choices:
                 delta = choices[0].get("delta") or {}
-                reasoning_details = delta.get("reasoning_details")
-                reasoning = (
-                    delta.get("reasoning_content")
-                    or delta.get("reasoning")
-                    or _extract_reasoning_text_from_reasoning_details(
-                        reasoning_details
-                    )
+                _capture_reasoning_into(
+                    delta, generation_chunk.message.additional_kwargs
                 )
-                if reasoning:
-                    generation_chunk.message.additional_kwargs[
-                        "reasoning_content"
-                    ] = reasoning
-                if reasoning_details:
-                    generation_chunk.message.additional_kwargs[
-                        "reasoning_details"
-                    ] = _reasoning_details_for_storage(reasoning_details)
         except (AttributeError, KeyError, IndexError, TypeError):
             pass  # reasoning metadata shape varies by provider
         return generation_chunk
