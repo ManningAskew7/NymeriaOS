@@ -642,7 +642,7 @@ Top-level sections:
 | `status` | processing flag and checkpoint revision |
 | `context` | token counts, context limit, compaction stats, context mode |
 | `config_summary` | customization flags and prompt char counts, not prompt bodies |
-| `llm` | effective provider/model/API mode/thinking labels and secret-safe override flags |
+| `llm` | effective provider/model/API mode/thinking labels, secret-safe override flags, and a `reasoning_passback` object (see below) |
 | `callable` | callable settings and visible callable-thread tools |
 | `tools` | default, disabled, enabled, temporary, MCP, callable, and effective counts |
 | `mcp` | server/tool counts and per-server active/discovered counts |
@@ -654,6 +654,22 @@ Top-level sections:
 | `section_errors` | non-fatal section failures keyed by section name |
 
 Raw API keys and full instruction/system-prompt bodies are never returned.
+
+The `llm.reasoning_passback` object reports whether this thread's prior-turn
+reasoning is replayed to the model (see
+`docs/agent-systems/reasoning-streaming.md`):
+
+| Field | Meaning |
+|-------|---------|
+| `mechanism` | `anthropic_thinking` / `responses_items` / `openrouter_reasoning_details` / `flat_reasoning_content` / `gemini_thought_signatures` / `bedrock_reasoning` / `none` |
+| `mechanism_label` | human-readable mechanism string |
+| `fidelity` | `signed` / `plaintext` / `none` |
+| `scope` | `all_turns` / `tool_call_turns_only` / `none` |
+| `reasoning_enabled` | whether the model will actually emit reasoning to replay |
+| `status` | `not_applicable` / `dropped` / `wired` / `active` (active = confirmed on a real turn) |
+| `verified` | provider's `reasoning_passback_verified` smoke-test marker |
+| `caveats` | human notes (e.g. plaintext-only, tool-call turns only, dropped) |
+| `last_confirmed_at` | epoch seconds of the last confirmed replay, or null |
 
 ---
 
@@ -1610,9 +1626,13 @@ Authorization: Bearer <token>
 
 Returns Nymeria's provider registry: provider IDs, labels, default base URLs,
 API key env vars, aliases, Chat Completions support, Responses support, tier
-metadata, and route metadata (`supported_routes`, `default_route`,
+metadata, route metadata (`supported_routes`, `default_route`,
 `openai_compat_base_url`, and `anthropic_native_for_claude` for gateways that
-expose the `anthropic_messages` route for Claude). Desktop/mobile use this metadata for provider setup
+expose the `anthropic_messages` route for Claude), and
+`reasoning_passback_verified` (a durable flag marking that the provider's
+reasoning-passback round-trip has been live-smoke-tested; the active mechanism
+for a given thread is computed at runtime, see
+`agent-systems/reasoning-streaming.md`). Desktop/mobile use this metadata for provider setup
 and diagnostics; the authoritative implementation lives in
 `nymeria/config/llm_providers.py`.
 

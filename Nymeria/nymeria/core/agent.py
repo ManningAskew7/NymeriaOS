@@ -2222,6 +2222,9 @@ class NymeriaAgent:
             # Per-turn LLM-time accumulator, mirroring astream (see there).
             _llm_timing: Dict[str, Any] = {}
             config["configurable"]["llm_timing"] = _llm_timing
+            # Marker: opt this user turn into reasoning-passback observation
+            # (the model node records whether prior reasoning was replayed).
+            config["configurable"]["reasoning_passback"] = True
 
             # Fresh-thread memory init (sync path: MCP, bots, triggers, CLI).
             self._seed_memory_init_if_empty_sync(graph, config, thread_id, user_id)
@@ -2976,6 +2979,9 @@ class NymeriaAgent:
             # summaries / nym.llm / dream seeding (which build their own
             # configs) are excluded by construction.
             config["configurable"]["llm_timing"] = _llm_timing
+            # Marker: opt this user turn into reasoning-passback observation
+            # (same scoping rationale as llm_timing above).
+            config["configurable"]["reasoning_passback"] = True
 
             # Track final response for RAG indexing.
             # Mutated by GraphStreamProcessor across every graph invocation

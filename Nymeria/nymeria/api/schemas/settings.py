@@ -43,6 +43,7 @@ class LLMProviderSpecResponse(BaseModel):
     openai_compat_base_url: Optional[str] = None
     verified: bool = False
     anthropic_native_for_claude: bool = False
+    reasoning_passback_verified: bool = False
 
 
 class SystemPromptResponse(BaseModel):

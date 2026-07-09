@@ -1873,8 +1873,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 125
-    assert sum(cmd.executable for cmd in service._commands.values()) == 110
+    assert len(service._commands) == 126
+    assert sum(cmd.executable for cmd in service._commands.values()) == 111
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"

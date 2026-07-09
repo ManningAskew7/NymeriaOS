@@ -236,7 +236,7 @@ def register_default_commands(service: "CommandService") -> None:
         "provider",
         description="Show the active LLM provider and credential status",
         category="LLM",
-        usage="/provider [list|set|test|switch]",
+        usage="/provider [list|set|switch|test|reasoning-passback]",
     )
     service.register(
         "provider list",
@@ -271,6 +271,13 @@ def register_default_commands(service: "CommandService") -> None:
         requires_admin=True,
         mutates_state=True,
         danger_level="normal",
+    )
+    service.register(
+        "provider reasoning-passback",
+        description="Show whether prior-turn reasoning is replayed to the model",
+        category="LLM",
+        usage="/provider reasoning-passback",
+        aliases=("provider_reasoning_passback", "provider passback"),
     )
     service.register(
         "config show",
