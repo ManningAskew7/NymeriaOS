@@ -1415,7 +1415,7 @@ class CommandBackendClient:
             _recurrence_anchor,
             _todo_to_response,
         )
-        from .todo_constants import calculate_next_recurrence_time
+        from .todo_constants import compute_recurrence_reschedule
         from .todo_manager import TodoManager, TodoStatus
 
         target_user_id = self._checked_user_id(user_id)
@@ -1442,9 +1442,10 @@ class CommandBackendClient:
                 _raise_http_status(404, f"TODO '{todo_id}' not found")
             if has_recurrence:
                 recurrence_anchor = _recurrence_anchor(item)
-                next_execution = calculate_next_recurrence_time(
+                next_execution, origin_to_persist = compute_recurrence_reschedule(
                     has_recurrence,
                     recurrence_anchor,
+                    item.recurrence_anchor,
                 )
                 if next_execution:
                     todo_list.update_item(
@@ -1455,6 +1456,8 @@ class CommandBackendClient:
                     refreshed = todo_list.get_item(todo_id)
                     if refreshed:
                         refreshed.last_execution = recurrence_anchor
+                        if origin_to_persist is not None:
+                            refreshed.recurrence_anchor = origin_to_persist
             item = todo_list.get_item(todo_id)
             if has_recurrence and item and item.scheduled_for:
                 todo_manager.sync_schedule_to_db(target_user_id, todo_id, schedule_db)

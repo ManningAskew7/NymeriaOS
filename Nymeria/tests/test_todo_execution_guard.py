@@ -123,6 +123,168 @@ def _add_scheduled_todo(
         return item
 
 
+def _add_recurring_todo(
+    agent: FakeAgent,
+    *,
+    task: str,
+    scheduled_for: datetime,
+    recurrence: str,
+    user_id: str = "owner",
+):
+    with agent.todo_manager.atomic_update(user_id) as todo_list:
+        item = todo_list.add_item(
+            task,
+            scheduled_for=scheduled_for,
+            thread_id="thread-1",
+            created_by="user",
+            recurrence=recurrence,
+        )
+        assert item is not None
+    agent.todo_manager.sync_schedule_to_db(user_id, item.id, agent._schedule_db)
+    return item
+
+
+def _entry_for(todo, fire_time: datetime) -> ScheduledTodoEntry:
+    return ScheduledTodoEntry(
+        todo_id=todo.id,
+        user_id="owner",
+        thread_id=todo.thread_id,
+        scheduled_for=fire_time.timestamp(),
+        task_preview=todo.task,
+        created_at=time.time(),
+    )
+
+
+def test_recurring_todo_rearms_at_next_slot_on_retry_giveup(
+    tmp_path: Path, api_client_builder
+):
+    """A recurring TODO that exhausts its retries skips the failed occurrence
+    and re-arms at the next slot instead of having its schedule cleared (which
+    would leave recurrence set but scheduled_for null, killing it forever)."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_recurring_todo(
+        agent, task="Daily digest", scheduled_for=fire_time, recurrence="1d"
+    )
+    entry = _entry_for(todo, fire_time)
+
+    for _ in range(Ticker.MAX_RETRIES):
+        ticker._handle_execution_failure(
+            entry, todo, todo.thread_id, RuntimeError("proxy 503")
+        )
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.recurrence == "1d"
+    assert refreshed.scheduled_for is not None
+    assert refreshed.scheduled_for > fire_time  # advanced to the next slot
+    assert refreshed.status == TodoStatus.PENDING
+    # Still indexed for polling: the schedule was NOT cleared.
+    assert agent._schedule_db.get_entry(todo.id) is not None
+    # Retry budget reset so the next occurrence starts fresh.
+    assert todo.id not in ticker._retry_counts
+
+
+def test_oneshot_todo_clears_schedule_on_retry_giveup(
+    tmp_path: Path, api_client_builder
+):
+    """A non-recurring TODO that exhausts its retries clears its schedule and
+    is left PENDING with a failure note (unchanged behavior)."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+    todo = _add_scheduled_todo(agent, task="One-shot", scheduled_for=fire_time)
+    agent.todo_manager.sync_schedule_to_db("owner", todo.id, agent._schedule_db)
+    entry = _entry_for(todo, fire_time)
+
+    for _ in range(Ticker.MAX_RETRIES):
+        ticker._handle_execution_failure(
+            entry, todo, todo.thread_id, RuntimeError("boom")
+        )
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.scheduled_for is None
+    assert refreshed.recurrence is None
+    assert refreshed.status == TodoStatus.PENDING
+    assert agent._schedule_db.get_entry(todo.id) is None
+    assert "failed after 3 retries" in (refreshed.notes or "")
+    assert todo.id not in ticker._retry_counts
+
+
+def test_handle_recurrence_adopts_and_keeps_month_origin_anchor(
+    tmp_path: Path, api_client_builder
+):
+    """A monthly TODO adopts its first slot as a stable origin and keeps it
+    across cycles, so later slots derive from the origin (drift-free) rather
+    than the previous clamped slot."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    origin_slot = datetime(2026, 1, 31, 11, 0, tzinfo=timezone.utc)
+    todo = _add_recurring_todo(
+        agent, task="Month-end report", scheduled_for=origin_slot, recurrence="1mo"
+    )
+
+    ticker._handle_recurrence(_entry_for(todo, origin_slot), todo)
+    after_first = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert after_first is not None
+    assert after_first.recurrence_anchor == origin_slot  # origin adopted
+    assert after_first.scheduled_for is not None
+    assert after_first.scheduled_for.day >= 28  # a valid month-end clamp
+
+    # Advance again from the (clamped) new slot: the origin must NOT be
+    # re-adopted to the clamped slot; it stays pinned to Jan 31.
+    second_slot = after_first.scheduled_for
+    ticker._handle_recurrence(_entry_for(after_first, second_slot), after_first)
+    after_second = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert after_second is not None
+    assert after_second.recurrence_anchor == origin_slot
+    assert after_second.scheduled_for != second_slot
+
+
+def test_handle_recurrence_leaves_no_origin_for_fixed_duration(
+    tmp_path: Path, api_client_builder
+):
+    """A fixed-duration (daily) recurrence never adopts a month-origin anchor."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    fire_time = datetime(2026, 1, 31, 11, 0, tzinfo=timezone.utc)
+    todo = _add_recurring_todo(
+        agent, task="Daily", scheduled_for=fire_time, recurrence="1d"
+    )
+
+    ticker._handle_recurrence(_entry_for(todo, fire_time), todo)
+
+    refreshed = agent.todo_manager.get_todo_by_id("owner", todo.id)
+    assert refreshed is not None
+    assert refreshed.recurrence_anchor is None
+
+
+def test_update_item_resets_recurrence_anchor_on_change(tmp_path: Path, api_client_builder):
+    """Changing or clearing the recurrence drops a stale month origin so the
+    next fire re-adopts a fresh anchor."""
+    agent = _agent(tmp_path, api_client_builder)
+    fire_time = datetime(2026, 1, 31, 11, 0, tzinfo=timezone.utc)
+    todo = _add_recurring_todo(
+        agent, task="Month-end", scheduled_for=fire_time, recurrence="1mo"
+    )
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        item = todo_list.get_item(todo.id)
+        item.recurrence_anchor = fire_time
+
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(todo.id, recurrence="2mo")
+    assert agent.todo_manager.get_todo_by_id("owner", todo.id).recurrence_anchor is None
+
+    # Re-stamp, then clear the recurrence entirely.
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        todo_list.get_item(todo.id).recurrence_anchor = fire_time
+    with agent.todo_manager.atomic_update("owner") as todo_list:
+        assert todo_list.update_item(todo.id, clear_recurrence=True)
+    assert agent.todo_manager.get_todo_by_id("owner", todo.id).recurrence_anchor is None
+
+
 def test_schedule_db_active_execution_lifecycle(tmp_path: Path):
     db = TodoScheduleDB(tmp_path / "todo_schedule.db")
 
@@ -251,29 +413,75 @@ def test_ticker_ask_policy_pauses_trigger_catchup_until_release(
             ticker._housekeeping_executor = None
 
 
-def test_ticker_prepare_clears_configured_stale_execution_markers(
+def test_ticker_prepare_clears_all_execution_markers_at_startup(
     tmp_path: Path,
     api_client_builder,
 ):
-    settings = api_client_builder.settings(
-        tmp_path,
-        scheduler_active_execution_stale_minutes=1,
-    )
-    agent = FakeAgent(settings)
-    assert agent._schedule_db.mark_execution_started("todo-1", "owner", "thread-1")
+    """Startup clears every execution marker regardless of age.
 
+    A single ticker owns the schedule DB, so any marker present at startup is
+    orphaned by a crash or non-graceful shutdown. A marker written moments
+    before a restart (well within the 24h stale window) must still be cleared,
+    otherwise the TODO stays wedged as "already executing" for up to a day.
+    """
+    agent = FakeAgent(api_client_builder.settings(tmp_path))
+    # A fresh marker (started_at = now) and an aged one: both are orphaned.
+    assert agent._schedule_db.mark_execution_started("todo-fresh", "owner", "thread-1")
+    assert agent._schedule_db.mark_execution_started("todo-aged", "owner", "thread-1")
     with sqlite3.connect(agent._schedule_db.db_path) as conn:
         conn.execute(
             "UPDATE active_todo_executions SET started_at = ? WHERE todo_id = ?",
-            (time.time() - 120, "todo-1"),
+            (time.time() - 120, "todo-aged"),
         )
         conn.commit()
 
     ticker = _make_ticker(agent)
     status = ticker.prepare_startup_recovery()
 
-    assert status["stale_execution_markers_cleared"] == 1
+    assert status["startup_execution_markers_cleared"] == 2
     assert agent._schedule_db.count_active_executions() == 0
+
+
+def test_ticker_startup_reclears_lets_interrupted_todo_fire_again(
+    tmp_path: Path,
+    monkeypatch,
+    api_client_builder,
+):
+    """A TODO interrupted mid-execution by a restart re-fires on the next poll.
+
+    Regression for the marker-drop bug: a fresh (non-stale) execution marker
+    left by a restart used to block the due TODO for up to 24h.
+    """
+    agent = _agent(tmp_path, api_client_builder)
+    todo = _add_scheduled_todo(
+        agent,
+        task="Interrupted by restart",
+        scheduled_for=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    # Simulate the pre-restart state: the TODO was mid-execution, so a fresh
+    # marker is present when the new process starts up.
+    assert agent._schedule_db.mark_execution_started(todo.id, "owner", todo.thread_id)
+
+    ticker = _make_ticker(agent)
+    ticker.prepare_startup_recovery()
+    assert agent._schedule_db.count_active_executions() == 0
+
+    executed: list[str] = []
+
+    def capture_execute(entry):
+        executed.append(entry.todo_id)
+        agent._schedule_db.remove_scheduled(entry.todo_id)
+
+    monkeypatch.setattr(ticker, "_execute_scheduled_todo", capture_execute)
+    ticker._executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        ticker._check_and_execute()
+        ticker._executor.shutdown(wait=True)
+        assert executed == [todo.id]
+    finally:
+        if ticker._executor:
+            ticker._executor.shutdown(wait=False, cancel_futures=True)
+            ticker._executor = None
 
 
 def test_scheduler_status_and_release_endpoints_require_admin_and_release_missed_work(

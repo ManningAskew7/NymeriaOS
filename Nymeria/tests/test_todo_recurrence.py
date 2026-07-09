@@ -10,7 +10,9 @@ from dateutil.relativedelta import relativedelta
 from nymeria.core.todo_constants import (
     MIN_RECURRENCE_SECONDS,
     calculate_next_recurrence_time,
+    compute_recurrence_reschedule,
     format_recurrence_for_display,
+    is_calendar_month_recurrence,
     parse_recurrence_interval,
     validate_recurrence,
 )
@@ -193,3 +195,125 @@ def test_daily_skip_forward_uses_seconds_path_unchanged():
     now = _utc(2026, 1, 20, 11, 0, 30)  # 5 days + 30s late
     next_time = calculate_next_recurrence_time("1d", anchor, now=now)
     assert next_time == _utc(2026, 1, 21, 11, 0)
+
+
+# --- calculate_next_recurrence_time: stable-origin month-end anchoring ---
+
+
+def test_monthly_origin_prevents_month_end_drift():
+    # The drift regression: deriving each slot from the previous *clamped* slot
+    # sends Jan 31 -> Feb 28 -> Mar 28 -> ... . With a stable origin the series
+    # recovers the 31st in longer months.
+    origin = _utc(2026, 1, 31, 11, 0)
+    slot = calculate_next_recurrence_time(
+        "1mo", origin, now=_utc(2026, 1, 31, 11, 0, 1), origin=origin
+    )
+    assert slot == _utc(2026, 2, 28, 11, 0)
+    slot = calculate_next_recurrence_time(
+        "1mo", slot, now=_utc(2026, 2, 28, 11, 0, 1), origin=origin
+    )
+    assert slot == _utc(2026, 3, 31, 11, 0)  # NOT Mar 28
+    slot = calculate_next_recurrence_time(
+        "1mo", slot, now=_utc(2026, 3, 31, 11, 0, 1), origin=origin
+    )
+    assert slot == _utc(2026, 4, 30, 11, 0)
+    slot = calculate_next_recurrence_time(
+        "1mo", slot, now=_utc(2026, 4, 30, 11, 0, 1), origin=origin
+    )
+    assert slot == _utc(2026, 5, 31, 11, 0)  # recovers the 31st
+
+
+def test_monthly_origin_skips_missed_intervals_to_future_month_end():
+    origin = _utc(2026, 1, 31, 11, 0)
+    # Current slot is the clamped Feb 28; the box was down until Apr 20. The
+    # origin series is Jan31, Feb28, Mar31, Apr30, ...; the first slot after
+    # Apr 20 is Apr 30 (clamped from the Jan-31 origin, drift-free), not Mar 31.
+    slot = calculate_next_recurrence_time(
+        "1mo", _utc(2026, 2, 28, 11, 0), now=_utc(2026, 4, 20, 9, 0), origin=origin
+    )
+    assert slot == _utc(2026, 4, 30, 11, 0)
+
+
+def test_three_month_origin_series_clamps_without_drift():
+    origin = _utc(2026, 1, 31, 11, 0)
+    slot = calculate_next_recurrence_time(
+        "3mo", origin, now=_utc(2026, 1, 31, 11, 0, 1), origin=origin
+    )
+    assert slot == _utc(2026, 4, 30, 11, 0)
+    slot = calculate_next_recurrence_time(
+        "3mo", slot, now=_utc(2026, 4, 30, 11, 0, 1), origin=origin
+    )
+    assert slot == _utc(2026, 7, 31, 11, 0)  # NOT Jul 30
+
+
+def test_origin_ignored_for_fixed_duration_intervals():
+    # A daily interval keeps its timedelta anchor-relative behavior even when an
+    # origin is (harmlessly) supplied.
+    anchor = _utc(2026, 1, 15, 11, 0)
+    slot = calculate_next_recurrence_time(
+        "1d", anchor, now=_utc(2026, 1, 15, 11, 0, 30), origin=_utc(2026, 1, 1, 11, 0)
+    )
+    assert slot == _utc(2026, 1, 16, 11, 0)
+
+
+def test_origin_none_preserves_anchor_relative_behavior():
+    # Back-compat guard: without an origin, monthly stays anchor-relative (the
+    # pre-fix behavior), so legacy callers are unaffected.
+    anchor = _utc(2026, 2, 28, 11, 0)
+    slot = calculate_next_recurrence_time("1mo", anchor, now=_utc(2026, 2, 28, 11, 0, 1))
+    assert slot == _utc(2026, 3, 28, 11, 0)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1mo", True),
+        ("3mo", True),
+        ("monthly", True),
+        ("1d", False),
+        ("2h", False),
+        ("1w", False),
+        ("90s", False),
+        (None, False),
+        ("", False),
+    ],
+)
+def test_is_calendar_month_recurrence(value, expected):
+    assert is_calendar_month_recurrence(value) is expected
+
+
+# --- compute_recurrence_reschedule: the shared reschedule contract ---
+
+
+def test_compute_recurrence_reschedule_adopts_then_pins_month_origin():
+    origin_slot = _utc(2026, 1, 31, 11, 0)
+    # First reschedule: no stored origin -> adopt the current slot and tell the
+    # caller to persist it.
+    nxt, persist = compute_recurrence_reschedule(
+        "1mo", origin_slot, None, now=_utc(2026, 1, 31, 11, 0, 1)
+    )
+    assert nxt == _utc(2026, 2, 28, 11, 0)
+    assert persist == origin_slot
+    # Second: a stored origin is present -> derive from it (drift-free) and do
+    # NOT ask to overwrite it.
+    nxt2, persist2 = compute_recurrence_reschedule(
+        "1mo", nxt, origin_slot, now=_utc(2026, 2, 28, 11, 0, 1)
+    )
+    assert nxt2 == _utc(2026, 3, 31, 11, 0)
+    assert persist2 is None
+
+
+def test_compute_recurrence_reschedule_ignores_origin_for_fixed_duration():
+    nxt, persist = compute_recurrence_reschedule(
+        "1d", _utc(2026, 1, 15, 11, 0), None, now=_utc(2026, 1, 15, 11, 0, 30)
+    )
+    assert nxt == _utc(2026, 1, 16, 11, 0)
+    assert persist is None  # fixed-duration series never adopt an origin
+
+
+def test_compute_recurrence_reschedule_returns_none_for_unparseable():
+    nxt, persist = compute_recurrence_reschedule(
+        "garbage", _utc(2026, 1, 15, 11, 0), None
+    )
+    assert nxt is None
+    assert persist is None

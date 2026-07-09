@@ -94,6 +94,18 @@ def parse_recurrence_interval(value: Optional[str]) -> Optional[RecurrenceDelta]
     return timedelta(seconds=seconds)
 
 
+def is_calendar_month_recurrence(value: Optional[str]) -> bool:
+    """Return True for calendar-month intervals ("Nmo" / legacy "monthly").
+
+    These are the only intervals whose next slot must be derived from a stable
+    origin (see ``calculate_next_recurrence_time``'s ``origin`` argument) so a
+    month-end day (29-31) clamps to short months without drifting downward.
+    """
+    if not value:
+        return False
+    return _parse_month_interval(_canonicalize_recurrence(value)) is not None
+
+
 def validate_recurrence(value: str) -> str:
     """Validate and return the canonical duration string.
 
@@ -154,11 +166,44 @@ def _ensure_aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _months_between(start: datetime, end: datetime) -> int:
+    """Whole calendar months from ``start`` to ``end`` (ignoring day/time)."""
+    return (end.year - start.year) * 12 + (end.month - start.month)
+
+
+def _next_month_slot_from_origin(
+    origin: datetime,
+    delta: relativedelta,
+    anchor: datetime,
+    baseline: datetime,
+) -> datetime | None:
+    """Next calendar-month slot derived from a stable ``origin``.
+
+    Each slot is ``origin + relativedelta(months=k)`` for an increasing
+    multiple ``k`` of the interval. Deriving from the origin (rather than from
+    the previous, possibly clamped, slot) is what keeps a month-end anchor from
+    drifting: Jan 31 -> Feb 28 -> Mar 31 -> Apr 30, never Feb 28 -> Mar 28.
+    """
+    interval = delta.years * 12 + delta.months
+    if interval <= 0:
+        return None
+    # Slot index of the current anchor measured from the origin, advanced by
+    # one interval to land on the next slot, then skipped forward past any
+    # missed intervals so the result is always in the future.
+    k = _months_between(origin, anchor) + interval
+    next_time = origin + relativedelta(months=k)
+    while next_time <= baseline:
+        k += interval
+        next_time = origin + relativedelta(months=k)
+    return next_time
+
+
 def calculate_next_recurrence_time(
     recurrence: str,
     anchor_time: datetime,
     *,
     now: datetime | None = None,
+    origin: datetime | None = None,
 ) -> datetime | None:
     """Return the next future recurrence time from the scheduled anchor.
 
@@ -168,6 +213,13 @@ def calculate_next_recurrence_time(
     arithmetic via ``relativedelta``, so a TODO anchored on the 31st clamps to
     the last day of shorter months (Feb 28/29) the same way Google Calendar
     handles "monthly on the 31st".
+
+    ``origin`` is the stable first-fire time of a calendar-month series. When
+    provided for a month interval, each slot is derived from the origin
+    (``origin + N months``) rather than from the previous (possibly clamped)
+    anchor, so a month-end day does not drift downward over successive fires.
+    It is ignored for fixed-duration intervals and when ``None`` (which
+    preserves the pre-origin anchor-relative behavior).
     """
     delta = parse_recurrence_interval(recurrence)
     if delta is None:
@@ -175,6 +227,12 @@ def calculate_next_recurrence_time(
 
     anchor = _ensure_aware_utc(anchor_time)
     baseline = _ensure_aware_utc(now) if now is not None else datetime.now(timezone.utc)
+
+    if isinstance(delta, relativedelta) and origin is not None:
+        return _next_month_slot_from_origin(
+            _ensure_aware_utc(origin), delta, anchor, baseline
+        )
+
     next_time = anchor + delta
     if next_time <= baseline:
         if isinstance(delta, timedelta):
@@ -190,3 +248,38 @@ def calculate_next_recurrence_time(
             while next_time <= baseline:
                 next_time = next_time + delta
     return next_time
+
+
+def compute_recurrence_reschedule(
+    recurrence: str,
+    anchor: datetime,
+    existing_origin: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    """Resolve a recurring TODO's next slot plus the origin to persist.
+
+    Single source of truth for the stable-origin handling shared by every
+    reschedule path (ticker success + retry give-up, the ``/done`` tool, the
+    REST complete / PATCH-to-done endpoints, and the slash-command completion)
+    so they cannot drift apart.
+
+    For calendar-month intervals the next slot is derived from a stable origin
+    (``existing_origin`` when already stored, otherwise the current ``anchor``,
+    adopted lazily) so a month-end day (29-31) clamps to short months without
+    creeping downward over successive fires. Fixed-duration intervals ignore
+    the origin entirely.
+
+    Returns ``(next_time, origin_to_persist)``: ``next_time`` is None when the
+    recurrence has no further slot; ``origin_to_persist`` is the value the
+    caller should write to ``TodoItem.recurrence_anchor`` (set only the first
+    time a month series adopts its origin, None otherwise so a stored origin is
+    never overwritten).
+    """
+    is_monthly = is_calendar_month_recurrence(recurrence)
+    origin = (existing_origin or anchor) if is_monthly else None
+    next_time = calculate_next_recurrence_time(
+        recurrence, anchor, now=now, origin=origin
+    )
+    origin_to_persist = origin if (is_monthly and existing_origin is None) else None
+    return next_time, origin_to_persist

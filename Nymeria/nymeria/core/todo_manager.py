@@ -71,6 +71,7 @@ class TodoItem(BaseModel):
     # User management & recurrence fields
     created_by: str = Field(default="agent", description="Who created this TODO: 'agent' or 'user'")
     recurrence: Optional[str] = Field(default=None, description="Recurrence interval as a duration string (e.g. '5m', '2h', '1d', '1w', '1mo'). Calendar months (Nmo) use calendar arithmetic; everything else is a fixed duration. Legacy preset names (hourly/daily/weekly/monthly, 5min/10min/15min/30min) are still accepted on input and resolved by todo_constants.")
+    recurrence_anchor: Optional[datetime] = Field(default=None, description="Stable origin fire time for calendar-month (Nmo) recurrence. Next slots are derived as origin + N months so a month-end day (29-31) clamps to short months without drifting downward. Adopted lazily from the first fired slot and reset when the recurrence changes; unused for fixed-duration intervals.")
 
     # /goal integration: when set, this TODO is part of a supervised goal and
     # cannot be transitioned to `done` by anyone but the goal's supervisor
@@ -91,7 +92,7 @@ class TodoItem(BaseModel):
         default=None, description="Parameters bound to the scheduled workflow run"
     )
 
-    @field_validator("created_at", "updated_at", "scheduled_for", "last_execution")
+    @field_validator("created_at", "updated_at", "scheduled_for", "last_execution", "recurrence_anchor")
     @classmethod
     def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
         if value is None:
@@ -254,7 +255,12 @@ class TodoList(BaseModel):
 
         if clear_recurrence:
             item.recurrence = None
+            item.recurrence_anchor = None
         elif recurrence is not None:
+            if recurrence != item.recurrence:
+                # Recurrence changed: drop the stale month-end origin so the
+                # next scheduled fire re-adopts a fresh anchor.
+                item.recurrence_anchor = None
             item.recurrence = recurrence
 
         item.updated_at = utc_now()

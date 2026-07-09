@@ -26,7 +26,7 @@ from ..core.time_utils import (
 from ..core.todo_constants import (
     STATUS_ICONS,
     STATUS_ORDER,
-    calculate_next_recurrence_time,
+    compute_recurrence_reschedule,
     validate_recurrence,
 )
 from ..core.todo_manager import TodoManager, TodoStatus
@@ -129,7 +129,10 @@ def _advance_recurring_done(
     this reschedule, so only the shared state mutation lives here.
     """
     anchor = _recurrence_anchor(anchor_item, schedule_db, todo_id, user_id)
-    rescheduled_time = calculate_next_recurrence_time(recurrence, anchor)
+    existing_origin = anchor_item.recurrence_anchor if anchor_item else None
+    rescheduled_time, origin_to_persist = compute_recurrence_reschedule(
+        recurrence, anchor, existing_origin
+    )
     if rescheduled_time:
         todo_list.update_item(
             todo_id,
@@ -139,6 +142,8 @@ def _advance_recurring_done(
         refreshed = todo_list.get_item(todo_id)
         if refreshed:
             refreshed.last_execution = anchor
+            if origin_to_persist is not None:
+                refreshed.recurrence_anchor = origin_to_persist
         logger.info(f"Auto-rescheduled recurring TODO {todo_id} for {rescheduled_time}")
     return rescheduled_time
 
