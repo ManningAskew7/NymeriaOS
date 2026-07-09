@@ -285,6 +285,47 @@ def test_update_item_resets_recurrence_anchor_on_change(tmp_path: Path, api_clie
     assert agent.todo_manager.get_todo_by_id("owner", todo.id).recurrence_anchor is None
 
 
+def test_scheduled_todo_for_deleted_item_is_skipped_and_cleaned(
+    tmp_path: Path, api_client_builder
+):
+    """A due entry whose TODO was reaped (e.g. its thread was deleted between
+    scheduling and firing) is skipped without an agent turn and removed from the
+    schedule by the item-not-found guard, never firing into a deleted/ghost
+    thread. Locks the "orphaned TODOs are cleaned, not fired" guarantee that
+    makes a thread-existence fire-gate unnecessary."""
+    agent = _agent(tmp_path, api_client_builder)
+    ticker = _make_ticker(agent)
+    agent._schedule_db.add_scheduled(
+        todo_id="gone-todo",
+        user_id="owner",
+        scheduled_for=datetime.now(timezone.utc),
+        task_preview="orphaned",
+        thread_id="deleted-thread",
+    )
+    entry = ScheduledTodoEntry(
+        todo_id="gone-todo",
+        user_id="owner",
+        thread_id="deleted-thread",
+        scheduled_for=time.time() - 1,
+        task_preview="orphaned",
+        created_at=time.time(),
+    )
+
+    astream_calls: list = []
+
+    async def tracking_astream(**kwargs):
+        astream_calls.append(kwargs)
+        yield {"type": "response", "content": "should not run"}
+
+    agent.astream = tracking_astream
+
+    ticker._execute_scheduled_todo(entry)
+
+    assert astream_calls == []  # no agent turn fired for the orphaned TODO
+    assert agent._schedule_db.get_entry("gone-todo") is None  # schedule cleaned
+    assert not agent._schedule_db.is_execution_active("gone-todo", "owner")
+
+
 def test_schedule_db_active_execution_lifecycle(tmp_path: Path):
     db = TodoScheduleDB(tmp_path / "todo_schedule.db")
 
