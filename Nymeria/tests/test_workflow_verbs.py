@@ -720,6 +720,59 @@ async def test_todo_add_full_list_and_empty_task():
     assert "full" in str(excinfo.value)
 
 
+async def test_todo_add_scheduled_registers_in_schedule_index(tmp_path, monkeypatch):
+    """A scheduled ``nym.todo.add`` must register the TODO in the ticker's
+    SQLite schedule index (not just the per-user JSON). The ticker polls only
+    the index, so without this the scheduled workflow TODO never fires until a
+    restart rebuilds the index from disk."""
+    from nymeria.core.todo_manager import TodoManager
+    from nymeria.core.todo_schedule_db import TodoScheduleDB
+    from nymeria.tools import todo as todo_tools
+
+    singleton = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", singleton)
+    monkeypatch.setattr(
+        "nymeria.config.get_settings",
+        lambda: SimpleNamespace(data_dir=tmp_path, user_timezone="UTC"),
+    )
+
+    result = await verbs_effects._todo_add_verb(
+        _ctx(user_id="u1"), "todo.add", {"task": "ping", "scheduled_for": "1h"}
+    )
+
+    todo_id = result["id"]
+    items = singleton.get_todos("u1").items
+    assert len(items) == 1 and items[0].scheduled_for is not None
+
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    entry = schedule_db.get_entry(todo_id)
+    assert entry is not None
+    assert entry.todo_id == todo_id
+    assert entry.user_id == "u1"
+
+
+async def test_todo_add_invalid_scheduled_for_raises(tmp_path, monkeypatch):
+    """An unparseable ``scheduled_for`` raises a clear VerbError instead of a
+    pydantic validation error (or silently creating an unscheduled TODO)."""
+    from nymeria.core.todo_manager import TodoManager
+    from nymeria.tools import todo as todo_tools
+
+    singleton = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", singleton)
+    monkeypatch.setattr(
+        "nymeria.config.get_settings",
+        lambda: SimpleNamespace(data_dir=tmp_path, user_timezone="UTC"),
+    )
+
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_effects._todo_add_verb(
+            _ctx(user_id="u1"), "todo.add", {"task": "x", "scheduled_for": "not-a-time"}
+        )
+    assert "scheduled_for" in str(excinfo.value)
+    # No TODO should have been created on the invalid path.
+    assert singleton.get_todos("u1").items == []
+
+
 async def test_notify_routes_via_profile(monkeypatch):
     seen = {}
 

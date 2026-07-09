@@ -261,3 +261,100 @@ def test_create_todo_action_reuses_canonical_singleton(tmp_path, monkeypatch):
     assert len(items) == 1
     assert items[0].task == "Triggered: My Trigger"
     assert items[0].created_by == "trigger"
+
+
+def _stub_todo_env(tmp_path, monkeypatch):
+    """Point the create_todo fire path's TodoManager singleton and the schedule
+    DB at ``tmp_path``. Returns the singleton manager.
+
+    ``_fire_create_todo`` builds the schedule DB from
+    ``get_settings().data_dir`` and parses absolute times via
+    ``get_settings().user_timezone``, so the fake settings supplies both.
+    """
+    import types
+
+    from nymeria.core.todo_manager import TodoManager
+    from nymeria.tools import todo as todo_tools
+
+    singleton = TodoManager(tmp_path)
+    monkeypatch.setattr(todo_tools, "_todo_manager", singleton)
+    monkeypatch.setattr(
+        "nymeria.config.get_settings",
+        lambda: types.SimpleNamespace(data_dir=tmp_path, user_timezone="UTC"),
+    )
+    return singleton
+
+
+def test_create_todo_scheduled_registers_in_schedule_index(tmp_path, monkeypatch):
+    """A ``create_todo`` trigger with ``scheduled_for`` must register the TODO
+    in the ticker's SQLite schedule index, not just the per-user JSON. The
+    ticker polls only that index (``schedule_db.get_due``), so without the
+    registration the scheduled work never fires until a restart rebuilds the
+    index from disk (regression guard for the born-buggy trigger path)."""
+    from nymeria.core.todo_schedule_db import TodoScheduleDB
+
+    singleton = _stub_todo_env(tmp_path, monkeypatch)
+
+    tm = TriggerManager(tmp_path)
+    tm._fire_create_todo(
+        config={"task_template": "Do {trigger_name}", "scheduled_for": "1h"},
+        template_vars={"trigger_name": "Nightly", "trigger_id": "trig-1"},
+        user_id="u1",
+    )
+
+    # The TODO exists and carries scheduled_for...
+    items = singleton.get_todos("u1").items
+    assert len(items) == 1
+    todo_id = items[0].id
+    assert items[0].scheduled_for is not None
+
+    # ...and, crucially, it is indexed where the ticker will actually see it.
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    entry = schedule_db.get_entry(todo_id)
+    assert entry is not None
+    assert entry.todo_id == todo_id
+    assert entry.user_id == "u1"
+
+
+def test_create_todo_unscheduled_does_not_touch_schedule_index(tmp_path, monkeypatch):
+    """An unscheduled ``create_todo`` fire must not create a schedule-index
+    entry (guards against over-indexing every trigger-created TODO)."""
+    from nymeria.core.todo_schedule_db import TodoScheduleDB
+
+    singleton = _stub_todo_env(tmp_path, monkeypatch)
+
+    tm = TriggerManager(tmp_path)
+    tm._fire_create_todo(
+        config={"task_template": "Do {trigger_name}"},
+        template_vars={"trigger_name": "Ad-hoc", "trigger_id": "trig-2"},
+        user_id="u1",
+    )
+
+    items = singleton.get_todos("u1").items
+    assert len(items) == 1
+    assert items[0].scheduled_for is None
+
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    assert schedule_db.get_entry(items[0].id) is None
+
+
+def test_create_todo_invalid_scheduled_for_creates_unscheduled(tmp_path, monkeypatch):
+    """An invalid ``scheduled_for`` must not raise in the fire path; the TODO is
+    created unscheduled and nothing lands in the schedule index."""
+    from nymeria.core.todo_schedule_db import TodoScheduleDB
+
+    singleton = _stub_todo_env(tmp_path, monkeypatch)
+
+    tm = TriggerManager(tmp_path)
+    tm._fire_create_todo(
+        config={"task_template": "Do it", "scheduled_for": "not-a-time"},
+        template_vars={"trigger_name": "X", "trigger_id": "trig-3"},
+        user_id="u1",
+    )
+
+    items = singleton.get_todos("u1").items
+    assert len(items) == 1
+    assert items[0].scheduled_for is None
+
+    schedule_db = TodoScheduleDB(tmp_path / "todo_schedule.db")
+    assert schedule_db.get_entry(items[0].id) is None
