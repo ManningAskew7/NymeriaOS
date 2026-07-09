@@ -12,7 +12,7 @@ from ...core.accounts import AuthenticatedUser
 from ...core.time_utils import ensure_aware_utc, parse_future_scheduled_time, utc_now
 from ...core.todo_constants import (
     STATUS_ORDER,
-    calculate_next_recurrence_time,
+    compute_recurrence_reschedule,
     validate_recurrence,
 )
 from ...core.todo_manager import TodoItem, TodoList, TodoManager, TodoStatus
@@ -68,7 +68,9 @@ def _reschedule_recurring_done(
     if not item.recurrence:
         return
     recurrence_anchor = _recurrence_anchor(item)
-    next_execution = calculate_next_recurrence_time(item.recurrence, recurrence_anchor)
+    next_execution, origin_to_persist = compute_recurrence_reschedule(
+        item.recurrence, recurrence_anchor, item.recurrence_anchor
+    )
     if next_execution is None:
         return
     todo_list.update_item(
@@ -77,6 +79,8 @@ def _reschedule_recurring_done(
         status=TodoStatus.PENDING,
     )
     item.last_execution = recurrence_anchor
+    if origin_to_persist is not None:
+        item.recurrence_anchor = origin_to_persist
     logger.debug(
         f"[API] Auto-rescheduled recurring TODO {todo_id} "
         f"from anchor {recurrence_anchor} for {next_execution}"

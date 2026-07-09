@@ -162,24 +162,32 @@ class TodoScheduleDB:
             )
         return deleted
 
-    def clear_stale_executions(
-        self,
-        *,
-        stale_after_seconds: int = ACTIVE_EXECUTION_STALE_SECONDS,
-    ) -> int:
-        """Clear execution markers left behind by interrupted scheduler runs."""
+    def clear_all_executions(self) -> int:
+        """Clear every active execution marker.
+
+        Called once at startup: with a single ticker owning this database, any
+        marker present before the poll loop starts is by definition orphaned by
+        a crash or a non-graceful shutdown (an in-flight daemon-thread execution
+        cannot survive the process boundary). Clearing them all unblocks a TODO
+        whose marker was written moments before a restart, which the 24h stale
+        sweep on the live in-flight path (``_delete_stale_executions``, invoked
+        by ``mark_execution_started`` / ``is_execution_active``) would otherwise
+        hold for up to a day.
+        """
         with self._lock:
             conn = self._get_connection()
             try:
-                deleted = self._delete_stale_executions(
-                    conn,
-                    now=time.time(),
-                    stale_after_seconds=stale_after_seconds,
-                )
+                cursor = conn.execute("DELETE FROM active_todo_executions")
+                deleted = cursor.rowcount if cursor.rowcount is not None else 0
                 conn.commit()
+                if deleted:
+                    logger.warning(
+                        "Cleared %s orphaned active TODO execution marker(s) at startup",
+                        deleted,
+                    )
                 return deleted
             except Exception as e:
-                logger.error(f"Failed to clear stale active TODO executions: {e}")
+                logger.error(f"Failed to clear active TODO executions: {e}")
                 conn.rollback()
                 return 0
             finally:

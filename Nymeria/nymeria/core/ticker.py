@@ -380,9 +380,15 @@ class Ticker:
                 return self.get_scheduler_status()
 
             self._scheduler_state.record_start()
-            stale_deleted = self.schedule_db.clear_stale_executions(
-                stale_after_seconds=self._active_execution_stale_seconds
-            )
+            # A single ticker owns the schedule DB, so any execution marker
+            # present at startup is orphaned by a crash or a non-graceful
+            # shutdown that left a mid-run daemon thread's marker behind. Clear
+            # them all here (before the poll loop starts) so a TODO interrupted
+            # moments before a restart re-fires immediately instead of being
+            # held by the 24h stale sweep. The stale sweep still guards the
+            # live in-flight path (mark_execution_started / is_execution_active)
+            # against a wedged thread within a running process.
+            startup_markers_cleared = self.schedule_db.clear_all_executions()
             indexed = self.rebuild_schedule_index()
             missed_entries = self.schedule_db.get_due(before=time.time())
             missed_ids = [entry.todo_id for entry in missed_entries]
@@ -411,7 +417,7 @@ class Ticker:
                 {
                     "indexed_schedule_count": indexed,
                     "startup_missed_count": len(missed_ids),
-                    "stale_execution_markers_cleared": stale_deleted,
+                    "startup_execution_markers_cleared": startup_markers_cleared,
                 }
             )
             return status
@@ -829,20 +835,6 @@ class Ticker:
                 exc = f.exception()
                 if exc:
                     logger.error(f"Task {tid} failed in thread pool: {exc}")
-
-    def _calculate_next_execution(self, recurrence: str, from_time: datetime) -> Optional[datetime]:
-        """
-        Calculate next execution time based on recurrence pattern.
-
-        Args:
-            recurrence: Recurrence pattern ('5min', '10min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly')
-            from_time: Time to calculate from
-
-        Returns:
-            Next execution datetime, or None if invalid recurrence
-        """
-        from .todo_constants import calculate_next_recurrence_time
-        return calculate_next_recurrence_time(recurrence, from_time)
 
     def _should_create_autonomous_notification(self, thread_id: str) -> bool:
         return should_notify_autonomous(thread_id, self.thread_config_manager)
@@ -1302,15 +1294,18 @@ class Ticker:
         self._trim_context_if_needed(entry, thread_id)
 
     def _handle_recurrence(self, entry: ScheduledTodoEntry, todo) -> None:
+        from .todo_constants import compute_recurrence_reschedule
+
         current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
         if current_todo and current_todo.recurrence:
             recurrence_anchor = datetime.fromtimestamp(
                 entry.scheduled_for,
                 timezone.utc,
             )
-            next_execution = self._calculate_next_execution(
+            next_execution, origin_to_persist = compute_recurrence_reschedule(
                 current_todo.recurrence,
                 recurrence_anchor,
+                current_todo.recurrence_anchor,
             )
             if next_execution:
                 logger.info(
@@ -1327,6 +1322,8 @@ class Ticker:
                     item = todo_list.get_item(todo.id)
                     if item:
                         item.last_execution = recurrence_anchor
+                        if origin_to_persist is not None:
+                            item.recurrence_anchor = origin_to_persist
                 self.todo_manager.sync_schedule_to_db(
                     entry.user_id, todo.id, self.schedule_db,
                 )
@@ -1425,6 +1422,38 @@ class Ticker:
         self._retry_counts[todo.id] = retry_count
 
         if retry_count >= self.MAX_RETRIES:
+            del self._retry_counts[todo.id]
+            current_todo = self.todo_manager.get_todo_by_id(entry.user_id, todo.id)
+            if current_todo and current_todo.recurrence:
+                # Recurring TODOs must survive a transient outage: skip this
+                # failed occurrence and re-arm at the next recurrence slot (or,
+                # only for a recurrence with no further slot, clear the
+                # schedule) via _handle_recurrence, instead of clearing the
+                # schedule outright, which would leave ``recurrence`` set but
+                # ``scheduled_for`` null and silently kill the schedule forever.
+                # The next occurrence gets a fresh retry budget since
+                # ``_retry_counts`` was just cleared.
+                logger.warning(
+                    "Recurring TODO %s failed after %s retries; skipping this "
+                    "occurrence and re-arming at the next scheduled slot",
+                    todo.id,
+                    retry_count,
+                )
+                self._handle_recurrence(entry, current_todo)
+                log_activity(
+                    ActivityType.TASK_FAILED,
+                    f"Recurring TODO occurrence failed: {todo.task[:80]} - {str(error)[:50]}",
+                    user_id=entry.user_id,
+                    thread_id=thread_id,
+                    metadata={
+                        "todo_id": todo.id,
+                        "error": str(error),
+                        "retries": retry_count,
+                        "recurring": True,
+                    },
+                )
+                return
+
             self.schedule_db.remove_scheduled(todo.id)
             with self.todo_manager.atomic_update(entry.user_id) as todo_list:
                 todo_list.update_item(
@@ -1442,7 +1471,6 @@ class Ticker:
                 thread_id=thread_id,
                 metadata={"todo_id": todo.id, "error": str(error), "retries": retry_count},
             )
-            del self._retry_counts[todo.id]
         else:
             logger.info(f"TODO {todo.id} will retry (attempt {retry_count + 1}/{self.MAX_RETRIES})")
 

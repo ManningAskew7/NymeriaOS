@@ -43,6 +43,44 @@ def _scheduled_row_count(data_dir: Path, todo_id: str) -> int:
     return row[0]
 
 
+def test_reschedule_recurring_done_adopts_and_pins_month_origin(
+    tmp_path: Path,
+    api_client_builder,
+):
+    """The REST complete / PATCH-to-done reschedule path (shared with the
+    slash-command completion) must derive month-end slots from a stable origin,
+    not the previous clamped slot. Regression guard for the drift bug on the
+    primary user-facing "mark done" flow."""
+    _client(tmp_path, api_client_builder)  # initialises settings/data_dir
+    tm = TodoManager(tmp_path)
+    jan31 = datetime(2026, 1, 31, 11, 0, tzinfo=timezone.utc)
+    with tm.atomic_update("owner") as todo_list:
+        created = todo_list.add_item(
+            "Month-end report",
+            scheduled_for=jan31,
+            thread_id="thread-1",
+            recurrence="1mo",
+        )
+    assert created is not None
+    todo_id = created.id
+
+    with tm.atomic_update("owner") as todo_list:
+        item = todo_list.get_item(todo_id)
+        _reschedule_recurring_done(todo_list, item, todo_id)
+        first_slot = item.scheduled_for
+        # Origin adopted from the first slot (the ship-blocker fix): before, the
+        # REST path never set recurrence_anchor.
+        assert item.recurrence_anchor == jan31
+
+    # Completing again advances the slot but must NOT re-adopt the origin to the
+    # clamped slot, so future slots stay pinned to the Jan-31 series.
+    with tm.atomic_update("owner") as todo_list:
+        item = todo_list.get_item(todo_id)
+        _reschedule_recurring_done(todo_list, item, todo_id)
+        assert item.recurrence_anchor == jan31
+        assert item.scheduled_for != first_slot
+
+
 def test_todo_crud_routes_filter_reschedule_and_sync_schedule_db(
     tmp_path: Path,
     api_client_builder,

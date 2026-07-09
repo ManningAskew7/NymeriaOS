@@ -181,18 +181,32 @@ Future TODOs that become due after startup continue to run normally.
 trigger catch-up pause, last startup and clean-shutdown timestamps, and active
 scheduled-TODO execution marker count.
 
-If the process stops while a scheduled TODO is executing, the
-`active_todo_executions` marker prevents duplicate execution until it is
-considered stale. The default stale window is 24 hours for server safety;
-desktop-managed local launches can pass `--active-execution-stale-minutes`
-with a shorter value.
+If the process stops while a scheduled TODO is executing, its
+`active_todo_executions` marker is left behind. Because exactly one ticker
+owns `todo_schedule.db` (slim: the API-agent; Docker: the worker, with the
+API-agent's ticker disabled), any marker present at startup is by definition
+orphaned  -  an in-flight execution runs on a daemon thread that cannot survive
+the process boundary. `prepare_startup_recovery` therefore clears **all**
+execution markers before the poll thread starts, so a TODO interrupted moments
+before a restart re-fires immediately instead of being held for up to a day.
+The 24-hour stale window (`--active-execution-stale-minutes`, default 1440)
+still guards the *live* in-flight path (`mark_execution_started` /
+`is_execution_active`) against a wedged execution thread inside a still-running
+process.
 
-When a scheduled TODO is executed:
+When a scheduled TODO succeeds:
 
 1. If `recurrence` is set, calculate next execution time
 2. Update `scheduled_for` to next time
 3. Reset status to `pending`
 4. Re-sync to TodoScheduleDB
+
+If a scheduled run fails, it is retried on subsequent polls up to
+`MAX_RETRIES` (3). On give-up, a **recurring** TODO skips only the failed
+occurrence and re-arms at its next slot (so a transient outage cannot silently
+kill the schedule by leaving `recurrence` set with a null `scheduled_for`); a
+**one-time** TODO has its schedule cleared and is left `pending` with a failure
+note.
 
 The interval calculation lives in `core/todo_constants.py`:
 
@@ -209,11 +223,15 @@ def validate_recurrence(value: str) -> str:
     interval is below MIN_RECURRENCE_SECONDS (60s) or malformed.
     Month intervals are exempt from the 60s floor."""
 
-def calculate_next_recurrence_time(recurrence: str, anchor: datetime, ...):
+def calculate_next_recurrence_time(recurrence: str, anchor: datetime, *,
+                                   now=None, origin=None):
     """Advance the anchor by parse_recurrence_interval(recurrence), skipping
-    any intervals that have already passed. Month intervals step forward
-    one calendar month at a time so a TODO anchored on the 31st clamps to
-    the last day of shorter months."""
+    any intervals that have already passed. For calendar-month intervals with
+    `origin` given, each slot is derived from the stable origin
+    (origin + N months) rather than the previous (clamped) anchor, so a
+    month-end day (29-31) clamps to short months WITHOUT drifting downward
+    over successive fires. `origin` is ignored for fixed-duration intervals
+    and when None (which keeps the anchor-relative behaviour)."""
 ```
 
 Legacy preset names map to canonical durations via `LEGACY_RECURRENCE_ALIASES`:
@@ -313,7 +331,7 @@ This ensures users can see and interact with scheduled TODO responses.
 **Mitigation:**
 - Ticker claims an `active_todo_executions` marker in `TodoScheduleDB` before reading the TODO body and clears it when the scheduled run exits.
 - REST update, complete, and delete endpoints check that marker and return `409 Conflict` while the TODO is actively executing.
-- Stale markers older than 24 hours are removed automatically so a crashed worker cannot lock a TODO forever.
+- All markers are cleared at startup (any marker outliving the single ticker's process is orphaned), and within a running process markers older than 24 hours are removed automatically, so neither a crash nor a mid-run restart can lock a TODO.
 
 ### 3. Thread Deletion
 
@@ -327,13 +345,18 @@ This ensures users can see and interact with scheduled TODO responses.
 
 ### 4. Recurrence Drift
 
-**Status:** Fixed for monthly recurrence. The legacy `monthly` alias now
-resolves to `1mo` and `calculate_next_recurrence_time` advances via
-`dateutil.relativedelta`, so a TODO anchored at 11:00 on the 15th fires at
-11:00 on the 15th of every subsequent month. Anchors on the 31st clamp to
-the last day of shorter months (Feb 28/29), matching Google Calendar's
-"monthly on the 31st" convention. Existing data stored as `30d` keeps its
-prior 30-day-fixed behaviour until edited or recreated.
+**Status:** Fixed for monthly recurrence, including multi-cycle month-end
+anchoring. The legacy `monthly` alias resolves to `1mo` and
+`calculate_next_recurrence_time` advances via `dateutil.relativedelta`, so a
+TODO anchored at 11:00 on the 15th fires at 11:00 on the 15th of every
+subsequent month. For month-end anchors each slot is derived from a stable
+origin (`TodoItem.recurrence_anchor`, adopted lazily from the first fired slot)
+rather than the previous clamped slot, so a TODO on the 31st runs Jan 31 ->
+Feb 28 -> Mar 31 -> Apr 30 -> May 31 and recovers the 31st in longer months,
+instead of drifting down to the 28th permanently. Anchors clamp to the last
+day of shorter months (Feb 28/29), matching Google Calendar's "monthly on the
+31st" convention. Existing data stored as `30d` keeps its prior 30-day-fixed
+behaviour until edited or recreated.
 
 ### 5. Timezone Edge Cases
 
