@@ -335,13 +335,26 @@ This ensures users can see and interact with scheduled TODO responses.
 
 ### 3. Thread Deletion
 
-**Risk:** User deletes a thread that a scheduled TODO references.
+**Status:** Handled. Deleting a thread cascades through `core/thread_deletion.py`,
+which reaps every TODO carrying that `thread_id` (items via
+`TodoManager.delete_todos_for_thread`, schedule-index rows via
+`TodoScheduleDB.remove_for_thread`) alongside triggers, hooks, RAG chunks,
+checkpoints, and the owner row. All delete entry points go through the cascade
+(`DELETE /threads/{id}`, the `/thread delete` command, and `spawn_thread`
+cleanup), so a deleted thread has no TODOs left. If a delete races an
+already-due entry, the ticker's item-not-found guard in `_execute_scheduled_todo`
+skips the run and removes the stale schedule row instead of firing.
 
-**Current Behavior:** TODO executes with `thread_id` that doesn't exist in frontend localStorage.
-
-**Impact:** Response appears in a "ghost" thread not visible in sidebar.
-
-**Potential Fix:** Validate thread existence before execution, or create thread if missing.
+**Residual (thin-client "ghost" thread):** A client can drop a thread from its
+local list without calling `DELETE`. The backend thread and its TODOs then
+persist, so the scheduled run still executes against the (still-valid) backend
+thread and emits the usual autonomous notification; the output is retained and
+reappears when the client re-syncs, rather than firing into limbo. A
+thread-existence precondition before firing is deliberately NOT used: it cannot
+distinguish a genuinely deleted thread from a `legacy` / `todo-*` /
+not-yet-materialized one, so it would drop legitimate autonomous work. Making
+ghost-thread output more discoverable is a client/delivery concern, not a
+scheduler fire-gate.
 
 ### 4. Recurrence Drift
 
