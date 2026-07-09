@@ -30,6 +30,7 @@ from nymeria.vendor.react_agent.cliproxy import (
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import (
     ChatOpenAIWithReasoning,
+    _capture_reasoning_into,
     _convert_responses_chunk_to_generation_chunk_compat,
     _convert_openrouter_responses_chunk_to_generation_chunk,
     _process_responses_stream_chunk,
@@ -885,6 +886,244 @@ def test_openrouter_streaming_chunk_preserves_reasoning_details_metadata():
             "format": "unknown",
         }
     ]
+
+
+def _completions_response(message: dict) -> dict:
+    """Minimal chat-completions response dict with one assistant choice."""
+    return {
+        "id": "resp",
+        "model": "m",
+        "object": "chat.completion",
+        "choices": [
+            {"index": 0, "finish_reason": "stop", "message": message},
+        ],
+    }
+
+
+def test_non_streaming_result_captures_openrouter_reasoning_details():
+    # The sync graph.invoke() path (/chat/sync, in-process bot fallback,
+    # compaction) must persist the same reasoning the streaming converter does,
+    # so a later Responses-mode turn on the thread can replay it.
+    llm = create_llm(
+        _openrouter_config(
+            openai_api_mode="chat_completions",
+            extended_thinking=True,
+            reasoning_effort="low",
+        )
+    )
+
+    result = llm._create_chat_result(
+        _completions_response(
+            {
+                "role": "assistant",
+                "content": "Hello",
+                "reasoning": "Need context",
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.text",
+                        "text": "Need context",
+                        "format": "unknown",
+                        "index": 0,
+                    }
+                ],
+            }
+        )
+    )
+
+    extras = result.generations[0].message.additional_kwargs
+    assert extras["reasoning_content"] == "Need context"
+    # `index` stripped for storage, matching the streaming capture path exactly.
+    assert extras["reasoning_details"] == [
+        {"type": "reasoning.text", "text": "Need context", "format": "unknown"}
+    ]
+
+
+def test_non_streaming_result_captures_flat_reasoning_content():
+    llm = create_llm(_openrouter_config(openai_api_mode="chat_completions"))
+
+    result = llm._create_chat_result(
+        _completions_response(
+            {
+                "role": "assistant",
+                "content": "Hi",
+                "reasoning_content": "flat trace",
+            }
+        )
+    )
+
+    extras = result.generations[0].message.additional_kwargs
+    assert extras["reasoning_content"] == "flat trace"
+    assert "reasoning_details" not in extras
+
+
+def test_non_streaming_result_without_reasoning_stays_clean():
+    llm = create_llm(_openrouter_config(openai_api_mode="chat_completions"))
+
+    result = llm._create_chat_result(
+        _completions_response({"role": "assistant", "content": "plain"})
+    )
+
+    extras = result.generations[0].message.additional_kwargs
+    assert "reasoning_content" not in extras
+    assert "reasoning_details" not in extras
+
+
+def test_non_streaming_result_captures_reasoning_from_pydantic_completion():
+    # The real .invoke()/.ainvoke() path hands _create_chat_result the OpenAI
+    # SDK's pydantic ChatCompletion, not a dict. Reasoning fields ride as model
+    # extras; this guards that they survive model_dump() and are captured.
+    from openai.types.chat import ChatCompletion, ChatCompletionMessage
+    from openai.types.chat.chat_completion import Choice
+
+    llm = create_llm(_openrouter_config(openai_api_mode="chat_completions"))
+    message = ChatCompletionMessage.model_construct(
+        role="assistant",
+        content="hello",
+        reasoning="pyd trace",
+        reasoning_details=[{"type": "reasoning.text", "text": "pyd trace", "index": 0}],
+    )
+    response = ChatCompletion.model_construct(
+        id="x",
+        model="m",
+        object="chat.completion",
+        created=0,
+        choices=[Choice.model_construct(index=0, finish_reason="stop", message=message)],
+    )
+
+    result = llm._create_chat_result(response)
+
+    extras = result.generations[0].message.additional_kwargs
+    assert extras["reasoning_content"] == "pyd trace"
+    assert extras["reasoning_details"] == [
+        {"type": "reasoning.text", "text": "pyd trace"}
+    ]
+
+
+def test_non_streaming_result_captures_reasoning_on_tool_call_turn():
+    # Realistic mid-turn shape: reasoning emitted before a tool call, with empty
+    # content and tool_calls present. Capture must fire without disturbing the
+    # tool_calls that base LangChain lifts from the same message.
+    llm = create_llm(_openrouter_config(openai_api_mode="chat_completions"))
+
+    result = llm._create_chat_result(
+        _completions_response(
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "I should call the tool.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "foo", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+    )
+
+    message = result.generations[0].message
+    assert message.additional_kwargs["reasoning_content"] == "I should call the tool."
+    assert [tc["name"] for tc in message.tool_calls] == ["foo"]
+
+
+def test_non_streaming_result_captures_reasoning_details_only():
+    # No flat reasoning / reasoning_content: the displayable text must be
+    # extracted from reasoning_details, exercising the helper's fallback branch
+    # through the non-streaming override.
+    llm = create_llm(_openrouter_config(openai_api_mode="chat_completions"))
+
+    result = llm._create_chat_result(
+        _completions_response(
+            {
+                "role": "assistant",
+                "content": "hi",
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.text",
+                        "text": "details-only trace",
+                        "format": "unknown",
+                        "index": 0,
+                    }
+                ],
+            }
+        )
+    )
+
+    extras = result.generations[0].message.additional_kwargs
+    assert extras["reasoning_content"] == "details-only trace"
+    assert extras["reasoning_details"] == [
+        {"type": "reasoning.text", "text": "details-only trace", "format": "unknown"}
+    ]
+
+
+def test_non_streaming_result_captures_reasoning_per_choice():
+    # n>1: each generation gets its own choice's reasoning, guarding the
+    # zip(generations, choices) alignment in the override.
+    llm = create_llm(_openrouter_config(openai_api_mode="chat_completions"))
+
+    response = {
+        "id": "resp",
+        "model": "m",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "a", "reasoning_content": "trace A"},
+            },
+            {
+                "index": 1,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "b", "reasoning_content": "trace B"},
+            },
+        ],
+    }
+
+    result = llm._create_chat_result(response)
+    assert result.generations[0].message.additional_kwargs["reasoning_content"] == "trace A"
+    assert result.generations[1].message.additional_kwargs["reasoning_content"] == "trace B"
+
+
+def test_streaming_and_non_streaming_capture_agree():
+    # Drift guard: the streaming converter reads reasoning off `choices[0].delta`
+    # and the non-streaming override reads it off `choices[i].message`. Drive the
+    # REAL methods with equivalent wire payloads and assert the reasoning they
+    # persist matches, so the two capture sites cannot silently read divergent
+    # containers (the property doc 25 F14 / reasoning-streaming.md rely on).
+    llm = create_llm(_openrouter_config(openai_api_mode="chat_completions"))
+    reasoning_payload = {
+        "reasoning": "shared trace",
+        "reasoning_details": [
+            {"type": "reasoning.text", "text": "shared trace", "index": 0}
+        ],
+    }
+
+    stream_chunk = {"choices": [{"delta": {"role": "assistant", **reasoning_payload}}]}
+    stream_ak = llm._convert_chunk_to_generation_chunk(
+        stream_chunk, AIMessageChunk, {}
+    ).message.additional_kwargs
+
+    nonstream_ak = (
+        llm._create_chat_result(
+            _completions_response(
+                {"role": "assistant", "content": "hi", **reasoning_payload}
+            )
+        )
+        .generations[0]
+        .message.additional_kwargs
+    )
+
+    assert stream_ak.get("reasoning_content") == nonstream_ak.get("reasoning_content")
+    assert stream_ak.get("reasoning_details") == nonstream_ak.get("reasoning_details")
+    assert nonstream_ak["reasoning_content"] == "shared trace"
+
+
+def test_capture_reasoning_into_ignores_non_dict_container():
+    extras: dict = {}
+    _capture_reasoning_into(None, extras)
+    _capture_reasoning_into("not a dict", extras)
+    assert extras == {}
 
 
 def test_openrouter_replays_reasoning_details_in_chat_payload():
