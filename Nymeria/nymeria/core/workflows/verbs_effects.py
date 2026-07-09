@@ -106,16 +106,46 @@ def _add_todo(ctx: VerbContext, args: dict) -> dict:
     from ...tools.todo import _get_todo_manager
 
     manager = _get_todo_manager()
-    with manager.atomic_update(ctx.user_id or "default") as todo_list:
+    user_id = ctx.user_id or "default"
+
+    # Parse ``scheduled_for`` the way every other create path does (accepts
+    # relative durations like "1h", ISO, and absolute times) rather than
+    # passing the raw value to ``add_item``, where a non-datetime string such
+    # as "1h" would raise a pydantic validation error.
+    scheduled_for = None
+    raw_scheduled_for = args.get("scheduled_for")
+    if raw_scheduled_for:
+        from ...core.time_utils import parse_scheduled_time
+
+        scheduled_for = parse_scheduled_time(str(raw_scheduled_for))
+        if scheduled_for is None:
+            raise VerbError(
+                f"invalid scheduled_for {raw_scheduled_for!r}; use a duration "
+                "like '1h' or an ISO timestamp"
+            )
+
+    with manager.atomic_update(user_id) as todo_list:
         item = todo_list.add_item(
             task=str(args.get("task") or ""),
-            scheduled_for=args.get("scheduled_for"),
+            scheduled_for=scheduled_for,
             thread_id=ctx.thread_id or "",
             created_by="workflow",
             notes=args.get("notes"),
         )
     if item is None:
         raise VerbError("the todo list is full; complete or remove items first")
+
+    # Register the schedule in the ticker's index AFTER the JSON is persisted
+    # (mirrors the trigger/REST/slash create paths). The ticker polls only the
+    # index, so an unindexed scheduled TODO would never fire until a restart
+    # rebuilt the index from disk.
+    if scheduled_for is not None:
+        from ...api.routers.todos import _get_todo_schedule_db
+        from ...config import get_settings
+
+        schedule_db = _get_todo_schedule_db(get_settings())
+        manager.sync_schedule_to_db(user_id, item.id, schedule_db)
+
     return {
         "id": item.id,
         "task": item.task,

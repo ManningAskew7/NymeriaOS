@@ -1210,24 +1210,49 @@ class TriggerManager:
 
         todo_manager = _get_todo_manager()
 
+        # Parse an optional ``scheduled_for`` up front so it can be written in
+        # the same ``add_item`` call. Keep the lenient parser: it returns None
+        # on bad input (an invalid value logs a warning and creates the TODO
+        # unscheduled) rather than raising, which in this fire path would abort
+        # the whole trigger.
+        scheduled_for = None
+        scheduled_for_str = config.get("scheduled_for")
+        if scheduled_for_str:
+            from ..core.time_utils import parse_scheduled_time
+
+            scheduled_for = parse_scheduled_time(scheduled_for_str)
+            if scheduled_for is None:
+                logger.warning(
+                    "[TRIGGER] Ignoring invalid scheduled_for %r on create_todo",
+                    scheduled_for_str,
+                )
+
+        created_item_id = None
         with todo_manager.atomic_update(user_id) as todo_list:
             item = todo_list.add_item(
                 task=task,
+                scheduled_for=scheduled_for,
                 created_by="trigger",
                 thread_id=f"trigger_{template_vars.get('trigger_id', 'auto')}",
             )
             if item:
+                created_item_id = item.id
                 logger.info(f"[TRIGGER] Created TODO {item.id}: {task[:80]}")
-
-                # Sync schedule if the TODO has scheduled_for
-                scheduled_for_str = config.get("scheduled_for")
-                if scheduled_for_str:
-                    from ..core.time_utils import parse_scheduled_time
-                    parsed = parse_scheduled_time(scheduled_for_str)
-                    if parsed:
-                        todo_list.update_item(item.id, scheduled_for=parsed)
             else:
                 logger.warning("[TRIGGER] Failed to create TODO (at limit?)")
+
+        # Register the schedule in the ticker's index AFTER the JSON is
+        # persisted (``sync_schedule_to_db`` reads the item back from disk, and
+        # ``atomic_update`` saves on block exit). Without this, the ticker,
+        # which polls only the index, would never fire the scheduled TODO until
+        # a restart rebuilt the index from disk. Mirrors the REST/slash create
+        # paths (api/routers/todos.py, command_service.py).
+        if created_item_id and scheduled_for is not None:
+            from ..api.routers.todos import _get_todo_schedule_db
+            from ..config import get_settings
+
+            schedule_db = _get_todo_schedule_db(get_settings())
+            todo_manager.sync_schedule_to_db(user_id, created_item_id, schedule_db)
 
     def _fire_run_workflow(
         self,

@@ -146,13 +146,18 @@ backward compatibility. See [`notifications.md`](notifications.md).
 
 ### create_todo
 
-Creates a TODO item for the user.
+Creates a TODO item for the user. Add an optional `scheduled_for` to schedule
+it: a relative duration (`30m`, `1h`, `1d`), an ISO timestamp, or an absolute
+`YYYY-MM-DD HH:MM` (interpreted in the user's timezone). A scheduled TODO is
+registered in the ticker's schedule index and fires at that time like any other
+scheduled TODO; without `scheduled_for` it is a plain unscheduled item.
 
 ```json
 {
   "type": "create_todo",
   "config": {
-    "task_template": "Review Slack message from {author}: {content}"
+    "task_template": "Review Slack message from {author}: {content}",
+    "scheduled_for": "1h"
   }
 }
 ```
