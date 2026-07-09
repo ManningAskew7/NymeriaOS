@@ -40,6 +40,7 @@ from .cliproxy import (
 from .state import AgentState
 from .config import AgentConfig, LLMConfig, default_config
 from .providers import create_llm_with_tools
+from .reasoning_passback import record_passback_observation
 
 logger = logging.getLogger(__name__)
 
@@ -1228,6 +1229,23 @@ def _accumulate_llm_seconds(config: Any, seconds: float) -> None:
         pass
 
 
+def _reasoning_passback_requested(config: Any) -> bool:
+    """True when the turn opted into reasoning-passback observation.
+
+    ``NymeriaAgent.astream``/``chat`` set ``configurable["reasoning_passback"]``
+    on user-facing turns. Side-channel graph runs (compaction, ``nym.llm``,
+    dream seeding) build their own configs without it, so they are excluded.
+    """
+    try:
+        if isinstance(config, dict):
+            configurable = config.get("configurable") or {}
+        else:
+            configurable = getattr(config, "configurable", {}) or {}
+        return "reasoning_passback" in configurable
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def create_agent_node(
     llm_with_tools: BaseChatModel,
     system_prompt: str,
@@ -1271,6 +1289,15 @@ def create_agent_node(
         # across turns. This mirrors what CLIProxy does automatically.
         if _uses_direct_anthropic(llm_config):
             messages = _inject_conversation_cache_breakpoint(messages)
+
+        # Reasoning-passback live confirmation: observe whether prior-turn
+        # reasoning is present to replay. Gated on the per-turn marker set by
+        # NymeriaAgent.astream/chat, so pure side-channel LLM calls that build
+        # their own configs (compaction summaries, nym.llm) are excluded.
+        # Autonomous/dream turns DO run it, but keyed by their own (shadow)
+        # thread_id, so they never affect the user thread's status. Never raises.
+        if _reasoning_passback_requested(config):
+            record_passback_observation(thread_id, llm_config, messages)
 
         # Prepend system prompt (not stored in state)
         return [

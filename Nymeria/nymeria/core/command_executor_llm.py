@@ -84,6 +84,7 @@ class LLMCommandsMixin:
 
     if TYPE_CHECKING:
         def _require_thread(self) -> str | None: ...
+        def _agent(self) -> Any: ...
 
     # ── Fallback chain ────────────────────────────────────────────────────
 
@@ -501,7 +502,7 @@ class LLMCommandsMixin:
 
     async def _cmd_provider(self, args: list[str], rest: str) -> str:
         if args:
-            return "[Error]: Usage: /provider [list|set|test|switch]"
+            return "[Error]: Usage: /provider [list|set|switch|test|reasoning-passback]"
         from ..config.llm_providers import get_llm_provider_spec
 
         settings = await self.api.get_settings()
@@ -538,7 +539,9 @@ class LLMCommandsMixin:
         lines = ["Provider"]
         for label, value in rows:
             lines.append(f"  {label:<{width}}  {value}")
-        lines.append("Manage with: /provider [list|set|test|switch]")
+        lines.append(
+            "Manage with: /provider [list|set|switch|test|reasoning-passback]"
+        )
         return "[Info]: " + "\n".join(lines)
 
     async def _cmd_provider_list(self, args: list[str], rest: str) -> str:
@@ -641,6 +644,106 @@ class LLMCommandsMixin:
             return f"[Success]: {label} provider test succeeded."
         message = str(result.get("message", "") or "").strip() or "unknown error"
         return f"[Error]: {label} provider test failed: {message}"
+
+    _RP_STATUS_TEXT = {
+        "active": "active (confirmed on the last turn)",
+        "wired": "wired (capable, not yet confirmed on a turn)",
+        "dropped": "DROPPED (reasoning is generated but not passed back)",
+        "not_applicable": "not applicable (reasoning off, or the model can't reason)",
+    }
+
+    async def _cmd_provider_reasoning_passback(
+        self, args: list[str], rest: str
+    ) -> str:
+        """Show whether prior-turn reasoning is replayed to the active model."""
+        if args:
+            return "[Error]: Usage: /provider reasoning-passback"
+        from ..vendor.react_agent.reasoning_passback import (
+            classify_reasoning_passback,
+            resolve_status_with_observation,
+        )
+
+        provider = model = api_mode = ""
+        rp: dict[str, Any] | None = None
+
+        agent = self._agent()
+        resolver = (
+            getattr(agent, "_get_llm_config_for_thread", None) if agent else None
+        )
+        effective: Any = None
+        if callable(resolver):
+            try:
+                effective = resolver(self.thread_id or "")
+            except Exception:  # noqa: BLE001
+                effective = None
+
+        if effective is not None:
+            info = classify_reasoning_passback(effective)
+            status, confirmed_at = resolve_status_with_observation(
+                info, self.thread_id or None
+            )
+            provider = str(getattr(effective, "provider", "") or "")
+            model = str(getattr(effective, "model", "") or "")
+            api_mode = str(getattr(effective, "openai_api_mode", "") or "")
+            rp = {**info.as_dict(), "status": status, "last_confirmed_at": confirmed_at}
+        else:
+            if self.thread_id and hasattr(self.api, "get_thread_overview"):
+                overview = await self.api.get_thread_overview(
+                    self.thread_id, user_id=self.user_id
+                )
+                llm = (overview or {}).get("llm") or {}
+                rp = llm.get("reasoning_passback")
+                provider = str(llm.get("provider", "") or "")
+                model = str(llm.get("model", "") or "")
+                api_mode = str(llm.get("api_mode", "") or "")
+            if not rp:
+                return (
+                    "[Error]: Reasoning-passback status is unavailable here. "
+                    "Send a message to activate a thread, then retry."
+                )
+
+        scope_word = "thread" if self.thread_id else "global"
+        status = str(rp.get("status", ""))
+        status_text = self._RP_STATUS_TEXT.get(status, status or "unknown")
+        confirmed_at = rp.get("last_confirmed_at")
+        if status == "active" and confirmed_at:
+            from datetime import datetime
+
+            try:
+                when = datetime.fromtimestamp(float(confirmed_at)).isoformat(
+                    timespec="seconds"
+                )
+                status_text += f" ({when})"
+            except (ValueError, OSError, OverflowError):
+                pass  # bad timestamp: skip the confirmed-at annotation
+
+        turns = {
+            "all_turns": "every assistant turn",
+            "tool_call_turns_only": "tool-call turns only",
+            "none": "not replayed",
+        }.get(str(rp.get("scope", "")), str(rp.get("scope", "")))
+
+        rows = [
+            ("Provider", provider or "Unknown"),
+            ("Model", model or "Unknown"),
+            ("API mode", api_mode or "-"),
+            ("Mechanism", str(rp.get("mechanism_label", ""))),
+            ("Fidelity", str(rp.get("fidelity", ""))),
+            ("Replayed on", turns),
+            ("Reasoning", "on" if rp.get("reasoning_enabled") else "off"),
+            ("Status", status_text),
+            ("Verified", "yes (round-trip smoke-tested)" if rp.get("verified") else "no"),
+        ]
+        width = max(len(label) for label, _ in rows)
+        lines = [f"Reasoning passback ({scope_word} scope)"]
+        for label, value in rows:
+            lines.append(f"  {label:<{width}}  {value}")
+        caveats = rp.get("caveats") or []
+        if caveats:
+            lines.append("Caveats:")
+            for caveat in caveats:
+                lines.append(f"  - {caveat}")
+        return "[Info]: " + "\n".join(lines)
 
     async def _provider_status_map(self) -> dict[str, dict[str, str]]:
         """Server-side credential presence per managed provider.

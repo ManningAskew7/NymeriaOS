@@ -24,6 +24,10 @@ from ..core.thread_config import ThreadConfig
 from ..core.time_utils import ensure_aware_utc, utc_now
 from ..tools import SEED_TOOLS, CATALOG_TOOLS
 from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+from ..vendor.react_agent.reasoning_passback import (
+    classify_reasoning_passback,
+    resolve_status_with_observation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -454,7 +458,7 @@ def _llm_section(
     tc_saved: ThreadConfig | None,
 ) -> dict[str, Any]:
     resolver = getattr(agent, "_get_llm_config_for_thread", None)
-    effective = resolver(thread_id) if callable(resolver) else None
+    effective: Any = resolver(thread_id) if callable(resolver) else None
     if effective is None:
         data = _llm_defaults(settings, {"model": getattr(settings, "llm_model", "")})
     else:
@@ -488,6 +492,23 @@ def _llm_section(
             "use_model_defaults": getattr(effective, "temperature", None) is None,
             "base_url_configured": bool(base_url),
             "api_key_configured": bool(getattr(effective, "api_key", None)),
+        }
+
+    if effective is not None:
+        rp_info = classify_reasoning_passback(effective)
+        rp_status, rp_confirmed_at = resolve_status_with_observation(
+            rp_info, thread_id
+        )
+        data["reasoning_passback"] = {
+            "mechanism": rp_info.mechanism,
+            "mechanism_label": rp_info.mechanism_label,
+            "fidelity": rp_info.fidelity,
+            "scope": rp_info.scope,
+            "reasoning_enabled": rp_info.reasoning_enabled,
+            "status": rp_status,
+            "verified": rp_info.verified,
+            "caveats": rp_info.caveats,
+            "last_confirmed_at": rp_confirmed_at,
         }
 
     overrides: dict[str, Any] = {}

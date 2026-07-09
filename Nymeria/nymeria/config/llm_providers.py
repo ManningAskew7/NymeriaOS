@@ -106,6 +106,14 @@ class LLMProviderSpec:
     # .../api/anthropic). None means "reuse the configured/default base URL"
     # (correct for proxies like LiteLLM whose root serves both surfaces).
     anthropic_messages_base_url: str | None = None
+    # True when the reasoning-passback round-trip (prior chain-of-thought
+    # replayed to the model on later turns) has been live-smoke-tested for this
+    # provider. Durable operator/verification marker only: the ACTIVE mechanism
+    # is always computed at runtime by
+    # ``vendor/react_agent/reasoning_passback.classify_reasoning_passback`` (it
+    # depends on api mode / route, so it cannot be a static per-spec value).
+    # Surfaced in the catalog and the /provider reasoning-passback command.
+    reasoning_passback_verified: bool = False
 
     @property
     def verified(self) -> bool:
@@ -142,6 +150,7 @@ def _spec(
     openai_compat_base_url: str | None = None,
     anthropic_native_for_claude: bool = False,
     anthropic_messages_base_url: str | None = None,
+    reasoning_passback_verified: bool = False,
 ) -> LLMProviderSpec:
     # Default route inference: native partner-package providers default to
     # ("native",), while generic OpenAI-compatible providers default to
@@ -182,6 +191,7 @@ def _spec(
         openai_compat_base_url=openai_compat_base_url,
         anthropic_native_for_claude=anthropic_native_for_claude,
         anthropic_messages_base_url=anthropic_messages_base_url,
+        reasoning_passback_verified=reasoning_passback_verified,
     )
 
 
@@ -202,6 +212,8 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         supports_chat_completions=False,
         aliases=("claude",),
         tier="native",
+        # Native /v1/messages: signed thinking blocks round-trip natively.
+        reasoning_passback_verified=True,
     ),
     _spec(
         "openai",
@@ -213,6 +225,8 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         supports_responses=True,
         default_api_mode="responses",
         tier="native",
+        # Responses API replays checkpointed reasoning items via `input`.
+        reasoning_passback_verified=True,
     ),
     _spec(
         "openrouter",

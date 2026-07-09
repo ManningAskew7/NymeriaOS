@@ -315,6 +315,71 @@ Expected for a GPT-5.5 sidecar turn: a `steps` array with a `thinking` entry bef
 - **No implicit endpoint fallback.** If OpenRouter's beta Responses endpoint rejects a model/request, Nymeria surfaces that provider error. Switch the global or per-thread API Mode to `chat_completions` when you intentionally want the older endpoint.
 - **Provider-specific reasoning continuation outside OpenAI Responses.** OpenRouter chat-completions reasoning replay is implemented for `message.reasoning_details` / `message.reasoning`. Other OpenAI-compatible servers may stream/display reasoning through `reasoning_content`, but Nymeria does not add those nonstandard fields back into later requests unless the base URL is OpenRouter.
 
+## Reasoning-passback observability
+
+Streaming reasoning to the frontend (above) is separate from *reasoning
+passback*: replaying a prior assistant turn's reasoning back to the model on
+later requests, in the field that provider expects, so the model sees its own
+earlier chain of thought. Passback is wired but takes five shapes, and on plain
+`/v1/chat/completions` against an unmapped provider it is silently dropped.
+Nymeria exposes whether it is active for the current provider/model without
+sending a probe request.
+
+### Mechanisms
+
+| Mechanism | When | Fidelity | Replayed on |
+| --- | --- | --- | --- |
+| `anthropic_thinking` | `provider=anthropic`, or any gateway via the `anthropic_messages` route | signed | every turn |
+| `responses_items` | `openai_api_mode=responses` and the provider advertises Responses | signed / encrypted | every turn |
+| `openrouter_reasoning_details` | OpenRouter, Vercel AI Gateway, AIHubMix on chat-completions | signed | every turn |
+| `flat_reasoning_content` | DeepSeek, Alibaba/Qwen, Baseten, LiteLLM, Together, Novita, Fireworks, Moonshot, native Ollama | plaintext | every turn, or tool-call turns only |
+| `gemini_thought_signatures` / `bedrock_reasoning` | native Google / Bedrock partner packages | signed | every turn |
+| `none` | any other OpenAI-compatible provider on `chat_completions` | none | reasoning is dropped |
+
+### How it is determined (drift-proof)
+
+`vendor/react_agent/reasoning_passback.py::classify_reasoning_passback(config)`
+resolves the mechanism by **re-using the same predicate functions the wire path
+uses** (`_supports_openrouter_style_reasoning_replay`,
+`_flat_reasoning_content_replay_mode`, `provider_supports_responses`,
+`provider_supports_route`, `resolve_provider_route`) plus
+`model_capabilities.supported_reasoning_efforts`. A displayed status therefore
+cannot disagree with what actually goes on the wire. It returns a `mechanism`,
+`fidelity` (signed / plaintext / none), replay `scope` (all turns vs tool-call
+turns only), `reasoning_enabled`, a `status`, the provider-spec `verified`
+marker, and human `caveats`. No network call.
+
+Status vocabulary:
+
+- `not_applicable` — reasoning is off, or the model cannot reason (nothing to replay).
+- `dropped` — reasoning is on but this provider/API mode has no passback wiring (the failure case).
+- `wired` — a mechanism exists but has not yet been observed on a real turn.
+- `active` — the passive recorder confirmed a real turn replayed prior reasoning.
+
+### Passive live confirmation
+
+The model node (`nodes.py::_prepare_messages`, gated on the per-turn
+`configurable["reasoning_passback"]` marker set by `NymeriaAgent.astream`/`chat`,
+so side-channel graph runs are excluded) observes whether prior-turn reasoning
+was present to replay and records it in a small in-process store keyed by
+`thread_id`. Read surfaces upgrade `wired → active` only when the recorded
+mechanism matches the currently-classified one (config-change safe). The store
+is in-memory (lost on restart, re-confirmed on the next turn). This is correct
+because the API process is the only agent runtime.
+
+### Surfaces
+
+- **`/provider reasoning-passback`** (alias `/provider passback`): prints the
+  active thread's mechanism, fidelity, replay scope, reasoning-enabled, status
+  (with last-confirmed time when `active`), the `verified` marker, and caveats.
+  Thread-scoped when a thread is active, else global.
+- **Thread overview**: the per-thread `llm.reasoning_passback` object
+  (`api/thread_overview.py`) carries the same fields for any client to read.
+- **Provider catalog**: `GET /settings/llm/providers` exposes the durable
+  `reasoning_passback_verified` marker per provider (a live-smoke-test flag,
+  seeded for `anthropic` and `openai`; the active mechanism is always computed
+  at runtime, never a static per-spec value).
+
 ## Related docs
 
 - [architecture.md](architecture.md)  -  overall SSE event protocol and streaming model.
