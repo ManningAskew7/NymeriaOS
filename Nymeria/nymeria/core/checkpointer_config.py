@@ -63,6 +63,7 @@ def build_checkpointer_config(settings: Settings) -> CheckpointerConfig:
             postgres_uri=settings.postgres_uri,
             postgres_pool_min_size=min_size,
             postgres_pool_max_size=max_size,
+            checkpoint_executor_max_workers=settings.checkpoint_executor_max_workers,
         )
     elif backend == "sqlite":
         db_path = settings.db_path
@@ -71,6 +72,7 @@ def build_checkpointer_config(settings: Settings) -> CheckpointerConfig:
         return CheckpointerConfig(
             backend="sqlite",
             sqlite_path=str(db_path),
+            checkpoint_executor_max_workers=settings.checkpoint_executor_max_workers,
         )
     else:  # memory
         logger.info("Using in-memory storage (conversations will not persist)")
@@ -96,6 +98,7 @@ def build_async_checkpointer_config(settings: Settings) -> CheckpointerConfig:
             postgres_uri=settings.postgres_uri,
             postgres_pool_min_size=min_size,
             postgres_pool_max_size=max_size,
+            checkpoint_executor_max_workers=settings.checkpoint_executor_max_workers,
         )
     elif backend == "sqlite":
         db_path = settings.db_path
@@ -103,6 +106,7 @@ def build_async_checkpointer_config(settings: Settings) -> CheckpointerConfig:
         return CheckpointerConfig(
             backend="sqlite_async",
             sqlite_path=str(db_path),
+            checkpoint_executor_max_workers=settings.checkpoint_executor_max_workers,
         )
     else:  # memory
         return CheckpointerConfig(backend="memory")

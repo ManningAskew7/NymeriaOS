@@ -36,6 +36,27 @@ from ..thread_config_helpers import effective_provider_model
 logger = logging.getLogger(__name__)
 
 
+def run_sync_turn_with_tool_count(
+    agent: Any, message: str, **chat_kwargs: Any
+) -> tuple[str, int]:
+    """Run one synchronous agent turn and return (response, tool_call_count).
+
+    Must execute on the worker thread the turn is dispatched to
+    (``asyncio.to_thread``): the count comes from the agent's per-thread turn
+    metadata (``_chat_turn_local``), which cannot race between concurrent
+    sync turns the way the shared ``_last_chat_tool_calls`` attribute does.
+    Agents without the thread-local (test fakes) fall back to the shared
+    attribute. Shared by ``/chat/sync`` and the in-process webhook-bot
+    adapter (``_bot_inprocess.py``).
+    """
+    response = agent.chat(message, **chat_kwargs)
+    local = getattr(agent, "_chat_turn_local", None)
+    count = getattr(local, "tool_calls", None) if local is not None else None
+    if count is None:
+        count = getattr(agent, "_last_chat_tool_calls", 0)
+    return response, count
+
+
 def _attachment_dicts(request: ChatRequest) -> list[dict[str, str]] | None:
     if not request.attachments:
         return None
@@ -1485,7 +1506,12 @@ def create_chat_router(
 
             refresh_thread_activity(agent, user_id, thread_id)
 
-        response = agent.chat(
+        # The whole synchronous turn (LLM round trips, tools, checkpoint
+        # writes) runs off the event loop; running it inline would freeze
+        # every SSE stream and probe in the process for the turn's duration.
+        response, tool_call_count = await asyncio.to_thread(
+            run_sync_turn_with_tool_count,
+            agent,
             message,
             thread_id=thread_id,
             user_id=user_id,
@@ -1498,7 +1524,6 @@ def create_chat_router(
             source_id=prompt_source_id,
             source_label=prompt_source_label or user_id,
         )
-        tool_call_count = getattr(agent, "_last_chat_tool_calls", 0)
         if is_quick:
             response = f"{response}{_quick_continue_footer(thread_id)}"
         return ChatResponse(

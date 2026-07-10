@@ -708,7 +708,8 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | `SQLITE_PATH` | `<data_dir>/nymeria.db` | SQLite database file location. Relative custom paths resolve from the runtime project root |
 | `POSTGRES_URI` | - | PostgreSQL connection string (if using postgres) |
 | `POSTGRES_POOL_MIN_SIZE` | `1` | Connections the shared LangGraph checkpointer pool keeps open (postgres only) |
-| `POSTGRES_POOL_MAX_SIZE` | `10` | Connection ceiling for the shared LangGraph checkpointer pool (postgres only). Sized at process start; a change needs a restart. Checkpoint ops dispatch on asyncio's default thread executor (min(32, cores+4) workers), so on hosts above ~6 cores consider raising this toward that worker count |
+| `POSTGRES_POOL_MAX_SIZE` | `10` | Connection ceiling for the shared LangGraph checkpointer pool (postgres only). Sized at process start; a change needs a restart. Keep at or above `CHECKPOINT_EXECUTOR_MAX_WORKERS` so checkpoint threads never queue waiting for a connection |
+| `CHECKPOINT_EXECUTOR_MAX_WORKERS` | `8` | Worker-thread ceiling for the dedicated LangGraph checkpoint I/O executor (sqlite and postgres). Checkpoint reads/writes run here instead of the asyncio default executor so persistence never queues behind unrelated blocking work. Sized by the first checkpointer built in the process; a change needs a restart |
 | `USER_TIMEZONE` | `UTC` | IANA timezone used for time context and absolute schedule parsing. Docker also mirrors this into `TZ` so OS-level time output stays aligned. |
 
 ### API Server and Paths
@@ -1405,6 +1406,7 @@ closing DNS-rebinding gaps.
 | `TICKER_POLL_INTERVAL` | `5` | Seconds between polls for due tasks (1-60) |
 | `MAX_CONCURRENT_AUTONOMOUS` | `5` | Max concurrent autonomous tasks (`0` = unlimited) |
 | `LOCK_TIMEOUT` | `120` | Seconds to wait on per-thread lock before timing out |
+| `DEFAULT_EXECUTOR_MAX_WORKERS` | `32` | Worker-thread ceiling for the asyncio default executor in the API process, which carries nearly all `to_thread` blocking work (integrations, voice, OAuth, credential probes, non-streaming turns). The stock asyncio size is only `min(32, cores + 4)` (8 on a 4-core host); threads here are cheap blocking-I/O waiters, so size for concurrency, not cores (8-256) |
 | `AGENT_MAX_ITERATIONS` | `500` | Max agent loop iterations per turn (10-10,000); a safety backstop, not a tuning knob. Callable threads use their own per-thread cap |
 | `TOOL_TIMEOUT` | `300` | Max seconds a tool or callable-thread invocation may run |
 | `TOOL_OUTPUT_MAX_CHARS` | `100000` | Max characters stored for one tool result. Larger outputs keep the first ~75k and last ~25k characters with a truncation marker. |

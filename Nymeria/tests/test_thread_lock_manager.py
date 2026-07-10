@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 
-from nymeria.core.thread_lock_manager import ThreadLockManager
+from nymeria.core.thread_lock_manager import (
+    ThreadLockManager,
+    async_event_wait,
+    async_lock_acquire,
+)
 
 
 def test_get_lock_returns_same_lock_for_same_thread():
@@ -78,3 +83,117 @@ def test_is_thread_busy_when_held_and_free():
 def test_get_lock_info_returns_none_for_unknown_thread():
     mgr = ThreadLockManager()
     assert mgr.get_lock_info("nonexistent") is None
+
+
+# --- async wait helpers (poll-based, cancellation-safe) ---
+
+
+def test_async_lock_acquire_free_lock_is_immediate():
+    lock = threading.Lock()
+
+    async def _scenario():
+        return await async_lock_acquire(lock, timeout=1.0)
+
+    assert asyncio.run(_scenario()) is True
+    # The helper took the lock; the caller owns the release.
+    assert lock.locked()
+    lock.release()
+
+
+def test_async_lock_acquire_times_out_without_leaking():
+    lock = threading.Lock()
+    lock.acquire()
+
+    async def _scenario():
+        return await async_lock_acquire(lock, timeout=0.15, poll_interval=0.01)
+
+    start = time.monotonic()
+    assert asyncio.run(_scenario()) is False
+    assert time.monotonic() - start < 2.0
+
+    # The defining property vs the old thread-parking pattern: after the
+    # holder releases, nothing orphaned swoops in and takes the lock.
+    lock.release()
+    time.sleep(0.1)
+    assert lock.acquire(blocking=False) is True
+    lock.release()
+
+
+def test_async_lock_acquire_wins_when_holder_releases():
+    lock = threading.Lock()
+    lock.acquire()
+
+    async def _scenario():
+        async def _release_soon():
+            await asyncio.sleep(0.1)
+            lock.release()
+
+        releaser = asyncio.create_task(_release_soon())
+        try:
+            return await async_lock_acquire(lock, timeout=2.0, poll_interval=0.01)
+        finally:
+            await releaser
+
+    assert asyncio.run(_scenario()) is True
+    assert lock.locked()
+    lock.release()
+
+
+def test_async_lock_acquire_cancellation_leaves_lock_untaken():
+    lock = threading.Lock()
+    lock.acquire()
+
+    async def _scenario():
+        waiter = asyncio.create_task(
+            async_lock_acquire(lock, timeout=5.0, poll_interval=0.01)
+        )
+        await asyncio.sleep(0.05)
+        waiter.cancel()
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_scenario())
+    # Release and confirm no residue of the cancelled wait holds or later
+    # takes the lock (the old pattern leaked it held here).
+    lock.release()
+    time.sleep(0.1)
+    assert lock.acquire(blocking=False) is True
+    lock.release()
+
+
+def test_async_event_wait_set_before_and_during():
+    event = threading.Event()
+    event.set()
+
+    async def _already_set():
+        return await async_event_wait(event, timeout=1.0)
+
+    assert asyncio.run(_already_set()) is True
+
+    event.clear()
+
+    async def _set_mid_wait():
+        async def _set_soon():
+            await asyncio.sleep(0.1)
+            event.set()
+
+        setter = asyncio.create_task(_set_soon())
+        try:
+            return await async_event_wait(event, timeout=2.0, poll_interval=0.01)
+        finally:
+            await setter
+
+    assert asyncio.run(_set_mid_wait()) is True
+
+
+def test_async_event_wait_times_out():
+    event = threading.Event()
+
+    async def _scenario():
+        return await async_event_wait(event, timeout=0.15, poll_interval=0.01)
+
+    start = time.monotonic()
+    assert asyncio.run(_scenario()) is False
+    assert time.monotonic() - start < 2.0

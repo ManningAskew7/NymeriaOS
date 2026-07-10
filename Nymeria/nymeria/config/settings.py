@@ -1410,6 +1410,25 @@ class Settings(BaseSettings):
         le=600,
         description="Seconds to wait for per-thread lock before timing out"
     )
+    default_executor_max_workers: int = Field(
+        default=32,
+        ge=8,
+        le=256,
+        description=(
+            "Worker-thread ceiling for the asyncio default executor in the "
+            "API process (all to_thread/run_in_executor(None) blocking work)"
+        ),
+    )
+    checkpoint_executor_max_workers: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        description=(
+            "Worker-thread ceiling for the dedicated LangGraph checkpoint "
+            "I/O executor; keep at or below POSTGRES_POOL_MAX_SIZE on the "
+            "postgres backend so checkpoint threads never queue on connections"
+        ),
+    )
     tool_timeout: int = Field(
         default=300,
         ge=30,

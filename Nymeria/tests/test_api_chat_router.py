@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from pathlib import Path
@@ -176,6 +177,121 @@ def test_chat_sync_uses_authenticated_user_not_body_user_id(
         }
     ]
     assert agent.accounts_repo.get_thread_owner("thread-sync") == "alice"
+
+
+def test_chat_sync_runs_turn_off_event_loop(
+    tmp_path: Path,
+    api_client_builder,
+):
+    # The whole sync turn must dispatch via to_thread: running it inline in
+    # the async endpoint would freeze every SSE stream and probe in the
+    # process for the turn's duration.
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    on_loop: list[bool] = []
+    original_chat = agent.chat
+
+    def _recording_chat(message: str, **kwargs: Any) -> str:
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return original_chat(message, **kwargs)
+
+    agent.chat = _recording_chat
+
+    response = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "hello", "thread_id": "thread-off-loop"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["response"] == "sync response"
+    assert on_loop == [False]
+
+
+def test_run_sync_turn_tool_count_is_per_thread_under_concurrency():
+    # Two sync turns running concurrently on worker threads must each report
+    # their own tool count. The barrier forces both turns' writes to land
+    # before either read, which the legacy shared _last_chat_tool_calls
+    # attribute cannot survive (last writer wins for both).
+    import threading
+
+    from nymeria.api.routers.chat import run_sync_turn_with_tool_count
+
+    class StubAgent:
+        def __init__(self) -> None:
+            self._chat_turn_local = threading.local()
+            self._last_chat_tool_calls = 0
+            self._barrier = threading.Barrier(2)
+
+        def chat(self, message: str, **kwargs: Any) -> str:
+            count = int(message)
+            self._chat_turn_local.tool_calls = count
+            self._last_chat_tool_calls = count
+            self._barrier.wait(timeout=5)
+            return f"resp-{count}"
+
+    agent = StubAgent()
+
+    async def _scenario():
+        return await asyncio.gather(
+            asyncio.to_thread(run_sync_turn_with_tool_count, agent, "1"),
+            asyncio.to_thread(run_sync_turn_with_tool_count, agent, "2"),
+        )
+
+    results = asyncio.run(_scenario())
+    assert sorted(results) == [("resp-1", 1), ("resp-2", 2)]
+
+
+def test_run_sync_turn_tool_count_falls_back_to_shared_attribute():
+    # Agents without the per-thread metadata channel (test fakes, stubs)
+    # still report via the legacy shared attribute.
+    from nymeria.api.routers.chat import run_sync_turn_with_tool_count
+
+    class LegacyAgent:
+        _last_chat_tool_calls = 7
+
+        def chat(self, message: str, **kwargs: Any) -> str:
+            return "r"
+
+    assert run_sync_turn_with_tool_count(LegacyAgent(), "m") == ("r", 7)
+
+
+def test_startup_handler_resizes_default_executor(
+    tmp_path: Path,
+    api_client_builder,
+):
+    # create_api_app registers a startup handler that installs a right-sized
+    # default executor (the stock one is only min(32, cores + 4) threads and
+    # carries nearly all of the runtime's blocking work).
+    settings = api_client_builder.settings(
+        tmp_path, default_executor_max_workers=9
+    )
+    agent = FakeChatAgent(tmp_path)
+    client = api_client_builder.client(agent, settings)
+
+    handlers = [
+        h
+        for h in client.app.router.on_startup
+        if getattr(h, "__name__", "") == "_resize_default_executor"
+    ]
+    assert len(handlers) == 1
+
+    async def _scenario():
+        import threading
+
+        await handlers[0]()
+        loop = asyncio.get_running_loop()
+        name = await loop.run_in_executor(
+            None, lambda: threading.current_thread().name
+        )
+        return name, loop._default_executor._max_workers
+
+    name, max_workers = asyncio.run(_scenario())
+    assert name.startswith("nym-default")
+    assert max_workers == 9
 
 
 def test_chat_stream_preserves_sse_shape_and_attachment_conversion(

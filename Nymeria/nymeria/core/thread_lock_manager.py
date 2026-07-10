@@ -13,9 +13,67 @@ cooperative cancellation.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from typing import Any, Dict, Optional
+
+# Poll granularity for the async wait helpers below. The waits they serve are
+# short by construction (a holder releasing at a sub-turn boundary), so a
+# coarse interval costs little latency while keeping the loop free.
+_ASYNC_WAIT_POLL_INTERVAL = 0.05
+
+
+async def async_lock_acquire(
+    lock: threading.Lock,
+    timeout: float,
+    poll_interval: float = _ASYNC_WAIT_POLL_INTERVAL,
+) -> bool:
+    """Bounded, cancellation-safe lock wait for async callers.
+
+    Polls ``lock.acquire(blocking=False)`` between ``asyncio.sleep`` yields
+    under a monotonic deadline instead of parking an executor thread on a
+    blocking ``acquire()``. The thread-parking pattern
+    (``wait_for(to_thread(lock.acquire))``) is unsafe: cancellation cannot
+    interrupt a thread blocked inside ``Lock.acquire()``, so a timeout or a
+    cancelled caller strands the worker thread, and when the holder later
+    releases, the orphaned ``acquire()`` takes the lock with no coroutine left
+    to release it (a permanent per-thread wedge). Polling makes that leak
+    structurally impossible: cancellation lands in ``asyncio.sleep`` with the
+    lock untaken, and no executor slot is ever consumed.
+
+    Returns True if the lock was acquired, False on timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if lock.acquire(blocking=False):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(min(poll_interval, max(deadline - time.monotonic(), 0)))
+
+
+async def async_event_wait(
+    event: threading.Event,
+    timeout: float,
+    poll_interval: float = _ASYNC_WAIT_POLL_INTERVAL,
+) -> bool:
+    """Bounded wait for a ``threading.Event`` without occupying an executor.
+
+    Same rationale as ``async_lock_acquire``: ``run_in_executor(None,
+    event.wait, timeout)`` parks a scarce default-pool thread doing nothing
+    for up to the full timeout. Polling ``is_set()`` keeps the wait free and
+    cancellation-safe (an Event has no leak hazard, only the wasted slot).
+
+    Returns True if the event was set, False on timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if event.is_set():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(min(poll_interval, max(deadline - time.monotonic(), 0)))
 
 
 class ThreadLockManager:

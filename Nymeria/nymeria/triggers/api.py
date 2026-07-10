@@ -762,6 +762,25 @@ def create_api_app(
         openapi_url="/openapi.json" if api_docs_enabled else None,
     )
 
+    async def _resize_default_executor() -> None:
+        # The API process is the single agent runtime, and nearly all of its
+        # blocking work (to_thread / run_in_executor(None, ...)) funnels
+        # through the asyncio default executor, whose stock size is only
+        # min(32, cpu_count + 4) threads (8 on a 4-core host). Threads here
+        # are cheap blocking-I/O waiters, so size for concurrency, not cores.
+        # asyncio's own loop shutdown drains the executor at exit.
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        max_workers = settings.default_executor_max_workers
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="nym-default",
+            )
+        )
+        logger.info(f"Default executor sized to {max_workers} workers")
+
     async def _close_provider_http_pools() -> None:
         from ..vendor.react_agent.providers import (
             close_provider_async_http_pools_for_loop,
@@ -778,6 +797,7 @@ def create_api_app(
         except Exception:
             logger.exception("Failed to stop agent ticker during API shutdown")
 
+    app.router.add_event_handler("startup", _resize_default_executor)
     app.router.add_event_handler("shutdown", _close_provider_http_pools)
     app.router.add_event_handler("shutdown", _stop_agent_ticker)
     app.router.add_event_handler("shutdown", _drain_observe_hooks)

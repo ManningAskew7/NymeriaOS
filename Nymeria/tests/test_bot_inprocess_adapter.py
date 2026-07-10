@@ -381,6 +381,27 @@ def test_chat_returns_response_and_tool_count():
     assert result == {"response": "the-response", "thread_id": "t1", "tool_call_count": 3}
 
 
+def test_chat_runs_turn_off_event_loop():
+    # The sync turn must dispatch via to_thread: running it inline in the
+    # async adapter would freeze the whole event loop for the turn's duration.
+    api, agent = _make_adapter()
+    on_loop: list[bool] = []
+
+    def _recording_chat(message, *, thread_id, user_id):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return "the-response"
+
+    agent.chat = _recording_chat
+    result = _run(api.chat("hi", "t1", "u1"))
+
+    assert result["response"] == "the-response"
+    assert on_loop == [False]
+
+
 def test_list_chatapp_bindings_maps_fields():
     api, agent = _make_adapter()
     agent.chat_bindings_repo.global_bindings = [

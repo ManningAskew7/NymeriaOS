@@ -5,11 +5,13 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from html import escape as html_escape
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
@@ -24,6 +26,27 @@ from ..schemas.system import (
 logger = logging.getLogger(__name__)
 
 _READINESS_CACHE_SECONDS = 1.0
+
+# The readiness probe's blocking dependency checks (a real Postgres connect,
+# a real Redis ping) run on this dedicated single thread rather than the
+# asyncio default executor: /ready must never report the process unready
+# because unrelated blocking work saturated the shared pool, since an
+# orchestrator restarting the single agent runtime turns transient load into
+# an outage. One thread suffices: probes are cached and serialized behind
+# ``readiness_lock``.
+_readiness_executor: Optional[ThreadPoolExecutor] = None
+_readiness_executor_lock = threading.Lock()
+
+
+def _get_readiness_executor() -> ThreadPoolExecutor:
+    global _readiness_executor
+    with _readiness_executor_lock:
+        if _readiness_executor is None:
+            _readiness_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="readiness",
+            )
+        return _readiness_executor
 
 # /health/stream emission shape. The inter-event interval must stay well
 # above the SSE_MIN_SPREAD_SECONDS threshold in setup/external_access.py, or
@@ -222,7 +245,9 @@ def create_system_router(
                     response.status_code = 503
                 return cached
 
-            readiness = await asyncio.to_thread(_build_readiness, settings)
+            readiness = await asyncio.get_running_loop().run_in_executor(
+                _get_readiness_executor(), _build_readiness, settings
+            )
             readiness_cache["value"] = readiness
             readiness_cache["expires_at"] = time.monotonic() + _READINESS_CACHE_SECONDS
 

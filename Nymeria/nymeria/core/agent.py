@@ -45,7 +45,7 @@ from .memory_index import MemoryIndex
 from .hook_manager import HookManager
 from .thread_config import ThreadConfigManager
 from .thread_metadata import ThreadMetadataManager
-from .thread_lock_manager import ThreadLockManager
+from .thread_lock_manager import ThreadLockManager, async_event_wait, async_lock_acquire
 from .time_utils import utc_now
 from .checkpointer_config import (
     build_async_checkpointer_config,
@@ -455,6 +455,12 @@ class NymeriaAgent:
 
         # Per-thread locking to prevent concurrent access (ticker vs API)
         self._thread_locks = ThreadLockManager()
+        # Per-worker-thread metadata for sync chat() turns. Sync turns run
+        # concurrently on executor threads (asyncio.to_thread), so the legacy
+        # shared _last_chat_tool_calls attribute races between overlapping
+        # turns; callers that dispatched chat() to a worker read this
+        # thread-local from that same thread instead (race-free).
+        self._chat_turn_local = threading.local()
         # Maps callable tool names to their thread IDs (for auto-abort on timeout)
         self._callable_tool_thread_map: Dict[str, str] = {}
         # Tracks active parent→children callable invocations for cascading abort
@@ -2042,6 +2048,12 @@ class NymeriaAgent:
         Returns:
             Agent's response as a string
         """
+        # Reset this worker thread's turn metadata FIRST so every early
+        # return (empty message, attachment error, busy, queued-and-absorbed)
+        # reports 0 tool calls instead of a stale count from a previous turn
+        # that ran on the same pooled thread.
+        self._chat_turn_local.tool_calls = 0
+
         if not message.strip():
             return "Please provide a message."
 
@@ -2370,8 +2382,13 @@ class NymeriaAgent:
                         f"\n\n---\n**Note:** {self._turn_safety_content(safety)}"
                     )
 
-                # Store tool call count from this turn for callers that need metadata
-                self._last_chat_tool_calls = self._count_current_turn_tool_calls(messages)
+                # Store tool call count from this turn for callers that need
+                # metadata. The thread-local is the race-free channel for
+                # callers reading from the worker thread that ran this turn;
+                # the shared attribute stays for legacy/off-thread readers.
+                turn_tool_calls = self._count_current_turn_tool_calls(messages)
+                self._last_chat_tool_calls = turn_tool_calls
+                self._chat_turn_local.tool_calls = turn_tool_calls
 
                 # Context management: sliding window trim (auto-compact handled pre-flight)
                 if self.settings.context_management == "sliding_window":
@@ -2646,19 +2663,15 @@ class NymeriaAgent:
 
         # Acquire per-thread lock (try non-blocking first to detect contention)
         lock = self._thread_locks.get_lock(thread_id)
-        acquired = await asyncio.to_thread(lock.acquire, False)
+        # Non-blocking try never blocks; no reason to hop through the executor.
+        acquired = lock.acquire(blocking=False)
         if not acquired and backend.is_releasing(thread_id):
             yield {
                 "type": "queued",
                 "content": "Waiting for current turn to finish...",
             }
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(lock.acquire),
-                    timeout=self.settings.lock_timeout,
-                )
-                acquired = True
-            except asyncio.TimeoutError:
+            acquired = await async_lock_acquire(lock, self.settings.lock_timeout)
+            if not acquired:
                 logger.warning(f"Thread {thread_id}: Lock acquisition timed out in astream()")
                 yield {"type": "error", "content": "Thread is busy. Please try again."}
                 return
@@ -2710,13 +2723,8 @@ class NymeriaAgent:
                     "type": "queued",
                     "content": "Waiting for current turn to finish...",
                 }
-                try:
-                    await asyncio.wait_for(
-                        asyncio.to_thread(lock.acquire),
-                        timeout=self.settings.lock_timeout,
-                    )
-                    acquired = True
-                except asyncio.TimeoutError:
+                acquired = await async_lock_acquire(lock, self.settings.lock_timeout)
+                if not acquired:
                     logger.warning(f"Thread {thread_id}: Lock acquisition timed out in astream()")
                     yield {"type": "error", "content": "Thread is busy. Please try again."}
                     return
@@ -2765,9 +2773,8 @@ class NymeriaAgent:
                         yield evt
                 else:
                     # Fire-and-forget path: just wait for absorption.
-                    wait_ok = await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        pending.notify_event.wait,
+                    wait_ok = await async_event_wait(
+                        pending.notify_event,
                         self.settings.lock_timeout,
                     )
                     if pending.abandoned:

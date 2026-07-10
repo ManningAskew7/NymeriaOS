@@ -17,6 +17,7 @@ byte-identical apart from three per-platform axes, now injected:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any, Optional, cast
@@ -260,13 +261,24 @@ class InProcessBotAPI:
         yield done
 
     async def chat(self, message: str, thread_id: str, user_id: str) -> dict[str, Any]:
+        from .chat import run_sync_turn_with_tool_count
+
         authed = self._authenticated_user(user_id)
         self._require_thread_access(authed, thread_id)
-        response = self.agent.chat(message, thread_id=thread_id, user_id=user_id)
+        # Off the event loop: the sync turn would otherwise block every
+        # stream and probe in the process until it finishes. The tool count
+        # is read on the same worker thread (race-free under concurrency).
+        response, tool_call_count = await asyncio.to_thread(
+            run_sync_turn_with_tool_count,
+            self.agent,
+            message,
+            thread_id=thread_id,
+            user_id=user_id,
+        )
         return {
             "response": response,
             "thread_id": thread_id,
-            "tool_call_count": getattr(self.agent, "_last_chat_tool_calls", 0),
+            "tool_call_count": tool_call_count,
         }
 
     def _authenticated_user(self, user_id: Optional[str]) -> AuthenticatedUser:

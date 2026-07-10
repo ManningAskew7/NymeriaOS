@@ -42,6 +42,7 @@ def _slim_settings(tmp_path: Path) -> Any:
         api_port=8000,
         api_docs_enabled=False,
         nymeria_debug=False,
+        default_executor_max_workers=32,
         cors_origins_list=["http://localhost:1420"],
     )
 

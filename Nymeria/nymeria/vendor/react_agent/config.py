@@ -91,6 +91,12 @@ class CheckpointerConfig:
     postgres_pool_min_size: int = 1
     postgres_pool_max_size: int = 10
 
+    # Worker-thread ceiling for the process-wide checkpoint executor that
+    # async paths dispatch blocking checkpoint I/O on (sqlite and postgres).
+    # The first checkpointer created in the process fixes the size for the
+    # process lifetime.
+    checkpoint_executor_max_workers: int = 8
+
     # For custom checkpointers
     custom_checkpointer: Optional[object] = field(default=None, repr=False)
 
