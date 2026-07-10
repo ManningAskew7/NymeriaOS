@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -90,6 +91,92 @@ def test_checkpoint_saver_wrapper_runs_async_methods_through_same_saver():
         ("put", "cfg", {"id": 1}, {"source": "test"}, {"v": 2}),
         ("put_writes", "cfg", [("channel", "value")], "task-1"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Dedicated checkpoint executor: async ops dispatch on a bounded process-wide
+# pool (thread prefix "checkpoint"), never the asyncio default executor, so
+# persistence cannot queue behind unrelated blocking work.
+# ---------------------------------------------------------------------------
+
+
+class ThreadRecordingSaver(FakeSyncSaver):
+    def __init__(self):
+        super().__init__()
+        self.thread_names: list[str] = []
+
+    def get_tuple(self, config):
+        self.thread_names.append(threading.current_thread().name)
+        return super().get_tuple(config)
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        self.thread_names.append(threading.current_thread().name)
+        return super().put(config, checkpoint, metadata, new_versions)
+
+
+def test_async_ops_run_on_dedicated_checkpoint_threads():
+    close_checkpointer_connections()
+    try:
+        saver = ThreadRecordingSaver()
+        wrapper = AsyncCheckpointSaverWrapper(saver, "Test")
+
+        async def run():
+            await wrapper.aget_tuple("cfg")
+            await wrapper.aput("cfg", {"id": 1}, {}, {})
+
+        asyncio.run(run())
+        assert saver.thread_names, "async ops never dispatched"
+        assert all(name.startswith("checkpoint") for name in saver.thread_names)
+    finally:
+        close_checkpointer_connections()
+
+
+def test_checkpoint_executor_sized_by_first_config(tmp_path):
+    close_checkpointer_connections()
+    try:
+        create_checkpointer(
+            CheckpointerConfig(
+                backend="sqlite",
+                sqlite_path=str(tmp_path / "a.db"),
+                checkpoint_executor_max_workers=3,
+            )
+        )
+        executor = graph_module._get_checkpoint_executor()
+        assert executor._max_workers == 3
+
+        # First build wins: a later config with a different size is ignored
+        # once the executor exists.
+        create_checkpointer(
+            CheckpointerConfig(
+                backend="sqlite",
+                sqlite_path=str(tmp_path / "a.db"),
+                checkpoint_executor_max_workers=12,
+            )
+        )
+        assert graph_module._get_checkpoint_executor() is executor
+        assert executor._max_workers == 3
+    finally:
+        close_checkpointer_connections()
+
+
+def test_close_checkpointer_connections_resets_checkpoint_executor():
+    close_checkpointer_connections()
+    try:
+        executor = graph_module._get_checkpoint_executor()
+        assert graph_module._checkpoint_executor is executor
+
+        close_checkpointer_connections()
+
+        assert graph_module._checkpoint_executor is None
+        assert (
+            graph_module._checkpoint_executor_workers
+            == graph_module._CHECKPOINT_EXECUTOR_DEFAULT_WORKERS
+        )
+        # The old executor is shut down; a fresh one is created on next use.
+        fresh = graph_module._get_checkpoint_executor()
+        assert fresh is not executor
+    finally:
+        close_checkpointer_connections()
 
 
 def test_vendor_graph_has_single_async_checkpoint_wrapper_class():

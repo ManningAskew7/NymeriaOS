@@ -7,9 +7,11 @@ Supports multiple checkpointer backends and custom tools.
 
 import asyncio
 import atexit
+import functools
 import logging
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Any, cast
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, END
@@ -28,6 +30,48 @@ _shared_db_path: Optional[str] = None
 
 logger = logging.getLogger(__name__)
 
+# Checkpoint I/O runs on this dedicated, bounded pool rather than the asyncio
+# default executor (mirroring the MCP-call pool in core/mcp_manager.py):
+# LangGraph persists a checkpoint at every super-step, and conversation
+# persistence is the worst work to queue behind unrelated blocking calls
+# (voice, OAuth, credential probes) on a saturated shared pool. The first
+# checkpointer created in the process fixes the size for the process lifetime
+# (see CheckpointerConfig.checkpoint_executor_max_workers).
+_CHECKPOINT_EXECUTOR_DEFAULT_WORKERS = 8
+_checkpoint_executor: Optional[ThreadPoolExecutor] = None
+_checkpoint_executor_workers: int = _CHECKPOINT_EXECUTOR_DEFAULT_WORKERS
+_checkpoint_executor_lock = threading.Lock()
+
+
+def _configure_checkpoint_executor(max_workers: int) -> None:
+    """Record the executor size; a no-op once the executor exists."""
+    global _checkpoint_executor_workers
+    if max_workers < 1:
+        return
+    with _checkpoint_executor_lock:
+        if _checkpoint_executor is None:
+            _checkpoint_executor_workers = max_workers
+
+
+def _get_checkpoint_executor() -> ThreadPoolExecutor:
+    """Return the process-wide bounded executor for checkpoint I/O."""
+    global _checkpoint_executor
+    with _checkpoint_executor_lock:
+        if _checkpoint_executor is None:
+            _checkpoint_executor = ThreadPoolExecutor(
+                max_workers=_checkpoint_executor_workers,
+                thread_name_prefix="checkpoint",
+            )
+        return _checkpoint_executor
+
+
+async def _run_checkpoint_op(func, /, *args, **kwargs):
+    """Dispatch one blocking checkpoint call on the dedicated executor."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _get_checkpoint_executor(), functools.partial(func, *args, **kwargs)
+    )
+
 
 class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
     """Expose sync checkpoint savers through both sync and async interfaces.
@@ -44,7 +88,7 @@ class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
     async def aget_tuple(self, config):
         logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.aget_tuple config={config}")
         try:
-            result = await asyncio.to_thread(self._saver.get_tuple, config)
+            result = await _run_checkpoint_op(self._saver.get_tuple, config)
             logger.debug(f"[CHECKPOINT] aget_tuple result: {type(result).__name__}, has_checkpoint={result is not None}")
             return result
         except Exception as e:
@@ -53,14 +97,14 @@ class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
 
     async def alist(self, config, *, filter=None, before=None, limit=None):
         logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.alist called")
-        return await asyncio.to_thread(
+        return await _run_checkpoint_op(
             self._saver.list, config, filter=filter, before=before, limit=limit
         )
 
     async def aput(self, config, checkpoint, metadata, new_versions):
         logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.aput new_versions={new_versions}")
         try:
-            result = await asyncio.to_thread(
+            result = await _run_checkpoint_op(
                 self._saver.put, config, checkpoint, metadata, new_versions
             )
             logger.debug("[CHECKPOINT] aput SUCCESS")
@@ -71,7 +115,7 @@ class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
 
     async def aput_writes(self, config, writes, task_id):
         logger.debug(f"[CHECKPOINT] {self._backend_label}Wrapper.aput_writes task_id={task_id}")
-        return await asyncio.to_thread(
+        return await _run_checkpoint_op(
             self._saver.put_writes, config, writes, task_id
         )
 
@@ -236,6 +280,19 @@ def _get_async_sqlite_wrapper(db_path: str) -> AsyncCheckpointSaverWrapper:
 def close_checkpointer_connections():
     """Close database connections on shutdown."""
     global _shared_sqlite_conn, _shared_sqlite_saver, _async_sqlite_wrapper
+    global _checkpoint_executor, _checkpoint_executor_workers
+
+    # Drain the checkpoint executor before closing the stores beneath it, so
+    # an in-flight write finishes against a live connection. Queued-but-not-
+    # started ops are cancelled.
+    with _checkpoint_executor_lock:
+        if _checkpoint_executor is not None:
+            try:
+                _checkpoint_executor.shutdown(wait=True, cancel_futures=True)
+            except Exception as e:
+                logger.warning(f"Error shutting down checkpoint executor: {e}")
+            _checkpoint_executor = None
+        _checkpoint_executor_workers = _CHECKPOINT_EXECUTOR_DEFAULT_WORKERS
 
     if _shared_sqlite_conn:
         try:
@@ -274,6 +331,9 @@ def create_checkpointer(config: CheckpointerConfig) -> Optional[BaseCheckpointSa
         Checkpointer instance or None
     """
     logger.info(f"[CHECKPOINT] create_checkpointer backend={config.backend}")
+
+    # First build wins; harmless for backends that never touch the executor.
+    _configure_checkpoint_executor(config.checkpoint_executor_max_workers)
 
     if config.custom_checkpointer is not None:
         logger.info(f"[CHECKPOINT] Using custom: {type(config.custom_checkpointer).__name__}")

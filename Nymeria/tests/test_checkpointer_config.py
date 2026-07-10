@@ -27,6 +27,7 @@ def _fake_settings(
     postgres_uri: str | None = None,
     postgres_pool_min_size: int = 1,
     postgres_pool_max_size: int = 10,
+    checkpoint_executor_max_workers: int = 8,
 ) -> Any:
     """SimpleNamespace stand-in for ``Settings`` exposing the attrs the builders read."""
     return SimpleNamespace(
@@ -35,6 +36,7 @@ def _fake_settings(
         postgres_uri=postgres_uri,
         postgres_pool_min_size=postgres_pool_min_size,
         postgres_pool_max_size=postgres_pool_max_size,
+        checkpoint_executor_max_workers=checkpoint_executor_max_workers,
     )
 
 
@@ -135,6 +137,27 @@ def test_build_checkpointer_config_postgres_clamps_inverted_pool_sizes(
     assert any(
         "POSTGRES_POOL_MAX_SIZE" in r.getMessage() for r in caplog.records
     )
+
+
+def test_builders_thread_checkpoint_executor_workers(tmp_path: Path):
+    pg = _fake_settings(
+        database_backend="postgres",
+        postgres_uri="postgresql://user:pw@host/db",
+        checkpoint_executor_max_workers=4,
+    )
+    lite = _fake_settings(
+        database_backend="sqlite",
+        db_path=tmp_path / "ckpt.db",
+        checkpoint_executor_max_workers=4,
+    )
+
+    for cfg in (
+        build_checkpointer_config(cast(Any, pg)),
+        build_async_checkpointer_config(cast(Any, pg)),
+        build_checkpointer_config(cast(Any, lite)),
+        build_async_checkpointer_config(cast(Any, lite)),
+    ):
+        assert cfg.checkpoint_executor_max_workers == 4
 
 
 def test_build_async_checkpointer_config_sqlite_uses_async_wrapper(tmp_path: Path):

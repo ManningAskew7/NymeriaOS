@@ -360,6 +360,36 @@ def test_public_ready_returns_503_when_dependency_fails(
     }
 
 
+def test_public_ready_probes_on_dedicated_readiness_thread(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    # The blocking dependency checks must run on the dedicated single-thread
+    # "readiness" executor, never the asyncio default executor, so a
+    # saturated shared pool cannot make the process look unready (and invite
+    # an orchestrator restart of the only agent runtime).
+    import threading
+
+    from nymeria.api.routers import system as system_module
+
+    recorded: list[str] = []
+    real_build = system_module._build_readiness
+
+    def _recording_build(settings):
+        recorded.append(threading.current_thread().name)
+        return real_build(settings)
+
+    monkeypatch.setattr(system_module, "_build_readiness", _recording_build)
+    client, _agent = _client(tmp_path, api_client_builder)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert recorded, "readiness probe never ran the dependency checks"
+    assert all(name.startswith("readiness") for name in recorded)
+
+
 def test_api_responses_include_baseline_security_headers(
     tmp_path: Path,
     api_client_builder,
