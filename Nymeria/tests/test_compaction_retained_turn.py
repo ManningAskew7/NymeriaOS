@@ -237,6 +237,18 @@ _REQUIRED_SECTIONS = (
 )
 
 
+def test_compact_prompt_forbids_answering_the_user():
+    # Backlog #84: the summary turn is an internal handoff. Without an explicit
+    # directive the model answers the user's still-pending question instead of
+    # writing the handoff (observed live 2026-07-10). Pin the directive.
+    assert "internal handoff, not a reply" in COMPACT_PROMPT
+    assert "Do not answer" in COMPACT_PROMPT
+    assert "never a reply to the user" in COMPACT_PROMPT
+    # Pending answers are deferred to the resumed session, not written here.
+    directive_pos = COMPACT_PROMPT.index("internal handoff")
+    assert directive_pos < COMPACT_PROMPT.index(_SECTIONS_ANCHOR)
+
+
 def test_build_compact_prompt_no_priority_is_base_prompt():
     # Auto-compaction passes no priority: the base prompt must stay
     # byte-identical (the addendum must never leak onto the no-priority path).

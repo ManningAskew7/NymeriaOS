@@ -81,6 +81,8 @@ The summary prompt requires these exact sections:
 
 The `RAG Search Queries` section should contain 3-5 quoted search strings that target important decisions, findings, file paths, and task state from the compacted thread. These are hints for the next agent turn to retrieve the full preserved conversation from RAG when the summary alone is not enough.
 
+The prompt also frames the summary as an internal handoff, not a reply: the output is notes to the agent's future self, typically never shown to the user, and the model is explicitly told not to answer, greet, or address the user or respond to a still-pending question (open questions belong under `## Pending Work` for the resumed session to answer). Without this directive, a compaction firing while a user question was still open (common on the sub-turn path) tended to produce an answer to the user instead of the handoff, and that answer was then lost with the discarded compaction turn.
+
 ### Steering the summary (`/compact <focus instruction>`)
 
 A manual `/compact` may carry an optional free-text focus instruction, for example `/compact keep the exact auth-flow decisions and the failing test names`. The text is normalized (trimmed, control-character stripped, `<<<`/`>>>` fence markers removed, capped at 1,000 chars; empty collapses to none) and, when present, inserts a one-line primer before the section list and appends a focus addendum after the base prompt.

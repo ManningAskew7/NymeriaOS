@@ -78,6 +78,13 @@ The conversation is getting long and is being summarized. The older messages
 will be replaced by your summary plus your reloaded persistent memory, so write
 the summary so that you (or a fresh session) can continue seamlessly.
 
+**This is an internal handoff, not a reply.** The user will typically never
+see this output; it exists only as notes to your future self. Do not answer,
+greet, or address the user, and do not respond to any pending or unanswered
+question in the conversation, even if the last user message is still open.
+Record open questions under "Pending Work" so the resumed session can answer
+them with full context.
+
 Before summarizing, persist anything important so it survives the trim:
 - Durable facts (user identity, lasting preferences, project names, technical
   constraints) -> memory_add(scope="global", key=..., content=...)
@@ -130,6 +137,7 @@ Format as a bulleted list of quoted strings.
 **Rules:**
 - Be specific: exact file paths, variable names, error messages
 - If you were mid-task, record precisely where you stopped and the next step
+- Write session-state notes to your future self, never a reply to the user
 - Omit greetings, failed-then-corrected attempts, verbose tool outputs
 - Aim for under 1500 words total"""
 
