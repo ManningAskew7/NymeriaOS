@@ -359,6 +359,31 @@ def test_python_tool_subprocess_contains_process_exit():
     assert "7" in result.error_message
 
 
+def test_python_tool_subprocess_stdlib_import_not_shadowed():
+    # The runner launches by file path, so its own directory (nymeria/core)
+    # would otherwise sit on sys.path[0] and shadow a stdlib module a user tool
+    # imports (``import secrets`` -> nymeria/core/secrets.py, whose token_hex
+    # does not exist). Regression guard for that fix.
+    config = PythonToolConfig(
+        source_code=(
+            "def run() -> str:\n"
+            "    import secrets\n"
+            "    return secrets.token_hex(4)\n"
+        )
+    )
+
+    result = run_python_tool_subprocess(
+        tool_id="stdlib_secrets",
+        config=config,
+        params={},
+        timeout_seconds=10,
+    )
+
+    assert result.ok is True, result.error_message
+    assert len(result.result) == 8
+    int(result.result, 16)  # valid hex, i.e. the real stdlib module ran
+
+
 def test_custom_tool_loader_registers_python_wrapper_without_importing_user_code(tmp_path):
     loader = CustomToolLoader(tmp_path / "custom_tools")
     parameters = {

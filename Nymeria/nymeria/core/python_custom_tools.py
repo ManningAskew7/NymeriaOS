@@ -6,19 +6,26 @@ import ast
 import hashlib
 import json
 import logging
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from ..config import get_settings
 from ..oom import oom_score_preexec
+from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
 from ..tools.definitions.custom_tool_schema import PythonToolConfig, ToolParameter
 from .http_policy import SECRET_PATTERNS
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
+
+# The runner is stdlib-only and self-contained. Launch it by FILE PATH (not
+# ``-m nymeria.core.python_tool_runner``) so the child never imports the
+# ``nymeria`` package, which keeps a scrubbed, deny-by-default environment from
+# disturbing package import and mirrors how the workflow runner is launched.
+_RUNNER_PATH = Path(__file__).with_name("python_tool_runner.py")
 
 DEFAULT_VALIDATION_TIMEOUT_SECONDS = 60
 MIN_VALIDATION_TIMEOUT_SECONDS = 5
@@ -273,11 +280,14 @@ def run_python_tool_subprocess(
         "entrypoint": config.entrypoint,
         "params": params,
     }
-    env = os.environ.copy()
+    # Custom tool code often makes outbound HTTPS calls, so opt the non-secret
+    # network/CA/runtime vars back in (proxy, custom CA, XDG); Nymeria's own
+    # secrets stay excluded.
+    env = scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH)
     env["PYTHONUNBUFFERED"] = "1"
     try:
         completed = subprocess.run(
-            [sys.executable, "-m", "nymeria.core.python_tool_runner"],
+            [sys.executable, str(_RUNNER_PATH)],
             input=json.dumps(payload, ensure_ascii=False),
             cwd=str(get_settings().project_root),
             env=env,

@@ -1485,10 +1485,17 @@ def _download(url: str, dest: Path) -> None:
 
 
 def _run(cmd: List[str], logs: List[str], *, cwd: Optional[Path] = None, timeout: int = 120) -> None:
+    # Install commands (npm/pip/git) run untrusted package build/postinstall
+    # scripts, so they get the same deny-by-default env as the runtime exec
+    # surfaces (never the API secrets), plus the non-secret network/CA vars a
+    # package fetch legitimately needs.
+    from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
+
     logs.append(f"$ {' '.join(cmd)}")
     proc = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
+        env=scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

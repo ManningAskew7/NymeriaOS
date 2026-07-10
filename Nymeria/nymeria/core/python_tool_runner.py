@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import io
 import json
+import os
 import sys
 import traceback
 from typing import Any
@@ -29,6 +30,12 @@ def _emit(payload: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    # Launched by file path, so sys.path[0] is this runner's own directory
+    # (nymeria/core), which would shadow stdlib modules a user tool imports
+    # (e.g. ``import secrets`` -> nymeria/core/secrets.py). Drop it so stdlib
+    # resolves normally; the nymeria package stays unimportable (not on path).
+    if sys.path and sys.path[0] == os.path.dirname(os.path.abspath(__file__)):
+        sys.path.pop(0)
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         source_code = str(payload.get("source_code") or "")
