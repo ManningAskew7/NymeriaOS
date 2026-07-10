@@ -9,7 +9,8 @@ import asyncio
 import atexit
 import logging
 import sqlite3
-from typing import Callable, List, Optional, Any
+import threading
+from typing import Callable, Dict, List, Optional, Any, cast
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -104,6 +105,74 @@ class AsyncCheckpointSaverWrapper(BaseCheckpointSaver):
 # Global async wrapper instance (wraps the shared SqliteSaver)
 _async_sqlite_wrapper: Optional[AsyncCheckpointSaverWrapper] = None
 
+# Shared Postgres connection pools, keyed by connection URI (in practice one
+# entry). Connections belong to the process-wide pool, never to individual
+# graphs: graph-cache eviction and rebuilds discard only lightweight saver
+# objects, and the pool's checkout-time liveness check replaces connections
+# that died (a Postgres restart, an idle timeout) without an API restart.
+_postgres_pools: Dict[str, Any] = {}
+_postgres_pool_lock = threading.Lock()
+
+# How long the first graph build may wait for the pool to reach min_size
+# and for pool checkouts to block when every connection is busy, before
+# raising. Mirrors psycopg_pool's own default.
+_POSTGRES_POOL_TIMEOUT = 30.0
+
+
+def _get_shared_postgres_pool(uri: str, min_size: int, max_size: int) -> Any:
+    """Get or create the shared checkpointer connection pool for a URI.
+
+    The first caller creates the pool (opened eagerly so an unreachable
+    server fails the build fast, like the previous direct connect did) and
+    runs ``PostgresSaver.setup()`` exactly once; later callers reuse the
+    pool as-is, so its sizing is fixed for the process lifetime. A pool
+    that fails to open or set up is closed and not cached, letting a later
+    build retry from scratch.
+    """
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg_pool import ConnectionPool  # type: ignore[import-untyped]
+
+    with _postgres_pool_lock:
+        pool = _postgres_pools.get(uri)
+        if pool is not None:
+            return pool
+
+        redacted = uri.split("@")[-1] if "@" in uri else "postgres"
+        # cast(Any, ...): psycopg_pool's generic ConnectionPool[CT] cannot be
+        # specialized to langgraph's Connection[DictRow] expectation here
+        # because the saver sets its row factory per cursor, not on the
+        # pooled connections.
+        pool = cast(Any, ConnectionPool(
+            uri,
+            min_size=min_size,
+            max_size=max_size,
+            # PostgresSaver.setup() runs CREATE INDEX CONCURRENTLY, which
+            # requires autocommit; prepare_threshold=0 matches langgraph's
+            # own from_conn_string() connections. The saver sets its row
+            # factory per cursor, so none is needed here.
+            kwargs={"autocommit": True, "prepare_threshold": 0},
+            check=ConnectionPool.check_connection,
+            name="nymeria-checkpointer",
+            timeout=_POSTGRES_POOL_TIMEOUT,
+            open=False,
+        ))
+        try:
+            pool.open(wait=True, timeout=_POSTGRES_POOL_TIMEOUT)
+            # One-time table creation / migration check per process.
+            PostgresSaver(pool).setup()
+        except Exception:
+            try:
+                pool.close()
+            except Exception as close_exc:  # noqa: BLE001
+                logger.warning(f"Error closing failed Postgres pool: {close_exc}")
+            raise
+        _postgres_pools[uri] = pool
+        logger.info(
+            f"[CHECKPOINT] Created shared Postgres pool for {redacted} "
+            f"(min={min_size}, max={max_size}); tables setup complete"
+        )
+        return pool
+
 
 def _init_sqlite_db(db_path: str) -> None:
     """Initialize SQLite database with WAL mode (one-time setup)."""
@@ -180,6 +249,15 @@ def close_checkpointer_connections():
     # Async wrapper just references the sync saver, no separate cleanup needed
     _async_sqlite_wrapper = None
 
+    with _postgres_pool_lock:
+        for pool in _postgres_pools.values():
+            try:
+                pool.close()
+                logger.info("Closed shared Postgres checkpointer pool")
+            except Exception as e:
+                logger.warning(f"Error closing Postgres checkpointer pool: {e}")
+        _postgres_pools.clear()
+
 
 # Register cleanup for graceful shutdown
 atexit.register(close_checkpointer_connections)
@@ -218,25 +296,25 @@ def create_checkpointer(config: CheckpointerConfig) -> Optional[BaseCheckpointSa
     elif config.backend == "postgres":
         try:
             from langgraph.checkpoint.postgres import PostgresSaver
-            import psycopg
             if not config.postgres_uri:
                 raise ValueError("Postgres backend requires postgres_uri")
 
-            # Create connection with autocommit=True for all operations
-            # PostgresSaver doesn't manage commits internally, so autocommit ensures
-            # each operation is immediately persisted
-            conn = psycopg.connect(config.postgres_uri, autocommit=True)
-            sync_saver = PostgresSaver(conn)
-            # Setup tables (requires autocommit for CREATE INDEX CONCURRENTLY)
-            sync_saver.setup()
-            logger.info("[CHECKPOINT] PostgreSQL tables setup complete")
-
-            # Keep autocommit=True so all writes are immediately committed
-            # (PostgresSaver doesn't handle transaction commits internally)
-
-            # Wrap in async-compatible wrapper
+            # All graphs draw connections from one bounded, process-wide
+            # pool (created and set up once). Each graph gets its own
+            # lightweight PostgresSaver so the saver's per-instance lock
+            # scopes checkpoint-I/O serialization to that graph rather
+            # than the whole process; evicting or rebuilding a graph
+            # discards no connection.
+            pool = _get_shared_postgres_pool(
+                config.postgres_uri,
+                config.postgres_pool_min_size,
+                config.postgres_pool_max_size,
+            )
+            sync_saver = PostgresSaver(pool)
             wrapper = AsyncCheckpointSaverWrapper(sync_saver, "Postgres")
-            logger.info(f"[CHECKPOINT] Created AsyncCheckpointSaverWrapper for {config.postgres_uri.split('@')[-1] if '@' in config.postgres_uri else 'postgres'}")
+            logger.debug(
+                f"[CHECKPOINT] Created pooled AsyncCheckpointSaverWrapper id={id(wrapper)}"
+            )
             return wrapper
         except ImportError as e:
             raise ImportError(

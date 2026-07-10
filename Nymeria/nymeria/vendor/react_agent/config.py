@@ -85,6 +85,11 @@ class CheckpointerConfig:
 
     # Postgres settings
     postgres_uri: Optional[str] = field(default_factory=lambda: os.getenv("POSTGRES_URI"))
+    # Shared checkpointer connection-pool bounds (postgres backend only).
+    # The first postgres checkpointer created in the process fixes the pool
+    # size for the process lifetime.
+    postgres_pool_min_size: int = 1
+    postgres_pool_max_size: int = 10
 
     # For custom checkpointers
     custom_checkpointer: Optional[object] = field(default=None, repr=False)

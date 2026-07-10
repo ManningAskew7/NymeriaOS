@@ -25,12 +25,16 @@ def _fake_settings(
     database_backend: str,
     db_path: Path | None = None,
     postgres_uri: str | None = None,
+    postgres_pool_min_size: int = 1,
+    postgres_pool_max_size: int = 10,
 ) -> Any:
     """SimpleNamespace stand-in for ``Settings`` exposing the attrs the builders read."""
     return SimpleNamespace(
         database_backend=database_backend,
         db_path=db_path,
         postgres_uri=postgres_uri,
+        postgres_pool_min_size=postgres_pool_min_size,
+        postgres_pool_max_size=postgres_pool_max_size,
     )
 
 
@@ -91,6 +95,46 @@ def test_build_checkpointer_config_postgres_ok():
     cfg = build_checkpointer_config(cast(Any, settings))
     assert cfg.backend == "postgres"
     assert cfg.postgres_uri == "postgresql://user:pw@host/db"
+    assert cfg.postgres_pool_min_size == 1
+    assert cfg.postgres_pool_max_size == 10
+
+
+def test_build_checkpointer_config_postgres_threads_pool_sizes():
+    settings = _fake_settings(
+        database_backend="postgres",
+        postgres_uri="postgresql://user:pw@host/db",
+        postgres_pool_min_size=2,
+        postgres_pool_max_size=6,
+    )
+
+    sync_cfg = build_checkpointer_config(cast(Any, settings))
+    async_cfg = build_async_checkpointer_config(cast(Any, settings))
+
+    for cfg in (sync_cfg, async_cfg):
+        assert cfg.postgres_pool_min_size == 2
+        assert cfg.postgres_pool_max_size == 6
+
+
+def test_build_checkpointer_config_postgres_clamps_inverted_pool_sizes(
+    caplog: pytest.LogCaptureFixture,
+):
+    # A max below min is lifted to min (with a warning) instead of refusing
+    # to start or handing psycopg_pool an invalid pair.
+    settings = _fake_settings(
+        database_backend="postgres",
+        postgres_uri="postgresql://user:pw@host/db",
+        postgres_pool_min_size=5,
+        postgres_pool_max_size=2,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        cfg = build_checkpointer_config(cast(Any, settings))
+
+    assert cfg.postgres_pool_min_size == 5
+    assert cfg.postgres_pool_max_size == 5
+    assert any(
+        "POSTGRES_POOL_MAX_SIZE" in r.getMessage() for r in caplog.records
+    )
 
 
 def test_build_async_checkpointer_config_sqlite_uses_async_wrapper(tmp_path: Path):

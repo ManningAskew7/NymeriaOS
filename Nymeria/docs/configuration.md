@@ -707,6 +707,8 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | `DATABASE_BACKEND` | `sqlite` | Backend type: `sqlite`, `postgres`, or `memory` |
 | `SQLITE_PATH` | `<data_dir>/nymeria.db` | SQLite database file location. Relative custom paths resolve from the runtime project root |
 | `POSTGRES_URI` | - | PostgreSQL connection string (if using postgres) |
+| `POSTGRES_POOL_MIN_SIZE` | `1` | Connections the shared LangGraph checkpointer pool keeps open (postgres only) |
+| `POSTGRES_POOL_MAX_SIZE` | `10` | Connection ceiling for the shared LangGraph checkpointer pool (postgres only). Sized at process start; a change needs a restart. Checkpoint ops dispatch on asyncio's default thread executor (min(32, cores+4) workers), so on hosts above ~6 cores consider raising this toward that worker count |
 | `USER_TIMEZONE` | `UTC` | IANA timezone used for time context and absolute schedule parsing. Docker also mirrors this into `TZ` so OS-level time output stays aligned. |
 
 ### API Server and Paths
