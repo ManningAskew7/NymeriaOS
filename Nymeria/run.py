@@ -1649,6 +1649,10 @@ Examples:
     from nymeria.cli import users as users_cli
     users_cli.build_parser(subparsers)
 
+    # Snapshot subcommand (user-data backup/restore)
+    from nymeria.cli import snapshot as snapshot_cli
+    snapshot_cli.build_parser(subparsers)
+
     # Completion subcommand
     from nymeria.triggers.cli.completion import SUPPORTED_SHELLS
     completion_parser = subparsers.add_parser(
@@ -1671,6 +1675,13 @@ def run_users(args: argparse.Namespace) -> int:
     return users_cli.dispatch(args)
 
 
+def run_snapshot(args: argparse.Namespace) -> int:
+    """Dispatch a ``snapshot`` subcommand against local state (no API needed)."""
+    from nymeria.cli import snapshot as snapshot_cli
+
+    return snapshot_cli.dispatch(args)
+
+
 class _Command(NamedTuple):
     """How ``main`` runs and validates one top-level subcommand.
 
@@ -1680,8 +1691,9 @@ class _Command(NamedTuple):
     full_validation: part of the server/bot set that runs the standard
                      ``validate_config(...)`` gate. ``cli``, ``service``, and
                      ``users`` validate conditionally and are handled explicitly
-                     in ``main``; everything else (init/doctor/reembed/completion)
-                     runs no config validation.
+                     in ``main``; everything else
+                     (init/doctor/reembed/snapshot/completion) runs no config
+                     validation.
     """
 
     runner: Callable[[argparse.Namespace], Optional[int]]
@@ -1707,6 +1719,7 @@ COMMANDS: dict[str, _Command] = {
     "claude-code-runner": _Command(run_claude_code_runner),
     "service": _Command(run_service),
     "users": _Command(run_users, exits=True),
+    "snapshot": _Command(run_snapshot, exits=True),
     "completion": _Command(run_completion),
 }
 
@@ -1744,9 +1757,11 @@ def main() -> None:
             _apply_fat_runtime_env()
 
     # Setup logging (except for service commands and STDIO MCP, which must keep
-    # stdout reserved for JSON-RPC messages. The MCP server configures stderr
-    # logging internally so client transports are not corrupted.
-    if args.command not in ("service", "mcp", "init", "doctor"):
+    # stdout reserved for JSON-RPC messages; the MCP server configures stderr
+    # logging internally so client transports are not corrupted. doctor and
+    # snapshot are skipped too: they print operator-facing check reports and
+    # must not interleave them with log lines.
+    if args.command not in ("service", "mcp", "init", "doctor", "snapshot"):
         setup_logging(args.log_level)
 
     if service_token_required:
@@ -1782,6 +1797,11 @@ def main() -> None:
         # Account CLI operates on the local DB directly; skip NYMERIA_API_KEY
         # check so the admin can provision users before the API is configured.
         validate_config(skip_api_key=True)
+    # `snapshot` deliberately runs NO config validation (like doctor): a
+    # disaster-recovery restore must work on a bare, half-configured host
+    # without validate_config offering to launch the setup wizard. The
+    # snapshot CLI loads settings itself and reports config problems in its
+    # own terms.
 
     # Run appropriate command via the COMMANDS registry. Resolve the runner
     # through the module namespace at call time (by name) rather than calling

@@ -733,6 +733,8 @@ in either mode. The token is written to `data/BOOTSTRAP_TOKEN.txt` regardless.
 | `NYMERIA_USER_REQUEST_RATE_LIMIT` | `300` | Per-user request cap per 60s on the expensive endpoints (`/chat`, `/chat/sync`, `/voice/*`, `/commands/execute`) to bound runaway LLM/STT spend from a compromised token. Admin-role callers (including the worker's autonomous-turn relay) are exempt. Set `0` to disable. |
 | `NYMERIA_MCP_ALLOW_UNAUTHENTICATED` | `false` | Escape hatch that disables inbound bearer auth on the MCP streamable-HTTP server. Leave off; only enable for a fully trusted, loopback-only local setup. |
 | `NYMERIA_DATA_DIR` | `<project_root>/data` | Override data directory path. For pipx/wheel installs, the project root defaults to `~/.nymeria`, so the effective default is `~/.nymeria/data` |
+| `NYMERIA_SNAPSHOTS_DIR` | `<data_dir>/snapshots` | Override where `snapshot create` writes user-data backup artifacts. See `docs/deployment/backup-and-restore.md` |
+| `NYMERIA_SNAPSHOT_PASSPHRASE` | - | Passphrase for `snapshot` create/verify/restore when running non-interactively (alternative to `--passphrase-file`). Never persisted by Nymeria; set it in the invoking environment only |
 | `NYMERIA_WORKSPACE_DIR` | `/workspace` | Workspace root for generated artifacts and optional file-tool confinement |
 | `NYMERIA_PROJECT_ROOT` | auto-detected | Override runtime project root resolution. Source launches use the checkout's `Nymeria/` root; packaged/frozen launches default to `~/.nymeria` |
 | `NYMERIA_CONFINE_FILE_TO_WORKSPACE` | `false` | When true, `file_write` and `file_edit` reject write targets outside `NYMERIA_WORKSPACE_DIR`. False keeps broad personal-assistant file access and relies on deployment sandboxing |
@@ -1534,6 +1536,7 @@ checkouts that defaults to `Nymeria/data/`; in packaged installs it defaults to
 | `data/logs/` | HTTP/API primitive tool audit logs (`audit_YYYYMMDD.jsonl`) |
 | `data/users/` | User profiles, memories, thread configs, activity logs, triggers |
 | `data/backups/` | Self-modification backups |
+| `data/snapshots/` | User-data snapshot artifacts (`snapshot-<utc>.nysnap`); see `docs/deployment/backup-and-restore.md` |
 | `data/custom_tools/` | Custom tool definitions (`{tool_id}.json`) |
 | `data/mcp_servers/` | MCP server configuration storage |
 | `data/notifications/` | User notification storage |
