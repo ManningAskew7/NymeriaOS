@@ -28,6 +28,7 @@ from .execution_environment import resolve_tool_working_directory
 from .utils import get_thread_id_or_none
 from ..config import get_settings
 from ..oom import with_tool_oom_score
+from ..subprocess_env import scrubbed_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +63,9 @@ _POST_EXIT_DRAIN_SECONDS = 0.3   # let the reader flush after the shell exits
 _POST_KILL_DRAIN_SECONDS = 0.5   # join the reader after the group is killed
 _TERM_GRACE_SECONDS = 2.0        # SIGTERM -> wait -> SIGKILL
 
-# Base environment exposed to bash commands. Matches the house convention used
-# by the workflow runner and the hooks run_command action: deny by default so
-# the API process's secrets (DB/Redis passwords, provider API keys, the service
-# token) never leak into command output or LLM context. Extra names can be
-# opted back in via the ``bash_env_passthrough`` setting.
-_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
+# Base environment exposed to bash commands is the shared deny-by-default
+# allowlist (nymeria/subprocess_env.py); extra names can be opted back in via
+# the ``bash_env_passthrough`` setting.
 
 # Strip ANSI/OSC escape sequences from command output so the model never copies
 # terminal control codes into files it writes and the text stays clean.
@@ -584,13 +582,13 @@ def _kill_process_group(proc, pgid: Optional[int]) -> None:
 
 
 def _scrubbed_env() -> dict:
-    names = set(_ENV_PASSTHROUGH)
+    extra: list[str] = []
     try:
-        extra = get_settings().bash_env_passthrough or ""
-        names.update(part.strip() for part in extra.split(",") if part.strip())
+        raw = get_settings().bash_env_passthrough or ""
+        extra = [part.strip() for part in raw.split(",") if part.strip()]
     except Exception:  # noqa: BLE001 - a settings hiccup must not break the tool
         pass
-    return {name: os.environ[name] for name in names if name in os.environ}
+    return scrubbed_subprocess_env(extra)
 
 
 def _get_abort_event(thread_id: Optional[str]):

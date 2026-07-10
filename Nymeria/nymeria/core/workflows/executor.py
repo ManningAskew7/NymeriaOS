@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ...subprocess_env import scrubbed_subprocess_env
 from .budget import BudgetUsage, WorkflowBudget
 from .envelope import (
     ERROR_KINDS,
@@ -48,7 +49,6 @@ from .trace import StepTrace, persist_run_record
 logger = logging.getLogger(__name__)
 
 RUNNER_PATH = Path(__file__).with_name("runner.py")
-_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
 # Grace between the wall-clock cap and the child's own socket-IO timeout so
 # the parent, not the child, is the one that decides a timeout.
 _CHILD_IO_SLACK_SECONDS = 30.0
@@ -83,7 +83,7 @@ def _discard_unfinished_suspension(approval: Optional[ApprovalRuntime]) -> None:
 
 
 def _scrubbed_env(run_id: str, user_id: str) -> dict:
-    env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
+    env = scrubbed_subprocess_env()
     env["PYTHONUNBUFFERED"] = "1"
     env["NYMERIA_WORKFLOW_RUN_ID"] = run_id
     env["NYMERIA_WORKFLOW_USER_ID"] = user_id

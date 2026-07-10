@@ -432,12 +432,13 @@ def webhook(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
 _RUN_COMMAND_READ_CAP = 50_000      # bytes read from stdout/stderr before truncation
 _RUN_COMMAND_INJECT_CAP = 10_000    # chars injected (matches InjectContextLogic.text)
 _RUN_COMMAND_MUTATE_TIMEOUT_CAP = 60.0  # in-band events cannot block the turn for long
-_RUN_COMMAND_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
 
 
 def _run_command_env(ctx: HookContext) -> Dict[str, str]:
     """Minimal environment for a run_command subprocess (no inherited secrets)."""
-    env = {k: os.environ[k] for k in _RUN_COMMAND_ENV_PASSTHROUGH if k in os.environ}
+    from ...subprocess_env import scrubbed_subprocess_env
+
+    env = scrubbed_subprocess_env()
     env["NYMERIA_HOOK_EVENT"] = ctx.event.value if isinstance(ctx.event, HookEvent) else str(ctx.event)
     env["NYMERIA_HOOK_THREAD_ID"] = ctx.thread_id or ""
     env["NYMERIA_HOOK_USER_ID"] = ctx.user_id or ""

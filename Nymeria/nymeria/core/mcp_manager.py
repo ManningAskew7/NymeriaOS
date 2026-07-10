@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..oom import with_tool_oom_score
+from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
 from ..tools.definitions.mcp_schema import MCPToolConfig
 from .http_policy import (
     HTTPPolicyRedirectLimit,
@@ -98,6 +99,43 @@ def _should_enforce_stdio_launch_allowlist() -> bool:
     except Exception:
         logger.debug("Failed to read MCP stdio allowlist setting", exc_info=True)
         return False
+
+
+def _build_stdio_env(config: MCPToolConfig) -> Dict[str, str]:
+    """Environment for an MCP stdio server subprocess.
+
+    A scrubbed, deny-by-default base (shared allowlist) plus the server's own
+    declared, credential-resolved ``env_vars``/``encrypted_env_vars``. The API
+    process's secrets (master key, DB/Redis creds, service token, provider
+    keys) are NOT inherited: a server that needs a value must declare it in its
+    ``env_vars`` (``${credential:...}``/``${env:...}`` references still resolve
+    against the parent environment; only the child's inherited base changes).
+    Non-secret network/CA/runtime vars are opted back in so npx/uvx/node servers
+    behind a proxy or custom CA keep working.
+    """
+    env = scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH)
+    used_credentials: set[str] = set()
+    for key, value in config.env_vars.items():
+        env[key] = resolve_env_and_credential_refs(
+            value,
+            target_type="mcp_server",
+            target_id=config.server_id or config.server_command,
+            used_credentials=used_credentials,
+            missing_env="empty",
+        )
+    if config.encrypted_env_vars:
+        from . import secrets as nymeria_secrets
+
+        for key, value in config.encrypted_env_vars.items():
+            env[key] = nymeria_secrets.decrypt(value)
+    if used_credentials:
+        logger.info(
+            "Resolved %d credential reference(s) for MCP server %s",
+            len(used_credentials),
+            config.server_id or config.server_command,
+        )
+    return env
+
 
 # Per-phase timeouts (seconds). MCPToolConfig.startup_timeout_seconds overrides INIT.
 INIT_TIMEOUT_DEFAULT = 10
@@ -303,26 +341,7 @@ class MCPServerManager:
             f"Starting MCP server (stdio): {config.server_command} {' '.join(config.server_args)}"
         )
 
-        env = os.environ.copy()
-        used_credentials: set[str] = set()
-        for key, value in config.env_vars.items():
-            env[key] = resolve_env_and_credential_refs(
-                value,
-                target_type="mcp_server",
-                target_id=config.server_id or config.server_command,
-                used_credentials=used_credentials,
-                missing_env="empty",
-            )
-        if config.encrypted_env_vars:
-            from . import secrets as nymeria_secrets
-            for key, value in config.encrypted_env_vars.items():
-                env[key] = nymeria_secrets.decrypt(value)
-        if used_credentials:
-            logger.info(
-                "Resolved %d credential reference(s) for MCP server %s",
-                len(used_credentials),
-                config.server_id or config.server_command,
-            )
+        env = _build_stdio_env(config)
 
         if _should_enforce_stdio_launch_allowlist():
             _validate_stdio_launch(config.server_command, config.server_args)
