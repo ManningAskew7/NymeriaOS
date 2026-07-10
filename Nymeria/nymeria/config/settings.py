@@ -245,6 +245,15 @@ class Settings(BaseSettings):
         description="Override data directory path (useful for Docker volumes)"
     )
 
+    # User-data snapshot (backup/restore) artifact directory override
+    nymeria_snapshots_dir: Optional[str] = Field(
+        default=None,
+        description=(
+            "Override the directory snapshot artifacts are written to "
+            "(default: <data_dir>/snapshots)"
+        ),
+    )
+
     # Redis Event Bus Configuration
     redis_url: Optional[str] = Field(
         default=None,
@@ -1785,6 +1794,20 @@ class Settings(BaseSettings):
     def backups_dir(self) -> Path:
         """Get the backups directory for self-modification."""
         return self.data_dir / "backups"
+
+    @property
+    def snapshots_dir(self) -> Path:
+        """Directory user-data snapshot artifacts are written to.
+
+        Distinct from backups_dir, which belongs to the self-modification
+        source-file rollback system.
+        """
+        if self.nymeria_snapshots_dir:
+            path = Path(self.nymeria_snapshots_dir).expanduser()
+            if path.is_absolute():
+                return path
+            return self.project_root / path
+        return self.data_dir / "snapshots"
 
     @property
     def custom_tools_dir(self) -> Path:

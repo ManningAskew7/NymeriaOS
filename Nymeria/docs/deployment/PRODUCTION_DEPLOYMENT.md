@@ -314,29 +314,35 @@ not worker uptime. Plan API restarts accordingly.
 
 ## Backup & Recovery
 
-### Data Locations
-
-| Data | Location | Backup Method |
-|------|----------|---------------|
-| LangGraph checkpoints | `postgres_data` PostgreSQL volume | `pg_dump` |
-| Accounts, tokens, chat bindings, credential vault | `/data/accounts.db` in `nymeria_data` | Volume backup plus secret-key backup |
-| Users, memories, TODOs, triggers, skills, MCP servers, custom tools | `/data/<runtime paths>` in `nymeria_data` | Volume backup |
-| Workspace files | `nymeria_workspace` | Volume backup |
-| Redis cache/pub-sub state | `redis_data` | Optional volume backup; not a conversation-history store |
-| Self-modifications | Host repo `./nymeria` (bind-mounted to `/app/nymeria`) | Git + host filesystem backup |
-
-### Backup Script
+Use the built-in snapshot CLI; it is the sanctioned backup path. It captures
+the `nymeria_data` volume (SQLite copied via the online backup API, so live
+WAL and rollback-journal databases cannot be torn), the Postgres checkpoint
+tables (one consistent transaction, no `pg_dump` needed), the durable
+workspace subtrees, and the `NYMERIA_SECRETS_KEY` vault key, all into one
+passphrase-encrypted artifact that restores a bare host. Full procedures,
+verification, and restore semantics: `backup-and-restore.md`.
 
 ```bash
-# Backup all volumes
-docker run --rm \
-  -v nymeria_data:/data \
-  -v $(pwd)/backup:/backup \
-  alpine tar czf /backup/nymeria-backup-$(date +%Y%m%d).tar.gz /data
-
-# Backup PostgreSQL
-docker exec nymeria-postgres pg_dump -U nymeria nymeria > backup.sql
+# Capture (stack may keep running) and copy the artifact off-host
+docker exec nymeria-api python run.py snapshot create
+docker cp nymeria-api:/data/snapshots/. ./snapshots-out/
 ```
+
+Raw volume copies (`tar` of `nymeria_data` plus a separate `pg_dump`) are NOT
+crash-consistent on a running stack and restore to an undecryptable
+credential vault unless you preserve `NYMERIA_SECRETS_KEY` yourself; if you
+must work at the volume level, stop the stack first (cold backup).
+
+### Data Locations
+
+| Data | Location | Captured by snapshot |
+|------|----------|----------------------|
+| LangGraph checkpoints | `postgres_data` PostgreSQL volume | Yes (consistent COPY dump) |
+| Accounts, tokens, chat bindings, credential vault | `/data/accounts.db` in `nymeria_data` | Yes (backup-API copy; vault key embedded) |
+| Users, memories, TODOs, triggers, skills, MCP servers, custom tools | `/data/<runtime paths>` in `nymeria_data` | Yes |
+| Workspace attachments and images | `nymeria_workspace` | Yes (`threads/`, `images/`; scratch excluded) |
+| Redis pub/sub state | `redis_data` | No (nothing durable; pure pub/sub relay) |
+| Self-modifications | Host repo `./nymeria` (bind-mounted to `/app/nymeria`) | No (Git + host filesystem backup; `data/backups/` rollback copies via `--include-code-backups`) |
 
 ## Secrets Management
 
