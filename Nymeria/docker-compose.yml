@@ -259,6 +259,8 @@ services:
       # Database
       DATABASE_BACKEND: postgres
       POSTGRES_URI: postgresql://${POSTGRES_USER:-nymeria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nymeria}
+      POSTGRES_POOL_MIN_SIZE: ${POSTGRES_POOL_MIN_SIZE:-}
+      POSTGRES_POOL_MAX_SIZE: ${POSTGRES_POOL_MAX_SIZE:-}
       # Redis
       REDIS_ENABLED: "true"
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0

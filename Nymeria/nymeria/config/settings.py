@@ -1308,6 +1308,16 @@ class Settings(BaseSettings):
     postgres_uri: Optional[str] = Field(
         default=None, description="PostgreSQL connection URI (only if database_backend=postgres)"
     )
+    postgres_pool_min_size: int = Field(
+        default=1,
+        ge=0,
+        description="Connections the shared LangGraph checkpointer pool keeps open (postgres backend only)",
+    )
+    postgres_pool_max_size: int = Field(
+        default=10,
+        ge=1,
+        description="Connection ceiling for the shared LangGraph checkpointer pool (postgres backend only)",
+    )
 
     @property
     def db_path(self) -> Path:

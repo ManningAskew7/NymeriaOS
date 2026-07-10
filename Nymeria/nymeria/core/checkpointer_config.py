@@ -29,6 +29,26 @@ from .checkpoint_sql import postgres_table_exists, sqlite_table_exists
 logger = logging.getLogger(__name__)
 
 
+def _postgres_pool_sizes(settings: Settings) -> tuple[int, int]:
+    """Return (min_size, max_size) for the shared checkpointer pool.
+
+    An inverted pair (max below min) is clamped up rather than rejected so a
+    misconfigured deployment degrades to a min-sized pool instead of
+    refusing to start.
+    """
+    min_size = settings.postgres_pool_min_size
+    max_size = settings.postgres_pool_max_size
+    if max_size < min_size:
+        logger.warning(
+            "POSTGRES_POOL_MAX_SIZE (%s) is below POSTGRES_POOL_MIN_SIZE (%s); using %s",
+            max_size,
+            min_size,
+            min_size,
+        )
+        max_size = min_size
+    return min_size, max_size
+
+
 def build_checkpointer_config(settings: Settings) -> CheckpointerConfig:
     """Build the (sync) checkpointer configuration."""
     backend = settings.database_backend
@@ -37,9 +57,12 @@ def build_checkpointer_config(settings: Settings) -> CheckpointerConfig:
         if not settings.postgres_uri:
             raise ValueError("POSTGRES_URI required when database_backend=postgres")
         logger.info("Using PostgreSQL for conversation persistence")
+        min_size, max_size = _postgres_pool_sizes(settings)
         return CheckpointerConfig(
             backend="postgres",
             postgres_uri=settings.postgres_uri,
+            postgres_pool_min_size=min_size,
+            postgres_pool_max_size=max_size,
         )
     elif backend == "sqlite":
         db_path = settings.db_path
@@ -67,9 +90,12 @@ def build_async_checkpointer_config(settings: Settings) -> CheckpointerConfig:
     if backend == "postgres":
         if not settings.postgres_uri:
             raise ValueError("POSTGRES_URI required when database_backend=postgres")
+        min_size, max_size = _postgres_pool_sizes(settings)
         return CheckpointerConfig(
             backend="postgres",
             postgres_uri=settings.postgres_uri,
+            postgres_pool_min_size=min_size,
+            postgres_pool_max_size=max_size,
         )
     elif backend == "sqlite":
         db_path = settings.db_path

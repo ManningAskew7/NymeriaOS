@@ -893,10 +893,17 @@ scheduled TODOs, triggers, callable threads, and spawned threads.
 - Docker compose provisions `postgres:15-alpine` as `nymeria-postgres`.
 - All app services use `DATABASE_BACKEND=postgres` and a shared
   `POSTGRES_URI` pointing at that container.
-- `vendor/react_agent/graph.py` creates a LangGraph `PostgresSaver`, runs
-  `setup()`, and wraps it with `AsyncCheckpointSaverWrapper` so sync and async
-  agent paths use the same checkpoint tables through the same adapter logic as
-  SQLite.
+- `vendor/react_agent/graph.py` maintains one process-wide
+  `psycopg_pool.ConnectionPool` per URI (bounded by
+  `POSTGRES_POOL_MIN_SIZE`/`POSTGRES_POOL_MAX_SIZE`, checkout-time liveness
+  checks so connections that died in a Postgres restart or idle timeout are
+  replaced automatically) and runs `PostgresSaver.setup()` once per process.
+  Each graph build gets its own lightweight `PostgresSaver` over that shared
+  pool, wrapped in `AsyncCheckpointSaverWrapper` so sync and async agent
+  paths use the same checkpoint tables through the same adapter logic as
+  SQLite. Graphs therefore never own connections: evicting or rebuilding a
+  cached graph releases nothing, and total connection use stays bounded
+  regardless of graph-cache churn.
 
 The local implementation details live in `nymeria/vendor/react_agent/graph.py`
 and `nymeria/core/checkpointer_config.py`.
