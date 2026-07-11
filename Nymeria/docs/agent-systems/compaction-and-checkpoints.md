@@ -18,14 +18,14 @@ A thread's conversation lives in three places:
 
 ## Compaction flow
 
-Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses the configured trigger. Auto-compaction fires at three points: **pre-flight** (before a new user turn), **sub-turn** (mid-loop, after a tool batch, see "Sub-turn trigger" below), and as a last resort on a context-overflow exception. The trigger has two modes (`COMPACT_THRESHOLD_MODE`):
+Triggered by `/compact`, `POST /threads/{id}/compact`, or automatically when token usage crosses the configured trigger. Auto-compaction fires at three points: **pre-flight** (before a new user turn), **sub-turn** (mid-loop, after a tool batch, see "Sub-turn trigger" below), and as a last resort on a context-overflow exception. A fourth, opt-in point runs on **idle** threads near the trigger (see "Proactive idle compaction" below). The trigger has two modes (`COMPACT_THRESHOLD_MODE`):
 
 - **`tokens`** (default): fires when input tokens reach the absolute count `COMPACT_THRESHOLD_TOKENS` (1,000–2,000,000, default 200,000), clamped at runtime to the model's context window so an oversized setting never disables compaction. Absolute counts stay put when you switch models with different context windows, which is why this is the default.
 - **`percentage`**: fires when input tokens reach `COMPACT_THRESHOLD * context_limit`. `COMPACT_THRESHOLD` accepts `0.05` through `0.95` (default 0.8).
 
 The check uses **real provider-reported input tokens**, not character estimates. `core/token_tracker.py` records `last_input_tokens` from each AIMessage via `core/token_usage.py::extract_from_message`, which reads LangChain's `usage_metadata` (`input_tokens` / `prompt_tokens`) and falls back to the Anthropic-native `response_metadata.usage` block. `should_auto_compact_now` compares that value directly against the trigger. The `estimate_tokens()` helper in `agent_compaction.py` is only used by the context-overflow rewind fallback to size the prefix trim  -  never for the primary compaction trigger.
 
-Per-thread `ThreadLLMConfig` may override `compact_threshold_mode`, `compact_threshold`, or `compact_threshold_tokens` independently  -  `None` on any field inherits the global setting.
+Per-thread `ThreadLLMConfig` may override `compact_threshold_mode`, `compact_threshold`, or `compact_threshold_tokens` independently  -  `None` on any field inherits the global setting. The proactive fields (`compact_proactive_enabled` / `compact_proactive_idle_seconds` / `compact_proactive_min_pct`) override the same way.
 
 Nymeria resolves bare OpenAI model IDs from CLIProxy (for example `gpt-5.5`) against provider-qualified metadata (`openai/gpt-5.5`) before falling back to static limits.
 
@@ -98,6 +98,19 @@ Auto-compaction can fire **mid-turn**, not just at turn boundaries. The vendored
 `astream()` / `chat()` then run the normal compaction (`_do_auto_compact` / `_do_compact_sync`) and **re-drive with `{"messages": []}`** so the agent continues from the reloaded memory. This is always a genuine mid-task boundary: the agent has a pending LLM call to process the tool results, so it is never "done" here (a final, no-tool-call response routes via `END`, where post-turn compaction handles it without a re-drive). The loop repeats if the continuation crosses the trigger again, capped by `MAX_COMPACTIONS_PER_TURN` (default 3); once the cap is hit, `should_halt_for_subturn_compaction` stops flagging so the continuation runs to completion. Per-turn state (`_subturn_compact_requested`, `_compactions_this_turn`) is cleared when the turn's lock releases.
 
 Clients see a `compacting` event, then a `compacted` event carrying `subturn: true`, then the resumed assistant output, all within the same turn.
+
+### Proactive idle compaction (opt-in)
+
+Compaction can also fire on an **idle** thread, before the trigger is crossed, so the summary turn runs while the provider's prompt-cache prefix is still warm. That is the entire point of the feature: the summary call's input is the thread's existing prefix, which bills mostly at cache-read rates if it runs within the cache TTL of the last turn, versus full input rates if compaction instead fires cold at the start of the next session hours later. The trade-off is that a proactive compact can be "wasted" spend if the user never returns to the thread, which is why it ships **off by default** (`COMPACT_PROACTIVE_ENABLED=false`).
+
+Mechanics (`core/agent_compaction.py`): both turn paths stamp `CompactionManager.note_turn_end(thread_id, user_id)` in their lock-release `finally`; an API-process heartbeat (`_register_proactive_compaction_lifecycle` in `triggers/api.py`, every 30 s, both deployment shapes) sweeps the stamps. A stamped thread compacts when ALL hold:
+
+- `context_management` is `auto_compact` and proactive is enabled for the thread (`compact_proactive_enabled`, per-thread override wins, `None` inherits).
+- The thread has sat idle for `compact_proactive_idle_seconds` (default 210, i.e. comfortably inside a 5-minute cache TTL) since its last turn end.
+- Context occupancy is at least `compact_proactive_min_pct` (default 85) percent of the auto-compact trigger, read via `hook_context_stats`; re-checked under the thread lock before compacting.
+- The thread lock is free (non-blocking acquire; the sweep holds it with holder label `proactive_compact` for the duration).
+
+Every drop path defers to a later turn end (which re-stamps), and stamps are in-memory only: a restart loses pending candidates, which is acceptable for an economics feature. The compaction itself is the **manual shape** (`compact_now`): no auto-resume, the thread is left on the retained tail and the user's next message continues naturally. Success publishes a best-effort `compacted` autonomous event with `proactive: true` so open clients refresh. Settings are exposed via `PATCH /settings`, per-thread via `ThreadLLMConfig` (`PATCH /threads/{id}/config`), and in the desktop GUI (global Agent tab + the per-thread Model/Context tab).
 
 ### Overflow rewind recovery
 

@@ -1431,6 +1431,9 @@ Nymeria automatically manages conversation context to prevent overflow. The defa
 | `COMPACT_THRESHOLD_TOKENS` | `200000` | Used when `COMPACT_THRESHOLD_MODE=tokens`. Trigger compaction at this absolute input-token count (1,000-2,000,000). Clamped to the model's context window at runtime. Token counts come from the most recent provider response (`usage_metadata`), not character estimates. |
 | `COMPACT_KEEP_MESSAGES` | `4` | Minimum messages before compaction is allowed |
 | `COMPACT_MODEL` | (main model) | Reserved: accepted and persisted, but not consumed by the runtime yet (summarization always runs on the thread's own model) |
+| `COMPACT_PROACTIVE_ENABLED` | `false` | Opt-in: compact idle threads in the background once they sit near the auto-compact trigger, while the provider prompt cache is still warm (cheap summary input). Per-thread override via `ThreadLLMConfig.compact_proactive_enabled`. See `docs/agent-systems/compaction-and-checkpoints.md` |
+| `COMPACT_PROACTIVE_IDLE_SECONDS` | `210` | Idle time after a turn end before a proactive compaction may fire (30-3600). Keep it inside the provider's cache TTL or the cost benefit vanishes |
+| `COMPACT_PROACTIVE_MIN_PCT` | `85` | Occupancy floor: proactive compaction fires only once context usage reaches this percentage of the auto-compact trigger (10-100) |
 | `SLIDING_WINDOW_CYCLES` | `5` | Legacy: cycles to keep when using `sliding_window` mode |
 
 **Context Management Modes:**

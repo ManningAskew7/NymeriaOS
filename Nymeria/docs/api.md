@@ -572,6 +572,14 @@ display-only `response` chunk with that continue hint (never written to any
 checkpoint). `/quick` is registered with `execution_kind: "chat_stream"`, so
 clients route it to `/chat` like `/skill`, `/kit`, and `/orchestrate`.
 
+**`/done <prompt>`** is the other chat_stream command intercepted here: it arms
+a one-shot follow-up on the current thread. If a turn is running, the backend
+creates a single-use thread-scoped `done` hook carrying the prompt and returns
+an ack `response` + `done` (no turn runs; the prompt fires as a DONE
+continuation when the running turn finishes, and the hook deletes itself). If
+the thread is idle, the prompt simply runs as a normal turn. Excluded on
+`is_self_invoke` turns. See `docs/agent-systems/hooks.md`.
+
 ---
 
 ### Chat (Synchronous)
@@ -1390,7 +1398,7 @@ and `timestamp` fields plus the event-specific payload. Internal fields such as
 | `response` | Response text chunks | `content` |
 | `context_attached` | Previous context summary attached to this autonomous prompt | `summary` |
 | `compacting` | Context summary generation has started after the compaction path passes its start checks | `message` |
-| `compacted` | Context was compacted | `messages_removed`, `auto_resumed`, `summary` |
+| `compacted` | Context was compacted | `messages_removed`, `auto_resumed`, `summary`; a background proactive idle compaction also sets `proactive: true` |
 | `iteration_limit` | Agent hit a turn safety stop | `content`, `reason`, `max_iterations`, `tool_call_count`, optional repeated-tool fields |
 | `notification` | Explicit `notify` tool event or new in-app notification | `message`, `summary`, `in_app_only` |
 | `task_completed` | Execution finished | `notify`, `content`, `summary`, `todo_id`, optional `handoff_id`, `caller_thread_id`, `caller_thread_name` |
@@ -3919,7 +3927,9 @@ Authoring (creating, or `PATCH`ing an existing hook to) `run_command` returns
 `conditions` match the tool call's args (operators `equals`,
 `not_equals`, `contains`, `starts_with`, `matches_regex`; `field` supports dotted
 paths). `scope` is `thread` (bound to `thread_id`) or `global` (all the user's
-threads). Returns `201` with the created hook (whose `logic` object holds the
+threads). The body also accepts the lifecycle flag `single_use` (bool, default
+false: the hook deletes itself after its first successful run, log entries
+kept). Returns `201` with the created hook (whose `logic` object holds the
 full action config), `400` on invalid config or when the per-user cap (50) is
 reached. Creating a thread-scoped hook for a thread the caller cannot access is
 rejected.
@@ -3934,6 +3944,7 @@ Authorization: Bearer <token>
 ```
 
 `PATCH` accepts any subset of `name`, `event`, `action`, `matcher`, `enabled`,
+`single_use`,
 and the per-action logic fields (`text` / `conditions` / `reason` / `updates` /
 `url` / `command` / `timeout_seconds`); the logic is rebuilt and re-validated on
 save. Switching `action` TO `run_command` is gated exactly as create (403
@@ -3956,6 +3967,30 @@ Authorization: Bearer <token>
 Previews the hook against sample event data without firing: `inject_context`
 renders its template, the guardrail actions describe what they would do. Returns
 `{"hook_id", "event", "action", "rendered"}`.
+
+### Hook Templates
+
+```http
+GET  /hooks/templates
+POST /hooks/templates/{template_id}/install
+Authorization: Bearer <token>
+```
+
+`GET` lists the bundled hook-template catalog (curated JSONs shipped in
+`nymeria/hooks_bundled/`, dry-validated at load): each entry carries
+`{id, title, description, notes, hook}`, where `hook` is the full definition
+body the install would create (event, action, fire gate, default scope).
+`POST` installs one as a regular hook for the caller; optional body fields
+`{"scope": "thread"|"global", "thread_id": "...", "text": "...",
+"enabled": bool}` override the template defaults (a thread-scoped install
+requires `thread_id`, and a supplied `thread_id` is access-checked
+whenever present). Installs are idempotent per (template, scope, thread
+binding): the response is `{"created": bool, "hook": <hook>}`, with
+`created=false` returning the existing installation. The installed hook
+records its origin in the response's `template` field and is otherwise an
+ordinary hook (edit/disable/delete as usual). Gated actions (`run_command`)
+pass the same authoring gates as a manual create. `400` on an unknown
+template id.
 
 ### Hook Executions
 

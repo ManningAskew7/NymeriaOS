@@ -129,19 +129,23 @@ Three surfaces write the same per-user JSON store (`data_dir/hooks/<user>.json`,
 per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
 
 - **Agent tools** (`tools/hooks.py`, opt-in `CATALOG_TOOLS`): `hook_config`
-  (create/update/delete) and `hook_info` (list/detail/test/log). The action is picked with
+  (create/update/delete/install) and `hook_info` (list/detail/test/log/templates). The
+  action is picked with
   `hook_action` (default `inject_context`); text actions take `text`, the guardrail
   actions take a `params` dict (`{"conditions": [...], "reason": ...}` /
   `{"conditions": [...], "updates": {...}}`); the definition-level fire gate is
   authored via `fire_conditions` (a list of condition objects) + `once` on both
-  create and update. A create auto-binds the current thread for
+  create and update, and the lifecycle flag via `single_use` (below). A create
+  auto-binds the current thread for
   `scope="thread"` (including the real `default` thread); `test` renders/describes the
-  hook without firing; `log` reads the execution log (below). The `hook-management`
+  hook without firing; `log` reads the execution log (below); `install` instantiates a
+  bundled template by `template_id` (see Bundled templates). The `hook-management`
   bundled skill front-loads these. Like every surface, `scope` is create-only
   (a re-scope is a delete + create: an update cannot supply the access-gated
   thread binding).
 - **Slash command** `/hook` (`core/command_service.py`, catalog in `core/registry_defaults.py`):
-  `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test` / `log`, plus the
+  `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test` / `log` /
+  `templates` / `install <template_id> [--scope thread|global] [--text ..] [--disabled]`, plus the
   resolve surface `approvals` / `approve <record_id> [note]` / `deny <record_id> [note]`
   (record-id prefix match; owner-or-admin; `agent_allowed=False` so the agent cannot
   approve its own held calls), reaching
@@ -153,10 +157,11 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   path that does not depend on the model calling the tool. The grammar is flag-based (a
   single line, so it round-trips through chat surfaces): `/hook create <name> --event E
   --action A [--text ..|--url ..|--cond "field op value"..|--reason ..|--set arg=value..]
-  [--fire-cond "field op value"]... [--once] [--matcher A|B] [--scope thread|global]
+  [--fire-cond "field op value"]... [--once] [--single-use] [--matcher A|B]
+  [--scope thread|global]
   [--disabled]`; `--cond`/`--set`/`--fire-cond` repeat; `edit`
-  takes `key=value` scalars (incl. `once=true|false`) plus `--cond`/`--set`/
-  `--fire-cond`. It reuses the same flat-field mapping
+  takes `key=value` scalars (incl. `once=true|false` and `single_use=true|false`)
+  plus `--cond`/`--set`/`--fire-cond`. It reuses the same flat-field mapping
   (`params_from_fields` / `build_update_kwargs` in `core/hook_manager.py`) as the REST
   surface, so the three authoring paths cannot drift. The mutating subcommands are
   `agent_allowed=False` (the agent authors via the tool) and hidden from chat command menus
@@ -166,16 +171,19 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
 - **REST** (`api/routers/hooks.py`, mounted at `/hooks`): pure CRUD plus
   `POST /hooks/{id}/test`, `GET /hooks/executions` (the execution log, below),
   `GET /hooks/approvals` + `POST /hooks/approvals/{record_id}/resolve` (the
-  `require_approval` resolve surface), and
+  `require_approval` resolve surface),
+  `GET /hooks/templates` + `POST /hooks/templates/{template_id}/install` (the
+  bundled-template surface, below), and
   `GET /hooks/schema` (the machine-readable taxonomy: per-event legal actions,
   per-action plane/events/params JSON schema, condition operators, the
-  `fire_gate` field surface, the cap; derived
+  `fire_gate` field surface, the `lifecycle` field surface (`single_use`), the
+  cap; derived
   from `core/hook_spec.py` so clients can render authoring forms from data). The
   request carries `action` plus the flat per-action fields
   (`text` / `conditions` / `reason` / `updates` / `url` / `command` / `timeout_seconds`)
-  and the definition-level `fire_conditions` / `once`; the
+  and the definition-level `fire_conditions` / `once` / `single_use`; the
   response exposes the full `logic` object (discriminated on `action`) plus the
-  fire-gate fields. Every handler pins
+  fire-gate and lifecycle fields and the `template` provenance id. Every handler pins
   `user_id` to the authenticated caller; scoped creates pass through the thread-access gate;
   authoring (or switching to) `run_command` is rejected for non-admins (403) or when the
   deployment flag is off (400), and any behavior edit of an existing `run_command` hook
@@ -189,6 +197,33 @@ a single adaptive **HookForm** modal whose fields reflow by event and action) au
 edits, tests, and toggles hooks; a per-thread **Hooks** tab drives the enable model
 below. The action families are category-coded (Guardrails / Context / Reactions) so the
 feed and form read as three families rather than one flat list.
+
+### Bundled hook templates
+
+Curated, ready-to-install hook definitions ship with the package in
+`nymeria/hooks_bundled/*.json` (mirroring `skills_bundled/`), loaded and
+dry-validated by `core/hook_templates.py` (each template's definition must pass
+`HookDefinition.model_validate` before it is listed, so a bad file is skipped,
+never installed). A template carries an `id`, display metadata, a default
+`scope`, and the full definition body; installing stamps the template id into
+the hook's `template` provenance field, and installs are idempotent per
+(template, scope, thread binding): re-installing returns the existing hook
+instead of duplicating it. Installed hooks are ordinary hooks (edit, disable,
+delete as usual); the provenance field only records where they came from.
+
+All three authoring surfaces expose the catalog: `hook_info(action="templates")` +
+`hook_config(action="install", template_id=...)`, `/hook templates` + `/hook install
+<template_id>`, and `GET /hooks/templates` + `POST /hooks/templates/{template_id}/install`.
+Install-time knobs: `scope` (thread installs bind the current/supplied thread through the
+same access gate as create), `text` (override the template's message), `enabled`. Templates
+whose action is gated (`run_command`) pass the same authoring gates as a manual create.
+
+Shipped templates:
+
+- `context-checkpoint-advisory`: the backlog #72 recipe below, ready-made
+  (global, `post_tool_use`, `once`, fires at 85% of the compact trigger).
+- `turn-end-prompt`: a thread-scoped one-shot DONE prompt (`once` +
+  `single_use`), the reusable shape behind `/done`.
 
 ### The fire gate: fire_conditions and once (the WHEN layer)
 
@@ -245,9 +280,27 @@ last AI message (the same source as sub-turn compaction), falling back to the
 turn-entry stamp in `graph_run_config`. Stats are stamped only when the turn has
 enabled hooks, so the zero-hook hot path is unchanged.
 
+### Single-use hooks (lifecycle)
+
+`HookDefinition.single_use` makes a hook delete itself after its first
+successful run: when the execution recorder logs an `ok` status for a
+single-use registration, the definition is removed synchronously (log entries
+are kept, so `/hook log` still shows the fire). Distinct from `once`, which
+silences a persistent hook per gate crossing via an in-memory sentinel:
+`once` re-arms on restart (the sentinel is lost), while `single_use` cannot
+re-fire because the definition itself is gone. One-shot hooks (e.g. `/done`,
+the `turn-end-prompt` template) set both, belt and braces: `once` suppresses a
+same-process double fire, `single_use` ends the lifecycle. The synchronous
+delete is also a claim primitive: a caller that can still delete the
+definition has proven it never fired (how the `/done` race is resolved).
+Non-`ok` runs (`no_op`, `error`, `timeout`) do not consume a single-use hook.
+
 ### Recipe: context checkpoint advisory (backlog #72)
 
-The flagship fire-gate recipe: warn the agent once per approach to the
+The flagship fire-gate recipe, which now ships as a bundled template: `/hook
+install context-checkpoint-advisory` (or the tool/REST equivalents) installs
+it ready-made, and the manual create below is the equivalent long-hand. It
+warns the agent once per approach to the
 auto-compaction trigger so it checkpoints working state (memory/notepad or a
 file) before the context is summarized. Fires on `post_tool_use` so a long
 tool-heavy turn still gets warned mid-turn; `once` + re-arm gives one advisory
@@ -448,7 +501,23 @@ by a two-layer guard, exactly like Claude Code:
 
 A continuation is enqueued like a normal steering prompt and absorbed by the existing
 drain/re-drive path (checked before the queue closes), so it reuses proven machinery
-rather than a parallel re-drive.
+rather than a parallel re-drive. Queued user prompts win: the DONE-continue check runs
+only when the pending queue drains empty, and multiple DONE hooks firing on one turn
+produce a single continuation with their reasons joined.
+
+### /done: a one-shot DONE prompt (backlog #70)
+
+`/done <prompt>` is the user-facing packaging of that machinery: a chat_stream slash
+command (like `/quick`, intercepted in the chat router, not the command registry) that
+arms a one-shot follow-up on the current thread while a turn is running. Busy thread:
+it creates a thread-scoped `done` + `inject_context` hook carrying the prompt (`once` +
+`single_use`, `created_by="user"`) and acks without running a turn; the running turn's
+DONE fire injects the prompt as a continuation and the hook deletes itself. Idle
+thread: the prompt simply runs as a normal turn now (the degenerate case). The
+arm/turn-end race is claimed by delete: if the turn finishes while `/done` is arming,
+a successful hook delete proves it never fired (run the prompt now), a failed delete
+proves the DONE fire consumed it. Works on every surface that reaches the chat
+endpoints (GUI, CLI, bots); self-invoked agent turns are excluded.
 
 ## Fire-point seams (implementation)
 
@@ -552,6 +621,10 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   which re-export `TriggerCondition`); string operators plus the numeric
   `gt`/`gte`/`lt`/`lte` (float coercion, non-numeric = non-match).
 - `core/text_format.py`: `safe_format` template substitution (shared with triggers).
+- `core/hook_templates.py` + `nymeria/hooks_bundled/`: the bundled-template
+  catalog (`HookTemplate`, `load_templates` from `settings.bundled_hooks_dir`,
+  `install_template` with the idempotency + gated-action checks) and the
+  shipped template JSONs.
 - Authoring: `tools/hooks.py` (`hook_config`/`hook_info`), `api/routers/hooks.py`
   (`/hooks` CRUD), `skills_bundled/hook-management/`.
 - Enable model: `Settings.hooks_enabled`, `ThreadConfig.hooks_enabled` /
