@@ -27,6 +27,9 @@ class ThreadLLMConfigRequest(BaseModel):
     compact_threshold_mode: Literal["percentage", "tokens"] | None = None
     compact_threshold: float | None = Field(default=None, ge=0.05, le=0.95)
     compact_threshold_tokens: int | None = Field(default=None, ge=1_000, le=2_000_000)
+    compact_proactive_enabled: bool | None = None
+    compact_proactive_idle_seconds: int | None = Field(default=None, ge=30, le=3600)
+    compact_proactive_min_pct: int | None = Field(default=None, ge=10, le=100)
 
     @field_validator("reasoning_effort")
     @classmethod

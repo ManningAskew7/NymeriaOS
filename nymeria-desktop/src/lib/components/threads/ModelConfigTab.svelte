@@ -48,6 +48,9 @@
     compactThresholdMode: 'default' | 'percentage' | 'tokens';
     compactThresholdPct: string;
     compactThresholdTokens: string;
+    proactiveCompactEnabled: 'default' | 'true' | 'false';
+    proactiveCompactIdleSeconds: string;
+    proactiveCompactMinPct: string;
   }
 
   let {
@@ -69,6 +72,9 @@
     compactThresholdMode = $bindable(),
     compactThresholdPct = $bindable(),
     compactThresholdTokens = $bindable(),
+    proactiveCompactEnabled = $bindable(),
+    proactiveCompactIdleSeconds = $bindable(),
+    proactiveCompactMinPct = $bindable(),
   }: Props = $props();
 
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
@@ -396,7 +402,7 @@
       </div>
     </div>
 
-    <div class="field-group" class:last={compactThresholdMode === 'default'}>
+    <div class="field-group">
       <label class="field-label" for="thread-compact-mode">Auto-compact trigger</label>
       <select id="thread-compact-mode" class="field-select" bind:value={compactThresholdMode}>
         <option value="default">Default (inherit global)</option>
@@ -407,15 +413,38 @@
     </div>
 
     {#if compactThresholdMode === 'percentage'}
-      <div class="field-group last">
+      <div class="field-group">
         <label class="field-label" for="thread-compact-pct">Compact threshold (0.05 – 0.95)</label>
         <input id="thread-compact-pct" class="field-input narrow" type="number" min="0.05" max="0.95" step="0.01" bind:value={compactThresholdPct} placeholder="Inherit global" />
       </div>
     {:else if compactThresholdMode === 'tokens'}
-      <div class="field-group last">
+      <div class="field-group">
         <label class="field-label" for="thread-compact-tokens">Compact token threshold</label>
         <input id="thread-compact-tokens" class="field-input narrow" type="number" min="1000" max="2000000" step="1000" bind:value={compactThresholdTokens} placeholder="Inherit global" />
         <span class="field-hint">Clamped to the model's context window at runtime.</span>
+      </div>
+    {/if}
+
+    <div class="field-group" class:last={proactiveCompactEnabled !== 'true'}>
+      <label class="field-label" for="thread-proactive-compact">Proactive idle compaction</label>
+      <select id="thread-proactive-compact" class="field-select" bind:value={proactiveCompactEnabled}>
+        <option value="default">Default (inherit global)</option>
+        <option value="true">Enabled</option>
+        <option value="false">Disabled</option>
+      </select>
+      <span class="field-hint">Compact this thread in the background once it sits idle near the compact trigger.</span>
+    </div>
+
+    {#if proactiveCompactEnabled === 'true'}
+      <div class="grid-2">
+        <div class="field-group last">
+          <label class="field-label" for="thread-proactive-idle">Idle delay (seconds)</label>
+          <input id="thread-proactive-idle" class="field-input" type="number" min="30" max="3600" step="10" bind:value={proactiveCompactIdleSeconds} placeholder="Inherit global" />
+        </div>
+        <div class="field-group last">
+          <label class="field-label" for="thread-proactive-pct">Occupancy floor (% of trigger)</label>
+          <input id="thread-proactive-pct" class="field-input" type="number" min="10" max="100" step="5" bind:value={proactiveCompactMinPct} placeholder="Inherit global" />
+        </div>
       </div>
     {/if}
   {/if}

@@ -64,6 +64,9 @@ class FakeSettings:
     compact_threshold_tokens: int = 100_000
     compact_keep_messages: int = 4
     compact_model: str | None = None
+    compact_proactive_enabled: bool = False
+    compact_proactive_idle_seconds: int = 210
+    compact_proactive_min_pct: int = 85
     sliding_window_cycles: int = 20
     tool_output_max_chars: int = 100000
     tool_timing_in_results: bool = False

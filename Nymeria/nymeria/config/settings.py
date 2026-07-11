@@ -1395,6 +1395,27 @@ class Settings(BaseSettings):
         default=None,
         description="Model for summarization (defaults to main model, can use cheaper)"
     )
+    # Proactive idle compaction: when a turn ends with occupancy at or above
+    # compact_proactive_min_pct percent of the auto-compact trigger and the
+    # thread stays idle for compact_proactive_idle_seconds, compact in the
+    # post-turn quiet window while the prompt-cache prefix is still warm,
+    # instead of paying full input price at the next turn's pre-flight.
+    compact_proactive_enabled: bool = Field(
+        default=False,
+        description="Compact a near-threshold thread during post-turn idle time (opt-in)"
+    )
+    compact_proactive_idle_seconds: int = Field(
+        default=210,
+        ge=30,
+        le=3600,
+        description="Idle seconds after a turn before proactive compaction fires (default sits inside the ~5 min prompt-cache TTL)"
+    )
+    compact_proactive_min_pct: int = Field(
+        default=85,
+        ge=10,
+        le=100,
+        description="Proactively compact only when context occupancy is at least this percent of the auto-compact trigger"
+    )
     # Legacy sliding window (renamed for clarity)
     sliding_window_cycles: int = Field(
         default=5,

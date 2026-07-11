@@ -138,6 +138,9 @@ class ServerSettingsResponse(BaseModel):
     compact_threshold_tokens: int = 200_000
     compact_keep_messages: int
     compact_model: Optional[str] = None
+    compact_proactive_enabled: bool = False
+    compact_proactive_idle_seconds: int = 210
+    compact_proactive_min_pct: int = 85
     sliding_window_cycles: int
     tool_output_max_chars: int
     tool_timing_in_results: bool = False
@@ -710,6 +713,11 @@ class ServerSettingsUpdate(BaseModel):
     )
     compact_keep_messages: Optional[int] = None
     compact_model: Optional[str] = None
+    compact_proactive_enabled: Optional[bool] = None
+    compact_proactive_idle_seconds: Optional[int] = Field(
+        default=None, ge=30, le=3600
+    )
+    compact_proactive_min_pct: Optional[int] = Field(default=None, ge=10, le=100)
     sliding_window_cycles: Optional[int] = None
     tool_output_max_chars: Optional[int] = None
     tool_timing_in_results: Optional[bool] = None

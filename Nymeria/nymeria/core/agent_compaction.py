@@ -11,6 +11,8 @@ import asyncio
 import concurrent.futures
 import inspect
 import logging
+import threading
+import time
 import uuid as _uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -65,6 +67,9 @@ def hook_context_stats(agent: "NymeriaAgent", thread_id: str) -> Dict[str, Optio
 
 
 COMPACTION_TIMEOUT_SECONDS = 900
+# Heartbeat cadence for the proactive idle-compaction sweep (triggers/api.py).
+# Idle thresholds are per-thread settings; this only bounds detection latency.
+PROACTIVE_SWEEP_INTERVAL_SECONDS = 30
 COMPACTING_MESSAGE = "Compacting thread context..."
 CompactionStartCallback = Callable[[], Any]
 
@@ -309,6 +314,14 @@ class CompactionManager:
 
     def __init__(self, agent: "NymeriaAgent") -> None:
         self._agent = agent
+        # Proactive idle compaction candidates: thread_id -> (user_id,
+        # monotonic ended_at). Stamped at every turn end, consumed by the
+        # periodic sweep. In-memory only (a restart just loses pending
+        # proactive compactions, which is fine for an opt-in economics
+        # feature); guarded by a lock because turn ends happen both on the
+        # event loop and in worker threads.
+        self._turn_end_stamps: Dict[str, tuple[str, float]] = {}
+        self._turn_end_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Formatting helpers (previously on ConversationCompactor)
@@ -406,6 +419,195 @@ class CompactionManager:
         if mode == "tokens":
             return max(1, min(int(tokens), int(model_limit)))
         return max(1, int(model_limit * threshold))
+
+    # ------------------------------------------------------------------
+    # Proactive idle compaction (backlog #28 slice B)
+    # ------------------------------------------------------------------
+
+    def _resolve_proactive_config(self, thread_id: str) -> tuple[bool, int, int]:
+        """Effective (enabled, idle_seconds, min_pct) with per-thread override.
+
+        Mirrors ``_resolve_threshold_config``: thread-level
+        ``llm_config.compact_proactive_*`` fields win; ``None`` inherits.
+        """
+        agent = self._agent
+        tc_llm = None
+        if thread_id:
+            tc_obj = agent.thread_config_manager.get_config(thread_id)
+            if tc_obj:
+                tc_llm = tc_obj.llm_config
+
+        def pick(attr: str, fallback: Any) -> Any:
+            value = getattr(tc_llm, attr, None) if tc_llm else None
+            return value if value is not None else fallback
+
+        enabled = pick(
+            "compact_proactive_enabled", agent.settings.compact_proactive_enabled
+        )
+        idle = pick(
+            "compact_proactive_idle_seconds",
+            agent.settings.compact_proactive_idle_seconds,
+        )
+        pct = pick(
+            "compact_proactive_min_pct", agent.settings.compact_proactive_min_pct
+        )
+        return bool(enabled), int(idle), int(pct)
+
+    def note_turn_end(self, thread_id: str, user_id: str) -> None:
+        """Stamp a turn end for the proactive idle-compaction sweep.
+
+        Called from the turn ``finally`` blocks just before the per-thread
+        lock releases (both chat and astream), so it must never raise or
+        block: nothing here may interfere with turn teardown. A newer turn's
+        stamp simply replaces an older one.
+        """
+        try:
+            if not thread_id:
+                return
+            with self._turn_end_lock:
+                self._turn_end_stamps[thread_id] = (
+                    user_id or "default",
+                    time.monotonic(),
+                )
+        except Exception:  # noqa: BLE001 - teardown must never be disturbed
+            logger.debug("proactive-compaction turn-end stamp failed", exc_info=True)
+
+    def _clear_stamp(self, thread_id: str, ended_at: float) -> bool:
+        """Drop a candidate stamp iff it is still the one we examined.
+
+        Returns False when a newer turn end replaced it meanwhile (that
+        newer stamp then rules, restarting the idle clock).
+        """
+        with self._turn_end_lock:
+            current = self._turn_end_stamps.get(thread_id)
+            if current is not None and current[1] == ended_at:
+                del self._turn_end_stamps[thread_id]
+                return True
+        return False
+
+    def _proactive_occupancy_ready(self, thread_id: str, min_pct: int) -> bool:
+        """True when occupancy is known and >= ``min_pct`` percent of the trigger."""
+        stats = hook_context_stats(self._agent, thread_id)
+        tokens = stats.get("context_tokens")
+        trigger = stats.get("compact_trigger_tokens")
+        if not tokens or not trigger:
+            return False
+        return tokens * 100 >= trigger * min_pct
+
+    async def run_proactive_sweep(self) -> int:
+        """One proactive idle-compaction pass; returns compactions performed.
+
+        Driven by an API-process heartbeat (both runtime shapes). For every
+        stamped turn end whose idle delay has elapsed: resolve the per-thread
+        enabled/idle/pct config, drop candidates that are disabled, busy, or
+        below the occupancy floor (a later turn end re-stamps them), then take
+        the per-thread lock (non-blocking; a losing race just defers), re-check
+        occupancy under the lock, and run the manual-compact path. The manual
+        shape is deliberate: no auto-resume, the summary rides the retained
+        tail and the user's next message continues naturally. Compaction here
+        happens while the prompt-cache prefix is still warm, which is the
+        entire point (summary input bills mostly at cache-read rates).
+        """
+        agent = self._agent
+        if agent.settings.context_management != "auto_compact":
+            return 0
+        now = time.monotonic()
+        with self._turn_end_lock:
+            candidates = list(self._turn_end_stamps.items())
+        compacted = 0
+        for thread_id, (user_id, ended_at) in candidates:
+            # Config resolution and the occupancy probes read thread-config
+            # files, so run them off-loop (the sweep runs on the API loop).
+            try:
+                enabled, idle_seconds, min_pct = await asyncio.to_thread(
+                    self._resolve_proactive_config, thread_id
+                )
+            except Exception:  # noqa: BLE001 - a broken thread config skips one candidate
+                logger.debug(
+                    "proactive-compaction config resolve failed for %s",
+                    thread_id, exc_info=True,
+                )
+                continue
+            if not enabled:
+                self._clear_stamp(thread_id, ended_at)
+                continue
+            if now - ended_at < idle_seconds:
+                continue  # not idle long enough yet; keep the stamp
+            # Consume the stamp: every path below either compacts or defers
+            # to a later turn end (which re-stamps). A False return means a
+            # newer turn ended meanwhile and its stamp rules.
+            if not self._clear_stamp(thread_id, ended_at):
+                continue
+            locks = agent._thread_locks
+            if locks.is_thread_busy(thread_id):
+                continue
+            if not await asyncio.to_thread(
+                self._proactive_occupancy_ready, thread_id, min_pct
+            ):
+                continue
+            lock = locks.get_lock(thread_id)
+            if not lock.acquire(blocking=False):
+                continue  # a turn raced in; it re-stamps at its end
+            try:
+                locks.set_lock_info(thread_id, "proactive_compact")
+                # Re-check under the lock: a turn may have compacted or
+                # grown/shrunk occupancy between the probe and the acquire.
+                if not await asyncio.to_thread(
+                    self._proactive_occupancy_ready, thread_id, min_pct
+                ):
+                    continue
+                logger.info(
+                    "Thread %s: proactive idle compaction starting "
+                    "(idle >= %ss, occupancy >= %s%% of trigger)",
+                    thread_id, idle_seconds, min_pct,
+                )
+                result = await asyncio.wait_for(
+                    self.compact_now(thread_id, user_id),
+                    timeout=COMPACTION_TIMEOUT_SECONDS,
+                )
+                if result.get("success"):
+                    compacted += 1
+                    self._publish_proactive_compacted(thread_id, user_id, result)
+                else:
+                    logger.info(
+                        "Thread %s: proactive compaction skipped: %s",
+                        thread_id, result.get("reason", "unknown"),
+                    )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Thread %s: proactive compaction timed out after %ss",
+                    thread_id, COMPACTION_TIMEOUT_SECONDS,
+                )
+            except Exception:  # noqa: BLE001 - one candidate must not kill the sweep
+                logger.warning(
+                    "Thread %s: proactive compaction failed", thread_id, exc_info=True
+                )
+            finally:
+                locks.clear_lock_info(thread_id)
+                lock.release()
+        return compacted
+
+    @staticmethod
+    def _publish_proactive_compacted(
+        thread_id: str, user_id: str, result: Dict[str, Any]
+    ) -> None:
+        """Best-effort ``compacted`` event so open clients learn of the trim."""
+        try:
+            from .event_bus import publish_autonomous_event
+
+            publish_autonomous_event(
+                event_type="compacted",
+                thread_id=thread_id,
+                user_id=user_id,
+                task_id=f"proactive-compact-{thread_id}",
+                data={
+                    "proactive": True,
+                    "auto_resumed": False,
+                    "messages_removed": result.get("messages_removed"),
+                },
+            )
+        except Exception:  # noqa: BLE001 - visibility only, never affects the compaction
+            logger.debug("proactive compacted event publish failed", exc_info=True)
 
     def should_subturn_compact(self, thread_id: str, messages: List[Any]) -> bool:
         """True if the running context crossed the auto-compact trigger mid-loop.

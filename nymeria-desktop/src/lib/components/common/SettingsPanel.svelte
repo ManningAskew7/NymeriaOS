@@ -124,6 +124,9 @@
   let compactThreshold = $state(0.8);
   let compactThresholdMode = $state<'percentage' | 'tokens'>('percentage');
   let compactThresholdTokens = $state(100000);
+  let compactProactiveEnabled = $state(false);
+  let compactProactiveIdleSeconds = $state(210);
+  let compactProactiveMinPct = $state(85);
   let slidingWindowCycles = $state(5);
   let memoryCharLimit = $state(8000);
   let logLevel = $state<LogLevel>('INFO');
@@ -657,6 +660,9 @@
       compactThreshold = serverSettings.compact_threshold ?? 0.8;
       compactThresholdMode = serverSettings.compact_threshold_mode ?? 'percentage';
       compactThresholdTokens = serverSettings.compact_threshold_tokens ?? 100000;
+      compactProactiveEnabled = serverSettings.compact_proactive_enabled ?? false;
+      compactProactiveIdleSeconds = serverSettings.compact_proactive_idle_seconds ?? 210;
+      compactProactiveMinPct = serverSettings.compact_proactive_min_pct ?? 85;
       // Load model metadata for OpenRouter enrichment
       if (serverSettings.llm_provider === 'openrouter') {
         modelsStore.loadModels();
@@ -901,6 +907,9 @@
         compact_threshold: compactThreshold,
         compact_threshold_mode: compactThresholdMode,
         compact_threshold_tokens: compactThresholdTokens,
+        compact_proactive_enabled: compactProactiveEnabled,
+        compact_proactive_idle_seconds: compactProactiveIdleSeconds,
+        compact_proactive_min_pct: compactProactiveMinPct,
         sliding_window_cycles: slidingWindowCycles,
         memory_char_limit: memoryCharLimit,
         log_level: logLevel,
@@ -2191,6 +2200,45 @@
                 bind:value={compactThresholdTokens}
               />
               <p class="hint">Token count from the most recent provider response that triggers summarization (1,000-2,000,000)</p>
+            </div>
+          {/if}
+
+          <div class="field">
+            <label class="toggle-label" for="compact-proactive-enabled">
+              <input type="checkbox" id="compact-proactive-enabled" bind:checked={compactProactiveEnabled} />
+              Proactive idle compaction
+            </label>
+            <p class="hint">
+              Compact idle threads in the background once they sit near the auto-compact trigger,
+              while the provider's prompt cache is still warm. Threads can override this per-thread.
+            </p>
+          </div>
+
+          {#if compactProactiveEnabled}
+            <div class="field">
+              <label for="compact-proactive-idle">Proactive Idle Delay: {compactProactiveIdleSeconds}s</label>
+              <input
+                id="compact-proactive-idle"
+                type="number"
+                min="30"
+                max="3600"
+                step="10"
+                bind:value={compactProactiveIdleSeconds}
+              />
+              <p class="hint">Seconds a thread must sit idle after a turn before it is compacted (30-3600)</p>
+            </div>
+
+            <div class="field">
+              <label for="compact-proactive-pct">Proactive Occupancy Floor: {compactProactiveMinPct}%</label>
+              <input
+                id="compact-proactive-pct"
+                type="range"
+                min="10"
+                max="100"
+                step="5"
+                bind:value={compactProactiveMinPct}
+              />
+              <p class="hint">Only compact once context usage reaches this percentage of the auto-compact trigger</p>
             </div>
           {/if}
         {/if}

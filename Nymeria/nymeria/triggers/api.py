@@ -1042,6 +1042,11 @@ def create_api_app(
     _register_workflow_approval_sweep_lifecycle(app)
     _register_hook_approval_sweep_lifecycle(app)
 
+    # Proactive idle compaction (opt-in via compact_proactive_enabled).
+    # Unconditional for the same reason: turns run in the API process in
+    # both shapes, so the turn-end stamps and the sweep live here too.
+    _register_proactive_compaction_lifecycle(app, agent_getter=get_agent)
+
     # ========================================================================
     # Slim-mode wiring (embedded MCP)
     #
@@ -1300,6 +1305,42 @@ def _register_dream_scheduler_lifecycle(
         startup_delay_seconds=60,
         start_log="Dream scheduler task started (Docker mode)",
         error_label="Dream scheduler",
+    )
+
+
+def _register_proactive_compaction_lifecycle(
+    app: FastAPI,
+    *,
+    agent_getter: Callable[[], NymeriaAgent],
+) -> None:
+    """Sweep idle threads for proactive compaction (opt-in, backlog #28).
+
+    Turn ends stamp ``CompactionManager.note_turn_end``; this heartbeat is
+    what turns a stamp into a compaction once the thread has sat idle past
+    its threshold with occupancy near the trigger. Compacting while the
+    prompt-cache prefix is still warm is the point of the feature, so the
+    sweep interval stays short: it bounds detection latency, not cost (the
+    pass is a dict scan unless a candidate actually qualifies).
+    """
+
+    async def _run_pass() -> None:
+        agent = agent_getter()
+        compacted = await agent._compaction.run_proactive_sweep()
+        if compacted:
+            logger.info(
+                "Proactive compaction sweep compacted %d thread(s)", compacted
+            )
+
+    from ..core.agent_compaction import PROACTIVE_SWEEP_INTERVAL_SECONDS
+
+    _register_periodic_task(
+        app,
+        state_prefix="proactive_compaction",
+        run_pass=_run_pass,
+        interval_seconds=PROACTIVE_SWEEP_INTERVAL_SECONDS,
+        startup_delay_seconds=60,
+        start_log="Proactive compaction sweep task started",
+        error_label="Proactive compaction sweep",
     )
 
 
