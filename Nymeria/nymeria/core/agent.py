@@ -2568,6 +2568,12 @@ class NymeriaAgent:
             self._pending_tool_reload.pop(thread_id, None)
             self._compactions_this_turn.pop(thread_id, None)
             self._subturn_compact_requested.discard(thread_id)
+            # Stamp the turn end for the proactive idle-compaction sweep
+            # (never raises; must not disturb teardown; getattr because
+            # partially-built agent stubs in tests may lack the manager).
+            _compaction = getattr(self, "_compaction", None)
+            if _compaction is not None:
+                _compaction.note_turn_end(thread_id, user_id)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
             backend.end_release(thread_id)
@@ -3467,6 +3473,12 @@ class NymeriaAgent:
             self._pending_tool_reload.pop(thread_id, None)
             self._compactions_this_turn.pop(thread_id, None)
             self._subturn_compact_requested.discard(thread_id)
+            # Stamp the turn end for the proactive idle-compaction sweep
+            # (never raises; must not disturb teardown; getattr because
+            # partially-built agent stubs in tests may lack the manager).
+            _compaction = getattr(self, "_compaction", None)
+            if _compaction is not None:
+                _compaction.note_turn_end(thread_id, user_id)
             self._thread_locks.clear_lock_info(thread_id)
             lock.release()
             backend.end_release(thread_id)

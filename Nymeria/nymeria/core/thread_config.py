@@ -52,6 +52,10 @@ class ThreadLLMConfig(BaseModel):
     compact_threshold_mode: Optional[Literal["percentage", "tokens"]] = None
     compact_threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
     compact_threshold_tokens: Optional[int] = Field(default=None, ge=1_000, le=2_000_000)
+    # Proactive idle compaction overrides (None inherits the global default).
+    compact_proactive_enabled: Optional[bool] = None
+    compact_proactive_idle_seconds: Optional[int] = Field(default=None, ge=30, le=3600)
+    compact_proactive_min_pct: Optional[int] = Field(default=None, ge=10, le=100)
 
     @field_validator("reasoning_effort", mode="before")
     @classmethod

@@ -318,6 +318,23 @@
       : '';
   }
 
+  function getInitialProactiveCompactEnabled(): 'default' | 'true' | 'false' {
+    const value = threadConfig?.llmConfig?.compact_proactive_enabled;
+    return value == null ? 'default' : value ? 'true' : 'false';
+  }
+
+  function getInitialProactiveCompactIdleSeconds(): string {
+    return threadConfig?.llmConfig?.compact_proactive_idle_seconds != null
+      ? String(threadConfig.llmConfig.compact_proactive_idle_seconds)
+      : '';
+  }
+
+  function getInitialProactiveCompactMinPct(): string {
+    return threadConfig?.llmConfig?.compact_proactive_min_pct != null
+      ? String(threadConfig.llmConfig.compact_proactive_min_pct)
+      : '';
+  }
+
   // LLM form state
   let threadDisplayProvider = $state<ThreadDisplayProvider>(getInitialThreadDisplayProvider());
   let llmProvider = $state(getInitialLlmProvider());
@@ -336,6 +353,9 @@
   let compactThresholdMode = $state<'default' | 'percentage' | 'tokens'>(getInitialCompactThresholdMode());
   let compactThresholdPct = $state<string>(getInitialCompactThreshold());
   let compactThresholdTokens = $state<string>(getInitialCompactThresholdTokens());
+  let proactiveCompactEnabled = $state<'default' | 'true' | 'false'>(getInitialProactiveCompactEnabled());
+  let proactiveCompactIdleSeconds = $state<string>(getInitialProactiveCompactIdleSeconds());
+  let proactiveCompactMinPct = $state<string>(getInitialProactiveCompactMinPct());
 
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
@@ -516,7 +536,9 @@
   const modelContextCustomized = $derived(
     Boolean(
       llmContextLength || llmOllamaNumCtx || compactThresholdMode !== 'default' ||
-      compactThresholdPct || compactThresholdTokens
+      compactThresholdPct || compactThresholdTokens ||
+      proactiveCompactEnabled !== 'default' || proactiveCompactIdleSeconds ||
+      proactiveCompactMinPct
     )
   );
   const memoryCustomized = $derived(Boolean(String(memoryCharLimit ?? '').trim()));
@@ -658,6 +680,9 @@
       ? String(threadConfig.llmConfig.compact_threshold) : '';
     const origCompactTokens = threadConfig?.llmConfig?.compact_threshold_tokens != null
       ? String(threadConfig.llmConfig.compact_threshold_tokens) : '';
+    const origProactiveEnabled = getInitialProactiveCompactEnabled();
+    const origProactiveIdle = getInitialProactiveCompactIdleSeconds();
+    const origProactivePct = getInitialProactiveCompactMinPct();
 
     const origEnabled = new Set(threadConfig?.enabledTools ?? []);
     const origSystemPrompt = threadConfig?.systemPrompt ?? '';
@@ -696,6 +721,9 @@
     if (compactThresholdMode !== origCompactMode) return true;
     if (compactThresholdPct !== origCompactPct) return true;
     if (compactThresholdTokens !== origCompactTokens) return true;
+    if (proactiveCompactEnabled !== origProactiveEnabled) return true;
+    if (proactiveCompactIdleSeconds !== origProactiveIdle) return true;
+    if (proactiveCompactMinPct !== origProactivePct) return true;
     if (systemPrompt !== origSystemPrompt) return true;
     if (notepad !== origNotepad) return true;
     if (isCallable !== origCallable) return true;
@@ -815,7 +843,8 @@
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
         llmUseModelDefaults !== 'default' || llmProviderRoute !== 'default' ||
         llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey ||
-        compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens;
+        compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens ||
+        proactiveCompactEnabled !== 'default' || proactiveCompactIdleSeconds || proactiveCompactMinPct;
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
@@ -851,6 +880,15 @@
         llm.compact_threshold_mode = compactThresholdMode === 'default' ? null : compactThresholdMode;
         llm.compact_threshold = compactThresholdPct ? parseFloat(compactThresholdPct) : null;
         llm.compact_threshold_tokens = compactThresholdTokens ? parseInt(compactThresholdTokens, 10) : null;
+        llm.compact_proactive_enabled = proactiveCompactEnabled === 'default'
+          ? null
+          : proactiveCompactEnabled === 'true';
+        llm.compact_proactive_idle_seconds = proactiveCompactIdleSeconds
+          ? parseInt(proactiveCompactIdleSeconds, 10)
+          : null;
+        llm.compact_proactive_min_pct = proactiveCompactMinPct
+          ? parseInt(proactiveCompactMinPct, 10)
+          : null;
         updates.llm_config = llm;
       } else {
         updates.clear_llm_config = true;
@@ -989,6 +1027,9 @@
     compactThresholdMode = 'default';
     compactThresholdPct = '';
     compactThresholdTokens = '';
+    proactiveCompactEnabled = 'default';
+    proactiveCompactIdleSeconds = '';
+    proactiveCompactMinPct = '';
     isCallable = false;
     callableName = '';
     callableDescription = '';
@@ -1196,6 +1237,9 @@
                 bind:compactThresholdMode
                 bind:compactThresholdPct
                 bind:compactThresholdTokens
+                bind:proactiveCompactEnabled
+                bind:proactiveCompactIdleSeconds
+                bind:proactiveCompactMinPct
               />
             {:else if activeTab === 'tools-native' || activeTab === 'tools-mcp'}
               {#if toolSection === 'mcp'}

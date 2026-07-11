@@ -261,6 +261,9 @@ export interface ThreadLLMConfig {
   compact_threshold_mode?: 'percentage' | 'tokens' | null;
   compact_threshold?: number | null;
   compact_threshold_tokens?: number | null;
+  compact_proactive_enabled?: boolean | null;
+  compact_proactive_idle_seconds?: number | null;
+  compact_proactive_min_pct?: number | null;
 }
 
 export interface DreamingConfig {
@@ -1237,6 +1240,9 @@ export interface ServerSettings {
   compact_threshold_tokens: number;
   compact_keep_messages: number;
   compact_model: string | null;
+  compact_proactive_enabled: boolean;
+  compact_proactive_idle_seconds: number;
+  compact_proactive_min_pct: number;
   sliding_window_cycles: number;
   tool_output_max_chars: number;
   memory_char_limit: number;
@@ -1688,6 +1694,9 @@ export interface ServerSettingsUpdate {
   compact_threshold_tokens?: number;
   compact_keep_messages?: number;
   compact_model?: string | null;
+  compact_proactive_enabled?: boolean;
+  compact_proactive_idle_seconds?: number;
+  compact_proactive_min_pct?: number;
   sliding_window_cycles?: number;
   tool_output_max_chars?: number;
   log_level?: LogLevel;
