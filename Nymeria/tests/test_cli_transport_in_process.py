@@ -171,6 +171,8 @@ class FakeAgent:
         self.trigger_manager = FakeTriggerManager()
         self.astream_calls: list[dict[str, Any]] = []
         self.abort_calls: list[str] = []
+        self.abort_restore_flags: list[bool] = []
+        self.restored_to_return: list[Any] = []
         self.history_calls: list[dict[str, Any]] = []
         self.context_calls: list[str] = []
         self.invalidated: list[str] = []
@@ -181,8 +183,12 @@ class FakeAgent:
         for event in self.events:
             yield copy.deepcopy(event)
 
-    def abort_with_cascade(self, thread_id: str) -> None:
+    def abort_with_cascade(
+        self, thread_id: str, *, restore_queue: bool = False
+    ) -> list[Any]:
         self.abort_calls.append(thread_id)
+        self.abort_restore_flags.append(restore_queue)
+        return list(self.restored_to_return) if restore_queue else []
 
     def get_conversation_history(
         self,
@@ -277,6 +283,46 @@ def test_stop_is_idempotent_until_next_stream() -> None:
     assert after_new_stream["status"] == "stopping"
     assert streamed[-1] == DoneEvent(thread_id="thread-a", tool_call_count=0)
     assert agent.abort_calls == ["thread-a", "thread-a"]
+    # A CLI stop is user-initiated: the local transport must restore the
+    # backend queue, mirroring the REST stop route (backlog #16).
+    assert agent.abort_restore_flags == [True, True]
+    assert first["restored_prompts"] == []
+    assert duplicate["restored_prompts"] == []
+
+
+def test_stop_returns_restored_prompts_payload() -> None:
+    import threading
+
+    from nymeria.core.pending_prompt_queue import PendingPrompt
+
+    agent = FakeAgent()
+    agent.restored_to_return = [
+        PendingPrompt(
+            message="held over",
+            source="user",
+            source_id=None,
+            source_label="User",
+            user_id="alice",
+            enqueued_at=123.0,
+            is_autonomous=False,
+            fanout_mailbox=None,
+            notify_event=threading.Event(),
+            consumer_loop=None,
+        )
+    ]
+    client = InProcessAgentClient(agent)
+
+    result = run(client.stop("thread-a", user_id="alice"))
+
+    assert result["status"] == "stopping"
+    assert result["restored_prompts"] == [
+        {
+            "text": "held over",
+            "source_label": "User",
+            "user_id": "alice",
+            "enqueued_at": 123.0,
+        }
+    ]
 
 
 def test_history_and_context_stats_use_local_agent_methods() -> None:

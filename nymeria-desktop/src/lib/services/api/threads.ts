@@ -3,6 +3,7 @@ import type {
   ContextStats,
   Message,
   MessageStep,
+  StopThreadResult,
   ThreadHistory,
   ThreadStatus,
   ToolCall
@@ -292,16 +293,50 @@ export class ThreadsApi extends ChatApi {
     return { blob, filename, contentType };
   }
 
-  async stopThread(threadId: string): Promise<void> {
-    try {
-      await fetch(`${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/stop`, {
+  /**
+   * Ask the backend to stop the running turn (backlog #11 + #16).
+   *
+   * Returns the structured stop response: whether a turn was actually
+   * stopping vs already idle, and any queued user prompts the backend
+   * handed back instead of discarding (raw text, FIFO). Throws on
+   * network/HTTP failure so the caller can fall back to its local
+   * force-stop path.
+   */
+  async stopThread(threadId: string): Promise<StopThreadResult> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/stop`,
+      {
         method: 'POST',
         headers: this.getHeaders()
-      });
-    } catch {
-      // Fire-and-forget — the AbortController already dropped the connection
-      // and the backend safety net (disconnect detection) will clean up.
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to stop thread: ${response.status}`);
     }
+    const body = (await response.json()) as {
+      status?: string;
+      holder?: string | null;
+      held_seconds?: number;
+      restored_prompts?: Array<{
+        text?: string;
+        source_label?: string;
+        user_id?: string;
+        enqueued_at?: number;
+      }>;
+    };
+    return {
+      status: body.status === 'stopping' ? 'stopping' : 'idle',
+      holder: body.holder ?? null,
+      heldSeconds: body.held_seconds ?? 0,
+      restoredPrompts: (body.restored_prompts ?? [])
+        .map((p) => ({
+          text: p.text ?? '',
+          sourceLabel: p.source_label ?? '',
+          userId: p.user_id ?? '',
+          enqueuedAt: p.enqueued_at ?? 0
+        }))
+        .filter((p) => p.text.trim().length > 0)
+    };
   }
 
   async getThreadContextStats(threadId: string): Promise<ContextStats | null> {

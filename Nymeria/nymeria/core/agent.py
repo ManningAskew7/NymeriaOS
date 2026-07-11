@@ -1721,9 +1721,9 @@ class NymeriaAgent:
         from .agent_callable_lifecycle import is_ancestor_invocation
         return is_ancestor_invocation(self, child_thread_id, target_thread_id)
 
-    def abort_with_cascade(self, thread_id: str):
+    def abort_with_cascade(self, thread_id: str, *, restore_queue: bool = False):
         from .agent_callable_lifecycle import abort_with_cascade
-        return abort_with_cascade(self, thread_id)
+        return abort_with_cascade(self, thread_id, restore_queue=restore_queue)
 
     def _patch_dangling_tool_calls(self, graph, config: dict) -> int:
         from .agent_callable_lifecycle import patch_dangling_tool_calls
@@ -2111,6 +2111,11 @@ class NymeriaAgent:
                     return "Thread is busy with another request. Please try again."
             if not acquired:
                 woken = pending.notify_event.wait(timeout=self.settings.lock_timeout)
+                if pending.restored:
+                    return (
+                        "Turn was stopped before this message could be "
+                        "processed; it was returned to you unsent."
+                    )
                 if pending.abandoned:
                     return "Turn was aborted before this message could be processed."
                 if not woken:
@@ -2777,6 +2782,17 @@ class NymeriaAgent:
                         pending.notify_event,
                         self.settings.lock_timeout,
                     )
+                    if pending.restored:
+                        from .pending_prompt_queue import (
+                            RESTORED_ERROR_CODE,
+                            RESTORED_ERROR_CONTENT,
+                        )
+                        yield {
+                            "type": "error",
+                            "code": RESTORED_ERROR_CODE,
+                            "content": RESTORED_ERROR_CONTENT,
+                        }
+                        return
                     if pending.abandoned:
                         yield {
                             "type": "error",

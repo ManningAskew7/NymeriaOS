@@ -34,10 +34,10 @@ class _StubAgent:
         self._active_callable_invocations: dict[str, set] = {}
         self._invocations_lock = threading.Lock()
 
-    def abort_with_cascade(self, thread_id: str) -> None:
+    def abort_with_cascade(self, thread_id: str, *, restore_queue: bool = False):
         # Re-enter the module function so cascading children works
         # the same as on the real agent.
-        abort_with_cascade(self, thread_id)
+        return abort_with_cascade(self, thread_id, restore_queue=restore_queue)
 
 
 @pytest.fixture
@@ -118,6 +118,106 @@ def test_abort_pushes_error_into_attached_mailbox(isolated_queue):
         assert sentinel.get("type") == _SENTINEL_PROMPT_ABSORBED
 
     asyncio.run(_scenario())
+
+
+def test_stop_restore_returns_user_prompts_and_discards_programmatic(isolated_queue):
+    agent = _StubAgent()
+    user_prompt = make_pending_prompt(
+        message="hand me back",
+        source="user",
+        source_id=None,
+        source_label="u1",
+        user_id="u1",
+        is_autonomous=False,
+        fanout_mailbox=None,
+        consumer_loop=None,
+    )
+    trigger_prompt = make_pending_prompt(
+        message="autonomous work",
+        source="trigger",
+        source_id="trig-1",
+        source_label="T",
+        user_id="u1",
+        is_autonomous=True,
+        fanout_mailbox=None,
+        consumer_loop=None,
+    )
+    isolated_queue.enqueue("t1", user_prompt)
+    isolated_queue.enqueue("t1", trigger_prompt)
+
+    restored = abort_with_cascade(agent, "t1", restore_queue=True)
+
+    assert agent._thread_locks.get_abort_event("t1").is_set()
+    assert isolated_queue.size("t1") == 0
+    # The user prompt is handed back (restored, NOT abandoned) ...
+    assert restored == [user_prompt]
+    assert user_prompt.restored is True
+    assert user_prompt.abandoned is False
+    assert user_prompt.notify_event.is_set()
+    # ... while the programmatic queuer keeps the abandoned wake.
+    assert trigger_prompt.restored is False
+    assert trigger_prompt.abandoned is True
+    assert trigger_prompt.notify_event.is_set()
+
+
+def test_stop_restore_cascade_children_still_discard(isolated_queue):
+    parent_agent = _StubAgent()
+    parent_agent._active_callable_invocations["parent"] = {"child-a"}
+
+    parent_user = make_pending_prompt(
+        message="parent user prompt",
+        source="user",
+        source_id=None,
+        source_label="u1",
+        user_id="u1",
+        is_autonomous=False,
+        fanout_mailbox=None,
+        consumer_loop=None,
+    )
+    child_user = make_pending_prompt(
+        message="child user prompt",
+        source="user",
+        source_id=None,
+        source_label="u1",
+        user_id="u1",
+        is_autonomous=False,
+        fanout_mailbox=None,
+        consumer_loop=None,
+    )
+    isolated_queue.enqueue("parent", parent_user)
+    isolated_queue.enqueue("child-a", child_user)
+
+    restored = abort_with_cascade(parent_agent, "parent", restore_queue=True)
+
+    # Only the explicitly stopped thread restores; the cascade into
+    # callable children keeps discard semantics even for user-source
+    # prompts queued on them.
+    assert restored == [parent_user]
+    assert parent_user.restored is True
+    assert child_user.restored is False
+    assert child_user.abandoned is True
+    assert isolated_queue.size("child-a") == 0
+
+
+def test_abort_default_path_returns_empty_and_discards_user_prompts(isolated_queue):
+    agent = _StubAgent()
+    user_prompt = make_pending_prompt(
+        message="not restored on plain abort",
+        source="user",
+        source_id=None,
+        source_label="u1",
+        user_id="u1",
+        is_autonomous=False,
+        fanout_mailbox=None,
+        consumer_loop=None,
+    )
+    isolated_queue.enqueue("t1", user_prompt)
+
+    restored = abort_with_cascade(agent, "t1")
+
+    assert restored == []
+    assert user_prompt.restored is False
+    assert user_prompt.abandoned is True
 
 
 def test_abort_cascades_to_callable_children(isolated_queue):

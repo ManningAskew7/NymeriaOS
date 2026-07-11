@@ -12,11 +12,14 @@ from nymeria.core.pending_prompt_queue import (
     PendingPrompt,
     PendingPromptQueueClosingError,
     PENDING_PROMPT_QUEUE_MAXSIZE,
+    RESTORED_ERROR_CODE,
     _SENTINEL_PROMPT_ABSORBED,
     create_pending_queue,
     get_pending_queue,
     make_pending_prompt,
     reset_pending_queue_for_tests,
+    restored_prompts_notice,
+    restored_prompts_payload,
     set_pending_queue,
 )
 
@@ -268,4 +271,113 @@ def test_pending_prompt_is_dataclass_with_defaults():
     prompt = _make_prompt("x")
     assert isinstance(prompt, PendingPrompt)
     assert prompt.abandoned is False
+    assert prompt.restored is False
     assert isinstance(prompt.notify_event, threading.Event)
+
+
+# ---------------------------------------------------------------------------
+# clear_with_restore: the user-initiated stop path hands user prompts back.
+# ---------------------------------------------------------------------------
+
+
+def test_clear_with_restore_partitions_by_user_source():
+    backend = InMemoryPendingPromptQueue()
+    user1 = _make_prompt("keep me first")
+    trigger = _make_prompt("autonomous", source="trigger", autonomous=True)
+    user2 = _make_prompt("keep me second")
+    callable_p = _make_prompt("programmatic", source="callable")
+    for p in (user1, trigger, user2, callable_p):
+        backend.enqueue("t1", p)
+
+    restored, discarded = backend.clear_with_restore("t1")
+
+    # User prompts come back in FIFO order, stamped restored (not abandoned).
+    assert [p.message for p in restored] == ["keep me first", "keep me second"]
+    assert discarded == 2
+    for p in (user1, user2):
+        assert p.restored is True
+        assert p.abandoned is False
+        assert p.notify_event.is_set()
+    # Programmatic queuers keep today's abandoned/aborted wake semantics.
+    for p in (trigger, callable_p):
+        assert p.restored is False
+        assert p.abandoned is True
+        assert p.notify_event.is_set()
+    assert backend.size("t1") == 0
+
+
+def test_clear_with_restore_drops_halt_observations():
+    backend = InMemoryPendingPromptQueue()
+    backend.mark_halt_observed("t1", 4)
+    backend.enqueue("t1", _make_prompt("x"))
+    backend.clear_with_restore("t1")
+    assert backend.consume_halt_observation("t1") == 0
+
+
+def test_clear_with_restore_empty_queue():
+    backend = InMemoryPendingPromptQueue()
+    assert backend.clear_with_restore("t1") == ([], 0)
+
+
+def test_clear_with_restore_pushes_restored_error_into_mailbox():
+    backend = InMemoryPendingPromptQueue()
+
+    async def _scenario():
+        consumer_loop = asyncio.get_running_loop()
+        mailbox = FanoutMailbox(consumer_loop)
+        prompt = make_pending_prompt(
+            message="hi",
+            source="user",
+            source_id=None,
+            source_label="user-1",
+            user_id="user-1",
+            is_autonomous=False,
+            fanout_mailbox=mailbox,
+            consumer_loop=consumer_loop,
+        )
+        backend.enqueue("t1", prompt)
+
+        await asyncio.to_thread(backend.clear_with_restore, "t1")
+
+        first = await mailbox.get()
+        assert first.get("type") == "error"
+        assert first.get("code") == RESTORED_ERROR_CODE
+
+        sentinel = await mailbox.get()
+        assert sentinel.get("type") == _SENTINEL_PROMPT_ABSORBED
+        assert prompt.restored is True
+        assert prompt.abandoned is False
+        assert prompt.notify_event.is_set()
+
+    asyncio.run(_scenario())
+
+
+def test_restored_prompts_payload_shape_and_raw_text():
+    p = _make_prompt("raw user text")
+    payload = restored_prompts_payload([p])
+    assert payload == [
+        {
+            "text": "raw user text",
+            "source_label": "user-label",
+            "user_id": "user-1",
+            "enqueued_at": p.enqueued_at,
+        }
+    ]
+    assert restored_prompts_payload([]) == []
+
+
+def test_restored_prompts_notice_formats_singular_plural_and_multiline():
+    assert restored_prompts_notice([]) is None
+    assert restored_prompts_notice([{"text": "   "}]) is None
+
+    single = restored_prompts_notice([{"text": "only one"}])
+    assert single == "This queued message was NOT sent:\n\n> only one"
+
+    multi = restored_prompts_notice(
+        [{"text": "first"}, {"text": "line a\nline b"}]
+    )
+    assert multi == (
+        "These 2 queued messages were NOT sent:\n\n"
+        "> first\n\n"
+        "> line a\n> line b"
+    )

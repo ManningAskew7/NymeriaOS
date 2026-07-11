@@ -147,8 +147,10 @@ class _FakeAgent:
     def chat(self, message, *, thread_id, user_id):
         return "the-response"
 
-    def abort_with_cascade(self, thread_id):
+    def abort_with_cascade(self, thread_id, *, restore_queue: bool = False):
         self.aborted = thread_id
+        restored = getattr(self, "restored_to_return", [])
+        return list(restored) if restore_queue else []
 
 
 def _make_adapter(agent=None, *, origin="testplat", display="TestPlatform", events=None):
@@ -364,15 +366,49 @@ def test_publish_platform_sync_uses_thread_list_platform(monkeypatch):
 def test_stop_idle_when_no_lock():
     api, agent = _make_adapter()
     result = _run(api.stop("t1", "u1"))
-    assert result == {"status": "idle", "thread_id": "t1"}
+    assert result == {"status": "idle", "thread_id": "t1", "restored_prompts": []}
 
 
 def test_stop_stopping_when_locked():
     api, agent = _make_adapter()
     agent._thread_locks.get_lock_info = lambda thread_id: {"held": True}
     result = _run(api.stop("t1", "u1"))
-    assert result == {"status": "stopping", "thread_id": "t1"}
+    assert result == {
+        "status": "stopping",
+        "thread_id": "t1",
+        "restored_prompts": [],
+    }
     assert agent.aborted == "t1"
+
+
+def test_stop_returns_restored_prompt_payload():
+    from nymeria.core.pending_prompt_queue import make_pending_prompt
+
+    api, agent = _make_adapter()
+    agent._thread_locks.get_lock_info = lambda thread_id: {"held": True}
+    pending = make_pending_prompt(
+        message="queued text",
+        source="user",
+        source_id=None,
+        source_label="U1",
+        user_id="u1",
+        is_autonomous=False,
+        fanout_mailbox=None,
+        consumer_loop=None,
+    )
+    agent.restored_to_return = [pending]
+
+    result = _run(api.stop("t1", "u1"))
+
+    assert result["status"] == "stopping"
+    assert result["restored_prompts"] == [
+        {
+            "text": "queued text",
+            "source_label": "U1",
+            "user_id": "u1",
+            "enqueued_at": pending.enqueued_at,
+        }
+    ]
 
 
 def test_chat_returns_response_and_tool_count():

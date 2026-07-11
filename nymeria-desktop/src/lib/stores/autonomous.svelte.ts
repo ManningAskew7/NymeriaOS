@@ -1160,6 +1160,18 @@ function createAutonomousStore() {
         break;
       }
 
+      case 'queue_restored': {
+        // Another client stopped this thread and the backend handed the
+        // queued user prompts back (backlog #16). The stopping client got
+        // the texts in its stop response; here we hand OUR locally-queued
+        // texts back to our composer and clear the queued bar so nothing
+        // looks pending anymore. Own stops are handled in stopGenerating.
+        if ((event._origin_client_id as string | undefined) === clientId) break;
+        if (event.thread_id !== threadsStore.currentThreadId) break;
+        chatStore.restoreLocalPendingToComposer();
+        break;
+      }
+
       // ================================================================
       // Mid-turn pending-prompt drain on an autonomous holder.
       // The interactive path handles these in MainPanel.svelte for

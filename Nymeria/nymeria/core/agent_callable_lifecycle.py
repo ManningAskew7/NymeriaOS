@@ -87,22 +87,46 @@ def is_ancestor_invocation(
     return False
 
 
-def abort_with_cascade(agent: "NymeriaAgent", thread_id: str) -> None:
+def abort_with_cascade(
+    agent: "NymeriaAgent",
+    thread_id: str,
+    *,
+    restore_queue: bool = False,
+) -> list:
     """Signal abort on a thread and recursively on all its active callable children.
 
-    Also clears the per-thread pending-prompt queue with
-    ``abandoned=True`` so any blocked queuers (user chat, callable
-    threads, MCP) wake up with an explicit ``aborted`` error event
-    instead of hanging on the lock_timeout.
+    Also clears the per-thread pending-prompt queue. By default every
+    entry is dropped with ``abandoned=True`` so any blocked queuers
+    (user chat, callable threads, MCP) wake up with an explicit
+    ``aborted`` error event instead of hanging on the lock_timeout.
+
+    ``restore_queue=True`` (the user-initiated stop path) instead hands
+    user-source prompts back: they are drained via ``clear_with_restore``
+    and returned (FIFO) so the stop surface can give the raw texts back
+    to the user; programmatic queuers keep the abandoned semantics. The
+    cascade into callable children always discards: only the thread the
+    user explicitly stopped restores.
+
+    Returns the restored ``PendingPrompt`` entries (empty unless
+    ``restore_queue`` is set and user prompts were queued).
     """
+    restored: list = []
     agent._thread_locks.signal_abort(thread_id)
     try:
         from .pending_prompt_queue import get_pending_queue
-        cleared = get_pending_queue().clear(thread_id, abandoned=True)
-        if cleared:
-            logger.info(
-                f"Abort on thread {thread_id} cleared {cleared} pending prompt(s)"
-            )
+        if restore_queue:
+            restored, discarded = get_pending_queue().clear_with_restore(thread_id)
+            if restored or discarded:
+                logger.info(
+                    f"Stop on thread {thread_id} restored {len(restored)} and "
+                    f"discarded {discarded} pending prompt(s)"
+                )
+        else:
+            cleared = get_pending_queue().clear(thread_id, abandoned=True)
+            if cleared:
+                logger.info(
+                    f"Abort on thread {thread_id} cleared {cleared} pending prompt(s)"
+                )
     except Exception as e:
         logger.warning(f"Failed to clear pending prompts on abort for {thread_id}: {e}")
     try:
@@ -143,6 +167,7 @@ def abort_with_cascade(agent: "NymeriaAgent", thread_id: str) -> None:
     for child_id in children:
         logger.info(f"Cascading abort from thread {thread_id} to child {child_id}")
         agent.abort_with_cascade(child_id)
+    return restored
 
 
 def patch_dangling_tool_calls(agent: "NymeriaAgent", graph, config: dict) -> int:

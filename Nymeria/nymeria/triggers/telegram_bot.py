@@ -2503,12 +2503,24 @@ class NymeriaTelegramBot:
             return
 
         try:
-            await self.api.stop(record.thread_id, user_id=record.nymeria_user_id)
+            result = await self.api.stop(record.thread_id, user_id=record.nymeria_user_id)
             self._stop_button_tokens.pop(token, None)
             await query.answer("Abort signal sent.")
         except Exception as e:
             logger.warning(f"Failed to stop thread via button: {e}")
             await query.answer("Couldn't send abort signal.", show_alert=True)
+            return
+
+        # Queued user prompts are handed back on stop; echo them so the
+        # user can copy/resend (bots have no composer to restore into).
+        from ..core.pending_prompt_queue import restored_prompts_notice
+
+        notice = restored_prompts_notice(result.get("restored_prompts") or [])
+        if notice:
+            try:
+                await context.bot.send_message(chat_id=record.chat_id, text=notice)
+            except Exception as e:  # noqa: BLE001 - echo is best-effort
+                logger.warning(f"Failed to echo restored prompts after stop: {e}")
 
     # =========================================================================
     # Plain Message Handler

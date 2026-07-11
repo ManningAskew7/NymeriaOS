@@ -4,11 +4,19 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // Mock it so the heavy api/index.ts module chain isn't pulled in.
 vi.mock('$lib/services/api.svelte', () => ({
   abortCurrentStream: vi.fn(),
-  api: { stopThread: vi.fn().mockResolvedValue(undefined) },
+  api: {
+    stopThread: vi.fn().mockResolvedValue({
+      status: 'idle',
+      holder: null,
+      heldSeconds: 0,
+      restoredPrompts: [],
+    }),
+  },
 }));
 
 import { createChatStore } from './chat.svelte';
-import type { Message } from '$lib/types';
+import { abortCurrentStream, api } from '$lib/services/api.svelte';
+import type { Message, StopThreadResult } from '$lib/types';
 
 function makeCompletedAssistant(content: string, id = 'prev-turn'): Message {
   return {
@@ -325,6 +333,257 @@ describe('chatStore — pending prompts queue', () => {
     const b = store.addPendingPrompt('b');
     store.removePendingPrompt(a);
     expect(store.pendingPrompts.map((p) => p.id)).toEqual([b]);
+  });
+});
+
+describe('chatStore: stop lifecycle (backlog #11 + #16)', () => {
+  let store: ReturnType<typeof createChatStore>;
+
+  function stopResult(overrides: Partial<StopThreadResult> = {}): StopThreadResult {
+    return {
+      status: 'stopping',
+      holder: 'chat',
+      heldSeconds: 2,
+      restoredPrompts: [],
+      ...overrides,
+    };
+  }
+
+  function seedStreamingTurn() {
+    store.setMessages([makeUser('go')]);
+    store.addAssistantMessage();
+    store.setStreaming(true);
+    store.addToolCallStep('tc-1', 'slow_tool', {});
+  }
+
+  beforeEach(() => {
+    store = createChatStore();
+    vi.mocked(api.stopThread).mockReset();
+    vi.mocked(abortCurrentStream).mockReset();
+  });
+
+  it('stopping response defers finalize until the cancelled frame', async () => {
+    vi.mocked(api.stopThread).mockResolvedValue(stopResult());
+    seedStreamingTurn();
+
+    await store.stopGenerating('t1');
+
+    // No optimistic edit: still streaming, marked stopping, stream not aborted.
+    expect(store.isStopping).toBe(true);
+    expect(store.isStreaming).toBe(true);
+    expect(abortCurrentStream).not.toHaveBeenCalled();
+    const last = store.messages[store.messages.length - 1];
+    expect(last.content).not.toContain('[User stopped this output]');
+
+    // The cancelled frame arrives: finalize marks the turn stopped.
+    store.finalizeStopped();
+    expect(store.isStopping).toBe(false);
+    expect(store.isStreaming).toBe(false);
+    const finalized = store.messages[store.messages.length - 1];
+    expect(finalized.content).toContain('[User stopped this output]');
+    const toolStep = finalized.steps?.find(
+      (s) => s.type === 'tool_call' && s.id === 'tc-1',
+    );
+    expect(toolStep && 'status' in toolStep ? toolStep.status : undefined).toBe(
+      'cancelled',
+    );
+  });
+
+  it('finalizeStopped is idempotent', () => {
+    seedStreamingTurn();
+    store.finalizeStopped();
+    const snapshot = structuredClone(store.messages);
+    store.finalizeStopped();
+    expect(store.messages).toEqual(snapshot);
+  });
+
+  it('idle response finalizes immediately', async () => {
+    vi.mocked(api.stopThread).mockResolvedValue(stopResult({ status: 'idle' }));
+    seedStreamingTurn();
+
+    await store.stopGenerating('t1');
+
+    expect(store.isStopping).toBe(false);
+    expect(store.isStreaming).toBe(false);
+    expect(abortCurrentStream).toHaveBeenCalled();
+  });
+
+  it('restores server texts plus local sending entries to the composer', async () => {
+    vi.mocked(api.stopThread).mockResolvedValue(
+      stopResult({
+        restoredPrompts: [
+          { text: 'server queued', sourceLabel: 'U', userId: 'u1', enqueuedAt: 1 },
+        ],
+      })
+    );
+    seedStreamingTurn();
+    // 'queued' entries reached the backend (covered by the server list);
+    // 'sending' entries never made it there and must be restored locally.
+    const queuedId = store.addPendingPrompt('server queued');
+    store.setPendingPromptStatus(queuedId, 'queued');
+    store.addPendingPrompt('still sending');
+
+    await store.stopGenerating('t1');
+
+    expect(store.composerRestore).toBe('server queued\n---\nstill sending');
+    expect(store.pendingPrompts).toHaveLength(0);
+  });
+
+  it('falls back to a local stop when the backend is unreachable', async () => {
+    vi.mocked(api.stopThread).mockRejectedValue(new Error('down'));
+    seedStreamingTurn();
+    store.addPendingPrompt('local only');
+
+    await store.stopGenerating('t1');
+
+    expect(store.isStopping).toBe(false);
+    expect(store.isStreaming).toBe(false);
+    expect(abortCurrentStream).toHaveBeenCalled();
+    expect(store.composerRestore).toBe('local only');
+    expect(store.pendingPrompts).toHaveLength(0);
+  });
+
+  it('fallback timer force-finalizes when no cancelled frame arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.stopThread).mockResolvedValue(stopResult());
+      seedStreamingTurn();
+
+      await store.stopGenerating('t1');
+      expect(store.isStopping).toBe(true);
+
+      vi.advanceTimersByTime(8_000);
+
+      expect(store.isStopping).toBe(false);
+      expect(store.isStreaming).toBe(false);
+      expect(abortCurrentStream).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('second stop click is a no-op while stopping', async () => {
+    vi.mocked(api.stopThread).mockResolvedValue(stopResult());
+    seedStreamingTurn();
+
+    await store.stopGenerating('t1');
+    await store.stopGenerating('t1');
+
+    expect(vi.mocked(api.stopThread)).toHaveBeenCalledTimes(1);
+  });
+
+  it('restoreToComposer joins with --- and consume clears the channel', () => {
+    store.restoreToComposer(['first', 'second']);
+    store.restoreToComposer(['third']);
+    expect(store.composerRestore).toBe('first\n---\nsecond\n---\nthird');
+    expect(store.consumeComposerRestore()).toBe('first\n---\nsecond\n---\nthird');
+    expect(store.composerRestore).toBe('');
+  });
+
+  it('done path clears stopping without cancelled visuals', async () => {
+    vi.mocked(api.stopThread).mockResolvedValue(stopResult());
+    seedStreamingTurn();
+
+    await store.stopGenerating('t1');
+    store.clearStopping();
+
+    expect(store.isStopping).toBe(false);
+    const last = store.messages[store.messages.length - 1];
+    expect(last.content).not.toContain('[User stopped this output]');
+  });
+
+  it('restores server prompts even when the cancelled frame finalizes during the stop await', async () => {
+    // The POST /stop response and the SSE cancelled frame race over two
+    // connections; when the frame wins, the response is still the only
+    // copy of the restored texts the initiating client gets.
+    let resolveStop!: (r: StopThreadResult) => void;
+    vi.mocked(api.stopThread).mockImplementation(
+      () => new Promise<StopThreadResult>((resolve) => { resolveStop = resolve; })
+    );
+    seedStreamingTurn();
+    const queuedId = store.addPendingPrompt('queued text');
+    store.setPendingPromptStatus(queuedId, 'queued');
+
+    const stopPromise = store.stopGenerating('t1');
+    // Cancelled frame arrives first: finalize + the mirror stream's
+    // restored error removes the pending chip.
+    store.finalizeStopped();
+    store.removePendingPrompt(queuedId);
+    expect(store.isStopping).toBe(false);
+
+    resolveStop(
+      stopResult({
+        restoredPrompts: [
+          { text: 'queued text', sourceLabel: 'U', userId: 'u1', enqueuedAt: 1 },
+        ],
+      })
+    );
+    await stopPromise;
+
+    expect(store.composerRestore).toBe('queued text');
+    // Already finalized: the late response must not re-abort a stream.
+    expect(abortCurrentStream).not.toHaveBeenCalled();
+  });
+
+  it('late stop response does not duplicate texts the fallback already restored', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveStop!: (r: StopThreadResult) => void;
+      vi.mocked(api.stopThread).mockImplementation(
+        () => new Promise<StopThreadResult>((resolve) => { resolveStop = resolve; })
+      );
+      seedStreamingTurn();
+      const queuedId = store.addPendingPrompt('only once');
+      store.setPendingPromptStatus(queuedId, 'queued');
+
+      const stopPromise = store.stopGenerating('t1');
+      vi.advanceTimersByTime(8_000); // fallback restores the local copy
+
+      expect(store.composerRestore).toBe('only once');
+
+      resolveStop(
+        stopResult({
+          restoredPrompts: [
+            { text: 'only once', sourceLabel: 'U', userId: 'u1', enqueuedAt: 1 },
+          ],
+        })
+      );
+      await stopPromise;
+
+      expect(store.composerRestore).toBe('only once');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('finalize via the cancelled frame cancels the fallback timer', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.stopThread).mockResolvedValue(stopResult());
+      seedStreamingTurn();
+
+      await store.stopGenerating('t1');
+      store.finalizeStopped(); // the cancelled frame arrives
+
+      vi.mocked(abortCurrentStream).mockClear();
+      vi.advanceTimersByTime(8_000);
+
+      expect(abortCurrentStream).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clearMessages resets stop state and drops an unconsumed composer restore', async () => {
+    vi.mocked(api.stopThread).mockResolvedValue(stopResult());
+    seedStreamingTurn();
+    await store.stopGenerating('t1');
+    store.restoreToComposer(['leftover']);
+
+    store.clearMessages();
+
+    expect(store.isStopping).toBe(false);
+    expect(store.composerRestore).toBe('');
   });
 });
 

@@ -193,6 +193,8 @@ class InProcessAgentClient:
     ) -> Mapping[str, Any]:
         """Abort local generation once per active stop request."""
 
+        from nymeria.core.pending_prompt_queue import restored_prompts_payload
+
         with self._stop_lock:
             if thread_id in self._stopping_threads:
                 return {
@@ -200,15 +202,19 @@ class InProcessAgentClient:
                     "thread_id": thread_id,
                     "user_id": user_id,
                     "status": "already_stopping",
+                    "restored_prompts": [],
                 }
             self._stopping_threads.add(thread_id)
 
-        self.agent.abort_with_cascade(thread_id)
+        # User-initiated stop: hand queued user prompts back instead of
+        # discarding them, mirroring the REST stop route.
+        restored = self.agent.abort_with_cascade(thread_id, restore_queue=True)
         return {
             "ok": True,
             "thread_id": thread_id,
             "user_id": user_id,
             "status": "stopping",
+            "restored_prompts": restored_prompts_payload(restored),
         }
 
     async def get_history(

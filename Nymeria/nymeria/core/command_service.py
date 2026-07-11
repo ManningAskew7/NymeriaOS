@@ -995,21 +995,30 @@ class CommandBackendClient:
         return {"status": "restarting"}
 
     async def stop_thread(self, thread_id: str) -> dict:
-        """Abort the running turn on a thread; cascades to callable children."""
+        """Abort the running turn on a thread; cascades to callable children.
+
+        A user-initiated stop hands queued user prompts back instead of
+        discarding them (``restored_prompts``, raw text in FIFO order),
+        mirroring the REST stop route.
+        """
         self._require_thread_access(thread_id)
         thread_locks = getattr(self.agent, "_thread_locks", None)
         lock_info = thread_locks.get_lock_info(thread_id) if thread_locks else None
         if lock_info:
-            self.agent.abort_with_cascade(thread_id)
+            from .pending_prompt_queue import restored_prompts_payload
+
+            restored = self.agent.abort_with_cascade(thread_id, restore_queue=True)
             return {
                 "status": "stopping",
                 "thread_id": thread_id,
                 "holder": lock_info.get("holder"),
                 "held_seconds": lock_info.get("held_seconds", 0),
+                "restored_prompts": restored_prompts_payload(restored),
             }
         return {
             "status": "idle",
             "thread_id": thread_id,
+            "restored_prompts": [],
         }
 
     async def prune_thread(self, thread_id: str, mode: str = "full") -> dict:
@@ -5047,6 +5056,8 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
     # ── Thread lifecycle ──────────────────────────────────────────────────
 
     async def _cmd_stop(self, args: list[str], rest: str) -> str:
+        from .pending_prompt_queue import restored_prompts_notice
+
         thread_error = self._require_thread()
         if thread_error:
             return thread_error
@@ -5054,10 +5065,14 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         if result.get("status") == "stopping":
             holder = result.get("holder") or "current turn"
             held = result.get("held_seconds", 0)
-            return (
+            message = (
                 f"[Success]: Stop requested. {holder} has been running for "
                 f"{held:.0f}s; will halt at the next iteration boundary."
             )
+            notice = restored_prompts_notice(result.get("restored_prompts") or [])
+            if notice:
+                message = f"{message}\n\n{notice}"
+            return message
         return "[Info]: Thread is idle; nothing to stop."
 
     async def _cmd_clear(self, args: list[str], rest: str) -> str:

@@ -1230,6 +1230,13 @@ class CLIApp:
                     attachments=current.attachments,
                     runtime=runtime,
                 )
+                stop_task = runtime._stop_task
+                if stop_task is not None and not stop_task.done():
+                    # A stop is in flight (backlog #16): the halted turn may
+                    # end before the stop RPC resolves, and popping the queue
+                    # here would auto-send an entry the stop is about to hand
+                    # back to the composer. Leave the deque for the drain.
+                    break
                 current = runtime.next_queued_submission()
         finally:
             runtime.clear_queued_notice_if_idle()
@@ -1500,14 +1507,21 @@ class CLIApp:
             logger.debug("Failed to stop the current turn", exc_info=True)
             return
 
-    async def _stop_current_turn_async(self) -> None:
+    async def _stop_current_turn_async(self) -> Mapping[str, Any] | None:
+        """Ask the backend to stop; returns the stop response when available.
+
+        The response carries ``restored_prompts`` (queued user prompts the
+        backend handed back instead of discarding, backlog #16); the rich
+        REPL restores them to the composer. None means the stop could not
+        be delivered (no client / network failure).
+        """
         if self._client is None:
-            return
+            return None
         try:
-            await self._client.stop(self.state.thread_id, self.state.user_id)
+            return await self._client.stop(self.state.thread_id, self.state.user_id)
         except Exception:  # noqa: BLE001 - cancellation feedback is best effort.
             logger.debug("Failed to stop the current turn", exc_info=True)
-            return
+            return None
 
     def _render_cancelled(self, renderer: _ReplRenderer) -> None:
         if isinstance(renderer, PlainRenderer):

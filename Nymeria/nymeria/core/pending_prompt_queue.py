@@ -159,23 +159,30 @@ class PendingPrompt:
     # Set to True by ``clear(abandoned=True)`` so a blocked queuer can
     # tell its wait was cut short by an abort vs. a normal absorb.
     abandoned: bool = field(default=False)
+    # Set to True by ``clear_with_restore`` (the user-initiated stop path)
+    # so a blocked queuer can tell its prompt was handed back to the user
+    # rather than dropped.
+    restored: bool = field(default=False)
 
 
 def _wake_prompt(
     prompt: PendingPrompt,
     *,
     abandoned: bool,
+    restored: bool = False,
     error_code: Optional[str] = None,
     error_content: Optional[str] = None,
 ) -> None:
     """Wake one prompt's waiters: optional error into the mailbox, close, set.
 
-    ``abandoned`` is stamped before ``notify_event`` fires so a woken waiter
-    reads the final value. Shared by the backend's evict/clear paths and the
-    module-level batch helpers below.
+    ``abandoned``/``restored`` are stamped before ``notify_event`` fires so a
+    woken waiter reads the final value. Shared by the backend's evict/clear/
+    restore paths and the module-level batch helpers below.
     """
     if abandoned:
         prompt.abandoned = True
+    if restored:
+        prompt.restored = True
     if prompt.fanout_mailbox is not None:
         if error_code:
             prompt.fanout_mailbox.put({
@@ -185,6 +192,16 @@ def _wake_prompt(
             })
         prompt.fanout_mailbox.close()
     prompt.notify_event.set()
+
+
+# Wire code + content pushed to a queued waiter whose prompt was handed
+# back to the user by a stop (``clear_with_restore``) instead of dropped.
+# Rides the ``error`` envelope so the queued-prompt SSE generators (which
+# exit on ``error``/``prompt_absorbed``) terminate cleanly on old clients.
+RESTORED_ERROR_CODE = "restored"
+RESTORED_ERROR_CONTENT = (
+    "Turn stopped; this queued message was returned to you unprocessed."
+)
 
 
 class PendingPromptQueueBackend(Protocol):
@@ -200,6 +217,9 @@ class PendingPromptQueueBackend(Protocol):
     def peek(self, thread_id: str) -> bool: ...
     def size(self, thread_id: str) -> int: ...
     def clear(self, thread_id: str, *, abandoned: bool = True) -> int: ...
+    def clear_with_restore(
+        self, thread_id: str
+    ) -> tuple[List[PendingPrompt], int]: ...
     def mark_halt_observed(self, thread_id: str, count: int) -> None: ...
     def consume_halt_observation(self, thread_id: str) -> int: ...
     def begin_release(self, thread_id: str) -> None: ...
@@ -284,6 +304,50 @@ class InMemoryPendingPromptQueue:
             )
         return count
 
+    def clear_with_restore(
+        self, thread_id: str
+    ) -> tuple[List[PendingPrompt], int]:
+        """Drop all pending prompts, handing user-source entries back.
+
+        The user-initiated-stop sibling of ``clear``: pops the queue and
+        the halt-observation counter atomically, then wakes each entry.
+        User-source prompts (``source == "user"``, the only human source;
+        callable/mcp waiters are interactive but programmatic) are stamped
+        ``restored`` and woken with a ``restored`` error so their blocked
+        waiters exit cleanly, and are returned in FIFO order so the stop
+        caller can hand the raw texts back to the user. Everything else
+        keeps ``clear``'s abandoned/aborted semantics so programmatic
+        queuers (ticker, triggers, callable-ask waiters) never hang.
+
+        Returns ``(restored_user_prompts, discarded_count)``.
+        """
+        with self._lock:
+            queue = self._queues.pop(thread_id, None)
+            self._halt_observed.pop(thread_id, None)
+        if not queue:
+            return [], 0
+        restored: List[PendingPrompt] = []
+        discarded = 0
+        for prompt in queue:
+            if prompt.source == "user":
+                restored.append(prompt)
+                self._wake_prompt(
+                    prompt,
+                    abandoned=False,
+                    restored=True,
+                    error_code=RESTORED_ERROR_CODE,
+                    error_content=RESTORED_ERROR_CONTENT,
+                )
+            else:
+                discarded += 1
+                self._wake_prompt(
+                    prompt,
+                    abandoned=True,
+                    error_code="aborted",
+                    error_content="Turn aborted.",
+                )
+        return restored, discarded
+
     def mark_halt_observed(self, thread_id: str, count: int) -> None:
         """Record that the router observed ``count`` pending prompts.
 
@@ -327,12 +391,14 @@ class InMemoryPendingPromptQueue:
         prompt: PendingPrompt,
         *,
         abandoned: bool,
+        restored: bool = False,
         error_code: Optional[str] = None,
         error_content: Optional[str] = None,
     ) -> None:
         _wake_prompt(
             prompt,
             abandoned=abandoned,
+            restored=restored,
             error_code=error_code,
             error_content=error_content,
         )
@@ -431,6 +497,48 @@ def queued_prompt_header(prompt: PendingPrompt) -> str:
         f"[Time: {format_user_time(prompt.enqueued_at)}]\n"
         f"[Trigger: {label}]"
     )
+
+
+def restored_prompts_payload(prompts: List[PendingPrompt]) -> List[Dict[str, Any]]:
+    """Wire payload for a stop response's ``restored_prompts`` field.
+
+    Shared by every stop surface (REST route, command-service adapter,
+    in-process bot adapter) so the field shape cannot drift. ``text`` is
+    the RAW user text: the ``[Time:]/[Trigger:]`` header is applied only
+    at message-build time, never stored on the entry.
+    """
+    return [
+        {
+            "text": p.message,
+            "source_label": p.source_label,
+            "user_id": p.user_id,
+            "enqueued_at": p.enqueued_at,
+        }
+        for p in (prompts or [])
+    ]
+
+
+def restored_prompts_notice(prompts: List[Dict[str, Any]]) -> Optional[str]:
+    """Human-readable echo block for stop responses: queued messages NOT sent.
+
+    ``prompts`` is the ``restored_prompts`` payload from a stop response
+    (dicts carrying at least ``text``). Returns None when there is nothing
+    to echo. Shared by the ``/stop`` slash handler and the chat-bot stop
+    confirmations so every text-only surface (no writable composer) renders
+    the same quote-for-resend echo.
+    """
+    texts = [str(p.get("text") or "").strip() for p in (prompts or [])]
+    texts = [t for t in texts if t]
+    if not texts:
+        return None
+    if len(texts) == 1:
+        header = "This queued message was NOT sent:"
+    else:
+        header = f"These {len(texts)} queued messages were NOT sent:"
+    blocks = [header]
+    for text in texts:
+        blocks.append("\n".join(f"> {line}" for line in text.splitlines()))
+    return "\n\n".join(blocks)
 
 
 # ---------------------------------------------------------------------------

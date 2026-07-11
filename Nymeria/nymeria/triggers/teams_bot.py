@@ -740,11 +740,17 @@ class NymeriaTeamsBot:
             return
         thread_id = self._resolve_thread_id(activity)
         try:
-            await self.api.stop(thread_id, user_id=user_id)
+            result = await self.api.stop(thread_id, user_id=user_id)
         except BotAPIError as exc:
             await self._send_text(target, f"Couldn't stop the current run: {exc.detail}")
             return
-        await self._send_text(target, "Stopped the current run for this Microsoft Teams chat.")
+        from ..core.pending_prompt_queue import restored_prompts_notice
+
+        message = "Stopped the current run for this Microsoft Teams chat."
+        notice = restored_prompts_notice(result.get("restored_prompts") or [])
+        if notice:
+            message = f"{message}\n\n{notice}"
+        await self._send_text(target, message)
 
     async def _reject_unlinked(self, target: TeamsReplyTarget, platform_user_id: str) -> None:
         await self._send_text(
