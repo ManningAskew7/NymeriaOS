@@ -233,6 +233,7 @@ def build_registry(
             observe=observe,
             definition_id=definition.id,
             timeout=_reg_timeout(definition),
+            single_use=bool(getattr(definition, "single_use", False)),
         )
     return registry
 

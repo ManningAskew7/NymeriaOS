@@ -588,3 +588,79 @@ def test_fire_gate_invalid_operator_rejected(manager):
             "u1", name="n", event="done", text="x", scope="global",
             fire_conditions=[{"field": "x", "operator": "sideways", "value": "1"}],
         )
+
+
+# --- single_use (delete after first successful run) -------------------------
+
+def test_single_use_field_defaults_false_and_roundtrips(manager):
+    h = manager.add_hook("u", name="n", event="done", text="x")
+    assert h.single_use is False
+    h2 = manager.add_hook("u", name="n2", event="done", text="x", single_use=True)
+    assert h2.single_use is True
+    assert manager.get_hook("u", h2.id).single_use is True
+
+
+def test_legacy_store_without_single_use_loads(manager):
+    # Old stored JSON has no single_use/template keys; defaults must apply.
+    h = HookDefinition(
+        id="leg1", name="n", event="done", logic=InjectContextLogic(text="x")
+    )
+    data = h.model_dump(mode="json")
+    data.pop("single_use", None)
+    data.pop("template", None)
+    loaded = HookDefinition.model_validate(data)
+    assert loaded.single_use is False
+    assert loaded.template == ""
+
+
+def test_delete_hook_purge_log_false_keeps_executions(manager):
+    h = manager.add_hook("u", name="n", event="done", text="x")
+    manager.log_execution(
+        "u", HookExecution(hook_id=h.id, hook_name="n", event="done", status="ok")
+    )
+    assert manager.delete_hook("u", h.id, purge_log=False) is True
+    entries = manager.get_executions("u")
+    assert any(e["hook_id"] == h.id for e in entries)
+
+
+def _reg_for(hook, *, single_use=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        definition_id=hook.id,
+        name=hook.name,
+        observe=False,
+        single_use=hook.single_use if single_use is None else single_use,
+    )
+
+
+def _ctx_stub():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(event="done", thread_id="t1", tool_name=None)
+
+
+def test_recorder_deletes_single_use_on_ok_synchronously(manager):
+    h = manager.add_hook("u", name="n", event="done", text="x", single_use=True)
+    recorder = make_execution_recorder(manager, "u")
+    recorder(_reg_for(h), _ctx_stub(), status="ok", detail="fired", duration=0.1)
+    # Synchronous: the definition is gone immediately (no flush needed), so
+    # "absent" reliably means "fired" for claim-by-delete callers.
+    assert manager.get_hook("u", h.id) is None
+    # The log entry survives the self-cleanup.
+    assert any(e["hook_id"] == h.id for e in manager.get_executions("u"))
+
+
+def test_recorder_keeps_single_use_on_non_ok(manager):
+    h = manager.add_hook("u", name="n", event="done", text="x", single_use=True)
+    recorder = make_execution_recorder(manager, "u")
+    for status in ("no_op", "error", "timeout", "saturated", "illegal"):
+        recorder(_reg_for(h), _ctx_stub(), status=status, detail="", duration=0.0)
+        assert manager.get_hook("u", h.id) is not None, status
+
+
+def test_recorder_keeps_non_single_use_on_ok(manager):
+    h = manager.add_hook("u", name="n", event="done", text="x")
+    recorder = make_execution_recorder(manager, "u")
+    recorder(_reg_for(h), _ctx_stub(), status="ok", detail="fired", duration=0.1)
+    assert manager.get_hook("u", h.id) is not None

@@ -614,7 +614,7 @@ def register_default_commands(service: "CommandService") -> None:
         category="Automation",
         usage=(
             "/hook list|create|show|edit|enable|disable|delete|test|log"
-            "|approvals|approve|deny [...]"
+            "|templates|install|approvals|approve|deny [...]"
         ),
         aliases=("hooks",),
     )
@@ -642,7 +642,7 @@ def register_default_commands(service: "CommandService") -> None:
             "/hook create <name> --event E --action A "
             '[--text ..|--url ..|--cond "f op v"..|--reason ..|--set arg=val..'
             "|--command ..|--timeout N] "
-            '[--fire-cond "f op v"]... [--once] '
+            '[--fire-cond "f op v"]... [--once] [--single-use] '
             "[--matcher A|B] [--scope thread|global] [--disabled]"
         ),
         aliases=("hook_create",),
@@ -657,7 +657,8 @@ def register_default_commands(service: "CommandService") -> None:
         category="Automation",
         usage=(
             '/hook edit <id> [key=value]... [--cond "f op v"]... '
-            '[--fire-cond "f op v"]... [--set arg=val]... [once=true|false]'
+            '[--fire-cond "f op v"]... [--set arg=val]... [once=true|false] '
+            "[single_use=true|false]"
         ),
         aliases=("hook_edit",),
         surfaces=_hook_sub_surfaces,
@@ -711,6 +712,25 @@ def register_default_commands(service: "CommandService") -> None:
         usage="/hook log [id] [--limit N]",
         aliases=("hook_log",),
         surfaces=_hook_sub_surfaces,
+    )
+    service.register(
+        "hook templates",
+        description="List the bundled hook-template catalog",
+        category="Automation",
+        usage="/hook templates",
+        aliases=("hook_templates",),
+        surfaces=_hook_sub_surfaces,
+    )
+    service.register(
+        "hook install",
+        description="Install a bundled hook template as a real hook",
+        category="Automation",
+        usage="/hook install <template-id> [--scope thread|global] [--text ...] [--disabled]",
+        aliases=("hook_install",),
+        surfaces=_hook_sub_surfaces,
+        mutates_state=True,
+        danger_level="normal",
+        agent_allowed=False,
     )
     # Hook approvals: the human resolve surface for require_approval holds.
     # agent_allowed=False is load-bearing on approve/deny (the agent must not
@@ -1041,6 +1061,21 @@ def register_default_commands(service: "CommandService") -> None:
         ),
         category="Thread",
         usage="/quick <prompt>",
+        requires_thread=True,
+        mutates_state=True,
+        agent_allowed=False,
+        execution_kind="chat_stream",
+        note="Handled by the chat stream endpoint.",
+    )
+    service.register(
+        "done",
+        description=(
+            "Arm a one-shot follow-up prompt that fires when the current "
+            "turn finishes (a single-use DONE hook, removed after firing). "
+            "With no turn running, the prompt is sent immediately."
+        ),
+        category="Automation",
+        usage="/done <prompt>",
         requires_thread=True,
         mutates_state=True,
         agent_allowed=False,

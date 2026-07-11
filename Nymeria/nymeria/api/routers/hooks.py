@@ -77,6 +77,10 @@ class HookCreateRequest(BaseModel):
             "matching"
         ),
     )
+    single_use: bool = Field(
+        default=False,
+        description="Delete the hook after its first successful run (log kept)",
+    )
     scope: Literal["global", "thread"] = Field(default="thread")
     thread_id: Optional[str] = Field(default=None)
     enabled: bool = Field(default=True)
@@ -96,6 +100,7 @@ class HookUpdateRequest(BaseModel):
     matcher: Optional[str] = None
     fire_conditions: Optional[List[HookCondition]] = None
     once: Optional[bool] = None
+    single_use: Optional[bool] = None
     enabled: Optional[bool] = None
     # Note: no `scope`/`thread_id` here. Re-scoping a hook to a thread needs a
     # thread_id (and its access gate), which a partial PATCH cannot supply
@@ -110,6 +115,22 @@ class HookApprovalResolveRequest(BaseModel):
     note: Optional[str] = Field(default=None, max_length=500)
 
 
+class HookTemplateInstallRequest(BaseModel):
+    """Install a bundled hook template (all overrides optional)."""
+
+    scope: Optional[Literal["global", "thread"]] = Field(
+        default=None, description="Override the template's default scope"
+    )
+    thread_id: Optional[str] = Field(
+        default=None, description="Thread binding (required when scope is 'thread')"
+    )
+    text: Optional[str] = Field(
+        default=None, max_length=10_000,
+        description="Override the template's text body / approval prompt",
+    )
+    enabled: Optional[bool] = Field(default=None)
+
+
 class HookResponse(BaseModel):
     id: str
     name: str
@@ -122,9 +143,11 @@ class HookResponse(BaseModel):
     matcher: Optional[str] = None
     fire_conditions: List[dict] = Field(default_factory=list)
     once: bool = False
+    single_use: bool = False
     enabled: bool
     scope: str
     thread_id: str = ""
+    template: str = ""
     created_by: str
     created_at: str
     updated_at: str
@@ -142,9 +165,11 @@ class HookResponse(BaseModel):
             matcher=h.matcher,
             fire_conditions=[c.model_dump() for c in h.fire_conditions],
             once=h.once,
+            single_use=h.single_use,
             enabled=h.enabled,
             scope=h.scope,
             thread_id=h.thread_id,
+            template=h.template,
             created_by=h.created_by,
             created_at=h.created_at.isoformat(),
             updated_at=h.updated_at.isoformat(),
@@ -239,6 +264,7 @@ def create_hook_router(
                 matcher=body.matcher,
                 fire_conditions=body.fire_conditions,
                 once=body.once,
+                single_use=body.single_use,
                 scope=body.scope,
                 thread_id=thread_id,
                 enabled=body.enabled,
@@ -320,6 +346,9 @@ def create_hook_router(
                 "context_fields": list(FIRE_CONDITION_CONTEXT_FIELDS),
                 "args_prefix": "args.",
             },
+            # Definition lifecycle fields (distinct from the fire gate):
+            # single_use deletes the hook after its first successful run.
+            "lifecycle": {"fields": ["single_use"]},
             "max_hooks": HookStore.model_fields["MAX_HOOKS"].default,
         }
 
@@ -406,6 +435,72 @@ def create_hook_router(
         return await run_in_threadpool(
             _get_manager().get_executions, user.id, hook_id=hook_id, limit=limit
         )
+
+    @router.get("/templates")
+    async def list_hook_templates(
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
+    ):
+        """The bundled hook-template catalog (install via the sibling POST)."""
+        from ...core.hook_templates import load_templates
+
+        templates = await run_in_threadpool(load_templates)
+        return {
+            "templates": [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "description": t.description,
+                    "notes": t.notes,
+                    "hook": t.hook,
+                }
+                for t in templates
+            ]
+        }
+
+    @router.post("/templates/{template_id}/install")
+    async def install_hook_template(
+        template_id: str,
+        body: HookTemplateInstallRequest,
+        user: AuthenticatedUser = Depends(verify_api_key_fn),
+    ):
+        """Install a bundled template as a real hook for the caller.
+
+        Idempotent: reinstalling a template already installed with the same
+        scope binding returns the existing hook with ``created: false``.
+        """
+        from ...core.hook_templates import install_template
+
+        scope = body.scope
+        # The binding is used whenever the EFFECTIVE scope (override or the
+        # template's default) is thread-scoped, so access-check it whenever
+        # the caller supplies one.
+        thread_id = body.thread_id
+        if scope == "thread" and not thread_id:
+            raise HTTPException(
+                status_code=400,
+                detail="A thread-scoped install requires a thread_id.",
+            )
+        if thread_id and require_thread_access_fn is not None:
+            require_thread_access_fn(user, thread_id)
+        try:
+            hook, created = await run_in_threadpool(
+                lambda: install_template(
+                    _get_manager(),
+                    user.id,
+                    template_id,
+                    scope=scope,
+                    thread_id=thread_id,
+                    text=body.text,
+                    enabled=body.enabled,
+                    created_by="user",
+                    is_admin=user.role == "admin",
+                )
+            )
+        except (ValidationError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if hook is None:
+            raise HTTPException(status_code=400, detail="Hook limit reached for this user.")
+        return {"created": created, "hook": HookResponse.from_definition(hook)}
 
     @router.get("/{hook_id}", response_model=HookResponse)
     async def get_hook(

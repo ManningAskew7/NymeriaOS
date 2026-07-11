@@ -318,3 +318,74 @@ def test_done_continuation_respects_loop_guard_cap(env):
         )
     )
     assert prompt is None
+
+
+# --- single_use: one-shot DONE hook end to end ------------------------------
+
+def test_single_use_done_hook_fires_once_and_self_deletes(env):
+    """The /done substrate: a single_use DONE hook injects its prompt on the
+    first DONE dispatch, its definition is deleted synchronously (log kept),
+    and a second turn's DONE finds nothing."""
+    agent, hm, _tcm = env
+    hook = hm.add_hook(
+        "u1", name="/done: follow up", event="done", text="follow up",
+        once=True, single_use=True, scope="thread", thread_id="t1",
+        created_by="user",
+    )
+    reg = agent._hook_registry_for_turn("t1", "u1")
+    prompt = asyncio.run(
+        agent._maybe_done_continuation(
+            thread_id="t1",
+            user_id="u1",
+            is_autonomous=False,
+            holder_kind="interactive",
+            final_text="turn output",
+            continuation_depth=0,
+            registry=reg,
+        )
+    )
+    assert prompt is not None
+    assert prompt.message == "follow up"
+    # The definition self-deleted on the ok run; the log entry survives.
+    assert hm.get_hook("u1", hook.id) is None
+    assert any(e["hook_id"] == hook.id for e in hm.get_executions("u1"))
+    # A later turn resolves no registry from the store at all.
+    assert agent._hook_registry_for_turn("t1", "u1") is None
+
+
+def test_single_use_not_consumed_by_continuation_no_op(env):
+    """On the continuation turn's DONE, inject_context returns None
+    (done_continuation_active guard) -> no_op -> the hook must NOT be deleted
+    by that path. (Reachable only if the first fire's deletion failed; the
+    asymmetry keeps the armed prompt alive rather than silently dropping it.)"""
+    agent, hm, _tcm = env
+    hook = hm.add_hook(
+        "u1", name="n", event="done", text="follow up",
+        single_use=True, scope="thread", thread_id="t1",
+    )
+    reg = agent._hook_registry_for_turn("t1", "u1")
+    prompt = asyncio.run(
+        agent._maybe_done_continuation(
+            thread_id="t1",
+            user_id="u1",
+            is_autonomous=False,
+            holder_kind="interactive",
+            final_text="x",
+            continuation_depth=1,  # continuation turn: provenance flag set
+            registry=reg,
+        )
+    )
+    assert prompt is None
+    assert hm.get_hook("u1", hook.id) is not None
+
+
+def test_bridge_passes_single_use_to_registration(env):
+    agent, hm, _tcm = env
+    hm.add_hook("u1", name="a", event="done", text="x", scope="global")
+    hm.add_hook(
+        "u1", name="b", event="done", text="y", scope="global", single_use=True
+    )
+    reg = agent._hook_registry_for_turn("t1", "u1")
+    ctx = _ctx(HookEvent.DONE, final_text="z")
+    flags = {r.name: r.single_use for r in reg.matching(HookEvent.DONE, ctx)}
+    assert flags == {"a": False, "b": True}

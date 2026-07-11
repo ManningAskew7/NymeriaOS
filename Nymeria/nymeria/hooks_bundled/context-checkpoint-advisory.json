@@ -1,0 +1,20 @@
+{
+  "id": "context-checkpoint-advisory",
+  "title": "Context checkpoint advisory",
+  "description": "Warns the agent once when context nears the auto-compaction trigger so it can persist working state before the summary fires.",
+  "notes": "Fires on post_tool_use when context_pct_of_trigger >= 85, once per approach (the once gate re-arms after compaction drops occupancy back below the threshold). The injected note carries live occupancy numbers and concrete wrap-up pointers: durable facts to global memory, in-flight task state to thread memory, open action items to TODOs, and tool_invoke for tools that are not currently bound. Pairs with the proactive idle compaction setting: the advisory lets the agent wrap up mid-turn, the idle timer then compacts in the post-turn quiet window. See docs/agent-systems/hooks.md.",
+  "hook": {
+    "name": "context-checkpoint-advisory",
+    "event": "post_tool_use",
+    "action": "inject_context",
+    "params": {
+      "text": "[Context advisory] Approaching auto-compaction: {context_tokens} of {compact_trigger_tokens} trigger tokens ({context_pct_of_trigger}%). Older messages will soon be summarized into a handoff. Persist important working state now: durable facts via memory_add(scope=\"global\", key=..., content=...); in-flight task state via memory_add(scope=\"thread\", content=...); open action items via nym_todo so they survive the trim. If a tool you need is not bound, run it without binding via tool_invoke. Then continue the task naturally; do not rush to finish before compaction."
+    },
+    "fire_conditions": [
+      {"field": "context_pct_of_trigger", "operator": "gte", "value": "85"}
+    ],
+    "once": true,
+    "scope": "global",
+    "enabled": true
+  }
+}

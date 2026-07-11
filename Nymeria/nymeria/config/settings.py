@@ -1859,6 +1859,11 @@ class Settings(BaseSettings):
         return PACKAGE_ROOT / "skills_bundled"
 
     @property
+    def bundled_hooks_dir(self) -> Path:
+        """Get the repo-bundled hook-template directory (ships with Nymeria)."""
+        return PACKAGE_ROOT / "hooks_bundled"
+
+    @property
     def cors_origins_list(self) -> List[str]:
         """Get CORS origins as a list."""
         if self.cors_origins == "*":

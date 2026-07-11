@@ -111,6 +111,8 @@ def _summary(h: HookDefinition) -> str:
         gate += f" gate={len(h.fire_conditions)} cond(s)"
     if h.once:
         gate += " once"
+    if h.single_use:
+        gate += " single-use"
     return (
         f"- {h.id} [{state}] {h.event}{matcher}{gate} ({scope}) :: "
         f"{h.name} -> {_logic_preview(h.logic)}"
@@ -221,6 +223,7 @@ def _hook_create(
     matcher: Optional[str],
     fire_conditions: Optional[list],
     once: Optional[bool],
+    single_use: Optional[bool],
     scope: Optional[str],
     config: RunnableConfig,
 ) -> str:
@@ -246,6 +249,7 @@ def _hook_create(
             matcher=matcher,
             fire_conditions=_coerce_fire_conditions(fire_conditions),
             once=bool(once),
+            single_use=bool(single_use),
             scope=scope_value,
             thread_id=thread_id,
             created_by="agent",
@@ -273,6 +277,7 @@ def _hook_update(
     matcher: Optional[str],
     fire_conditions: Optional[list],
     once: Optional[bool],
+    single_use: Optional[bool],
     enabled: Optional[bool],
     scope: Optional[str],
     config: RunnableConfig,
@@ -307,6 +312,8 @@ def _hook_update(
             return f"[Error]: {e}"
     if once is not None:
         updates["once"] = bool(once)
+    if single_use is not None:
+        updates["single_use"] = bool(single_use)
     if enabled is not None:
         updates["enabled"] = enabled
     if not updates:
@@ -326,6 +333,72 @@ def _hook_delete(*, hook_id: str, config: RunnableConfig) -> str:
     if manager.delete_hook(user_id, hook_id):
         return f"[Success]: Deleted hook {hook_id}."
     return f"[Error]: no hook found with id '{hook_id}'."
+
+
+def _hook_install(
+    *,
+    template_id: str,
+    text: Optional[str],
+    scope: Optional[str],
+    enabled: Optional[bool],
+    config: RunnableConfig,
+) -> str:
+    from ..core.hook_templates import install_template
+
+    user_id = get_user_id(config)
+    scope_value = (scope or "").strip().lower() or None
+    if scope_value is not None and scope_value not in ("thread", "global"):
+        return "[Error]: scope must be 'thread' or 'global'."
+    # Always offer the current thread as the binding: it is used only when
+    # the effective scope (override or template default) is thread-scoped.
+    thread_id = get_thread_id(config)
+    try:
+        hook, created = install_template(
+            _get_hook_manager(),
+            user_id,
+            template_id,
+            scope=scope_value,
+            thread_id=thread_id,
+            text=text,
+            enabled=enabled,
+            created_by="agent",
+            is_admin=is_admin(user_id),
+        )
+    except Exception as e:  # noqa: BLE001 - surface validation as a human string
+        return f"[Error]: {e}"
+    if hook is None:
+        return "[Error]: hook limit reached for this user."
+    scope_desc = "all threads" if hook.scope == "global" else f"thread {hook.thread_id}"
+    if not created:
+        return (
+            f"[Info]: Template '{template_id}' is already installed as hook "
+            f"{hook.id} for {scope_desc}. Use hook_config(action='update', ...) to "
+            "change it, or delete it to reinstall fresh."
+        )
+    return (
+        f"[Success]: Installed template '{template_id}' as hook '{hook.name}' "
+        f"({hook.id}) on {hook.event} for {scope_desc}: {_logic_preview(hook.logic)}."
+    )
+
+
+def _hook_templates() -> str:
+    from ..core.hook_templates import load_templates
+
+    templates = load_templates()
+    if not templates:
+        return "[Info]: No bundled hook templates available."
+    lines = [f"{len(templates)} bundled hook template(s):"]
+    for t in templates:
+        hook = t.hook
+        lines.append(
+            f"- {t.id} ({hook.get('event', '?')}/"
+            f"{hook.get('action', 'inject_context')}, "
+            f"default scope {hook.get('scope', 'global')}): {t.description or t.title}"
+        )
+    lines.append(
+        "Install one with hook_config(action='install', template_id=...)."
+    )
+    return "\n".join(lines)
 
 
 def _hook_list(*, current_thread_only: bool, config: RunnableConfig) -> str:
@@ -357,10 +430,14 @@ def render_hook_detail(hook: HookDefinition) -> str:
         f"  once: {hook.once}"
         + (" (fires once per crossing, re-arms when the gate stops matching)"
            if hook.once else ""),
+        f"  single_use: {hook.single_use}"
+        + (" (deleted after its first successful run)" if hook.single_use else ""),
         f"  scope: {hook.scope}"
         + (f" (thread {hook.thread_id})" if hook.scope == "thread" else ""),
         f"  action: {logic.action}",
     ]
+    if hook.template:
+        lines.insert(1, f"  template: {hook.template} (installed from the bundled catalog)")
     if logic.action in _TEXT_ACTIONS:
         lines.append(f"  text: {getattr(logic, 'text', '')!r}")
     elif logic.action == "block_if_matches":
@@ -504,22 +581,30 @@ def hook_config(
     matcher: Optional[str] = None,
     fire_conditions: Optional[list] = None,
     once: Optional[bool] = None,
+    single_use: Optional[bool] = None,
     scope: Optional[str] = None,
     enabled: Optional[bool] = None,
     command: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
+    template_id: Optional[str] = None,
     *,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
-    """Create, update, or delete a lifecycle hook.
+    """Create, update, delete, or install a lifecycle hook.
 
     A hook runs a canned action when an event fires. Use action="create" for a
-    new hook, "update" to change one, "delete" to remove one. Hooks auto-bind to
-    the current thread unless scope="global".
+    new hook, "update" to change one, "delete" to remove one, or
+    action="install" to instantiate a bundled template (see
+    hook_info(action="templates") for the catalog). Hooks auto-bind to the
+    current thread unless scope="global".
 
     Args:
-        action: "create", "update", or "delete" (the CRUD verb).
+        action: "create", "update", "delete", or "install".
         hook_id: Required for update/delete.
+        template_id: For install: the bundled template to instantiate.
+            Optional overrides: scope (defaults to the template's), text (the
+            text-action body), enabled. Reinstalling an already-installed
+            template returns the existing hook.
         name: Hook display name (create; optional on update).
         event: The lifecycle event. "pre_tool_use" takes block_if_matches/
             rewrite_arg/require_approval; "prompt_submit" takes inject_context;
@@ -563,6 +648,10 @@ def hook_config(
             (e.g. a context warning that fires once per approach to the
             compaction trigger). Without fire_conditions, fires once per
             thread.
+        single_use: Delete the hook after its first successful run (its log
+            entries are kept). Use for one-shot follow-ups, e.g. a DONE hook
+            that injects a prompt when the current turn ends. Survives
+            restarts unfired, unlike once, whose fired-state is in-memory.
         scope: "thread" (default; only the current thread) or "global" (all your
             threads). Create only; to re-scope, delete and re-create the hook.
         enabled: Enable/disable an existing hook on update.
@@ -607,7 +696,8 @@ def hook_config(
             return f"[Error]: {hook_action_key} requires params."
         return _hook_create(
             name=name, event=event, action=hook_action_key, text=text, params=params,
-            matcher=matcher, fire_conditions=fire_conditions, once=once, scope=scope,
+            matcher=matcher, fire_conditions=fire_conditions, once=once,
+            single_use=single_use, scope=scope,
             config=config,
         )
 
@@ -628,6 +718,7 @@ def hook_config(
                 "matcher": matcher, "scope": scope, "enabled": enabled,
                 "command": command, "timeout_seconds": timeout_seconds,
                 "fire_conditions": fire_conditions, "once": once,
+                "single_use": single_use,
             }.items()
             if value is not None
         }
@@ -657,7 +748,8 @@ def hook_config(
             hook_id=hook_id, name=name, event=event,
             action=(hook_action_key if hook_action is not None else None),
             text=text, params=params, matcher=matcher,
-            fire_conditions=fire_conditions, once=once, enabled=enabled, scope=scope,
+            fire_conditions=fire_conditions, once=once, single_use=single_use,
+            enabled=enabled, scope=scope,
             config=config,
         )
 
@@ -666,7 +758,18 @@ def hook_config(
             return "[Error]: delete requires hook_id."
         return _hook_delete(hook_id=hook_id, config=config)
 
-    return "[Error]: action must be one of: create, update, delete."
+    if action_key == "install":
+        if not template_id:
+            return (
+                "[Error]: install requires template_id. See "
+                "hook_info(action='templates') for the catalog."
+            )
+        return _hook_install(
+            template_id=template_id, text=text, scope=scope, enabled=enabled,
+            config=config,
+        )
+
+    return "[Error]: action must be one of: create, update, delete, install."
 
 
 @tool
@@ -684,10 +787,11 @@ def hook_info(
     "test" for a dry-run render of a hook's text against sample data (no fire),
     "log" for recent executions (what fired, its outcome or fault, and timing;
     a "no_op" entry means the hook ran and produced nothing, no entry means it
-    never fired).
+    never fired), "templates" for the bundled template catalog (install one
+    with hook_config(action="install", template_id=...)).
 
     Args:
-        action: "list", "detail", "test", or "log".
+        action: "list", "detail", "test", "log", or "templates".
         hook_id: Required for detail/test; optional filter for log.
         current_thread_only: List only hooks that apply to this thread.
         limit: Max execution entries for log (default 20).
@@ -705,7 +809,10 @@ def hook_info(
     if action_key == "log":
         return _hook_log(hook_id=hook_id, limit=limit, config=config)
 
-    return "[Error]: action must be one of: list, detail, test, log."
+    if action_key == "templates":
+        return _hook_templates()
+
+    return "[Error]: action must be one of: list, detail, test, log, templates."
 
 
 # Grouped export for CATALOG_TOOLS registration (opt-in).

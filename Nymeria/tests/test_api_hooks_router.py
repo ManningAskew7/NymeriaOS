@@ -790,3 +790,62 @@ def test_schema_exposes_fire_gate_and_numeric_operators(client_env):
     assert "context_pct_of_trigger" in gate["context_fields"]
     assert "tool_name" in gate["meta_fields"]
     assert gate["args_prefix"] == "args."
+
+
+def test_templates_list_and_install(client_env):
+    client, _agent, headers, _b = client_env
+    listing = client.get("/hooks/templates", headers=headers)
+    assert listing.status_code == 200
+    ids = [t["id"] for t in listing.json()["templates"]]
+    assert "context-checkpoint-advisory" in ids
+
+    resp = client.post(
+        "/hooks/templates/context-checkpoint-advisory/install", headers=headers, json={}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["created"] is True
+    assert body["hook"]["template"] == "context-checkpoint-advisory"
+    assert body["hook"]["scope"] == "global"
+    assert body["hook"]["once"] is True
+
+    again = client.post(
+        "/hooks/templates/context-checkpoint-advisory/install", headers=headers, json={}
+    )
+    assert again.status_code == 200
+    assert again.json()["created"] is False
+    assert again.json()["hook"]["id"] == body["hook"]["id"]
+
+
+def test_template_install_thread_scope_requires_thread_id(client_env):
+    client, _agent, headers, _b = client_env
+    resp = client.post(
+        "/hooks/templates/context-checkpoint-advisory/install",
+        headers=headers,
+        json={"scope": "thread"},
+    )
+    assert resp.status_code == 400
+    assert "thread_id" in resp.json()["detail"]
+
+
+def test_template_install_unknown_is_400(client_env):
+    client, _agent, headers, _b = client_env
+    resp = client.post("/hooks/templates/nope/install", headers=headers, json={})
+    assert resp.status_code == 400
+    assert "Unknown template" in resp.json()["detail"]
+
+
+def test_create_single_use_and_schema_lifecycle(client_env):
+    client, _agent, headers, _b = client_env
+    resp = _create(client, headers, name="oneshot", single_use=True)
+    assert resp.status_code == 201
+    assert resp.json()["single_use"] is True
+
+    patched = client.patch(
+        f"/hooks/{resp.json()['id']}", headers=headers, json={"single_use": False}
+    )
+    assert patched.status_code == 200
+    assert patched.json()["single_use"] is False
+
+    schema = client.get("/hooks/schema", headers=headers).json()
+    assert schema["lifecycle"]["fields"] == ["single_use"]

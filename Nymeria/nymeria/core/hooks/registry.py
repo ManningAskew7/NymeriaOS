@@ -37,6 +37,11 @@ class Registration:
     (None = use the dispatch default). The bridge sets it for actions whose
     runtime is author-configured (``run_command``), so a long-running command
     is not cut at the 5s default.
+
+    ``single_use`` marks a definition that deletes itself after its first
+    successful run; the engine only carries the flag through to the recorder
+    (the product layer's ``make_execution_recorder`` does the deletion), so
+    the registry stays store-agnostic.
     """
 
     id: int
@@ -47,6 +52,7 @@ class Registration:
     observe: bool
     definition_id: Optional[str] = None
     timeout: Optional[float] = None
+    single_use: bool = False
 
 
 def _matches(matcher: Optional[str], tool_name: Optional[str]) -> bool:
@@ -88,6 +94,7 @@ class HookRegistry:
         observe: bool = False,
         definition_id: Optional[str] = None,
         timeout: Optional[float] = None,
+        single_use: bool = False,
     ) -> int:
         """Register a hook; returns an opaque handle for :meth:`unregister`."""
         with self._lock:
@@ -101,6 +108,7 @@ class HookRegistry:
                 observe=observe,
                 definition_id=definition_id,
                 timeout=timeout,
+                single_use=single_use,
             )
             self._regs.append(reg)
             return reg.id
