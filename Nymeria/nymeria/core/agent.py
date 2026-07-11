@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -2596,6 +2596,7 @@ class NymeriaAgent:
         source: Optional[str] = None,
         source_id: Optional[str] = None,
         source_label: Optional[str] = None,
+        _on_turn_started: Optional[Callable[[], None]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Async version of stream for use with FastAPI.
@@ -2621,6 +2622,12 @@ class NymeriaAgent:
             source_label: Human-readable label included in the queued
                 prompt's metadata header (trigger.name, todo task
                 excerpt, caller_thread title, ...).
+            _on_turn_started: Optional callback fired exactly once when
+                THIS call becomes the lock-holder turn (right after lock
+                acquisition), before any holder events are yielded. Queued
+                prompts that get absorbed by a running holder never fire
+                it. Used by the chat route to key the turn stream buffer
+                to the holder turn without a wire marker.
 
         Yields:
             Same event types as stream(), plus the queue-related
@@ -2831,6 +2838,16 @@ class NymeriaAgent:
             # Clear any stale abort signal and capture the event for this run
             abort_event = self._thread_locks.get_abort_event(thread_id)
             abort_event.clear()
+
+            # Holder-turn signal for the caller (turn stream buffer keying).
+            # Must never break a turn.
+            if _on_turn_started is not None:
+                try:
+                    _on_turn_started()
+                except Exception:
+                    logger.debug(
+                        "[ASTREAM] _on_turn_started callback failed", exc_info=True
+                    )
 
             _stream_start = time.monotonic()
             # Guards the error path against re-recording a turn the success

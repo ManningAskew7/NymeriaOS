@@ -36,6 +36,7 @@
     FileAttachment,
     ContextStats,
     ThreadConfig,
+    ThreadStatus,
     AttachmentValidationResult,
     DispatchInfo
   } from '$lib/types';
@@ -90,6 +91,28 @@
     pendingSend = null;
   }
 
+  // Interactive-stream recovery (re-attachable turns): backoff mirrors the
+  // autonomous store's reconnect posture (linear ramp to a ceiling), bounded
+  // like the CLI's recovery loop so the UI can never reconnect forever.
+  const RECOVERY_BASE_DELAY_MS = 2000;
+  const RECOVERY_MAX_DELAY_MS = 15000;
+  const RECOVERY_MAX_ATTEMPTS = 20;
+  const TURN_LOST_MESSAGE =
+    'Lost connection while this reply was streaming and could not rejoin it. Showing the last saved state; the turn may still finish on the server.';
+
+  /** Standard end-of-stream cleanup, shared by the live stream and recovery. */
+  function finalizeStreamCleanup(threadId: string | undefined) {
+    // Stream closed while a stop was still pending (no cancelled frame
+    // arrived, e.g. the server tore the stream down first): finalize
+    // the stopped rendering before the generic completion cleanup.
+    if (chatStore.isStopping) chatStore.finalizeStopped();
+    chatStore.setStreaming(false);
+    chatStore.setLastMessageComplete();
+    chatStore.clearActiveToolCalls();
+    // Update sync poll baseline so it doesn't re-fetch what we just streamed
+    if (threadId) void refreshThreadSyncBaseline(threadId);
+  }
+
   async function streamMessage(
     message: string,
     attachments?: FileAttachment[],
@@ -123,9 +146,17 @@
     chatStore.setStreaming(true);
 
     const threadId = threadsStore.currentThreadId || undefined;
+    // Holder-turn id from the stream's turn_started event; the re-attach
+    // handle if this connection drops mid-turn.
+    let activeTurnId: string | null = null;
+    let recovering = false;
 
     try {
       for await (const event of api.chatStream(message, threadId, attachments, forceUnsupportedAttachments)) {
+        if (event.type === 'turn_started') {
+          activeTurnId = ((event.data as { turnId?: string })?.turnId) || null;
+          continue;
+        }
         handleSSEEvent(event);
       }
     } catch (error) {
@@ -135,26 +166,157 @@
         return;
       }
       console.error('Chat error:', error);
+      if (isConnectivityError(error) && threadId && activeTurnId) {
+        // The backend keeps the turn running after a dropped connection.
+        // Hand off to the recovery loop, which re-attaches to the turn's
+        // buffered stream (or reconciles from history when it is gone).
+        // Recovery owns all terminal state transitions from here.
+        // Gated on activeTurnId (from turn_started, the holder turn's first
+        // frame): without it the turn never demonstrably started server-side
+        // (connect failure at send, or this stream was a queued observer of
+        // another turn), so recovery could wipe the unsent user message or
+        // replay a foreign turn; keep the plain error instead.
+        recovering = true;
+        void recoverInterruptedTurn(threadId, activeTurnId);
+        return;
+      }
       chatStore.setLastMessageError(
-        isConnectivityError(error)
-          ? 'Lost connection to the backend. It may be restarting; reconnecting now. Your message may still be processing.'
-          : humanizeErrorText(error, { action: 'send', resource: 'your message' })
+        humanizeErrorText(error, { action: 'send', resource: 'your message' })
       );
     } finally {
       // Only touch chat store if we're still on the stream's original thread —
       // a thread switch during streaming replaces messages, so touching them here
       // would corrupt the new thread's state.
-      if (threadsStore.currentThreadId === threadId) {
-        // Stream closed while a stop was still pending (no cancelled frame
-        // arrived, e.g. the server tore the stream down first): finalize
-        // the stopped rendering before the generic completion cleanup.
-        if (chatStore.isStopping) chatStore.finalizeStopped();
-        chatStore.setStreaming(false);
-        chatStore.setLastMessageComplete();
-        chatStore.clearActiveToolCalls();
-        // Update sync poll baseline so it doesn't re-fetch what we just streamed
-        if (threadId) void refreshThreadSyncBaseline(threadId);
+      if (!recovering && threadsStore.currentThreadId === threadId) {
+        finalizeStreamCleanup(threadId);
       }
+    }
+  }
+
+  /**
+   * Rejoin a dropped interactive turn. Polls thread status with backoff;
+   * when the turn's buffer is attachable, replays it (rebuilding the reply
+   * bubble from the byte-identical replay) and tails it live; when the turn
+   * is gone (API restart, buffer expired, foreign turn), reconciles from
+   * persisted history instead. Honest states throughout: the message shows
+   * "Reconnecting" while recovery is real, and the turn-lost copy only when
+   * recovery genuinely failed.
+   */
+  async function recoverInterruptedTurn(threadId: string, turnId: string | null) {
+    chatStore.setReconnecting(true);
+    let attempt = 0;
+    try {
+      while (true) {
+        // Stop conditions: user switched threads (thread-switch machinery
+        // owns the messages now) or a stop is finalizing the turn.
+        if (threadsStore.currentThreadId !== threadId) return;
+        if (chatStore.isStopping || !chatStore.isStreaming) return;
+        if (attempt >= RECOVERY_MAX_ATTEMPTS) {
+          // Bounded give-up: fall back to persisted history (which itself
+          // degrades to the turn-lost error if even that is unreachable)
+          // instead of reconnecting forever.
+          await reconcileFromHistory(threadId);
+          return;
+        }
+
+        attempt += 1;
+        let status: ThreadStatus | null = null;
+        try {
+          status = await api.getThreadStatus(threadId);
+        } catch {
+          // Backend unreachable; keep backing off like the autonomous stream.
+        }
+
+        if (status) {
+          const turn = status.turn;
+          const turnMatches = turn && (!turnId || turn.turnId === turnId);
+          if (turn && turnMatches && !turn.truncated) {
+            const outcome = await replayAndTailTurn(threadId, turn.turnId);
+            if (outcome === 'abandon') return;
+            if (outcome === 'finished') {
+              if (threadsStore.currentThreadId === threadId) {
+                finalizeStreamCleanup(threadId);
+              }
+              return;
+            }
+            if (outcome === 'reconcile') {
+              await reconcileFromHistory(threadId);
+              return;
+            }
+            // 'retry': fall through to backoff.
+          } else if (!status.processing) {
+            // The turn is gone (API restart, buffer expired, or another turn
+            // already ran): reconcile from persisted history.
+            await reconcileFromHistory(threadId);
+            return;
+          }
+          // Still processing but unattachable (truncated buffer or a foreign
+          // turn holds the thread): keep polling until it finishes.
+        }
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(RECOVERY_BASE_DELAY_MS * attempt, RECOVERY_MAX_DELAY_MS))
+        );
+      }
+    } finally {
+      chatStore.setReconnecting(false);
+    }
+  }
+
+  /** One re-attach pass: replay the buffered turn, then tail it live. */
+  async function replayAndTailTurn(
+    threadId: string,
+    turnId: string
+  ): Promise<'finished' | 'reconcile' | 'retry' | 'abandon'> {
+    let sawTerminal = false;
+    try {
+      for await (const event of api.reattachTurnStream(threadId, turnId)) {
+        if (threadsStore.currentThreadId !== threadId) return 'abandon';
+        if (event.type === 'turn_attach') {
+          // Full-turn replay follows: rebuild the reply from scratch so the
+          // re-rendered turn is exactly what the original stream carried.
+          chatStore.resetLastMessageForReplay();
+          continue;
+        }
+        if (event.type === 'turn_started') continue;
+        if (event.type === 'error') {
+          const code = (event.data as { code?: string })?.code;
+          if (code === 'turn_not_found' || code === 'turn_replay_gap') return 'reconcile';
+          if (code === 'reattach_failed') return 'retry';
+          sawTerminal = true;
+        }
+        if (event.type === 'done') sawTerminal = true;
+        handleSSEEvent(event);
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return 'abandon';
+      return 'retry';
+    }
+    // A clean stream end without a terminal event means the turn's writer
+    // died without finishing (buffer state aborted): fall back to history.
+    return sawTerminal ? 'finished' : 'reconcile';
+  }
+
+  /** Recovery fallback: replace local state with the persisted thread. */
+  async function reconcileFromHistory(threadId: string) {
+    try {
+      const [history, stats] = await Promise.all([
+        api.getThreadHistory(threadId),
+        api.getThreadContextStats(threadId)
+      ]);
+      if (threadsStore.currentThreadId !== threadId) return;
+      chatStore.setStreaming(false);
+      chatStore.setLastMessageComplete();
+      chatStore.clearActiveToolCalls();
+      chatStore.setMessages(history.messages);
+      chatStore.setContextStats(stats);
+      chatStore.setActiveModel(stats?.model ?? null);
+      void refreshThreadSyncBaseline(threadId);
+    } catch (error) {
+      console.error('Turn recovery reconciliation failed:', error);
+      if (threadsStore.currentThreadId !== threadId) return;
+      chatStore.setLastMessageError(TURN_LOST_MESSAGE);
+      finalizeStreamCleanup(threadId);
     }
   }
 

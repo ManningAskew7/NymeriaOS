@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import os
 import uuid
@@ -10,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
+
+import httpx
 
 from ....triggers.api_client import NymeriaAPIClient
 from ..credentials import CLIConnectionProfile, load_cli_config
@@ -20,6 +23,34 @@ from .disconnected import DisconnectedAgentClient
 TransportMode = Literal["api", "local", "auto"]
 
 DEFAULT_API_URL = "http://localhost:8000"
+
+# Exception shapes that mean "the connection dropped", not "the request was
+# rejected": these trigger the turn re-attach recovery path in stream_chat.
+# httpx.TransportError covers connect/read/write errors and timeouts;
+# HTTPStatusError deliberately stays on the plain error path.
+CONNECTION_ERRORS: tuple[type[Exception], ...] = (httpx.TransportError,)
+
+# Turn-recovery backoff (mirrors the GUI clients' reconnect posture).
+RECOVERY_BASE_DELAY_SECONDS = 2.0
+RECOVERY_MAX_DELAY_SECONDS = 15.0
+RECOVERY_MAX_ATTEMPTS = 20
+
+
+def _track_turn_cursor(
+    raw_event: Mapping[str, Any],
+    turn_id: str | None,
+    last_seq: int,
+) -> tuple[str | None, int]:
+    """Advance the (turn_id, last_seq) re-attach cursor from a raw event."""
+
+    if raw_event.get("type") == "turn_started":
+        new_id = raw_event.get("turn_id")
+        if isinstance(new_id, str) and new_id:
+            turn_id = new_id
+    seq = raw_event.get("seq")
+    if isinstance(seq, int) and seq > last_seq:
+        last_seq = seq
+    return turn_id, last_seq
 
 # Startup-failure codes that mean "the backend is not up yet" rather than "the
 # credentials are wrong". Only these are worth retrying automatically from a
@@ -139,9 +170,20 @@ class APIAgentClient:
         attachments: Sequence[Attachment] | None = None,
         **options: Any,
     ) -> AsyncIterator[NormalizedEvent]:
-        """Stream API SSE chat events as normalized CLI events."""
+        """Stream API SSE chat events as normalized CLI events.
+
+        Connection drops mid-turn do not end the turn locally: the backend
+        keeps executing and buffers the turn's events, so this generator
+        re-attaches via GET /threads/{id}/turn/stream and resumes from the
+        last seen ``seq`` (suffix-only replay: a terminal cannot unprint the
+        prefix the way the GUI clients rebuild their reply bubble). Only when
+        the turn is genuinely gone (API restart, buffer expired) does it
+        yield an honest ``turn_lost`` error event.
+        """
 
         selected_user_id = self._selected_user_id(user_id)
+        turn_id: str | None = None
+        last_seq = 0
         try:
             async for raw_event in self.api.chat_stream(
                 message=message,
@@ -154,7 +196,13 @@ class APIAgentClient:
                     options.get("force_unsupported_attachments", False)
                 ),
             ):
+                turn_id, last_seq = _track_turn_cursor(raw_event, turn_id, last_seq)
+                if raw_event.get("type") == "turn_started":
+                    continue  # identity marker, not a renderable event
                 yield normalize_stream_event(raw_event, default_thread_id=thread_id)
+            return
+        except CONNECTION_ERRORS as exc:
+            recovery_cause = exc
         except Exception as exc:  # noqa: BLE001 - stream path must report errors.
             yield _error_event_from_exception(
                 exc,
@@ -162,6 +210,122 @@ class APIAgentClient:
                 thread_id=thread_id,
                 default_code="api_transport_error",
             )
+            return
+
+        # Recovery: the POST /chat connection dropped mid-turn.
+        async for event in self._recover_interrupted_turn(
+            thread_id=thread_id,
+            user_id=selected_user_id,
+            turn_id=turn_id,
+            last_seq=last_seq,
+            cause=recovery_cause,
+        ):
+            yield event
+
+    async def _recover_interrupted_turn(
+        self,
+        *,
+        thread_id: str,
+        user_id: str,
+        turn_id: str | None,
+        last_seq: int,
+        cause: Exception,
+    ) -> AsyncIterator[NormalizedEvent]:
+        """Re-attach to a dropped turn, resuming output from ``last_seq``.
+
+        Bounded backoff loop: each pass polls thread status, re-attaches when
+        the turn's buffer is available, and resets the attempt budget whenever
+        replayed events actually flow (so a long turn surviving several drops
+        is not abandoned). Ends silently after the turn's terminal event, or
+        with a ``turn_lost`` error event when the turn cannot be recovered.
+        """
+
+        attempt = 0
+        while attempt < RECOVERY_MAX_ATTEMPTS:
+            attempt += 1
+            status: Mapping[str, Any] | None = None
+            try:
+                raw_status = await self.api.get_thread_status(thread_id, user_id=user_id)
+                status = raw_status if isinstance(raw_status, Mapping) else None
+            except Exception:  # noqa: BLE001 - backend unreachable; keep retrying.
+                status = None
+
+            if status is not None:
+                raw_turn = status.get("turn")
+                turn = raw_turn if isinstance(raw_turn, Mapping) else None
+                turn_matches = turn is not None and (
+                    not turn_id or turn.get("turn_id") == turn_id
+                )
+                if turn is not None and turn_matches:
+                    outcome: str | None = None
+                    progressed = False
+                    try:
+                        async for raw_event in self.api.reattach_turn_stream(
+                            thread_id,
+                            user_id=user_id,
+                            turn_id=str(turn.get("turn_id") or "") or None,
+                            from_seq=last_seq,
+                        ):
+                            event_type = raw_event.get("type")
+                            if event_type in ("turn_attach", "turn_started"):
+                                continue
+                            if event_type == "turn_replay_gap":
+                                # Overflow evicted events past our cursor
+                                # MID-stream (the attach-time 410 only covers
+                                # pre-existing gaps); the remainder cannot be
+                                # replayed faithfully. The server ends the
+                                # stream right after this frame.
+                                outcome = "gone"
+                                continue
+                            turn_id, last_seq = _track_turn_cursor(
+                                raw_event, turn_id, last_seq
+                            )
+                            progressed = True
+                            yield normalize_stream_event(
+                                raw_event, default_thread_id=thread_id
+                            )
+                            if event_type in ("done", "error"):
+                                outcome = "finished"
+                    except CONNECTION_ERRORS:
+                        outcome = None  # dropped again: back off and retry
+                    except Exception as exc:  # noqa: BLE001
+                        if _status_code(exc) in (404, 410):
+                            # Buffer replaced/expired or replay gap: the rest
+                            # of this turn cannot be recovered here.
+                            outcome = "gone"
+                        else:
+                            outcome = None
+                    else:
+                        if outcome != "finished":
+                            # Clean stream end without a terminal event: the
+                            # turn's writer died without finishing.
+                            outcome = "gone"
+                    if outcome == "finished":
+                        return
+                    if outcome == "gone":
+                        break
+                    if progressed:
+                        attempt = 0
+                elif not status.get("processing"):
+                    # Turn is gone (API restart, buffer expired, or another
+                    # turn already ran).
+                    break
+                # else: thread busy with an unattachable turn; keep waiting.
+
+            await asyncio.sleep(
+                min(RECOVERY_BASE_DELAY_SECONDS * attempt, RECOVERY_MAX_DELAY_SECONDS)
+            )
+
+        yield ErrorEvent(
+            thread_id=thread_id,
+            content=(
+                "Lost connection while this reply was streaming and could not "
+                "rejoin it. The turn may still finish on the server; its result "
+                "is saved to the thread history."
+            ),
+            code="turn_lost",
+            details={"api_url": self.base_url, "cause": str(cause)},
+        )
 
     async def stream_autonomous(
         self,

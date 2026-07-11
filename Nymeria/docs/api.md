@@ -533,15 +533,29 @@ finishes or errors.
 **Response:** Server-Sent Events (SSE)
 
 ```
-data: {"type": "thinking", "content": "...", "thread_id": "abc123"}
-data: {"type": "response", "content": "I'll check that now.", "thread_id": "abc123"}
-data: {"type": "tool_call_delta", "thread_id": "abc123"}
-data: {"type": "tool_call", "name": "web_search_perplexity", "args": {...}, "thread_id": "abc123"}
-data: {"type": "tool_result", "name": "web_search_perplexity", "result": "...", "thread_id": "abc123"}
-data: {"type": "workspace_artifact", "tool_call_id": "tool1", "tool_name": "file_write", "path": "/workspace/report.csv", "name": "report.csv", "mime_type": "text/csv", "size_bytes": 1024, "thread_id": "abc123"}
-data: {"type": "response", "content": "...", "thread_id": "abc123"}
-data: {"type": "done", "thread_id": "abc123"}
+data: {"type": "turn_started", "turn_id": "9f2c...", "thread_id": "abc123", "seq": 1}
+data: {"type": "thinking", "content": "...", "thread_id": "abc123", "seq": 2}
+data: {"type": "response", "content": "I'll check that now.", "thread_id": "abc123", "seq": 3}
+data: {"type": "tool_call_delta", "thread_id": "abc123", "seq": 4}
+data: {"type": "tool_call", "name": "web_search_perplexity", "args": {...}, "thread_id": "abc123", "seq": 5}
+data: {"type": "tool_result", "name": "web_search_perplexity", "result": "...", "thread_id": "abc123", "seq": 6}
+data: {"type": "workspace_artifact", "tool_call_id": "tool1", "tool_name": "file_write", "path": "/workspace/report.csv", "name": "report.csv", "mime_type": "text/csv", "size_bytes": 1024, "thread_id": "abc123", "seq": 7}
+data: {"type": "response", "content": "...", "thread_id": "abc123", "seq": 8}
+data: {"type": "done", "thread_id": "abc123", "seq": 9}
 ```
+
+**Turn identity and re-attach:** when the request wins the thread lock and
+becomes the executing (holder) turn, the stream opens with a `turn_started`
+event carrying `turn_id`, and every subsequent event of that turn is stamped
+with a monotonically increasing `seq`. Both fields are additive; clients that
+ignore them behave as before. They exist for stream recovery: the backend
+buffers the holder turn's events (bounded; last turn per thread, retained ~5
+minutes after the turn ends), and a client whose connection dropped mid-turn
+can replay and rejoin the live turn via
+`GET /threads/{thread_id}/turn/stream` (see Threads). Requests that only
+queue a prompt behind a running turn (`queued` / `prompt_queued` streams) are
+not holder turns: they carry no `turn_started`/`seq`, and their recovery path
+is re-attaching to the holder turn that absorbs the prompt.
 
 Dispatched `@thread` messages first emit:
 
@@ -619,14 +633,71 @@ and only refreshes full history/context when the revision changes, processing
 finishes, or it has no local revision baseline. Mobile remains primarily
 event/reconnect driven.
 
+`turn` describes the thread's attachable interactive turn buffer (the current
+holder turn, or the most recent one within its ~5-minute retention window):
+`turn_id` matches the stream's `turn_started` event, `state` is one of
+`live | done | error | aborted`, `last_seq` is the highest buffered `seq`,
+and `truncated` reports replay-buffer overflow. `null` when nothing is
+attachable (no recent turn, retention expired, or an API restart, which
+loses in-flight turns and their buffers).
+
 **Response:**
 ```json
 {
   "thread_id": "abc123",
   "revision": "1f07bcb2-1d7a-67d2-8003-65db7b8e71f9",
-  "processing": false
+  "processing": false,
+  "turn": {
+    "turn_id": "9f2c8f6f2f0d4f0f8a3b1c2d3e4f5a6b",
+    "state": "done",
+    "last_seq": 42,
+    "truncated": false
+  }
 }
 ```
+
+---
+
+### Re-attach to an Interactive Turn
+
+```http
+GET /threads/{thread_id}/turn/stream?turn_id=<id>&from_seq=<n>
+Authorization: Bearer <token>
+```
+
+Recovery endpoint for dropped `POST /chat` streams. The backend deliberately
+keeps a turn running when its SSE client disconnects; this endpoint replays
+the turn's buffered events (byte-identical to the original stream, `seq`
+stamps included) and then tails live events until the turn ends, so the
+client can re-render the full turn including the terminal `done` that the
+original response suppressed after the disconnect.
+
+Query parameters: `turn_id` (optional) pins the attach to the turn the client
+was streaming (from its `turn_started` event); omit it to attach to the
+thread's current or most recent turn. `from_seq` (optional, default 0)
+replays only events with `seq` greater than the value; recovery clients
+normally pass 0 and rebuild the whole assistant turn from the replay.
+
+**Response:** SSE. The stream opens with a `turn_attach` meta event
+(`turn_id`, `state`, `last_seq`, `truncated`), then the replayed/live turn
+events follow. For a finished turn the stream ends after the last buffered
+event; `state: "aborted"` means the turn died without a terminal event
+(stop-cancelled turns instead carry their `error` event with
+`code: "cancelled"`).
+
+**Errors:** `404` `{"code": "turn_not_found"}` when there is nothing to
+attach to (no recent turn, buffer expired or replaced by a newer turn, or an
+API restart); `410` `{"code": "turn_replay_gap"}` when buffer overflow
+evicted events after `from_seq`. A gap can also open MID-stream (overflow
+eviction outrunning a slow reader): the stream then ends with a
+`{"type": "turn_replay_gap"}` event instead of silently skipping the evicted
+span. In all three cases clients fall back to history reconciliation: poll
+`GET /threads/{id}/status` until `processing` is false, then reload
+`GET /threads/{id}/history`.
+
+Dispatched (`@thread`) turns are not re-attachable: their buffer is keyed to
+the execution thread while the stream advertises the origin thread, so
+recovery on the origin thread 404s and falls back to history reconciliation.
 
 ---
 

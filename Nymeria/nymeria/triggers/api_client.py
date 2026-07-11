@@ -429,6 +429,51 @@ class NymeriaAPIClient:
                     continue
                 raise
 
+    async def reattach_turn_stream(
+        self,
+        thread_id: str,
+        user_id: Optional[str] = None,
+        *,
+        turn_id: Optional[str] = None,
+        from_seq: int = 0,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Re-attach to a thread's buffered interactive turn via SSE.
+
+        GET /threads/{id}/turn/stream: replays the holder turn's buffered
+        events with ``seq`` greater than ``from_seq`` (byte-identical to the
+        original POST /chat stream), then tails live events until the turn
+        ends. Raises ``httpx.HTTPStatusError`` with status 404
+        (``turn_not_found``) or 410 (``turn_replay_gap``) when the turn is
+        not attachable; callers fall back to history reconciliation.
+        """
+        params: Dict[str, Any] = {"from_seq": from_seq}
+        if turn_id:
+            params["turn_id"] = turn_id
+        async with self._client_for_loop().stream(
+            "GET",
+            self._url(f"/threads/{_path_param(thread_id)}/turn/stream"),
+            headers={
+                **self._headers_for(user_id),
+                "Accept": "text/event-stream",
+            },
+            params=params,
+            timeout=_SSE_TIMEOUT,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                chunk = parse_sse_data_line(line)
+                if chunk is None:
+                    continue
+                yield chunk
+
+    async def get_thread_status(
+        self, thread_id: str, user_id: Optional[str] = None
+    ) -> dict:
+        """Lightweight thread status (revision, processing, attachable turn)."""
+        return await self._get(
+            f"/threads/{_path_param(thread_id)}/status", act_as=user_id
+        )
+
     async def autonomous_stream(
         self,
         user_id: str = "default",

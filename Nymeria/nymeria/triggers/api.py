@@ -1047,6 +1047,11 @@ def create_api_app(
     # both shapes, so the turn-end stamps and the sweep live here too.
     _register_proactive_compaction_lifecycle(app, agent_getter=get_agent)
 
+    # Age out finished turn stream buffers (re-attach replay memory).
+    # Unconditional: interactive turns stream through this process in both
+    # shapes, so the buffers live (and must be swept) here.
+    _register_turn_buffer_sweep_lifecycle(app)
+
     # ========================================================================
     # Slim-mode wiring (embedded MCP)
     #
@@ -1401,6 +1406,34 @@ def _register_hook_approval_sweep_lifecycle(app: FastAPI) -> None:
         startup_delay_seconds=180,
         start_log="Hook approval sweep task started",
         error_label="Hook approval sweep",
+    )
+
+
+def _register_turn_buffer_sweep_lifecycle(app: FastAPI) -> None:
+    """Drop finished turn stream buffers past their retention window.
+
+    Live buffers are never dropped here (a turn may legitimately run for a
+    long time; its memory is bounded by the per-turn caps). The sweep only
+    reclaims finished turns nobody re-attached to, so idle threads do not
+    pin replay memory. Everything is in-memory dict work; the short interval
+    bounds retention accuracy, not cost.
+    """
+
+    async def _run_pass() -> None:
+        from ..core.turn_stream_buffer import get_turn_stream_registry
+
+        dropped = get_turn_stream_registry().sweep_expired()
+        if dropped:
+            logger.debug("Turn buffer sweep dropped %d finished buffer(s)", dropped)
+
+    _register_periodic_task(
+        app,
+        state_prefix="turn_buffer_sweep",
+        run_pass=_run_pass,
+        interval_seconds=60,
+        startup_delay_seconds=120,
+        start_log="Turn buffer sweep task started",
+        error_label="Turn buffer sweep",
     )
 
 

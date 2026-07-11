@@ -1,18 +1,23 @@
-"""Thread portability, attachment validation, compaction, and stop routes."""
+"""Thread portability, attachment validation, compaction, stop, and turn re-attach routes."""
 
+import json
 import logging
 import mimetypes
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from ...core.accounts import AuthenticatedUser
 from ...core.event_bus import publish_sync_event as default_publish_sync_event
+from ...core.turn_stream_buffer import (
+    TurnReplayGapError,
+    get_turn_stream_registry,
+)
 from ..schemas.thread_operations import (
     AttachmentLimits,
     AttachmentLimitsResponse,
@@ -21,6 +26,7 @@ from ..schemas.thread_operations import (
     ThreadRewindRequest,
     ThreadRewindResponse,
 )
+from ..sse import SSE_RESPONSE_HEADERS, with_sse_keepalive
 from ..thread_config_helpers import effective_provider_model
 
 logger = logging.getLogger(__name__)
@@ -538,5 +544,87 @@ def create_thread_operations_router(
             "restored_prompts": [],
             "message": "Thread was not running. No stop signal needed.",
         }
+
+    @router.get("/threads/{thread_id}/turn/stream")
+    async def reattach_turn_stream(
+        thread_id: str,
+        turn_id: Optional[str] = Query(
+            None,
+            description=(
+                "Turn to attach to (from the turn_started stream event). "
+                "Omit to attach to the thread's current or most recent turn."
+            ),
+        ),
+        from_seq: int = Query(
+            0,
+            ge=0,
+            description="Replay only events with seq greater than this value.",
+        ),
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Re-attach to a thread's in-flight (or just-finished) interactive turn.
+
+        Replays the turn's buffered SSE events (byte-identical to the original
+        ``POST /chat`` stream, each stamped with ``seq``), then tails live
+        events until the turn ends. The stream opens with a ``turn_attach``
+        meta event carrying the turn's id/state so clients can render an
+        honest recovery state. 404 ``turn_not_found`` when there is nothing
+        to attach to (no turn ran recently, its buffer expired, or the buffer
+        now holds a different turn than ``turn_id``); clients fall back to
+        history reconciliation. 410 ``turn_replay_gap`` when overflow evicted
+        events after ``from_seq``; same fallback. An in-flight turn whose
+        writer died without a terminal event replays with state ``aborted``.
+        """
+        require_thread_access_fn(user, thread_id)
+        buffer = get_turn_stream_registry().get(thread_id)
+        if buffer is None or (turn_id is not None and buffer.turn_id != turn_id):
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "turn_not_found",
+                    "message": "No attachable turn for this thread.",
+                },
+            )
+        if buffer.has_replay_gap(from_seq):
+            raise HTTPException(
+                status_code=410,
+                detail={
+                    "code": "turn_replay_gap",
+                    "message": (
+                        "Events after from_seq were evicted by the buffer "
+                        "bounds; reconcile via thread history instead."
+                    ),
+                },
+            )
+
+        attach_meta = {
+            "type": "turn_attach",
+            "thread_id": thread_id,
+            **buffer.snapshot(),
+        }
+
+        async def replay_generator():
+            yield f"data: {json.dumps(attach_meta)}\n\n"
+            try:
+                async for payload in buffer.stream_payloads(from_seq=from_seq):
+                    yield f"data: {payload}\n\n"
+            except TurnReplayGapError:
+                # Overflow eviction outran this reader mid-stream (the
+                # attach-time check can only catch gaps that already exist).
+                # Tell the client honestly instead of silently skipping the
+                # evicted span; clients treat this like the 410: reconcile
+                # via thread history.
+                gap_event = {
+                    "type": "turn_replay_gap",
+                    "thread_id": thread_id,
+                    "turn_id": buffer.turn_id,
+                }
+                yield f"data: {json.dumps(gap_event)}\n\n"
+
+        return StreamingResponse(
+            with_sse_keepalive(replay_generator()),
+            media_type="text/event-stream",
+            headers=SSE_RESPONSE_HEADERS,
+        )
 
     return router

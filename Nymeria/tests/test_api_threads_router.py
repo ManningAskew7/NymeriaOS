@@ -337,6 +337,7 @@ def test_thread_status_returns_revision_and_processing_state(
         "thread_id": thread_id,
         "revision": "0003",
         "processing": True,
+        "turn": None,
     }
 
 
@@ -364,6 +365,7 @@ def test_thread_status_enforces_thread_access(
         "thread_id": thread_id,
         "revision": None,
         "processing": False,
+        "turn": None,
     }
     assert other.status_code == 404
 
@@ -455,6 +457,7 @@ def test_thread_status_falls_back_to_graph_state_for_memory_backend(
         "thread_id": "thread-memory",
         "revision": "memory-revision",
         "processing": False,
+        "turn": None,
     }
 
 

@@ -218,6 +218,7 @@ EXPECTED_ROUTES = [
     ('/threads/{thread_id}/skills', ('GET',)),
     ('/threads/{thread_id}/status', ('GET',)),
     ('/threads/{thread_id}/stop', ('POST',)),
+    ('/threads/{thread_id}/turn/stream', ('GET',)),
     ('/todos', ('GET',)),
     ('/todos', ('POST',)),
     ('/todos/thread-counts', ('GET',)),
