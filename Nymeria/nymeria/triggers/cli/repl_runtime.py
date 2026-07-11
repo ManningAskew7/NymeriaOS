@@ -113,6 +113,9 @@ class _RichReplRuntime:
         self._reconnect_task: asyncio.Task[None] | None = None
         self._pending_submissions: deque[Any] = deque()
         self.current_turn_task: asyncio.Task[bool] | None = None
+        # In-flight stop request (backlog #11): repeat Ctrl-C presses while a
+        # stop is pending must not schedule duplicate backend stop calls.
+        self._stop_task: asyncio.Task[None] | None = None
         self._slash_panel_filter_text = ""
         self._slash_panel_match_count = 0
         self._slash_panel_selected_index = 0
@@ -156,6 +159,42 @@ class _RichReplRuntime:
         submission = self._pending_submissions.popleft()
         self.invalidate()
         return submission
+
+    def drain_pending_submissions(self) -> list[str]:
+        """Pop every queued submission and return its message text (FIFO).
+
+        The stop path (backlog #16) hands queued messages back to the user
+        instead of letting the halted turn's submission chain auto-send
+        them when it drains the queue.
+        """
+        drained = [
+            str(getattr(submission, "message", "") or "")
+            for submission in self._pending_submissions
+        ]
+        self._pending_submissions.clear()
+        self.clear_queued_notice_if_idle()
+        self.invalidate()
+        return drained
+
+    def restore_texts_to_composer(self, texts: list[str]) -> int:
+        """Append restored prompt texts to the composer, `---` separated.
+
+        Preserves anything already drafted. Returns how many texts were
+        restored (0 when there is nothing to restore or no composer yet).
+        """
+        cleaned = [text.strip() for text in texts if text and text.strip()]
+        if not cleaned:
+            return 0
+        controller = self.composer_controller
+        buffer = getattr(getattr(controller, "text_area", None), "buffer", None)
+        if buffer is None:
+            return 0
+        joined = "\n---\n".join(cleaned)
+        existing = buffer.text
+        buffer.text = f"{existing}\n---\n{joined}" if existing.strip() else joined
+        buffer.cursor_position = len(buffer.text)
+        self.invalidate()
+        return len(cleaned)
 
     def clear_queued_notice_if_idle(self) -> None:
         if (
@@ -1375,15 +1414,50 @@ class _RichReplPromptToolkitShell:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return False
-        loop.create_task(
+        stop_task = self.runtime._stop_task
+        if stop_task is not None and not stop_task.done():
+            # A stop is already in flight; swallow the repeat press instead
+            # of stacking duplicate backend stop calls (backlog #11).
+            return True
+        self.runtime._stop_task = loop.create_task(
             self._stop_current_turn(),
             name="NymeriaCLIRichStopTurn",
         )
         return True
 
     async def _stop_current_turn(self) -> None:
-        await self.cli_app._stop_current_turn_async()
-        self.runtime.set_status_notice("Stop requested")
+        self.runtime.set_status_notice("Stopping...")
+        result = await self.cli_app._stop_current_turn_async()
+
+        # Hand queued messages back instead of auto-sending them
+        # (backlog #16): the backend returns what it had queued, and the
+        # client-side deque holds what never reached it. Draining the
+        # deque also stops _run_rich_submission_chain from picking the
+        # next entry up when the halted turn ends (the chain additionally
+        # skips its drain while this stop task is still pending).
+        restored: list[str] = []
+        if isinstance(result, dict):
+            restored.extend(
+                str(prompt.get("text") or "")
+                for prompt in (result.get("restored_prompts") or [])
+                if isinstance(prompt, dict)
+            )
+        controller = self.runtime.composer_controller
+        buffer = getattr(getattr(controller, "text_area", None), "buffer", None)
+        if buffer is not None:
+            # Only drain the local deque when there is a composer to hand
+            # the texts to; otherwise leave them queued rather than lose them.
+            restored.extend(self.runtime.drain_pending_submissions())
+        count = self.runtime.restore_texts_to_composer(restored)
+        if count:
+            plural = "s" if count != 1 else ""
+            self.runtime.set_status_notice(
+                f"Stop requested; {count} queued message{plural} returned to the composer."
+            )
+        else:
+            # Terminal copy: never leave the in-progress "Stopping..." as the
+            # resting state of the status bar.
+            self.runtime.set_status_notice("Stop requested.")
 
 
 def _repl_prompt_style(

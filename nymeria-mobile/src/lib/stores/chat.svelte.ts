@@ -1,4 +1,4 @@
-import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, WorkspaceArtifact, DispatchInfo, PendingPrompt, PendingPromptStatus } from '$lib/types';
+import type { Message, MessageStep, ToolCall, ToolCallStatus, FileAttachment, ContextStats, ToolReloadInfo, WorkspaceArtifact, DispatchInfo, PendingPrompt, PendingPromptStatus, StopThreadResult } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 import { generateId } from '$lib/utils/ids';
 
@@ -23,6 +23,10 @@ function mergeArtifacts(
 
 const FLUSH_INTERVAL = 48; // ~20 updates/sec
 
+// How long stopGenerating waits for the backend's cancelled frame before
+// force-finalizing locally (dead backend / SSE channel already gone).
+const STOP_FALLBACK_MS = 8000;
+
 export function createChatStore() {
   let messages = $state<Message[]>([]);
   let isStreaming = $state(false);
@@ -36,6 +40,17 @@ export function createChatStore() {
   let isQueued = $state(false);
   let pendingPrompts = $state<PendingPrompt[]>([]);
   const pendingPromptAborts = new Map<string, AbortController>();
+  // Stop lifecycle (backlog #11): true from the stop tap until the backend's
+  // cancelled frame (or the fallback timer) finalizes the turn.
+  let isStopping = $state(false);
+  let stopFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  // Composer restore channel (backlog #16): texts a stop handed back, consumed
+  // by InputBar, which appends them to the current composer draft.
+  let composerRestore = $state('');
+  // Texts already restored during the current stop cycle: the fallback timer,
+  // the unreachable-backend path, and the (possibly late) stop response can
+  // each restore, so dedupe across them. Reset when a stop starts.
+  let stopRestoredTexts: Set<string> = new Set();
   let isLoadingHistory = $state(false);
   let _instantScroll = $state(false);
 
@@ -96,6 +111,12 @@ export function createChatStore() {
     },
     get isQueued() {
       return isQueued;
+    },
+    get isStopping() {
+      return isStopping;
+    },
+    get composerRestore() {
+      return composerRestore;
     },
     get pendingPrompts() {
       return pendingPrompts;
@@ -830,9 +851,12 @@ export function createChatStore() {
       contextStats = null;
       activeModel = null;
       isQueued = false;
+      // New-thread flows call this without prepareForThreadSwitch: stop
+      // state, an unconsumed composer restore, a seeded edit, or an open
+      // action sheet must not survive into the fresh transcript.
+      this.clearStopping();
+      composerRestore = '';
       this.clearPendingPrompts();
-      // New-thread flows call this without prepareForThreadSwitch: a seeded
-      // edit or open action sheet must not survive into the fresh transcript.
       this.cancelEdit();
       this.closeActionSheet();
     },
@@ -851,6 +875,8 @@ export function createChatStore() {
       compactingMessage = '';
       lastCompactResult = null;
       contextAttachedMessage = null;
+      this.clearStopping();
+      composerRestore = '';
       _lastFlushTime = 0;
       this.clearPendingPrompts();
       this.cancelEdit();
@@ -862,16 +888,120 @@ export function createChatStore() {
     },
 
     /**
-     * Stop the current generation and mark the message as stopped.
-     * Aborts the active stream and appends context for the AI.
+     * Stop the current generation (backlog #11 + #16).
+     *
+     * Marks the store "stopping" and asks the backend to abort, then
+     * finalizes when the backend's cancelled frame arrives (the SSE error
+     * handler calls finalizeStopped), when the backend reports the thread
+     * was already idle, or when the fallback timer fires (unreachable
+     * backend). Queued prompts the backend hands back are appended to the
+     * composer instead of being discarded.
      */
-    stopGenerating(threadId?: string) {
-      if (!isStreaming) return;
-
+    async stopGenerating(threadId?: string) {
+      if (!isStreaming || isStopping) return;
+      isStopping = true;
+      stopRestoredTexts = new Set();
       this._forceFlush();
-      abortCurrentStream();
 
-      // Mark last assistant message: update running tool calls to 'cancelled'
+      if (!threadId) {
+        // Nothing to signal: local force-stop (the pre-#11 behavior).
+        abortCurrentStream();
+        this._restoreLocalPendingForStop();
+        this.finalizeStopped();
+        return;
+      }
+
+      stopFallbackTimer = setTimeout(() => {
+        stopFallbackTimer = null;
+        if (isStopping) {
+          abortCurrentStream();
+          this._restoreLocalPendingForStop();
+          this.finalizeStopped();
+        }
+      }, STOP_FALLBACK_MS);
+
+      let result: StopThreadResult;
+      try {
+        result = await api.stopThread(threadId);
+      } catch {
+        // Backend unreachable: force-stop locally with what we know.
+        if (isStopping) {
+          abortCurrentStream();
+          this._restoreLocalPendingForStop();
+          this.finalizeStopped();
+        }
+        return;
+      }
+
+      // Restore what the backend handed back REGARDLESS of the stopping
+      // flag: the cancelled frame (or the fallback timer) may have
+      // finalized during the await, but these prompts are already drained
+      // server-side and this response is the only copy the initiating
+      // client gets (the queue_restored sync event is origin-suppressed).
+      // Local entries that never reached the backend queue come back too;
+      // _restoreForStop dedupes texts across the restore paths (a prompt
+      // can be backend-queued but still 'sending' locally when its ack
+      // has not landed yet).
+      const texts = result.restoredPrompts.map((p) => p.text);
+      for (const p of pendingPrompts) {
+        texts.push(p.content);
+      }
+      this._restoreForStop(texts);
+      this.clearPendingPrompts();
+
+      if (!isStopping) return; // the turn already finalized during the await
+
+      if (result.status === 'idle') {
+        // No turn was running server-side; the stream is already dead.
+        abortCurrentStream();
+        this.finalizeStopped();
+      }
+      // status 'stopping': the running stream keeps draining until the
+      // cancelled frame (or stream close) finalizes, so in-flight events
+      // are consumed instead of racing an optimistic edit.
+    },
+
+    /**
+     * Restore texts to the composer once per stop cycle: the fallback
+     * timer, the unreachable-backend path, and a late stop response can
+     * all attempt a restore for the same stop, so texts already handed
+     * back this cycle are skipped.
+     */
+    _restoreForStop(texts: string[]) {
+      const fresh: string[] = [];
+      for (const text of texts) {
+        if (!text || !text.trim() || stopRestoredTexts.has(text)) continue;
+        stopRestoredTexts.add(text);
+        fresh.push(text);
+      }
+      if (fresh.length) this.restoreToComposer(fresh);
+    },
+
+    /** Stop-cycle variant of restoreLocalPendingToComposer (deduped). */
+    _restoreLocalPendingForStop() {
+      this._restoreForStop(pendingPrompts.map((p) => p.content));
+      this.clearPendingPrompts();
+    },
+
+    /**
+     * Finalize a stopped turn's rendering: mark running tool-call steps
+     * cancelled, append the stopped note, and clear the stopping and
+     * streaming flags. Runs when the backend's cancelled frame arrives,
+     * when the stream closes while stopping, or from the local fallback
+     * paths. Idempotent.
+     *
+     * Steps only, deliberately: the mobile store never writes the legacy
+     * message.toolCalls field (render-time derivation from steps; pinned
+     * by test_mobile_legacy_message_fields.py), and a streaming message
+     * here is always store-created with steps, so cancelled step statuses
+     * are what MessageBubble renders.
+     */
+    finalizeStopped() {
+      this.clearStopping();
+      if (!isStreaming) return;
+      this._forceFlush();
+
+      // Mark last assistant message: update running tool-call steps to 'cancelled'
       const lastIndex = messages.length - 1;
       if (lastIndex >= 0) {
         const lastMessage = messages[lastIndex];
@@ -901,12 +1031,33 @@ export function createChatStore() {
 
       isStreaming = false;
       activeToolCalls = new Map();
-      this.clearPendingPrompts();
+    },
 
-      // Signal the backend to abort and clean up checkpoint (fire-and-forget)
-      if (threadId) {
-        api.stopThread(threadId).catch(() => {});
+    /** Clear the stopping flag and its fallback timer without finalizing. */
+    clearStopping() {
+      if (stopFallbackTimer) {
+        clearTimeout(stopFallbackTimer);
+        stopFallbackTimer = null;
       }
+      isStopping = false;
+    },
+
+    /**
+     * Queue restored-prompt texts for the composer, joined by `---` lines.
+     * InputBar consumes the channel and appends to the current draft.
+     */
+    restoreToComposer(texts: string[]) {
+      const cleaned = texts.map((t) => t.trim()).filter((t) => t.length > 0);
+      if (cleaned.length === 0) return;
+      const joined = cleaned.join('\n---\n');
+      composerRestore = composerRestore ? `${composerRestore}\n---\n${joined}` : joined;
+    },
+
+    /** Pop the composer-restore channel (InputBar's consume side). */
+    consumeComposerRestore(): string {
+      const value = composerRestore;
+      composerRestore = '';
+      return value;
     },
 
     // Compaction status methods

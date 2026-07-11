@@ -261,6 +261,10 @@
         );
       }
     } finally {
+      // Stream closed while a stop was still pending (no cancelled frame
+      // arrived, e.g. the server tore the stream down first): finalize
+      // the stopped rendering before the generic completion cleanup.
+      if (chatStore.isStopping) chatStore.finalizeStopped();
       chatStore.reclassifyThinkingAsResponse();
       chatStore.setLastMessageComplete();
       chatStore.setStreaming(false);
@@ -366,7 +370,13 @@
             chatStore.removePendingPrompt(promptId);
             return;
           case 'error': {
-            const data = event.data as { message: string };
+            const data = event.data as { message: string; code?: string };
+            if (data.code === 'restored') {
+              // A stop handed this prompt back (backlog #16); the stop path
+              // restores it to the composer, so drop the bar entry silently.
+              chatStore.removePendingPrompt(promptId);
+              return;
+            }
             chatStore.setPendingPromptStatus(promptId, 'error', data.message);
             return;
           }
@@ -494,9 +504,19 @@
         break;
       }
 
-      case 'error':
-        chatStore.setLastMessageError((event.data as { message: string }).message);
+      case 'error': {
+        const errData = event.data as { message: string; code?: string };
+        if (errData.code === 'cancelled') {
+          // The backend confirmed the abort (backlog #11): finalize the
+          // stopped rendering from the server's frame instead of the old
+          // optimistic client-side edit. Also covers stops initiated from
+          // another client or surface.
+          chatStore.finalizeStopped();
+          break;
+        }
+        chatStore.setLastMessageError(errData.message);
         break;
+      }
 
       case 'done': {
         const doneData = event.data as {
@@ -521,6 +541,10 @@
         } else if (event.threadId) {
           threadsStore.setThreadFromApi(event.threadId, currentTitle);
         }
+        // The turn completed normally; a stop that raced it has nothing
+        // left to cancel, so drop the stopping state without the
+        // cancelled-visuals finalization.
+        if (chatStore.isStopping) chatStore.clearStopping();
         break;
       }
 

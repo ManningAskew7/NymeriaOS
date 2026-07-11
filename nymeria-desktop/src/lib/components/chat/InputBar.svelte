@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { Button, Icon } from '$lib/components/common';
   import { api } from '$lib/services/api.svelte';
   import { chatStore } from '$lib/stores/chat.svelte';
@@ -97,7 +98,30 @@
     }
   });
 
+  // Composer restore (backlog #16): a stopped turn hands queued prompts
+  // back; append them below whatever is already drafted, separated by ---.
+  // The draft read is untracked so the effect only re-runs on the channel,
+  // not on every keystroke.
+  $effect(() => {
+    const restored = chatStore.composerRestore;
+    if (!restored) return;
+    chatStore.consumeComposerRestore();
+    untrack(() => {
+      inputValue = inputValue.trim() ? `${inputValue}\n---\n${restored}` : restored;
+    });
+    if (textareaRef) {
+      requestAnimationFrame(() => {
+        if (textareaRef) {
+          textareaRef.style.height = 'auto';
+          textareaRef.style.height = Math.min(textareaRef.scrollHeight, 200) + 'px';
+          textareaRef.focus();
+        }
+      });
+    }
+  });
+
   let isStreaming = $derived(chatStore.isStreaming);
+  let isStopping = $derived(chatStore.isStopping);
   let pendingImageCount = $derived(pendingFiles.filter((f) => f.type === 'image').length);
   // After Phase B, non-image attachments are sandboxed at ingress and ride
   // inside the message text (which queues fine). Only image attachments still
@@ -529,9 +553,11 @@
       <button
         type="button"
         class="plus-btn danger"
+        class:stopping={isStopping}
         onclick={handleStopClick}
-        data-tooltip="Stop the current turn"
-        aria-label="Stop"
+        disabled={isStopping}
+        data-tooltip={isStopping ? 'Stopping…' : 'Stop the current turn'}
+        aria-label={isStopping ? 'Stopping' : 'Stop'}
       >
         <Icon name="stop" size={14} />
       </button>
@@ -622,6 +648,14 @@
 
   .plus-btn.danger {
     color: var(--error);
+  }
+
+  /* Stop-in-flight state (backlog #11): pulse until the backend confirms
+     the abort; the global reduced-motion floor disables the animation. */
+  .plus-btn.danger.stopping:disabled {
+    opacity: 1;
+    cursor: progress;
+    animation: pulse 1.2s var(--ease-out) infinite;
   }
 
   .plus-btn.danger:hover:not(:disabled) {

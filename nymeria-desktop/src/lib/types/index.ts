@@ -868,6 +868,22 @@ export interface PendingPrompt {
   timestamp: Date;
 }
 
+/** A queued prompt handed back by a user-initiated stop (backlog #16). */
+export interface RestoredPrompt {
+  text: string;
+  sourceLabel: string;
+  userId: string;
+  enqueuedAt: number;
+}
+
+/** Structured response of POST /threads/{id}/stop (backlog #11). */
+export interface StopThreadResult {
+  status: 'stopping' | 'idle';
+  holder: string | null;
+  heldSeconds: number;
+  restoredPrompts: RestoredPrompt[];
+}
+
 export interface SSEEvent {
   type: SSEEventType;
   data: unknown;

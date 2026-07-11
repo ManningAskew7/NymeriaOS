@@ -43,6 +43,8 @@ class FakeAgent:
         self._callable_tool_thread_map = {}
         self._thread_locks = FakeThreadLocks()
         self.aborted_threads: list[str] = []
+        self.abort_restore_flags: list[bool] = []
+        self.restored_to_return: list = []
         self.compactions: list[tuple[str, str, str | None]] = []
         self.prunes: list[tuple[str, str, str]] = []
         self.rewinds: list[tuple[str, object]] = []
@@ -82,8 +84,10 @@ class FakeAgent:
         self.rewinds.append((thread_id, steps))
         return RewindResult(self.rewind_return, self.rewind_exchanges)
 
-    def abort_with_cascade(self, thread_id: str):
+    def abort_with_cascade(self, thread_id: str, *, restore_queue: bool = False):
         self.aborted_threads.append(thread_id)
+        self.abort_restore_flags.append(restore_queue)
+        return list(self.restored_to_return) if restore_queue else []
 
     def invalidate_thread_config_cache(self, thread_id: str):
         pass
@@ -451,8 +455,94 @@ def test_stop_route_aborts_only_when_thread_is_running(tmp_path: Path, api_clien
     body = response.json()
     assert body["status"] == "stopping"
     assert body["thread_id"] == thread_id
+    assert body["holder"] == "chat"
+    assert body["held_seconds"] == 2.4
+    assert body["restored_prompts"] == []
     assert "Thread was held by 'chat'" in body["message"]
     assert agent.aborted_threads == [thread_id]
+    assert agent.abort_restore_flags == [True]
+
+
+def test_stop_route_idle_returns_empty_restored_prompts(
+    tmp_path: Path, api_client_builder
+):
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-stop-idle"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+
+    response = client.post(
+        f"/threads/{thread_id}/stop",
+        headers=api_client_builder.auth(token),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "idle"
+    assert body["restored_prompts"] == []
+    assert agent.aborted_threads == []
+
+
+def test_stop_route_returns_restored_prompts_and_publishes_queue_restored(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    from nymeria.core import event_bus as event_bus_module
+    from nymeria.core.pending_prompt_queue import make_pending_prompt
+
+    published = []
+
+    class _CapturingBus:
+        def publish(self, event):
+            published.append(event)
+
+    monkeypatch.setattr(
+        event_bus_module, "get_event_bus", lambda: _CapturingBus()
+    )
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    thread_id = "thread-stop-restore"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent._thread_locks.lock_info = {"holder": "chat", "held_seconds": 1.0}
+    pending = make_pending_prompt(
+        message="queued while busy",
+        source="user",
+        source_id=None,
+        source_label="Owner",
+        user_id="owner",
+        is_autonomous=False,
+        fanout_mailbox=None,
+        consumer_loop=None,
+    )
+    agent.restored_to_return = [pending]
+
+    response = client.post(
+        f"/threads/{thread_id}/stop",
+        headers=api_client_builder.auth(
+            token, **{"x-nymeria-client-id": "client-abc"}
+        ),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "stopping"
+    assert body["restored_prompts"] == [
+        {
+            "text": "queued while busy",
+            "source_label": "Owner",
+            "user_id": "owner",
+            "enqueued_at": pending.enqueued_at,
+        }
+    ]
+
+    assert len(published) == 1
+    event = published[0]
+    assert event.event_type == "queue_restored"
+    assert event.thread_id == thread_id
+    assert event.user_id == "owner"
+    assert event.data == {
+        "count": 1,
+        "prompts": ["queued while busy"],
+        "_origin_client_id": "client-abc",
+    }
 
 
 def test_attachment_validation_returns_per_model_limits(tmp_path: Path, api_client_builder):

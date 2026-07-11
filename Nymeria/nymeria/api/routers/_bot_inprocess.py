@@ -198,13 +198,19 @@ class InProcessBotAPI:
         }
 
     async def stop(self, thread_id: str, user_id: Optional[str] = None) -> dict[str, Any]:
+        from ...core.pending_prompt_queue import restored_prompts_payload
+
         authed = self._authenticated_user(user_id)
         self._require_thread_access(authed, thread_id)
         lock_info = self.agent._thread_locks.get_lock_info(thread_id)
         if lock_info:
-            self.agent.abort_with_cascade(thread_id)
-            return {"status": "stopping", "thread_id": thread_id}
-        return {"status": "idle", "thread_id": thread_id}
+            restored = self.agent.abort_with_cascade(thread_id, restore_queue=True)
+            return {
+                "status": "stopping",
+                "thread_id": thread_id,
+                "restored_prompts": restored_prompts_payload(restored),
+            }
+        return {"status": "idle", "thread_id": thread_id, "restored_prompts": []}
 
     def chat_stream(
         self,

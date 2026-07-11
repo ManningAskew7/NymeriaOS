@@ -145,6 +145,10 @@
       // a thread switch during streaming replaces messages, so touching them here
       // would corrupt the new thread's state.
       if (threadsStore.currentThreadId === threadId) {
+        // Stream closed while a stop was still pending (no cancelled frame
+        // arrived, e.g. the server tore the stream down first): finalize
+        // the stopped rendering before the generic completion cleanup.
+        if (chatStore.isStopping) chatStore.finalizeStopped();
         chatStore.setStreaming(false);
         chatStore.setLastMessageComplete();
         chatStore.clearActiveToolCalls();
@@ -349,6 +353,13 @@
             return;
           case 'error': {
             const data = event.data as { message: string; code?: string };
+            if (data.code === 'restored') {
+              // A stop handed this prompt back (backlog #16); the stop path
+              // (or the queue_restored sync event) restores it to the
+              // composer, so drop the bar entry instead of showing an error.
+              chatStore.removePendingPrompt(promptId);
+              return;
+            }
             chatStore.setPendingPromptStatus(promptId, 'error', data.message);
             return;
           }
@@ -600,6 +611,14 @@
           code?: string;
           details?: Record<string, unknown>;
         };
+        if (data.code === 'cancelled') {
+          // The backend confirmed the abort (backlog #11): finalize the
+          // stopped rendering from the server's frame instead of the old
+          // optimistic client-side edit. Also covers stops initiated from
+          // another client or surface.
+          chatStore.finalizeStopped();
+          break;
+        }
         const message = data.code
           ? `${data.message}\n\n(code: ${data.code})`
           : data.message;
@@ -637,6 +656,10 @@
 
         // Clear queued state
         chatStore.setQueued(false);
+        // The turn completed normally; a stop that raced it has nothing
+        // left to cancel, so drop the stopping state without the
+        // cancelled-visuals finalization.
+        if (chatStore.isStopping) chatStore.clearStopping();
         // Note: Thread ID syncing is handled by syncThreadIdFromEvent() called at top of handleSSEEvent
 
         // A completed turn may have changed this thread's tool bindings — e.g.

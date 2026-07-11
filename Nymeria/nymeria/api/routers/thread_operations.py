@@ -470,7 +470,9 @@ def create_thread_operations_router(
 
     @router.post("/threads/{thread_id}/stop")
     async def stop_thread(
+        http_request: Request,
         thread_id: str,
+        user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Stop any running operation on a thread.
@@ -478,6 +480,12 @@ def create_thread_operations_router(
         Signals the abort event for the thread and cascades to any active
         callable threads it has spawned. The current stream()/astream() call
         breaks at the next iteration boundary, releasing the thread lock.
+
+        A user-initiated stop hands queued user prompts back instead of
+        discarding them: they are returned as ``restored_prompts`` (raw
+        text, FIFO) so the client can restore them to the composer, and a
+        ``queue_restored`` sync event tells the user's other clients to
+        drop their queued-prompt displays.
         """
         require_thread_access_fn(user, thread_id)
         agent = get_agent_fn()
@@ -486,10 +494,38 @@ def create_thread_operations_router(
         # Only create abort events for threads with active operations
         # to prevent unbounded memory growth from arbitrary thread IDs
         if lock_info:
-            agent.abort_with_cascade(thread_id)
+            from ...core.pending_prompt_queue import restored_prompts_payload
+
+            restored = agent.abort_with_cascade(thread_id, restore_queue=True)
+            restored_payload = restored_prompts_payload(restored)
+            if restored_payload:
+                # Best-effort: the queue is already drained and the response
+                # body below is the initiating client's only copy of the
+                # restored texts, so a publish failure must not 500 the stop.
+                try:
+                    client_id = http_request.headers.get("x-nymeria-client-id", "")
+                    publish_sync_event_fn(
+                        event_type="queue_restored",
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        data={
+                            "count": len(restored_payload),
+                            "prompts": [p["text"] for p in restored_payload],
+                        },
+                        origin_client_id=client_id,
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    logger.warning(
+                        "queue_restored publish failed for thread %s",
+                        thread_id,
+                        exc_info=True,
+                    )
             return {
                 "status": "stopping",
                 "thread_id": thread_id,
+                "holder": lock_info.get("holder"),
+                "held_seconds": lock_info.get("held_seconds", 0),
+                "restored_prompts": restored_payload,
                 "message": (
                     f"Stop signal sent. Thread was held by '{lock_info.get('holder')}' "
                     f"for {lock_info.get('held_seconds', 0):.0f}s. "
@@ -499,6 +535,7 @@ def create_thread_operations_router(
         return {
             "status": "idle",
             "thread_id": thread_id,
+            "restored_prompts": [],
             "message": "Thread was not running. No stop signal needed.",
         }
 

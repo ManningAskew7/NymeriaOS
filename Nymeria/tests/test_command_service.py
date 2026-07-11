@@ -355,8 +355,10 @@ class _FakeAgent:
             "context_management": "auto_compact",
         }
 
-    def abort_with_cascade(self, thread_id: str) -> None:
+    def abort_with_cascade(self, thread_id: str, *, restore_queue: bool = False):
         self.aborted.append(thread_id)
+        restored = getattr(self, "restored_to_return", [])
+        return list(restored) if restore_queue else []
 
     def _flush_memories_before_trim(self, user_id: str, thread_id: str, messages: list) -> None:
         self.flushed.append((user_id, thread_id))
@@ -1512,6 +1514,41 @@ def test_stop_aborts_active_thread_and_reports_idle_when_no_lock(
     assert "astream" in active.markdown
     assert "iteration boundary" in active.markdown
     assert fake_agent.aborted == ["thread-1"]
+
+
+def test_stop_echoes_restored_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nymeria.core.agent as agent_module
+    from nymeria.core.pending_prompt_queue import make_pending_prompt
+
+    fake_agent = _FakeAgent()
+    fake_agent._thread_locks.lock_info = {"holder": "astream", "held_seconds": 4.2}
+    fake_agent.restored_to_return = [
+        make_pending_prompt(
+            message="follow-up question",
+            source="user",
+            source_id=None,
+            source_label="Alice",
+            user_id="alice",
+            is_autonomous=False,
+            fanout_mailbox=None,
+            consumer_loop=None,
+        )
+    ]
+    monkeypatch.setattr(agent_module, "get_current_agent", lambda: fake_agent)
+
+    ctx = CommandContext(
+        user_id="alice",
+        thread_id="thread-1",
+        actor="user",
+        surface="cli",
+        is_admin=True,
+    )
+    result = run(CommandService().execute(ctx, "/stop"))
+    assert result.success is True
+    assert "This queued message was NOT sent:" in result.markdown
+    assert "> follow-up question" in result.markdown
 
 
 def test_stop_is_blocked_for_agent_actor() -> None:

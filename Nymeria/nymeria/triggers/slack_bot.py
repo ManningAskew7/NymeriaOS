@@ -599,11 +599,17 @@ class NymeriaSlackBot:
             thread_ts=thread_ts,
         )
         try:
-            await self.api.stop(thread_id, user_id=user_id)
+            result = await self.api.stop(thread_id, user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             await self._send_text(target, f"Couldn't stop the current run: {exc}")
             return
-        await self._send_text(target, "Stopped the current run for this Slack thread.")
+        from ..core.pending_prompt_queue import restored_prompts_notice
+
+        message = "Stopped the current run for this Slack thread."
+        notice = restored_prompts_notice(result.get("restored_prompts") or [])
+        if notice:
+            message = f"{message}\n\n{notice}"
+        await self._send_text(target, message)
 
     async def _reject_unlinked(
         self,

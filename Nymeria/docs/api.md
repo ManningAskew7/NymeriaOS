@@ -1152,7 +1152,7 @@ Returns the callable thread tools actually available from that caller thread aft
 | `prompt_absorbed` | The queuer's specific prompt finished being absorbed. Mirrors the holder's full event stream to the queuer's connection in real time leading up to this. | `thread_id` |
 | `fanout_dropped` | The queuer's fanout mailbox overflowed its bound (slow consumer); some events were dropped from this queuer's mirror. | `dropped_count` |
 | `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection | `content`, `reason`, `max_iterations`, `tool_call_count`, optional `repeated_tool_name`, `repeated_count` |
-| `error` | Error message | `content`, optional `code` (e.g. `aborted`, `queue_attachments_unsupported`, `cross_user_queue_unsupported`, `queue_overflow`) |
+| `error` | Error message | `content`, optional `code` (e.g. `aborted`, `cancelled` (turn aborted via the stop endpoint; the client should finalize its stop UI on this frame), `restored` (a queued prompt was handed back unprocessed because the user stopped the turn; the queuer's stream ends with this instead of `prompt_absorbed`), `queue_attachments_unsupported`, `cross_user_queue_unsupported`, `queue_overflow`) |
 | `done` | Stream complete | `context_stats` (same shape as `GET /threads/{id}/context`, including the per-turn `input_tokens`/`output_tokens`/`turn_recorded`/`turn_llm_seconds`/`tokens_per_second` fields), `model` (when available) |
 
 All events include `thread_id` for correlation.
@@ -1404,6 +1404,7 @@ The same stream also carries cross-client sync events used by open frontends:
 | `thread_updated` | Thread metadata changed | `title`, `title_source`, `pinned`, `platform` |
 | `thread_deleted` | A thread was deleted | none |
 | `thread_rewound` | Trailing exchanges were removed via the rewind endpoint | `steps`, `removed`, optional `to_message_id` |
+| `queue_restored` | A user-initiated stop returned queued user prompts unprocessed; other open clients should restore their local queued copies to the composer. Suppressed for the originating client via `X-Nymeria-Client-Id`. | `count`, `prompts` (list of raw prompt texts) |
 
 **Example Stream:**
 ```
@@ -1989,19 +1990,45 @@ POST /threads/{thread_id}/stop
 Authorization: Bearer <token>
 ```
 
-Aborts a running stream on the thread. Cascades to any active callable child threads.
+Aborts a running stream on the thread. Cascades to any active callable child
+threads. Any prompts still waiting on the sub-turn queue are handled by
+source: queued user prompts are returned to the caller unprocessed
+(restore-to-composer semantics, never auto-resent), while programmatic
+queuers (callable threads, MCP, triggers, ticker) are woken with an abandon
+signal as before. Each restored queuer's own stream is terminated with an
+`error` frame carrying `code: "restored"`.
 
 **Response:**
 ```json
 {
   "status": "stopping",
   "thread_id": "abc123",
-  "message": "Stop signal sent. Thread was held by 'chat' for 12s. Will stop at next iteration boundary."
+  "message": "Stop signal sent. Thread was held by 'chat' for 12s. Will stop at next iteration boundary.",
+  "holder": "chat",
+  "held_seconds": 12.4,
+  "restored_prompts": [
+    {
+      "text": "the queued message text",
+      "source_label": "User",
+      "user_id": "default",
+      "enqueued_at": 1767052800.0
+    }
+  ]
 }
 ```
 
+`holder` and `held_seconds` are the structured forms of the values embedded
+in `message`. `restored_prompts` lists the queued user prompts handed back
+by this stop, oldest first (empty when nothing was queued). Clients should
+place the `text` values back into the composer for the user to edit or
+resend. When the stop restores at least one prompt, the autonomous stream
+also carries a `queue_restored` sync event (origin-suppressed via
+`X-Nymeria-Client-Id`) so other open clients can restore their local queued
+copies.
+
 If the thread is idle, the response is `{"status":"idle","thread_id":"abc123",
-"message":"Thread was not running. No stop signal needed."}`.
+"message":"Thread was not running. No stop signal needed.",
+"restored_prompts":[]}`.
 
 ---
 
