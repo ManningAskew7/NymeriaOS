@@ -61,6 +61,10 @@ export function createChatStore() {
   // the unreachable-backend path, and the (possibly late) stop response can
   // each restore, so dedupe across them. Reset when a stop starts.
   let stopRestoredTexts: Set<string> = new Set();
+  // Interactive-stream recovery: true while MainPanel's re-attach loop is
+  // trying to rejoin a dropped turn. isStreaming stays true throughout so
+  // the autonomous store keeps standing down and the composer stays gated.
+  let isReconnecting = $state(false);
   let isLoadingHistory = $state(false);
   let _instantScroll = $state(false);
 
@@ -138,6 +142,9 @@ export function createChatStore() {
     },
     get isStopping() {
       return isStopping;
+    },
+    get isReconnecting() {
+      return isReconnecting;
     },
     get composerRestore() {
       return composerRestore;
@@ -281,6 +288,59 @@ export function createChatStore() {
           }
         ];
       }
+    },
+
+    /**
+     * Mark the in-flight reply as reconnecting after a dropped interactive
+     * stream. The message stays streaming (the recovery loop owns the
+     * terminal transition); the activity indicator shows an honest
+     * "Reconnecting" phase. Un-flushed token buffers are discarded: the
+     * turn replay rebuilds the message content from scratch.
+     */
+    setReconnecting(value: boolean) {
+      isReconnecting = value;
+      if (value) {
+        if (_flushTimer) {
+          clearTimeout(_flushTimer);
+          _flushTimer = null;
+        }
+        _responseBuffer = '';
+        _thinkingBuffer = '';
+        setLastAssistantActivityPhase('reconnecting');
+      }
+    },
+
+    /**
+     * Reset the tail assistant message to an empty streaming placeholder so
+     * a turn re-attach can rebuild the whole reply from the replayed stream
+     * (the replay is the full turn from seq 0, byte-identical to the
+     * original). Preserves message identity/dispatch info.
+     */
+    resetLastMessageForReplay() {
+      if (_flushTimer) {
+        clearTimeout(_flushTimer);
+        _flushTimer = null;
+      }
+      _responseBuffer = '';
+      _thinkingBuffer = '';
+      if (messages.length === 0) return;
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+      if (lastMessage.role !== 'assistant') return;
+      activeToolCalls = new Map();
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content: '',
+          steps: [],
+          intermediateContent: '',
+          toolCalls: [],
+          status: 'streaming' as const,
+          activityPhase: 'processing' as const,
+          activityUpdatedAt: new Date()
+        }
+      ];
     },
 
     setLastMessageError(error: string) {

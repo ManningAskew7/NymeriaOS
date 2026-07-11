@@ -12,12 +12,24 @@ class ThreadHistoryResponse(BaseModel):
     messages: list[Any]
 
 
+class ThreadTurnStatus(BaseModel):
+    """Attachable-turn info for GET /threads/{id}/turn/stream recovery."""
+
+    turn_id: str
+    state: str  # live | done | error | aborted
+    last_seq: int
+    truncated: bool
+
+
 class ThreadStatusResponse(BaseModel):
     """Lightweight thread status response for sync polling."""
 
     thread_id: str
     revision: str | None
     processing: bool
+    # The thread's current (or most recently finished, within retention)
+    # interactive turn buffer, if any. None when nothing is attachable.
+    turn: ThreadTurnStatus | None = None
 
 
 class ThreadOverviewResponse(BaseModel):

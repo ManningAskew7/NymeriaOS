@@ -111,6 +111,12 @@ class FakeChatAgent:
         return "sync response"
 
     async def astream(self, message: str, **kwargs: Any):
+        # Record the holder-turn callback as a presence flag so the exact
+        # kwargs pins below stay comparable (the real value is a closure).
+        # Deliberately NOT invoked: these tests pin the pre-buffer wire
+        # shape; the tee/turn_started behavior is pinned in
+        # test_turn_stream_buffer.py.
+        kwargs["_on_turn_started"] = kwargs.get("_on_turn_started") is not None
         self.astream_calls.append({"message": message, **kwargs})
         yield {"type": "thinking", "content": "working"}
         yield {"type": "response", "content": "stream response"}
@@ -386,6 +392,7 @@ def test_chat_stream_preserves_sse_shape_and_attachment_conversion(
             "source": "user",
             "source_id": None,
             "source_label": "alice",
+            "_on_turn_started": True,
         }
     ]
     assert agent.thread_metadata_manager.auto_title_calls == [
@@ -519,6 +526,7 @@ def test_quick_stream_creates_temporary_thread_and_streams_inline(
             "source": "user",
             "source_id": None,
             "source_label": "alice",
+            "_on_turn_started": True,
         }
     ]
 

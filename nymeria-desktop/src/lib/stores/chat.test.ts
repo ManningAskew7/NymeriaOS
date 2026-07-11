@@ -672,3 +672,89 @@ describe('chatStore: edit-previous-prompt state (backlog #12)', () => {
     expect(store.editingDraft).toBe('');
   });
 });
+
+describe('chatStore: interactive-turn recovery (re-attachable turns)', () => {
+  let store: ReturnType<typeof createChatStore>;
+
+  beforeEach(() => {
+    store = createChatStore();
+  });
+
+  function seedStreamingTurn() {
+    store.setMessages([makeUser('hello')]);
+    store.addAssistantMessage();
+    store.setStreaming(true);
+    store.addThinkingStep('working on it');
+    store.addToolCallStep('tc-1', 'web_search', { q: 'x' });
+    store.addResponseStep('partial ans');
+    store.flushStreamingBuffers();
+  }
+
+  it('setReconnecting marks the streaming tail with the reconnecting phase', () => {
+    seedStreamingTurn();
+
+    store.setReconnecting(true);
+
+    expect(store.isReconnecting).toBe(true);
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.status).toBe('streaming');
+    expect(tail.activityPhase).toBe('reconnecting');
+
+    store.setReconnecting(false);
+    expect(store.isReconnecting).toBe(false);
+  });
+
+  it('setReconnecting discards un-flushed stream buffers', () => {
+    seedStreamingTurn();
+    store.addResponseStep(' BUFFERED AFTER DROP');
+
+    store.setReconnecting(true);
+    store.flushStreamingBuffers();
+
+    const tail = store.messages[store.messages.length - 1];
+    const responseText = (tail.steps || [])
+      .filter((s) => s.type === 'response')
+      .map((s) => s.content)
+      .join('');
+    expect(responseText).toBe('partial ans');
+  });
+
+  it('resetLastMessageForReplay clears the tail for a full-turn replay', () => {
+    seedStreamingTurn();
+
+    store.resetLastMessageForReplay();
+
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.role).toBe('assistant');
+    expect(tail.status).toBe('streaming');
+    expect(tail.content).toBe('');
+    expect(tail.steps).toEqual([]);
+    expect(store.activeToolCalls.size).toBe(0);
+    // The user message is untouched.
+    expect(store.messages[0].content).toBe('hello');
+  });
+
+  it('resetLastMessageForReplay then replay rebuilds the reply from stream events', () => {
+    seedStreamingTurn();
+
+    store.resetLastMessageForReplay();
+    store.addThinkingStep('replayed thinking');
+    store.addResponseStep('full replayed answer');
+    store.flushStreamingBuffers();
+    store.reclassifyThinkingAsResponse();
+    store.setLastMessageComplete();
+
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.status).toBe('complete');
+    expect(tail.content).toBe('full replayed answer');
+  });
+
+  it('resetLastMessageForReplay no-ops when the tail is not an assistant message', () => {
+    store.setMessages([makeUser('hello')]);
+    const snapshot = structuredClone(store.messages);
+
+    store.resetLastMessageForReplay();
+
+    expect(store.messages).toEqual(snapshot);
+  });
+});

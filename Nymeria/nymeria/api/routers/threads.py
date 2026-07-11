@@ -22,6 +22,7 @@ from ...core.thread_classification import (
     parse_thread_metadata,
 )
 from ...core.thread_deletion import ThreadDeletionBusy, cascade_delete_thread
+from ...core.turn_stream_buffer import get_turn_stream_registry
 from ..schemas.threads import (
     ThreadBranchRequest,
     ThreadBranchResponse,
@@ -32,6 +33,7 @@ from ..schemas.threads import (
     ThreadMetadataUpdateRequest,
     ThreadOverviewResponse,
     ThreadStatusResponse,
+    ThreadTurnStatus,
 )
 from ..thread_overview import (
     build_thread_overview,
@@ -280,10 +282,16 @@ def create_threads_router(
                 thread_id,
             )
 
+        turn_buffer = get_turn_stream_registry().get(thread_id)
         return ThreadStatusResponse(
             thread_id=thread_id,
             revision=revision,
             processing=is_thread_processing(agent, thread_id),
+            turn=(
+                ThreadTurnStatus(**turn_buffer.snapshot())
+                if turn_buffer is not None
+                else None
+            ),
         )
 
     @router.get(

@@ -18,6 +18,7 @@
     compacting: 'Compacting',
     processing_results: 'Processing results',
     waiting: 'Waiting',
+    reconnecting: 'Reconnecting',
   };
 
   let { message }: Props = $props();

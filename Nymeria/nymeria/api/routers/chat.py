@@ -30,6 +30,13 @@ from ...core.notification_dispatch import (
     should_notify_autonomous as default_should_notify_autonomous,
 )
 from ...core.pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
+from ...core.turn_stream_buffer import (
+    STATE_ABORTED,
+    STATE_DONE,
+    STATE_ERROR,
+    TurnStreamBuffer,
+    get_turn_stream_registry,
+)
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..sse import SSE_RESPONSE_HEADERS, with_sse_keepalive
 from ..thread_config_helpers import effective_provider_model
@@ -1239,6 +1246,34 @@ def create_chat_router(
             autonomous_final_content_parts: list[str] = []
             autonomous_completed = False
             autonomous_started = False
+
+            # Turn stream buffer: created iff THIS request becomes the
+            # lock-holder turn (the astream callback fires after lock
+            # acquisition). Queued-prompt requests never create one, so the
+            # holder's events are buffered exactly once. The buffer retains
+            # the turn's wire payloads (including after a client disconnect)
+            # so GET /threads/{id}/turn/stream can replay them.
+            turn_buffer: Optional[TurnStreamBuffer] = None
+            turn_started_pending = False
+
+            def _mark_turn_started() -> None:
+                nonlocal turn_buffer, turn_started_pending
+                turn_buffer = get_turn_stream_registry().begin_turn(
+                    thread_id, user_id
+                )
+                turn_started_pending = True
+
+            def _wire_payload(event: dict[str, Any]) -> str:
+                """Serialize an outbound event, teeing holder events into the buffer.
+
+                The buffer stamps ``seq`` and returns the exact payload string,
+                so live wire and replay stay byte-identical.
+                """
+                if turn_buffer is not None:
+                    _, payload = turn_buffer.append(event)
+                    return payload
+                return json.dumps(event)
+
             try:
                 attachments = _attachment_dicts(request)
                 images = _legacy_image_dicts(request)
@@ -1270,6 +1305,10 @@ def create_chat_router(
 
                     refresh_thread_activity(agent, user_id, thread_id)
 
+                stream_thread_id = (
+                    original_thread_id if dispatched_target is not None else thread_id
+                )
+
                 async for chunk in agent.astream(
                     message,
                     thread_id=thread_id,
@@ -1282,18 +1321,63 @@ def create_chat_router(
                     source=prompt_source,
                     source_id=prompt_source_id,
                     source_label=prompt_source_label or user_id,
+                    _on_turn_started=_mark_turn_started,
                 ):
-                    # If client disconnected, stop yielding SSE events but keep
-                    # consuming the generator so the agent finishes its work.
-                    # Results are saved to thread history and available on reconnect.
+                    # If the client disconnected, stop yielding SSE events but
+                    # keep consuming the generator so the agent finishes its
+                    # work, teeing holder events into the turn buffer so the
+                    # client can re-attach via GET /threads/{id}/turn/stream.
+                    # Results are also saved to thread history.
                     # Explicit cancellation uses POST /threads/{id}/stop instead.
-                    if await http_request.is_disconnected():
-                        if not client_disconnected:
-                            client_disconnected = True
-                            logger.info(
-                                "Client disconnected for thread %s, agent will continue in background",
-                                thread_id,
-                            )
+                    if not client_disconnected and await http_request.is_disconnected():
+                        client_disconnected = True
+                        logger.info(
+                            "Client disconnected for thread %s, agent will continue in background",
+                            thread_id,
+                        )
+
+                    # Surface the holder-turn start on the wire (and as the
+                    # buffer's first event) so clients learn the turn_id used
+                    # for re-attach. Synthesized here, route-level, so direct
+                    # agent.astream() consumers never see it. Self-invoke
+                    # relay turns (the Docker worker's APIClientExecutor)
+                    # still buffer it but do not get it on the wire: the
+                    # trigger manager's task_started gate and the autonomous
+                    # event-bus mirror keep their pre-existing first-chunk
+                    # timing, and the relay consumer has no use for it.
+                    if turn_started_pending and turn_buffer is not None:
+                        turn_started_pending = False
+                        started_payload = _wire_payload(
+                            {
+                                "type": "turn_started",
+                                "turn_id": turn_buffer.turn_id,
+                                "thread_id": stream_thread_id,
+                                **_dispatch_stream_fields(
+                                    dispatched_target,
+                                    original_thread_id,
+                                ),
+                            }
+                        )
+                        if not client_disconnected and not request.is_self_invoke:
+                            yield f"data: {started_payload}\n\n"
+
+                    # Non-holder (queued-prompt) streams have nothing to tee;
+                    # skip payload building entirely once the client is gone.
+                    if client_disconnected and turn_buffer is None:
+                        continue
+
+                    event_data = _wire_payload(
+                        {
+                            **chunk,
+                            "thread_id": stream_thread_id,
+                            **_dispatch_stream_fields(
+                                dispatched_target,
+                                original_thread_id,
+                            ),
+                        }
+                    )
+
+                    if client_disconnected:
                         continue
 
                     # Publish task_started on the first non-queue-meta chunk
@@ -1321,19 +1405,6 @@ def create_chat_router(
                         )
                         autonomous_started = True
 
-                    stream_thread_id = (
-                        original_thread_id if dispatched_target is not None else thread_id
-                    )
-                    event_data = json.dumps(
-                        {
-                            **chunk,
-                            "thread_id": stream_thread_id,
-                            **_dispatch_stream_fields(
-                                dispatched_target,
-                                original_thread_id,
-                            ),
-                        }
-                    )
                     yield f"data: {event_data}\n\n"
 
                     # Mirror streaming chunks to the autonomous event bus for
@@ -1350,30 +1421,38 @@ def create_chat_router(
                         if ctype == "response":
                             autonomous_final_content_parts.append(chunk.get("content", ""))
 
-                # Only send done event if client is still connected
-                if not client_disconnected and not await http_request.is_disconnected():
+                # Terminal handling. The done payload (context stats, model,
+                # auto-title) is built whenever the client is still connected
+                # OR this request ran the holder turn: a disconnected holder
+                # still buffers `done` so a re-attaching client gets a proper
+                # turn end, and auto-title no longer depends on the caller's
+                # connection (disconnected turns previously never titled
+                # their thread or published the title sync event).
+                still_connected = (
+                    not client_disconnected and not await http_request.is_disconnected()
+                )
+                if still_connected or turn_buffer is not None:
                     # For /quick, append a display-only footer telling the user
                     # how to continue the fresh thread. Emitted as a trailing
                     # `response` chunk (re-tagged to the caller thread) BEFORE
                     # `done`, so it accumulates into the same assistant bubble
                     # on every surface and is never written to any checkpoint.
+                    # Buffered for holder turns so a re-attached client sees
+                    # the same footer.
                     if is_quick:
-                        quick_footer = _quick_continue_footer(thread_id)
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "type": "response",
-                                    "content": quick_footer,
-                                    "thread_id": original_thread_id,
-                                    **_dispatch_stream_fields(
-                                        dispatched_target,
-                                        original_thread_id,
-                                    ),
-                                }
-                            )
-                            + "\n\n"
+                        footer_payload = _wire_payload(
+                            {
+                                "type": "response",
+                                "content": _quick_continue_footer(thread_id),
+                                "thread_id": original_thread_id,
+                                **_dispatch_stream_fields(
+                                    dispatched_target,
+                                    original_thread_id,
+                                ),
+                            }
                         )
+                        if still_connected:
+                            yield f"data: {footer_payload}\n\n"
 
                     # Get context stats and model info for UI
                     try:
@@ -1414,11 +1493,15 @@ def create_chat_router(
                     except Exception as e:
                         logger.warning("Failed to auto-title thread %s: %s", thread_id, e)
 
-                    yield f"data: {json.dumps(done_data)}\n\n"
+                    done_payload = _wire_payload(done_data)
+                    if turn_buffer is not None:
+                        turn_buffer.finish(STATE_DONE)
+                    if still_connected:
+                        yield f"data: {done_payload}\n\n"
 
             except Exception as e:
                 logger.error("Stream error: %s", e, exc_info=True)
-                error_data = json.dumps(
+                error_data = _wire_payload(
                     {
                         "type": "error",
                         "content": str(e),
@@ -1431,6 +1514,8 @@ def create_chat_router(
                         ),
                     }
                 )
+                if turn_buffer is not None:
+                    turn_buffer.finish(STATE_ERROR)
                 yield f"data: {error_data}\n\n"
                 if autonomous_task_id and not autonomous_completed:
                     error_text = str(e)
@@ -1452,6 +1537,13 @@ def create_chat_router(
                     )
                     autonomous_completed = True
             finally:
+                # A holder buffer still live here means the generator died
+                # without a terminal event (GeneratorExit / task cancel):
+                # mark it aborted so re-attachers get an honest end-of-stream
+                # instead of waiting on a turn that will never finish.
+                # finish() no-ops when a terminal state is already set.
+                if turn_buffer is not None:
+                    turn_buffer.finish(STATE_ABORTED)
                 if autonomous_task_id and not autonomous_completed:
                     final_content = "".join(autonomous_final_content_parts)
                     _maybe_create_autonomous_notification(final_content, autonomous_task_id)

@@ -225,10 +225,19 @@ export class ThreadsApi extends ChatApi {
     }
 
     const data = await response.json();
+    const rawTurn = data.turn as Record<string, unknown> | null | undefined;
     return {
       threadId: data.thread_id as string,
       revision: (data.revision as string | null | undefined) ?? null,
       processing: Boolean(data.processing),
+      turn: rawTurn
+        ? {
+            turnId: rawTurn.turn_id as string,
+            state: rawTurn.state as 'live' | 'done' | 'error' | 'aborted',
+            lastSeq: (rawTurn.last_seq as number) ?? 0,
+            truncated: Boolean(rawTurn.truncated),
+          }
+        : null,
     };
   }
   /**

@@ -8,7 +8,8 @@ export type AssistantActivityPhase =
   | 'formulating'
   | 'compacting'
   | 'processing_results'
-  | 'waiting';
+  | 'waiting'
+  | 'reconnecting';
 
 // File type discriminator for attachments
 export type FileType = 'image' | 'document';
@@ -631,10 +632,19 @@ export interface ThreadHistory {
   messages: Message[];
 }
 
+export interface ThreadTurnStatus {
+  turnId: string;
+  state: 'live' | 'done' | 'error' | 'aborted';
+  lastSeq: number;
+  truncated: boolean;
+}
+
 export interface ThreadStatus {
   threadId: string;
   revision: string | null;
   processing: boolean;
+  // Attachable interactive-turn buffer (GET /threads/{id}/turn/stream), if any.
+  turn?: ThreadTurnStatus | null;
 }
 
 // TODO types (from backend)
@@ -857,7 +867,9 @@ export type SSEEventType =
   | 'context_attached'
   | 'iteration_limit'
   | 'tool_reload'
-  | 'hook_activity';
+  | 'hook_activity'
+  | 'turn_started'
+  | 'turn_attach';
 
 export type PendingPromptStatus = 'sending' | 'queued' | 'error';
 

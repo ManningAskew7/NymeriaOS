@@ -40,8 +40,12 @@ export class ChatApi extends CredentialsApi {
   ): AsyncGenerator<SSEEvent> {
     const url = `${this.getBaseUrl()}/chat`;
 
-    // Create abort controller for this stream
-    currentAbortController = new AbortController();
+    // Create abort controller for this stream. Keep a local reference so
+    // cleanup only clears the module slot when it still belongs to THIS
+    // stream (a drained old stream must not clobber a newer stream's
+    // controller after a thread switch).
+    const abortController = new AbortController();
+    currentAbortController = abortController;
     currentStreamThreadId = threadId || null;
 
     // Build request body with optional attachments
@@ -72,7 +76,7 @@ export class ChatApi extends CredentialsApi {
         Accept: 'text/event-stream'
       },
       body: JSON.stringify(requestBody),
-      signal: currentAbortController.signal
+      signal: abortController.signal
     });
 
     if (!response.ok) {
@@ -148,8 +152,10 @@ export class ChatApi extends CredentialsApi {
       }
     } finally {
       reader.releaseLock();
-      currentAbortController = null;
-      currentStreamThreadId = null;
+      if (currentAbortController === abortController) {
+        currentAbortController = null;
+        currentStreamThreadId = null;
+      }
     }
   }
   /**
@@ -254,6 +260,123 @@ export class ChatApi extends CredentialsApi {
       }
     } finally {
       reader.releaseLock();
+    }
+  }
+
+  /**
+   * Re-attach to a thread's in-flight (or just-finished, still-buffered)
+   * interactive turn after a connection drop. Replays the turn's buffered
+   * events from the start (the caller rebuilds the assistant bubble from the
+   * replay), then tails live events until the turn ends. Registers itself as
+   * the module-level active stream so stop/abort behave like chatStream.
+   *
+   * Errors are yielded as `error` events with recovery-aware codes:
+   * `turn_not_found` (nothing to attach to) and `turn_replay_gap` (buffer
+   * overflow) mean "reconcile via history"; other failures mean "retry".
+   */
+  async *reattachTurnStream(
+    threadId: string,
+    turnId?: string
+  ): AsyncGenerator<SSEEvent> {
+    const params = new URLSearchParams();
+    if (turnId) params.set('turn_id', turnId);
+    const url =
+      `${this.getBaseUrl()}/threads/${encodeURIComponent(threadId)}/turn/stream` +
+      (params.size > 0 ? `?${params.toString()}` : '');
+
+    const abortController = new AbortController();
+    currentAbortController = abortController;
+    currentStreamThreadId = threadId;
+
+    const releaseModuleSlot = () => {
+      if (currentAbortController === abortController) {
+        currentAbortController = null;
+        currentStreamThreadId = null;
+      }
+    };
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          ...this.getHeaders(),
+          Accept: 'text/event-stream'
+        },
+        signal: abortController.signal
+      });
+    } catch (error) {
+      releaseModuleSlot();
+      throw error;
+    }
+
+    if (!response.ok) {
+      releaseModuleSlot();
+      let code = response.status === 410 ? 'turn_replay_gap' : 'turn_not_found';
+      let message = `Re-attach failed: ${response.status}`;
+      try {
+        const detail = (await response.json())?.detail;
+        if (detail?.code) code = detail.code;
+        if (detail?.message) message = detail.message;
+      } catch {
+        // Non-JSON error body; keep the status-derived defaults.
+      }
+      if (response.status !== 404 && response.status !== 410) {
+        code = 'reattach_failed';
+      }
+      yield {
+        type: 'error',
+        data: { message, code },
+        timestamp: new Date(),
+        threadId
+      };
+      return;
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      currentAbortController = null;
+      currentStreamThreadId = null;
+      yield {
+        type: 'error',
+        data: { message: 'No response body', code: 'reattach_failed' },
+        timestamp: new Date(),
+        threadId
+      };
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const event = this.parseSSEEvent(parsed);
+            if (event) yield event;
+          } catch (e) {
+            console.error('Failed to parse re-attach SSE event:', e, jsonStr);
+          }
+        }
+      }
+    } finally {
+      try {
+        // Abandoned mid-tail (e.g. thread switch): tear the connection down
+        // instead of leaving the SSE body open until the turn ends.
+        await reader.cancel();
+      } catch {
+        // Stream already closed or errored; nothing to cancel.
+      }
+      reader.releaseLock();
+      releaseModuleSlot();
     }
   }
 
@@ -612,6 +735,30 @@ export class ChatApi extends CredentialsApi {
               source: data.source as string | undefined,
               skillName: data.skill_name as string | null | undefined,
               reason: data.reason as string | null | undefined,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'turn_started':
+          // Holder-turn identity marker: carries the turn_id used to
+          // re-attach to this turn after a connection drop.
+          return {
+            type: 'turn_started',
+            data: { turnId: (data.turn_id as string) || '' },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'turn_attach':
+          // Re-attach stream preamble (GET /threads/{id}/turn/stream).
+          return {
+            type: 'turn_attach',
+            data: {
+              turnId: (data.turn_id as string) || '',
+              state: (data.state as string) || 'live',
+              lastSeq: (data.last_seq as number) ?? 0,
+              truncated: Boolean(data.truncated)
             },
             timestamp: new Date(),
             threadId

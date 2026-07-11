@@ -51,6 +51,10 @@ export function createChatStore() {
   // the unreachable-backend path, and the (possibly late) stop response can
   // each restore, so dedupe across them. Reset when a stop starts.
   let stopRestoredTexts: Set<string> = new Set();
+  // Interactive-stream recovery: true while ChatPanel's re-attach loop is
+  // trying to rejoin a dropped turn. isStreaming stays true throughout so
+  // the autonomous store keeps standing down and the composer stays gated.
+  let isReconnecting = $state(false);
   let isLoadingHistory = $state(false);
   let _instantScroll = $state(false);
 
@@ -114,6 +118,9 @@ export function createChatStore() {
     },
     get isStopping() {
       return isStopping;
+    },
+    get isReconnecting() {
+      return isReconnecting;
     },
     get composerRestore() {
       return composerRestore;
@@ -258,6 +265,57 @@ export function createChatStore() {
           { ...lastMessage, status: 'streaming' as const }
         ];
       }
+    },
+
+    /**
+     * Mark the in-flight reply as reconnecting after a dropped interactive
+     * stream. The message stays streaming (the recovery loop owns the
+     * terminal transition). Un-flushed token buffers are discarded: the
+     * turn replay rebuilds the message content from scratch.
+     */
+    setReconnecting(value: boolean) {
+      isReconnecting = value;
+      if (value) {
+        if (_flushTimer) {
+          clearTimeout(_flushTimer);
+          _flushTimer = null;
+        }
+        _responseBuffer = '';
+        _thinkingBuffer = '';
+      }
+    },
+
+    /**
+     * Reset the tail assistant message to an empty streaming placeholder so
+     * a turn re-attach can rebuild the whole reply from the replayed stream
+     * (the replay is the full turn from seq 0, byte-identical to the
+     * original). Preserves message identity/dispatch info.
+     */
+    resetLastMessageForReplay() {
+      if (_flushTimer) {
+        clearTimeout(_flushTimer);
+        _flushTimer = null;
+      }
+      _responseBuffer = '';
+      _thinkingBuffer = '';
+      if (messages.length === 0) return;
+      const lastIndex = messages.length - 1;
+      const lastMessage = messages[lastIndex];
+      if (lastMessage.role !== 'assistant') return;
+      activeToolCalls = new Map();
+      // No legacy intermediateContent/toolCalls writes here: the mobile
+      // store never materializes them (pinned by
+      // test_mobile_legacy_message_fields.py); the streaming tail carries
+      // steps only and MessageBubble derives fallbacks at render time.
+      messages = [
+        ...messages.slice(0, lastIndex),
+        {
+          ...lastMessage,
+          content: '',
+          steps: [],
+          status: 'streaming' as const
+        }
+      ];
     },
 
     setLastMessageError(error: string) {

@@ -313,6 +313,12 @@ def _delete_in_memory_state(agent: "NymeriaAgent", thread_id: str, result: Threa
     if token_tracker is not None:
         token_tracker.clear_thread(thread_id)
 
+    # Drop the thread's turn stream buffer so a deleted thread's last turn
+    # is no longer re-attachable (and its memory is reclaimed immediately).
+    from .turn_stream_buffer import get_turn_stream_registry
+
+    get_turn_stream_registry().drop_thread(thread_id)
+
     cache_deleted = 0
     graph_lock = getattr(agent, "_graph_cache_lock", None)
     if graph_lock is not None:
