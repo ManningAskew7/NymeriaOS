@@ -1,0 +1,18 @@
+{
+  "id": "turn-end-prompt",
+  "title": "Turn-end prompt (one-shot)",
+  "description": "One-shot DONE hook that injects a follow-up prompt when the current turn finishes, then removes itself.",
+  "notes": "The template behind the /done command, installable directly when you want to customize it: install with --text \"your follow-up\" (or edit the default text afterwards). single_use deletes the hook after its first successful fire, so it cannot re-fire after a restart; once keeps it silent for the rest of the turn's thread scratch lifetime as a belt-and-braces guard. Installs thread-scoped by default; the prompt re-drives the turn via the DONE-continue mechanism (bounded by the continuation cap).",
+  "hook": {
+    "name": "turn-end-prompt",
+    "event": "done",
+    "action": "inject_context",
+    "params": {
+      "text": "Before finishing: review this turn's work, verify the results hold, and fix or flag anything incomplete."
+    },
+    "once": true,
+    "single_use": true,
+    "scope": "thread",
+    "enabled": true
+  }
+}

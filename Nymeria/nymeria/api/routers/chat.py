@@ -7,7 +7,8 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -346,6 +347,81 @@ def _quick_continue_footer(quick_thread_id: str) -> str:
     )
 
 
+_DONE_USAGE = (
+    "[Error]: Usage: `/done <prompt>` arms a one-shot follow-up that runs "
+    "when the current turn finishes. With no turn running, the prompt is "
+    "sent immediately."
+)
+
+
+def _try_arm_done_hook(
+    agent, thread_id: str, user_id: str, prompt: str
+) -> Optional[str]:
+    """Arm a one-shot DONE hook carrying ``prompt`` when a turn is running.
+
+    Returns the ack text when armed: the caller should return it and NOT run
+    a turn (the hook fires at the running turn's DONE point and the shipped
+    DONE-continue machinery re-drives the turn with the prompt). Returns
+    ``None`` when the thread is idle, so the caller runs the prompt as a
+    normal turn (the degenerate case).
+
+    The hook is ``single_use`` (the recorder deletes it synchronously on its
+    first ``ok`` run), which makes the create/turn-end race claimable: if the
+    turn ends between the busy probe and the create, a successful delete
+    proves the hook never fired and the prompt runs now; a failed delete
+    proves the DONE fire already consumed it.
+    """
+    locks = agent._thread_locks
+    if not locks.is_thread_busy(thread_id):
+        return None
+    # Arming is pointless when the hooks engine is off for this thread (the
+    # DONE fire would never pick the hook up): fail honestly instead of
+    # acking a follow-up that cannot run.
+    from ...core.agent_safety import get_effective_hook_enabled
+
+    hooks_on = get_effective_hook_enabled(
+        SimpleNamespace(id=None, enabled=True),
+        thread_id,
+        thread_config_manager=getattr(agent, "thread_config_manager", None),
+        settings=getattr(agent, "settings", None),
+    )
+    if not hooks_on:
+        return (
+            "[Error]: Lifecycle hooks are disabled for this thread, so `/done` "
+            "cannot arm a follow-up. Enable hooks (`hooks_enabled`) or resend "
+            "the prompt once the current turn finishes."
+        )
+    excerpt = prompt if len(prompt) <= 40 else prompt[:37] + "..."
+    try:
+        hook = agent.hook_manager.add_hook(
+            user_id,
+            name=f"/done: {excerpt}",
+            event="done",
+            action="inject_context",
+            text=prompt,
+            once=True,
+            single_use=True,
+            scope="thread",
+            thread_id=thread_id,
+            created_by="user",
+        )
+    except Exception as exc:  # noqa: BLE001 - surface as a command error
+        return f"[Error]: Could not arm the follow-up: {exc}"
+    if hook is None:
+        return "[Error]: Hook limit reached; the follow-up was not armed."
+    if not locks.is_thread_busy(thread_id):
+        # The turn ended while we were arming. Claim the hook back by
+        # deleting it: success = it never fired (run the prompt now);
+        # failure = the DONE fire consumed it (single_use removal), so the
+        # prompt already ran at turn end.
+        if agent.hook_manager.delete_hook(user_id, hook.id):
+            return None
+    return (
+        f"[Info]: Follow-up armed: your prompt will run when the current turn "
+        f"finishes (one-shot hook `{hook.id}`, removed after firing)."
+    )
+
+
 def create_chat_router(
     verify_api_key: Callable[..., Any],
     get_agent_fn: Callable[[], Any],
@@ -678,6 +754,24 @@ def create_chat_router(
             message = quick_prompt
             display_message = quick_prompt
             is_quick = True
+
+        # Handle /done slash command (chat_stream execution).
+        # /done <prompt> arms a one-shot single_use DONE hook on the busy
+        # thread: the running turn picks it up at its DONE fire point and
+        # re-drives with the prompt. With no turn running, the prompt just
+        # runs as a normal turn now (fall through with the rewritten message).
+        done_tokens = msg_stripped.split(maxsplit=1)
+        if not request.is_self_invoke and done_tokens and done_tokens[0] == "/done":
+            raw_parts = message.strip().split(maxsplit=1)
+            done_prompt = raw_parts[1].strip() if len(raw_parts) > 1 else ""
+            if not done_prompt:
+                return _slash_sse_response(_DONE_USAGE, thread_id)
+            done_ack = _try_arm_done_hook(agent, thread_id, user_id, done_prompt)
+            if done_ack is not None:
+                return _slash_sse_response(done_ack, thread_id)
+            message = done_prompt
+            display_message = done_prompt
+            msg_stripped = message.strip().lower()
 
         # Handle /skill and /kit slash commands (chat_stream execution).
         # /skill <name> [prompt] activates a markdown-only skill, prepends
@@ -1462,6 +1556,23 @@ def create_chat_router(
                 )
             message = quick_prompt
             is_quick = True
+
+        # /done <prompt>: sync parity with the streaming intercept above.
+        done_tokens = msg_stripped.split(maxsplit=1)
+        if not request.is_self_invoke and done_tokens and done_tokens[0] == "/done":
+            raw_parts = message.strip().split(maxsplit=1)
+            done_prompt = raw_parts[1].strip() if len(raw_parts) > 1 else ""
+            if not done_prompt:
+                return ChatResponse(
+                    response=_DONE_USAGE, thread_id=thread_id, tool_call_count=0
+                )
+            done_ack = _try_arm_done_hook(agent, thread_id, user_id, done_prompt)
+            if done_ack is not None:
+                return ChatResponse(
+                    response=done_ack, thread_id=thread_id, tool_call_count=0
+                )
+            message = done_prompt
+            msg_stripped = message.strip().lower()
 
         skill_tokens = msg_stripped.split(maxsplit=1)
         if skill_tokens and skill_tokens[0] in {"/skill", "/kit"}:

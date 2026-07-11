@@ -67,12 +67,28 @@ class FakeThreadMetadataManager:
         return self.threads.get((user_id, thread_id))
 
 
+class _FakeThreadLocks:
+    """Scripted busy-probe: pops queued responses, then reports idle."""
+
+    def __init__(self) -> None:
+        self.busy_responses: list[bool] = []
+
+    def is_thread_busy(self, thread_id: str) -> bool:
+        if self.busy_responses:
+            return self.busy_responses.pop(0)
+        return False
+
+
 class FakeChatAgent:
     def __init__(self, data_dir: Path) -> None:
+        from nymeria.core.hook_manager import HookManager
+
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
         self.settings = SimpleNamespace(
             llm_provider="fallback-provider", llm_model="fallback-model"
         )
+        self._thread_locks = _FakeThreadLocks()
+        self.hook_manager = HookManager(data_dir)
         self.thread_metadata_manager = FakeThreadMetadataManager()
         self.thread_config_manager = object()
         self.synced_tools = 0
@@ -647,3 +663,169 @@ def test_interactive_turn_on_temporary_spawned_thread_refreshes_idle_clock(
     assert meta is not None
     assert meta.platform_meta["last_active_at"] != stale
     assert meta.platform_meta["lifetime"] == "temporary"
+
+
+# --- /done: one-shot DONE-hook arming (backlog #70) --------------------------
+
+def test_done_stream_busy_arms_single_use_hook(tmp_path: Path, api_client_builder):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent._thread_locks.busy_responses = [True, True]  # probe + race re-check
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done check the tests", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    events = _sse_events(body)
+    assert any(
+        e["type"] == "response" and "Follow-up armed" in e["content"] for e in events
+    )
+    # No turn ran; the hook is stored, single-use, bound to the busy thread.
+    assert agent.astream_calls == []
+    (hook,) = agent.hook_manager.get_hooks("alice")
+    assert hook.event == "done"
+    assert hook.logic.text == "check the tests"
+    assert hook.single_use is True
+    assert hook.once is True
+    assert hook.scope == "thread"
+    assert hook.thread_id == "caller-1"
+    assert hook.created_by == "user"
+
+
+def test_done_stream_hooks_disabled_errors_without_arming(
+    tmp_path: Path, api_client_builder
+):
+    # The DONE fire would never pick the hook up with the engine off, so
+    # /done must fail honestly instead of acking a dead follow-up.
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent._thread_locks.busy_responses = [True, True]
+    agent.settings.hooks_enabled = False
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done check the tests", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    events = _sse_events(body)
+    assert any(
+        e["type"] == "response" and "hooks are disabled" in e["content"]
+        for e in events
+    )
+    assert agent.astream_calls == []
+    assert agent.hook_manager.get_hooks("alice") == []
+
+
+def test_done_stream_idle_runs_prompt_now(tmp_path: Path, api_client_builder):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    # No busy responses queued: the thread is idle (degenerate case).
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done check the tests", "thread_id": "caller-1"},
+    ) as response:
+        "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert len(agent.astream_calls) == 1
+    assert agent.astream_calls[0]["message"] == "check the tests"
+    assert agent.astream_calls[0]["thread_id"] == "caller-1"
+    assert agent.hook_manager.get_hooks("alice") == []
+
+
+def test_done_stream_empty_prompt_is_usage_error(tmp_path: Path, api_client_builder):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    events = _sse_events(body)
+    assert any(
+        e["type"] == "response" and "Usage: `/done" in e["content"] for e in events
+    )
+    assert agent.astream_calls == []
+    assert agent.hook_manager.get_hooks("alice") == []
+
+
+def test_done_stream_race_claimed_back_runs_now(tmp_path: Path, api_client_builder):
+    # Turn ends between the busy probe and the create: the delete claim
+    # succeeds (the hook never fired), so the prompt runs as a normal turn.
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent._thread_locks.busy_responses = [True, False]
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done follow up", "thread_id": "caller-1"},
+    ) as response:
+        "".join(response.iter_text())
+
+    assert len(agent.astream_calls) == 1
+    assert agent.astream_calls[0]["message"] == "follow up"
+    assert agent.hook_manager.get_hooks("alice") == []
+
+
+def test_done_stream_race_already_fired_acks(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    # Turn ends AND the DONE fire consumes the hook before the re-check: the
+    # delete claim fails, so the ack stands (the prompt already ran).
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent._thread_locks.busy_responses = [True, False]
+    monkeypatch.setattr(agent.hook_manager, "delete_hook", lambda *a, **k: False)
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done follow up", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    events = _sse_events(body)
+    assert any(
+        e["type"] == "response" and "Follow-up armed" in e["content"] for e in events
+    )
+    assert agent.astream_calls == []
+
+
+def test_done_sync_parity(tmp_path: Path, api_client_builder):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    # Busy: arm the hook, no turn.
+    agent._thread_locks.busy_responses = [True, True]
+    resp = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done wrap up", "thread_id": "caller-1"},
+    )
+    assert resp.status_code == 200
+    assert "Follow-up armed" in resp.json()["response"]
+    assert agent.chat_calls == []
+    (hook,) = agent.hook_manager.get_hooks("alice")
+    assert hook.single_use is True and hook.logic.text == "wrap up"
+
+    # Idle: the prompt runs as a normal sync turn.
+    agent.hook_manager.delete_hook("alice", hook.id)
+    resp = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "/done wrap up", "thread_id": "caller-1"},
+    )
+    assert resp.status_code == 200
+    assert len(agent.chat_calls) == 1
+    assert agent.chat_calls[0]["message"] == "wrap up"

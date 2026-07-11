@@ -457,6 +457,7 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
     disabled, args = _consume_flag(args, "--disabled")
     case_sensitive, args = _consume_flag(args, "--case-sensitive")
     once, args = _consume_flag(args, "--once")
+    single_use, args = _consume_flag(args, "--single-use")
     error = next(
         (e for e in (e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12) if e), ""
     )
@@ -482,6 +483,7 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
         "sets": sets,
         "fire_conds": fire_conds,
         "once": once,
+        "single_use": single_use,
         "disabled": disabled,
         "case_sensitive": case_sensitive,
     }, ""
@@ -3215,6 +3217,8 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
             "delete": self._cmd_hook_delete,
             "test": self._cmd_hook_test,
             "log": self._cmd_hook_log,
+            "templates": self._cmd_hook_templates,
+            "install": self._cmd_hook_install,
             "approvals": self._cmd_hook_approvals,
             "approve": self._cmd_hook_approve,
             "deny": self._cmd_hook_deny,
@@ -3231,7 +3235,7 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
             return await handler(args[1:], rest)
         return (
             "[Error]: Usage: /hook list|create|show|edit|enable|disable|delete"
-            "|test|log|approvals|approve|deny [...]"
+            "|test|log|templates|install|approvals|approve|deny [...]"
         )
 
     async def _cmd_hook_list(self, args: list[str], rest: str) -> str:
@@ -3264,6 +3268,90 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
                 f"| `{h.id}` | {state} | {h.event} | {h.logic.action} | {scope} | {h.name} |"
             )
         return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_hook_templates(self, args: list[str], rest: str) -> str:
+        from .hook_templates import load_templates
+
+        templates = load_templates()
+        if not templates:
+            return "[Info]: No bundled hook templates available."
+        lines = [
+            f"Bundled hook templates: {len(templates)}",
+            "",
+            "| ID | Event | Action | Default scope | Description |",
+            "|---|---|---|---|---|",
+        ]
+        for t in templates:
+            hook = t.hook
+            lines.append(
+                f"| `{t.id}` | {hook.get('event', '?')} | "
+                f"{hook.get('action', 'inject_context')} | "
+                f"{hook.get('scope', 'global')} | {t.description or t.title} |"
+            )
+        lines.append("")
+        lines.append("Install one with `/hook install <id>`.")
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_hook_install(self, args: list[str], rest: str) -> str:
+        from ..tools.hooks import _logic_preview
+        from ..tools.utils import is_admin
+        from .hook_templates import install_template
+
+        scope, args, error = _consume_option(args, "--scope", default="")
+        if error:
+            return f"[Error]: {error}"
+        text, args, error = _consume_option(args, "--text", default="")
+        if error:
+            return f"[Error]: {error}"
+        disabled, args = _consume_flag(args, "--disabled")
+        stray = next((a for a in args if a.startswith("--")), None)
+        if stray:
+            return f"[Error]: unknown option {stray!r}."
+        if not args:
+            return (
+                "[Error]: Usage: /hook install <template-id> "
+                "[--scope thread|global] [--text ...] [--disabled]. "
+                "See /hook templates for the catalog."
+            )
+        template_id = args[0]
+        scope_value = scope.strip().lower() or None
+        if scope_value is not None and scope_value not in ("thread", "global"):
+            return "[Error]: --scope must be 'thread' or 'global'."
+        if scope_value == "thread" and not self.thread_id:
+            return (
+                "[Error]: A thread-scoped install needs an active thread. "
+                "Use --scope global or send a message first."
+            )
+        try:
+            hook, created = install_template(
+                self._hook_manager(),
+                self.user_id,
+                template_id,
+                # The current thread is the binding whenever the effective
+                # scope (override or template default) is thread-scoped.
+                scope=scope_value,
+                thread_id=self.thread_id or None,
+                text=text or None,
+                enabled=False if disabled else None,
+                created_by="user",
+                is_admin=is_admin(self.user_id, agent=self._agent()),
+            )
+        except Exception as e:  # noqa: BLE001 - surface validation as a human string
+            return f"[Error]: {e}"
+        if hook is None:
+            return "[Error]: Hook limit reached (max 50)."
+        scope_desc = "all threads" if hook.scope == "global" else f"thread {hook.thread_id}"
+        if not created:
+            return (
+                f"[Info]: Template '{template_id}' is already installed as hook "
+                f"`{hook.id}` for {scope_desc}. Use /hook edit or /hook delete to "
+                "change or reinstall it."
+            )
+        return (
+            f"[Success]: Installed template '{template_id}' as hook '{hook.name}' "
+            f"({hook.id}) on {hook.event} for {scope_desc}: "
+            f"{_logic_preview(hook.logic)}."
+        )
 
     def _gated_action_error(self, action: str) -> str | None:
         """Admin + flag gate for run_command on the command surface (or None).
@@ -3358,6 +3446,7 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
                 matcher=parsed["matcher"] or None,
                 fire_conditions=fire_conditions or None,
                 once=parsed["once"],
+                single_use=parsed["single_use"],
                 scope=scope,
                 thread_id=thread_id,
                 enabled=not parsed["disabled"],
@@ -3572,7 +3661,7 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         # Remaining tokens are key=value scalar edits.
         edit_keys = {
             "name", "enabled", "event", "matcher", "action", "text", "url", "reason",
-            "command", "timeout", "once",
+            "command", "timeout", "once", "single_use",
         }
         kv: dict[str, str] = {}
         for token in rest_args:
@@ -3628,6 +3717,8 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
             # model_validate, whose lax bool coercion handles yes/no/1/0 and
             # rejects garbage instead of bool("no") silently being True.
             scalars["once"] = coerce_value(kv["once"])
+        if "single_use" in kv:
+            scalars["single_use"] = coerce_value(kv["single_use"])
         if fire_conds_raw:
             scalars["fire_conditions"] = fire_conditions
         update_kwargs = build_update_kwargs(

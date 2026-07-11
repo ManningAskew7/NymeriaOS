@@ -339,12 +339,29 @@ class HookDefinition(BaseModel):
             "fire_conditions keep matching and re-arms when they stop matching"
         ),
     )
+    single_use: bool = Field(
+        default=False,
+        description=(
+            "Delete this hook after its first successful run (the recorder "
+            "removes the definition on an 'ok' status, keeping its log "
+            "entries). Unlike 'once', whose fired-state is in-memory and "
+            "re-arms on restart, a single_use hook cannot fire twice."
+        ),
+    )
     logic: HookLogic
     enabled: bool = Field(default=True, description="Per-hook global default (see enable model)")
     scope: Literal["global", "thread"] = Field(
         default="thread", description="'global' = all threads; 'thread' = only thread_id"
     )
     thread_id: str = Field(default="", description="Bound thread when scope == 'thread'")
+    template: str = Field(
+        default="",
+        max_length=100,
+        description=(
+            "Bundled template id this hook was installed from "
+            "('' = hand-authored); makes installs idempotent"
+        ),
+    )
     created_by: str = Field(default="agent", description="'agent' or 'user'")
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -534,18 +551,26 @@ def make_execution_recorder(manager: "HookManager", user_id: str):
     The engine calls it as ``recorder(reg, ctx, status=..., detail=...,
     duration=...)`` after each hook run. ``reg``/``ctx`` are duck-typed (this
     module keeps its no-engine-imports rule): ``reg`` carries
-    ``definition_id``/``name``/``observe``, ``ctx`` carries the event and turn
-    fields. Recording never raises into a turn.
+    ``definition_id``/``name``/``observe``/``single_use``, ``ctx`` carries the
+    event and turn fields. Recording never raises into a turn.
+
+    The recorder is also the single_use cleanup seam: an ``ok`` run of a
+    ``single_use`` registration deletes its definition SYNCHRONOUSLY (not via
+    the write-behind log executor), so "definition absent" reliably means
+    "already fired" for callers that claim-by-delete (the ``/done`` race
+    guard), and a restart can never re-fire a spent one-shot hook. Log
+    entries are kept (``purge_log=False``) so the fire stays visible.
     """
 
     def _recorder(reg, ctx, *, status: str, detail: str, duration: float) -> None:
         try:
             event = getattr(ctx, "event", None)
             event_name = getattr(event, "value", None) or str(event or "")
+            hook_id = getattr(reg, "definition_id", None) or ""
             manager.log_execution(
                 user_id,
                 HookExecution(
-                    hook_id=getattr(reg, "definition_id", None) or "",
+                    hook_id=hook_id,
                     hook_name=getattr(reg, "name", "") or "",
                     event=event_name,
                     plane="observe" if getattr(reg, "observe", False) else "mutate",
@@ -556,6 +581,14 @@ def make_execution_recorder(manager: "HookManager", user_id: str):
                     tool_name=getattr(ctx, "tool_name", None) or "",
                 ),
             )
+            # single_use self-cleanup: only a successful run consumes the hook
+            # (a no_op/error/timeout keeps it armed, mirroring the once gate's
+            # failed-fire asymmetry).
+            if hook_id and status == "ok" and getattr(reg, "single_use", False):
+                if manager.delete_hook(user_id, hook_id, purge_log=False):
+                    logger.info(
+                        "Deleted spent single_use hook %s for user %s", hook_id, user_id
+                    )
         except Exception:  # noqa: BLE001 - recording must never raise into a turn
             logger.warning("hook execution recording failed", exc_info=True)
 
@@ -705,10 +738,12 @@ class HookManager:
         matcher: Optional[str] = None,
         fire_conditions: Optional[List[HookCondition]] = None,
         once: bool = False,
+        single_use: bool = False,
         scope: str = "thread",
         thread_id: Optional[str] = None,
         enabled: bool = True,
         created_by: str = "agent",
+        template: str = "",
     ) -> Optional[HookDefinition]:
         """Create a hook. Raises ``ValueError``/``ValidationError`` on an invalid
         definition; returns ``None`` if the per-user cap is reached.
@@ -731,10 +766,12 @@ class HookManager:
             matcher=matcher,
             fire_conditions=fire_conditions or [],
             once=once,
+            single_use=single_use,
             logic=logic,  # type: ignore[arg-type]
             enabled=enabled,
             scope=scope,  # type: ignore[arg-type]
             thread_id=thread_id or "",
+            template=template,
             created_by=created_by,
         )
         with self.atomic_update(user_id) as store:
@@ -790,13 +827,18 @@ class HookManager:
             store.hooks = [updated if h.id == hook_id else h for h in store.hooks]
         return True
 
-    def delete_hook(self, user_id: str, hook_id: str) -> bool:
-        """Remove a hook permanently (and its execution-log entries)."""
+    def delete_hook(self, user_id: str, hook_id: str, *, purge_log: bool = True) -> bool:
+        """Remove a hook permanently (and, by default, its execution-log entries).
+
+        ``purge_log=False`` keeps the log entries: the single_use self-cleanup
+        path uses it so a spent one-shot hook's fire stays visible in
+        ``/hook log`` (orphaned entries age out via the log cap).
+        """
         with self.atomic_update(user_id) as store:
             before = len(store.hooks)
             store.hooks = [h for h in store.hooks if h.id != hook_id]
             deleted = len(store.hooks) < before
-        if deleted:
+        if deleted and purge_log:
             self.delete_executions_for_hooks(user_id, [hook_id])
         return deleted
 

@@ -103,6 +103,8 @@ EXPECTED_ROUTES = [
     ('/hooks/approvals/{record_id}/resolve', ('POST',)),
     ('/hooks/executions', ('GET',)),
     ('/hooks/schema', ('GET',)),
+    ('/hooks/templates', ('GET',)),
+    ('/hooks/templates/{template_id}/install', ('POST',)),
     ('/hooks/{hook_id}', ('DELETE',)),
     ('/hooks/{hook_id}', ('GET',)),
     ('/hooks/{hook_id}', ('PATCH',)),

@@ -730,3 +730,79 @@ def test_edit_fire_gate(manager):
     result = _run(f"/hook edit {hook.id} once=false")
     assert result.success is True, result.markdown
     assert manager.get_hook("alice", hook.id).once is False
+
+
+# --- templates + install (bundled hook-template catalog) --------------------
+
+def test_hook_templates_lists_bundled_catalog(manager):
+    result = _run("/hook templates")
+    assert result.success is True, result.markdown
+    assert "context-checkpoint-advisory" in result.markdown
+    assert "/hook install" in result.markdown
+
+
+def test_hook_install_bundled_template(manager):
+    result = _run("/hook install context-checkpoint-advisory")
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.template == "context-checkpoint-advisory"
+    assert hook.event == "post_tool_use"
+    assert hook.scope == "global"
+    assert hook.once is True
+    assert hook.created_by == "user"
+
+
+def test_hook_install_is_idempotent(manager):
+    _run("/hook install context-checkpoint-advisory")
+    result = _run("/hook install context-checkpoint-advisory")
+    assert result.success is True, result.markdown
+    assert "already installed" in result.markdown
+    assert len(manager.get_hooks("alice")) == 1
+
+
+def test_hook_install_thread_scope_binds_current_thread(manager):
+    result = _run("/hook install context-checkpoint-advisory --scope thread")
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.scope == "thread"
+    assert hook.thread_id == "thread-1"
+
+
+def test_hook_install_thread_scope_requires_thread(manager):
+    result = _run(
+        "/hook install context-checkpoint-advisory --scope thread", thread_id=None
+    )
+    assert result.success is False
+    assert "active thread" in result.markdown
+
+
+def test_hook_install_unknown_template(manager):
+    result = _run("/hook install no-such-template")
+    assert result.success is False
+    assert "Unknown template" in result.markdown
+    assert manager.get_hooks("alice") == []
+
+
+def test_hook_install_requires_template_id(manager):
+    result = _run("/hook install")
+    assert result.success is False
+    assert "Usage" in result.markdown
+
+
+def test_hook_install_disabled_flag(manager):
+    result = _run("/hook install context-checkpoint-advisory --disabled")
+    assert result.success is True, result.markdown
+    assert _only(manager).enabled is False
+
+
+def test_create_single_use_flag_and_edit(manager):
+    result = _run(
+        "/hook create oneshot --event done --action inject_context "
+        "--text follow --single-use --scope global"
+    )
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.single_use is True
+    result = _run(f"/hook edit {hook.id} single_use=false")
+    assert result.success is True, result.markdown
+    assert manager.get_hook("alice", hook.id).single_use is False

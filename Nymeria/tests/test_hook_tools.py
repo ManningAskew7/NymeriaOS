@@ -556,3 +556,91 @@ def test_detail_renders_fire_gate(store):
     assert "fire_conditions" in detail
     assert "context_pct_of_trigger" in detail
     assert "once: True" in detail
+
+
+# --- templates + install (bundled hook-template catalog) --------------------
+
+def test_hook_info_templates_lists_catalog(store):
+    out = _invoke(hook_tools.hook_info, {"action": "templates"}, _cfg())
+    assert "context-checkpoint-advisory" in out
+    assert "install" in out
+
+
+def test_hook_config_install(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "install", "template_id": "context-checkpoint-advisory"},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    hooks = store.get_hooks("u1")
+    assert len(hooks) == 1
+    assert hooks[0].template == "context-checkpoint-advisory"
+    assert hooks[0].scope == "global"
+    assert hooks[0].created_by == "agent"
+
+
+def test_hook_config_install_idempotent(store):
+    _invoke(
+        hook_tools.hook_config,
+        {"action": "install", "template_id": "context-checkpoint-advisory"},
+        _cfg(),
+    )
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "install", "template_id": "context-checkpoint-advisory"},
+        _cfg(),
+    )
+    assert "already installed" in out
+    assert len(store.get_hooks("u1")) == 1
+
+
+def test_hook_config_install_thread_scope(store):
+    _invoke(
+        hook_tools.hook_config,
+        {
+            "action": "install",
+            "template_id": "context-checkpoint-advisory",
+            "scope": "thread",
+        },
+        _cfg(thread_id="mythread"),
+    )
+    h = store.get_hooks("u1")[0]
+    assert h.scope == "thread"
+    assert h.thread_id == "mythread"
+
+
+def test_hook_config_install_requires_template_id(store):
+    out = _invoke(hook_tools.hook_config, {"action": "install"}, _cfg())
+    assert "[Error]" in out
+    assert store.get_hooks("u1") == []
+
+
+def test_hook_detail_shows_template_provenance(store):
+    _invoke(
+        hook_tools.hook_config,
+        {"action": "install", "template_id": "context-checkpoint-advisory"},
+        _cfg(),
+    )
+    hook_id = store.get_hooks("u1")[0].id
+    detail = _invoke(
+        hook_tools.hook_info, {"action": "detail", "hook_id": hook_id}, _cfg()
+    )
+    assert "template: context-checkpoint-advisory" in detail
+
+
+def test_create_single_use_via_tool(store):
+    _invoke(
+        hook_tools.hook_config,
+        {
+            "action": "create", "name": "n", "event": "done", "text": "x",
+            "single_use": True,
+        },
+        _cfg(),
+    )
+    h = store.get_hooks("u1")[0]
+    assert h.single_use is True
+    detail = _invoke(
+        hook_tools.hook_info, {"action": "detail", "hook_id": h.id}, _cfg()
+    )
+    assert "single_use: True" in detail
