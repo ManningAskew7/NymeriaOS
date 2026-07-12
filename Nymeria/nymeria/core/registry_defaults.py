@@ -641,7 +641,8 @@ def register_default_commands(service: "CommandService") -> None:
         usage=(
             "/hook create <name> --event E --action A "
             '[--text ..|--url ..|--cond "f op v"..|--reason ..|--set arg=val..'
-            "|--command ..|--timeout N] "
+            "|--command ..|--timeout N"
+            "|--workflow <id> --workflow-params '{..}' --on-fault allow|deny] "
             '[--fire-cond "f op v"]... [--once] [--single-use] '
             "[--matcher A|B] [--scope thread|global] [--disabled]"
         ),
@@ -658,7 +659,8 @@ def register_default_commands(service: "CommandService") -> None:
         usage=(
             '/hook edit <id> [key=value]... [--cond "f op v"]... '
             '[--fire-cond "f op v"]... [--set arg=val]... [once=true|false] '
-            "[single_use=true|false]"
+            "[single_use=true|false] [workflow=<id>] "
+            "[workflow_params='{..}'] [on_fault=allow|deny]"
         ),
         aliases=("hook_edit",),
         surfaces=_hook_sub_surfaces,

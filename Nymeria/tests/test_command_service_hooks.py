@@ -806,3 +806,70 @@ def test_create_single_use_flag_and_edit(manager):
     result = _run(f"/hook edit {hook.id} single_use=false")
     assert result.success is True, result.markdown
     assert manager.get_hook("alice", hook.id).single_use is False
+
+
+# --- run_workflow authoring ---------------------------------------------------
+
+def _pass_workflow_binding(monkeypatch: pytest.MonkeyPatch, error: str | None = None):
+    """Stub the bind-time workflow validation (no published workflows in tests)."""
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.workflow_binding_error",
+        lambda workflow_id, params, allow_event=False: error,
+    )
+
+
+def test_run_workflow_create_edit_roundtrip(
+    manager: HookManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pass_workflow_binding(monkeypatch)
+    result = _run(
+        '/hook create Guard --event pre_tool_use --action run_workflow '
+        '--matcher Bash --workflow wf_guard --workflow-params \'{"mode": "strict"}\' '
+        "--on-fault deny --timeout 45"
+    )
+    assert result.success is True, result.markdown
+    hook = _only(manager)
+    assert hook.event == "pre_tool_use"
+    assert hook.matcher == "Bash"
+    assert hook.logic.action == "run_workflow"
+    assert hook.logic.workflow_id == "wf_guard"
+    assert hook.logic.params == {"mode": "strict"}
+    assert hook.logic.on_fault == "deny"
+    assert hook.logic.timeout_seconds == 45
+    edited = _run(
+        f'/hook edit {hook.id[:6]} workflow_params=\'{{"mode": "lax"}}\' on_fault=allow'
+    )
+    assert edited.success is True, edited.markdown
+    updated = manager.get_hooks("alice")[0]
+    assert updated.logic.params == {"mode": "lax"}
+    assert updated.logic.on_fault == "allow"
+    assert updated.logic.workflow_id == "wf_guard"  # untouched fields survive
+
+
+def test_run_workflow_requires_workflow_flag(manager: HookManager) -> None:
+    result = _run("/hook create G --event done --action run_workflow")
+    assert result.success is False
+    assert "--workflow" in result.markdown
+    assert manager.get_hooks("alice") == []
+
+
+def test_run_workflow_rejects_bad_params_json(manager: HookManager) -> None:
+    result = _run(
+        "/hook create G --event done --action run_workflow "
+        "--workflow wf_x --workflow-params not-json"
+    )
+    assert result.success is False
+    assert "JSON object" in result.markdown
+    assert manager.get_hooks("alice") == []
+
+
+def test_run_workflow_create_surfaces_binding_error(
+    manager: HookManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pass_workflow_binding(monkeypatch, "no published workflow tool named 'wf_x'")
+    result = _run(
+        "/hook create G --event done --action run_workflow --workflow wf_x"
+    )
+    assert result.success is False
+    assert "no published workflow tool named 'wf_x'" in result.markdown
+    assert manager.get_hooks("alice") == []

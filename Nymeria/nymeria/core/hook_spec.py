@@ -68,6 +68,16 @@ ACTION_SPECS: Dict[str, ActionSpec] = {
             ("prompt_submit", "pre_tool_use", "post_tool_use", "done"),
             observe_events=("post_tool_use", "done"),
         ),
+        # The workflow logic substrate (backlog #80): the hook's logic is a
+        # saved, published, admin-approved nym workflow run out-of-process.
+        # Same per-event plane map as run_command: a mutate injector/guardrail
+        # on prompt_submit/pre_tool_use, a fire-and-forget side effect on
+        # post_tool_use/done.
+        ActionSpec(
+            "run_workflow", "mutate",
+            ("prompt_submit", "pre_tool_use", "post_tool_use", "done"),
+            observe_events=("post_tool_use", "done"),
+        ),
     )
 }
 

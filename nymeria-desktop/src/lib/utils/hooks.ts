@@ -12,10 +12,23 @@ export type HookCategory = 'guardrails' | 'context' | 'reactions' | 'commands';
 
 /** Which actions are legal for each event (gates the authoring action list). */
 export const HOOK_EVENT_ACTIONS: Record<HookEvent, HookAction[]> = {
-  prompt_submit: ['inject_context', 'run_command'],
-  pre_tool_use: ['block_if_matches', 'rewrite_arg', 'require_approval', 'run_command'],
-  post_tool_use: ['inject_context', 'notify', 'create_todo', 'webhook', 'run_command'],
-  done: ['inject_context', 'notify', 'create_todo', 'webhook', 'run_command'],
+  prompt_submit: ['inject_context', 'run_command', 'run_workflow'],
+  pre_tool_use: [
+    'block_if_matches',
+    'rewrite_arg',
+    'require_approval',
+    'run_command',
+    'run_workflow',
+  ],
+  post_tool_use: [
+    'inject_context',
+    'notify',
+    'create_todo',
+    'webhook',
+    'run_command',
+    'run_workflow',
+  ],
+  done: ['inject_context', 'notify', 'create_todo', 'webhook', 'run_command', 'run_workflow'],
 };
 
 /** Events that fire around a tool call, where a tool-name matcher applies. */
@@ -30,6 +43,7 @@ const CATEGORY_OF: Record<HookAction, HookCategory> = {
   create_todo: 'reactions',
   webhook: 'reactions',
   run_command: 'commands',
+  run_workflow: 'commands',
 };
 
 export function hookCategory(action: HookAction): HookCategory {
@@ -65,9 +79,9 @@ export const HOOK_CATEGORIES: HookCategoryMeta[] = [
   },
   {
     key: 'commands',
-    label: 'Commands',
+    label: 'Custom logic',
     icon: 'terminal',
-    description: 'Run a shell command (admin only)',
+    description: 'Run a shell command (admin only) or a nym workflow',
   },
 ];
 
@@ -118,6 +132,11 @@ export const HOOK_ACTION_META: Record<HookAction, HookActionMeta> = {
     label: 'Run command',
     icon: 'terminal',
     hint: 'Run a shell command (admin only; must be enabled on the server).',
+  },
+  run_workflow: {
+    label: 'Run workflow',
+    icon: 'bolt',
+    hint: "Run a published, approved nym workflow as this hook's logic.",
   },
 };
 
@@ -198,6 +217,10 @@ export function describeHookLogic(hook: Hook): string {
     case 'run_command': {
       const command = String(logic.command ?? '').replace(/\s+/g, ' ').trim();
       return command ? `Run ${command}${matcher}` : '(no command)';
+    }
+    case 'run_workflow': {
+      const workflowId = String(logic.workflow_id ?? '').trim();
+      return workflowId ? `Run workflow ${workflowId}${matcher}` : '(no workflow)';
     }
     default:
       return hook.action;

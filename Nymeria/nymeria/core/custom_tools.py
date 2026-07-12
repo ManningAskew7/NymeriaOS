@@ -396,13 +396,20 @@ class CustomToolLoader:
     def _create_workflow_tool(self, definition: CustomToolDefinition) -> BaseTool:
         """Create a nym-SDK workflow tool (subprocess + verb RPC engine).
 
-        Coroutine-only: the workflow engine needs the running event loop for
-        its per-run RPC listener, and the agent runtime is async. The
-        coroutine re-reads the definition from this loader at call time (the
-        execution-time approval re-gate), so the closure captures only the id.
-        The ``config`` parameter's ``RunnableConfig`` annotation makes
+        The coroutine re-reads the definition from this loader at call time
+        (the execution-time approval re-gate), so the closure captures only
+        the id. The ``config`` parameter's ``RunnableConfig`` annotation makes
         langchain inject the run config (the bash.py pattern), which carries
         ``user_id``/``thread_id``/``workflow_depth``.
+
+        Both entry points are bound (like every other custom-tool type): a
+        coroutine-only StructuredTool raises ``NotImplementedError`` from
+        ``tool.invoke()`` on the SYNC tool-node path, which is live via
+        ``POST /chat/sync`` and the in-process webhook bots. The sync wrapper
+        runs the engine under ``asyncio.run`` on the calling worker thread
+        (no running loop there); the trigger ``_fire_run_workflow`` path
+        proves the engine's per-run RPC listener works under exactly this
+        shape.
         """
         from langchain_core.runnables import RunnableConfig
 
@@ -417,7 +424,14 @@ class CustomToolLoader:
 
             return await run_workflow_tool(loader, tool_id, kwargs, config)
 
+        def execute_workflow_tool_sync(
+            config: RunnableConfig = None,  # type: ignore[assignment]
+            **kwargs: Any,
+        ) -> str:
+            return asyncio.run(execute_workflow_tool(config=config, **kwargs))
+
         return StructuredTool.from_function(
+            func=execute_workflow_tool_sync,
             coroutine=execute_workflow_tool,
             name=definition.id,
             description=definition.description,

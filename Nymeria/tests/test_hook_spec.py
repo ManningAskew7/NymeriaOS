@@ -108,12 +108,12 @@ def _parse_frontend_event_actions(text: str) -> dict:
     block = re.search(r"HOOK_EVENT_ACTIONS[^=]*=\s*\{(.*?)\n\};", text, re.DOTALL)
     assert block, "HOOK_EVENT_ACTIONS not found in utils/hooks.ts"
     out: dict = {}
-    for line in block.group(1).splitlines():
-        m = re.match(r"\s*(\w+):\s*\[(.*)\],?\s*$", line)
-        if m:
-            out[m.group(1)] = {
-                v.strip().strip("'\"") for v in m.group(2).split(",") if v.strip()
-            }
+    # Entry-wise (not line-wise) so a formatter wrapping an array across lines
+    # cannot silently shrink the parsed map and mask a real drift.
+    for m in re.finditer(r"(\w+):\s*\[([^\]]*)\]", block.group(1), re.DOTALL):
+        out[m.group(1)] = {
+            v.strip().strip("'\"") for v in m.group(2).split(",") if v.strip()
+        }
     return out
 
 

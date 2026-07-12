@@ -447,6 +447,82 @@ def test_loader_binds_workflow_tool_and_injects_config(wf_env, monkeypatch):
     assert str(result).startswith("[Error]: approval_required")
 
 
+def _published_workflow_tool(wf_env, monkeypatch):
+    """Draft + test + publish wf_lc_echo, return its bound StructuredTool."""
+    _draft_workflow(role="admin")
+    monkeypatch.setattr(
+        "nymeria.core.workflows.executor.execute_workflow", _fake_execute_workflow
+    )
+    with patch(
+        "nymeria.core.agent.get_current_agent",
+        return_value=_fake_agent_with_role("admin"),
+    ):
+        _run_tool(action="test", tool_id="wf_lc_echo", sample_params={"name": "hi"})
+    with patch("nymeria.core.agent.get_current_agent", return_value=None):
+        _publish_draft(
+            store=wf_env.store,
+            user_id="u1",
+            draft_id="wf_lc_echo",
+            thread_id="t1",
+            ttl="2h",
+            tool_call_id="call-2",
+        )
+    tools = wf_env.loader.load_all()
+    return next(t for t in tools if t.name == "wf_lc_echo")
+
+
+def test_bound_workflow_tool_supports_sync_invoke(wf_env, monkeypatch):
+    """The SYNC tool-node path (POST /chat/sync, in-process webhook bots) calls
+    ``tool.invoke()``; a coroutine-only StructuredTool raises
+    NotImplementedError there, so the workflow tool must bind a real ``func``
+    (it runs the engine under ``asyncio.run`` on the calling worker thread,
+    the trigger ``_fire_run_workflow`` shape)."""
+    tool = _published_workflow_tool(wf_env, monkeypatch)
+
+    captured: dict = {}
+
+    async def capturing_execute(**kwargs):
+        captured.update(kwargs)
+        return await _fake_execute_workflow(**kwargs)
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.executor.execute_workflow", capturing_execute
+    )
+    result = tool.invoke({"name": "hi"}, _tool_config())  # no event loop
+    assert str(result).startswith("ran:run")
+    assert captured["user_id"] == "u1"
+    assert captured["thread_id"] == "t1"
+
+
+def test_direct_tool_path_caps_wall_clock_to_tool_timeout(wf_env, monkeypatch):
+    """The bound-tool path caps the engine wall clock just under
+    ``settings.tool_timeout`` so a long run dies as a clean ``timeout``
+    envelope instead of the tool node's generic asyncio cancellation.
+    Headless surfaces (REST/trigger/TODO) keep the definition's full budget."""
+    tool = _published_workflow_tool(wf_env, monkeypatch)
+
+    fake_settings = SimpleNamespace(
+        data_dir=wf_env.tmp,
+        custom_tools_dir=wf_env.tmp / "custom_tools",
+        tool_timeout=120,
+    )
+    monkeypatch.setattr("nymeria.config.get_settings", lambda: fake_settings)
+    monkeypatch.setattr("nymeria.config.settings.get_settings", lambda: fake_settings)
+
+    captured: dict = {}
+
+    async def capturing_execute(**kwargs):
+        captured.update(kwargs)
+        return await _fake_execute_workflow(**kwargs)
+
+    monkeypatch.setattr(
+        "nymeria.core.workflows.executor.execute_workflow", capturing_execute
+    )
+    result = asyncio.run(tool.ainvoke({"name": "hi"}, _tool_config()))
+    assert str(result).startswith("ran:run")
+    assert captured["budget"].wall_clock_seconds == 118.0
+
+
 def test_loader_skips_unknown_type_still(wf_env):
     # The dispatch switch: a workflow definition loads, an unknown type does not.
     _draft_workflow(role="admin")

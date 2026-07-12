@@ -411,6 +411,42 @@ def test_run_command_requires_command(store, monkeypatch):
     assert "run_command requires command" in out
 
 
+# --- hook_config: run_workflow ------------------------------------------------
+
+def test_run_workflow_created_with_params(store, monkeypatch):
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.workflow_binding_error",
+        lambda workflow_id, params, allow_event=False: None,
+    )
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "wf", "event": "pre_tool_use", "scope": "global",
+         "hook_action": "run_workflow", "matcher": "Bash",
+         "params": {"workflow_id": "wf_guard", "params": {"mode": "strict"},
+                    "on_fault": "deny", "timeout_seconds": 45}},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    h = store.get_hooks("u1")[0]
+    assert h.logic.action == "run_workflow"
+    assert h.logic.workflow_id == "wf_guard"
+    assert h.logic.params == {"mode": "strict"}
+    assert h.logic.on_fault == "deny"
+    assert h.logic.timeout_seconds == 45
+
+
+def test_run_workflow_requires_workflow_id(store):
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "create", "name": "wf", "event": "done",
+         "hook_action": "run_workflow"},
+        _cfg(),
+    )
+    assert "[Error]" in out
+    assert "workflow_id" in out
+    assert store.get_hooks("u1") == []
+
+
 def test_run_command_update_command_preserves_timeout(store, monkeypatch):
     """Editing just `command` (no `hook_action`) must reach the store and keep timeout."""
     _set_run_command_flag(monkeypatch, True)

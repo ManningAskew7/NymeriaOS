@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 HookEventName = Literal["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
 HookActionName = Literal[
     "inject_context", "block_if_matches", "rewrite_arg", "require_approval",
-    "notify", "create_todo", "webhook", "run_command",
+    "notify", "create_todo", "webhook", "run_command", "run_workflow",
 ]
 
 
@@ -53,11 +53,24 @@ class HookCreateRequest(BaseModel):
     command: Optional[str] = Field(
         default=None, max_length=4_000, description="run_command shell command (admin + flag gated)"
     )
+    workflow_id: Optional[str] = Field(
+        default=None, max_length=200,
+        description="run_workflow: published workflow tool id (binding validated at authoring)",
+    )
+    workflow_params: Optional[dict] = Field(
+        default=None,
+        description="run_workflow: static bound params (per-fire dynamics ride the 'event' param)",
+    )
+    on_fault: Optional[Literal["allow", "deny"]] = Field(
+        default=None,
+        description="run_workflow, pre_tool_use only: proceed or fail closed when the workflow faults",
+    )
     timeout_seconds: Optional[float] = Field(
         default=None, ge=1.0, le=600.0,
         description=(
-            "run_command subprocess budget (1..300) or require_approval window "
-            "(10..600); each action's logic model enforces its own bounds"
+            "run_command subprocess budget (1..300), require_approval window "
+            "(10..600), or run_workflow wall clock (5..600); each action's "
+            "logic model enforces its own bounds"
         ),
     )
     matcher: Optional[str] = Field(default=None, description="Tool-name filter (tool events)")
@@ -96,6 +109,9 @@ class HookUpdateRequest(BaseModel):
     updates: Optional[Dict[str, str]] = None
     url: Optional[str] = None
     command: Optional[str] = None
+    workflow_id: Optional[str] = None
+    workflow_params: Optional[dict] = None
+    on_fault: Optional[Literal["allow", "deny"]] = None
     timeout_seconds: Optional[float] = None
     matcher: Optional[str] = None
     fire_conditions: Optional[List[HookCondition]] = None
@@ -253,6 +269,8 @@ def create_hook_router(
             body.action, text=body.text, conditions=body.conditions,
             reason=body.reason, updates=body.updates, url=body.url,
             command=body.command, timeout_seconds=body.timeout_seconds,
+            workflow_id=body.workflow_id, workflow_params=body.workflow_params,
+            on_fault=body.on_fault,
         )
         try:
             hook = _get_manager().add_hook(
@@ -546,12 +564,15 @@ def create_hook_router(
             exclude={
                 "action", "conditions", "reason", "updates", "text", "url",
                 "command", "timeout_seconds",
+                "workflow_id", "workflow_params", "on_fault",
             },
         )
         updates = build_update_kwargs(
             existing, action=body.action, text=body.text, conditions=body.conditions,
             reason=body.reason, updates=body.updates, url=body.url,
-            command=body.command, timeout_seconds=body.timeout_seconds, scalars=scalars,
+            command=body.command, timeout_seconds=body.timeout_seconds,
+            workflow_id=body.workflow_id, workflow_params=body.workflow_params,
+            on_fault=body.on_fault, scalars=scalars,
         )
         if not updates:
             raise HTTPException(status_code=400, detail="No updates provided")
@@ -641,6 +662,16 @@ def create_hook_router(
             result["rendered"] = (
                 f"Runs {logic.command!r} ({plane} plane, timeout {logic.timeout_seconds}s) "
                 f"with the hook context as JSON on stdin. No command is executed by this preview."
+            )
+        elif logic.action == "run_workflow":
+            from ...core.hook_spec import plane_for
+            plane = plane_for("run_workflow", hook.event)
+            fault = f", on_fault={logic.on_fault}" if hook.event == "pre_tool_use" else ""
+            result["rendered"] = (
+                f"Runs workflow {logic.workflow_id!r} ({plane} plane, wall clock "
+                f"{logic.timeout_seconds:.0f}s{fault}); the hook context rides the "
+                "workflow's 'event' parameter when declared. No workflow is run by "
+                "this preview."
             )
         return result
 

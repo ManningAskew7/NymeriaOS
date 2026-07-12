@@ -99,6 +99,11 @@ def _logic_preview(logic) -> str:
         cmd = logic.command
         short = cmd if len(cmd) <= 60 else cmd[:57] + "..."
         return f"run_command {short!r} (timeout {logic.timeout_seconds}s)"
+    if action == "run_workflow":
+        return (
+            f"run workflow {logic.workflow_id!r} "
+            f"(wall clock {logic.timeout_seconds:.0f}s, on_fault={logic.on_fault})"
+        )
     return action
 
 
@@ -456,6 +461,11 @@ def render_hook_detail(hook: HookDefinition) -> str:
     elif logic.action == "run_command":
         lines.append(f"  command: {logic.command!r}")
         lines.append(f"  timeout_seconds: {logic.timeout_seconds}")
+    elif logic.action == "run_workflow":
+        lines.append(f"  workflow_id: {logic.workflow_id}")
+        lines.append(f"  params: {logic.params or '(none)'}")
+        lines.append(f"  timeout_seconds: {logic.timeout_seconds}")
+        lines.append(f"  on_fault: {logic.on_fault} (pre_tool_use only)")
     lines.append(f"  created_by: {hook.created_by}")
     return "\n".join(lines)
 
@@ -529,6 +539,24 @@ def render_hook_test(hook: HookDefinition) -> str:
             f"[Info]: Hook {hook.id} (run_command, {plane} plane) on {hook.event} runs "
             f"{logic.command!r} (timeout {logic.timeout_seconds}s) with the hook context "
             f"as JSON on stdin; {effect}. No command is executed by this dry run."
+        )
+    if logic.action == "run_workflow":
+        from ..core.hook_spec import plane_for
+        plane = plane_for("run_workflow", hook.event)
+        effect = {
+            "prompt_submit": 'its result ({"inject_context": ...} or a string) is injected into the turn',
+            "pre_tool_use": (
+                'its result ({"decision": "allow"|"deny"|"modify", ...}) gates the '
+                f"tool call (on_fault={logic.on_fault})"
+            ),
+            "post_tool_use": "it runs off-turn for side effects",
+            "done": "it runs off-turn for side effects",
+        }.get(hook.event, "it runs")
+        return (
+            f"[Info]: Hook {hook.id} (run_workflow, {plane} plane) on {hook.event} runs "
+            f"workflow {logic.workflow_id!r} (wall clock {logic.timeout_seconds:.0f}s), "
+            f"passing the hook context as its 'event' parameter when declared; {effect}. "
+            "No workflow is run by this dry run."
         )
     return f"[Info]: Hook {hook.id} action {logic.action} has no test render."
 
@@ -616,7 +644,10 @@ def hook_config(
             "require_approval" HOLDS a matched tool call until the user
             approves or denies it (no answer within the window = deny); "notify"
             sends a notification; "create_todo" adds a TODO; "webhook" POSTs to
-            a URL; "run_command" runs a shell command (admin-gated).
+            a URL; "run_command" runs a shell command (admin-gated);
+            "run_workflow" runs a published, approved nym workflow as the
+            hook's logic (any event; not admin-gated, the workflow's own
+            approval gate applies).
         text: For the text actions (inject_context/notify/create_todo, and the
             webhook body): the text. For require_approval: the approval prompt
             shown to the user. Supports {placeholder} interpolation
@@ -628,6 +659,15 @@ def hook_config(
             require_approval: {"conditions": [...], "prompt": "...",
             "timeout_seconds": 180} (all optional; empty conditions = always ask).
             webhook: {"url": "https://...", "text": "..."}.
+            run_workflow: {"workflow_id": "...", "params": {...},
+            "timeout_seconds": 60, "on_fault": "allow"|"deny"}. The hook
+            context rides the workflow's "event" parameter when its signature
+            declares one. On prompt_submit the workflow's result (a string or
+            {"inject_context": ...}) is injected; on pre_tool_use the result
+            {"decision": "allow"|"deny"|"modify", "reason", "updated_args",
+            "note"} gates the call and on_fault decides a faulting workflow
+            (allow-with-note default, deny fails closed); on post_tool_use/
+            done it runs off-turn for side effects.
             Operators: equals, not_equals, contains, starts_with, matches_regex,
             plus the numeric gt, gte, lt, lte.
             Conditions match the tool call's ARGS (field is an arg name).
@@ -663,7 +703,9 @@ def hook_config(
             events clamped to 60; defaults to 10). For require_approval: the
             approval window in seconds (10..600; defaults to 180). The user
             decides via the /hook approve|deny command, the tool-call card, or
-            a push notification; you never resolve your own approvals.
+            a push notification; you never resolve your own approvals. Not
+            read for run_workflow: nest its wall clock inside params
+            ({"timeout_seconds": ...}, 5..600, defaults to 60).
     """
     action_key = (action or "").strip().lower()
     hook_action_key = (hook_action or "inject_context").strip().lower()
@@ -687,6 +729,12 @@ def hook_config(
         if hook_action_key == "run_command":
             if not (params and params.get("command")):
                 return "[Error]: run_command requires command."
+        elif hook_action_key == "run_workflow":
+            if not (params and params.get("workflow_id")):
+                return (
+                    "[Error]: run_workflow requires params with a workflow_id, "
+                    "e.g. params={'workflow_id': 'my_workflow'}."
+                )
         elif hook_action_key in _TEXT_ACTIONS:
             if not text and not params:
                 return f"[Error]: {hook_action_key} requires text."
