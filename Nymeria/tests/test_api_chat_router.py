@@ -196,6 +196,7 @@ def test_chat_sync_uses_authenticated_user_not_body_user_id(
             "source": "user",
             "source_id": None,
             "source_label": "alice",
+            "_resume_halted_turn": False,
         }
     ]
     assert agent.accounts_repo.get_thread_owner("thread-sync") == "alice"
@@ -393,6 +394,7 @@ def test_chat_stream_preserves_sse_shape_and_attachment_conversion(
             "source_id": None,
             "source_label": "alice",
             "_on_turn_started": True,
+            "_resume_halted_turn": False,
         }
     ]
     assert agent.thread_metadata_manager.auto_title_calls == [
@@ -527,6 +529,7 @@ def test_quick_stream_creates_temporary_thread_and_streams_inline(
             "source_id": None,
             "source_label": "alice",
             "_on_turn_started": True,
+            "_resume_halted_turn": False,
         }
     ]
 
@@ -614,6 +617,7 @@ def test_quick_sync_creates_thread_and_appends_footer(
             "source": "user",
             "source_id": None,
             "source_label": "alice",
+            "_resume_halted_turn": False,
         }
     ]
     meta = agent.thread_metadata_manager.get_thread("alice", quick_id)
@@ -837,3 +841,77 @@ def test_done_sync_parity(tmp_path: Path, api_client_builder):
     assert resp.status_code == 200
     assert len(agent.chat_calls) == 1
     assert agent.chat_calls[0]["message"] == "wrap up"
+
+
+def test_resume_stream_busy_acks_error_without_queueing(
+    tmp_path: Path, api_client_builder
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+    agent._thread_locks.busy_responses = [True]
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/resume", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    events = _sse_events(body)
+    assert any(
+        e["type"] == "response" and "already running" in e["content"] for e in events
+    )
+    # /resume must never run or queue a turn on a busy thread.
+    assert agent.astream_calls == []
+
+
+def test_resume_stream_idle_runs_message_less_resume(
+    tmp_path: Path, api_client_builder
+):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    with client.stream(
+        "POST",
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "/resume", "thread_id": "caller-1"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert len(agent.astream_calls) == 1
+    call = agent.astream_calls[0]
+    # Message-less resume: nothing is added to history, the agent-side
+    # resume mode does the validation and re-drive.
+    assert call["message"] == ""
+    assert call["_resume_halted_turn"] is True
+    assert call["thread_id"] == "caller-1"
+    # The streamed continuation still flows to the client.
+    assert any(e["type"] == "response" for e in _sse_events(body))
+
+
+def test_resume_sync_parity(tmp_path: Path, api_client_builder):
+    client, agent, token = _chat_client(tmp_path, api_client_builder)
+
+    # Busy: explicit error, never queued.
+    agent._thread_locks.busy_responses = [True]
+    resp = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "/resume", "thread_id": "caller-1"},
+    )
+    assert resp.status_code == 200
+    assert "already running" in resp.json()["response"]
+    assert agent.chat_calls == []
+
+    # Idle: the message-less resume runs as a sync turn.
+    resp = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "/resume", "thread_id": "caller-1"},
+    )
+    assert resp.status_code == 200
+    assert len(agent.chat_calls) == 1
+    assert agent.chat_calls[0]["message"] == ""
+    assert agent.chat_calls[0]["_resume_halted_turn"] is True

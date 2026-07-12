@@ -919,22 +919,41 @@ def analyze_turn_safety(
     messages: List[BaseMessage],
     max_iterations: int,
     repeated_tool_result_limit: int = 5,
+    tool_call_offset: int = 0,
 ) -> TurnSafetyResult:
     """Detect hard iteration caps and exact repeated tool/result loops.
 
     The repeated-result guard stops before executing another tool call when the
     last N completed tool exchanges used the same tool args and returned the
     same exact normalized result, and the model asks for that same call again.
+
+    The iteration cap fires on two tail shapes:
+
+    - an ``AIMessage`` with pending ``tool_calls`` (the pre-execution shape,
+      used by direct callers and the pre-#27 router), and
+    - a ``ToolMessage``-terminal tail (the graceful sub-turn boundary where
+      ``route_after_tools`` halts: the crossing batch has executed, its
+      results are in history, and the model call is still pending). This is
+      also how the turn drivers detect a graceful cap halt post-drive.
+
+    ``tool_call_offset`` anchors the safety window at a resume point: a
+    ``/resume`` re-drive has no fresh ``HumanMessage`` to reset the window
+    (unlike compaction's resume opener or a drained queued prompt), so the
+    resume path stamps the tool-call count at resume time and the effective
+    count becomes ``count_since_last_human - offset``. If a queued prompt
+    later resets the window mid-continuation, the clamp below just makes the
+    offset slack: the cap is a runaway bound, not an exact budget.
     """
     # Compute the current-turn slice once and reuse it for the tool-call count
     # and the completed-exchange walk below (the router runs after every step,
     # so avoid re-walking the slice three times per call).
     current_turn = _current_turn_messages(messages)
-    tool_call_count = sum(
+    raw_tool_call_count = sum(
         len(msg.tool_calls)
         for msg in current_turn
         if isinstance(msg, AIMessage) and msg.tool_calls
     )
+    tool_call_count = max(0, raw_tool_call_count - max(0, int(tool_call_offset or 0)))
     result = TurnSafetyResult(
         should_stop=False,
         tool_call_count=tool_call_count,
@@ -945,7 +964,9 @@ def analyze_turn_safety(
         return result
 
     last_message = messages[-1]
-    if not (isinstance(last_message, AIMessage) and last_message.tool_calls):
+    pending_ai_tail = isinstance(last_message, AIMessage) and bool(last_message.tool_calls)
+    tool_terminal_tail = isinstance(last_message, ToolMessage)
+    if not (pending_ai_tail or tool_terminal_tail):
         return result
 
     if max_iterations > 0 and tool_call_count > max_iterations:
@@ -955,6 +976,11 @@ def analyze_turn_safety(
             tool_call_count=tool_call_count,
             max_iterations=max_iterations,
         )
+
+    # The repeated-result guard needs a pending tool call to compare against;
+    # a ToolMessage-terminal tail has none (cap check only).
+    if not pending_ai_tail:
+        return result
 
     if repeated_tool_result_limit <= 0:
         return result
@@ -3020,15 +3046,27 @@ def create_should_continue(
     repeated_tool_result_limit: int = 5,
 ) -> Callable[[AgentState], str]:
     """
-    Factory for the routing function with iteration limit.
+    Factory for the routing function with the repeated-tool-loop guard.
 
-    The iteration count is derived from the message history (counting tool calls
-    since the last HumanMessage) rather than using a closure, making it
-    thread-safe and stateless. Only the current turn's tool calls count toward
-    the limit, so previous turns don't block future ones.
+    The repeat count is derived from the message history rather than a
+    closure, making it thread-safe and stateless. Only the current turn's
+    exchanges count, so previous turns don't block future ones.
+
+    The max-iterations cap is deliberately NOT enforced here anymore: it
+    moved to ``route_after_tools`` (backlog #27) so a cap halt lands AFTER
+    the crossing batch executes, on a clean sub-turn boundary that a bare
+    ``{"messages": []}`` re-drive can resume (the compaction-resume shape).
+    The cap counts EMITTED tool calls, so the relocated check fires at the
+    same count, one node later. ``max_iterations`` stays in the signature
+    because it still sizes the graph's recursion limit at build time and
+    keeps the factory contract stable.
+
+    The repeated-tool guard stays HERE, before execution: its whole point
+    is never running the degenerate call again.
 
     Args:
-        max_iterations: Maximum ReAct loops per turn before forcing end
+        max_iterations: Maximum ReAct loops per turn (enforced post-batch
+            in ``route_after_tools``)
 
     Returns:
         Routing function for conditional edges
@@ -3039,7 +3077,7 @@ def create_should_continue(
 
         Returns:
             'tools' if agent wants to use tools
-            'end' if agent is done or iteration limit reached
+            'end' if agent is done or a repeated tool loop was detected
         """
         messages = state["messages"]
         last_message = messages[-1]
@@ -3048,24 +3086,18 @@ def create_should_continue(
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
             safety = analyze_turn_safety(
                 messages,
-                max_iterations=max_iterations,
+                max_iterations=0,  # cap enforced post-batch in route_after_tools
                 repeated_tool_result_limit=repeated_tool_result_limit,
             )
 
             if safety.should_stop:
                 # Force stop to prevent runaway loops.
-                if safety.reason == TURN_SAFETY_REASON_REPEATED_TOOL_RESULT:
-                    logger.warning(
-                        "Repeated tool/result loop detected: tool=%s repeat_count=%s. "
-                        "Forcing agent to stop before another identical tool call.",
-                        safety.repeated_tool_name,
-                        safety.repeated_count,
-                    )
-                else:
-                    logger.warning(
-                        f"Iteration limit reached ({safety.tool_call_count}/{max_iterations}). "
-                        f"Forcing agent to stop. The agent wanted to call more tools but was cut off."
-                    )
+                logger.warning(
+                    "Repeated tool/result loop detected: tool=%s repeat_count=%s. "
+                    "Forcing agent to stop before another identical tool call.",
+                    safety.repeated_tool_name,
+                    safety.repeated_count,
+                )
                 return "end"
 
             return "tools"
@@ -3146,6 +3178,47 @@ def route_after_tools(state: AgentState, config=None) -> str:
                 thread_id, state["messages"]
             ):
                 return "end"
+
+            # Turn-safety iteration cap (graceful halt, backlog #27). The cap
+            # counts EMITTED tool calls, so checking here (after the batch
+            # executed) fires at the same count as the old pre-execution check
+            # in should_continue, one node later: the crossing batch runs and
+            # the halt lands on this clean sub-turn boundary (results in
+            # history, model call pending), which a bare ``{"messages": []}``
+            # re-drive can resume (the /resume path). The queue check above
+            # deliberately wins: a queued prompt absorbing at this boundary
+            # injects a fresh HumanMessage and resets the window, which is the
+            # implicit resume-with-a-message behavior this preserves.
+            #
+            # The cap comes from the ``turn_safety_max_iterations`` stamp that
+            # ``graph_run_config`` writes (falling back to the agent's
+            # per-thread resolution for configs built elsewhere); with neither
+            # available the graph's recursion_limit stays the backstop.
+            # ``turn_safety_tool_call_offset`` anchors a resumed turn's window
+            # at its resume point.
+            cap = configurable.get("turn_safety_max_iterations")
+            if cap is None and agent is not None:
+                try:
+                    cap = agent._max_iterations_for_thread(thread_id)
+                except Exception:  # noqa: BLE001 - cap resolution is best-effort
+                    cap = None
+            if cap:
+                safety = analyze_turn_safety(
+                    state["messages"],
+                    max_iterations=int(cap),
+                    repeated_tool_result_limit=0,
+                    tool_call_offset=int(
+                        configurable.get("turn_safety_tool_call_offset") or 0
+                    ),
+                )
+                if safety.should_stop:
+                    logger.warning(
+                        "Iteration limit reached (%s/%s). Halting at the "
+                        "sub-turn boundary after the crossing batch executed.",
+                        safety.tool_call_count,
+                        safety.max_iterations,
+                    )
+                    return "end"
 
     return "agent"
 

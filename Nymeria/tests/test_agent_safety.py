@@ -48,7 +48,9 @@ class _EventFacadeAgent:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
-    def _turn_safety_content(self, safety: TurnSafetyResult) -> str:
+    def _turn_safety_content(
+        self, safety: TurnSafetyResult, resumable: bool = False
+    ) -> str:
         self.calls.append(("content", safety))
         return "facade content"
 
@@ -101,12 +103,14 @@ def test_graph_run_config_uses_agent_facades():
 
     # The facade agent has no settings/thread_config_manager, so the Tier 2 flag,
     # the tool-timing flag, and the unbound-call flag resolve to their defaults
-    # (False) and are always present in configurable.
+    # (False) and are always present in configurable. The iteration cap is
+    # stamped for route_after_tools (the graceful-halt check, backlog #27).
     assert config == {
         "recursion_limit": 177,
         "configurable": {
             "thread_id": "thread-a",
             "user_id": "user-b",
+            "turn_safety_max_iterations": 17,
             "sequential_tools": False,
             "tool_timing_in_results": False,
             "allow_unbound_tool_calls": False,
@@ -223,6 +227,7 @@ def test_turn_safety_event_uses_agent_content_facade():
         "content": "facade content",
         "max_iterations": 17,
         "tool_call_count": 18,
+        "resumable": False,
         "repeated_tool_name": "lookup",
         "repeated_count": 5,
     }
@@ -307,3 +312,108 @@ def test_hook_enabled_never_raises_on_lookup_failure():
     assert get_effective_hook_enabled(
         _hook(enabled=False), "t", thread_config_manager=_Boom(), settings=_settings(True)
     ) is False
+
+
+# --------------------------------------------------------------------------- #
+# Resumable-halt predicate + resumable event/content (backlog #27)
+# --------------------------------------------------------------------------- #
+
+
+def _graceful_halt_messages(count: int = 6) -> list:
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    messages: list = [HumanMessage(content="go")]
+    for index in range(count):
+        call_id = f"call-{index}"
+        messages.append(
+            AIMessage(
+                content="",
+                tool_calls=[{"id": call_id, "name": "lookup", "args": {"i": index}}],
+            )
+        )
+        messages.append(
+            ToolMessage(content=f"result {index}", tool_call_id=call_id)
+        )
+    return messages
+
+
+def test_is_resumable_halt_true_on_graceful_cap_tail():
+    from nymeria.core.agent_safety import is_resumable_halt
+
+    assert is_resumable_halt(_graceful_halt_messages(6), 5) is True
+
+
+def test_is_resumable_halt_false_below_cap():
+    from nymeria.core.agent_safety import is_resumable_halt
+
+    assert is_resumable_halt(_graceful_halt_messages(5), 5) is False
+
+
+def test_is_resumable_halt_false_on_dangling_ai_tail():
+    from langchain_core.messages import AIMessage
+
+    from nymeria.core.agent_safety import is_resumable_halt
+
+    messages = _graceful_halt_messages(6)
+    messages.append(
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "dangling", "name": "lookup", "args": {}}],
+        )
+    )
+    # A dangling (unexecuted) pending batch is NOT the graceful boundary; a
+    # bare re-drive on it would hand the provider a malformed history.
+    assert is_resumable_halt(messages, 5) is False
+
+
+def test_is_resumable_halt_false_on_final_answer_and_empty():
+    from langchain_core.messages import AIMessage
+
+    from nymeria.core.agent_safety import is_resumable_halt
+
+    messages = _graceful_halt_messages(6)
+    messages.append(AIMessage(content="done"))
+    assert is_resumable_halt(messages, 5) is False
+    assert is_resumable_halt([], 5) is False
+
+
+def test_turn_safety_content_resumable_hint():
+    from nymeria.core.agent_safety import turn_safety_content
+
+    agent = SimpleNamespace(TURN_SAME_TOOL_RESULT_LIMIT=5)
+    safety = TurnSafetyResult(
+        should_stop=True,
+        reason="max_iterations",
+        tool_call_count=6,
+        max_iterations=5,
+    )
+
+    resumable = turn_safety_content(cast(Any, agent), safety, resumable=True)
+    assert "/resume" in resumable
+
+    plain = turn_safety_content(cast(Any, agent), safety, resumable=False)
+    assert "/resume" not in plain
+
+
+def test_turn_safety_event_carries_resumable_flag():
+    class _Agent:
+        TURN_SAME_TOOL_RESULT_LIMIT = 5
+
+        def _turn_safety_content(
+            self, safety: TurnSafetyResult, resumable: bool = False
+        ) -> str:
+            return f"content resumable={resumable}"
+
+    safety = TurnSafetyResult(
+        should_stop=True,
+        reason="max_iterations",
+        tool_call_count=6,
+        max_iterations=5,
+    )
+
+    event = turn_safety_event(cast(Any, _Agent()), safety, resumable=True)
+    assert event["resumable"] is True
+    assert event["content"] == "content resumable=True"
+
+    event = turn_safety_event(cast(Any, _Agent()), safety)
+    assert event["resumable"] is False

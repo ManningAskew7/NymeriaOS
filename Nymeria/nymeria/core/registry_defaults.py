@@ -1083,6 +1083,22 @@ def register_default_commands(service: "CommandService") -> None:
         note="Handled by the chat stream endpoint.",
     )
     service.register(
+        "resume",
+        description=(
+            "Resume a turn that stopped at its iteration limit: re-drives "
+            "the halted agent loop from the executed tool results, with a "
+            "fresh safety window. No message is added to the conversation. "
+            "Only valid right after an iteration-limit stop."
+        ),
+        category="Thread",
+        usage="/resume",
+        requires_thread=True,
+        mutates_state=True,
+        agent_allowed=False,
+        execution_kind="chat_stream",
+        note="Handled by the chat stream endpoint.",
+    )
+    service.register(
         "goal",
         description=(
             "Start a supervised goal. The worker (this thread) decomposes "

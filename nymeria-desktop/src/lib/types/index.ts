@@ -118,6 +118,23 @@ export interface ToolReloadInfo {
   resumePrompt?: string;
 }
 
+// Turn-safety halt card (backlog #27). Present on the inline message that
+// renders when a turn stops at its iteration limit or a repeated tool loop.
+// `resumable` mirrors the backend's iteration_limit event field: true only
+// for graceful main-agent cap halts, where /resume can re-drive the turn.
+export interface TurnPausedInfo {
+  reason: 'max_iterations' | 'repeated_tool_result' | string;
+  scope: 'main_agent' | 'sub_agent' | string;
+  content: string;
+  maxIterations: number;
+  toolCallCount?: number;
+  repeatedToolName?: string;
+  repeatedCount?: number;
+  agentName?: string;
+  resumable: boolean;
+  resumed?: boolean; // Set client-side when the turn_resumed event arrives
+}
+
 export interface DispatchInfo {
   threadId: string;
   title: string;
@@ -172,6 +189,7 @@ export interface Message {
   autoResumed?: boolean;          // True when assistant output resumed after compaction
   autonomousSource?: string;      // Source of autonomous prompt: 'scheduler' | 'watchdog' | 'trigger'
   toolReloadInfo?: ToolReloadInfo; // Present on messages that follow a tool hot-reload
+  turnPausedInfo?: TurnPausedInfo; // Present on the turn-safety halt card (iteration limit)
   dispatchInfo?: DispatchInfo;    // Present on responses routed to another thread
   commandInput?: string;          // Raw slash command typed by the user
 }
@@ -866,6 +884,7 @@ export type SSEEventType =
   | 'compacted'
   | 'context_attached'
   | 'iteration_limit'
+  | 'turn_resumed'
   | 'tool_reload'
   | 'hook_activity'
   | 'turn_started'

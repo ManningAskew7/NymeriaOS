@@ -503,3 +503,61 @@ describe('chatStore: interactive-turn recovery (re-attachable turns)', () => {
     expect(store.messages).toEqual(snapshot);
   });
 });
+
+describe('chatStore: turn-paused card + resume request (backlog #27)', () => {
+  let store: ReturnType<typeof createChatStore>;
+
+  const pausedInfo = {
+    reason: 'max_iterations',
+    scope: 'main_agent',
+    content: 'I reached the maximum number of steps (500) and had to stop.',
+    maxIterations: 500,
+    toolCallCount: 501,
+    resumable: true,
+  };
+
+  beforeEach(() => {
+    store = createChatStore();
+  });
+
+  it('handleTurnPaused completes the streaming reply and appends the card message', () => {
+    store.addUserMessage('do the big task');
+    store.addAssistantMessage();
+    store.appendToLastMessage('working on it');
+
+    store.handleTurnPaused({ ...pausedInfo });
+
+    const messages = store.messages;
+    const card = messages[messages.length - 1];
+    expect(card.turnPausedInfo).toMatchObject({
+      reason: 'max_iterations',
+      resumable: true,
+    });
+    // The card message is complete: the turn ended at the halt.
+    expect(card.status).toBe('complete');
+    // The preceding assistant reply was finalized, not left streaming.
+    expect(messages[messages.length - 2].status).toBe('complete');
+  });
+
+  it('markTurnPausedResumed flips only the latest un-resumed card', () => {
+    store.handleTurnPaused({ ...pausedInfo });
+    store.handleTurnPaused({ ...pausedInfo });
+
+    store.markTurnPausedResumed();
+
+    const cards = store.messages.filter((m) => m.turnPausedInfo);
+    expect(cards[0].turnPausedInfo?.resumed).toBeUndefined();
+    expect(cards[1].turnPausedInfo?.resumed).toBe(true);
+
+    store.markTurnPausedResumed();
+    const after = store.messages.filter((m) => m.turnPausedInfo);
+    expect(after[0].turnPausedInfo?.resumed).toBe(true);
+  });
+
+  it('requestResume bumps the consumer-facing counter', () => {
+    expect(store.resumeRequest).toBe(0);
+    store.requestResume();
+    store.requestResume();
+    expect(store.resumeRequest).toBe(2);
+  });
+});

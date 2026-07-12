@@ -2,6 +2,7 @@
   import { chatStore } from '$lib/stores/chat.svelte';
   import MessageBubble from './MessageBubble.svelte';
   import ToolReloadIndicator from './ToolReloadIndicator.svelte';
+  import TurnPausedCard from './TurnPausedCard.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Spinner from '$lib/components/common/Spinner.svelte';
 
@@ -100,10 +101,17 @@
   {:else}
     <div class="messages">
       {#each chatStore.messages as message (message.id)}
-        {#if message.toolReloadInfo}
-          <ToolReloadIndicator info={message.toolReloadInfo} />
+        {#if message.turnPausedInfo}
+          <!-- The pause-card message is a pure carrier (empty content,
+               complete); rendering the bubble too would show an empty
+               assistant box under every card. -->
+          <TurnPausedCard info={message.turnPausedInfo} />
+        {:else}
+          {#if message.toolReloadInfo}
+            <ToolReloadIndicator info={message.toolReloadInfo} />
+          {/if}
+          <MessageBubble {message} />
         {/if}
-        <MessageBubble {message} />
       {/each}
     </div>
   {/if}

@@ -653,3 +653,235 @@ def test_astream_drain_rejects_cross_user_prompts_and_absorbs_own():
     holder_types = [e["type"] for e in events]
     assert "prompt_injected" in holder_types
     assert holder_types.count("response") == 2  # first pass + re-drive
+
+
+# ---------------------------------------------------------------------------
+# Integration: /resume of a graceful iteration-cap halt (backlog #27) and the
+# drain loop's patch-before-inject guard, driven through the REAL astream.
+# ---------------------------------------------------------------------------
+
+
+def _graceful_halt_tail(count: int) -> list:
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    messages: list = [HumanMessage(content="go")]
+    for index in range(count):
+        call_id = f"call-{index}"
+        messages.append(
+            AIMessage(
+                content="",
+                tool_calls=[{"id": call_id, "name": "lookup", "args": {"i": index}}],
+            )
+        )
+        messages.append(ToolMessage(content=f"result {index}", tool_call_id=call_id))
+    return messages
+
+
+class _StatefulAsyncGraph(_FakeAsyncGraph):
+    """_FakeAsyncGraph whose checkpoint state is settable per test."""
+
+    def __init__(self, events, messages):
+        super().__init__(events)
+        self.messages = messages
+
+    async def aget_state(self, config):
+        return SimpleNamespace(values={"messages": self.messages})
+
+    def get_state(self, config):
+        return SimpleNamespace(values={"messages": self.messages})
+
+
+def _resume_agent(thread_id: str) -> Any:
+    agent = _stream_agent(thread_id)
+    # The real astream passes tool_call_offset; the plain _stream_agent stub
+    # predates the kwarg.
+    agent._analyze_turn_safety = (
+        lambda messages, max_iterations, **kwargs: SimpleNamespace(should_stop=False)
+    )
+
+    async def _no_continuation(**kwargs):
+        return None
+
+    async def _record_done(**kwargs):
+        return None
+
+    agent._maybe_done_continuation = _no_continuation
+    agent._fire_done_observe = _record_done
+    return agent
+
+
+def test_astream_resume_invalid_tail_yields_error():
+    thread_id = "turn-loops-resume-invalid"
+    agent = _resume_agent(thread_id)
+    agent._max_iterations_for_thread = lambda thread_id: 5
+
+    async def model_events():
+        yield {
+            "event": "on_chat_model_end",
+            "data": {"output": AIMessage(content="should never run")},
+        }
+
+    # A clean, completed tail: nothing to resume.
+    graph = _StatefulAsyncGraph(model_events, _graceful_halt_tail(2))
+    agent._get_async_graph_for_user = lambda *args, **kwargs: graph
+
+    async def collect():
+        events = []
+        async for event in agent.astream(
+            "", thread_id=thread_id, user_id="user-a", _resume_halted_turn=True
+        ):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect())
+
+    assert [e["type"] for e in events] == ["error"]
+    assert events[0]["code"] == "resume_invalid"
+    # The graph was never driven.
+    assert graph.stream_inputs == []
+
+
+def test_astream_resume_redrives_with_anchored_window():
+    thread_id = "turn-loops-resume-ok"
+    agent = _resume_agent(thread_id)
+    agent._max_iterations_for_thread = lambda thread_id: 5
+
+    async def model_events():
+        yield {
+            "event": "on_chat_model_end",
+            "data": {"output": AIMessage(content="continued")},
+        }
+
+    # A graceful cap halt: 6 executed exchanges (> 5), ToolMessage-terminal.
+    graph = _StatefulAsyncGraph(model_events, _graceful_halt_tail(6))
+    agent._get_async_graph_for_user = lambda *args, **kwargs: graph
+
+    async def collect():
+        events = []
+        async for event in agent.astream(
+            "", thread_id=thread_id, user_id="user-a", _resume_halted_turn=True
+        ):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect())
+    types = [e["type"] for e in events]
+
+    # The resume announces itself, then streams the continuation.
+    assert types[0] == "turn_resumed"
+    assert events[0]["tool_call_offset"] == 6
+    assert "response" in types
+
+    # The re-drive is the compaction shape: empty input, nothing injected
+    # into history, and the safety window anchored via the config stamp.
+    (input_state, config, _version) = graph.stream_inputs[0]
+    assert input_state == {"messages": []}
+    assert config["configurable"]["turn_safety_tool_call_offset"] == 6
+    assert graph.state_updates == []
+
+
+def test_astream_resume_second_halt_emits_resumable_iteration_limit():
+    """End-to-end pin: a resumed turn whose continuation crosses the cap
+    AGAIN runs the REAL post-drive analyzer (no stub) and emits an
+    iteration_limit event with resumable=True and the window-anchored count
+    (the pre-resume calls must not re-fire or inflate the report)."""
+    thread_id = "turn-loops-resume-second-halt"
+    agent = _resume_agent(thread_id)
+    # Drop the helper's analyzer stub so the class facade (the real
+    # analyzer + resumable predicate + event builder) runs.
+    del agent._analyze_turn_safety
+    agent._max_iterations_for_thread = lambda thread_id: 5
+
+    # A graceful cap halt to resume from: 6 executed exchanges (> 5).
+    tail = _graceful_halt_tail(6)
+
+    async def model_events():
+        # The continuation executes 6 more tool batches before halting
+        # gracefully again: grow the checkpoint tail in place so the
+        # post-drive aget_state sees the re-crossed window (12 total).
+        tail.extend(_graceful_halt_tail(6)[1:])
+        yield {
+            "event": "on_chat_model_end",
+            "data": {"output": AIMessage(content="continued")},
+        }
+
+    graph = _StatefulAsyncGraph(model_events, tail)
+    agent._get_async_graph_for_user = lambda *args, **kwargs: graph
+
+    async def collect():
+        events = []
+        async for event in agent.astream(
+            "", thread_id=thread_id, user_id="user-a", _resume_halted_turn=True
+        ):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect())
+
+    assert events[0]["type"] == "turn_resumed"
+    assert events[0]["tool_call_offset"] == 6
+
+    limits = [e for e in events if e["type"] == "iteration_limit"]
+    assert len(limits) == 1
+    limit = limits[0]
+    assert limit["reason"] == "max_iterations"
+    assert limit["scope"] == "main_agent"
+    # Window-anchored: 12 executed calls minus the resume offset of 6.
+    assert limit["tool_call_count"] == 6
+    assert limit["max_iterations"] == 5
+    assert limit["resumable"] is True
+    assert "/resume" in limit["content"]
+
+
+def test_astream_drain_patches_dangling_before_inject():
+    from nymeria.core.agent_callable_lifecycle import DANGLING_MARKER_REPEATED
+
+    thread_id = "turn-loops-drain-patch"
+    agent = _resume_agent(thread_id)
+
+    order: list[Any] = []
+
+    def _record_patch(graph, config, marker=None):
+        order.append(("patch", marker))
+        return 0
+
+    agent._patch_dangling_tool_calls = _record_patch
+
+    async def model_events():
+        yield {
+            "event": "on_chat_model_end",
+            "data": {"output": AIMessage(content="answer")},
+        }
+
+    class _OrderedGraph(_FakeAsyncGraph):
+        async def aupdate_state(self, config, values):
+            order.append(("inject",))
+            await super().aupdate_state(config, values)
+
+    graph = _OrderedGraph(model_events)
+    agent._get_async_graph_for_user = lambda *args, **kwargs: graph
+
+    backend = InMemoryPendingPromptQueue()
+    set_pending_queue(backend)
+    backend.enqueue(thread_id, _prompt(user_id="user-a", message="follow up"))
+
+    try:
+
+        async def collect():
+            events = []
+            async for event in agent.astream(
+                "hi", thread_id=thread_id, user_id="user-a"
+            ):
+                events.append(event)
+            return events
+
+        asyncio.run(collect())
+    finally:
+        reset_pending_queue_for_tests()
+
+    # The drain loop patches a (potentially dangling) tail with the
+    # repeated-halt marker BEFORE injecting the queued HumanMessage, so a
+    # repeated-tool halt plus a queued prompt can never hand the provider a
+    # tool_use without its tool_result.
+    inject_at = order.index(("inject",))
+    assert ("patch", DANGLING_MARKER_REPEATED) in order[:inject_at]

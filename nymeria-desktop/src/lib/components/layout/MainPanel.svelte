@@ -116,8 +116,12 @@
   async function streamMessage(
     message: string,
     attachments?: FileAttachment[],
-    forceUnsupportedAttachments: boolean = false
+    forceUnsupportedAttachments: boolean = false,
+    opts: { echoUser?: boolean } = {}
   ) {
+    // echoUser=false runs a turn without a user bubble or title change: the
+    // /resume re-drive (backlog #27) adds nothing to the conversation.
+    const echoUser = opts.echoUser !== false;
     if ((!message.trim() && (!attachments || attachments.length === 0)) || chatStore.isStreaming) return;
 
     // Ensure a thread exists before sending — prevents the backend from
@@ -131,6 +135,7 @@
     // the §9 terminology canon sweep).
     const currentThread = threadsStore.currentThread;
     if (
+      echoUser &&
       currentThread &&
       (currentThread.title === 'New Thread' || currentThread.title === 'New Chat') &&
       message.trim()
@@ -139,7 +144,9 @@
     }
 
     // Add user message with optional attachments
-    chatStore.addUserMessage(message, attachments);
+    if (echoUser) {
+      chatStore.addUserMessage(message, attachments);
+    }
 
     // Create assistant message placeholder
     chatStore.addAssistantMessage();
@@ -192,6 +199,24 @@
       }
     }
   }
+
+  // Resume request from the pause card (backlog #27): run the message-less
+  // /resume turn. The "/resume" text is the chat_stream command the backend
+  // intercepts (no HumanMessage is recorded); echoUser=false keeps it out of
+  // the visible conversation too. The high-water mark initializes from the
+  // store (an untracked read), not 0: the store counter is a session-long
+  // singleton, so a panel remount after an earlier resume must not see a
+  // stale delta and auto-fire an unrequested /resume.
+  let consumedResumeRequest = chatStore.resumeRequest;
+  $effect(() => {
+    const req = chatStore.resumeRequest;
+    if (req > consumedResumeRequest) {
+      consumedResumeRequest = req;
+      if (!chatStore.isStreaming) {
+        void streamMessage('/resume', undefined, false, { echoUser: false });
+      }
+    }
+  });
 
   /**
    * Rejoin a dropped interactive turn. Polls thread status with backoff;
@@ -916,7 +941,7 @@
       }
 
       case 'iteration_limit': {
-        // Agent was stopped because it hit the maximum number of steps
+        // Turn-safety halt (backlog #27).
         const data = event.data as {
           message: string;
           maxIterations: number;
@@ -926,9 +951,14 @@
           toolCallCount?: number;
           repeatedToolName?: string;
           repeatedCount?: number;
+          resumable?: boolean;
         };
 
         if (data.scope === 'sub_agent') {
+          // A sub-agent limit is a MID-TURN event (it rides a tool result;
+          // the main turn keeps streaming after it), so it must stay an
+          // inline note: the terminal pause card would mark the streaming
+          // reply complete and swallow the rest of the live output.
           const agentName = data.agentName || 'Sub-agent';
           const countText = data.toolCallCount
             ? `${data.toolCallCount}/${data.maxIterations}`
@@ -940,17 +970,32 @@
             `\n\n---\n**${title} (${countText} steps).** ` +
             `${data.message || 'The sub-agent was stopped before finishing.'}`
           );
-        } else if (data.reason === 'repeated_tool_result') {
-          chatStore.addResponseStep(
-            `\n\n---\n**Repeated tool loop stopped.** ` +
-            `${data.message || 'The agent repeated the same tool call and result too many times.'}`
-          );
-        } else {
-          chatStore.addResponseStep(
-            `\n\n---\n**Iteration limit reached (${data.maxIterations} steps).** ` +
-            `${data.message || 'My task may be incomplete. You can ask me to continue where I left off.'}`
-          );
+          break;
         }
+
+        // Main-agent halt: the turn is over; render the pause card. The
+        // Resume button shows only when the backend says the halt is
+        // resumable (graceful cap halt).
+        chatStore.handleTurnPaused({
+          reason: data.reason || 'max_iterations',
+          scope: data.scope || 'main_agent',
+          content:
+            data.message ||
+            'My task may be incomplete. You can ask me to continue where I left off.',
+          maxIterations: data.maxIterations,
+          toolCallCount: data.toolCallCount,
+          repeatedToolName: data.repeatedToolName,
+          repeatedCount: data.repeatedCount,
+          agentName: data.agentName,
+          resumable: data.resumable === true,
+        });
+        break;
+      }
+
+      case 'turn_resumed': {
+        // A /resume re-drive started (from this client or another one
+        // watching the thread): flip the pause card to its resumed state.
+        chatStore.markTurnPausedResumed();
         break;
       }
     }

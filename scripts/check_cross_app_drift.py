@@ -30,6 +30,7 @@ EXACT_MATCH: set[str] = {
     "lib/components/account/RoleChip.svelte",
     "lib/components/chat/FilePreview.svelte",
     "lib/components/chat/StreamingText.svelte",
+    "lib/components/chat/TurnPausedCard.svelte",
     "lib/components/chat/WorkspaceImage.svelte",
     "lib/components/common/Collapsible.svelte",
     "lib/components/common/Icon.svelte",

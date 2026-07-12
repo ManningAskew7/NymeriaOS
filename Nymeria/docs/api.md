@@ -501,7 +501,7 @@ subscribers using the same `client_id` can suppress their own echoes.
 | `user_id` | string | No | `"default"` | Legacy compatibility field. The backend ignores client-claimed user IDs and uses the bearer token or admin `X-Nymeria-Act-As` as the effective user. |
 | `attachments` | array | No | - | Optional multimodal attachments (images/documents) |
 | `force_unsupported_attachments` | bool | No | `false` | Send request even if model modality checks fail |
-| `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and mirrors supported stream events (`task_started`, `tool_call_delta`, `tool_call`, `tool_result`, `workspace_artifact`, `tool_reload`, `provider_retry`, `provider_fallback`, `thinking`, `response`, `context_attached`, `compacting`, `compacted`, `iteration_limit`, `task_completed`) to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the Docker worker's relayed autonomous turns; gated by the same Bearer-auth check as any `/chat` call. |
+| `is_self_invoke` | bool | No | `false` | Mark invocation as autonomous/internal. Skips the `message_added` sync event, routes the request through the autonomous prompt path, and mirrors supported stream events (`task_started`, `tool_call_delta`, `tool_call`, `tool_result`, `workspace_artifact`, `tool_reload`, `provider_retry`, `provider_fallback`, `thinking`, `response`, `context_attached`, `compacting`, `compacted`, `iteration_limit`, `turn_resumed`, `task_completed`) to the autonomous event bus (visible via `GET /autonomous/stream`). Used by the Docker worker's relayed autonomous turns; gated by the same Bearer-auth check as any `/chat` call. |
 | `trigger_override` | string | No | - | Label for autonomous invocations (e.g. `"watchdog"`, `"ticker"`). Becomes part of `task_id` and the `source` field on emitted autonomous events. |
 | `trigger_id` | string | No | - | Trigger row ID for `trigger_override=="trigger"` calls. Surfaced on `task_started` and `task_completed` for frontend/bot classification. |
 | `trigger_name` | string | No | - | Human-readable trigger name for `trigger_override=="trigger"` calls. Surfaced on `task_started` and `task_completed`. |
@@ -586,13 +586,29 @@ display-only `response` chunk with that continue hint (never written to any
 checkpoint). `/quick` is registered with `execution_kind: "chat_stream"`, so
 clients route it to `/chat` like `/skill`, `/kit`, and `/orchestrate`.
 
-**`/done <prompt>`** is the other chat_stream command intercepted here: it arms
+**`/done <prompt>`** is another chat_stream command intercepted here: it arms
 a one-shot follow-up on the current thread. If a turn is running, the backend
 creates a single-use thread-scoped `done` hook carrying the prompt and returns
 an ack `response` + `done` (no turn runs; the prompt fires as a DONE
 continuation when the running turn finishes, and the hook deletes itself). If
 the thread is idle, the prompt simply runs as a normal turn. Excluded on
 `is_self_invoke` turns. See `docs/agent-systems/hooks.md`.
+
+**`/resume`** (chat_stream, intercepted on both `/chat` and `/chat/sync`)
+truly resumes a turn that stopped at its iteration limit. A max-iterations
+halt lands at the sub-turn boundary AFTER the crossing tool batch executed
+(the `iteration_limit` event carries `resumable: true`), so the checkpoint
+tail is clean: the resume re-drives the graph with no new message (the
+compaction-resume shape) and the executed tool results drive the model's
+next call. Nothing is added to model-visible history ("/resume" is never
+recorded), and the turn-safety window is anchored at the resume point so the
+continuation gets a fresh budget. The resumed turn is an ordinary holder turn
+(SSE streaming, the turn replay buffer, re-attach, queued prompts, DONE hooks
+all apply) and starts by emitting `turn_resumed`. A busy thread answers with
+an error ack (a resume is never queued); a thread whose tail is not a
+resumable halt answers with an `error` event, code `resume_invalid`
+(streaming) or an explanation string (sync). Repeated-tool-loop halts are
+deliberately not resumable. Excluded on `is_self_invoke` turns.
 
 ---
 
@@ -1230,7 +1246,8 @@ Returns the callable thread tools actually available from that caller thread aft
 | `prompt_injected` | One or more queued prompts have been turned into HumanMessages and appended to the checkpoint; the graph is being re-driven to absorb them. | `count`, `sources` |
 | `prompt_absorbed` | The queuer's specific prompt finished being absorbed. Mirrors the holder's full event stream to the queuer's connection in real time leading up to this. | `thread_id` |
 | `fanout_dropped` | The queuer's fanout mailbox overflowed its bound (slow consumer); some events were dropped from this queuer's mirror. | `dropped_count` |
-| `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection | `content`, `reason`, `max_iterations`, `tool_call_count`, optional `repeated_tool_name`, `repeated_count` |
+| `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection. A max-iterations halt lands at the sub-turn boundary AFTER the crossing tool batch executes, leaving a clean resumable tail. | `content`, `reason`, `scope` (`main_agent`/`sub_agent`), `max_iterations`, `tool_call_count`, `resumable` (true only for graceful main-agent cap halts; gates the client Resume affordance), optional `repeated_tool_name`, `repeated_count`, optional `agent_name` (sub-agent scope) |
+| `turn_resumed` | A `/resume` re-drive of a halted turn started. Emitted before the continuation streams; other clients watching the thread receive it via the autonomous mirror and can flip their pause card. | `tool_call_offset` (the tool-call count anchored away so the continuation gets a fresh safety window) |
 | `error` | Error message | `content`, optional `code` (e.g. `aborted`, `cancelled` (turn aborted via the stop endpoint; the client should finalize its stop UI on this frame), `restored` (a queued prompt was handed back unprocessed because the user stopped the turn; the queuer's stream ends with this instead of `prompt_absorbed`), `queue_attachments_unsupported`, `cross_user_queue_unsupported`, `queue_overflow`) |
 | `done` | Stream complete | `context_stats` (same shape as `GET /threads/{id}/context`, including the per-turn `input_tokens`/`output_tokens`/`turn_recorded`/`turn_llm_seconds`/`tokens_per_second` fields), `model` (when available) |
 
@@ -1470,7 +1487,8 @@ and `timestamp` fields plus the event-specific payload. Internal fields such as
 | `context_attached` | Previous context summary attached to this autonomous prompt | `summary` |
 | `compacting` | Context summary generation has started after the compaction path passes its start checks | `message` |
 | `compacted` | Context was compacted | `messages_removed`, `auto_resumed`, `summary`; a background proactive idle compaction also sets `proactive: true` |
-| `iteration_limit` | Agent hit a turn safety stop | `content`, `reason`, `max_iterations`, `tool_call_count`, optional repeated-tool fields |
+| `iteration_limit` | Agent hit a turn safety stop | `content`, `reason`, `scope`, `max_iterations`, `tool_call_count`, `resumable`, optional repeated-tool fields |
+| `turn_resumed` | A `/resume` re-drive of a halted turn started | `tool_call_offset` |
 | `notification` | Explicit `notify` tool event or new in-app notification | `message`, `summary`, `in_app_only` |
 | `task_completed` | Execution finished | `notify`, `content`, `summary`, `todo_id`, optional `handoff_id`, `caller_thread_id`, `caller_thread_name` |
 

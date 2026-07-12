@@ -56,12 +56,20 @@ def analyze_turn_safety(
     agent: "NymeriaAgent",
     messages: List,
     max_iterations: int,
+    tool_call_offset: int = 0,
 ) -> TurnSafetyResult:
-    """Return turn safety status using the same logic as the graph router."""
+    """Return turn safety status using the same logic as the graph router.
+
+    ``tool_call_offset`` anchors the window at a resume point (see the graph
+    analyzer's docstring); the turn drivers pass the offset they stamped into
+    the run config so a resumed turn's post-drive detection neither re-fires
+    on the pre-resume count nor misses a genuine second cap halt.
+    """
     return _graph_analyze_turn_safety(
         messages,
         max_iterations=max_iterations,
         repeated_tool_result_limit=agent.TURN_SAME_TOOL_RESULT_LIMIT,
+        tool_call_offset=tool_call_offset,
     )
 
 
@@ -190,6 +198,10 @@ def graph_run_config(
         "configurable": {
             "thread_id": thread_id,
             "user_id": user_id,
+            # The per-thread iteration cap, enforced by route_after_tools at
+            # the sub-turn boundary (graceful halt, backlog #27). Stamped here
+            # so the router needs no agent lookup on the hot path.
+            "turn_safety_max_iterations": max_iterations,
             "sequential_tools": sequential_tools,
             # When on, SafeToolNode appends each tool result's server-measured
             # duration to the text the model sees (global setting; per-turn read).
@@ -243,7 +255,39 @@ def graph_run_config(
     return config
 
 
-def turn_safety_content(agent: "NymeriaAgent", safety: TurnSafetyResult) -> str:
+def is_resumable_halt(messages: List, max_iterations: int) -> bool:
+    """True when the thread tail is a resumable iteration-cap halt.
+
+    Resumable means: the tail is ToolMessage-terminal (the graceful sub-turn
+    boundary route_after_tools halts on, or a stop whose dangling calls were
+    patched) AND the cap is crossed for the current window. Stateless and
+    derived from the checkpoint, so it survives API restarts and needs no
+    per-thread bookkeeping. Repeated-tool halts are deliberately NOT
+    resumable (their tail is a patched degenerate loop, and re-running it is
+    friction the user should feel); they fail the cap predicate here because
+    they fire below the cap.
+    """
+    if not messages:
+        return False
+    from langchain_core.messages import ToolMessage
+
+    if not isinstance(messages[-1], ToolMessage):
+        return False
+    safety = _graph_analyze_turn_safety(
+        messages,
+        max_iterations=max_iterations,
+        repeated_tool_result_limit=0,
+    )
+    return bool(
+        safety.should_stop and safety.reason == TURN_SAFETY_REASON_MAX_ITERATIONS
+    )
+
+
+def turn_safety_content(
+    agent: "NymeriaAgent",
+    safety: TurnSafetyResult,
+    resumable: bool = False,
+) -> str:
     if safety.reason == TURN_SAFETY_REASON_REPEATED_TOOL_RESULT:
         tool_name = safety.repeated_tool_name or "a tool"
         repeat_count = safety.repeated_count or agent.TURN_SAME_TOOL_RESULT_LIMIT
@@ -253,25 +297,34 @@ def turn_safety_content(agent: "NymeriaAgent", safety: TurnSafetyResult) -> str:
             "This looks like a runaway tool loop, so I stopped before running it again."
         )
 
-    return (
+    content = (
         f"I reached the maximum number of steps "
         f"({safety.max_iterations}) and had to stop. "
-        "My task may be incomplete. You can ask me to continue where I left off."
+        "My task may be incomplete."
     )
+    if resumable:
+        # Plain-text clients (CLI, bots) get the affordance through this
+        # hint with zero client work; GUIs render a Resume button instead.
+        content += " Send /resume to continue where I left off."
+    else:
+        content += " You can ask me to continue where I left off."
+    return content
 
 
 def turn_safety_event(
     agent: "NymeriaAgent",
     safety: TurnSafetyResult,
     scope: str = "main_agent",
+    resumable: bool = False,
 ) -> Dict[str, Any]:
     event: Dict[str, Any] = {
         "type": "iteration_limit",
         "scope": scope,
         "reason": safety.reason or TURN_SAFETY_REASON_MAX_ITERATIONS,
-        "content": agent._turn_safety_content(safety),
+        "content": agent._turn_safety_content(safety, resumable=resumable),
         "max_iterations": safety.max_iterations,
         "tool_call_count": safety.tool_call_count,
+        "resumable": bool(resumable),
     }
     if safety.repeated_tool_name:
         event["repeated_tool_name"] = safety.repeated_tool_name
