@@ -43,7 +43,6 @@ SkillScope = Literal["bundled", "global", "user"]
 AVAILABLE_SKILLS_CHAR_BUDGET = 15_000
 DEFAULT_SKILL_KIT_TOOL_TTL = "2h"
 
-
 class SkillParseError(Exception):
     """Raised when a SKILL.md file cannot be parsed."""
 
@@ -95,14 +94,9 @@ class Skill(BaseModel):
         nymeria = metadata.get("nymeria", {})
         return nymeria if isinstance(nymeria, dict) else {}
 
-    @property
-    def required_tools(self) -> List[str]:
-        """Nymeria tools this skill must bind when activated.
-
-        This intentionally reads from ``metadata.nymeria.required_tools`` so
-        portable ``allowed-tools`` remains advisory Agent Skills metadata.
-        """
-        raw = self._nymeria_metadata.get("required_tools", [])
+    def _nymeria_name_list(self, key: str) -> List[str]:
+        """Normalize a ``metadata.nymeria`` string-or-list field to names."""
+        raw = self._nymeria_metadata.get(key, [])
         if isinstance(raw, str):
             values = [raw]
         elif isinstance(raw, list):
@@ -119,6 +113,26 @@ class Skill(BaseModel):
             out.append(name)
             seen.add(name)
         return out
+
+    @property
+    def required_tools(self) -> List[str]:
+        """Nymeria tools this skill must bind when activated.
+
+        This intentionally reads from ``metadata.nymeria.required_tools`` so
+        portable ``allowed-tools`` remains advisory Agent Skills metadata.
+        """
+        return self._nymeria_name_list("required_tools")
+
+    @property
+    def required_skills(self) -> List[str]:
+        """Skills or kits this kit pulls in on activation (one level deep).
+
+        Reads ``metadata.nymeria.required_skills``. With defer=false a nested
+        skill fully activates (its body is loaded and, if it is a kit, its
+        required_tools bind too); with defer=true nested entries are listed as
+        name + description only, loadable on demand via Skill().
+        """
+        return self._nymeria_name_list("required_skills")
 
     @property
     def tool_ttl(self) -> str:
@@ -140,7 +154,13 @@ class Skill(BaseModel):
 
     @property
     def is_skill_kit(self) -> bool:
-        return bool(self.required_tools)
+        """A skill with ANY declared dependency.
+
+        Composition features (required tools, nested skills) route through
+        the kit surfaces (/kit, activation binding, UI "Kit" labels), so a
+        tools-less skill that only nests other skills still counts as a kit.
+        """
+        return bool(self.required_tools or self.required_skills)
 
     @property
     def is_internal(self) -> bool:
@@ -284,6 +304,64 @@ def load_skill_directory(
         scope=scope,
         user_id=user_id,
     )
+
+
+def resolve_nested_skills(
+    skill: Skill,
+    skill_manager: Optional["SkillManager"],
+    user_id: Optional[str] = None,
+    snapshot_by_name: Optional[Dict[str, Skill]] = None,
+) -> Tuple[List[Skill], List[str]]:
+    """Resolve a kit's ``required_skills`` one level deep.
+
+    Returns ``(nested_skills, missing_names)``. Resolution prefers the live
+    ``skill_manager`` (user > global > bundled precedence) and falls back to
+    ``snapshot_by_name`` (a graph-build snapshot) when no manager is available.
+    Self-references and duplicate names are skipped. Nesting is deliberately
+    ONE level deep: a nested kit's own ``required_skills`` are never expanded
+    here (callers list them instead), which also makes cycles a non-issue.
+    """
+    nested: List[Skill] = []
+    missing: List[str] = []
+    seen = {skill.name}
+    for name in skill.required_skills:
+        if name in seen:
+            continue
+        seen.add(name)
+        resolved: Optional[Skill] = None
+        if skill_manager is not None:
+            try:
+                resolved = skill_manager.get(name, user_id=user_id)
+            except Exception:  # noqa: BLE001 - resolution is best-effort per name
+                logger.warning(
+                    "nested skill lookup failed for %r (required by %r)",
+                    name, skill.name, exc_info=True,
+                )
+        if resolved is None and snapshot_by_name:
+            resolved = snapshot_by_name.get(name)
+        if resolved is None:
+            missing.append(name)
+            continue
+        nested.append(resolved)
+    return nested, missing
+
+
+def expanded_required_tools(skill: Skill, nested_skills: List[Skill]) -> List[str]:
+    """The deduped, order-preserving tool union a kit activation must bind.
+
+    The outer kit's ``required_tools`` first, then each nested kit's, in
+    declaration order. This is the one list a defer=false activation binds in
+    a single strict call (atomic no-partial-activation).
+    """
+    out: List[str] = []
+    seen: set = set()
+    for source in [skill, *nested_skills]:
+        for name in source.required_tools:
+            if name in seen:
+                continue
+            out.append(name)
+            seen.add(name)
+    return out
 
 
 class SkillManager:
@@ -713,6 +791,8 @@ __all__ = [
     "SkillParseError",
     "SkillScope",
     "AVAILABLE_SKILLS_CHAR_BUDGET",
+    "expanded_required_tools",
     "load_skill_directory",
     "parse_skill_file",
+    "resolve_nested_skills",
 ]

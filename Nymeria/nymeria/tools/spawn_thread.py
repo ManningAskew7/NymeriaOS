@@ -1067,11 +1067,17 @@ def spawn_thread(
                 f"spawned thread: {kit_message}"
             )
         if getattr(kit_skill, "is_skill_kit", False):
-            kit_line = (
-                f"Kit: {kit_skill.name} (tools: "
-                f"{', '.join(kit_skill.required_tools)}, "
-                f"TTL {kit_skill.tool_ttl})"
-            )
+            kit_parts = []
+            if kit_skill.required_tools:
+                kit_parts.append(
+                    f"tools: {', '.join(kit_skill.required_tools)}, "
+                    f"TTL {kit_skill.tool_ttl}"
+                )
+            required_skills = getattr(kit_skill, "required_skills", [])
+            if required_skills:
+                kit_parts.append(f"skills: {', '.join(required_skills)}")
+            detail = f" ({'; '.join(kit_parts)})" if kit_parts else ""
+            kit_line = f"Kit: {kit_skill.name}{detail}"
         else:
             kit_line = f"Skill: {kit_skill.name} enabled"
 

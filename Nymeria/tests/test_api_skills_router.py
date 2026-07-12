@@ -16,6 +16,7 @@ class FakeSkill:
         self.scope = "user"
         self.allowed_tools = ["nym_todo"]
         self.required_tools = ["web_search"]
+        self.required_skills = ["plain-skill"]
         self.tool_ttl = "30m"
         self.is_skill_kit = True
         self.has_scripts = True
@@ -138,6 +139,7 @@ def test_skills_router_preserves_skill_kit_metadata(tmp_path: Path, api_client_b
             "scope": "user",
             "allowed_tools": ["nym_todo"],
             "required_tools": ["web_search"],
+            "required_skills": ["plain-skill"],
             "tool_ttl": "30m",
             "is_skill_kit": True,
             "default_active": False,
