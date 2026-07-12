@@ -171,6 +171,64 @@ def _agent_prompt_source(request: ChatRequest) -> tuple[str, str | None, str | N
     return source, request.source_id, request.source_label
 
 
+def _apply_platform_origin(
+    agent: Any,
+    request: ChatRequest,
+    thread_id: str,
+    user_id: str,
+    message: str,
+) -> str:
+    """Record a chat-bot turn's platform origin; enrich reaction prompts.
+
+    Stamps ``request.platform_origin`` into the per-thread registry
+    (``core/bot_reactions.py``) so the ``react`` tool can target the
+    originating message, and, for reaction-triggered turns
+    (``kind == "reaction"``), appends the react-tool guidance block while the
+    tool is unbound on the thread (the bound check IS
+    ``select_tools_for_graph``, so the omit rule cannot drift). Returns the
+    (possibly extended) message; no-op without a ``platform_origin``.
+    """
+    origin = request.platform_origin
+    if origin is None:
+        return message
+
+    from ...core.bot_reactions import set_turn_origin
+
+    set_turn_origin(
+        thread_id,
+        platform=origin.platform,
+        channel_id=origin.channel_id,
+        message_id=origin.message_id,
+        kind=origin.kind,
+    )
+    if origin.kind != "reaction":
+        return message
+    try:
+        from ...tools.react import reaction_guidance_block
+
+        guidance = reaction_guidance_block(agent, user_id, thread_id)
+    except Exception:  # noqa: BLE001 - guidance is best-effort enrichment
+        logger.debug("Failed to build reaction guidance block", exc_info=True)
+        guidance = ""
+    if guidance:
+        return f"{message}\n\n{guidance}"
+    return message
+
+
+def _turn_reply_suppressed(request: ChatRequest, thread_id: str) -> bool:
+    """Whether this turn's react call asked to suppress the reply text.
+
+    Gated on the request having carried a ``platform_origin``: only those
+    requests reset the per-thread flag at turn start, so anything else could
+    read a stale value from an earlier bot turn.
+    """
+    if request.platform_origin is None:
+        return False
+    from ...core.bot_reactions import reply_suppressed
+
+    return reply_suppressed(thread_id)
+
+
 def _spawn_goal_supervisor(
     agent: Any, user_id: str, worker_thread_id: str, goal: Any
 ) -> tuple[str | None, str | None]:
@@ -1227,6 +1285,13 @@ def create_chat_router(
                 headers={"Retry-After": str(exc.retry_after)},
             ) from exc
 
+        # Chat-platform provenance (Discord/Telegram bots): record the origin
+        # message for the react tool and, on reaction-triggered turns, append
+        # the react-tool guidance block while the tool is unbound (backlog
+        # #45; core/bot_reactions.py + tools/react.py). AFTER the admission
+        # gate, so a shed request never touches the origin registry.
+        message = _apply_platform_origin(agent, request, thread_id, user_id, message)
+
         # Read client ID from header for sync event origin filtering
         client_id = http_request.headers.get("x-nymeria-client-id", "")
 
@@ -1572,6 +1637,11 @@ def create_chat_router(
                             original_thread_id,
                         ),
                     }
+                    # End-of-turn confirmation of the react tool's reply
+                    # suppression (the live signal is the mid-stream
+                    # reply_suppressed event).
+                    if _turn_reply_suppressed(request, thread_id):
+                        done_data["suppress_reply"] = True
 
                     # Auto-title the thread from the user's message if untitled
                     # (skipped on /resume: there is no user message to title
@@ -1863,6 +1933,12 @@ def create_chat_router(
                 headers={"Retry-After": str(exc.retry_after)},
             ) from exc
 
+        # Chat-platform provenance (mirrors the streaming route): record the
+        # origin for the react tool and enrich reaction-triggered prompts.
+        # AFTER the admission gate, so a shed request never touches the
+        # origin registry.
+        message = _apply_platform_origin(agent, request, thread_id, user_id, message)
+
         # The whole synchronous turn (LLM round trips, tools, checkpoint
         # writes) runs off the event loop; running it inline would freeze
         # every SSE stream and probe in the process for the turn's duration.
@@ -1892,6 +1968,7 @@ def create_chat_router(
             response=response,
             thread_id=thread_id,
             tool_call_count=tool_call_count,
+            suppress_reply=_turn_reply_suppressed(request, thread_id),
         )
 
     return router

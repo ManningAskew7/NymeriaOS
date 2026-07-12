@@ -262,6 +262,58 @@ When enabled (default), the bot fetches the last ~10 non-bot messages from the c
 
 This helps Nymeria understand the ongoing conversation even when invoked via `/ask` rather than a direct @mention.
 
+## Emoji Reactions
+
+Two-way emoji reactions, opt-in via `DISCORD_REACTION_TRIGGER_ENABLED=true`
+(default off). The bot always enables the `reactions` gateway intent, so
+flipping the toggle needs only a bot restart, not a Discord-side change.
+
+### Inbound: reactions fire the agent
+
+When a user adds any emoji reaction to a message **the bot itself authored**
+(`on_raw_reaction_add`), the bot fires an agent turn in the channel's mapped
+thread with a synthetic prompt:
+
+```
+[Reaction] Alice reacted with 👍 to your message: "Sure, I have rescheduled the ..."
+```
+
+Custom Discord emojis are rendered as `:name:`. The quoted excerpt is the
+reacted message's text, whitespace-collapsed and capped at 200 characters.
+
+Guards, in order: toggle off → drop; reactor is the bot itself or any bot →
+drop (loop guard); reacted message not authored by the bot → drop; reactor has
+no linked Nymeria account → silent drop (same access model as messages).
+Reaction **removals** never fire. The turn runs with `is_self_invoke=true`,
+`trigger_override="reaction"`, `source="trigger"`, and a `source_label` like
+`reaction 👍`, and streams into the channel exactly like an @mention response.
+
+### Outbound: the `react` tool
+
+The synthetic prompt tells the agent how to react back. `react` is a catalog
+tool (not bound by default); when it is unbound in the thread the prompt
+includes its compact args schema plus a `tool_invoke` recipe, so the agent can
+call it immediately without a graph rebuild:
+
+- `react(emoji="👍")` posts the emoji onto the message that started the turn
+  (the reacted-to message for reaction turns, the user's message for normal
+  ones). `message_id` overrides the target within the same channel.
+- `react(emoji="👍", suppress_reply=true)` additionally hides the turn's text
+  reply in Discord, for emoji-only acknowledgements.
+
+Delivery: the tool publishes a `reaction_request` event on the autonomous bus;
+the bot's firehose listener matches `platform == "discord"`, fetches the
+channel and message, and calls `message.add_reaction(...)`. Failures (deleted
+message, missing permission, unknown emoji) are logged and never break the
+turn.
+
+Reply suppression is deterministic, not model-inferred: the tool result
+carries the marker `[nymeria:reply_suppressed]`, the stream emits a
+`reply_suppressed` event right after the `tool_result`, and the bot then drops
+buffered text, stops sending chunks, and skips the sync-fallback and
+`task_completed` content fallbacks for that turn. Tool-call embeds (when
+`/show-tools` is on) still render.
+
 ## Future Improvements
 
 - **`/activation` command**  -  Toggle between `mention` and `all` respond modes from Discord instead of requiring an env var change + restart. Deferred because the interaction between per-guild settings, env var defaults, and runtime state is more complex than it appears.
@@ -276,4 +328,4 @@ This helps Nymeria understand the ongoing conversation even when invoked via `/a
 | Attachment helpers (shared) | `nymeria/triggers/attachment_helpers.py` |
 | Entry point | `run.py` → `run_discord_bot()` |
 | Docker config | `docker-compose.yml` (profile: `discord`) |
-| Env vars | `.env.docker` (`DISCORD_BOT_TOKEN`, `DISCORD_RESPOND_MODE`) |
+| Env vars | `.env.docker` (`DISCORD_BOT_TOKEN`, `DISCORD_RESPOND_MODE`, `DISCORD_REACTION_TRIGGER_ENABLED`) |

@@ -284,6 +284,12 @@ def test_compact_uses_chat_stream_endpoint():
             "user_id": "user-1",
             "attachments": None,
             "force_unsupported_attachments": False,
+            "is_self_invoke": False,
+            "trigger_override": None,
+            "source": None,
+            "source_label": None,
+            "publish_autonomous_events": None,
+            "platform_origin": None,
         }
     ]
     assert any(

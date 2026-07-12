@@ -291,6 +291,12 @@ class Settings(BaseSettings):
                     "build t.me/<bot>?start=... deep links in the desktop wizard. "
                     "Optional — the bot reports it on startup if not set.",
     )
+    telegram_reaction_trigger_enabled: bool = Field(
+        default=False,
+        description="Fire an agent turn when a user adds an emoji reaction in "
+                    "a private Telegram chat with the bot (any emoji; each "
+                    "reaction costs a full agent turn). Off by default.",
+    )
 
     # Messaging Platform Credentials - Discord
     discord_webhook_url: Optional[str] = Field(
@@ -308,6 +314,12 @@ class Settings(BaseSettings):
     discord_respond_mode: Literal["mention", "all"] = Field(
         default="mention",
         description="Guild behavior: mention (only @Nymeria) or all (every message)"
+    )
+    discord_reaction_trigger_enabled: bool = Field(
+        default=False,
+        description="Fire an agent turn when a user adds an emoji reaction to "
+                    "one of the bot's own Discord messages (any emoji; each "
+                    "reaction costs a full agent turn). Off by default.",
     )
 
     # Messaging Platform Credentials - Twitch

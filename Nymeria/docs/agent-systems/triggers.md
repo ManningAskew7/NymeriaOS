@@ -296,6 +296,39 @@ Health status is tracked per trigger based on source check outcomes:
 
 Resets to `healthy` on the first successful check. Health status and last error are visible in the UI and API responses.
 
+## Chat-Bot Emoji Reaction Triggers
+
+Discord and Telegram bot messages can act as a lightweight trigger surface: a
+user reacting with an emoji on one of the bot's own messages fires an agent
+turn in the mapped thread. This is a bot-level event path, not a trigger
+source: there is no trigger definition, no conditions, and nothing appears in
+the trigger list or execution history. The turn carries the standard source
+taxonomy (`source="trigger"`, `trigger_override="reaction"`, and a
+`source_label` like `reaction 👍`), so lifecycle hooks can target or exclude
+reaction turns via `fire_conditions` the same way they filter trigger fires.
+
+Per-platform opt-in toggles (both default off):
+
+| Setting | Platform |
+|---------|----------|
+| `DISCORD_REACTION_TRIGGER_ENABLED` | Discord (`on_raw_reaction_add`; the bot enables the reactions gateway intent automatically) |
+| `TELEGRAM_REACTION_TRIGGER_ENABLED` | Telegram (`MessageReactionHandler`; private chats only, because Telegram reaction updates do not identify the reacted message's author) |
+
+Scope and loop guards: only reactions **added** by a human to a message
+**authored by the bot** fire (removals are ignored, the bot's own reactions
+are ignored, other bots are ignored). Unlinked platform users are silently
+dropped, matching the bots' existing access model. The agent receives a
+synthetic prompt of the form `[Reaction] Alice reacted with 👍 to your
+message: "..."` plus, when the `react` tool is not bound in the thread, a
+guidance block containing the tool's compact args schema and a `tool_invoke`
+recipe so it can react back without a graph rebuild.
+
+The outbound half (the `react` catalog tool, `reaction_request` bus events,
+and `suppress_reply` for emoji-only responses) is documented per platform in
+`docs/chat-apps/discord-bot.md` and
+`docs/chat-apps/telegram-bot.md`, with the wire contract in
+`docs/api.md`.
+
 ## Streaming & Autonomous Events
 
 When an `agent_prompt` trigger fires, the agent's response streams live into the frontend chat UI (same visual treatment as autonomous TODO executions). This section documents how that works and the timing hazards it avoids.
