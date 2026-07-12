@@ -93,6 +93,92 @@ If a Skill Kit binds a new tool, the current graph invocation ends with
 with `source="skill_kit"` and `skill_name`, then resumes the same user turn
 with the new tools callable.
 
+### Nested skills and kits (`required_skills`)
+
+A kit can also declare skill dependencies, one level deep:
+
+```yaml
+metadata:
+  nymeria:
+    required_tools: [trigger_config]
+    required_skills:
+      - web-research        # a kit or a plain skill, by exact name
+      - report-format
+```
+
+- A skill with `required_skills` counts as a Skill Kit even when it binds no
+  tools of its own.
+- Activation posture follows the `Skill()` defer semantics:
+  - **defer=false (default, and the `/kit` slash path)**: nested skills fully
+    activate. Each nested skill's full body is appended to the activation
+    result (`Skill()` only; `/kit` injects the outer body and leaves nested
+    bodies loadable on demand), and any nested KIT's `required_tools` bind
+    too, in ONE strict transaction with the outer kit's tools. One TTL (the
+    kit's `tool_ttl` or the per-activation override) governs the whole union.
+  - **defer=true**: nothing binds or activates; nested skills are listed as
+    name + description, loadable on demand via `Skill(name=...)`.
+- Strict, no-partial-activation semantics extend to nesting: a
+  `required_skills` name that is not installed, or a nested kit tool that
+  fails validation, aborts the whole activation with nothing bound (the
+  defer=true listing instead marks a missing name as not installed).
+- Nesting is exactly one level deep for auto-activation: a nested kit's own
+  `required_skills` are listed in the result, never expanded, so dependency
+  cycles cannot occur.
+- Deactivation (`/kit <name> off`) evicts the same expanded tool union.
+- `skill_write`/`skill_edit` validate `required_skills` strictly: names must
+  be kebab-case, installed, and visible to the author, and a kit cannot
+  require itself.
+- The graph-cache fingerprint folds each active kit's `required_skills` and
+  their one-level resolution, so editing a nested dependency on disk
+  invalidates affected graphs.
+
+### Thread templates (`thread_templates`)
+
+A kit can declare callable-thread TEMPLATES: full thread configurations that
+surface as callable-thread tools while the kit is active, with the thread
+itself created lazily on the tool's first call:
+
+```yaml
+metadata:
+  nymeria:
+    thread_templates:
+      - name: research-helper        # normalizes to tool name research_helper
+        description: Deep research helper thread.   # required, <= 1024 chars
+        title: Research Helper       # optional thread title (default: from name)
+        instructions: You are a focused research thread.  # optional, <= 5000 chars
+        provider: openrouter         # optional model override
+        model: openai/gpt-5.5
+        tools: [fetch_url_nymeria]   # optional extra tools for the thread
+        kit: web-research            # optional kit bound at spawn
+        ttl_hours: 24                # optional idle lifetime (default: permanent)
+```
+
+- **Surfacing is derived state.** The kit being active on a thread IS the
+  registration: template tools appear at graph build for active kits
+  (`defer=false` activation and `/kit` enable the kit, which registers them),
+  and deactivating the kit removes them. `disabled_tools` stays authoritative
+  by name. With `defer=true` the templates are only listed with compact
+  schemas, runnable via `tool_invoke` (the dispatch superset carries
+  templates from every installed skill, so loadability mirrors the deferred
+  "visibility is not reachability" rule).
+- **Lazy materialization.** The first call spawns the thread from the
+  declared config through the ordinary `spawn_thread` machinery (so spawn
+  depth/rate caps, role gates, and ownership apply to the caller), delivers
+  that call's `task` as its first turn, and prepends a
+  `[Materialized]: thread_id=...` receipt. The spawned thread is renamed so
+  its callable name equals the template tool name; subsequent calls route to
+  it like any callable thread (`mode="ask"` or `"handoff"`). Concurrent first
+  calls are serialized in-process: exactly one spawn.
+- **Lifecycle.** Materialized threads are ordinary spawned threads: they live
+  in the Spawned folder, honor the template's `ttl_hours` idle lifetime, and
+  survive kit deactivation (only the template TOOL disappears; an existing
+  materialized thread's ordinary callable tool keeps working). A stale
+  template tool whose kit was uninstalled fails closed without spawning.
+- **Authoring validation.** `skill_write`/`skill_edit` reject malformed
+  entries (unknown keys included), duplicate or tool-colliding names, unknown
+  or author-role-gated template tools, and an uninstalled `kit`. Hand-edited
+  store files load leniently (bad entries are skipped with a warning).
+
 ### Slash-command activation
 
 User-facing skill activation uses fixed slash-command roots so skill names
@@ -210,10 +296,12 @@ at all (e.g. a marketplace result) must be `install_skill`'d first;
 
 For a Skill Kit, `Skill(name=..., defer=true)` loads the kit's instructions plus
 its tools' argument schemas but binds NOTHING to the thread; the agent then runs
-those tools by name via `tool_invoke` (cache-safe). This is the kit-level
-expression of defer-vs-bind: use `defer` for a one-off, use `ttl` (bind) for
-repeated use. `defer` and `ttl` are mutually exclusive (passing both ignores
-`ttl`). See [tool-hot-loading.md](./tool-hot-loading.md#deferred-execution-tool_invoke-cache-safe-alternative-to-binding).
+those tools by name via `tool_invoke` (cache-safe). Nested `required_skills`
+are listed as name + description (loadable on demand via `Skill()`), and any
+declared thread templates are listed with their compact schemas. This is the
+kit-level expression of defer-vs-bind: use `defer` for a one-off, use `ttl`
+(bind) for repeated use. `defer` and `ttl` are mutually exclusive (passing both
+ignores `ttl`). See [tool-hot-loading.md](./tool-hot-loading.md#deferred-execution-tool_invoke-cache-safe-alternative-to-binding).
 
 ## Where skills live on disk
 
@@ -250,9 +338,9 @@ both global defaults and thread-local enables.
 Plus: the existing `PATCH /threads/{id}/config` accepts `enabled_skills` and
 `disabled_skills` fields.
 
-Skill metadata responses include `required_tools`, `tool_ttl`,
-`is_skill_kit`, and `default_active` in addition to the portable Agent Skills
-fields.
+Skill metadata responses include `required_tools`, `required_skills`,
+`thread_templates` (name + description), `tool_ttl`, `is_skill_kit`, and
+`default_active` in addition to the portable Agent Skills fields.
 
 Implementation: the Skills HTTP routes are mounted from
 `nymeria/api/routers/skills.py`; runtime Skill Kit tool binding remains in the
@@ -341,12 +429,16 @@ bombs) and logs warnings; it does not hard-block.
 ## Graph cache invalidation
 
 `NymeriaAgent._get_memory_hash()` folds in a skills fingerprint (name, scope,
-description hash, allowed_tools, and Skill Kit required tools/TTL for each active skill). Any of these
-invalidate the per-(user, thread) graph cache:
+description hash, allowed_tools, Skill Kit required tools/TTL, the
+`required_skills` list plus each nested dependency's one-level resolution,
+and a digest of declared `thread_templates`, for each active skill). Any of
+these invalidate the per-(user, thread) graph cache:
 
 - User toggles a skill in `enabled_global_skills`
 - Thread flips `enabled_skills` or `disabled_skills`
-- A `SKILL.md` description, allowed-tools, required tools, or Skill Kit TTL changes on disk
+- A `SKILL.md` description, allowed-tools, required tools, required skills,
+  thread templates, or Skill Kit TTL changes on disk (including edits to a
+  NESTED kit an active kit merely requires)
 - A skill is installed or uninstalled via the REST endpoints
 
 The body itself is re-read from disk at activation time, so edits to a

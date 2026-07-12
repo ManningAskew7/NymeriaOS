@@ -37,14 +37,99 @@ logger = logging.getLogger(__name__)
 
 KEBAB_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*[a-z0-9]$")
 
+# Kit-declared thread-template TOOL names (normalized: lowercase, hyphens
+# become underscores). Must be a valid provider tool-name shape.
+TEMPLATE_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
 SkillScope = Literal["bundled", "global", "user"]
 
 # Anthropic's documented upper bound on the <available_skills> block.
 AVAILABLE_SKILLS_CHAR_BUDGET = 15_000
 DEFAULT_SKILL_KIT_TOOL_TTL = "2h"
 
+# spawn_thread's instructions cap; template instructions honor the same bound.
+TEMPLATE_INSTRUCTIONS_MAX_CHARS = 5000
+
+
 class SkillParseError(Exception):
     """Raised when a SKILL.md file cannot be parsed."""
+
+
+class ThreadTemplate(BaseModel):
+    """A kit-declared callable-thread template (backlog #26).
+
+    Declared under ``metadata.nymeria.thread_templates``. Surfaces as a
+    callable-thread TOOL when the kit is active; the thread itself is
+    materialized lazily on the tool's first call via the spawn_thread
+    machinery (so spawn depth/rate caps and role gates apply to the caller).
+    ``extra="forbid"`` so a typo'd key fails authoring validation instead of
+    being silently ignored.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str
+    description: str = Field(..., min_length=1, max_length=1024)
+    title: Optional[str] = None
+    instructions: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    tools: List[str] = Field(default_factory=list)
+    kit: Optional[str] = None
+    ttl_hours: Optional[int] = None
+
+    @field_validator("name")
+    @classmethod
+    def _tool_name(cls, v: str) -> str:
+        normalized = str(v).strip().lower().replace("-", "_")
+        if not TEMPLATE_TOOL_NAME_RE.match(normalized):
+            raise ValueError(
+                "template name must normalize to a valid tool name "
+                f"(lowercase letters, digits, underscores, max 64 chars): {v!r}"
+            )
+        return normalized
+
+    @field_validator("instructions")
+    @classmethod
+    def _instructions_cap(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and len(v) > TEMPLATE_INSTRUCTIONS_MAX_CHARS:
+            raise ValueError(
+                f"template instructions exceed {TEMPLATE_INSTRUCTIONS_MAX_CHARS} chars"
+            )
+        return v
+
+    @field_validator("tools", mode="before")
+    @classmethod
+    def _tools_list(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = v.split(",")
+        if not isinstance(v, list):
+            raise ValueError("template tools must be a list of tool names")
+        out: List[str] = []
+        seen = set()
+        for item in v:
+            name = str(item).strip()
+            if not name or name in seen:
+                continue
+            out.append(name)
+            seen.add(name)
+        return out
+
+    @field_validator("ttl_hours")
+    @classmethod
+    def _ttl_floor(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and int(v) < 1:
+            raise ValueError("template ttl_hours must be >= 1 (or omitted for permanent)")
+        return v
+
+    @property
+    def thread_title(self) -> str:
+        """The materialized thread's title (declared, or derived from name)."""
+        if self.title and self.title.strip():
+            return self.title.strip()[:80]
+        return self.name.replace("_", " ").title()[:80]
 
 
 class SkillFrontmatter(BaseModel):
@@ -135,6 +220,44 @@ class Skill(BaseModel):
         return self._nymeria_name_list("required_skills")
 
     @property
+    def thread_templates(self) -> List["ThreadTemplate"]:
+        """Kit-declared callable-thread templates (lenient at read time).
+
+        Reads ``metadata.nymeria.thread_templates``. A malformed entry is
+        logged and skipped here (matching the ``tool_ttl`` fallback posture for
+        hand-edited files); ``skill_write``/``skill_edit`` reject the same
+        input strictly. Duplicate template names keep the first entry.
+        """
+        raw = self._nymeria_metadata.get("thread_templates", [])
+        if not isinstance(raw, list):
+            if raw:
+                logger.warning(
+                    "skill %s: metadata.nymeria.thread_templates must be a "
+                    "list; ignoring", self.name,
+                )
+            return []
+        out: List[ThreadTemplate] = []
+        seen: set = set()
+        for entry in raw:
+            try:
+                template = ThreadTemplate.model_validate(entry)
+            except ValidationError as exc:
+                logger.warning(
+                    "skill %s: skipping invalid thread template %r: %s",
+                    self.name, entry, exc,
+                )
+                continue
+            if template.name in seen:
+                logger.warning(
+                    "skill %s: duplicate thread template name %r; keeping first",
+                    self.name, template.name,
+                )
+                continue
+            seen.add(template.name)
+            out.append(template)
+        return out
+
+    @property
     def tool_ttl(self) -> str:
         """TTL for Skill Kit tool bindings, defaulting to 2h."""
         value = str(
@@ -154,13 +277,16 @@ class Skill(BaseModel):
 
     @property
     def is_skill_kit(self) -> bool:
-        """A skill with ANY declared dependency.
+        """A skill with ANY declared dependency or template.
 
-        Composition features (required tools, nested skills) route through
-        the kit surfaces (/kit, activation binding, UI "Kit" labels), so a
-        tools-less skill that only nests other skills still counts as a kit.
+        All composition features (required tools, nested skills, thread
+        templates) route through the kit surfaces (/kit, activation binding,
+        UI "Kit" labels), so a tools-less skill that only nests other skills
+        or declares templates still counts as a kit.
         """
-        return bool(self.required_tools or self.required_skills)
+        return bool(
+            self.required_tools or self.required_skills or self.thread_templates
+        )
 
     @property
     def is_internal(self) -> bool:
@@ -790,7 +916,9 @@ __all__ = [
     "SkillManager",
     "SkillParseError",
     "SkillScope",
+    "ThreadTemplate",
     "AVAILABLE_SKILLS_CHAR_BUDGET",
+    "TEMPLATE_TOOL_NAME_RE",
     "expanded_required_tools",
     "load_skill_directory",
     "parse_skill_file",
