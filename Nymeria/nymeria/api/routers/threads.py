@@ -620,7 +620,8 @@ def create_threads_router(
         Manually trigger a dream (self-reflection) cycle for this thread.
 
         Spawns a shadow sibling thread with the dream system prompt and a
-        tool whitelist scoped to memory, TODOs, instructions, and skills.
+        tool whitelist scoped to memory, TODOs, instructions, skills, and
+        trigger review.
         The shadow thread runs in the background; this endpoint returns
         immediately with its ID. Frontends observe progress via the
         autonomous SSE event stream keyed on ``shadow_thread_id``.

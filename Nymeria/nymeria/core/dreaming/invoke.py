@@ -75,8 +75,10 @@ DEFAULT_DREAM_ENABLED_CORE_TOOLS: tuple[str, ...] = (
 # Catalog tools the dream cycle gets access to in addition to its fixed core
 # allowlist (DEFAULT_DREAM_ENABLED_CORE_TOOLS above). A dream shadow thread uses
 # this strict allowlist, NOT the user's default_thread_tools. These let the dream
-# propose skill suggestions, manage skills, and write to the parent's
-# instructions field.
+# curate skills and kits, review the user's triggers, and write to the parent's
+# instructions field. Thread-scoped actions (skill enablement, trigger binding)
+# retarget to the parent via ``get_effective_thread_id``, the same contract the
+# memory/TODO core tools follow.
 DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS: tuple[str, ...] = (
     "thread_instructions_set",
     "skill_write",
@@ -86,6 +88,8 @@ DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS: tuple[str, ...] = (
     "search_skills",
     "install_skill",
     "tool_create",
+    "trigger_config",
+    "trigger_info",
 )
 
 DREAM_THREAD_ID_PREFIX = "dream"
@@ -565,6 +569,12 @@ def _run_dream_cycle(
                 "user_id": user_id,
                 "_is_self_invoke": True,
                 "_trigger_override": trigger_override,
+                # Honest turn-source classification: dreams ride the standard
+                # source taxonomy so lifecycle hooks see holder_kind="dream"
+                # (fire_conditions can target or exclude dream turns) instead
+                # of masquerading as "ticker". _is_self_invoke stays as the
+                # legacy autonomous back-stop.
+                "source": "dream",
             },
             on_chunk=handle_chunk,
             error_message_factory=stream_error_message,

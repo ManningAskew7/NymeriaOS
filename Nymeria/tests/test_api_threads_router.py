@@ -753,3 +753,117 @@ def test_thread_claim_can_seed_cli_metadata(tmp_path: Path, api_client_builder):
     [thread] = listed.json()["threads"]
     assert thread["thread_id"] == "cli-thread"
     assert thread["platform"] == "cli"
+
+
+# ---------------------------------------------------------------------------
+# POST /threads/{id}/dream route guards (backlog #24 Strand 1)
+# ---------------------------------------------------------------------------
+
+
+def test_dream_route_guards_disabled_midturn_and_shadow(
+    tmp_path: Path, api_client_builder
+):
+    """The three refusal gates: opt-in 409, mid-turn 409, shadow-parent 400."""
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    headers = api_client_builder.auth(token)
+
+    parent = "thread-dreamer"
+    agent.accounts_repo.claim_thread(parent, "owner")
+    agent.thread_config_manager.save_config(ThreadConfig(thread_id=parent))
+
+    # Dreaming disabled and no force: 409 with the enable hint.
+    response = client.post(f"/threads/{parent}/dream", headers=headers)
+    assert response.status_code == 409
+    assert "not enabled" in response.json()["detail"]
+
+    # Mid-turn: 409 even with force=true.
+    agent._thread_locks.lock_info = {"owner": "turn"}
+    response = client.post(
+        f"/threads/{parent}/dream", json={"force": True}, headers=headers
+    )
+    assert response.status_code == 409
+    assert "processing" in response.json()["detail"]
+    agent._thread_locks.lock_info = None
+
+    # Dreaming FROM a shadow thread: 400.
+    shadow = "dream-thread-dreamer-x"
+    agent.accounts_repo.claim_thread(shadow, "owner")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id=shadow, shadow_parent_id=parent)
+    )
+    response = client.post(
+        f"/threads/{shadow}/dream", json={"force": True}, headers=headers
+    )
+    assert response.status_code == 400
+    assert "shadow" in response.json()["detail"].lower()
+
+
+def test_dream_route_force_and_enabled_paths_invoke(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """force=true bypasses the opt-in; an enabled thread needs no force; the
+    response carries invoke_dream's summary shape; DreamInvocationError -> 400."""
+    import nymeria.core.dreaming as dreaming_mod
+    from nymeria.core.thread_config import DreamingConfig
+
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    headers = api_client_builder.auth(token)
+
+    parent = "thread-dreamer-2"
+    agent.accounts_repo.claim_thread(parent, "owner")
+    agent.thread_config_manager.save_config(ThreadConfig(thread_id=parent))
+
+    calls: list[dict] = []
+
+    def fake_invoke_dream(
+        *, agent, parent_thread_id, user_id, model_override=None, **kwargs
+    ):
+        calls.append(
+            {
+                "parent_thread_id": parent_thread_id,
+                "user_id": user_id,
+                "model_override": model_override,
+            }
+        )
+        return "dream-x", {
+            "shadow_thread_id": "dream-x",
+            "parent_thread_id": parent_thread_id,
+            "started_at": "2026-07-12T00:00:00+00:00",
+            "model": "(inherits global)",
+            "enabled_optional_tools": ["skill_manage", "trigger_info"],
+            "disabled_core_tools": ["bash_execute"],
+        }
+
+    monkeypatch.setattr(dreaming_mod, "invoke_dream", fake_invoke_dream)
+
+    # force=true bypasses the opt-in gate.
+    response = client.post(
+        f"/threads/{parent}/dream", json={"force": True}, headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["shadow_thread_id"] == "dream-x"
+    assert body["parent_thread_id"] == parent
+    assert "trigger_info" in body["enabled_optional_tools"]
+    assert calls[-1]["user_id"] == "owner"
+
+    # dreaming.enabled=true passes without force.
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id=parent, dreaming=DreamingConfig(enabled=True))
+    )
+    response = client.post(f"/threads/{parent}/dream", headers=headers)
+    assert response.status_code == 200
+    assert len(calls) == 2
+
+    # Validation failures inside invoke_dream map to 400.
+    def raising_invoke(**kwargs):
+        raise dreaming_mod.DreamInvocationError("no parent")
+
+    monkeypatch.setattr(dreaming_mod, "invoke_dream", raising_invoke)
+    response = client.post(
+        f"/threads/{parent}/dream", json={"force": True}, headers=headers
+    )
+    assert response.status_code == 400
+    assert "no parent" in response.json()["detail"]
