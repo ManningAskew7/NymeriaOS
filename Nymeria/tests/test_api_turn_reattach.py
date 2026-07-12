@@ -72,8 +72,14 @@ def _create_user(agent: FakeAgent, user_id: str, *, role: str = "user") -> str:
     return agent.accounts_repo.issue_token(user_id)
 
 
-def _seed_finished_turn(thread_id: str, user_id: str = "owner"):
-    buffer = get_turn_stream_registry().begin_turn(thread_id, user_id)
+def _seed_finished_turn(
+    thread_id: str,
+    user_id: str = "owner",
+    user_message_id: str | None = None,
+):
+    buffer = get_turn_stream_registry().begin_turn(
+        thread_id, user_id, user_message_id=user_message_id
+    )
     buffer.append({"type": "turn_started", "turn_id": buffer.turn_id})
     buffer.append({"type": "response", "content": "Hello "})
     buffer.append({"type": "response", "content": "world"})
@@ -217,6 +223,61 @@ def test_mid_stream_gap_ends_with_turn_replay_gap_frame(
     assert events[-1]["turn_id"] == buffer.turn_id
 
 
+def test_attach_and_status_carry_user_message_id(
+    tmp_path: Path, api_client_builder
+):
+    """The turn's initiating-message anchor rides both read surfaces.
+
+    Live-attach viewers use it to trim hydrated history back to the turn
+    start before replaying, so it must appear on the ``turn_attach``
+    preamble and the status ``turn`` block alike.
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "owner")
+    agent.accounts_repo.claim_thread("t1", "owner")
+    _seed_finished_turn("t1", user_message_id="msg-anchor-1")
+
+    with client.stream(
+        "GET",
+        "/threads/t1/turn/stream",
+        headers=api_client_builder.auth(token),
+    ) as response:
+        body = response.read().decode()
+    attach = _sse_events(body)[0]
+    assert attach["type"] == "turn_attach"
+    assert attach["user_message_id"] == "msg-anchor-1"
+
+    status = client.get(
+        "/threads/t1/status",
+        headers=api_client_builder.auth(token),
+    )
+    assert status.json()["turn"]["user_message_id"] == "msg-anchor-1"
+
+
+def test_reattach_does_not_claim_ownerless_thread(
+    tmp_path: Path, api_client_builder
+):
+    """The attach GET is a read: it must not TOFU-claim an ownerless thread.
+
+    Sibling read GETs (status, history) pass claim=False; before this pin the
+    attach route used the claiming default, so merely watching a thread could
+    transfer first-touch ownership.
+    """
+    client, agent = _client(tmp_path, api_client_builder)
+    token = _create_user(agent, "viewer")
+    _seed_finished_turn("t-unowned", user_id="viewer")
+
+    with client.stream(
+        "GET",
+        "/threads/t-unowned/turn/stream",
+        headers=api_client_builder.auth(token),
+    ) as response:
+        assert response.status_code == 200
+        response.read()
+
+    assert agent.accounts_repo.get_thread_owner("t-unowned") is None
+
+
 def test_reattach_enforces_thread_access(tmp_path: Path, api_client_builder):
     client, agent = _client(tmp_path, api_client_builder)
     _create_user(agent, "owner")
@@ -247,6 +308,7 @@ def test_thread_status_reports_attachable_turn(tmp_path: Path, api_client_builde
         "state": "done",
         "last_seq": 4,
         "truncated": False,
+        "user_message_id": None,
     }
 
 

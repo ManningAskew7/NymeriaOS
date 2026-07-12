@@ -38,7 +38,8 @@
     ThreadConfig,
     ThreadStatus,
     AttachmentValidationResult,
-    DispatchInfo
+    DispatchInfo,
+    RestoredPrompt
   } from '$lib/types';
 
   let showThreadSettings = $state(false);
@@ -218,6 +219,86 @@
     }
   });
 
+  // Live-attach request (backlog #87): navigation (thread open) or the sync
+  // poll saw an in-flight holder turn this client did not start. Same
+  // consumed-counter pattern as resume: the store value is a session-long
+  // singleton, so initialize the high-water mark from it to keep a panel
+  // remount from replaying a stale request.
+  let consumedViewerAttachSeq = chatStore.viewerAttachRequest?.seq ?? 0;
+  $effect(() => {
+    const req = chatStore.viewerAttachRequest;
+    if (req && req.seq > consumedViewerAttachSeq) {
+      consumedViewerAttachSeq = req.seq;
+      if (!chatStore.isStreaming && threadsStore.currentThreadId === req.threadId) {
+        void watchLiveTurn(req.threadId, req.turnId, req.userMessageId);
+      }
+    }
+  });
+
+  /**
+   * Watch a holder turn this client did not start (backlog #87): anchor the
+   * hydrated history to the turn start, bind a streaming reply bubble, then
+   * reuse the recovery loop to replay the turn buffer from seq 0 and tail
+   * it live. The composer keeps its normal busy behavior (sends queue into
+   * the running turn) and Stop/Resume act on the real turn: it is the same
+   * user's turn on another device.
+   */
+  async function watchLiveTurn(
+    threadId: string,
+    turnId: string,
+    userMessageId: string | null
+  ) {
+    if (chatStore.isStreaming || chatStore.isLoadingHistory) return;
+    // Gate the composer/poll before any await so a concurrent send queues
+    // instead of racing the attach.
+    chatStore.setStreaming(true);
+
+    // The replay carries only assistant-side events, so the viewer keeps
+    // history up to the turn's initiating user message and lets the replay
+    // rebuild everything after it. Without the trim, the persisted
+    // turn-so-far would render twice.
+    let reconcileOnFinish = false;
+    if (userMessageId) {
+      let anchored = chatStore.trimAfterGraphMessageId(userMessageId);
+      if (!anchored) {
+        // The local view predates the turn (poll-triggered attach) or the
+        // message has not reached a checkpoint yet: refresh history once
+        // and re-anchor.
+        try {
+          const history = await api.getThreadHistory(threadId);
+          if (threadsStore.currentThreadId !== threadId || chatStore.isStopping) return;
+          chatStore.setMessages(history.messages);
+          anchored = chatStore.trimAfterGraphMessageId(userMessageId);
+        } catch {
+          // Unreachable backend: the recovery loop below owns retries.
+        }
+      }
+      if (!anchored) {
+        // Replay cannot re-render the user bubble; settle from history at
+        // the end instead.
+        reconcileOnFinish = true;
+      }
+      chatStore.addAssistantMessage();
+    } else {
+      // Message-less turn (/resume continuation): the replay carries only
+      // the continuation, so reuse the trailing assistant entry (the
+      // replay reset clears it) and reconcile at the end to restore the
+      // pre-halt steps.
+      const last = chatStore.messages[chatStore.messages.length - 1];
+      if (last?.role === 'assistant') {
+        chatStore.setLastMessageStreaming();
+      } else {
+        chatStore.addAssistantMessage();
+      }
+      reconcileOnFinish = true;
+    }
+
+    await recoverInterruptedTurn(threadId, turnId, {
+      silentFirstAttempt: true,
+      reconcileOnFinish
+    });
+  }
+
   /**
    * Rejoin a dropped interactive turn. Polls thread status with backoff;
    * when the turn's buffer is attachable, replays it (rebuilding the reply
@@ -226,9 +307,26 @@
    * persisted history instead. Honest states throughout: the message shows
    * "Reconnecting" while recovery is real, and the turn-lost copy only when
    * recovery genuinely failed.
+   *
+   * Also the tail half of a viewer attach (backlog #87), with two opts:
+   * `silentFirstAttempt` keeps the "Reconnecting" phase off a fresh attach
+   * (nothing dropped; it shows only if the first pass fails), and
+   * `reconcileOnFinish` replaces the terminal cleanup with a history
+   * reconcile when the viewer rendered without the turn-start anchor.
    */
-  async function recoverInterruptedTurn(threadId: string, turnId: string | null) {
-    chatStore.setReconnecting(true);
+  async function recoverInterruptedTurn(
+    threadId: string,
+    turnId: string | null,
+    opts: { silentFirstAttempt?: boolean; reconcileOnFinish?: boolean } = {}
+  ) {
+    let reconnectingShown = false;
+    const showReconnecting = () => {
+      if (!reconnectingShown) {
+        reconnectingShown = true;
+        chatStore.setReconnecting(true);
+      }
+    };
+    if (!opts.silentFirstAttempt) showReconnecting();
     let attempt = 0;
     try {
       while (true) {
@@ -260,7 +358,14 @@
             if (outcome === 'abandon') return;
             if (outcome === 'finished') {
               if (threadsStore.currentThreadId === threadId) {
-                finalizeStreamCleanup(threadId);
+                if (opts.reconcileOnFinish) {
+                  // The viewer rendered without the turn-start anchor (user
+                  // bubble or pre-halt steps missing from the replay), so
+                  // settle on the canonical persisted state.
+                  await reconcileFromHistory(threadId);
+                } else {
+                  finalizeStreamCleanup(threadId);
+                }
               }
               return;
             }
@@ -279,6 +384,7 @@
           // turn holds the thread): keep polling until it finishes.
         }
 
+        showReconnecting();
         await new Promise((resolve) =>
           setTimeout(resolve, Math.min(RECOVERY_BASE_DELAY_MS * attempt, RECOVERY_MAX_DELAY_MS))
         );
@@ -882,13 +988,28 @@
         // Holder is draining queued prompts. Close the current assistant
         // bubble, materialize each queued prompt as a user message in FIFO
         // order, and open a new assistant placeholder for the sub-turn.
-        const data = event.data as { count: number; sources?: string[] };
-        const injected = chatStore.consumeQueuedPrompts(data.count);
+        const data = event.data as {
+          count: number;
+          sources?: string[];
+          prompts?: RestoredPrompt[];
+        };
+        // Local entries still get consumed (pending-bar cleanup), but the
+        // bubbles render from the wire texts when present: a prompt queued
+        // on ANOTHER client (or watched by a live-attach viewer) has no
+        // local copy, so the local list alone would drop its user bubble.
+        // The wire list is index-parallel with `sources`; only user-source
+        // prompts are user-visible (matches history filtering).
+        const consumed = chatStore.consumeQueuedPrompts(data.count);
         chatStore.flushStreamingBuffers();
         chatStore.setLastMessageComplete();
         chatStore.clearActiveToolCalls();
-        for (const p of injected) {
-          chatStore.addUserMessage(p.content);
+        const sources = data.sources ?? [];
+        const wireTexts = data.prompts
+          ?.filter((p, i) => (sources[i] ?? 'user') === 'user' && p.text.trim())
+          .map((p) => p.text);
+        const texts = wireTexts ?? consumed.map((p) => p.content);
+        for (const text of texts) {
+          chatStore.addUserMessage(text);
         }
         chatStore.addAssistantMessage();
         break;

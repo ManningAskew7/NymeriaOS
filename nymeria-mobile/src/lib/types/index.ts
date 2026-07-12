@@ -485,6 +485,11 @@ export interface ThreadTurnStatus {
   state: 'live' | 'done' | 'error' | 'aborted';
   lastSeq: number;
   truncated: boolean;
+  // Graph message id of the turn's initiating user message (null for
+  // message-less turns, e.g. /resume). Matches Message.graphMessageId in
+  // hydrated history; live-attach viewers trim everything after it before
+  // replaying the turn (backlog #87).
+  userMessageId?: string | null;
 }
 
 export interface ThreadStatus {
@@ -493,6 +498,16 @@ export interface ThreadStatus {
   processing: boolean;
   // Attachable interactive-turn buffer (GET /threads/{id}/turn/stream), if any.
   turn?: ThreadTurnStatus | null;
+}
+
+// Live-attach request (backlog #87): navigation asks the chat panel to watch
+// a holder turn this client did not start. `seq` makes each request
+// consumable exactly once (the panel keeps a high-water mark).
+export interface ViewerAttachRequest {
+  seq: number;
+  threadId: string;
+  turnId: string;
+  userMessageId: string | null;
 }
 
 // TODO types (from backend)

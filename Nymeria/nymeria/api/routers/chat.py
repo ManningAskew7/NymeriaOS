@@ -1279,10 +1279,21 @@ def create_chat_router(
             turn_buffer: Optional[TurnStreamBuffer] = None
             turn_started_pending = False
 
+            # Graph message id for this turn's initiating HumanMessage,
+            # minted here so the buffer can expose it to live-attach viewers
+            # (they anchor hydrated history to it) and the agent can stamp
+            # the same id on the message it persists. Resume turns add no
+            # message, so they carry no anchor.
+            turn_user_message_id = (
+                None if resume_halted_turn else str(uuid.uuid4())
+            )
+
             def _mark_turn_started() -> None:
                 nonlocal turn_buffer, turn_started_pending
                 turn_buffer = get_turn_stream_registry().begin_turn(
-                    thread_id, user_id
+                    thread_id,
+                    user_id,
+                    user_message_id=turn_user_message_id,
                 )
                 turn_started_pending = True
 
@@ -1346,6 +1357,7 @@ def create_chat_router(
                     source_label=prompt_source_label or user_id,
                     _on_turn_started=_mark_turn_started,
                     _resume_halted_turn=resume_halted_turn,
+                    _turn_user_message_id=turn_user_message_id,
                 ):
                     # If the client disconnected, stop yielding SSE events but
                     # keep consuming the generator so the agent finishes its

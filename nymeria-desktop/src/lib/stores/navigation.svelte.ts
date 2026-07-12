@@ -79,6 +79,13 @@ export async function switchToThread(
       // Bind a streaming message and replay the turn so far (applies the same
       // graft-safe reuse rule internally), then live events render.
       autonomousStore.attachToThread(threadId);
+    } else if (status?.turn?.state === 'live') {
+      // A holder turn is running that this client did not start (another
+      // client of the same user, or this client's own turn surviving a
+      // dropped stream): watch it live (backlog #87). MainPanel consumes
+      // the request, trims the hydrated turn-so-far, and replays + tails
+      // the turn buffer.
+      chatStore.requestViewerAttach(threadId, status.turn);
     }
 
     return { success: true };

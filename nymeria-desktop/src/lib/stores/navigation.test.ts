@@ -6,7 +6,7 @@ vi.mock('$lib/services/api.svelte', () => ({
 }));
 
 import { createChatStore } from './chat.svelte';
-import type { Message } from '$lib/types';
+import type { Message, ThreadStatus } from '$lib/types';
 
 /**
  * Mirrors the stream-recovery decision in navigation.svelte.ts so we can
@@ -117,6 +117,56 @@ describe('navigation stream-recovery decision', () => {
     expect(store.messages.length).toBe(2);
     expect(store.messages[1].id).toBe('a-streaming');
     expect(store.messages[1].status).toBe('streaming');
+  });
+
+  it('viewer attach fires only when no local stream binds and a turn is live (backlog #87)', () => {
+    // Mirrors switchToThread's three-way branch: own interactive stream >
+    // autonomous attach > live-turn viewer attach. Update alongside
+    // navigation.svelte.ts (same contract note as applyStreamRecovery).
+    function applyAttachDecision(
+      hasInteractiveStream: boolean,
+      hasAutonomousTask: boolean,
+      status: ThreadStatus,
+    ): void {
+      if (hasInteractiveStream || hasAutonomousTask) return;
+      if (status.turn?.state === 'live') {
+        store.requestViewerAttach(status.threadId, status.turn);
+      }
+    }
+
+    const liveTurn: ThreadStatus = {
+      threadId: 't-1',
+      revision: 'r1',
+      processing: true,
+      turn: {
+        turnId: 'turn-live',
+        state: 'live',
+        lastSeq: 3,
+        truncated: false,
+        userMessageId: 'g-1',
+      },
+    };
+
+    applyAttachDecision(true, false, liveTurn);
+    expect(store.viewerAttachRequest).toBeNull();
+
+    applyAttachDecision(false, true, liveTurn);
+    expect(store.viewerAttachRequest).toBeNull();
+
+    // A finished (retained) turn buffer must not trigger a viewer attach.
+    applyAttachDecision(false, false, {
+      ...liveTurn,
+      processing: false,
+      turn: { ...liveTurn.turn!, state: 'done' },
+    });
+    expect(store.viewerAttachRequest).toBeNull();
+
+    applyAttachDecision(false, false, liveTurn);
+    expect(store.viewerAttachRequest).toMatchObject({
+      threadId: 't-1',
+      turnId: 'turn-live',
+      userMessageId: 'g-1',
+    });
   });
 
   it('streamed events flow into the fresh message and leave the prior intact', () => {

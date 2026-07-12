@@ -653,9 +653,11 @@ event/reconnect driven.
 holder turn, or the most recent one within its ~5-minute retention window):
 `turn_id` matches the stream's `turn_started` event, `state` is one of
 `live | done | error | aborted`, `last_seq` is the highest buffered `seq`,
-and `truncated` reports replay-buffer overflow. `null` when nothing is
-attachable (no recent turn, retention expired, or an API restart, which
-loses in-flight turns and their buffers).
+`truncated` reports replay-buffer overflow, and `user_message_id` is the
+graph message id of the turn's user message (the anchor viewers use to trim
+hydrated history before replaying the turn; `null` for message-less `/resume`
+turns). `null` when nothing is attachable (no recent turn, retention expired,
+or an API restart, which loses in-flight turns and their buffers).
 
 **Response:**
 ```json
@@ -667,7 +669,8 @@ loses in-flight turns and their buffers).
     "turn_id": "9f2c8f6f2f0d4f0f8a3b1c2d3e4f5a6b",
     "state": "done",
     "last_seq": 42,
-    "truncated": false
+    "truncated": false,
+    "user_message_id": "3f6e2b1a-8c4d-4e5f-9a0b-1c2d3e4f5a6b"
   }
 }
 ```
@@ -681,12 +684,25 @@ GET /threads/{thread_id}/turn/stream?turn_id=<id>&from_seq=<n>
 Authorization: Bearer <token>
 ```
 
-Recovery endpoint for dropped `POST /chat` streams. The backend deliberately
-keeps a turn running when its SSE client disconnects; this endpoint replays
-the turn's buffered events (byte-identical to the original stream, `seq`
-stamps included) and then tails live events until the turn ends, so the
-client can re-render the full turn including the terminal `done` that the
-original response suppressed after the disconnect.
+Recovery endpoint for dropped `POST /chat` streams, and the live-attach
+endpoint for watching an in-flight turn from any client. The backend
+deliberately keeps a turn running when its SSE client disconnects; this
+endpoint replays the turn's buffered events (byte-identical to the original
+stream, `seq` stamps included) and then tails live events until the turn
+ends, so the client can re-render the full turn including the terminal `done`
+that the original response suppressed after the disconnect.
+
+The same replay-then-tail contract serves cross-client live attach: any
+client with thread access (the owner on another device, or an admin) that
+opens a thread while a holder turn is running can attach with `from_seq=0`
+and watch the turn live. Viewer clients trim their hydrated history after
+the turn's user-message anchor (the status `turn` block's `user_message_id`)
+before replaying, so the persisted turn-so-far is not rendered twice. The
+desktop and mobile GUIs do this automatically on thread open (desktop also
+on its 5-second sync poll); the viewer's composer stays live in
+compose-and-queue mode, and Stop/Resume work from the viewer like any other
+client. Only interactive streaming turns buffer: synchronous `/chat` turns
+(bot platforms) and dispatched (`@thread`) turns are not watchable.
 
 Query parameters: `turn_id` (optional) pins the attach to the turn the client
 was streaming (from its `turn_started` event); omit it to attach to the
@@ -695,8 +711,8 @@ replays only events with `seq` greater than the value; recovery clients
 normally pass 0 and rebuild the whole assistant turn from the replay.
 
 **Response:** SSE. The stream opens with a `turn_attach` meta event
-(`turn_id`, `state`, `last_seq`, `truncated`), then the replayed/live turn
-events follow. For a finished turn the stream ends after the last buffered
+(`turn_id`, `state`, `last_seq`, `truncated`, `user_message_id`), then the
+replayed/live turn events follow. For a finished turn the stream ends after the last buffered
 event; `state: "aborted"` means the turn died without a terminal event
 (stop-cancelled turns instead carry their `error` event with
 `code: "cancelled"`).
@@ -1243,7 +1259,7 @@ Returns the callable thread tools actually available from that caller thread aft
 | `queued` | Legacy: thread is busy with another turn; client should wait. Now emitted alongside `prompt_queued`; will be dropped once frontends adopt the new event. | `content`, `holder`, `held_seconds` |
 | `prompt_queued` | Prompt was placed on the per-thread sub-turn queue because the thread was busy. The currently-running turn will halt at its next sub-turn boundary and absorb the queued prompt. | `position`, `holder`, `held_seconds`, `source` |
 | `turn_halted` | The running turn observed pending queued prompts and ended early at the post-tools boundary; the drain loop is about to inject the queued prompts. | `reason`, `count` |
-| `prompt_injected` | One or more queued prompts have been turned into HumanMessages and appended to the checkpoint; the graph is being re-driven to absorb them. | `count`, `sources` |
+| `prompt_injected` | One or more queued prompts have been turned into HumanMessages and appended to the checkpoint; the graph is being re-driven to absorb them. `prompts` carries the queued texts (`{text, source_label, user_id, enqueued_at}`, index-parallel with `sources`) so clients that did not enqueue locally (live-attach viewers, other same-user clients) can render the injected user bubbles. | `count`, `sources`, `prompts` |
 | `prompt_absorbed` | The queuer's specific prompt finished being absorbed. Mirrors the holder's full event stream to the queuer's connection in real time leading up to this. | `thread_id` |
 | `fanout_dropped` | The queuer's fanout mailbox overflowed its bound (slow consumer); some events were dropped from this queuer's mirror. | `dropped_count` |
 | `iteration_limit` | Agent hit a turn safety stop: either the max tool-call budget or repeated same tool/args/result loop detection. A max-iterations halt lands at the sub-turn boundary AFTER the crossing tool batch executes, leaving a clean resumable tail. | `content`, `reason`, `scope` (`main_agent`/`sub_agent`), `max_iterations`, `tool_call_count`, `resumable` (true only for graceful main-agent cap halts; gates the client Resume affordance), optional `repeated_tool_name`, `repeated_count`, optional `agent_name` (sub-agent scope) |

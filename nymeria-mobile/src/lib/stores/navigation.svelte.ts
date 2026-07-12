@@ -35,9 +35,12 @@ export async function switchToThread(
   uiStore.goToChat();
 
   try {
-    const [history, stats] = await Promise.all([
+    const [history, stats, status] = await Promise.all([
       api.getThreadHistory(threadId),
       api.getThreadContextStats(threadId),
+      // For the live-attach decision below (backlog #87); a status failure
+      // must not block opening the thread.
+      api.getThreadStatus(threadId).catch(() => null),
     ]);
 
     // Stale navigation guard. Leave isLoadingHistory alone: whichever
@@ -62,6 +65,13 @@ export async function switchToThread(
         chatStore.addAssistantMessage();
       }
       chatStore.setStreaming(true);
+    } else if (status?.turn?.state === 'live') {
+      // A holder turn is running that this client did not start (another
+      // client of the same user, or this client's own turn surviving a
+      // dropped stream): watch it live (backlog #87). ChatPanel consumes
+      // the request, trims the hydrated turn-so-far, and replays + tails
+      // the turn buffer.
+      chatStore.requestViewerAttach(threadId, status.turn);
     }
 
     return { success: true };

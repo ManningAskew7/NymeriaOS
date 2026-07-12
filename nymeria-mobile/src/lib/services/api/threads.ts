@@ -236,6 +236,7 @@ export class ThreadsApi extends ChatApi {
             state: rawTurn.state as 'live' | 'done' | 'error' | 'aborted',
             lastSeq: (rawTurn.last_seq as number) ?? 0,
             truncated: Boolean(rawTurn.truncated),
+            userMessageId: (rawTurn.user_message_id as string | null | undefined) ?? null,
           }
         : null,
     };

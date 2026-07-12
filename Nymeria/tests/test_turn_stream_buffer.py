@@ -90,6 +90,17 @@ def test_finish_is_terminal_and_idempotent():
     assert buf.state == STATE_DONE
 
 
+def test_begin_turn_stores_user_message_id_in_snapshot():
+    # The turn's initiating HumanMessage id (live-attach viewers anchor their
+    # hydrated history to it). Message-less turns (/resume) carry None.
+    registry = TurnStreamRegistry()
+    anchored = registry.begin_turn("t1", "alice", user_message_id="msg-abc")
+    assert anchored.user_message_id == "msg-abc"
+    assert anchored.snapshot()["user_message_id"] == "msg-abc"
+    bare = registry.begin_turn("t2", "alice")
+    assert bare.snapshot()["user_message_id"] is None
+
+
 def test_registry_begin_turn_replaces_and_aborts_live_predecessor():
     registry = TurnStreamRegistry()
     first = registry.begin_turn("t1", "alice")
@@ -235,6 +246,7 @@ class _FakeAgent:
         self.raise_after = raise_after
         self.hang_after = hang_after
         self.titled: list[tuple[str, str]] = []
+        self.astream_kwargs: dict[str, Any] = {}
         self.settings = SimpleNamespace(llm_model="m", llm_provider="p")
         self.thread_metadata_manager = SimpleNamespace(
             auto_title=self._auto_title,
@@ -248,6 +260,7 @@ class _FakeAgent:
         return self._title
 
     async def astream(self, message: str, **kwargs: Any):
+        self.astream_kwargs = dict(kwargs)
         on_turn_started = kwargs.get("_on_turn_started")
         if self.fire_turn_started and on_turn_started is not None:
             on_turn_started()
@@ -346,6 +359,29 @@ def test_connected_holder_turn_streams_turn_started_and_buffers_wire_payloads():
         if line.startswith("data: ")
     ]
     assert replayed == wire
+
+
+def test_holder_turn_buffer_carries_minted_user_message_id():
+    """The route mints ONE id and threads it to both the buffer and astream.
+
+    The buffer copy anchors live-attach viewers; the astream copy is stamped
+    on the persisted HumanMessage, so history's ``message_id`` matches.
+    """
+    agent = _FakeAgent()
+    client = TestClient(
+        _app_for(_build_router(agent, _PublishRecorder()))
+    )
+    with client.stream(
+        "POST", "/chat", json={"message": "hi", "thread_id": "t-anchor"}
+    ) as response:
+        response.read()
+
+    minted = agent.astream_kwargs.get("_turn_user_message_id")
+    assert isinstance(minted, str) and minted
+    buffer = get_turn_stream_registry().get("t-anchor")
+    assert buffer is not None
+    assert buffer.user_message_id == minted
+    assert buffer.snapshot()["user_message_id"] == minted
 
 
 @pytest.mark.asyncio

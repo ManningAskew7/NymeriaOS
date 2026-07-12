@@ -38,10 +38,16 @@ def prepare_astream_input(
     sandbox_records: Optional[List["AttachmentRecord"]],
     force_unsupported_attachments: bool,
     is_self_invoke: bool,
+    user_message_id: Optional[str] = None,
 ) -> tuple[Optional[Dict[str, Any]], Optional[str], Optional[Dict[str, Any]]]:
     """Build the LangGraph input state for a streaming turn.
 
     Returns ``(input_state, context_summary_for_ui, input_error)``.
+
+    ``user_message_id``, when provided, is stamped as the HumanMessage's
+    graph id (LangGraph's ``add_messages`` preserves caller-set ids). The
+    chat route mints it and shares it with the turn stream buffer so
+    live-attach viewers can anchor hydrated history to the turn start.
     """
     from .agent import _create_human_message  # Lazy: avoid circular import at module load.
 
@@ -95,6 +101,8 @@ def prepare_astream_input(
         meta = _attachments_metadata()
         if meta:
             human_msg.additional_kwargs["attachments"] = meta
+        if user_message_id:
+            human_msg.id = user_message_id
         return {"messages": [human_msg]}, context_summary_for_ui, None
 
     # Image attachments require a compatibility check against the model.
@@ -152,4 +160,6 @@ def prepare_astream_input(
     else:
         human_msg = HumanMessage(content=content)
     human_msg.additional_kwargs["attachments"] = _attachments_metadata()
+    if user_message_id:
+        human_msg.id = user_message_id
     return {"messages": [human_msg]}, context_summary_for_ui, None

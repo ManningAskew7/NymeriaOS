@@ -504,6 +504,86 @@ describe('chatStore: interactive-turn recovery (re-attachable turns)', () => {
   });
 });
 
+describe('chatStore: live-attach viewer support (backlog #87)', () => {
+  let store: ReturnType<typeof createChatStore>;
+
+  beforeEach(() => {
+    store = createChatStore();
+  });
+
+  function makeGraphUser(content: string, graphMessageId: string, id = `u-${graphMessageId}`): Message {
+    return { ...makeUser(content, id), graphMessageId };
+  }
+
+  it('requestViewerAttach publishes a monotonically-sequenced request', () => {
+    expect(store.viewerAttachRequest).toBeNull();
+
+    store.requestViewerAttach('t-1', {
+      turnId: 'turn-a',
+      state: 'live',
+      lastSeq: 7,
+      truncated: false,
+      userMessageId: 'msg-anchor',
+    });
+    const first = store.viewerAttachRequest;
+    expect(first).toMatchObject({
+      threadId: 't-1',
+      turnId: 'turn-a',
+      userMessageId: 'msg-anchor',
+    });
+
+    store.requestViewerAttach('t-1', {
+      turnId: 'turn-b',
+      state: 'live',
+      lastSeq: 2,
+      truncated: false,
+    });
+    const second = store.viewerAttachRequest;
+    expect(second?.seq).toBeGreaterThan(first?.seq ?? 0);
+    expect(second?.turnId).toBe('turn-b');
+    // Missing anchor (message-less /resume turn) normalizes to null.
+    expect(second?.userMessageId).toBeNull();
+  });
+
+  it('trimAfterGraphMessageId drops the hydrated turn-so-far after the anchor', () => {
+    store.setMessages([
+      makeGraphUser('earlier prompt', 'g-1'),
+      makeCompletedAssistant('earlier reply'),
+      makeGraphUser('live turn prompt', 'g-2', 'u-live'),
+      makeCompletedAssistant('partial turn render', 'partial-1'),
+    ]);
+
+    expect(store.trimAfterGraphMessageId('g-2')).toBe(true);
+
+    expect(store.messages).toHaveLength(3);
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.graphMessageId).toBe('g-2');
+    // Earlier turns are untouched.
+    expect(store.messages[0].graphMessageId).toBe('g-1');
+    expect(store.messages[1].content).toBe('earlier reply');
+  });
+
+  it('trimAfterGraphMessageId is a no-op when the anchor is already the tail', () => {
+    store.setMessages([
+      makeGraphUser('earlier prompt', 'g-1'),
+      makeGraphUser('live turn prompt', 'g-2'),
+    ]);
+
+    expect(store.trimAfterGraphMessageId('g-2')).toBe(true);
+    expect(store.messages).toHaveLength(2);
+  });
+
+  it('trimAfterGraphMessageId returns false and trims nothing when the anchor is unknown', () => {
+    store.setMessages([
+      makeGraphUser('earlier prompt', 'g-1'),
+      makeCompletedAssistant('earlier reply'),
+    ]);
+
+    expect(store.trimAfterGraphMessageId('g-missing')).toBe(false);
+    expect(store.messages).toHaveLength(2);
+  });
+});
+
 describe('chatStore: turn-paused card + resume request (backlog #27)', () => {
   let store: ReturnType<typeof createChatStore>;
 

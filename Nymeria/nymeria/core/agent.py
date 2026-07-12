@@ -2718,6 +2718,7 @@ class NymeriaAgent:
         source_label: Optional[str] = None,
         _on_turn_started: Optional[Callable[[], None]] = None,
         _resume_halted_turn: bool = False,
+        _turn_user_message_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Async version of stream for use with FastAPI.
@@ -2758,6 +2759,12 @@ class NymeriaAgent:
                 under the lock; an unresumable tail yields an ``error``
                 with code ``resume_invalid``, a busy thread yields code
                 ``resume_busy`` (never queued).
+            _turn_user_message_id: Optional graph message id to stamp on
+                this turn's initiating HumanMessage. The chat route mints
+                it and hands the same id to the turn stream buffer, so
+                live-attach viewers can anchor hydrated history (which
+                exposes the id as ``message_id``) to the turn start.
+                Ignored on resume turns (no message is added).
 
         Yields:
             Same event types as stream(), plus the queue-related
@@ -3208,6 +3215,7 @@ class NymeriaAgent:
                     sandbox_records=sandbox_records,
                     force_unsupported_attachments=force_unsupported_attachments,
                     is_self_invoke=_is_self_invoke,
+                    user_message_id=_turn_user_message_id,
                 )
                 if input_error:
                     yield input_error
@@ -3400,10 +3408,19 @@ class NymeriaAgent:
                         if not pending_batch:
                             continue
 
+                    from .pending_prompt_queue import restored_prompts_payload
+
                     inject_evt = {
                         "type": "prompt_injected",
                         "count": len(pending_batch),
                         "sources": [p.source for p in pending_batch],
+                        # Raw prompt texts (index-parallel with ``sources``),
+                        # so ANY same-thread client can render the injected
+                        # user bubbles: without this only the client that
+                        # queued a given prompt has its text (a cross-client
+                        # or live-attach viewer would show the sub-turn with
+                        # the user message missing).
+                        "prompts": restored_prompts_payload(pending_batch),
                     }
                     yield inject_evt
                     for p in pending_batch:

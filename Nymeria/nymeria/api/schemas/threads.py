@@ -19,6 +19,14 @@ class ThreadTurnStatus(BaseModel):
     state: str  # live | done | error | aborted
     last_seq: int
     truncated: bool
+    # Graph message id of the turn's initiating user message (None for
+    # message-less turns, e.g. /resume). Live-attach viewers use it to anchor
+    # hydrated history to the turn start (history exposes it as message_id).
+    # Advisory, not guaranteed to resolve: a turn whose input was rejected
+    # before graph entry (e.g. incompatible image attachment) errors without
+    # persisting the message, so its buffer still advertises an id no history
+    # entry carries. Clients must treat anchor-not-found as reconcilable.
+    user_message_id: str | None = None
 
 
 class ThreadStatusResponse(BaseModel):
