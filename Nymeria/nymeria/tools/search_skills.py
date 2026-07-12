@@ -34,6 +34,18 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+
+def _template_summaries(skill) -> list[dict]:
+    """Name + description summaries of a skill's thread templates."""
+    try:
+        return [
+            {"name": t.name, "description": t.description}
+            for t in skill.thread_templates
+        ]
+    except Exception:  # noqa: BLE001 - metadata surfacing is best-effort
+        return []
+
+
 PROTECTED_SKILL_NAMES = frozenset({"self-improve"})
 
 
@@ -76,6 +88,7 @@ def _skill_status(*, user_id: str, thread_id: str) -> str:
                 "scope": skill.scope,
                 "required_tools": skill.required_tools,
                 "required_skills": skill.required_skills,
+                "thread_templates": _template_summaries(skill),
                 "tool_ttl": skill.tool_ttl,
                 "is_skill_kit": skill.is_skill_kit,
             }
@@ -253,6 +266,7 @@ def list_installed_skills(
             "allowed_tools": s.allowed_tools,
             "required_tools": s.required_tools,
             "required_skills": s.required_skills,
+            "thread_templates": _template_summaries(s),
             "tool_ttl": s.tool_ttl,
             "is_skill_kit": s.is_skill_kit,
             "default_active": False,
@@ -715,7 +729,8 @@ def skill_manage(
                     "scope": skill.scope,
                     "required_tools": skill.required_tools,
                     "required_skills": skill.required_skills,
-                        "tool_ttl": skill.tool_ttl,
+                    "thread_templates": _template_summaries(skill),
+                    "tool_ttl": skill.tool_ttl,
                     "is_skill_kit": skill.is_skill_kit,
                     "has_scripts": skill.has_scripts,
                     "has_references": skill.has_references,

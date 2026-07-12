@@ -1644,6 +1644,11 @@ class NymeriaAgent:
         from .agent_graph import build_skill_meta_tool
         return build_skill_meta_tool(self, user_id, tc, thread_tools)
 
+    def _build_template_thread_tools(self, user_id: str, tc, existing_names):
+        """Synthesize kit-declared thread-template tools for active skills."""
+        from .agent_graph import build_template_thread_tools
+        return build_template_thread_tools(self, user_id, tc, existing_names)
+
     def _skills_fingerprint(self, user_id: str, thread_id: str) -> str:
         """Hash inputs that affect the Skill meta-tool's description."""
         from .agent_graph import skills_fingerprint

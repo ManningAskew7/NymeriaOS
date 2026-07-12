@@ -163,6 +163,14 @@ def _render_skill_body(skill: Skill) -> str:
             "Skill Kit required skills: " + ", ".join(skill.required_skills)
         )
 
+    templates = skill.thread_templates
+    if templates:
+        aux_lines.append("")
+        aux_lines.append(
+            "Thread templates (callable threads, created on first call): "
+            + ", ".join(t.name for t in templates)
+        )
+
     if aux_lines:
         parts.append("---")
         parts.extend(aux_lines)
@@ -482,6 +490,110 @@ def _defer_required_skills_block(
     return "\n".join(lines)
 
 
+def _defer_thread_templates_block(skill: Skill) -> str:
+    """Deferred listing of a kit's thread templates: name + description + schema.
+
+    Nothing is registered on the thread; each template is runnable via
+    ``tool_invoke`` (the dispatch superset carries templates from every
+    installed skill), and its thread materializes on the first call.
+    """
+    templates = skill.thread_templates
+    if not templates:
+        return ""
+    from ..agents.tool_factory import create_template_thread_tool
+    from ..tools.schema_render import render_tool_args_schema
+
+    lines = [
+        "\n\n---\n"
+        "[Thread templates (deferred)] This kit declares callable-thread "
+        "templates. Nothing was registered on this thread; run one via "
+        "tool_invoke(name, arguments). Its thread is created on the first "
+        "call (with that call's task) and reused afterwards.",
+    ]
+    for template in templates:
+        desc = template.description.strip().replace("\n", " ")
+        lines.append(f"  - {template.name}: {desc}")
+        try:
+            schema = render_tool_args_schema(
+                create_template_thread_tool(skill.name, template)
+            )
+        except Exception:  # noqa: BLE001 - schema rendering is enrichment
+            logger.debug(
+                "template schema render failed for %r", template.name,
+                exc_info=True,
+            )
+            schema = ""
+        if schema:
+            lines.append(f"    args: {schema}")
+    return "\n".join(lines)
+
+
+def _register_thread_templates(
+    skill: Skill, config: RunnableConfig, *, reload_already_queued: bool
+) -> tuple[str, bool, bool]:
+    """Register a kit's thread templates on the current thread (defer=false).
+
+    Registration = enabling the kit on the thread (idempotent): template
+    tools are DERIVED from the active skill set at graph build, so this is
+    the persistent step that surfaces them, and deactivation is the single
+    removal path. Returns ``(note, reload_queued, cap_hit)``; the reload is
+    only queued when the activation actually changed the thread AND the
+    caller's tool binding did not already queue one (a second queue would
+    clobber the pending reload's tool list).
+    """
+    templates = skill.thread_templates
+    if not templates:
+        return "", False, False
+
+    from ..core.agent import get_current_agent
+    from ..tools.utils import get_thread_id
+
+    agent = get_current_agent()
+    try:
+        thread_id = get_thread_id(config)
+    except Exception:  # noqa: BLE001
+        thread_id = ""
+    if agent is None or not thread_id:
+        return (
+            "\n\n---\n[note] This kit declares thread templates, but no "
+            "active thread was available to register them on.",
+            False,
+            False,
+        )
+
+    from ..tools.skill_config import _activate_skill_on_thread, _queue_skill_reload
+
+    try:
+        changed = _activate_skill_on_thread(agent, thread_id, skill.name)
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"\n\n---\n[note] Thread template registration failed: {exc}",
+            False,
+            False,
+        )
+
+    queued = cap_hit = False
+    if changed and not reload_already_queued:
+        queued, cap_hit = _queue_skill_reload(
+            agent,
+            thread_id,
+            skill.name,
+            source="skill_kit",
+            reason="thread_templates_registered",
+        )
+
+    names = ", ".join(t.name for t in templates)
+    note = (
+        "\n\n---\n"
+        f"[Thread templates registered]: {names}. Each is a callable-thread "
+        "tool; its thread is created on the FIRST call (with that call's "
+        "task) and reused afterwards. Registration enabled this kit on the "
+        "thread; deactivating the kit removes the template tools (already "
+        "materialized threads live on as ordinary spawned threads)."
+    )
+    return note, queued, cap_hit
+
+
 def _allowed_tools_advisory(skill: Skill, thread_tools_set: set[str]) -> str:
     """Advisory body block warning when a skill's portable allowed-tools entries
     name real Nymeria tools missing from this thread.
@@ -654,6 +766,7 @@ def create_skill_meta_tool(
             body += _defer_required_skills_block(
                 skill, skill_manager, user_id, snapshot_by_name
             )
+            body += _defer_thread_templates_block(skill)
             if ttl is not None and str(ttl).strip() and skill.required_tools:
                 body += (
                     "\n\n---\n[note] ttl was ignored because defer=true binds no "
@@ -699,6 +812,15 @@ def create_skill_meta_tool(
         body += _nested_skill_bodies_block(skill, nested_skills)
         body += outcome.result_suffix
 
+        # Kit-declared thread templates register AFTER a successful bind so a
+        # binding failure never half-activates the kit.
+        template_note, template_reload_queued, template_cap_hit = (
+            _register_thread_templates(
+                skill, config, reload_already_queued=outcome.reload_queued
+            )
+        )
+        body += template_note
+
         if ttl_notice:
             body += "\n\n---\n" + ttl_notice
 
@@ -712,12 +834,32 @@ def create_skill_meta_tool(
             if emit_command:
                 return tool_reload_command(body, tool_call_id)
 
+        if template_reload_queued:
+            # Legacy rebuild mode, skill-only change (no tool bind queued a
+            # reload): the template tools cannot bind in this invocation.
+            body += (
+                "\n\n---\n"
+                "[Skill reload queued - STOP NOW]\n"
+                "This kit's thread templates were registered, but the current "
+                "graph invocation cannot bind them. Stop after this tool "
+                "result; the system will rebuild the tool list and resume "
+                "you automatically."
+            )
+            return tool_reload_command(body, tool_call_id)
+
         if outcome.cap_hit:
             body += (
                 "\n\n---\n"
                 "[notice] This Skill Kit's required tools were persisted, but "
                 "the turn already hit the in-turn reload cap. Do not call those "
                 "new tools until the next user turn."
+            )
+        if template_cap_hit:
+            body += (
+                "\n\n---\n"
+                "[notice] Thread templates were registered, but the turn "
+                "already hit the in-turn reload cap; the template tools become "
+                "callable on the next user turn."
             )
 
         return body

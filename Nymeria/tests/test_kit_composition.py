@@ -8,18 +8,28 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+import pytest
 from langgraph.types import Command
 
+from nymeria.agents import tool_factory
 from nymeria.core.agent import set_current_agent
-from nymeria.core.agent_graph import skills_fingerprint
+from nymeria.core.agent_graph import (
+    build_template_thread_tools,
+    compute_tool_superset,
+    select_tools_for_graph,
+    skills_fingerprint,
+)
 from nymeria.core.command_service import activate_skill_kit, deactivate_skill_kit
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.skills import (
     SkillManager,
+    ThreadTemplate,
     expanded_required_tools,
     load_skill_directory,
     resolve_nested_skills,
@@ -642,4 +652,576 @@ metadata:
     payload = _skill_write(md, agent)
     assert payload["ok"] is True
     assert payload["skill"]["required_skills"] == ["plain-skill"]
+    assert payload["skill"]["is_skill_kit"] is True
+
+
+# ---------------------------------------------------------------------------
+# #26: thread templates - parsing and the ThreadTemplate model
+# ---------------------------------------------------------------------------
+
+
+TEMPLATE_KIT_MD = """---
+name: template-kit
+description: Kit declaring a callable-thread template.
+metadata:
+  nymeria:
+    thread_templates:
+      - name: research-helper
+        description: Deep research helper thread.
+        instructions: You are a focused research thread.
+        tools:
+          - memory_clear_all
+        ttl_hours: 24
+---
+
+# Template Kit
+
+Call research_helper for deep dives.
+"""
+
+SLOPPY_TEMPLATE_KIT_MD = """---
+name: sloppy-kit
+description: Kit with one invalid and one valid template.
+metadata:
+  nymeria:
+    thread_templates:
+      - name: no-description-here
+      - name: good-helper
+        description: The good one.
+---
+
+# Sloppy Kit
+"""
+
+
+def test_thread_template_parse_normalization_and_kit_flag(tmp_path: Path):
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "template-kit", TEMPLATE_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    templates = skill.thread_templates
+    # Kebab-case declared name normalizes to a tool-safe underscore name.
+    assert [t.name for t in templates] == ["research_helper"]
+    t = templates[0]
+    assert t.thread_title == "Research Helper"
+    assert t.tools == ["memory_clear_all"]
+    assert t.ttl_hours == 24
+    # A skill declaring templates is a kit even with no required tools.
+    assert skill.is_skill_kit is True
+
+
+def test_thread_templates_lenient_load_skips_invalid_entries(tmp_path: Path):
+    skill = load_skill_directory(
+        _write_skill(tmp_path, "sloppy-kit", SLOPPY_TEMPLATE_KIT_MD), scope="bundled"
+    )
+    assert skill is not None
+    # The loader is lenient: the description-less entry is skipped with a
+    # warning, the valid one survives.
+    assert [t.name for t in skill.thread_templates] == ["good_helper"]
+
+
+def test_thread_template_model_validation():
+    with pytest.raises(Exception):
+        ThreadTemplate(name="Bad Name!", description="x")
+    with pytest.raises(Exception):
+        ThreadTemplate(name="ok_name", description="x", ttl_hours=0)
+    with pytest.raises(Exception):
+        ThreadTemplate(name="ok_name", description="x", instructions="a" * 5001)
+    with pytest.raises(Exception):
+        # extra="forbid": a typo'd key must fail, not be silently ignored.
+        ThreadTemplate(name="ok_name", description="x", bogus_key=True)
+    t = ThreadTemplate(name="ok_name", description="x", tools="alpha, beta, alpha")
+    assert t.tools == ["alpha", "beta"]
+
+
+# ---------------------------------------------------------------------------
+# #26: template tool surfacing (graph build + dispatch superset)
+# ---------------------------------------------------------------------------
+
+
+def test_build_template_thread_tools_derivation_rules(tmp_path: Path):
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    agent = _FakeAgent(tmp_path / "data", skill_manager=manager)
+
+    active_tc = ThreadConfig(thread_id="t1", enabled_skills=["template-kit"])
+    tools = build_template_thread_tools(agent, "user-a", active_tc, set())
+    assert [t.name for t in tools] == ["research_helper"]
+    assert "Skill Kit 'template-kit'" in tools[0].description
+
+    # Kit not active on the thread: nothing derived.
+    idle_tc = ThreadConfig(thread_id="t2")
+    assert build_template_thread_tools(agent, "user-a", idle_tc, set()) == []
+
+    # disabled_tools stays authoritative over template surfacing.
+    disabled_tc = ThreadConfig(
+        thread_id="t3",
+        enabled_skills=["template-kit"],
+        disabled_tools=["research_helper"],
+    )
+    assert build_template_thread_tools(agent, "user-a", disabled_tc, set()) == []
+
+    # An existing bound name (e.g. the materialized thread's ordinary callable
+    # tool) shadows the template tool.
+    assert (
+        build_template_thread_tools(agent, "user-a", active_tc, {"research_helper"})
+        == []
+    )
+
+
+def _graph_agent(tmp_path: Path, manager: SkillManager):
+    """MagicMock-pattern NymeriaAgent (as in test_graph_build_unification) with
+    a real ThreadConfigManager and real SkillManager for template tests."""
+    from nymeria.core.agent import NymeriaAgent
+
+    with patch.object(NymeriaAgent, "__init__", lambda self: None):
+        agent = NymeriaAgent()
+
+    agent.settings = MagicMock()
+    agent.settings.dynamic_tool_binding = False
+    agent.settings.allow_unbound_tool_calls = False
+    agent.thread_config_manager = ThreadConfigManager(tmp_path / "graph-data")
+    agent.profile_manager = MagicMock()
+    agent.profile_manager.get_profile.return_value = SimpleNamespace(
+        tool_preferences=SimpleNamespace(default_thread_tools=None),
+        enabled_global_skills=[],
+    )
+    agent.accounts_repo = MagicMock()
+    agent.accounts_repo.list_threads_for_user.return_value = []
+    agent.accounts_repo.get_user_by_id.return_value = SimpleNamespace(role="admin")
+    agent.tool_registry = MagicMock()
+    agent.tool_registry.get_all_tools.return_value = []
+    agent.tool_registry.get_tool.return_value = None
+    agent._callable_tool_thread_map = {}
+    agent._get_team_scoped_callable_threads = MagicMock(return_value=[])
+    agent.skill_manager = manager
+    return agent
+
+
+def test_select_tools_for_graph_binds_active_templates(tmp_path: Path):
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    agent = _graph_agent(tmp_path, manager)
+
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-a", enabled_skills=["template-kit"])
+    )
+    tools, _ = select_tools_for_graph(agent, "user-a", "thread-a")
+    assert "research_helper" in {t.name for t in tools}
+
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id="thread-b",
+            enabled_skills=["template-kit"],
+            disabled_tools=["research_helper"],
+        )
+    )
+    tools, _ = select_tools_for_graph(agent, "user-a", "thread-b")
+    assert "research_helper" not in {t.name for t in tools}
+
+    # Thread without the kit active: no template tool bound.
+    tools, _ = select_tools_for_graph(agent, "user-a", "thread-c")
+    assert "research_helper" not in {t.name for t in tools}
+
+
+def test_compute_tool_superset_includes_installed_templates(tmp_path: Path):
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    agent = _graph_agent(tmp_path, manager)
+
+    # The kit is enabled on NO thread: the dispatch superset still carries the
+    # template so the deferred path (tool_invoke) can run it, mirroring the
+    # "visibility is not reachability" loadability rule.
+    tools, names = compute_tool_superset(agent, "user-a", "thread-z")
+    assert "research_helper" in names
+    template_tool = next(t for t in tools if t.name == "research_helper")
+    assert "Skill Kit 'template-kit'" in template_tool.description
+
+
+def test_skills_fingerprint_folds_template_edits(tmp_path: Path):
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    agent = _FakeAgent(tmp_path / "data", skill_manager=manager)
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-a", enabled_skills=["template-kit"])
+    )
+    before = skills_fingerprint(agent, "user-a", "thread-a")
+
+    kit_dir = tmp_path / "bundled" / "template-kit"
+    (kit_dir / "SKILL.md").write_text(
+        TEMPLATE_KIT_MD.replace("ttl_hours: 24", "ttl_hours: 48"), encoding="utf-8"
+    )
+    manager.refresh_if_stale(force=True)
+    after = skills_fingerprint(agent, "user-a", "thread-a")
+    assert before != after
+
+
+# ---------------------------------------------------------------------------
+# #26: Skill() meta-tool surfacing (defer listing + defer=false registration)
+# ---------------------------------------------------------------------------
+
+
+def test_skill_meta_tool_defer_lists_template_schemas(tmp_path: Path):
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    kit = manager.get("template-kit")
+    agent = _FakeAgent(tmp_path / "data", skill_manager=manager)
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool(
+            [kit], skill_manager=manager, user_id="user-a"
+        )
+        result = skill_tool.func(
+            "template-kit", defer=True, tool_call_id="call-1", config=_CONFIG
+        )
+    finally:
+        set_current_agent(None)
+
+    assert isinstance(result, str)
+    assert "[Thread templates (deferred)]" in result
+    assert "research_helper: Deep research helper thread." in result
+    # The compact args schema is rendered for tool_invoke use.
+    assert "task" in result
+    # Nothing registered: the thread config was never created.
+    assert agent.thread_config_manager.get_config("thread-a") is None
+    assert agent._pending_tool_reload == {}
+
+
+def test_skill_meta_tool_registers_templates_on_activation(tmp_path: Path):
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    kit = manager.get("template-kit")
+    agent = _FakeAgent(tmp_path / "data", skill_manager=manager)
+    set_current_agent(agent)
+    try:
+        skill_tool = create_skill_meta_tool(
+            [kit], skill_manager=manager, user_id="user-a"
+        )
+        result = skill_tool.func("template-kit", tool_call_id="call-1", config=_CONFIG)
+        again = skill_tool.func("template-kit", tool_call_id="call-2", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+
+    # Legacy rebuild mode: registration enabled the kit (a skill-only change),
+    # so the invocation queues a reload and stops the turn.
+    assert isinstance(result, Command)
+    content = result.update["messages"][0].content
+    assert "[Thread templates registered]: research_helper" in content
+    assert "STOP NOW" in content
+    tc = agent.thread_config_manager.get_config("thread-a")
+    assert tc is not None
+    assert "template-kit" in tc.enabled_skills
+    assert "thread-a" in agent._pending_tool_reload
+
+    # Re-activation is idempotent: no second reload command, plain text.
+    assert isinstance(again, str)
+    assert "[Thread templates registered]" in again
+
+
+# ---------------------------------------------------------------------------
+# #26: lazy materialization on first call
+# ---------------------------------------------------------------------------
+
+
+class _TemplateAgent(_FakeAgent):
+    """_FakeAgent extended with the surfaces template materialization touches."""
+
+    def __init__(self, data_dir: Path, skill_manager=None):
+        super().__init__(data_dir, skill_manager=skill_manager)
+        self.owned_threads: list[str] = []
+        self.accounts_repo = SimpleNamespace(
+            get_user_by_id=lambda user_id: SimpleNamespace(role="admin"),
+            list_threads_for_user=lambda user_id: list(self.owned_threads),
+        )
+        self.meta_upserts: list = []
+        self.thread_metadata_manager = SimpleNamespace(
+            get_thread=lambda user_id, thread_id: None,
+            upsert_thread=lambda user_id, thread_id, **kw: self.meta_upserts.append(
+                (thread_id, kw)
+            ),
+        )
+        self.synced = 0
+
+    def sync_agent_tools(self):
+        self.synced += 1
+
+
+def _template_fixture(tmp_path: Path):
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    agent = _TemplateAgent(tmp_path / "data", skill_manager=manager)
+    kit = manager.get("template-kit")
+    assert kit is not None
+    template = kit.thread_templates[0]
+    tool = tool_factory.create_template_thread_tool("template-kit", template)
+    return manager, agent, tool
+
+
+def _fake_spawn_factory(agent: _TemplateAgent, spawn_calls: list, *, delay: float = 0.0):
+    """Fake for the module-level _spawn_template_thread seam: registers a
+    fresh callable thread on the fake agent and returns a spawn receipt."""
+
+    def fake_spawn(agent_arg, template, config):
+        spawn_calls.append(template.name)
+        if delay:
+            time.sleep(delay)
+        thread_id = f"spawned-{template.name}-{len(spawn_calls)}"
+        agent.thread_config_manager.save_config(
+            ThreadConfig(
+                thread_id=thread_id,
+                callable=True,
+                callable_name=f"spawned_{template.name}_x",
+                callable_description="fresh spawn",
+            )
+        )
+        agent.owned_threads.append(thread_id)
+        return (
+            f"[Spawned]: thread_id={thread_id}\n"
+            "Callable as: spawned_research_helper_x(task=...)"
+        )
+
+    return fake_spawn
+
+
+def test_template_first_call_materializes_then_routes(tmp_path: Path, monkeypatch):
+    _, agent, tool = _template_fixture(tmp_path)
+    spawn_calls: list[str] = []
+    invoke_calls: list[tuple] = []
+    monkeypatch.setattr(
+        tool_factory, "_spawn_template_thread", _fake_spawn_factory(agent, spawn_calls)
+    )
+
+    def fake_invoke(child_tc, task, mode, config):
+        invoke_calls.append((child_tc.thread_id, task, mode))
+        return "child answer"
+
+    monkeypatch.setattr(tool_factory, "_invoke_materialized", fake_invoke)
+
+    set_current_agent(agent)
+    try:
+        first = tool.func(task="dig into X", config=_CONFIG)
+        second = tool.func(task="follow up", mode="handoff", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+
+    # Exactly one spawn; the first call carries the materialization receipt.
+    assert spawn_calls == ["research_helper"]
+    assert first.startswith("[Materialized]: thread_id=spawned-research_helper-1")
+    assert first.endswith("child answer")
+    assert "[Materialized]" not in second
+
+    # Finalize renamed the spawn to the template tool name (the routing key).
+    tc = agent.thread_config_manager.get_config("spawned-research_helper-1")
+    assert tc is not None
+    assert tc.callable_name == "research_helper"
+    assert tc.callable_description == "Deep research helper thread."
+
+    # Provenance stamp (best-effort platform_meta).
+    assert agent.meta_upserts
+    thread_id, kwargs = agent.meta_upserts[0]
+    assert thread_id == "spawned-research_helper-1"
+    assert kwargs["platform_meta"] == {
+        "template_skill": "template-kit",
+        "template_name": "research_helper",
+    }
+    assert agent.synced >= 1
+
+    # Both calls routed to the SAME thread through the callable seam.
+    assert invoke_calls == [
+        ("spawned-research_helper-1", "dig into X", "ask"),
+        ("spawned-research_helper-1", "follow up", "handoff"),
+    ]
+
+
+def test_template_concurrent_first_calls_spawn_once(tmp_path: Path, monkeypatch):
+    _, agent, tool = _template_fixture(tmp_path)
+    spawn_calls: list[str] = []
+    monkeypatch.setattr(
+        tool_factory,
+        "_spawn_template_thread",
+        _fake_spawn_factory(agent, spawn_calls, delay=0.2),
+    )
+    monkeypatch.setattr(
+        tool_factory, "_invoke_materialized", lambda tc, task, mode, config: "answer"
+    )
+
+    results: list = [None, None]
+
+    def call(i: int):
+        results[i] = tool.func(task=f"task {i}", config=_CONFIG)
+
+    set_current_agent(agent)
+    try:
+        workers = [threading.Thread(target=call, args=(i,)) for i in range(2)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(timeout=10)
+    finally:
+        set_current_agent(None)
+
+    # The in-process lock serializes the two first calls: one spawn, the
+    # loser routes to the winner's freshly materialized thread.
+    assert spawn_calls == ["research_helper"]
+    assert all(r is not None and r.endswith("answer") for r in results)
+    assert sum("[Materialized]" in r for r in results) == 1
+
+
+def test_template_call_fails_closed_when_kit_uninstalled(tmp_path: Path, monkeypatch):
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    kit = manager.get("template-kit")
+    template = kit.thread_templates[0]
+    tool = tool_factory.create_template_thread_tool("template-kit", template)
+
+    # The agent's CURRENT store no longer has the kit: a stale graph still
+    # carrying the tool must fail closed, never spawn.
+    empty_manager = _manager_with(tmp_path / "other", {})
+    agent = _TemplateAgent(tmp_path / "data", skill_manager=empty_manager)
+    spawned = []
+    monkeypatch.setattr(
+        tool_factory,
+        "_spawn_template_thread",
+        lambda *a, **k: spawned.append(1) or "[Spawned]: thread_id=nope",
+    )
+
+    set_current_agent(agent)
+    try:
+        result = tool.func(task="x", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+
+    assert "no longer declares thread template 'research_helper'" in result
+    assert "stale" in result
+    assert spawned == []
+
+
+def test_template_spawn_refusal_passes_through_verbatim(tmp_path: Path, monkeypatch):
+    _, agent, tool = _template_fixture(tmp_path)
+    refusal = "[Error]: Spawn rate limit reached (5 per hour). Try again later."
+    monkeypatch.setattr(
+        tool_factory, "_spawn_template_thread", lambda *a, **k: refusal
+    )
+    invoked: list = []
+    monkeypatch.setattr(
+        tool_factory,
+        "_invoke_materialized",
+        lambda *a, **k: invoked.append(1) or "never",
+    )
+
+    set_current_agent(agent)
+    try:
+        result = tool.func(task="x", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+
+    # Spawn gates (depth/rate caps, role gates, bad kit) surface verbatim;
+    # nothing was created and nothing invoked.
+    assert result == refusal
+    assert invoked == []
+    assert agent.owned_threads == []
+
+
+def test_template_tool_rejects_bad_mode(tmp_path: Path):
+    _, agent, tool = _template_fixture(tmp_path)
+    set_current_agent(agent)
+    try:
+        result = tool.func(task="x", mode="broadcast", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+    assert result == "[Error]: mode must be 'ask' or 'handoff'."
+
+
+# ---------------------------------------------------------------------------
+# #26: skill_write / skill_edit validation of thread_templates
+# ---------------------------------------------------------------------------
+
+
+def test_skill_write_rejects_invalid_thread_templates(tmp_path: Path):
+    agent = _AuthoringAgent(tmp_path)
+    md = """---
+name: bad-template-kit
+description: Kit with invalid templates.
+metadata:
+  nymeria:
+    thread_templates:
+      - name: "helper!"
+        description: Bad tool name.
+      - name: ghost-runner
+        description: Unknown tool.
+        tools:
+          - no_such_tool_xyz
+      - name: ghost-runner
+        description: Duplicate name.
+---
+
+# Bad Kit
+"""
+    payload = _skill_write(md, agent)
+    assert payload["ok"] is False
+    msg = payload["error"]["message"]
+    assert "no skill was written" in msg
+    assert "thread_templates[0]" in msg
+    assert "no_such_tool_xyz" in msg
+    assert "duplicate template name" in msg
+
+
+def test_skill_write_rejects_template_collisions_and_unknown_kit(tmp_path: Path):
+    agent = _AuthoringAgent(tmp_path)
+    md = """---
+name: colliding-template-kit
+description: Kit whose template collides and names a missing kit.
+metadata:
+  nymeria:
+    thread_templates:
+      - name: bash_execute
+        description: Collides with a real tool.
+      - name: kit-user
+        description: Uses a kit that is not installed.
+        kit: not-a-kit
+---
+
+# Colliding Kit
+"""
+    payload = _skill_write(md, agent)
+    assert payload["ok"] is False
+    msg = payload["error"]["message"]
+    assert "collides with an existing tool" in msg
+    assert "'not-a-kit' is not installed" in msg
+
+
+def test_skill_write_template_tools_respect_role_gates(tmp_path: Path):
+    agent = _AuthoringAgent(tmp_path, role="user")
+    md = """---
+name: gated-template-kit
+description: Non-admin author declaring an admin-only template tool.
+metadata:
+  nymeria:
+    thread_templates:
+      - name: code-helper
+        description: Wants claude_code.
+        tools:
+          - claude_code
+---
+
+# Gated Kit
+"""
+    payload = _skill_write(md, agent)
+    assert payload["ok"] is False
+    assert "admin-only" in payload["error"]["message"]
+
+
+def test_skill_write_accepts_valid_thread_templates(tmp_path: Path):
+    agent = _AuthoringAgent(tmp_path)
+    md = """---
+name: authored-template-kit
+description: Authored kit with a valid thread template.
+metadata:
+  nymeria:
+    thread_templates:
+      - name: docs-helper
+        description: Documentation helper thread.
+        tools:
+          - memory_clear_all
+---
+
+# Authored Kit
+"""
+    payload = _skill_write(md, agent)
+    assert payload["ok"] is True
+    assert payload["skill"]["thread_templates"] == [
+        {"name": "docs_helper", "description": "Documentation helper thread."}
+    ]
     assert payload["skill"]["is_skill_kit"] is True

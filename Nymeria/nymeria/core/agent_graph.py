@@ -227,6 +227,56 @@ def build_skill_meta_tool(
     )
 
 
+def build_template_thread_tools(
+    agent: "NymeriaAgent", user_id: str, tc, existing_names
+) -> List[BaseTool]:
+    """Synthesize kit-declared thread-template tools for the ACTIVE skills.
+
+    Derived state (backlog #26): the kit being active on the thread IS the
+    registration, so activation is idempotent and deactivation removes the
+    tools at the next build. Names already bound win (a materialized thread's
+    ordinary callable tool shadows its template tool), and the thread's
+    authoritative ``disabled_tools`` applies by name.
+    """
+    if getattr(agent, "skill_manager", None) is None:
+        return []
+    from ..agents.tool_factory import create_template_thread_tool
+
+    try:
+        active = _active_skills_for_thread(agent, user_id, tc)
+    except Exception:  # noqa: BLE001 - template surfacing must not break a build
+        logger.warning(
+            "Active-skill resolution failed during template tool build",
+            exc_info=True,
+        )
+        return []
+
+    disabled = set(tc.disabled_tools or []) if tc else set()
+    seen = set(existing_names)
+    tools: List[BaseTool] = []
+    for skill in active:
+        for template in skill.thread_templates:
+            if template.name in disabled:
+                continue
+            if template.name in seen:
+                # A bound tool (or an earlier kit's template) owns the name;
+                # post-materialization this is the normal shadowing path.
+                logger.debug(
+                    "thread template %r from kit %r shadowed by an existing "
+                    "tool; skipping", template.name, skill.name,
+                )
+                continue
+            try:
+                tools.append(create_template_thread_tool(skill.name, template))
+                seen.add(template.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to build template tool %r from kit %r: %s",
+                    template.name, skill.name, exc,
+                )
+    return tools
+
+
 def _apply_execution_environment_descriptions(
     agent: "NymeriaAgent",
     tools: List[BaseTool],
@@ -358,10 +408,25 @@ def skills_fingerprint(agent: "NymeriaAgent", user_id: str, thread_id: str) -> s
     parts = [
         f"{s.name}:{s.scope}:{hash(s.description)}:{sorted(s.allowed_tools)}:"
         f"{sorted(s.required_tools)}:{s.tool_ttl}:"
-        f"{sorted(s.required_skills)}:{_nested_deps_digest(agent, s, user_id)}"
+        f"{sorted(s.required_skills)}:{_nested_deps_digest(agent, s, user_id)}:"
+        f"{_templates_digest(s)}"
         for s in active
     ]
     return f"sk:{hash('|'.join(parts))}"
+
+
+def _templates_digest(skill) -> str:
+    """Normalized digest of a skill's thread templates (order-sensitive)."""
+    templates = skill.thread_templates
+    if not templates:
+        return ""
+    try:
+        return json.dumps(
+            [t.model_dump() for t in templates], sort_keys=True, default=str
+        )
+    except Exception:  # noqa: BLE001 - a digest failure must not break a build
+        logger.debug("template digest failed for %r", skill.name, exc_info=True)
+        return "digest-error"
 
 
 def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
@@ -485,6 +550,19 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
                 reg_tool = agent.tool_registry.get_tool(name)
                 if reg_tool:
                     tools.append(reg_tool)
+
+    # Kit-declared thread templates (backlog #26): derived from the thread's
+    # ACTIVE skill set, after the disabled/extras passes so bound tools (and a
+    # materialized thread's ordinary callable tool) win name collisions and
+    # disabled_tools stays authoritative.
+    try:
+        tools.extend(
+            agent._build_template_thread_tools(
+                user_id, tc, {t.name for t in tools}
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - template surfacing is best-effort
+        logger.warning("Template thread tool injection failed: %s", exc)
 
     # Token optimization: when unbound direct calls are allowed (dynamic binding
     # only), the resident tool_invoke tool is redundant because the model can
@@ -618,6 +696,26 @@ def compute_tool_superset(agent: "NymeriaAgent", user_id: str, thread_id: str):
                 )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Owned-callable superset enumeration failed: %s", exc)
+
+    # Kit-declared thread templates: the SUPERSET includes templates from ALL
+    # skills installed and visible to the user (not just active ones), so the
+    # deferred path (tool_invoke) can execute a template without the kit being
+    # enabled, mirroring the "visibility is not reachability" loadability
+    # rule. Bound graphs stay active-only via build_template_thread_tools.
+    try:
+        skill_manager = getattr(agent, "skill_manager", None)
+        if skill_manager is not None:
+            from ..agents.tool_factory import create_template_thread_tool
+
+            for skill in skill_manager.list_installed(user_id=user_id):
+                for template in skill.thread_templates:
+                    if template.name in merged:
+                        continue
+                    merged[template.name] = create_template_thread_tool(
+                        skill.name, template
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Template tool superset enumeration failed: %s", exc)
 
     # Skill meta-tool: only present when the user actually has active
     # skills for this thread. We approximate by reading thread tools and

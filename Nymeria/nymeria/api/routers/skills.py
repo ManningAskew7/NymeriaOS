@@ -43,6 +43,10 @@ def create_skills_router(
             "allowed_tools": skill.allowed_tools,
             "required_tools": skill.required_tools,
             "required_skills": skill.required_skills,
+            "thread_templates": [
+                {"name": t.name, "description": t.description}
+                for t in skill.thread_templates
+            ],
             "tool_ttl": skill.tool_ttl,
             "is_skill_kit": skill.is_skill_kit,
             "default_active": False,

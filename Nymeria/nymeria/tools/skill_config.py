@@ -245,6 +245,18 @@ def _required_skills_from_frontmatter(frontmatter_data: dict[str, Any]) -> list[
     )
 
 
+def _thread_templates_from_frontmatter(frontmatter_data: dict[str, Any]) -> list:
+    nymeria = _nymeria_frontmatter(frontmatter_data)
+    raw = nymeria.get("thread_templates")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(
+            "metadata.nymeria.thread_templates must be a list of template objects"
+        )
+    return raw
+
+
 def _tool_ttl_from_frontmatter(frontmatter_data: dict[str, Any]) -> str:
     metadata = frontmatter_data.get("metadata")
     if isinstance(metadata, dict):
@@ -438,6 +450,87 @@ def _validate_required_skills(
         )
 
 
+def _validate_thread_templates(raw_templates: list, user_id: str) -> list[dict]:
+    """Strict authoring validation for ``metadata.nymeria.thread_templates``.
+
+    The loader is lenient (a hand-edited bad template is skipped with a
+    warning), but the authoring surface rejects: malformed entries (the
+    ThreadTemplate model, ``extra="forbid"``), duplicate/colliding tool names,
+    unknown or author-role-gated template tools, and an uninstalled ``kit``.
+    Returns ``[{name, description}, ...]`` summaries for the result payload.
+    """
+    if not raw_templates:
+        return []
+
+    from ..core.agent import get_current_agent
+    from ..skills import ThreadTemplate
+    from . import filter_admin_only_tools, filter_developer_only_tools
+
+    agent = get_current_agent()
+    if agent is None:
+        raise ValueError("No active agent. Cannot validate thread_templates.")
+
+    catalog = _build_catalog()
+    known = set(catalog.keys())
+    registry = getattr(agent, "tool_registry", None)
+    role = caller_role(user_id, agent=agent)
+    skill_manager = getattr(agent, "skill_manager", None)
+
+    errors: list[str] = []
+    validated: list[dict] = []
+    seen_names: set[str] = set()
+    for index, raw in enumerate(raw_templates):
+        label = f"thread_templates[{index}]"
+        try:
+            template = ThreadTemplate.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001 - surfaced as a validation error
+            errors.append(f"{label}: {exc}")
+            continue
+        if template.name in seen_names:
+            errors.append(f"{label}: duplicate template name {template.name!r}")
+            continue
+        seen_names.add(template.name)
+        if template.name in known or (registry and registry.get_tool(template.name)):
+            errors.append(
+                f"{label}: name {template.name!r} collides with an existing tool"
+            )
+        unknown = [
+            name
+            for name in template.tools
+            if name not in known and not (registry and registry.get_tool(name))
+        ]
+        if unknown:
+            errors.append(f"{label}: unknown template tools: {', '.join(unknown)}")
+        gated = [name for name in template.tools if name not in unknown]
+        _, blocked = filter_admin_only_tools(gated, role)
+        if blocked:
+            errors.append(
+                f"{label}: admin-only tools cannot be declared by this user: "
+                + ", ".join(sorted(blocked))
+            )
+        _, blocked = filter_developer_only_tools(gated, role)
+        if blocked:
+            errors.append(
+                f"{label}: developer-only diagnostic tools cannot be declared "
+                "by this user: " + ", ".join(sorted(blocked))
+            )
+        if template.kit and skill_manager is not None:
+            try:
+                kit_skill = skill_manager.get(template.kit, user_id=user_id)
+            except Exception:  # noqa: BLE001
+                kit_skill = None
+            if kit_skill is None:
+                errors.append(f"{label}: kit {template.kit!r} is not installed")
+        validated.append({"name": template.name, "description": template.description})
+
+    if errors:
+        raise ValueError(
+            "Thread template validation failed; no skill was written. "
+            + " ".join(errors)
+        )
+    return validated
+
+
 def _write_skill_md_atomic(target_dir: Path, markdown: str) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / "SKILL.md"
@@ -599,6 +692,9 @@ def _write_skill_package(
     _validate_required_tools(required_tools, user_id)
     required_skills = _required_skills_from_frontmatter(frontmatter_data)
     _validate_required_skills(required_skills, frontmatter.name, user_id)
+    thread_templates = _validate_thread_templates(
+        _thread_templates_from_frontmatter(frontmatter_data), user_id
+    )
 
     target_parent = skill_manager.target_dir(scope, user_id=user_id if scope == "user" else None)
     target_dir = target_parent / frontmatter.name
@@ -634,8 +730,11 @@ def _write_skill_package(
             "scope": scope,
             "required_tools": required_tools,
             "required_skills": required_skills,
+            "thread_templates": thread_templates,
             "tool_ttl": _tool_ttl_from_frontmatter(frontmatter_data),
-            "is_skill_kit": bool(required_tools or required_skills),
+            "is_skill_kit": bool(
+                required_tools or required_skills or thread_templates
+            ),
         },
         "scripts": [script.path for script in scripts],
     }
