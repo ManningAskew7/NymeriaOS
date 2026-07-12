@@ -254,6 +254,7 @@ EXPECTED_ROUTES = [
     ('/triggers/{trigger_id}', ('PATCH',)),
     ('/triggers/{trigger_id}/executions', ('GET',)),
     ('/triggers/{trigger_id}/test', ('POST',)),
+    ('/ui-prompts/{prompt_id}/result', ('POST',)),
     ('/users/{user_id}/memories', ('GET',)),
     ('/users/{user_id}/memories', ('POST',)),
     ('/users/{user_id}/memories/search', ('GET',)),

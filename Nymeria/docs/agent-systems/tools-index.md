@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1235 tools found.**
+**1236 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -519,7 +519,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `homeassistant_list_states` | `nymeria/tools/personal_device_service_integrations.py` | List Home Assistant entity states. |
 | `homeassistant_render_template` | `nymeria/tools/personal_device_service_integrations.py` | Render a Home Assistant template. |
 | `homeassistant_set_state` | `nymeria/tools/personal_device_service_integrations.py` | Create or update a Home Assistant entity state. |
-| `hook_config` | `nymeria/tools/hooks.py` | Create, update, or delete a lifecycle hook. |
+| `hook_config` | `nymeria/tools/hooks.py` | Create, update, delete, or install a lifecycle hook. |
 | `hook_info` | `nymeria/tools/hooks.py` | List, inspect, or debug lifecycle hooks. |
 | `http_request` | `nymeria/tools/http_api.py` | Make a one-off HTTP request to a documented API endpoint. |
 | `hubspot_archive_crm_object` | `nymeria/tools/customer_engagement_service_integrations.py` | Archive/delete a HubSpot CRM object. |
@@ -1130,6 +1130,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `twitter_repost` | `nymeria/tools/community_publishing_service_integrations.py` | Repost an X/Twitter post as the authenticated user. |
 | `twitter_search_recent` | `nymeria/tools/community_publishing_service_integrations.py` | Search recent X/Twitter posts. |
 | `twitter_send_direct_message` | `nymeria/tools/community_publishing_service_integrations.py` | Send an X/Twitter direct message to a user. |
+| `ui_prompt` | `nymeria/tools/ui_prompt.py` | Show an interactive HTML form to the user in the desktop app and wait |
 | `unleashed_get_stock_on_hand` | `nymeria/tools/commerce_billing_service_integrations.py` | Get Unleashed stock-on-hand for one product. |
 | `unleashed_list_sales_orders` | `nymeria/tools/commerce_billing_service_integrations.py` | List Unleashed sales orders. |
 | `unleashed_list_stock_on_hand` | `nymeria/tools/commerce_billing_service_integrations.py` | List Unleashed stock-on-hand records. |

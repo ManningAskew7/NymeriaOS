@@ -72,6 +72,7 @@ from .runtime_admin import (
 from .outlook_email import EMAIL_TOOLS
 from .browser import BROWSER_TOOLS
 from .chrome_browser import CHROME_BROWSER_TOOLS
+from .ui_prompt import ui_prompt, UI_PROMPT_TOOLS
 from .cli_statusbar import CLI_STATUSBAR_TOOLS
 from .calendar import CALENDAR_TOOLS
 from .notify import notify, NOTIFY_TOOLS
@@ -1395,6 +1396,7 @@ CATALOG_TOOLS = {t.name: t for t in (
     + HOOK_TOOLS
     + BROWSER_TOOLS
     + CHROME_BROWSER_TOOLS
+    + UI_PROMPT_TOOLS
     + CLI_STATUSBAR_TOOLS
     + CALENDAR_TOOLS
     + SELF_AGENT_TOOLS
@@ -2744,6 +2746,8 @@ __all__ = [
     "OUTLOOK_TOOLS",
     "BROWSER_TOOLS",
     "CHROME_BROWSER_TOOLS",
+    "ui_prompt",
+    "UI_PROMPT_TOOLS",
     "CALENDAR_TOOLS",
     "SELF_AGENT_TOOLS",
     "CATALOG_TOOLS",

@@ -141,6 +141,17 @@ def abort_with_cascade(
             f"Failed to abort pending browser commands on abort for {thread_id}: {e}"
         )
     try:
+        from .ui_prompt_coordinator import get_ui_prompt_coordinator
+        prompts_aborted = get_ui_prompt_coordinator().abort_thread(thread_id)
+        if prompts_aborted:
+            logger.info(
+                f"Abort on thread {thread_id} aborted {prompts_aborted} pending UI prompt(s)"
+            )
+    except Exception as e:
+        logger.warning(
+            f"Failed to abort pending UI prompts on abort for {thread_id}: {e}"
+        )
+    try:
         from .cli_config_coordinator import get_cli_config_coordinator
         cli_aborted = get_cli_config_coordinator().abort_thread(thread_id)
         if cli_aborted:

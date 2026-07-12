@@ -15,6 +15,7 @@ import { threadConfigStore } from './threadConfig.svelte';
 import { notificationStore } from './notifications.svelte';
 import { workflowsStore } from './workflows.svelte';
 import { authPromptStore } from './authPrompt.svelte';
+import { uiPromptStore } from './uiPrompt.svelte';
 import { errorsStore } from './errors.svelte';
 import { refreshThreadSyncBaseline } from './syncPoll.svelte';
 import { api } from '$lib/services/api.svelte';
@@ -950,6 +951,31 @@ function createAutonomousStore() {
             credentialId: null,
           });
         }
+        break;
+      }
+
+      case 'ui_prompt': {
+        // Per-user filtering already happens at the SSE generator. Like
+        // auth_prompt, the modal is global (not thread-scoped): the user can
+        // answer even after navigating away from the issuing thread.
+        const promptId = event.prompt_id as string | undefined;
+        if (!promptId) break;
+        uiPromptStore.open({
+          prompt_id: promptId,
+          thread_id: event.thread_id,
+          title: (event.title as string) || '',
+          html: (event.html as string) || '',
+          timeout_seconds: (event.timeout_seconds as number) || 300,
+          expires_at: (event.expires_at as string | null | undefined) ?? null,
+        });
+        break;
+      }
+
+      case 'ui_prompt_result': {
+        // Any client answered (or the backend published a timeout/abort
+        // closure); retract this client's copy of the modal.
+        const promptId = event.prompt_id as string | undefined;
+        if (promptId) uiPromptStore.clearById(promptId);
         break;
       }
 
