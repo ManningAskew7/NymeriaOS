@@ -25,6 +25,7 @@ from typing import Annotated, Any, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..config import get_settings
 from ..core.event_bus import publish_autonomous_event
 from ..core.time_utils import utc_now
 from ..core.ui_prompt_coordinator import (
@@ -40,6 +41,28 @@ _DEFAULT_TIMEOUT_SECONDS = 300
 _MIN_TIMEOUT_SECONDS = 15
 # 256 KiB: bounds the SSE frame / event-bus payload; real forms are a few KB.
 _MAX_HTML_BYTES = 256 * 1024
+# SafeToolNode terminates ANY tool call at settings.tool_timeout, with no
+# per-tool override, so the user-wait must stay under that ceiling or the
+# platform kill (a CancelledError, never our graceful timeout branch) always
+# wins. The margin keeps the tool's own timeout, plus its +1s await grace,
+# comfortably inside the node budget; mirrors bash_execute's
+# _effective_foreground_cap.
+_TOOL_TIMEOUT_MARGIN_SECONDS = 10
+
+
+def _effective_timeout_cap() -> int:
+    """The largest user-wait this deployment can honour (see margin note)."""
+    cap = MAX_TIMEOUT_SECONDS
+    try:
+        tool_timeout = int(get_settings().tool_timeout or 0)
+        if tool_timeout > 0:
+            cap = min(
+                cap,
+                max(_MIN_TIMEOUT_SECONDS, tool_timeout - _TOOL_TIMEOUT_MARGIN_SECONDS),
+            )
+    except Exception:  # noqa: BLE001 - a settings hiccup must not break the tool
+        pass
+    return cap
 
 
 def _format_result(payload: dict[str, Any]) -> str:
@@ -73,8 +96,7 @@ async def ui_prompt(
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> str:
-    """Show an interactive HTML form to the user in the desktop app and wait
-    for their answer.
+    """Show an interactive HTML form in the desktop app and return the user's answers.
 
     Write a self-contained HTML fragment (it becomes the body of a sandboxed
     document with no network access). Tailwind utility classes, DaisyUI
@@ -89,7 +111,9 @@ async def ui_prompt(
 
     html: the HTML fragment to render.
     title: short modal heading, e.g. "Choose deployment options".
-    timeout_seconds: how long to wait for the user (15-600, default 300).
+    timeout_seconds: seconds to wait for the user (15-600, default 300; the
+        effective wait is capped just below this server's tool timeout, so
+        large values may be shortened).
     """
     user_id = get_user_id(config)
     thread_id = get_thread_id(config)
@@ -108,7 +132,9 @@ async def ui_prompt(
             "provided by the renderer."
         )
 
-    timeout_s = max(_MIN_TIMEOUT_SECONDS, min(int(timeout_seconds), MAX_TIMEOUT_SECONDS))
+    # The clamped value is what gets stamped into the event, so the client
+    # countdown always shows time the tool will actually wait.
+    timeout_s = max(_MIN_TIMEOUT_SECONDS, min(int(timeout_seconds), _effective_timeout_cap()))
     prompt_id = new_prompt_id()
     clean_title = (title or "").strip()
     coord = get_ui_prompt_coordinator()
@@ -119,19 +145,25 @@ async def ui_prompt(
         title=clean_title,
     )
     expires_at = (utc_now() + timedelta(seconds=timeout_s)).isoformat()
-    publish_autonomous_event(
-        event_type="ui_prompt",
-        thread_id=thread_id,
-        user_id=user_id,
-        task_id="",
-        data={
-            "prompt_id": prompt_id,
-            "title": clean_title,
-            "html": html,
-            "timeout_seconds": timeout_s,
-            "expires_at": expires_at,
-        },
-    )
+    try:
+        publish_autonomous_event(
+            event_type="ui_prompt",
+            thread_id=thread_id,
+            user_id=user_id,
+            task_id="",
+            data={
+                "prompt_id": prompt_id,
+                "title": clean_title,
+                "html": html,
+                "timeout_seconds": timeout_s,
+                "expires_at": expires_at,
+            },
+        )
+    except Exception:
+        # No client can ever see this prompt; drop the registration instead
+        # of leaving it to linger until the orphan sweep.
+        coord.discard(prompt_id)
+        raise
     try:
         result = await asyncio.wait_for(future, timeout=timeout_s + 1)
     except asyncio.TimeoutError:
@@ -143,8 +175,10 @@ async def ui_prompt(
             "without the answers or ask in chat instead."
         )
     except asyncio.CancelledError:
+        # Distinct from a user dismissal ("cancelled"): the surrounding turn
+        # was cancelled or the platform tool timeout fired.
         coord.discard(prompt_id)
-        _publish_closure(prompt_id, thread_id, user_id, "cancelled")
+        _publish_closure(prompt_id, thread_id, user_id, "turn_cancelled")
         raise
     status = result.get("status") if isinstance(result, dict) else None
     if status in ("aborted", "swept"):

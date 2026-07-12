@@ -273,16 +273,28 @@ def test_result_publishes_observability_event_without_values(env) -> None:
             user_id="alice",
             thread_id="thread-alice",
         )
+        result_box: dict = {}
 
         def post_result() -> None:
-            client.post(
+            result_box["resp"] = client.post(
                 f"/ui-prompts/{prompt_id}/result",
                 headers=_auth(alice_token),
                 json={"status": "submitted", "values": {"secret": "hunter2"}},
             )
 
         threading.Thread(target=post_result, daemon=True).start()
-        return await asyncio.wait_for(future, timeout=3)
+        resolved = await asyncio.wait_for(future, timeout=3)
+        # The future resolves BEFORE the endpoint publishes the observability
+        # event; wait for the HTTP response to complete so the publish has
+        # definitely happened before the bus is drained.
+        for _ in range(150):
+            if "resp" in result_box:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("result POST never completed")
+        assert result_box["resp"].status_code == 200
+        return resolved
 
     asyncio.run(run())
     seen = []
