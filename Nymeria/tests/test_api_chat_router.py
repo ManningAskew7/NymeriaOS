@@ -926,3 +926,183 @@ def test_resume_sync_parity(tmp_path: Path, api_client_builder):
     assert len(agent.chat_calls) == 1
     assert agent.chat_calls[0]["message"] == ""
     assert agent.chat_calls[0]["_resume_halted_turn"] is True
+
+
+# ---------------------------------------------------------------------------
+# Interactive admission control (backlog #83)
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from nymeria.core.interactive_admission import (  # noqa: E402
+    CAPACITY_DETAIL,
+    get_interactive_turn_gate,
+    reset_interactive_turn_gate_for_tests,
+)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_interactive_gate():
+    """Isolate the process-global admission gate per test in this module."""
+    reset_interactive_turn_gate_for_tests()
+    yield
+    reset_interactive_turn_gate_for_tests()
+
+
+def _capacity_client(tmp_path: Path, api_client_builder, agent=None):
+    settings = api_client_builder.settings(
+        tmp_path, max_concurrent_interactive=1
+    )
+    agent = agent or FakeChatAgent(tmp_path)
+    client, token = api_client_builder.authenticated_client(
+        agent, settings, user_id="alice"
+    )
+    return client, agent, token
+
+
+def test_chat_stream_sheds_429_at_interactive_capacity(
+    tmp_path: Path, api_client_builder
+):
+    client, agent, token = _capacity_client(tmp_path, api_client_builder)
+    held = get_interactive_turn_gate().try_acquire(1)
+    assert held is not None
+
+    response = client.post(
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "hello", "thread_id": "cap-1"},
+    )
+
+    # Shed BEFORE the SSE handshake: a plain HTTP 429 with the documented
+    # string detail and the advisory Retry-After, and no turn was started.
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "10"
+    assert response.json() == {"detail": CAPACITY_DETAIL}
+    assert agent.astream_calls == []
+    held.release()
+
+
+def test_chat_sync_sheds_429_at_interactive_capacity(
+    tmp_path: Path, api_client_builder
+):
+    client, agent, token = _capacity_client(tmp_path, api_client_builder)
+    held = get_interactive_turn_gate().try_acquire(1)
+    assert held is not None
+
+    response = client.post(
+        "/chat/sync",
+        headers=api_client_builder.auth(token),
+        json={"message": "hello", "thread_id": "cap-sync"},
+    )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "10"
+    assert response.json() == {"detail": CAPACITY_DETAIL}
+    assert agent.chat_calls == []
+    held.release()
+
+
+def test_chat_stream_busy_thread_bypasses_capacity(
+    tmp_path: Path, api_client_builder
+):
+    # A prompt aimed at a busy thread queues onto the running holder turn
+    # (no new concurrency), so it must pass through even at the ceiling.
+    client, agent, token = _capacity_client(tmp_path, api_client_builder)
+    held = get_interactive_turn_gate().try_acquire(1)
+    assert held is not None
+    agent._thread_locks.busy_responses = [True]
+
+    response = client.post(
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "hello", "thread_id": "busy-1"},
+    )
+
+    assert response.status_code == 200
+    assert len(agent.astream_calls) == 1
+    held.release()
+
+
+def test_chat_stream_self_invoke_bypasses_capacity(
+    tmp_path: Path, api_client_builder
+):
+    # Relay turns are bounded by max_concurrent_autonomous on the dispatch
+    # side; the interactive ceiling must not double-count them.
+    client, agent, token = _capacity_client(tmp_path, api_client_builder)
+    held = get_interactive_turn_gate().try_acquire(1)
+    assert held is not None
+
+    response = client.post(
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "go", "thread_id": "relay-1", "is_self_invoke": True},
+    )
+
+    assert response.status_code == 200
+    assert len(agent.astream_calls) == 1
+    held.release()
+
+
+def test_chat_stream_slot_freed_at_turn_end(tmp_path: Path, api_client_builder):
+    # With limit=1, two sequential turns must both run: the first turn's
+    # slot is released in the stream generator's finally.
+    client, agent, token = _capacity_client(tmp_path, api_client_builder)
+
+    for thread in ("seq-1", "seq-2"):
+        response = client.post(
+            "/chat",
+            headers=api_client_builder.auth(token),
+            json={"message": "hello", "thread_id": thread},
+        )
+        assert response.status_code == 200
+
+    assert len(agent.astream_calls) == 2
+    assert get_interactive_turn_gate().active == 0
+
+
+def test_chat_stream_releases_slot_on_prompt_queued(
+    tmp_path: Path, api_client_builder
+):
+    # An admitted request that loses the lock race becomes a queued prompt:
+    # the route gives its slot back as soon as astream reports prompt_queued.
+    # The fake embeds the gate's live count into the NEXT chunk, which the
+    # route only sees after processing prompt_queued.
+    class QueueProbeAgent(FakeChatAgent):
+        async def astream(self, message: str, **kwargs: Any):
+            yield {"type": "prompt_queued", "position": 1, "source": "user"}
+            yield {
+                "type": "response",
+                "content": f"active={get_interactive_turn_gate().active}",
+            }
+
+    agent = QueueProbeAgent(tmp_path)
+    client, agent, token = _capacity_client(
+        tmp_path, api_client_builder, agent=agent
+    )
+
+    response = client.post(
+        "/chat",
+        headers=api_client_builder.auth(token),
+        json={"message": "hello", "thread_id": "race-1"},
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    probe = [e for e in events if e["type"] == "response"]
+    assert probe and probe[0]["content"] == "active=0"
+    assert get_interactive_turn_gate().active == 0
+
+
+def test_chat_sync_admits_and_frees_slot(tmp_path: Path, api_client_builder):
+    client, agent, token = _capacity_client(tmp_path, api_client_builder)
+
+    for thread in ("s-1", "s-2"):
+        response = client.post(
+            "/chat/sync",
+            headers=api_client_builder.auth(token),
+            json={"message": "hello", "thread_id": thread},
+        )
+        assert response.status_code == 200
+
+    assert len(agent.chat_calls) == 2
+    assert get_interactive_turn_gate().active == 0

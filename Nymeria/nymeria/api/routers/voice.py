@@ -64,6 +64,24 @@ def create_voice_router(
         logger.info(f"[VOICE] STT ({stt_elapsed:.1f}s): {transcription[:100]}...")
 
         agent = get_agent_fn()
+
+        # Global interactive-turn admission (backlog #83): a voice turn is an
+        # interactive holder turn like any /chat message, so it draws against
+        # the same ceiling (busy-thread prompts queue and pass through).
+        from ...core.interactive_admission import (
+            InteractiveCapacityError,
+            admit_interactive_turn,
+        )
+
+        try:
+            turn_slot = await admit_interactive_turn(agent, settings, tid)
+        except InteractiveCapacityError as e:
+            raise HTTPException(
+                status_code=429,
+                detail=e.detail,
+                headers={"Retry-After": str(e.retry_after)},
+            )
+
         t1 = _time.monotonic()
         try:
             response_text = ""
@@ -81,6 +99,9 @@ def create_voice_router(
         except Exception as e:
             logger.error(f"[VOICE] Agent error: {e}")
             raise HTTPException(status_code=500, detail=f"Agent error: {e}")
+        finally:
+            if turn_slot is not None:
+                turn_slot.release()
         agent_elapsed = _time.monotonic() - t1
 
         if not response_text:

@@ -35,6 +35,10 @@ from ...core.command_service import (
     CommandContext,
     get_command_service,
 )
+from ...core.interactive_admission import (
+    InteractiveCapacityError,
+    admit_interactive_turn,
+)
 from .threads import _thread_list_platform
 
 logger = logging.getLogger(__name__)
@@ -223,19 +227,37 @@ class InProcessBotAPI:
     async def _chat_stream(self, message: str, thread_id: str, user_id: str):
         authed = self._authenticated_user(user_id)
         self._require_thread_access(authed, thread_id)
-        self._publish_sync_event(
-            event_type="message_added",
-            thread_id=thread_id,
-            user_id=user_id,
-            data={"role": "user", "content": message},
-            origin_client_id=self._origin_client_id,
-        )
-        async for chunk in self.agent.astream(
-            message,
-            thread_id=thread_id,
-            user_id=user_id,
-        ):
-            yield chunk
+        # Global interactive-turn admission (backlog #83): the adapter is an
+        # in-process mirror of POST /chat, so its turns draw against the same
+        # ceiling. Busy-thread prompts pass through (they queue onto the
+        # running holder). Shed before the message_added publish so other
+        # clients never render a user message that was not run.
+        turn_slot = await self._admit_interactive_turn(thread_id)
+        try:
+            self._publish_sync_event(
+                event_type="message_added",
+                thread_id=thread_id,
+                user_id=user_id,
+                data={"role": "user", "content": message},
+                origin_client_id=self._origin_client_id,
+            )
+            async for chunk in self.agent.astream(
+                message,
+                thread_id=thread_id,
+                user_id=user_id,
+            ):
+                # Lost the lock race and queued instead of holding: give the
+                # slot back while this stream observes the holder turn.
+                if (
+                    turn_slot is not None
+                    and isinstance(chunk, dict)
+                    and chunk.get("type") == "prompt_queued"
+                ):
+                    turn_slot.release()
+                yield chunk
+        finally:
+            if turn_slot is not None:
+                turn_slot.release()
         done: dict[str, Any] = {
             "type": "done",
             "thread_id": thread_id,
@@ -271,21 +293,43 @@ class InProcessBotAPI:
 
         authed = self._authenticated_user(user_id)
         self._require_thread_access(authed, thread_id)
+        # Global interactive-turn admission (backlog #83); mirrors /chat/sync.
+        turn_slot = await self._admit_interactive_turn(thread_id)
         # Off the event loop: the sync turn would otherwise block every
         # stream and probe in the process until it finishes. The tool count
         # is read on the same worker thread (race-free under concurrency).
-        response, tool_call_count = await asyncio.to_thread(
-            run_sync_turn_with_tool_count,
-            self.agent,
-            message,
-            thread_id=thread_id,
-            user_id=user_id,
-        )
+        try:
+            response, tool_call_count = await asyncio.to_thread(
+                run_sync_turn_with_tool_count,
+                self.agent,
+                message,
+                thread_id=thread_id,
+                user_id=user_id,
+            )
+        finally:
+            if turn_slot is not None:
+                turn_slot.release()
         return {
             "response": response,
             "thread_id": thread_id,
             "tool_call_count": tool_call_count,
         }
+
+    async def _admit_interactive_turn(self, thread_id: str):
+        """Admission-check one adapter turn, shedding as the platform error.
+
+        Returns the slot to release at turn end, or ``None`` when exempt
+        (busy thread). The native bot handlers already catch their
+        ``BotAPIError`` and relay the message to the user.
+        """
+        try:
+            return await admit_interactive_turn(
+                self.agent,
+                getattr(self.agent, "settings", None),
+                thread_id,
+            )
+        except InteractiveCapacityError as exc:
+            raise self._error_cls(exc.detail, status_code=429) from exc
 
     def _authenticated_user(self, user_id: Optional[str]) -> AuthenticatedUser:
         if not user_id:

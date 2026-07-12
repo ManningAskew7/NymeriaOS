@@ -516,6 +516,33 @@ treated as normal chat. If it matches multiple threads, `/chat` emits an `error`
 event with
 `code: "mention_ambiguous"` and candidate thread IDs.
 
+**Capacity shedding (HTTP 429):** the API enforces an optional global ceiling
+on concurrent interactive turns (`MAX_CONCURRENT_INTERACTIVE`, default `0` =
+unlimited, feature off). When the ceiling is saturated, a request that would
+start a new turn waits up to `INTERACTIVE_ADMISSION_WAIT_SECONDS` (default 10)
+for a slot, then is rejected BEFORE the SSE handshake:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 10
+
+{"detail": "The server is at its interactive turn limit; your message was not started. Try again in a moment."}
+```
+
+`Retry-After` is advisory (the server cannot know when a running turn will
+end). No `message_added` sync event is published for a shed request, so other
+clients never render a user message that was not run. Exempt from the ceiling:
+`is_self_invoke` relay turns (bounded by `MAX_CONCURRENT_AUTONOMOUS` on the
+dispatch side instead) and prompts sent to a thread whose turn is already
+running (those queue onto the running turn via `prompt_queued` and start no
+new concurrency; a queued request that raced the thread lock releases its
+admission slot as soon as `prompt_queued` is emitted). Disconnected holder
+turns keep counting until they finish (they keep running and stay
+re-attachable). The same contract applies to `POST /chat/sync`,
+`POST /voice/chat`, and the in-process webhook-bot chat paths. This 429 is
+distinct from the per-user request rate limit's 429 (`"Too many requests;
+please slow down."`); both mean back off and retry.
+
 **Autonomous caller contract:** Trusted workers and thin clients start internal
 work by calling `POST /chat` with `is_self_invoke=true`, a normal Bearer token,
 and usually `X-Nymeria-Act-As: <target_user_id>` when using an admin service
@@ -620,7 +647,7 @@ Content-Type: application/json
 Authorization: Bearer <token>
 ```
 
-**Request Body:** Same as the streaming endpoint, including the optional `is_self_invoke` and `trigger_override` fields. Self-invoke behavior here is identical to `/chat`  -  it's a pass-through to `agent.chat()` with those flags.
+**Request Body:** Same as the streaming endpoint, including the optional `is_self_invoke` and `trigger_override` fields. Self-invoke behavior here is identical to `/chat`  -  it's a pass-through to `agent.chat()` with those flags. The interactive capacity ceiling applies here too (HTTP 429 + `Retry-After`; see "Capacity shedding" under Chat (Streaming)).
 
 **Response:**
 ```json

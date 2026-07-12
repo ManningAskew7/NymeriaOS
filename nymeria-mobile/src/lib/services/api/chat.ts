@@ -31,6 +31,27 @@ export function hasActiveStreamForThread(threadId: string): boolean {
   return currentAbortController !== null && currentStreamThreadId === threadId;
 }
 
+/**
+ * Human-readable message for a non-OK chat HTTP response. Backend errors are
+ * FastAPI-shaped (`{"detail": "..."}` or `{"detail": {"message": ...}}`, e.g.
+ * the per-user rate limit and interactive capacity 429s, the 413 attachment
+ * caps), so surface the detail text instead of a raw JSON blob; fall back to
+ * the legacy status-plus-body string when the body is not that shape.
+ */
+function httpErrorMessage(status: number, bodyText: string): string {
+  try {
+    const detail = (JSON.parse(bodyText) as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail === 'object') {
+      const message = (detail as { message?: unknown }).message;
+      if (typeof message === 'string' && message.trim()) return message;
+    }
+  } catch {
+    // Not JSON; use the raw text below.
+  }
+  return `API error: ${status} - ${bodyText}`;
+}
+
 export class ChatApi extends CredentialsApi {
   async *chatStream(
     message: string,
@@ -84,7 +105,7 @@ export class ChatApi extends CredentialsApi {
       yield {
         type: 'error',
         data: {
-          message: `API error: ${response.status} - ${errorText}`,
+          message: httpErrorMessage(response.status, errorText),
           code: response.status.toString()
         },
         timestamp: new Date()
@@ -202,7 +223,7 @@ export class ChatApi extends CredentialsApi {
       yield {
         type: 'error',
         data: {
-          message: `API error: ${response.status} - ${errorText}`,
+          message: httpErrorMessage(response.status, errorText),
           code: response.status.toString()
         },
         timestamp: new Date()

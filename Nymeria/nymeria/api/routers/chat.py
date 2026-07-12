@@ -15,6 +15,11 @@ from fastapi.responses import StreamingResponse
 
 from ...core.accounts import AuthenticatedUser
 from ...core.agent_compaction import COMPACTING_MESSAGE
+from ...core.interactive_admission import (
+    InteractiveCapacityError,
+    TurnSlot,
+    admit_interactive_turn,
+)
 from ...core.event_bus import (
     publish_agent_stream_chunk as default_publish_agent_stream_chunk,
     publish_autonomous_event as default_publish_autonomous_event,
@@ -1200,6 +1205,27 @@ def create_chat_router(
                 )
                 msg_stripped = message.strip().lower()
 
+        # Global interactive-turn admission (backlog #83): only requests
+        # that would START a new holder turn are gated. A prompt aimed at a
+        # busy thread queues onto the running turn (no new concurrency) and
+        # self-invoke relays are already bounded by max_concurrent_autonomous,
+        # so both pass through (slot None). Sheds with 429 BEFORE the
+        # message_added publish and the SSE handshake, so other clients never
+        # render a user message that was not run.
+        try:
+            turn_slot: Optional[TurnSlot] = await admit_interactive_turn(
+                agent,
+                get_settings_fn(),
+                thread_id,
+                is_self_invoke=request.is_self_invoke,
+            )
+        except InteractiveCapacityError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail=exc.detail,
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from exc
+
         # Read client ID from header for sync event origin filtering
         client_id = http_request.headers.get("x-nymeria-client-id", "")
 
@@ -1211,13 +1237,21 @@ def create_chat_router(
         # other clients (they learn about the continuation via turn_resumed
         # and the streamed events instead).
         if not request.is_self_invoke and not resume_halted_turn:
-            publish_sync_event_fn(
-                event_type="message_added",
-                thread_id=thread_id,
-                user_id=user_id,
-                data={"role": "user", "content": display_message},
-                origin_client_id=client_id,
-            )
+            try:
+                publish_sync_event_fn(
+                    event_type="message_added",
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    data={"role": "user", "content": display_message},
+                    origin_client_id=client_id,
+                )
+            except BaseException:
+                # The admission slot is otherwise released by the response
+                # generator's finally; a failure before the response exists
+                # must not strand it.
+                if turn_slot is not None:
+                    turn_slot.release()
+                raise
 
         # Autonomous task bookends: publish task_started/task_completed to Redis so
         # /autonomous/stream subscribers see watchdog/ticker activity live. Matches
@@ -1378,6 +1412,15 @@ def create_chat_router(
                     _resume_halted_turn=resume_halted_turn,
                     _turn_user_message_id=turn_user_message_id,
                 ):
+                    # This request lost the lock race and queued its prompt
+                    # onto the running holder turn instead of starting one:
+                    # give the admission slot back while it observes the
+                    # holder's stream. Only prompt_queued proves the queued
+                    # outcome (the legacy bare `queued` event also fires on
+                    # paths that still become the holder).
+                    if turn_slot is not None and chunk.get("type") == "prompt_queued":
+                        turn_slot.release()
+
                     # If the client disconnected, stop yielding SSE events but
                     # keep consuming the generator so the agent finishes its
                     # work, teeing holder events into the turn buffer so the
@@ -1596,6 +1639,13 @@ def create_chat_router(
                     )
                     autonomous_completed = True
             finally:
+                # The admission slot is held for the turn's whole life,
+                # including after a client disconnect (a disconnected holder
+                # turn keeps running and doing real work, so it keeps drawing
+                # against the interactive ceiling). release() is idempotent
+                # (no-op after the prompt_queued early release above).
+                if turn_slot is not None:
+                    turn_slot.release()
                 # A holder buffer still live here means the generator died
                 # without a terminal event (GeneratorExit / task cancel):
                 # mark it aborted so re-attachers get an honest end-of-stream
@@ -1784,25 +1834,48 @@ def create_chat_router(
 
             refresh_thread_activity(agent, user_id, thread_id)
 
+        # Global interactive-turn admission (backlog #83); same exemptions
+        # and 429 contract as the streaming endpoint above. The sync path
+        # cannot observe queue events, so a request that loses the lock race
+        # holds its slot until agent.chat() returns (accepted overcount in a
+        # one-probe race window; capacity policy, not correctness).
+        try:
+            turn_slot = await admit_interactive_turn(
+                agent,
+                get_settings_fn(),
+                thread_id,
+                is_self_invoke=request.is_self_invoke,
+            )
+        except InteractiveCapacityError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail=exc.detail,
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from exc
+
         # The whole synchronous turn (LLM round trips, tools, checkpoint
         # writes) runs off the event loop; running it inline would freeze
         # every SSE stream and probe in the process for the turn's duration.
-        response, tool_call_count = await asyncio.to_thread(
-            run_sync_turn_with_tool_count,
-            agent,
-            message,
-            thread_id=thread_id,
-            user_id=user_id,
-            attachments=attachments,
-            images=images,
-            force_unsupported_attachments=request.force_unsupported_attachments,
-            _is_self_invoke=request.is_self_invoke,
-            _trigger_override=request.trigger_override,
-            source=prompt_source,
-            source_id=prompt_source_id,
-            source_label=prompt_source_label or user_id,
-            _resume_halted_turn=resume_halted_turn,
-        )
+        try:
+            response, tool_call_count = await asyncio.to_thread(
+                run_sync_turn_with_tool_count,
+                agent,
+                message,
+                thread_id=thread_id,
+                user_id=user_id,
+                attachments=attachments,
+                images=images,
+                force_unsupported_attachments=request.force_unsupported_attachments,
+                _is_self_invoke=request.is_self_invoke,
+                _trigger_override=request.trigger_override,
+                source=prompt_source,
+                source_id=prompt_source_id,
+                source_label=prompt_source_label or user_id,
+                _resume_halted_turn=resume_halted_turn,
+            )
+        finally:
+            if turn_slot is not None:
+                turn_slot.release()
         if is_quick:
             response = f"{response}{_quick_continue_footer(thread_id)}"
         return ChatResponse(
