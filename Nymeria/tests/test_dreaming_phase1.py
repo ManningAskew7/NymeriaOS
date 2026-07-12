@@ -647,3 +647,220 @@ def test_run_dream_cycle_publishes_error_event_on_failure(stub_agent, monkeypatc
     assert "provider exploded" in completed[0]["data"]["error_message"]
     # No dream_completed on the parent when the cycle failed.
     assert not [e for e in sink.sync if e["event_type"] == "dream_completed"]
+
+
+def test_run_dream_cycle_dispatches_with_dream_source(stub_agent, monkeypatch):
+    """The dream turn rides the standard source taxonomy.
+
+    ``source="dream"`` is what makes lifecycle hooks see
+    ``holder_kind="dream"`` (targetable/excludable via fire_conditions)
+    instead of the dream masquerading as a "ticker" turn.
+    ``_is_self_invoke`` stays as the legacy autonomous back-stop.
+    """
+    import nymeria.core.stream_bridge as bridge
+    from nymeria.core.dreaming import invoke as invoke_mod
+    from nymeria.core.stream_bridge import StreamCollection
+
+    _EventSink().install(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    def _capture(agent, *, astream_kwargs, on_chunk=None, error_message_factory=None):
+        seen.update(astream_kwargs)
+        return StreamCollection()
+
+    monkeypatch.setattr(bridge, "stream_and_collect", _capture)
+    invoke_mod._run_dream_cycle(
+        agent=stub_agent,
+        shadow_thread_id="dream-parent-1-x",
+        parent_thread_id="parent-1",
+        user_id="u1",
+        initial_prompt="[Dream cycle starting]",
+        title="Dream: parent-1",
+    )
+
+    assert seen["source"] == "dream"
+    assert seen["_is_self_invoke"] is True
+    assert seen["_trigger_override"] == 'Dream("parent-1")'
+    assert seen["thread_id"] == "dream-parent-1-x"
+
+
+# ---------------------------------------------------------------------------
+# Strand 2 alignment: prompt phases <-> tool allowlist, and shadow retargeting
+# of the skill/trigger management surfaces.
+# ---------------------------------------------------------------------------
+
+
+def test_log_user_turn_activity_gates_and_records(monkeypatch):
+    """The shared chat/astream activity helper feeds the dream gates.
+
+    Genuine user turns record USER_MESSAGE (turns/idle gate inputs);
+    autonomous turns and message-less resumes are excluded.
+    """
+    import nymeria.core.activity_log as al
+    from nymeria.core.agent import NymeriaAgent
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        al,
+        "log_activity",
+        lambda t, d, user_id=None, thread_id=None: calls.append(
+            (t, d, user_id, thread_id)
+        ),
+    )
+
+    NymeriaAgent._log_user_turn_activity(
+        "hello\nworld", user_id="u1", thread_id="t1", is_autonomous=False
+    )
+    assert len(calls) == 1
+    assert calls[0][0] == al.ActivityType.USER_MESSAGE
+    assert calls[0][1] == "hello world"
+    assert calls[0][2:] == ("u1", "t1")
+
+    NymeriaAgent._log_user_turn_activity(
+        "x", user_id="u1", thread_id="t1", is_autonomous=True
+    )
+    NymeriaAgent._log_user_turn_activity(
+        "x", user_id="u1", thread_id="t1", is_autonomous=False, resumed=True
+    )
+    assert len(calls) == 1
+
+
+def test_dream_prompt_covers_scoped_surfaces():
+    """The shipped dream prompt directs every allowlisted surface and no more.
+
+    Scope decided 2026-07-12 (backlog #24): memory, notepad, instructions,
+    TODOs, skills/kits, and trigger review. tool_create stays allowed for
+    admins but deliberately unmentioned (autonomous tool authoring is parked
+    backlog #58); hook management is out of dream reach entirely.
+    """
+    import nymeria.config as config_pkg
+
+    text = (Path(config_pkg.__file__).parent / "dream_prompt.md").read_text()
+
+    for mentioned in (
+        "memory_add",
+        "memory_edit",
+        "memory_read",
+        "thread_instructions_set",
+        "nym_todo",
+        "skill_manage",
+        "skill_edit",
+        "skill_write",
+        "list_installed_skills",
+        "trigger_info",
+        "trigger_config",
+    ):
+        assert mentioned in text, f"dream prompt no longer directs {mentioned}"
+
+    for absent in ("tool_create", "hook_config", "hook_info", "bash_execute"):
+        assert absent not in text, f"dream prompt must not mention {absent}"
+
+
+def test_default_dream_allowlist_includes_trigger_tools(stub_agent):
+    """Trigger review tools ride the default optional allowlist and bind."""
+    from nymeria.core.dreaming.invoke import DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS
+
+    assert {"trigger_config", "trigger_info"} <= set(
+        DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS
+    )
+
+    shadow_id = "dream-parent-trig-x"
+    stub_agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=shadow_id,
+            shadow_parent_id="parent-trig",
+            enabled_tools=sorted(DEFAULT_DREAM_ENABLED_OPTIONAL_TOOLS),
+        )
+    )
+    tools, _tc = select_tools_for_graph(stub_agent, "u1", shadow_id)
+    names = {tool.name for tool in tools}
+    assert {"trigger_config", "trigger_info"} <= names
+
+
+def test_dream_shadow_skill_enablement_targets_parent(stub_agent, monkeypatch):
+    """skill_manage enable/disable from a shadow writes the PARENT thread config
+    and never runs the same-turn reload dance (no Command, no STOP NOW)."""
+    import importlib
+
+    from langgraph.types import Command
+
+    # The package attribute ``nymeria.tools.search_skills`` is the TOOL (the
+    # package __init__ rebinds it); import the module explicitly.
+    skills_mod = importlib.import_module("nymeria.tools.search_skills")
+
+    parent_id = "parent-skills"
+    shadow_id = "dream-parent-skills-x"
+    stub_agent.thread_config_manager.save_config(ThreadConfig(thread_id=parent_id))
+    stub_agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id=shadow_id, shadow_parent_id=parent_id)
+    )
+    stub_agent.skill_manager = SimpleNamespace(
+        get=lambda name, user_id=None: SimpleNamespace(
+            name=name,
+            description="d",
+            scope="user",
+            required_tools=[],
+            tool_ttl="2h",
+            is_skill_kit=False,
+            has_scripts=False,
+            has_references=False,
+        )
+    )
+
+    with patch("nymeria.core.agent.get_current_agent", return_value=stub_agent):
+        result = skills_mod.skill_manage.func(
+            action="enable",
+            name="focus-mode",
+            tool_call_id="tc-1",
+            config=_runnable_config(shadow_id),
+        )
+
+    assert not isinstance(result, Command), "retargeted enable must not force-end"
+    assert "STOP NOW" not in str(result)
+    assert f"applied to thread {parent_id}" in str(result)
+
+    parent_tc = stub_agent.thread_config_manager.get_config(parent_id)
+    shadow_tc = stub_agent.thread_config_manager.get_config(shadow_id)
+    assert "focus-mode" in parent_tc.enabled_skills
+    assert "focus-mode" not in (shadow_tc.enabled_skills or [])
+
+
+def test_dream_shadow_trigger_create_binds_parent(stub_agent, monkeypatch):
+    """trigger_config create from a shadow binds the trigger to the PARENT."""
+    from nymeria.tools import triggers as triggers_mod
+
+    parent_id = "parent-trigger"
+    shadow_id = "dream-parent-trigger-x"
+    stub_agent.thread_config_manager.save_config(ThreadConfig(thread_id=parent_id))
+    stub_agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id=shadow_id, shadow_parent_id=parent_id)
+    )
+
+    captured: dict[str, Any] = {}
+
+    def fake_add_trigger(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id="trg-1", source_config=kwargs.get("source_config") or {},
+            thread_id=kwargs.get("thread_id"),
+        )
+
+    monkeypatch.setattr(
+        triggers_mod,
+        "_get_trigger_manager",
+        lambda: SimpleNamespace(add_trigger=fake_add_trigger),
+    )
+
+    with patch("nymeria.core.agent.get_current_agent", return_value=stub_agent):
+        result = triggers_mod.trigger_config.func(
+            action="create",
+            name="dream-made",
+            source_type="webhook",
+            action_type="notify",
+            action_config={"message_template": "hi"},
+            source_config={"secret": "s3cret"},
+            config=_runnable_config(shadow_id),
+        )
+
+    assert result.startswith("[Success]"), result
+    assert captured["thread_id"] == parent_id

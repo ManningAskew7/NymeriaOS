@@ -18,7 +18,7 @@ from ..core.trigger_manager import (
     TriggerManager,
     _safe_format,
 )
-from .utils import get_thread_id, get_user_id
+from .utils import get_effective_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +124,11 @@ def _trigger_create(
     user_id = get_user_id(config)
     manager = _get_trigger_manager()
 
-    # Always bind to current thread; fall back to auto-generated thread only from default
-    thread_id = get_thread_id(config)
+    # Always bind to the current thread; fall back to auto-generated thread
+    # only from default. Dream shadow threads retarget to their PARENT (same
+    # contract as the memory/TODO tools), so a trigger created during a dream
+    # never binds to the disposable shadow.
+    thread_id = get_effective_thread_id(config)
     if thread_id == "default":
         thread_id = None
 
@@ -220,7 +223,8 @@ def _trigger_list(
         triggers = [t for t in triggers if t.enabled]
 
     if current_thread_only:
-        thread_id = get_thread_id(config)
+        # Effective thread: dream shadows filter by their parent's triggers.
+        thread_id = get_effective_thread_id(config)
         triggers = [t for t in triggers if t.thread_id == thread_id]
 
     if not triggers:

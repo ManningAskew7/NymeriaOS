@@ -485,6 +485,7 @@ _SOURCE_LABELS = {
     "watchdog": "Watchdog",
     "background_bash": "Background Bash",
     "hook_continuation": "Hook Continuation",
+    "dream": "Dream",
 }
 
 

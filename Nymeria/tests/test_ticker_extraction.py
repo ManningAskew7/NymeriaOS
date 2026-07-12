@@ -537,6 +537,49 @@ def test_workflow_todo_error_envelope_engages_retry(tmp_path: Path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
+def test_dream_sweep_noop_without_sweeper(tmp_path: Path):
+    """The Docker worker shape: dream_sweeper=None makes the sweep inert."""
+    ticker, _agent = _make_ticker(tmp_path)
+
+    assert ticker._dream_sweeper is None
+    ticker._run_dream_sweep()  # must not raise
+
+
+def test_dream_sweep_cadence_and_error_isolation(tmp_path: Path):
+    """Slim shape: the injected sweeper runs on the 600s cadence, errors isolated."""
+    agent = FakeAgent(tmp_path)
+    calls: list[int] = []
+
+    def sweeper() -> int:
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("sweep exploded")
+        return len(calls)
+
+    ticker = Ticker(
+        executor=LocalAgentExecutor(agent),
+        settings=agent.settings,
+        schedule_db=agent._schedule_db,
+        todo_manager=agent.todo_manager,
+        thread_config_manager=agent.thread_config_manager,
+        profile_manager=agent.profile_manager,
+        busy_agent=agent,
+        spawn_sweeper=None,
+        dream_sweeper=sweeper,
+    )
+
+    now = time.time()
+    # First due check fires (no housekeeping executor -> runs inline).
+    assert ticker._maybe_submit_dream_sweep(now) is True
+    assert len(calls) == 1
+    # Within the 600s interval: skipped.
+    assert ticker._maybe_submit_dream_sweep(now + 10) is False
+    assert len(calls) == 1
+    # Past the interval: fires again; the sweeper's error must not propagate.
+    assert ticker._maybe_submit_dream_sweep(now + 601) is True
+    assert len(calls) == 2
+
+
 def test_watchdog_sweep_disabled_without_setting(tmp_path: Path):
     """FakeSettings carries no watchdog_enabled, so the sub-loop stays off."""
     ticker, _agent = _make_ticker(tmp_path)

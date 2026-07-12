@@ -24,7 +24,13 @@ from ..core.capability_usage import collect_stale_names, compute_prune_window
 from ..core.thread_config import ThreadConfig
 from ..core.time_utils import utc_now
 from ..core.tool_reload import command_or_text, tool_reload_command
-from .utils import current_agent, get_thread_id, get_user_id, json_result
+from .utils import (
+    current_agent,
+    get_effective_thread_id,
+    get_thread_id,
+    get_user_id,
+    json_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -521,6 +527,7 @@ def _set_thread_skill_enabled(
     user_id: str,
     thread_id: str,
     tool_call_id: Optional[str],
+    invoking_thread_id: Optional[str] = None,
 ) -> Union[str, Command]:
     agent = current_agent()
     if agent is None or not hasattr(agent, "skill_manager") or agent.skill_manager is None:
@@ -561,19 +568,27 @@ def _set_thread_skill_enabled(
         if hasattr(agent, "invalidate_thread_config_cache"):
             agent.invalidate_thread_config_cache(thread_id)
 
+    # A retargeted call (dream shadow acting on its parent) must not run the
+    # same-turn reload dance: the reload queue and the STOP-NOW Command both
+    # belong to the INVOKING thread's graph, which is unaffected by a config
+    # change on the target. The target thread's resolver picks the change up
+    # at its next turn.
+    retargeted = bool(invoking_thread_id) and invoking_thread_id != thread_id
+
     queued_reload = False
     cap_hit = False
     if enabled and changed:
-        from .skill_config import _queue_skill_reload
+        if not retargeted:
+            from .skill_config import _queue_skill_reload
 
-        queued_reload, cap_hit = _queue_skill_reload(
-            agent,
-            thread_id,
-            target,
-            source="skill_install",
-            reason="skill_enabled_on_thread",
-        )
-    elif changed:
+            queued_reload, cap_hit = _queue_skill_reload(
+                agent,
+                thread_id,
+                target,
+                source="skill_install",
+                reason="skill_enabled_on_thread",
+            )
+    elif changed and not retargeted:
         try:
             agent._rebuild_default_graphs()
         except Exception:
@@ -590,10 +605,16 @@ def _set_thread_skill_enabled(
             "required_tools": skill.required_tools,
             "tool_ttl": skill.tool_ttl,
         },
-        active_on_current_thread=enabled,
+        active_on_current_thread=enabled and not retargeted,
         reload_queued=queued_reload,
         reload_cap_hit=cap_hit,
+        **({"target_thread_id": thread_id} if retargeted else {}),
     )
+    if retargeted and changed:
+        payload += (
+            f"\n\n[Note]: applied to thread {thread_id} (this shadow thread's "
+            "parent). The change takes effect on that thread's next turn."
+        )
     if queued_reload:
         payload += (
             "\n\n[Skill reload queued - STOP NOW]\n"
@@ -653,7 +674,12 @@ def skill_manage(
         Errors: JSON {ok: false, error: "..."}.
     """
     user_id = get_user_id(config)
-    thread_id = get_thread_id(config)
+    # Thread-scoped actions (status/prune/enable/disable) follow the same
+    # shadow-parent retargeting as the memory and TODO tools: inside a dream
+    # shadow thread they act on the PARENT thread's config, never on the
+    # disposable shadow. On normal threads both ids are identical.
+    invoking_thread_id = get_thread_id(config)
+    thread_id = get_effective_thread_id(config)
     action_key = (action or "").strip().lower()
 
     if action_key == "status":
@@ -721,6 +747,7 @@ def skill_manage(
             user_id=user_id,
             thread_id=thread_id,
             tool_call_id=tool_call_id,
+            invoking_thread_id=invoking_thread_id,
         )
         if isinstance(enabled_result, Command):
             try:
@@ -742,6 +769,7 @@ def skill_manage(
             user_id=user_id,
             thread_id=thread_id,
             tool_call_id=tool_call_id,
+            invoking_thread_id=invoking_thread_id,
         )
 
     if action_key == "disable":
@@ -751,6 +779,7 @@ def skill_manage(
             user_id=user_id,
             thread_id=thread_id,
             tool_call_id=tool_call_id,
+            invoking_thread_id=invoking_thread_id,
         )
 
     return json_result(

@@ -408,3 +408,34 @@ def test_gateless_definitions_take_the_ungated_path():
     out = fn(_ctx(HookEvent.PROMPT_SUBMIT))
     assert out.inject_context == "hi"
     assert out.scratch_patch is None
+
+
+def test_fire_conditions_holder_kind_gates_dream_turns():
+    """Dream turns carry holder_kind="dream", so hooks can target or exclude them.
+
+    Dream turns fire hooks normally (guardrails included); the fire gate is how
+    an author opts a noisy hook out of dreams, or scopes one to dreams only.
+    """
+    dream_ctx = _ctx(
+        HookEvent.PROMPT_SUBMIT,
+        is_autonomous=True,
+        holder_kind="dream",
+        trigger_label='Dream("parent-1")',
+    )
+    user_ctx = _ctx(HookEvent.PROMPT_SUBMIT, holder_kind="user")
+
+    only_dreams = [_cond("holder_kind", "equals", "dream")]
+    reg = build_registry(
+        [_defn("d1", "prompt_submit", "dream advice", fire_conditions=only_dreams)]
+    )
+    fn = reg.matching(HookEvent.PROMPT_SUBMIT, dream_ctx)[0].fn
+    assert fn(user_ctx) is None
+    assert fn(dream_ctx).inject_context == "dream advice"
+
+    skip_dreams = [_cond("holder_kind", "not_equals", "dream")]
+    reg2 = build_registry(
+        [_defn("d2", "prompt_submit", "not for dreams", fire_conditions=skip_dreams)]
+    )
+    fn2 = reg2.matching(HookEvent.PROMPT_SUBMIT, dream_ctx)[0].fn
+    assert fn2(dream_ctx) is None
+    assert fn2(user_ctx).inject_context == "not for dreams"

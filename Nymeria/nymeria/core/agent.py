@@ -715,6 +715,39 @@ class NymeriaAgent:
         from .agent_history import wrap_hook_context
         return wrap_hook_context(text)
 
+    @staticmethod
+    def _log_user_turn_activity(
+        message: str,
+        *,
+        user_id: str,
+        thread_id: str,
+        is_autonomous: bool,
+        resumed: bool = False,
+    ) -> None:
+        """Record a genuine user turn in the activity log (shared by chat/astream).
+
+        The dream scheduler's turns gate counts USER_MESSAGE entries per
+        thread and its idle gate reads the newest entry of any type, so every
+        interactive turn must land here regardless of path (before 2026-07-12
+        only the sync ``chat()`` path logged, leaving streamed threads
+        invisible to scheduled dreaming). Autonomous turns (self-invoke,
+        trigger/ticker/watchdog/dream sources) and message-less resumes are
+        deliberately excluded: they are not user turns. Never raises.
+        """
+        if is_autonomous or resumed:
+            return
+        try:
+            from .activity_log import ActivityType, log_activity
+            preview = message.strip()[:120].replace("\n", " ")
+            log_activity(
+                ActivityType.USER_MESSAGE,
+                f"{preview}",
+                user_id=user_id,
+                thread_id=thread_id,
+            )
+        except Exception:
+            logger.debug("Activity logging failed for user message")
+
     def _done_context(
         self,
         *,
@@ -2103,7 +2136,7 @@ class NymeriaAgent:
 
         if source is None:
             source = "ticker" if _is_self_invoke else "user"
-        is_autonomous_source = source in {"trigger", "ticker", "watchdog"} or _is_self_invoke
+        is_autonomous_source = source in {"trigger", "ticker", "watchdog", "dream"} or _is_self_invoke
 
         backend = get_pending_queue()
 
@@ -2193,18 +2226,13 @@ class NymeriaAgent:
             holder = "autonomous" if is_autonomous_source else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
 
-            if not _is_self_invoke and not _resume_halted_turn:
-                try:
-                    from .activity_log import ActivityType, log_activity
-                    preview = message.strip()[:120].replace("\n", " ")
-                    log_activity(
-                        ActivityType.USER_MESSAGE,
-                        f"{preview}",
-                        user_id=user_id,
-                        thread_id=thread_id,
-                    )
-                except Exception:
-                    logger.debug("Activity logging failed for user message")
+            self._log_user_turn_activity(
+                message,
+                user_id=user_id,
+                thread_id=thread_id,
+                is_autonomous=is_autonomous_source,
+                resumed=_resume_halted_turn,
+            )
 
             # Get the appropriate graph for this user (includes their memories in system prompt)
             graph = self._get_graph_for_user(
@@ -2734,7 +2762,7 @@ class NymeriaAgent:
             user_id: User ID for profile/memory access
             source: Logical origin of the prompt -- one of
                 "user", "trigger", "callable", "ticker", "watchdog",
-                "mcp". Defaults to "user" (or "ticker" when
+                "mcp", "dream". Defaults to "user" (or "ticker" when
                 _is_self_invoke=True is left as the only signal).
                 Used by the pending-prompt queue to (a) decide whether
                 a queued prompt is autonomous (filtered from history)
@@ -2805,7 +2833,7 @@ class NymeriaAgent:
         # call sites that haven't been updated yet.
         if source is None:
             source = "ticker" if _is_self_invoke else "user"
-        is_autonomous_source = source in {"trigger", "ticker", "watchdog"} or _is_self_invoke
+        is_autonomous_source = source in {"trigger", "ticker", "watchdog", "dream"} or _is_self_invoke
         # Sources that observe the holder's stream after injection.
         # Autonomous sources (ticker / trigger / watchdog) MUST observe so the
         # queued prompt's response chunks are fanned to the worker's HTTP
@@ -2815,7 +2843,7 @@ class NymeriaAgent:
         # docstring for the fanout protocol.
         observes_stream = source in {
             "user", "callable", "mcp",
-            "trigger", "ticker", "watchdog", "background_bash",
+            "trigger", "ticker", "watchdog", "background_bash", "dream",
         }
 
         backend = get_pending_queue()
@@ -2989,6 +3017,19 @@ class NymeriaAgent:
         try:
             holder = "autonomous" if is_autonomous_source else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
+
+            # Record the user turn in the activity log (shared helper with
+            # chat()). The dream scheduler's turns/idle gates count
+            # USER_MESSAGE entries per thread; before 2026-07-12 only the
+            # sync path logged, so every streamed turn was invisible to
+            # scheduled dreaming.
+            self._log_user_turn_activity(
+                message,
+                user_id=user_id,
+                thread_id=thread_id,
+                is_autonomous=is_autonomous_source,
+                resumed=_resume_halted_turn,
+            )
 
             # Clear any stale abort signal and capture the event for this run
             abort_event = self._thread_locks.get_abort_event(thread_id)

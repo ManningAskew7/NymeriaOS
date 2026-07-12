@@ -291,6 +291,12 @@ part of that logic's semantics.
   (`equals`, `not_equals`, `contains`, `starts_with`, `matches_regex`). Both
   sides coerce via `float()`; non-numeric on either side is a non-match, never a
   raise. Being shared, the trigger stack gains them too.
+- Dream turns are gateable: a dream cycle (see
+  `docs/agent-systems/dreaming.md`) runs with `holder_kind` = `dream`
+  and `trigger_label` = `Dream("<parent_thread_id>")`. Hooks fire on dreams
+  like any autonomous turn (guardrails included); use a fire condition
+  `holder_kind not_equals dream` to keep a noisy hook out of dream cycles, or
+  `holder_kind equals dream` to scope a hook to dreams only.
 - `once`: fire once per gate crossing. After firing, the hook stays silent while
   `fire_conditions` keep matching and re-arms when they stop matching (e.g. a
   context warning re-arms after compaction drops occupancy). With no

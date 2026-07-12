@@ -257,6 +257,7 @@ def test_queued_prompt_header_source_label_mapping(monkeypatch):
         "callable": "Callable Thread",
         "mcp": "MCP Client",
         "watchdog": "Watchdog",
+        "dream": "Dream",
         # Unknown sources fall back to capitalize() so the header never crashes.
         "novel-source": "Novel-source",
     }
