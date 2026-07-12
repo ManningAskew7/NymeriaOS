@@ -730,6 +730,10 @@ class ServerSettingsUpdate(BaseModel):
     watchdog_interval_minutes: Optional[int] = None
     todo_staleness_minutes: Optional[int] = None
     activity_retention_hours: Optional[int] = None
+    max_concurrent_interactive: Optional[int] = Field(default=None, ge=0)
+    interactive_admission_wait_seconds: Optional[float] = Field(
+        default=None, ge=0.0, le=120.0
+    )
     dream_default_min_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
     dream_default_min_idle_minutes: Optional[int] = Field(default=None, ge=5, le=10080)
     dream_default_min_turns_since_last: Optional[int] = Field(default=None, ge=1, le=10000)

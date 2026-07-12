@@ -302,6 +302,9 @@ services:
       # Scheduler & autonomy
       TICKER_POLL_INTERVAL: ${TICKER_POLL_INTERVAL:-5}
       MAX_CONCURRENT_AUTONOMOUS: ${MAX_CONCURRENT_AUTONOMOUS:-5}
+      # Interactive admission control (0 = unlimited, feature off)
+      MAX_CONCURRENT_INTERACTIVE: ${MAX_CONCURRENT_INTERACTIVE:-0}
+      INTERACTIVE_ADMISSION_WAIT_SECONDS: ${INTERACTIVE_ADMISSION_WAIT_SECONDS:-10}
       # The watchdog sweep runs inside the worker's ticker (and reads the
       # NYMERIA_WATCHDOG_DISABLED env kill switch live, every cycle).
       WATCHDOG_ENABLED: ${WATCHDOG_ENABLED:-true}

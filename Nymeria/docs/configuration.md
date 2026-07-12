@@ -1405,6 +1405,8 @@ closing DNS-rebinding gaps.
 |----------|---------|-------------|
 | `TICKER_POLL_INTERVAL` | `5` | Seconds between polls for due tasks (1-60) |
 | `MAX_CONCURRENT_AUTONOMOUS` | `5` | Max concurrent autonomous tasks (`0` = unlimited) |
+| `MAX_CONCURRENT_INTERACTIVE` | `0` | Global ceiling on concurrent interactive chat turns across all users in the API process (`0` = unlimited, feature off). When saturated, a chat request that would start a new turn is rejected with HTTP `429` + `Retry-After` after the bounded wait below; prompts to already-busy threads and `is_self_invoke` relay turns are exempt (they start no new concurrency / are bounded by `MAX_CONCURRENT_AUTONOMOUS`). 4-8 is a reasonable starting value on small hosts. See "Capacity shedding" in `api.md`. |
+| `INTERACTIVE_ADMISSION_WAIT_SECONDS` | `10` | Seconds an over-capacity interactive chat request may wait for a free turn slot before the `429` (0-120; `0` = reject immediately). Only meaningful when `MAX_CONCURRENT_INTERACTIVE` > 0. |
 | `LOCK_TIMEOUT` | `120` | Seconds to wait on per-thread lock before timing out |
 | `DEFAULT_EXECUTOR_MAX_WORKERS` | `32` | Worker-thread ceiling for the asyncio default executor in the API process, which carries nearly all `to_thread` blocking work (integrations, voice, OAuth, credential probes, non-streaming turns). The stock asyncio size is only `min(32, cores + 4)` (8 on a 4-core host); threads here are cheap blocking-I/O waiters, so size for concurrency, not cores (8-256) |
 | `AGENT_MAX_ITERATIONS` | `500` | Max agent loop iterations per turn (10-10,000); a safety backstop, not a tuning knob. Callable threads use their own per-thread cap |
@@ -1657,6 +1659,8 @@ AUDIT_LOG_ENABLED=true
 # Autonomous Operation (optional - defaults shown)
 # TICKER_POLL_INTERVAL=5
 # MAX_CONCURRENT_AUTONOMOUS=5
+# MAX_CONCURRENT_INTERACTIVE=0          # 0 = unlimited (interactive admission control off)
+# INTERACTIVE_ADMISSION_WAIT_SECONDS=10 # bounded wait before shedding with 429
 
 # Context Management (optional - defaults shown)
 # CONTEXT_MANAGEMENT=auto_compact      # auto_compact, sliding_window, or none

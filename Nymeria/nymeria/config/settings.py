@@ -1347,6 +1347,27 @@ class Settings(BaseSettings):
         ge=0,
         description="Max concurrent autonomous tasks (0 = unlimited)"
     )
+    # Interactive admission control (backlog #83): global ceiling on
+    # concurrent interactive turns in the API process. 0 keeps the feature
+    # off (no behavior change for existing deployments); at the ceiling a
+    # chat request waits up to interactive_admission_wait_seconds for a slot
+    # and is then shed with 429 + Retry-After. Enforcement lives in
+    # core/interactive_admission.py.
+    max_concurrent_interactive: int = Field(
+        default=0,
+        ge=0,
+        description="Max concurrent interactive chat turns across all users (0 = unlimited)"
+    )
+    interactive_admission_wait_seconds: float = Field(
+        default=10.0,
+        ge=0.0,
+        le=120.0,
+        description=(
+            "Seconds an over-capacity interactive chat request may wait for "
+            "a free turn slot before it is rejected with 429 (0 = reject "
+            "immediately; only meaningful when max_concurrent_interactive > 0)"
+        ),
+    )
     scheduler_missed_work_policy: Literal["run", "ask"] = Field(
         default="run",
         description=(

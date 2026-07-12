@@ -195,6 +195,8 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
     "Tasks": (
         "ticker_poll_interval",
         "max_concurrent_autonomous",
+        "max_concurrent_interactive",
+        "interactive_admission_wait_seconds",
         "todo_staleness_minutes",
         "todo_auto_archive_days",
         "activity_retention_hours",

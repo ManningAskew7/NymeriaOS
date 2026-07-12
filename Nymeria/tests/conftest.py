@@ -28,6 +28,8 @@ class ApiTestSettings:
     scheduler_missed_work_policy: str = "run"
     scheduler_active_execution_stale_minutes: int = 1440
     default_executor_max_workers: int = 32
+    max_concurrent_interactive: int = 0
+    interactive_admission_wait_seconds: float = 0.0
     hooks_run_command_enabled: bool = False
     nymeria_debug: bool = False
     api_docs_enabled: bool = False
