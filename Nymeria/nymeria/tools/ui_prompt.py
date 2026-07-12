@@ -5,9 +5,10 @@ The bridge half mirrors the ``chrome_*`` tool family: allocate a
 ``prompt_id``, register a future with the :class:`UiPromptCoordinator`,
 publish a ``ui_prompt`` autonomous event over ``/autonomous/stream``, and
 await the future. The nymeria-desktop app renders the HTML in a sandboxed
-iframe (``sandbox="allow-scripts"``, null origin, CSP ``connect-src
-'none'``; Alpine.js + Tailwind v4 + DaisyUI are inlined into the srcdoc)
-and POSTs the user's submission to ``/ui-prompts/{prompt_id}/result``.
+iframe (``sandbox="allow-scripts"``, null origin, a ``default-src 'none'``
+meta CSP so no network request leaves the frame; Alpine.js + Tailwind v4 +
+DaisyUI are inlined into the srcdoc) and POSTs the user's submission to
+``/ui-prompts/{prompt_id}/result``.
 
 Desktop-only by design: no other client renders the event, so on a
 desktop-less deployment the tool simply times out. Single-process

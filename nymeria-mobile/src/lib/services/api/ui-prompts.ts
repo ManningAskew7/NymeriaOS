@@ -14,7 +14,10 @@ export class UiPromptsApi extends ReportingApi {
       body: JSON.stringify(request)
     });
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to send your answer'));
+      // Non-toasting: the modal renders failures inline (and a failed
+      // dismissal closes anyway), so the account/admin toast helper would
+      // double-surface every error and sign the user out on a stray 401.
+      throw new Error(await this._extractError(response, 'Failed to send your answer'));
     }
     return response.json();
   }

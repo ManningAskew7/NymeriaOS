@@ -21,10 +21,22 @@
  *     so this document runs with a null origin. NEVER add
  *     allow-same-origin: it would hand agent-authored script the app
  *     origin (Tauri IPC, tokens, backend access).
- *   - The meta CSP `connect-src 'none'` blocks fetch/XHR/WebSocket/
- *     EventSource exfiltration; the sandbox itself blocks forms, popups,
- *     and navigation.
- *   - postMessage to the parent is the only channel out.
+ *   - The meta CSP defaults every fetch directive to 'none'
+ *     (default-src 'none'), so it closes not just fetch/XHR/WebSocket/
+ *     EventSource (connect-src falls back to default-src) but also the
+ *     side channels: new Image().src, CSS background url(), <link>
+ *     stylesheets/prefetch, fonts, media, nested frames. Only inline
+ *     script (plus 'unsafe-eval': Alpine evaluates directives via
+ *     new Function), inline styles, and data: styles/images/fonts are
+ *     allowed; daisyUI's only url()s are data: SVGs and the Tailwind
+ *     runtime injects inline <style>, so the vendored stack needs nothing
+ *     more. base-uri and form-action are 'none' as belt-and-braces.
+ *   - The one channel CSP cannot close is the frame navigating ITSELF to
+ *     an external URL (sandbox without allow-top-navigation only blocks
+ *     TOP navigation, and the navigate-to directive never shipped).
+ *     UiPromptModal watches iframe load events and cancels the prompt on
+ *     any load after the initial srcdoc render.
+ *   - postMessage to the parent is the intended channel out.
  */
 
 // @ts-nocheck on the first line of each vendored .js keeps checkJs away;
@@ -124,7 +136,7 @@ export function buildArtifactSrcdoc(options: BuildSrcdocOptions): string {
 <html data-theme="${theme}">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="connect-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline' data:; img-src data:; font-src data:; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>${escapeInlineStyle(daisyUiCss)}</style>
 <style>
