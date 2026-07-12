@@ -29,6 +29,12 @@ def _invoke(tool, args, cfg):
     return tool.invoke(args, config=cfg)
 
 
+def _user_hooks(store, user_id="u1"):
+    """Stored hooks minus the ever-present virtual system turn-metadata hook."""
+    from nymeria.core.hook_manager import SYSTEM_HOOK_IDS
+    return [h for h in store.get_hooks(user_id) if h.id not in SYSTEM_HOOK_IDS]
+
+
 # --- hook_config ------------------------------------------------------------
 
 def test_create_binds_current_thread(store):
@@ -38,7 +44,7 @@ def test_create_binds_current_thread(store):
         _cfg(thread_id="mythread"),
     )
     assert "[Success]" in out
-    hooks = store.get_hooks("u1")
+    hooks = _user_hooks(store)
     assert len(hooks) == 1
     assert hooks[0].scope == "thread"
     assert hooks[0].thread_id == "mythread"
@@ -50,7 +56,7 @@ def test_create_global_scope_has_no_thread(store):
         {"action": "create", "name": "n", "event": "done", "text": "x", "scope": "global"},
         _cfg(thread_id="ignored"),
     )
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.scope == "global"
     assert h.thread_id == ""
 
@@ -58,7 +64,7 @@ def test_create_global_scope_has_no_thread(store):
 def test_create_requires_fields(store):
     out = _invoke(hook_tools.hook_config, {"action": "create", "name": "n"}, _cfg())
     assert "[Error]" in out
-    assert store.get_hooks("u1") == []
+    assert _user_hooks(store) == []
 
 
 def test_create_rejects_bad_event(store):
@@ -131,7 +137,7 @@ def test_create_block_if_matches(store):
         _cfg(),
     )
     assert "[Success]" in out
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.logic.action == "block_if_matches"
     assert h.matcher == "bash"
     assert h.logic.reason == "no"
@@ -145,7 +151,7 @@ def test_create_rewrite_arg(store):
         _cfg(),
     )
     assert "[Success]" in out
-    assert store.get_hooks("u1")[0].logic.updates == {"command": "echo hi"}
+    assert _user_hooks(store)[0].logic.updates == {"command": "echo hi"}
 
 
 def test_create_block_requires_params(store):
@@ -156,7 +162,7 @@ def test_create_block_requires_params(store):
         _cfg(),
     )
     assert "[Error]" in out
-    assert store.get_hooks("u1") == []
+    assert _user_hooks(store) == []
 
 
 def test_create_rejects_illegal_action_for_event(store):
@@ -203,7 +209,7 @@ def test_create_notify_via_text(store):
         _cfg(),
     )
     assert "[Success]" in out
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.logic.action == "notify"
     assert h.logic.text == "finished: {final_text}"
 
@@ -216,7 +222,7 @@ def test_create_webhook_via_params(store):
         _cfg(),
     )
     assert "[Success]" in out
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.logic.action == "webhook"
     assert h.logic.url == "https://x.test/h"
 
@@ -228,7 +234,7 @@ def test_create_webhook_requires_params(store):
         _cfg(),
     )
     assert "[Error]" in out
-    assert store.get_hooks("u1") == []
+    assert _user_hooks(store) == []
 
 
 def test_create_notify_illegal_on_prompt_submit(store):
@@ -254,8 +260,10 @@ def test_detail_renders_webhook_variant(store):
 # --- hook_info --------------------------------------------------------------
 
 def test_list_empty(store):
+    # A pristine store still lists the virtual system turn-metadata hook.
     out = _invoke(hook_tools.hook_info, {"action": "list"}, _cfg())
-    assert "No hooks" in out
+    assert "turn-metadata" in out
+    assert "No hooks" not in out
 
 
 def test_list_shows_hooks(store):
@@ -365,7 +373,7 @@ def test_run_command_denied_when_flag_off(store, monkeypatch):
     )
     assert "[Error]" in out
     assert "HOOKS_RUN_COMMAND_ENABLED" in out
-    assert store.get_hooks("u1") == []
+    assert _user_hooks(store) == []
 
 
 def test_run_command_denied_for_non_admin(store, monkeypatch):
@@ -379,7 +387,7 @@ def test_run_command_denied_for_non_admin(store, monkeypatch):
     )
     assert "[Error]" in out
     assert "admin-only" in out
-    assert store.get_hooks("u1") == []
+    assert _user_hooks(store) == []
 
 
 def test_run_command_created_for_admin_with_flag_on(store, monkeypatch):
@@ -392,7 +400,7 @@ def test_run_command_created_for_admin_with_flag_on(store, monkeypatch):
         _cfg(),
     )
     assert "[Success]" in out
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.logic.action == "run_command"
     assert h.logic.command == "echo hi"
     assert h.logic.timeout_seconds == 12
@@ -427,7 +435,7 @@ def test_run_workflow_created_with_params(store, monkeypatch):
         _cfg(),
     )
     assert "[Success]" in out
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.logic.action == "run_workflow"
     assert h.logic.workflow_id == "wf_guard"
     assert h.logic.params == {"mode": "strict"}
@@ -444,7 +452,7 @@ def test_run_workflow_requires_workflow_id(store):
     )
     assert "[Error]" in out
     assert "workflow_id" in out
-    assert store.get_hooks("u1") == []
+    assert _user_hooks(store) == []
 
 
 def test_run_command_update_command_preserves_timeout(store, monkeypatch):
@@ -457,14 +465,14 @@ def test_run_command_update_command_preserves_timeout(store, monkeypatch):
          "hook_action": "run_command", "command": "echo hi", "timeout_seconds": 42},
         _cfg(),
     )
-    hook = store.get_hooks("u1")[0]
+    hook = _user_hooks(store)[0]
     out = _invoke(
         hook_tools.hook_config,
         {"action": "update", "hook_id": hook.id, "command": "echo bye"},
         _cfg(),
     )
     assert "[Success]" in out
-    updated = store.get_hooks("u1")[0]
+    updated = _user_hooks(store)[0]
     assert updated.logic.command == "echo bye"
     assert updated.logic.timeout_seconds == 42  # sibling preserved, not reset to default
 
@@ -479,7 +487,7 @@ def test_run_command_update_command_denied_for_non_admin(store, monkeypatch):
          "hook_action": "run_command", "command": "echo hi"},
         _cfg(),
     )
-    hook = store.get_hooks("u1")[0]
+    hook = _user_hooks(store)[0]
     monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: False)
     out = _invoke(
         hook_tools.hook_config,
@@ -488,7 +496,7 @@ def test_run_command_update_command_denied_for_non_admin(store, monkeypatch):
     )
     assert "[Error]" in out
     assert "admin-only" in out
-    assert store.get_hooks("u1")[0].logic.command == "echo hi"
+    assert _user_hooks(store)[0].logic.command == "echo hi"
 
 
 def test_run_command_update_enabled_toggle_allowed_for_non_admin(store, monkeypatch):
@@ -501,7 +509,7 @@ def test_run_command_update_enabled_toggle_allowed_for_non_admin(store, monkeypa
          "hook_action": "run_command", "command": "echo hi"},
         _cfg(),
     )
-    hook = store.get_hooks("u1")[0]
+    hook = _user_hooks(store)[0]
     monkeypatch.setattr(hook_tools, "is_admin", lambda *a, **k: False)
     out = _invoke(
         hook_tools.hook_config,
@@ -509,7 +517,7 @@ def test_run_command_update_enabled_toggle_allowed_for_non_admin(store, monkeypa
         _cfg(),
     )
     assert "[Success]" in out
-    updated = store.get_hooks("u1")[0]
+    updated = _user_hooks(store)[0]
     assert updated.enabled is False
     assert updated.logic.command == "echo hi"
 
@@ -530,7 +538,7 @@ def test_create_with_fire_gate(store):
         _cfg(),
     )
     assert "[Success]" in out
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.once is True
     assert h.fire_conditions[0].operator == "gte"
 
@@ -547,7 +555,7 @@ def test_create_rejects_non_list_fire_conditions(store):
             },
             _cfg(),
         )
-    assert store.get_hooks("u1") == []
+    assert _user_hooks(store) == []
 
 
 def test_update_fire_gate(store):
@@ -556,7 +564,7 @@ def test_update_fire_gate(store):
         {"action": "create", "name": "n", "event": "done", "text": "x"},
         _cfg(),
     )
-    hook_id = store.get_hooks("u1")[0].id
+    hook_id = _user_hooks(store)[0].id
     out = _invoke(
         hook_tools.hook_config,
         {
@@ -585,7 +593,7 @@ def test_detail_renders_fire_gate(store):
         },
         _cfg(),
     )
-    hook_id = store.get_hooks("u1")[0].id
+    hook_id = _user_hooks(store)[0].id
     detail = _invoke(
         hook_tools.hook_info, {"action": "detail", "hook_id": hook_id}, _cfg()
     )
@@ -609,7 +617,7 @@ def test_hook_config_install(store):
         _cfg(),
     )
     assert "[Success]" in out
-    hooks = store.get_hooks("u1")
+    hooks = _user_hooks(store)
     assert len(hooks) == 1
     assert hooks[0].template == "context-checkpoint-advisory"
     assert hooks[0].scope == "global"
@@ -628,7 +636,7 @@ def test_hook_config_install_idempotent(store):
         _cfg(),
     )
     assert "already installed" in out
-    assert len(store.get_hooks("u1")) == 1
+    assert len(_user_hooks(store)) == 1
 
 
 def test_hook_config_install_thread_scope(store):
@@ -641,7 +649,7 @@ def test_hook_config_install_thread_scope(store):
         },
         _cfg(thread_id="mythread"),
     )
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.scope == "thread"
     assert h.thread_id == "mythread"
 
@@ -649,7 +657,7 @@ def test_hook_config_install_thread_scope(store):
 def test_hook_config_install_requires_template_id(store):
     out = _invoke(hook_tools.hook_config, {"action": "install"}, _cfg())
     assert "[Error]" in out
-    assert store.get_hooks("u1") == []
+    assert _user_hooks(store) == []
 
 
 def test_hook_detail_shows_template_provenance(store):
@@ -658,7 +666,7 @@ def test_hook_detail_shows_template_provenance(store):
         {"action": "install", "template_id": "context-checkpoint-advisory"},
         _cfg(),
     )
-    hook_id = store.get_hooks("u1")[0].id
+    hook_id = _user_hooks(store)[0].id
     detail = _invoke(
         hook_tools.hook_info, {"action": "detail", "hook_id": hook_id}, _cfg()
     )
@@ -674,7 +682,7 @@ def test_create_single_use_via_tool(store):
         },
         _cfg(),
     )
-    h = store.get_hooks("u1")[0]
+    h = _user_hooks(store)[0]
     assert h.single_use is True
     detail = _invoke(
         hook_tools.hook_info, {"action": "detail", "hook_id": h.id}, _cfg()

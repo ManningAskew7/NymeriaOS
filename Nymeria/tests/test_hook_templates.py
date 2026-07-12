@@ -118,7 +118,8 @@ def test_reinstall_is_idempotent(manager, catalog):
     second, created2 = install_template(manager, "alice", "wrap-up", directory=catalog)
     assert created1 is True and created2 is False
     assert second.id == first.id
-    assert len(manager.get_hooks("alice")) == 1
+    from nymeria.core.hook_manager import SYSTEM_HOOK_IDS
+    assert len([h for h in manager.get_hooks("alice") if h.id not in SYSTEM_HOOK_IDS]) == 1
 
 
 def test_reinstall_with_different_binding_creates_new(manager, catalog):
@@ -169,7 +170,8 @@ def test_gated_action_template_is_gated(manager, catalog):
     )
     with pytest.raises(ValueError, match="disabled on this deployment"):
         install_template(manager, "alice", "gated", is_admin=False, directory=catalog)
-    assert manager.get_hooks("alice") == []
+    from nymeria.core.hook_manager import SYSTEM_HOOK_IDS
+    assert [h for h in manager.get_hooks("alice") if h.id not in SYSTEM_HOOK_IDS] == []
 
 
 # --- the real bundled catalog -----------------------------------------------

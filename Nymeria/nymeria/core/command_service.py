@@ -3676,8 +3676,17 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         hook, error = self._resolve_hook(args[0])
         if hook is None:
             return error or f"[Error]: No hook matching '{args[0]}'."
+        from .hook_manager import is_system_hook_id
         if not self._hook_manager().delete_hook(self.user_id, hook.id):
+            if is_system_hook_id(hook.id):
+                # Nothing stored: the system hook is already pristine.
+                return (
+                    f"[Info]: System hook `{hook.id}` is already at its built-in "
+                    "defaults (nothing to reset)."
+                )
             return f"[Error]: No hook matching '{args[0]}'."
+        if is_system_hook_id(hook.id):
+            return f"[Success]: Reset system hook `{hook.id}` to its built-in defaults."
         return f"[Success]: Deleted hook `{hook.id}`."
 
     async def _cmd_hook_edit(self, args: list[str], rest: str) -> str:

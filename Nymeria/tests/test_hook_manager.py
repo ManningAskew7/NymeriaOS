@@ -23,6 +23,8 @@ from nymeria.core.hook_manager import (
     WebhookLogic,
     build_logic,
     make_execution_recorder,
+    SYSTEM_HOOK_IDS,
+    SYSTEM_TURN_METADATA_ID,
 )
 
 
@@ -101,11 +103,19 @@ def test_add_hook_defaults_thread_scope(manager):
     assert h.thread_id == "t9"
 
 
+def _user_hooks(manager, user_id="u1"):
+    """Stored hooks minus the ever-present virtual system turn-metadata hook."""
+    return [h for h in manager.get_hooks(user_id) if h.id not in SYSTEM_HOOK_IDS]
+
+
 def test_get_hooks_lists_all_for_user(manager):
     manager.add_hook("u1", name="a", event="done", text="1")
     manager.add_hook("u1", name="b", event="prompt_submit", text="2")
-    assert len(manager.get_hooks("u1")) == 2
-    assert manager.get_hooks("u2") == []
+    assert len(_user_hooks(manager)) == 2
+    assert _user_hooks(manager, "u2") == []
+    # The virtual system turn-metadata hook always rides the authoring view.
+    assert any(h.id == SYSTEM_TURN_METADATA_ID for h in manager.get_hooks("u1"))
+    assert any(h.id == SYSTEM_TURN_METADATA_ID for h in manager.get_hooks("u2"))
 
 
 def test_update_hook_changes_text(manager):
@@ -156,7 +166,7 @@ def test_max_hooks_cap(manager):
         assert manager.add_hook("u1", name=f"h{i}", event="done", text="x") is not None
     # The (cap + 1)th returns None and is not stored.
     assert manager.add_hook("u1", name="overflow", event="done", text="x") is None
-    assert len(manager.get_hooks("u1")) == cap
+    assert len(_user_hooks(manager)) == cap
 
 
 # --- persistence robustness -------------------------------------------------
@@ -171,14 +181,14 @@ def test_load_never_raises_on_corrupt_file(manager, tmp_path):
     path = manager._path_for("u1")
     path.write_text("{ this is not json", encoding="utf-8")
     # A bad file must not raise; it degrades to an empty store.
-    assert manager.get_hooks("u1") == []
+    assert _user_hooks(manager) == []
 
 
 def test_corrupt_file_is_quarantined_not_destroyed(manager, tmp_path):
     path = manager._path_for("u1")
     corrupt_bytes = "{ this is not json"
     path.write_text(corrupt_bytes, encoding="utf-8")
-    assert manager.get_hooks("u1") == []
+    assert _user_hooks(manager) == []
     # The original bytes survive under a quarantine name for manual recovery.
     quarantined = list((path.parent / "quarantine").glob(f"{path.stem}.corrupt-*.json"))
     assert len(quarantined) == 1
@@ -209,7 +219,11 @@ def test_corrupt_load_waits_for_user_lock(manager):
     path = manager._path_for("u1")
     path.write_text("{ not json", encoding="utf-8")
     results: list = []
-    reader = threading.Thread(target=lambda: results.append(manager.get_hooks("u1")))
+    reader = threading.Thread(
+        target=lambda: results.append(
+            [h for h in manager.get_hooks("u1") if h.id not in SYSTEM_HOOK_IDS]
+        )
+    )
     lock = manager._get_lock("u1")
     lock.acquire()
     try:
@@ -241,7 +255,9 @@ def test_mtime_cache_refreshes_on_write(manager):
 
 def test_cached_read_matches_fresh_read(manager):
     manager.add_hook("u1", name="a", event="done", text="1")
-    assert [h.id for h in manager.get_hooks_cached("u1")] == [h.id for h in manager.get_hooks("u1")]
+    # get_hooks_cached is the raw store view; get_hooks appends the virtual
+    # system hook, so compare against the filtered authoring view.
+    assert [h.id for h in manager.get_hooks_cached("u1")] == [h.id for h in _user_hooks(manager)]
 
 
 # --- discriminated union (Pass 3 actions) -----------------------------------

@@ -4,6 +4,7 @@ Contains mode-specific rules and system prompt building utilities.
 """
 
 import json
+import re
 
 
 # Autonomous behavioral guidance (scheduled TODOs, watchdog nudges, triggers,
@@ -79,6 +80,40 @@ def format_untrusted_json_record(
     return json.dumps(safe_record, ensure_ascii=True, sort_keys=True)
 
 
+# The stock turn-metadata template rendered by the system `turn-metadata`
+# lifecycle hook (backlog #66). `{time}` and `{trigger}` are supplied by the
+# `turn_metadata` action; rendered with them it is byte-identical to
+# get_time_context(). Kept here (the prompt leaf) so the store layer
+# (hook_manager) can validate templates without importing the agent stack.
+DEFAULT_TURN_METADATA_TEMPLATE = "[Time: {time}]\n[Trigger: {trigger}]"
+
+# Authoring-time frame for custom turn-metadata templates: exactly two lines,
+# `[Time: <interior>]` then `[Trigger: <interior>]`, interiors non-empty with
+# no `]` and no newline. Any template matching this frame, rendered with
+# values free of `]`/newlines, is matched by the history-strip regex
+# (agent_history.CONTEXT_PREFIX_PATTERN), so customized metadata can never
+# leak into compaction. The seam additionally re-checks the RENDERED block
+# against the strip pattern itself, so the two cannot drift.
+TURN_METADATA_TEMPLATE_PATTERN = re.compile(
+    r"^\[Time:[^\]\n]+\]\n\[Trigger:[^\]\n]+\]$"
+)
+
+
+def resolve_trigger_label(
+    is_autonomous: bool = False,
+    trigger_override: str | None = None,
+) -> str:
+    """The human-readable trigger label for a turn's metadata block.
+
+    Shared by ``get_time_context`` (the built-in block) and the system
+    turn-metadata hook seam (which passes the resolved label to the engine as
+    ``HookContext.trigger_label``), so the two cannot drift.
+    """
+    if trigger_override:
+        return trigger_override
+    return "Scheduled TODO" if is_autonomous else "User Message"
+
+
 def get_time_context(
     is_autonomous: bool = False,
     trigger_override: str | None = None,
@@ -96,12 +131,7 @@ def get_time_context(
     """
     from .time_utils import format_user_time
 
-    if trigger_override:
-        trigger = trigger_override
-    elif is_autonomous:
-        trigger = "Scheduled TODO"
-    else:
-        trigger = "User Message"
+    trigger = resolve_trigger_label(is_autonomous, trigger_override)
 
     return (
         f"[Time: {format_user_time()}]\n"

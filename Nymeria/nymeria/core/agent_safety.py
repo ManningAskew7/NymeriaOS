@@ -176,6 +176,35 @@ def get_effective_hook_enabled(
     return bool(getattr(definition, "enabled", True))
 
 
+def get_effective_system_hook_enabled(
+    definition: Any,
+    thread_id: Optional[str],
+    *,
+    thread_config_manager: Any | None = None,
+) -> bool:
+    """Resolve whether a SYSTEM hook definition (turn metadata) is enabled.
+
+    Precedence: the per-thread per-hook override
+    (``ThreadConfig.hook_overrides[id]``) -> the definition's own ``enabled``.
+    Deliberately NO master-switch rung (global/thread ``hooks_enabled``):
+    operators flip the master switch to stop user hook LOGIC, and before the
+    #66 conversion it never affected turn metadata; honoring it here would
+    silently strip metadata on existing deployments. Never raises.
+    """
+    if thread_id and thread_config_manager is not None:
+        try:
+            tc = thread_config_manager.get_config(thread_id)
+        except Exception:  # noqa: BLE001 - never let config lookup break a turn
+            tc = None
+        if tc is not None:
+            override = (getattr(tc, "hook_overrides", None) or {}).get(
+                getattr(definition, "id", None)
+            )
+            if override is not None:
+                return bool(override)
+    return bool(getattr(definition, "enabled", True))
+
+
 def graph_run_config(
     agent: "NymeriaAgent",
     thread_id: str,
