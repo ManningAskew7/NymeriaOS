@@ -168,7 +168,7 @@ class GraphStreamProcessor:
         is_self_invoke: bool,
         response_parts: list[str],
         clean_tool_result: Callable[[str], str],
-        tool_result_extra_events: Callable[[str, str, Any], Iterable[dict[str, Any]]],
+        tool_result_extra_events: Callable[..., Iterable[dict[str, Any]]],
         stream_logger: Optional[logging.Logger] = None,
         llm_config: Any = None,
         tool_timeout: Optional[int] = None,
@@ -443,7 +443,9 @@ class GraphStreamProcessor:
             chunk["started_at"] = started[1]
             chunk["duration_ms"] = max(0, int((time.monotonic() - started[0]) * 1000))
         events = [chunk]
-        events.extend(self.tool_result_extra_events(tool_name, raw_result, run_id))
+        events.extend(
+            self.tool_result_extra_events(tool_name, raw_result, run_id, self.thread_id)
+        )
         return events
 
     def _handle_model_stream(self, event: dict[str, Any]) -> Iterable[dict[str, Any]]:

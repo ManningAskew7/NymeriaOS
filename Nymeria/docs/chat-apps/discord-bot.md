@@ -282,8 +282,12 @@ Custom Discord emojis are rendered as `:name:`. The quoted excerpt is the
 reacted message's text, whitespace-collapsed and capped at 200 characters.
 
 Guards, in order: toggle off → drop; reactor is the bot itself or any bot →
-drop (loop guard); reacted message not authored by the bot → drop; reactor has
-no linked Nymeria account → silent drop (same access model as messages).
+drop (loop guard); reacted message not authored by the bot → drop (checked
+first against the raw payload's `message_author_id`, so no message fetch is
+spent on other people's messages, then re-checked on the fetched message);
+repeat of the same (message, reactor, emoji) within 45 seconds → drop
+(debounce, so emoji toggling cannot fire repeated turns); reactor has no
+linked Nymeria account → silent drop (same access model as messages).
 Reaction **removals** never fire. The turn runs with `is_self_invoke=true`,
 `trigger_override="reaction"`, `source="trigger"`, and a `source_label` like
 `reaction 👍`, and streams into the channel exactly like an @mention response.
@@ -307,9 +311,12 @@ channel and message, and calls `message.add_reaction(...)`. Failures (deleted
 message, missing permission, unknown emoji) are logged and never break the
 turn.
 
-Reply suppression is deterministic, not model-inferred: the tool result
-carries the marker `[nymeria:reply_suppressed]`, the stream emits a
-`reply_suppressed` event right after the `tool_result`, and the bot then drops
+Reply suppression is deterministic, not model-inferred: the react call sets
+a per-turn backend flag and its result carries the marker
+`[nymeria:reply_suppressed]`; the stream emits a `reply_suppressed` event
+right after the `tool_result` only when the backend flag confirms the real
+react call (marker text echoed by any other tool's output is inert), and the
+bot then drops
 buffered text, stops sending chunks, and skips the sync-fallback and
 `task_completed` content fallbacks for that turn. Tool-call embeds (when
 `/show-tools` is on) still render.

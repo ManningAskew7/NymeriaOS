@@ -171,28 +171,62 @@ def _agent_prompt_source(request: ChatRequest) -> tuple[str, str | None, str | N
     return source, request.source_id, request.source_label
 
 
+def _privileged_platform_caller(user: Any) -> bool:
+    """Whether the authenticated caller may assert ``platform_origin``.
+
+    The chat-platform bots (and the Docker worker) authenticate with the
+    admin service token, usually acting as the linked user via
+    ``X-Nymeria-Act-As`` (which resolves with ``via_act_as=True``); a direct
+    admin token qualifies too. Anyone else could otherwise fabricate an
+    origin pointing at another user's chat and drive cross-chat reaction
+    writes through the bots, so the field is silently ignored for them.
+    """
+    return bool(getattr(user, "via_act_as", False)) or (
+        getattr(user, "role", "") == "admin"
+    )
+
+
+def _effective_platform_origin(request: ChatRequest, privileged: bool) -> Any:
+    """The request's ``platform_origin``, or None when absent or unprivileged."""
+    origin = request.platform_origin
+    if origin is None:
+        return None
+    if not privileged:
+        logger.debug(
+            "Ignoring platform_origin from non-privileged caller (thread %s)",
+            request.thread_id,
+        )
+        return None
+    return origin
+
+
 def _apply_platform_origin(
     agent: Any,
     request: ChatRequest,
     thread_id: str,
     user_id: str,
     message: str,
+    *,
+    privileged: bool,
 ) -> str:
-    """Record a chat-bot turn's platform origin; enrich reaction prompts.
+    """Record (or clear) the turn's platform origin; enrich reaction prompts.
 
-    Stamps ``request.platform_origin`` into the per-thread registry
-    (``core/bot_reactions.py``) so the ``react`` tool can target the
-    originating message, and, for reaction-triggered turns
-    (``kind == "reaction"``), appends the react-tool guidance block while the
-    tool is unbound on the thread (the bound check IS
+    A privileged request carrying ``platform_origin`` stamps it into the
+    per-thread registry (``core/bot_reactions.py``) so the ``react`` tool can
+    target the originating message; every other request CLEARS the entry, so
+    the registry describes the current turn and ``react`` can never act on a
+    stale origin left by an earlier bot turn. For reaction-triggered turns
+    (``kind == "reaction"``) the react-tool guidance block is appended while
+    the tool is unbound on the thread (the bound check IS
     ``select_tools_for_graph``, so the omit rule cannot drift). Returns the
-    (possibly extended) message; no-op without a ``platform_origin``.
+    (possibly extended) message.
     """
-    origin = request.platform_origin
-    if origin is None:
-        return message
+    from ...core.bot_reactions import clear_turn_origin, set_turn_origin
 
-    from ...core.bot_reactions import set_turn_origin
+    origin = _effective_platform_origin(request, privileged)
+    if origin is None:
+        clear_turn_origin(thread_id)
+        return message
 
     set_turn_origin(
         thread_id,
@@ -215,14 +249,16 @@ def _apply_platform_origin(
     return message
 
 
-def _turn_reply_suppressed(request: ChatRequest, thread_id: str) -> bool:
+def _turn_reply_suppressed(
+    request: ChatRequest, thread_id: str, *, privileged: bool
+) -> bool:
     """Whether this turn's react call asked to suppress the reply text.
 
-    Gated on the request having carried a ``platform_origin``: only those
-    requests reset the per-thread flag at turn start, so anything else could
-    read a stale value from an earlier bot turn.
+    Gated on the request having carried an honored ``platform_origin``: only
+    those requests stamp the per-thread flag at turn start, and only their
+    (bot) callers act on the terminal ``suppress_reply`` stamp.
     """
-    if request.platform_origin is None:
+    if _effective_platform_origin(request, privileged) is None:
         return False
     from ...core.bot_reactions import reply_suppressed
 
@@ -1290,7 +1326,14 @@ def create_chat_router(
         # the react-tool guidance block while the tool is unbound (backlog
         # #45; core/bot_reactions.py + tools/react.py). AFTER the admission
         # gate, so a shed request never touches the origin registry.
-        message = _apply_platform_origin(agent, request, thread_id, user_id, message)
+        message = _apply_platform_origin(
+            agent,
+            request,
+            thread_id,
+            user_id,
+            message,
+            privileged=_privileged_platform_caller(user),
+        )
 
         # Read client ID from header for sync event origin filtering
         client_id = http_request.headers.get("x-nymeria-client-id", "")
@@ -1640,7 +1683,11 @@ def create_chat_router(
                     # End-of-turn confirmation of the react tool's reply
                     # suppression (the live signal is the mid-stream
                     # reply_suppressed event).
-                    if _turn_reply_suppressed(request, thread_id):
+                    if _turn_reply_suppressed(
+                        request,
+                        thread_id,
+                        privileged=_privileged_platform_caller(user),
+                    ):
                         done_data["suppress_reply"] = True
 
                     # Auto-title the thread from the user's message if untitled
@@ -1937,7 +1984,14 @@ def create_chat_router(
         # origin for the react tool and enrich reaction-triggered prompts.
         # AFTER the admission gate, so a shed request never touches the
         # origin registry.
-        message = _apply_platform_origin(agent, request, thread_id, user_id, message)
+        message = _apply_platform_origin(
+            agent,
+            request,
+            thread_id,
+            user_id,
+            message,
+            privileged=_privileged_platform_caller(user),
+        )
 
         # The whole synchronous turn (LLM round trips, tools, checkpoint
         # writes) runs off the event loop; running it inline would freeze
@@ -1968,7 +2022,9 @@ def create_chat_router(
             response=response,
             thread_id=thread_id,
             tool_call_count=tool_call_count,
-            suppress_reply=_turn_reply_suppressed(request, thread_id),
+            suppress_reply=_turn_reply_suppressed(
+                request, thread_id, privileged=_privileged_platform_caller(user)
+            ),
         )
 
     return router

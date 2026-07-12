@@ -141,7 +141,7 @@ def test_reasoning_chunk_deduper_resets_between_model_calls():
 def test_graph_stream_processor_converts_tool_events_and_model_end_fallback():
     response_parts = []
 
-    def extra_events(tool_name, raw_result, run_id):
+    def extra_events(tool_name, raw_result, run_id, thread_id=None):
         return [{
             "type": "workspace_artifact",
             "name": tool_name,

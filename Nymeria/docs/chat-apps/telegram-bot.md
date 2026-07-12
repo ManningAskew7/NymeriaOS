@@ -429,7 +429,9 @@ Custom (paid) emoji reactions are described as "a custom emoji".
 
 Guards, in order: toggle off → drop; non-private chat → drop; reactor missing,
 a bot, or the bot itself → drop (loop guard); no newly **added** emoji in the
-old-to-new reaction delta (i.e. a removal) → drop; reactor has no linked
+old-to-new reaction delta (i.e. a removal) → drop; repeat of the same
+(message, reactor, emoji) within 45 seconds → drop (debounce, so toggling an
+emoji off and on cannot fire repeated turns); reactor has no linked
 Nymeria account → silent drop. The turn runs with `is_self_invoke=true`,
 `trigger_override="reaction"`, `source="trigger"`, and a `source_label` like
 `reaction 👍`, and streams into the chat like a normal reply.
@@ -454,9 +456,12 @@ emoji against Telegram's standard reaction set
 calls `set_message_reaction(...)`. A non-standard emoji or API failure is
 logged and never breaks the turn.
 
-Reply suppression is deterministic, not model-inferred: the tool result
-carries the marker `[nymeria:reply_suppressed]`, the stream emits a
-`reply_suppressed` event right after the `tool_result`, and the bot then drops
+Reply suppression is deterministic, not model-inferred: the react call sets
+a per-turn backend flag and its result carries the marker
+`[nymeria:reply_suppressed]`; the stream emits a `reply_suppressed` event
+right after the `tool_result` only when the backend flag confirms the real
+react call (marker text echoed by any other tool's output is inert), and the
+bot then drops
 buffered text, stops sending chunks, removes the Stop button, and skips the
 sync-fallback, voice-reply, and `task_completed` content fallbacks for that
 turn. Tool-call messages (when `/showtools` is on) still render.

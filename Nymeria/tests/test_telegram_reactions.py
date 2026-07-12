@@ -8,9 +8,19 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+import pytest
+
+from nymeria.core import bot_reactions
 from nymeria.triggers.telegram_bot import NymeriaTelegramBot
 
 BOT_ID = 999
+
+
+@pytest.fixture(autouse=True)
+def _clear_debounce():
+    bot_reactions._recent_reaction_fires.clear()
+    yield
+    bot_reactions._recent_reaction_fires.clear()
 
 
 def _reaction_bot(
@@ -159,6 +169,22 @@ def test_unlinked_reactor_dropped_silently(monkeypatch):
 
     asyncio.run(bot._on_message_reaction(_reaction_update(), _context()))
     assert dispatched == []
+
+
+def test_repeat_reaction_is_debounced(monkeypatch):
+    # Toggling 👍 off and on again within the TTL must not fire a second
+    # full agent turn; a different emoji still fires.
+    _enable_toggle(monkeypatch)
+    bot, dispatched = _reaction_bot()
+
+    asyncio.run(bot._on_message_reaction(_reaction_update(), _context()))
+    asyncio.run(bot._on_message_reaction(_reaction_update(), _context()))
+    assert len(dispatched) == 1
+
+    asyncio.run(
+        bot._on_message_reaction(_reaction_update(new=["❤"]), _context())
+    )
+    assert len(dispatched) == 2
 
 
 def test_added_reaction_emojis_delta():
