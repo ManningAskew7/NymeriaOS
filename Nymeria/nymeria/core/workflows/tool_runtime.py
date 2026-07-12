@@ -25,6 +25,7 @@ group and re-raises ``CancelledError``, which must keep propagating.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from typing import Any, Mapping, Optional, Tuple
@@ -63,8 +64,10 @@ def format_envelope_for_agent(envelope: WorkflowEnvelope) -> str:
         if prompt:
             text += f": {prompt}"
         text += (
-            ". The owner has been notified and the run resumes automatically "
-            "once resolved"
+            ". The owner has been notified; once resolved the run continues "
+            "out-of-band, and its result is NOT delivered back to this "
+            "conversation unless the workflow itself delivers it (nym.notify "
+            "or nym.thread)"
         )
         if expires:
             text += f" (expires {expires})"
@@ -90,13 +93,18 @@ async def run_workflow_by_id(
     user_id: str,
     thread_id: str,
     depth: int = 0,
+    wall_clock_cap: Optional[float] = None,
 ) -> Tuple[Optional[str], Optional[Any]]:
     """Gate and run one saved workflow; ``(refusal, result)``.
 
     The single by-id execution path shared by the bound tool coroutine, the
-    REST execute endpoint, trigger fires, and scheduled TODOs. Exactly one
-    side of the tuple is set: a human-readable refusal (missing definition,
-    approval gate, nesting depth), or the ``WorkflowRunResult``.
+    REST execute endpoint, trigger fires, scheduled TODOs, and run_workflow
+    hooks. Exactly one side of the tuple is set: a human-readable refusal
+    (missing definition, approval gate, nesting depth), or the
+    ``WorkflowRunResult``. ``wall_clock_cap`` lowers (never raises) the
+    definition's wall-clock budget; a hook fire passes its author-side
+    ``timeout_seconds`` so the engine kills the child and returns a clean
+    ``timeout`` envelope before the hook dispatcher's deadline.
     """
     definition = loader.get_definition(tool_id)
     if definition is None or definition.workflow_config is None:
@@ -111,6 +119,8 @@ async def run_workflow_by_id(
         return f"approval_required - {gate_error}", None
 
     budget = budget_from_config(workflow_config)
+    if wall_clock_cap is not None and 0 < wall_clock_cap < budget.wall_clock_seconds:
+        budget = dataclasses.replace(budget, wall_clock_seconds=float(wall_clock_cap))
     if depth > budget.max_depth:
         return (
             "workflow error (budget_exceeded) - workflow nesting depth "
@@ -211,7 +221,16 @@ async def run_workflow_tool(
     params: dict,
     config: Optional[Mapping[str, Any]],
 ) -> str:
-    """One workflow-tool invocation: re-gate, budget, execute, format."""
+    """One workflow-tool invocation: re-gate, budget, execute, format.
+
+    The tool node bounds every tool call by ``settings.tool_timeout`` with a
+    generic asyncio timeout, so the engine's wall clock is capped just under
+    it here: a long run dies as a clean ``timeout`` envelope (error taxonomy
+    plus budget stats) instead of the node's opaque cancellation. Headless
+    surfaces (REST execute, triggers, scheduled TODOs) have no node wrapper
+    and keep the definition's full budget; runs needing more than
+    ``tool_timeout`` belong on those surfaces.
+    """
     configurable = (config or {}).get("configurable") or {}
     user_id = str(configurable.get("user_id") or "default")
     thread_id = str(configurable.get("thread_id") or "")
@@ -219,6 +238,12 @@ async def run_workflow_tool(
         depth = int(configurable.get("workflow_depth") or 0)
     except (TypeError, ValueError):
         depth = 0
+    try:
+        from ...config import get_settings
+
+        node_timeout = float(get_settings().tool_timeout)
+    except Exception:  # noqa: BLE001 - settings may be unavailable in tests
+        node_timeout = 300.0
 
     refusal, run = await run_workflow_by_id(
         loader,
@@ -227,10 +252,12 @@ async def run_workflow_tool(
         user_id=user_id,
         thread_id=thread_id,
         depth=depth,
+        wall_clock_cap=max(1.0, node_timeout - 2.0),
     )
     if refusal is not None:
         return f"[Error]: {refusal}"
-    assert run is not None  # exactly one of (refusal, run) is None
+    if run is None:  # exactly one of (refusal, run) is set; never both None
+        return "[Error]: workflow produced no result (internal error)"
     return format_envelope_for_agent(run.envelope)
 
 

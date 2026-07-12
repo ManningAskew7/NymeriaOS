@@ -71,6 +71,19 @@
           ? logic.timeout_seconds
           : 180,
       prompt: String(logic.prompt ?? ''),
+      workflowId: String(logic.workflow_id ?? ''),
+      workflowParams:
+        h?.action === 'run_workflow' && logic.params && typeof logic.params === 'object'
+          && Object.keys(logic.params as Record<string, unknown>).length > 0
+          ? JSON.stringify(logic.params, null, 2)
+          : '',
+      onFault: (logic.on_fault === 'deny' ? 'deny' : 'allow') as 'allow' | 'deny',
+      // run_workflow keeps its own wall clock so switching actions never drags
+      // run_command's 10s default into a 5..600s workflow budget.
+      workflowTimeoutSeconds:
+        h?.action === 'run_workflow' && typeof logic.timeout_seconds === 'number'
+          ? logic.timeout_seconds
+          : 60,
       conditions: Array.isArray(logic.conditions)
         ? (logic.conditions as HookCondition[]).map((c) => ({ ...c }))
         : [],
@@ -98,6 +111,10 @@
   let timeoutSeconds = $state(init.timeoutSeconds);
   let approvalWindowSeconds = $state(init.approvalWindowSeconds);
   let approvalPrompt = $state(init.prompt);
+  let workflowId = $state(init.workflowId);
+  let workflowParams = $state(init.workflowParams);
+  let onFault = $state<'allow' | 'deny'>(init.onFault);
+  let workflowTimeoutSeconds = $state(init.workflowTimeoutSeconds);
   let conditions = $state<HookCondition[]>(init.conditions);
   let updateRows = $state<UpdateRow[]>(init.updateRows);
   let enabled = $state(init.enabled);
@@ -174,7 +191,29 @@
       if (!(approvalWindowSeconds >= 10 && approvalWindowSeconds <= 600))
         return 'Approval window must be between 10 and 600 seconds.';
     }
+    if (action === 'run_workflow') {
+      if (!workflowId.trim()) return 'A workflow hook needs a workflow id.';
+      if (!(workflowTimeoutSeconds >= 5 && workflowTimeoutSeconds <= 600))
+        return 'Workflow timeout must be between 5 and 600 seconds.';
+      if (parseWorkflowParams() === null)
+        return 'Workflow parameters must be a JSON object, e.g. {"key": "value"}.';
+    }
     return null;
+  }
+
+  /** Parse the params textarea: {} when blank, null when invalid. */
+  function parseWorkflowParams(): Record<string, unknown> | null {
+    const raw = workflowParams.trim();
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   function buildLogicFields() {
@@ -233,6 +272,14 @@
           req.conditions = cleanConditions;
           req.timeout_seconds = approvalWindowSeconds;
         }
+        if (action === 'run_workflow') {
+          req.workflow_id = workflowId.trim();
+          // {} (not undefined) so emptying the field actually clears the
+          // stored params; undefined would merge and keep the old binding.
+          req.workflow_params = parseWorkflowParams() ?? {};
+          req.on_fault = onFault;
+          req.timeout_seconds = workflowTimeoutSeconds;
+        }
         await hooksStore.updateHook(editHook.id, req);
       } else {
         const req: HookCreateRequest = {
@@ -262,6 +309,15 @@
           if (approvalPrompt.trim()) req.text = approvalPrompt.trim();
           req.conditions = cleanConditions;
           req.timeout_seconds = approvalWindowSeconds;
+        }
+        if (action === 'run_workflow') {
+          req.workflow_id = workflowId.trim();
+          const parsedParams = parseWorkflowParams();
+          if (parsedParams && Object.keys(parsedParams).length > 0) {
+            req.workflow_params = parsedParams;
+          }
+          req.on_fault = onFault;
+          req.timeout_seconds = workflowTimeoutSeconds;
         }
         const created = await hooksStore.createHook(req);
         onCreated?.(created);
@@ -541,6 +597,68 @@
             <Icon name="plus" size={12} /> <span>Add argument</span>
           </button>
         </div>
+      {/if}
+
+      {#if action === 'run_workflow'}
+        <div class="field-row">
+          <label class="field-label" for="hook-workflow-id">Workflow <span class="required">*</span></label>
+          <input
+            id="hook-workflow-id"
+            class="field-input"
+            type="text"
+            placeholder="Published workflow tool id, e.g. my_workflow"
+            bind:value={workflowId}
+            maxlength={200}
+          />
+          <span class="field-hint">
+            Must be a published, approved workflow. The hook context is passed as its
+            <code>event</code> parameter when the workflow declares one.
+          </span>
+        </div>
+        <div class="field-row">
+          <label class="field-label" for="hook-workflow-params">
+            Parameters <span class="optional-badge">optional</span>
+          </label>
+          <textarea
+            id="hook-workflow-params"
+            class="field-textarea"
+            bind:value={workflowParams}
+            rows={3}
+            placeholder={'JSON object of static params, e.g. {"channel": "alerts"}'}
+          ></textarea>
+        </div>
+        <div class="field-row">
+          <label class="field-label" for="hook-workflow-timeout">Timeout (seconds)</label>
+          <input
+            id="hook-workflow-timeout"
+            class="field-input"
+            type="number"
+            min={5}
+            max={600}
+            bind:value={workflowTimeoutSeconds}
+          />
+          <span class="field-hint">5 to 600. The workflow run is killed at this wall clock.</span>
+        </div>
+        {#if event === 'pre_tool_use'}
+          <div class="field-row">
+            <span class="field-label">If the workflow fails</span>
+            <div class="segmented-toggle" role="group" aria-label="Workflow fault policy">
+              <button
+                class="seg" class:active={onFault === 'allow'}
+                type="button" onclick={() => (onFault = 'allow')}
+              >Allow the tool call</button>
+              <button
+                class="seg" class:active={onFault === 'deny'}
+                type="button" onclick={() => (onFault = 'deny')}
+              >Deny the tool call</button>
+            </div>
+            <span class="field-hint">
+              {onFault === 'allow'
+                ? 'A faulting workflow lets the tool call proceed, with a note in the hook log.'
+                : 'A faulting workflow blocks the tool call (fail closed).'}
+            </span>
+          </div>
+        {/if}
       {/if}
 
       {#if action === 'run_command'}

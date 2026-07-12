@@ -849,3 +849,94 @@ def test_create_single_use_and_schema_lifecycle(client_env):
 
     schema = client.get("/hooks/schema", headers=headers).json()
     assert schema["lifecycle"]["fields"] == ["single_use"]
+
+
+# --- run_workflow authoring ------------------------------------------------------
+
+def _pass_workflow_binding(monkeypatch, error=None):
+    """Stub the bind-time workflow validation (no published workflows in tests)."""
+    monkeypatch.setattr(
+        "nymeria.core.workflows.tool_runtime.workflow_binding_error",
+        lambda workflow_id, params, allow_event=False: error,
+    )
+
+
+def _run_workflow_body(**over):
+    body = {
+        "name": "wf-guard",
+        "event": "pre_tool_use",
+        "action": "run_workflow",
+        "matcher": "Bash",
+        "workflow_id": "wf_guard",
+        "workflow_params": {"mode": "strict"},
+        "on_fault": "deny",
+        "timeout_seconds": 45,
+        "scope": "global",
+    }
+    body.update(over)
+    return body
+
+
+def test_create_run_workflow_roundtrip(client_env, monkeypatch):
+    client, _agent, headers, _b = client_env
+    _pass_workflow_binding(monkeypatch)
+    resp = client.post("/hooks", headers=headers, json=_run_workflow_body())
+    assert resp.status_code == 201
+    hook = resp.json()
+    assert hook["action"] == "run_workflow"
+    assert hook["logic"]["workflow_id"] == "wf_guard"
+    assert hook["logic"]["params"] == {"mode": "strict"}
+    assert hook["logic"]["on_fault"] == "deny"
+    assert hook["logic"]["timeout_seconds"] == 45
+    assert hook["text"] == ""
+
+
+def test_create_run_workflow_binding_rejected_400(client_env, monkeypatch):
+    client, _agent, headers, _b = client_env
+    _pass_workflow_binding(monkeypatch, "no published workflow tool named 'wf_guard'")
+    resp = client.post("/hooks", headers=headers, json=_run_workflow_body())
+    assert resp.status_code == 400
+    assert "no published workflow tool named 'wf_guard'" in resp.json()["detail"]
+
+
+def test_patch_run_workflow_partial_merge(client_env, monkeypatch):
+    client, _agent, headers, _b = client_env
+    _pass_workflow_binding(monkeypatch)
+    created = client.post("/hooks", headers=headers, json=_run_workflow_body()).json()
+    patched = client.patch(
+        f"/hooks/{created['id']}", headers=headers,
+        json={"workflow_params": {"mode": "lax"}, "on_fault": "allow"},
+    )
+    assert patched.status_code == 200
+    logic = patched.json()["logic"]
+    assert logic["params"] == {"mode": "lax"}
+    assert logic["on_fault"] == "allow"
+    assert logic["workflow_id"] == "wf_guard"  # untouched fields survive the merge
+
+
+def test_patch_run_workflow_revalidates_binding(client_env, monkeypatch):
+    client, _agent, headers, _b = client_env
+    _pass_workflow_binding(monkeypatch)
+    created = client.post("/hooks", headers=headers, json=_run_workflow_body()).json()
+    _pass_workflow_binding(monkeypatch, "approval_required - revision not approved")
+    patched = client.patch(
+        f"/hooks/{created['id']}", headers=headers,
+        json={"workflow_params": {"mode": "lax"}},
+    )
+    assert patched.status_code == 400
+    assert "approval_required" in patched.json()["detail"]
+
+
+def test_schema_exposes_run_workflow(client_env):
+    client, _agent, headers, _b = client_env
+    schema = client.get("/hooks/schema", headers=headers).json()
+    rw = schema["actions"]["run_workflow"]
+    assert rw["gated"] is False  # the workflow approval gate is the control
+    assert rw["events"] == ["prompt_submit", "pre_tool_use", "post_tool_use", "done"]
+    assert rw["plane_by_event"] == {
+        "prompt_submit": "mutate",
+        "pre_tool_use": "mutate",
+        "post_tool_use": "observe",
+        "done": "observe",
+    }
+    assert "workflow_id" in rw["params_schema"]["properties"]

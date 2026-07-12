@@ -9,6 +9,7 @@ out-of-process compatibility shims.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -451,6 +452,9 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
     scope, args, e7 = _consume_option(args, "--scope", default="")
     command, args, e10 = _consume_option(args, "--command", default="")
     timeout, args, e11 = _consume_option(args, "--timeout", default="")
+    workflow, args, e13 = _consume_option(args, "--workflow", default="")
+    workflow_params, args, e14 = _consume_option(args, "--workflow-params", default="")
+    on_fault, args, e15 = _consume_option(args, "--on-fault", default="")
     conds, args, e8 = _consume_all(args, "--cond")
     sets, args, e9 = _consume_all(args, "--set")
     fire_conds, args, e12 = _consume_all(args, "--fire-cond")
@@ -459,7 +463,7 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
     once, args = _consume_flag(args, "--once")
     single_use, args = _consume_flag(args, "--single-use")
     error = next(
-        (e for e in (e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12) if e), ""
+        (e for e in (e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15) if e), ""
     )
     if error:
         return {}, error
@@ -479,6 +483,9 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
         "scope": scope,
         "command": command,
         "timeout": timeout,
+        "workflow": workflow,
+        "workflow_params": workflow_params,
+        "on_fault": on_fault,
         "conds": conds,
         "sets": sets,
         "fire_conds": fire_conds,
@@ -487,6 +494,29 @@ def _parse_hook_flags(args: list[str]) -> tuple[dict, str]:
         "disabled": disabled,
         "case_sensitive": case_sensitive,
     }, ""
+
+
+def _parse_hook_workflow_params(raw: str) -> tuple[dict | None, str]:
+    """Parse ``--workflow-params '<json object>'`` (None when unset)."""
+    if not raw:
+        return None, ""
+    try:
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001 - report, never raise into the command
+        return None, "--workflow-params must be a JSON object, e.g. '{\"key\": \"value\"}'."
+    if not isinstance(data, dict):
+        return None, "--workflow-params must be a JSON object, e.g. '{\"key\": \"value\"}'."
+    return data, ""
+
+
+def _parse_hook_on_fault(raw: str) -> tuple[str | None, str]:
+    """Validate ``--on-fault allow|deny`` (None when unset)."""
+    if not raw:
+        return None, ""
+    value = raw.strip().lower()
+    if value not in ("allow", "deny"):
+        return None, "--on-fault must be 'allow' or 'deny'."
+    return value, ""
 
 
 def _truncate(text: str, limit: int = 4000) -> str:
@@ -3403,6 +3433,8 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
             return "[Error]: rewrite_arg requires at least one --set arg=value."
         if action == "run_command" and not parsed["command"]:
             return "[Error]: run_command requires --command."
+        if action == "run_workflow" and not parsed["workflow"]:
+            return "[Error]: run_workflow requires --workflow <workflow_id>."
         conditions, cerr = _parse_hook_conditions(parsed["conds"], parsed["case_sensitive"])
         if cerr:
             return f"[Error]: {cerr}"
@@ -3417,6 +3449,12 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         timeout_val, terr = _parse_hook_timeout(parsed["timeout"])
         if terr:
             return f"[Error]: {terr}"
+        workflow_params_val, wperr = _parse_hook_workflow_params(parsed["workflow_params"])
+        if wperr:
+            return f"[Error]: {wperr}"
+        on_fault_val, oferr = _parse_hook_on_fault(parsed["on_fault"])
+        if oferr:
+            return f"[Error]: {oferr}"
         params = params_from_fields(
             action,
             text=parsed["text"] or None,
@@ -3426,6 +3464,9 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
             url=parsed["url"] or None,
             command=parsed["command"] or None,
             timeout_seconds=timeout_val,
+            workflow_id=parsed["workflow"] or None,
+            workflow_params=workflow_params_val,
+            on_fault=on_fault_val,
         )
         scope = (parsed["scope"] or "thread").strip().lower()
         if scope not in ("thread", "global"):
@@ -3662,6 +3703,7 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         edit_keys = {
             "name", "enabled", "event", "matcher", "action", "text", "url", "reason",
             "command", "timeout", "once", "single_use",
+            "workflow", "workflow_params", "on_fault",
         }
         kv: dict[str, str] = {}
         for token in rest_args:
@@ -3703,6 +3745,14 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
         timeout_val, terr = _parse_hook_timeout(kv.get("timeout", ""))
         if terr:
             return f"[Error]: {terr}"
+        workflow_params_val, wperr = _parse_hook_workflow_params(
+            kv.get("workflow_params", "")
+        )
+        if wperr:
+            return f"[Error]: {wperr}"
+        on_fault_val, oferr = _parse_hook_on_fault(kv.get("on_fault", ""))
+        if oferr:
+            return f"[Error]: {oferr}"
         scalars: dict = {}
         if "name" in kv:
             scalars["name"] = kv["name"]
@@ -3731,6 +3781,9 @@ class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMix
             url=kv.get("url"),
             command=kv.get("command"),
             timeout_seconds=timeout_val,
+            workflow_id=kv.get("workflow"),
+            workflow_params=workflow_params_val,
+            on_fault=on_fault_val,
             scalars=scalars,
         )
         if not update_kwargs:

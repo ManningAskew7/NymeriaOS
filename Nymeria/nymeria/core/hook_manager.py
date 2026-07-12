@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Dict, Iterable, List, Literal, Optional, Set, Tuple, Union
+from typing import Annotated, Any, Dict, Iterable, List, Literal, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -97,6 +97,31 @@ def run_command_authoring_error(action: str, *, is_admin: Optional[bool]) -> Opt
     if is_admin is False:
         return f"The '{action}' action is admin-only (it runs shell commands on the host)."
     return None
+
+
+def run_workflow_authoring_error(params: Optional[dict]) -> Optional[str]:
+    """Reason a ``run_workflow`` logic binding is unsound, or ``None`` if fine.
+
+    Bind-time validation shared by every authoring surface via
+    ``add_hook``/``update_hook`` (the single chokepoint), mirroring the
+    trigger surfaces' ``run_workflow`` action validation: the workflow must
+    exist as a published workflow tool, its current revision must be
+    approved, the bound params must all be declared, and every required
+    parameter must be covered (``event`` counts as covered because the fire
+    point supplies it when declared). Execution re-gates regardless, so a
+    store-file-planted record referencing an unapproved workflow stays inert;
+    this catches misconfiguration where it is authored. Function-local import
+    keeps this store-only module free of the workflows engine at import time.
+    """
+    params = params or {}
+    workflow_id = str(params.get("workflow_id") or "").strip()
+    if not workflow_id:
+        return "run_workflow requires 'workflow_id'."
+    bound = params.get("params") or {}
+    if not isinstance(bound, dict):
+        return "run_workflow 'params' must be a dict."
+    from .workflows.tool_runtime import workflow_binding_error
+    return workflow_binding_error(workflow_id, bound, allow_event=True)
 
 
 # Update fields a caller may touch on an existing gated hook WITHOUT passing
@@ -266,6 +291,54 @@ class RunCommandLogic(BaseModel):
     )
 
 
+class RunWorkflowLogic(BaseModel):
+    """Run a saved nym workflow; its result drives the outcome (backlog #80).
+
+    The workflow logic substrate: the hook's logic is a published,
+    admin-approved workflow tool run out-of-process. Per-event plane mirrors
+    ``run_command`` (mutate injector/guardrail on prompt_submit/pre_tool_use,
+    fire-and-forget on post_tool_use/done). The hook context is passed as the
+    workflow's ``event`` parameter when its signature declares one (the
+    trigger ``run_workflow`` convention). Authoring is NOT admin-gated: the
+    per-revision approval gate (recomputed at every execution) is the
+    control, matching the trigger and scheduled-TODO firing surfaces; the
+    binding itself is validated at authoring via
+    ``run_workflow_authoring_error``.
+    """
+
+    action: Literal["run_workflow"] = "run_workflow"
+    workflow_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Published workflow tool id to run",
+    )
+    params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Static bound parameters (no {placeholder} templating; per-fire "
+            "dynamics ride the 'event' parameter when the workflow declares it)"
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=60.0,
+        ge=5.0,
+        le=600.0,
+        description=(
+            "Workflow wall-clock budget for this hook, both planes (the "
+            "workflow's own configured wall clock still applies when lower)"
+        ),
+    )
+    on_fault: Literal["allow", "deny"] = Field(
+        default="allow",
+        description=(
+            "pre_tool_use only: whether the gated tool call proceeds when the "
+            "workflow faults (error/timeout/suspension). 'allow' surfaces a "
+            "diagnostic note; 'deny' fails closed"
+        ),
+    )
+
+
 # Discriminated union on ``action``. Store-compatible with legacy inject_context
 # records ({"action":"inject_context","text":...}). Adding an action is a new
 # variant here + an ``ACTIONS``/``ACTION_PLANES`` entry + an ``EVENT_ACTIONS``
@@ -275,6 +348,7 @@ HookLogic = Annotated[
         InjectContextLogic, BlockIfMatchesLogic, RewriteArgLogic,
         RequireApprovalLogic,
         NotifyLogic, CreateTodoLogic, WebhookLogic, RunCommandLogic,
+        RunWorkflowLogic,
     ],
     Field(discriminator="action"),
 ]
@@ -289,6 +363,7 @@ HOOK_LOGIC_BY_ACTION: Dict[str, type[BaseModel]] = {
     "create_todo": CreateTodoLogic,
     "webhook": WebhookLogic,
     "run_command": RunCommandLogic,
+    "run_workflow": RunWorkflowLogic,
 }
 
 
@@ -407,6 +482,9 @@ def params_from_fields(
     url: Optional[str] = None,
     command: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
+    workflow_id: Optional[str] = None,
+    workflow_params: Optional[Dict[str, Any]] = None,
+    on_fault: Optional[str] = None,
 ) -> Optional[dict]:
     """Assemble the logic params dict for ``action`` from flat authoring fields.
 
@@ -443,6 +521,17 @@ def params_from_fields(
         if timeout_seconds is not None:
             params["timeout_seconds"] = timeout_seconds
         return params or None
+    if action == "run_workflow":
+        params = {}
+        if workflow_id is not None:
+            params["workflow_id"] = workflow_id
+        if workflow_params is not None:
+            params["params"] = workflow_params
+        if timeout_seconds is not None:
+            params["timeout_seconds"] = timeout_seconds
+        if on_fault is not None:
+            params["on_fault"] = on_fault
+        return params or None
     params = {}
     if conditions is not None:
         params["conditions"] = [c.model_dump() for c in conditions]
@@ -464,6 +553,9 @@ def build_update_kwargs(
     url: Optional[str] = None,
     command: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
+    workflow_id: Optional[str] = None,
+    workflow_params: Optional[Dict[str, Any]] = None,
+    on_fault: Optional[str] = None,
     scalars: Optional[dict] = None,
 ) -> dict:
     """Merge flat authoring fields into a kwargs dict for ``update_hook``.
@@ -481,6 +573,8 @@ def build_update_kwargs(
         effective_action, text=text, conditions=conditions,
         reason=reason, updates=updates, url=url,
         command=command, timeout_seconds=timeout_seconds,
+        workflow_id=workflow_id, workflow_params=workflow_params,
+        on_fault=on_fault,
     )
     if provided is not None:
         if switching:
@@ -757,6 +851,10 @@ class HookManager:
         if params is None and text is not None:
             params = {"prompt": text} if action == "require_approval" else {"text": text}
         logic = build_logic(action, params)  # ValueError on bad action/params
+        if action == "run_workflow":
+            binding_error = run_workflow_authoring_error(params)
+            if binding_error:
+                raise ValueError(binding_error)
         # Construct first so validation (event/action legality, matcher
         # normalization) runs before we touch the store.
         hook = HookDefinition(
@@ -817,6 +915,10 @@ class HookManager:
                 # Validate the variant now (clear error) before re-validating the
                 # whole definition below.
                 build_logic(action, params)
+                if action == "run_workflow":
+                    binding_error = run_workflow_authoring_error(params)
+                    if binding_error:
+                        raise ValueError(binding_error)
                 data["logic"] = {"action": action, **params}
             for key, value in kwargs.items():
                 if key in data and key not in ("id", "created_at"):

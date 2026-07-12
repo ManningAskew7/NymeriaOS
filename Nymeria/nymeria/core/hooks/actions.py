@@ -721,18 +721,253 @@ def _pre_outcome_from_json(out: str) -> Optional[HookOutcome]:
         data = json.loads(out)
     except Exception:  # noqa: BLE001 - non-JSON stdout on exit 0 -> allow
         return None
+    return _pre_outcome_from_data(data)
+
+
+def _pre_outcome_from_data(data: object) -> Optional[HookOutcome]:
+    """Map a decoded decision object to a ``PreToolOutcome`` (lenient, never raises).
+
+    Shared by the ``run_command`` stdout-JSON contract and the ``run_workflow``
+    envelope-output contract: ``{"decision": "allow"|"deny"|"modify", "reason",
+    "updated_args", "note", "scratch_patch"}``. An explicit allow may carry a
+    ``note`` (execution-log story) and any decision a ``scratch_patch``; a
+    non-dict or unknown decision is a no-op (allow).
+    """
     if not isinstance(data, dict):
         return None
+    patch = data.get("scratch_patch")
+    scratch_patch = dict(patch) if isinstance(patch, dict) and patch else None
     decision = str(data.get("decision") or "allow").lower()
     if decision == "deny":
         reason = str(data.get("reason") or "blocked by a lifecycle hook")[:500]
-        return PreToolOutcome(decision="deny", reason=reason)
+        return PreToolOutcome(decision="deny", reason=reason, scratch_patch=scratch_patch)
     if decision == "modify":
         updates = data.get("updated_args")
         if isinstance(updates, dict) and updates:
-            return PreToolOutcome(decision="modify", updated_args={str(k): v for k, v in updates.items()})
+            return PreToolOutcome(
+                decision="modify",
+                updated_args={str(k): v for k, v in updates.items()},
+                scratch_patch=scratch_patch,
+            )
+        return PreToolOutcome(decision="allow", scratch_patch=scratch_patch) if scratch_patch else None
+    if decision == "allow":
+        note = str(data.get("note") or "").strip()[:500] or None
+        if note or scratch_patch:
+            return PreToolOutcome(decision="allow", note=note, scratch_patch=scratch_patch)
         return None
-    return None  # allow / unknown decision -> no-op
+    return None  # unknown decision -> no-op
+
+
+# --------------------------------------------------------------------------- #
+# run_workflow: the workflow logic substrate (backlog #80)
+# --------------------------------------------------------------------------- #
+
+# Per-field cap on the long text fields relayed in the workflow's ``event``
+# payload; keeps the RPC frame bounded (workflows should reach back through
+# verbs for full data, not receive dumps).
+_WORKFLOW_EVENT_TEXT_CAP = 16_000
+
+
+def hook_event_payload(ctx: HookContext) -> dict:
+    """JSON-safe dump of a ``HookContext`` for a workflow's ``event`` parameter.
+
+    The contract's primitives-only guarantee makes this nearly free; the JSON
+    round-trips on ``tool_args``/``scratch`` are the wire-safety backstop for
+    caller-supplied values (``default=str``), and the long text fields are
+    capped. Field names mirror ``HookContext`` so the payload is
+    self-describing for workflow authors.
+    """
+    def _cap(value: Optional[str]) -> Optional[str]:
+        if value is None or len(value) <= _WORKFLOW_EVENT_TEXT_CAP:
+            return value
+        return value[:_WORKFLOW_EVENT_TEXT_CAP]
+
+    tool_args: Optional[dict] = None
+    if isinstance(ctx.tool_args, dict):
+        try:
+            tool_args = json.loads(json.dumps(ctx.tool_args, default=str))
+        except Exception:  # noqa: BLE001 - payload building must never raise
+            tool_args = None
+    scratch: dict = {}
+    try:
+        scratch = json.loads(json.dumps(dict(ctx.scratch or {}), default=str))
+    except Exception:  # noqa: BLE001
+        scratch = {}
+    return {
+        "event": ctx.event.value if isinstance(ctx.event, HookEvent) else str(ctx.event),
+        "thread_id": ctx.thread_id or "",
+        "user_id": ctx.user_id or "",
+        "is_autonomous": bool(ctx.is_autonomous),
+        "holder_kind": ctx.holder_kind,
+        "trigger_label": ctx.trigger_label,
+        "provenance": {
+            "done_continuation_active": bool(ctx.provenance.done_continuation_active),
+            "continuation_depth": int(ctx.provenance.continuation_depth),
+        },
+        "scratch": scratch,
+        "context_tokens": ctx.context_tokens,
+        "context_limit": ctx.context_limit,
+        "compact_trigger_tokens": ctx.compact_trigger_tokens,
+        "prompt": _cap(ctx.prompt),
+        "tool_name": ctx.tool_name,
+        "tool_call_id": ctx.tool_call_id,
+        "tool_args": tool_args,
+        "tool_result_text": _cap(ctx.tool_result_text),
+        "tool_status": ctx.tool_status,
+        "completed_normally": ctx.completed_normally,
+        "final_text": _cap(ctx.final_text),
+    }
+
+
+def _workflow_fault_outcome(on_fault: str, message: str) -> PreToolOutcome:
+    """Map a PRE workflow fault to the author's ``on_fault`` choice.
+
+    Default ``allow`` mirrors the run_command guardrail-script-bug posture
+    (non-blocking, but visible in the execution log and as an activity line);
+    ``deny`` is the fail-closed option for authors whose guardrail must not
+    be bypassable by breaking the workflow.
+    """
+    if str(on_fault or "").lower() == "deny":
+        return PreToolOutcome(
+            decision="deny",
+            reason=f"workflow guardrail unavailable: {message}",
+        )
+    return PreToolOutcome(
+        decision="allow",
+        note=f"workflow guardrail fault (non-blocking): {message}",
+    )
+
+
+async def run_workflow(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
+    """Run a saved nym workflow as the hook's logic (backlog #80).
+
+    Deliberately ``async`` (the require_approval pattern): awaited on the
+    event loop on the async dispatch path, ``asyncio.run`` on the sync
+    bridge, so a long in-band run never occupies a mutate-pool worker. The
+    dispatcher budget is the author's ``timeout_seconds`` + 0.5s (bridge),
+    and the same value caps the workflow engine's wall clock, so the child
+    process is killed and returns a clean ``timeout`` envelope before the
+    dispatcher deadline (run_command's subprocess-kill-first posture).
+
+    Execution re-gates every fire: ``run_workflow_by_id`` re-reads the
+    definition and recomputes the approval hash (fail closed), so a
+    store-planted hook naming an unapproved workflow is inert. The hook
+    context rides as the workflow's ``event`` parameter when its signature
+    declares one (the trigger convention).
+
+    Contract per event:
+
+    - ``prompt_submit`` (mutate): envelope ok + output ``{"inject_context":
+      str}`` (or a plain string) -> inject; empty -> no-op. Any failure
+      RAISES so the dispatcher records an honest ``error`` and fails open.
+    - ``pre_tool_use`` (mutate, guardrail): never raises. ok + decision dict
+      -> that outcome (see ``_pre_outcome_from_data``); ok + empty -> allow;
+      refusal / error / timeout / malformed output / ``needs_approval`` (a
+      suspended workflow cannot hold a tool call) -> the author's
+      ``on_fault`` mapping (allow-with-note default, deny fails closed).
+    - ``post_tool_use`` / ``done`` (observe): side effects only; output
+      ignored. ``needs_approval`` counts as a successful fire (the suspend
+      already notified the owner; the resume runs out-of-band, the trigger
+      precedent). Failures RAISE (observe swallows them, execution log shows
+      ``error``).
+    """
+    params = params or {}
+    event = ctx.event
+    is_pre = event is HookEvent.PRE_TOOL_USE
+    on_fault = str(params.get("on_fault") or "allow")
+    workflow_id = str(params.get("workflow_id") or "").strip()
+    if not workflow_id:
+        # Authoring validates this; a store-planted/blank record lands here.
+        if is_pre:
+            return _workflow_fault_outcome(on_fault, "hook has no workflow_id")
+        logger.warning("hook run_workflow skipped: no workflow_id")
+        return None
+    try:
+        timeout = float(params.get("timeout_seconds") or 60.0)
+    except (TypeError, ValueError):
+        timeout = 60.0
+    bound = params.get("params")
+    bound = dict(bound) if isinstance(bound, dict) else {}
+
+    from ..custom_tools import get_custom_tool_loader
+    from ..workflows.envelope import STATUS_NEEDS_APPROVAL, STATUS_OK
+    from ..workflows.tool_runtime import run_workflow_by_id, workflow_declares_event
+
+    try:
+        if workflow_declares_event(workflow_id):
+            bound.setdefault("event", hook_event_payload(ctx))
+        refusal, run = await run_workflow_by_id(
+            get_custom_tool_loader(),
+            workflow_id,
+            bound,
+            user_id=ctx.user_id or "default",
+            thread_id=ctx.thread_id or "",
+            wall_clock_cap=timeout,
+        )
+    except asyncio.CancelledError:
+        raise  # turn abort: the executor already killed the child group
+    except Exception as e:  # noqa: BLE001 - PRE must map faults itself
+        if is_pre:
+            logger.warning("hook run_workflow %s failed", workflow_id, exc_info=True)
+            return _workflow_fault_outcome(on_fault, f"workflow failed to run ({e})")
+        raise
+
+    if refusal is not None or run is None:
+        # Missing definition, revoked approval, or nesting depth: fail closed
+        # at the gate, mapped per plane. run is None only if refusal is set
+        # (exactly one side of the tuple), the guard keeps the narrowing honest.
+        detail = refusal or "workflow produced no result (internal error)"
+        if is_pre:
+            return _workflow_fault_outcome(on_fault, detail)
+        raise RuntimeError(f"workflow {workflow_id}: {detail}")
+
+    envelope = run.envelope
+    if envelope.status == STATUS_NEEDS_APPROVAL:
+        if event in (HookEvent.POST_TOOL_USE, HookEvent.DONE):
+            logger.info("hook run_workflow %s suspended for approval", workflow_id)
+            return None
+        message = (
+            "workflow suspended for approval (nym.approve cannot hold an "
+            "in-band hook; resolve or drop the approve step)"
+        )
+        if is_pre:
+            return _workflow_fault_outcome(on_fault, message)
+        raise RuntimeError(f"workflow {workflow_id}: {message}")
+
+    if envelope.status != STATUS_OK:
+        error = envelope.error
+        kind = error.kind if error else "runner_error"
+        message = error.message if error else "workflow failed"
+        detail = f"workflow {envelope.status} ({kind}): {message}"
+        if is_pre:
+            return _workflow_fault_outcome(on_fault, detail)
+        raise RuntimeError(f"workflow {workflow_id}: {detail}")
+
+    output = envelope.output
+    if event is HookEvent.PROMPT_SUBMIT:
+        text = None
+        if isinstance(output, str):
+            text = output.strip()
+        elif isinstance(output, dict):
+            raw = output.get("inject_context")
+            text = str(raw).strip() if raw is not None else None
+        if text:
+            return PromptOutcome(inject_context=text[:_RUN_COMMAND_INJECT_CAP])
+        return None
+
+    if is_pre:
+        if output is None or output == "" or output == {}:
+            return None  # allow
+        outcome = _pre_outcome_from_data(output)
+        if outcome is None and not isinstance(output, dict):
+            # A non-dict, non-empty result is an author bug worth surfacing.
+            return _workflow_fault_outcome(
+                on_fault, f"workflow returned a non-decision result ({type(output).__name__})"
+            )
+        return outcome
+
+    # post_tool_use / done (observe): side effects only.
+    return None
 
 
 # The action table. The bridge looks actions up by name. Adding an action:
@@ -754,6 +989,7 @@ ACTIONS: Dict[str, ActionFn] = {
     "create_todo": create_todo,
     "webhook": webhook,
     "run_command": run_command,
+    "run_workflow": run_workflow,
 }
 
 # Each action's dispatch plane, derived from ``core/hook_spec.py``. Mutate-plane

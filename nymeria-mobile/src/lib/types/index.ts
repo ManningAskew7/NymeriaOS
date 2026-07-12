@@ -2227,7 +2227,8 @@ export type HookAction =
   | 'notify'
   | 'create_todo'
   | 'webhook'
-  | 'run_command';
+  | 'run_command'
+  | 'run_workflow';
 export type HookScope = 'global' | 'thread';
 export type HookCreatedBy = 'user' | 'agent';
 
@@ -2267,6 +2268,9 @@ export interface HookCreateRequest {
   updates?: Record<string, string>;
   url?: string;
   command?: string;
+  workflow_id?: string;
+  workflow_params?: Record<string, unknown>;
+  on_fault?: 'allow' | 'deny';
   timeout_seconds?: number;
   matcher?: string | null;
   scope: HookScope;
@@ -2284,6 +2288,9 @@ export interface HookUpdateRequest {
   updates?: Record<string, string>;
   url?: string;
   command?: string;
+  workflow_id?: string;
+  workflow_params?: Record<string, unknown>;
+  on_fault?: 'allow' | 'deny';
   timeout_seconds?: number;
   matcher?: string | null;
   enabled?: boolean;

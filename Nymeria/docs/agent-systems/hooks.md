@@ -7,8 +7,9 @@ landed on top of it as a set of **canned actions** a user or the agent can attac
 event. This document covers both the engine and those actions. The desktop and mobile
 clients ship a GUI over the REST surface (a dashboard **Hooks** panel to author and toggle
 hooks, plus a per-thread **Hooks** tab for enablement). The `run_command` action (a hook
-that shells out, admin + deployment-flag gated) ships as the pathfinder for the eventual
-`nym` workflow substrate, which lands in a later pass.
+that shells out, admin + deployment-flag gated) shipped as the pathfinder for the `nym`
+workflow substrate; that substrate now ships too, as the `run_workflow` action (backlog
+#80): a hook whose logic is a published, approved nym workflow.
 
 Full design and rationale: `docs/private/plans/lifecycle-hooks.md`.
 
@@ -29,6 +30,7 @@ actions that ship today, and the events they attach to (`EVENT_ACTIONS` in
 | `create_todo` | observe | `post_tool_use`, `done` | add a user TODO |
 | `webhook` | observe | `post_tool_use`, `done` | POST a JSON payload to a URL |
 | `run_command` | mutate on `prompt_submit`/`pre_tool_use`, observe on `post_tool_use`/`done` | all four | run a shell command with the hook context as JSON on stdin (admin + flag gated) |
+| `run_workflow` | mutate on `prompt_submit`/`pre_tool_use`, observe on `post_tool_use`/`done` | all four | run a published, approved `nym` workflow with the hook context as its `event` param |
 
 **`inject_context`** appends its text to the model-facing tail (`prompt_submit`), to the
 matching tool's result (`post_tool_use`, scope with `matcher`), or re-drives once as a
@@ -116,6 +118,38 @@ two-pipe flood cannot deadlock; the wall clock still bounds pipe EOF, so a backg
 grandchild holding the pipes open past the deadline is a timeout (group-killed), exactly as
 before.
 
+**`run_workflow`** runs a published `nym` workflow as the hook's logic (backlog #80: the
+workflow substrate `run_command` pathfound). Same plane shape as `run_command`: mutate on
+`prompt_submit`/`pre_tool_use`, observe on `post_tool_use`/`done`. It is **not**
+admin/flag gated; the control is the workflow platform's own per-revision approval gate:
+authoring a hook validates the binding (`workflow_binding_error`: published workflow
+exists, current revision admin-approved, bound `params` all declared, required params
+covered), and every fire re-gates through `run_workflow_by_id` (revoking a workflow's
+approval neuters every hook bound to it, immediately, with no hook edit). Params:
+`workflow_id`, static `params` bound at authoring, `timeout_seconds` (5..600, default 60:
+the engine wall clock, which the dispatcher budget rides via the shared
+`logic.timeout_seconds` seam), and `on_fault` (`allow`|`deny`, default `allow`,
+`pre_tool_use` only). Per-fire dynamics arrive through the workflow's optional `event`
+parameter: when the signature declares `event`, the fire passes the full hook context as
+a JSON-safe dict (event, tool name/args/result, prompt or final text capped at 16 KB,
+scratch, context-usage stats), mirroring the trigger `run_workflow` action. The contract
+by event: on `prompt_submit`, an ok run returns injected context (a plain-string output,
+or the `inject_context` key of a dict output; empty = no-op); on `pre_tool_use` an ok
+dict output is the decision (`{"decision": "deny", "reason": ...}` /
+`{"decision": "modify", "updates": {...}}` / allow with optional `note` and
+`scratch_patch`), empty output allows, and **every fault** (missing/unapproved workflow,
+crash, timeout, refusal, non-dict output) maps through `on_fault`: `allow` proceeds with
+a diagnostic note in `/hook log`, `deny` fails closed with the fault reason; on
+`post_tool_use`/`done` it is observe (fire-and-forget side effects, output ignored). One
+caveat: `nym.approve` cannot hold an in-band hook. A workflow that suspends for approval
+counts as a **success on the observe events** (the approval resolves out-of-band, the
+trigger precedent) but as a **fault on the mutate events** (mapped via `on_fault` on PRE,
+raised on `prompt_submit`), so guardrail workflows should not call `nym.approve`
+(use the `require_approval` action for interactive holds). Note that every suspending
+fire still mints a durable pending-approval record (7-day expiry, hourly sweep), so a
+frequently-firing hook bound to a suspending workflow accumulates them until resolved
+or reaped.
+
 Actions are store-agnostic: `core/hooks/actions.py` maps each action to its outcome/side
 effect via `ACTIONS`/`ACTION_PLANES`, and `core/hooks/bridge.py::build_registry` turns a
 user's enabled `HookDefinition` records into a per-turn `HookRegistry`, registering each hook
@@ -133,7 +167,9 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   action is picked with
   `hook_action` (default `inject_context`); text actions take `text`, the guardrail
   actions take a `params` dict (`{"conditions": [...], "reason": ...}` /
-  `{"conditions": [...], "updates": {...}}`); the definition-level fire gate is
+  `{"conditions": [...], "updates": {...}}`; `run_workflow` takes
+  `{"workflow_id": ..., "params": {...}, "timeout_seconds": ..., "on_fault": ...}`);
+  the definition-level fire gate is
   authored via `fire_conditions` (a list of condition objects) + `once` on both
   create and update, and the lifecycle flag via `single_use` (below). A create
   auto-binds the current thread for
@@ -159,8 +195,11 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   --action A [--text ..|--url ..|--cond "field op value"..|--reason ..|--set arg=value..]
   [--fire-cond "field op value"]... [--once] [--single-use] [--matcher A|B]
   [--scope thread|global]
-  [--disabled]`; `--cond`/`--set`/`--fire-cond` repeat; `edit`
-  takes `key=value` scalars (incl. `once=true|false` and `single_use=true|false`)
+  [--disabled]`; `run_workflow` adds `--workflow <id> [--workflow-params
+  '{"k": "v"}'] [--on-fault allow|deny]` (`--workflow-params` takes one JSON
+  object); `--cond`/`--set`/`--fire-cond` repeat; `edit`
+  takes `key=value` scalars (incl. `once=true|false`, `single_use=true|false`,
+  `workflow=<id>`, `workflow_params='{...}'`, `on_fault=allow|deny`)
   plus `--cond`/`--set`/`--fire-cond`. It reuses the same flat-field mapping
   (`params_from_fields` / `build_update_kwargs` in `core/hook_manager.py`) as the REST
   surface, so the three authoring paths cannot drift. The mutating subcommands are
@@ -180,7 +219,8 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   cap; derived
   from `core/hook_spec.py` so clients can render authoring forms from data). The
   request carries `action` plus the flat per-action fields
-  (`text` / `conditions` / `reason` / `updates` / `url` / `command` / `timeout_seconds`)
+  (`text` / `conditions` / `reason` / `updates` / `url` / `command` /
+  `workflow_id` / `workflow_params` / `on_fault` / `timeout_seconds`)
   and the definition-level `fire_conditions` / `once` / `single_use`; the
   response exposes the full `logic` object (discriminated on `action`) plus the
   fire-gate and lifecycle fields and the `template` provenance id. Every handler pins
@@ -567,10 +607,11 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
 
 ## What is deferred (not yet shipped)
 
-- The `nym` **workflow** logic substrate (sandboxed, out-of-process). `run_command` is the
-  shipped subprocess pathfinder for it. The eight canned actions (`inject_context`,
-  `block_if_matches`, `rewrite_arg`, `require_approval`, `notify`, `create_todo`, `webhook`,
-  `run_command`) all ship.
+- All nine canned actions ship (`inject_context`, `block_if_matches`, `rewrite_arg`,
+  `require_approval`, `notify`, `create_todo`, `webhook`, `run_command`,
+  `run_workflow`), including the `nym` workflow substrate. Deferred on
+  `run_workflow`: a delivery path for the result of a workflow that suspends via
+  `nym.approve` mid-hook (today: observe = out-of-band success, mutate = fault).
 - Observe fire points for `PROMPT_SUBMIT` / `PRE_TOOL_USE` (a registration on those
   events is inert; no product action needs them yet). `POST_TOOL_USE` and `DONE` have
   observe fire points.
@@ -585,7 +626,8 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `_mutate_pool`/`_observe_pool` + the off-turn `schedule_observe` on its own
   `_observe_dispatch_pool` + the queue-wait-vs-execution timeout split; reports each run to
   the recorder and, on the mutate plane, to an optional `emit` sink for in-chat lines),
-  `actions.py` (the eight actions incl. `require_approval` + `run_command`; per-event planes via the spec's
+  `actions.py` (the nine actions incl. `require_approval`, `run_command`, and
+  `run_workflow` with its `hook_event_payload` context dump; per-event planes via the spec's
   `plane_for`/`plane_by_event`; `context_usage_fields` + the context template vars),
   `bridge.py` (definitions → per-turn registry, registering
   each on its per-event plane with its `definition_id`, a per-registration timeout, + the
@@ -597,9 +639,11 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `GET /hooks/schema` exposes it (including `plane_by_event` and a `gated` flag);
   `tests/test_hook_spec.py` pins the independent copies (the engine `ACTIONS` table,
   the logic variants, the frontend `HOOK_EVENT_ACTIONS`) in lockstep.
-- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (eight
+- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (nine
   variants) + `HookStore` records + the per-user `HookManager` (store-only, no engine
-  import; a corrupt store file is quarantined to
+  import; `run_workflow` create/logic-edit validates the binding via
+  `run_workflow_authoring_error`, delegating to the shared trigger-side
+  `workflow_binding_error`; a corrupt store file is quarantined to
   `hooks/quarantine/<user>.corrupt-*.json` via the shared
   `core/storage_paths.py::quarantine_corrupt_file` helper, never silently
   overwritten), plus the execution log (`HookExecution`,
