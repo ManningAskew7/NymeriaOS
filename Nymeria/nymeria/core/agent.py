@@ -721,7 +721,8 @@ class NymeriaAgent:
         *,
         user_id: str,
         thread_id: str,
-        is_autonomous: bool,
+        source: Optional[str],
+        is_self_invoke: bool,
         resumed: bool = False,
     ) -> None:
         """Record a genuine user turn in the activity log (shared by chat/astream).
@@ -730,11 +731,13 @@ class NymeriaAgent:
         thread and its idle gate reads the newest entry of any type, so every
         interactive turn must land here regardless of path (before 2026-07-12
         only the sync ``chat()`` path logged, leaving streamed threads
-        invisible to scheduled dreaming). Autonomous turns (self-invoke,
-        trigger/ticker/watchdog/dream sources) and message-less resumes are
-        deliberately excluded: they are not user turns. Never raises.
+        invisible to scheduled dreaming). Only true user turns qualify:
+        self-invoked turns and every non-"user" source stay out, covering
+        both the autonomous sources (trigger/ticker/watchdog/dream) and the
+        programmatic interactive ones (callable asks, mcp), which are not
+        human activity. Message-less resumes are excluded too. Never raises.
         """
-        if is_autonomous or resumed:
+        if (source or "user") != "user" or is_self_invoke or resumed:
             return
         try:
             from .activity_log import ActivityType, log_activity
@@ -2230,7 +2233,8 @@ class NymeriaAgent:
                 message,
                 user_id=user_id,
                 thread_id=thread_id,
-                is_autonomous=is_autonomous_source,
+                source=source,
+                is_self_invoke=_is_self_invoke,
                 resumed=_resume_halted_turn,
             )
 
@@ -3027,7 +3031,8 @@ class NymeriaAgent:
                 message,
                 user_id=user_id,
                 thread_id=thread_id,
-                is_autonomous=is_autonomous_source,
+                source=source,
+                is_self_invoke=_is_self_invoke,
                 resumed=_resume_halted_turn,
             )
 

@@ -160,7 +160,7 @@ def _agent_prompt_source(request: ChatRequest) -> tuple[str, str | None, str | N
     if not request.is_self_invoke or not request.source:
         return "user", None, None
     source = request.source
-    if source not in {"trigger", "ticker", "watchdog", "callable", "mcp"}:
+    if source not in {"trigger", "ticker", "watchdog", "callable", "mcp", "dream"}:
         source = "ticker"
     return source, request.source_id, request.source_label
 
