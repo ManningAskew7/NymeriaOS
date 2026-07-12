@@ -316,7 +316,9 @@ Per-platform opt-in toggles (both default off):
 
 Scope and loop guards: only reactions **added** by a human to a message
 **authored by the bot** fire (removals are ignored, the bot's own reactions
-are ignored, other bots are ignored). Unlinked platform users are silently
+are ignored, other bots are ignored), and a repeat of the same (message,
+reactor, emoji) within 45 seconds is debounced so emoji toggling cannot burn
+repeated agent turns. Unlinked platform users are silently
 dropped, matching the bots' existing access model. The agent receives a
 synthetic prompt of the form `[Reaction] Alice reacted with 👍 to your
 message: "..."` plus, when the `react` tool is not bound in the thread, a

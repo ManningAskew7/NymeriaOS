@@ -870,6 +870,7 @@ class NymeriaDiscordBot(_BotBase):
         (default off).
         """
         from ..config import get_settings
+        from ..core.bot_reactions import debounce_reaction_fire
 
         try:
             if not get_settings().discord_reaction_trigger_enabled:
@@ -886,19 +887,26 @@ class NymeriaDiscordBot(_BotBase):
         if member is not None and getattr(member, "bot", False):
             return
 
-        try:
-            channel = self.get_channel(payload.channel_id)
-            if channel is None:
-                channel = await self.fetch_channel(payload.channel_id)
-            if channel is None or not hasattr(channel, "fetch_message"):
-                return
-            reacted_message = await channel.fetch_message(payload.message_id)
-        except Exception as e:  # noqa: BLE001 - deleted message, missing perms
-            logger.debug("Reaction trigger: could not fetch message: %s", e)
+        # Cheap own-message pre-gate: the raw payload carries the reacted
+        # message's author id on REACTION_ADD, so with the toggle on, a
+        # reaction to someone else's message costs no message fetch. The
+        # authoritative gate below (on the fetched message) stays as the
+        # backstop for payloads without the field.
+        author_id = getattr(payload, "message_author_id", None)
+        if author_id is not None and author_id != self.user.id:
             return
 
-        # Scope: only reactions on the bot's own messages fire (Hermes gate).
-        if reacted_message.author.id != self.user.id:
+        emoji_text = self._reaction_emoji_text(payload.emoji)
+
+        # Short-TTL dedupe: emoji toggling or gateway replays must not fire
+        # repeated full agent turns for the same (message, reactor, emoji).
+        if debounce_reaction_fire(
+            platform="discord",
+            channel_id=str(payload.channel_id),
+            message_id=str(payload.message_id),
+            reactor_id=str(payload.user_id),
+            emoji=emoji_text,
+        ):
             return
 
         user_id = await self.resolve_user_id(payload.user_id)
@@ -910,7 +918,21 @@ class NymeriaDiscordBot(_BotBase):
             )
             return
 
-        emoji_text = self._reaction_emoji_text(payload.emoji)
+        try:
+            channel = self.get_channel(payload.channel_id)
+            if channel is None:
+                channel = await self.fetch_channel(payload.channel_id)
+            if channel is None or not hasattr(channel, "fetch_message"):
+                return
+            reacted_message = await channel.fetch_message(payload.message_id)
+        except Exception as e:  # noqa: BLE001 - deleted message, missing perms
+            logger.debug("Reaction trigger: could not fetch message: %s", e)
+            return
+
+        # Scope: only reactions on the bot's own messages fire (Hermes gate;
+        # authoritative form of the payload pre-gate above).
+        if reacted_message.author.id != self.user.id:
+            return
         reactor = member.display_name if member is not None else None
         if not reactor:
             user_obj = self.get_user(payload.user_id)

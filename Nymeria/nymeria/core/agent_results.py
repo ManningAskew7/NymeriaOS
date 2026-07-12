@@ -33,10 +33,12 @@ logger = logging.getLogger(__name__)
 SUBAGENT_ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
 _ATTACH_TAG_PATTERN = re.compile(r"\[attach:(.+?)\]")
 
-# Only the react tool itself (and tool_invoke, its deferred wrapper, which
-# returns the target's result text verbatim) may signal reply suppression.
-# Keying on the tool name means arbitrary tool output (a fetched web page, an
-# MCP tool) cannot suppress bot replies by echoing the marker.
+# Defense-in-depth name gate for the reply_suppressed emission: only the
+# react tool itself (and tool_invoke, its deferred wrapper) can carry the
+# marker legitimately. The AUTHORITY is the per-thread registry flag in
+# core/bot_reactions.py, which only the real react implementation sets; the
+# marker text alone (echoed by a fetched web page, an MCP tool, or any tool
+# relayed verbatim through tool_invoke) is inert without it.
 _REPLY_SUPPRESSING_TOOL_NAMES = frozenset({"react", "tool_invoke"})
 
 
@@ -268,8 +270,13 @@ def tool_result_extra_events(
     tool_name: str,
     raw_result: str,
     tool_call_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Build extra stream events for structured tool results."""
+    """Build extra stream events for structured tool results.
+
+    ``thread_id`` scopes the reply-suppression check to the turn's thread;
+    without it the ``reply_suppressed`` event is never emitted (fail closed).
+    """
     events: List[Dict[str, Any]] = []
 
     payload = parse_subagent_error_marker(raw_result)
@@ -318,18 +325,25 @@ def tool_result_extra_events(
             **artifact,
         })
 
-    # The react tool's deterministic suppression marker becomes a stream
-    # event immediately after its tool_result, before any later response
-    # text, so bot clients can drop the reply as it streams (backlog #45;
-    # see core/bot_reactions.py).
+    # The react tool's suppression becomes a stream event immediately after
+    # its tool_result, before any later response text, so bot clients can
+    # drop the reply as it streams (backlog #45). Emission requires BOTH the
+    # marker text and the per-thread registry flag that only the real react
+    # implementation sets (core/bot_reactions.py), so foreign tool output
+    # echoing the marker (including through tool_invoke of any other tool)
+    # can never suppress a reply.
     if (
         tool_name in _REPLY_SUPPRESSING_TOOL_NAMES
         and isinstance(raw_result, str)
         and REPLY_SUPPRESSED_MARKER in raw_result
+        and thread_id
     ):
-        events.append({
-            "type": "reply_suppressed",
-            "tool_call_id": tool_call_id,
-        })
+        from .bot_reactions import reply_suppressed
+
+        if reply_suppressed(thread_id):
+            events.append({
+                "type": "reply_suppressed",
+                "tool_call_id": tool_call_id,
+            })
 
     return events

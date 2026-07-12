@@ -7,9 +7,19 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+import pytest
+
+from nymeria.core import bot_reactions
 from nymeria.triggers.discord_bot import NymeriaDiscordBot
 
 BOT_USER_ID = 999
+
+
+@pytest.fixture(autouse=True)
+def _clear_debounce():
+    bot_reactions._recent_reaction_fires.clear()
+    yield
+    bot_reactions._recent_reaction_fires.clear()
 
 
 class _FakeMessage:
@@ -75,6 +85,7 @@ def _payload(
     guild_id: Optional[int] = 123,
     emoji: Any = "👍",
     member: Any = None,
+    message_author_id: Optional[int] = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         user_id=user_id,
@@ -83,6 +94,7 @@ def _payload(
         guild_id=guild_id,
         emoji=emoji,
         member=member,
+        message_author_id=message_author_id,
     )
 
 
@@ -172,6 +184,41 @@ def test_reaction_on_non_bot_message_is_ignored(monkeypatch):
 
     asyncio.run(bot.on_raw_reaction_add(_payload()))
     assert dispatched == []
+
+
+def test_author_pregate_drops_without_fetch(monkeypatch):
+    # The raw payload carries message_author_id on REACTION_ADD: a reaction
+    # to someone else's message must cost no channel/message fetch at all.
+    _enable_toggle(monkeypatch)
+    channel = _FakeChannel(456, _FakeMessage(author_id=5, content="user msg"))
+    bot, dispatched = _reaction_bot(channel)
+    fetches: List[int] = []
+
+    original_fetch = channel.fetch_message
+
+    async def _counting_fetch(message_id: int):
+        fetches.append(message_id)
+        return await original_fetch(message_id)
+
+    channel.fetch_message = _counting_fetch
+
+    asyncio.run(bot.on_raw_reaction_add(_payload(message_author_id=5)))
+    assert dispatched == []
+    assert fetches == []
+
+
+def test_repeat_reaction_is_debounced(monkeypatch):
+    _enable_toggle(monkeypatch)
+    channel = _FakeChannel(456, _FakeMessage(BOT_USER_ID, "hi"))
+    bot, dispatched = _reaction_bot(channel)
+
+    asyncio.run(bot.on_raw_reaction_add(_payload()))
+    asyncio.run(bot.on_raw_reaction_add(_payload()))  # emoji toggled again
+    assert len(dispatched) == 1
+
+    # A different emoji on the same message still fires.
+    asyncio.run(bot.on_raw_reaction_add(_payload(emoji="❤")))
+    assert len(dispatched) == 2
 
 
 def test_unlinked_reactor_dropped_silently(monkeypatch):

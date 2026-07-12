@@ -267,6 +267,17 @@ def stream_and_collect(
     executor = wrap_for_stream(agent)
     tee = None if executor.is_remote else _TurnBufferTee(executor, kwargs)
 
+    # Local autonomous turns never carry a chat-platform origin: clear any
+    # stale entry so the react tool refuses instead of reacting to an old
+    # bot message (backlog #45; remote/relayed turns are cleared by the /chat
+    # route in the API process, where the registry lives).
+    if not executor.is_remote:
+        _thread_id = kwargs.get("thread_id")
+        if _thread_id:
+            from .bot_reactions import clear_turn_origin
+
+            clear_turn_origin(str(_thread_id))
+
     try:
         for chunk in iter_agent_astream(agent, **kwargs):
             chunk_type = chunk.get("type")

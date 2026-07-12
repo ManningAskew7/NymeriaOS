@@ -3,26 +3,31 @@
 The outbound half of two-way bot reactions (backlog #45,
 ``docs/private/plans/emoji-reactions.md``). Chat-platform bots stamp every
 dispatched turn with the originating platform message
-(``ChatRequest.platform_origin`` -> ``core/bot_reactions.set_turn_origin``);
-this tool reads that origin and publishes one ``reaction_request`` autonomous
-event, which the origin platform's bot executes (Discord ``add_reaction``,
-Telegram ``setMessageReaction``). The transport is the same event-bus path
-``notification`` events ride, so it works in both deployment shapes and stays
-best-effort fire-and-forget.
+(``ChatRequest.platform_origin`` -> ``core/bot_reactions.set_turn_origin``,
+honored for admin/service-token callers only, and cleared at the start of
+every turn without one); this tool reads that origin and publishes one
+``reaction_request`` autonomous event, which the origin platform's bot
+executes (Discord ``add_reaction``, Telegram ``setMessageReaction``). The
+transport is the same event-bus path ``notification`` events ride, so it works
+in both deployment shapes and stays best-effort fire-and-forget: the tool
+result honestly says "queued", since delivery needs the platform's bot to be
+running and able to reach the message.
 
 ``suppress_reply=true`` makes the reaction the turn's ONLY visible output: the
-tool marks the per-thread suppress flag (read by the chat routes for the
-terminal ``done``/``ChatResponse`` stamp) and appends the deterministic
-``REPLY_SUPPRESSED_MARKER`` to its result text, which
-``agent_results.tool_result_extra_events`` converts into a ``reply_suppressed``
-stream event every bot delivery path honors.
+tool marks the per-thread suppress flag (the authority: read back by
+``agent_results.tool_result_extra_events`` before it emits the
+``reply_suppressed`` stream event, and by the chat routes for the terminal
+``done``/``ChatResponse`` stamp) and appends ``REPLY_SUPPRESSED_MARKER`` to
+its result text. Marker text from any other tool is inert without the flag.
 
 ``reaction_guidance_block`` renders the deferred-use guidance the chat routes
 inject into reaction-triggered synthetic prompts: the tool description plus
 its compact ``schema_render`` schema for a cache-safe ``tool_invoke`` call,
-omitted (down to a one-line reminder) while the tool is actually bound. The
-bound-state authority is ``agent._select_tools_for_graph`` itself, so the omit
-rule cannot drift from what the graph binds.
+omitted (down to a one-line reminder) while the tool is actually bound, and
+omitted entirely when the deferred gate would refuse the call (for example
+``react`` in the thread's ``disabled_tools``). The authorities are
+``agent._select_tools_for_graph`` and ``tool_invoke.deferred_gate_reason``
+themselves, so neither rule can drift from what actually runs.
 """
 
 from __future__ import annotations
@@ -114,12 +119,16 @@ async def _react_impl(
     if suppress_reply:
         mark_reply_suppressed(thread_id)
         return (
-            f"Reacted with {emoji} to the {platform} message. Reply "
-            "suppression is active: end your turn now without writing any "
-            "other text, so the user sees only the reaction. "
+            f"Queued a {emoji} reaction to the {platform} message (the "
+            f"{platform} bot posts it best-effort). Reply suppression is "
+            "active: end your turn now without writing any other text, so "
+            "the user sees only the reaction. "
             f"{REPLY_SUPPRESSED_MARKER}"
         )
-    return f"Reacted with {emoji} to the {platform} message."
+    return (
+        f"Queued a {emoji} reaction to the {platform} message; the "
+        f"{platform} bot posts it best-effort."
+    )
 
 
 @tool
@@ -132,10 +141,11 @@ async def react(
 ) -> str:
     """Post an emoji reaction to the chat-platform message behind this turn.
 
-    Only works on threads driven by a chat-platform bot (Discord, Telegram):
+    Only works on turns driven by a chat-platform bot (Discord, Telegram):
     the reaction lands on the message that started the current turn (the
     user's message, or, on a reaction-triggered turn, the message the user
-    reacted to). Delivery is asynchronous and best-effort.
+    reacted to). Delivery is asynchronous and best-effort: the request is
+    queued for the platform's bot, which must be running to post it.
 
     With suppress_reply=true the reaction becomes your ENTIRE visible
     response: the bot will not post your reply text, so call this tool and end
@@ -168,9 +178,12 @@ def reaction_guidance_block(agent, user_id: str, thread_id: str) -> str:
 
     Unbound: the full deferred-use block (description line, compact
     ``schema_render`` schema, ``tool_invoke`` recipe, bind nudge). Bound: a
-    one-line reminder with no schema, until the binding lapses. Fails open to
-    the full block when bound-state resolution errors: a few redundant tokens
-    beat stranding the model without the schema.
+    one-line reminder with no schema, until the binding lapses. Refused by
+    the deferred gate (``tool_invoke.deferred_gate_reason``, notably the
+    thread's ``disabled_tools``): no block at all, since the nudged
+    ``tool_invoke`` call would only be refused by the same gate. Fails open
+    to the full block when resolution errors: a few redundant tokens beat
+    stranding the model without the schema.
     """
     bound = False
     try:
@@ -187,6 +200,23 @@ def reaction_guidance_block(agent, user_id: str, thread_id: str) -> str:
             "call it directly to respond with an emoji reaction "
             "(suppress_reply=true makes the reaction your only visible "
             "response)."
+        )
+
+    try:
+        from .tool_invoke import deferred_gate_reason
+        from .utils import caller_role
+
+        if deferred_gate_reason(
+            agent, "react", user_id, thread_id, caller_role(user_id, agent=agent)
+        ):
+            # The deferred path would refuse (e.g. react is in the thread's
+            # disabled_tools): advertising a tool_invoke recipe that the
+            # same gate rejects would only waste a round trip.
+            return ""
+    except Exception:  # noqa: BLE001 - fail open to including the guidance
+        logger.debug(
+            "reaction_guidance_block: deferred-gate resolution failed",
+            exc_info=True,
         )
 
     from .schema_render import render_tool_args_schema

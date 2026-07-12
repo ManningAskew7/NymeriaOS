@@ -1238,9 +1238,10 @@ class NymeriaAgent:
         tool_name: str,
         raw_result: str,
         tool_call_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         from .agent_results import tool_result_extra_events
-        return tool_result_extra_events(tool_name, raw_result, tool_call_id)
+        return tool_result_extra_events(tool_name, raw_result, tool_call_id, thread_id)
 
     def _extract_tokens_from_response(self, messages: List) -> tuple:
         """Extract token usage from the latest AIMessage's metadata."""

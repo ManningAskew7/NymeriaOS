@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -36,8 +37,10 @@ THREAD = "discord_123_456"
 @pytest.fixture(autouse=True)
 def _clean_registry():
     clear_turn_origin(THREAD)
+    bot_reactions._recent_reaction_fires.clear()
     yield
     clear_turn_origin(THREAD)
+    bot_reactions._recent_reaction_fires.clear()
 
 
 def _config(thread_id: str = THREAD, user_id: str = "u1") -> dict:
@@ -98,7 +101,7 @@ def test_react_publishes_reaction_request(monkeypatch):
     )
 
     result = asyncio.run(_react_impl("👍", False, None, _config()))
-    assert "Reacted with 👍" in result
+    assert "Queued a 👍 reaction" in result
     assert REPLY_SUPPRESSED_MARKER not in result
     assert reply_suppressed(THREAD) is False
     assert published == [{
@@ -157,7 +160,7 @@ def test_react_tool_invocable_via_ainvoke(monkeypatch):
         THREAD, platform="discord", channel_id="456", message_id="777", kind="message"
     )
     result = asyncio.run(react.ainvoke({"emoji": "🎉"}, _config()))
-    assert "Reacted with 🎉" in result
+    assert "Queued a 🎉 reaction" in result
     assert published[0]["emoji"] == "🎉"
 
 
@@ -209,34 +212,86 @@ def test_guidance_block_fails_open_to_full_block():
     assert render_tool_args_schema(react) in block
 
 
+def test_guidance_block_omitted_when_react_disabled_on_thread():
+    # disabled_tools would make the nudged tool_invoke call refuse via the
+    # same deferred gate, so no block is rendered at all.
+    agent = _AgentWithTools([])
+    agent.thread_config_manager = SimpleNamespace(
+        get_config=lambda thread_id: SimpleNamespace(disabled_tools=["react"])
+    )
+    assert reaction_guidance_block(agent, "u1", THREAD) == ""
+
+
 # ---------------------------------------------------------------------------
-# Reply-suppression marker -> stream event
+# Reply-suppression: marker + registry flag -> stream event
 # ---------------------------------------------------------------------------
 
 
-def test_marker_in_react_result_emits_reply_suppressed_event():
+def _suppressed_thread() -> None:
+    """Simulate a real react(suppress_reply=true) call on THREAD."""
+    set_turn_origin(
+        THREAD, platform="discord", channel_id="456", message_id="777", kind="message"
+    )
+    mark_reply_suppressed(THREAD)
+
+
+def test_marker_with_registry_flag_emits_reply_suppressed_event():
+    _suppressed_thread()
     events = tool_result_extra_events(
-        "react", f"Reacted with 👍. {REPLY_SUPPRESSED_MARKER}", "call-1"
+        "react", f"Queued. {REPLY_SUPPRESSED_MARKER}", "call-1", THREAD
     )
     assert {"type": "reply_suppressed", "tool_call_id": "call-1"} in events
 
 
-def test_marker_through_tool_invoke_emits_event():
+def test_marker_through_tool_invoke_of_react_emits_event():
+    # The deferred path: tool_invoke(react) relays react's own result text,
+    # and the react implementation set the registry flag.
+    _suppressed_thread()
     events = tool_result_extra_events(
-        "tool_invoke", f"Reacted with 👍. {REPLY_SUPPRESSED_MARKER}", "call-2"
+        "tool_invoke", f"Queued. {REPLY_SUPPRESSED_MARKER}", "call-2", THREAD
     )
     assert any(e["type"] == "reply_suppressed" for e in events)
 
 
-def test_marker_in_other_tool_result_is_inert():
+def test_foreign_marker_via_tool_invoke_is_inert_without_registry_flag():
+    # tool_invoke of ANY OTHER tool relays the target's text verbatim: a
+    # fetched web page or MCP tool echoing the marker must never suppress
+    # the bot's reply. The registry flag, set only by the real react tool,
+    # is the authority.
+    set_turn_origin(
+        THREAD, platform="discord", channel_id="456", message_id="777", kind="message"
+    )
+    assert reply_suppressed(THREAD) is False
     events = tool_result_extra_events(
-        "fetch_url_nymeria", f"page says {REPLY_SUPPRESSED_MARKER}", "call-3"
+        "tool_invoke", f"page says {REPLY_SUPPRESSED_MARKER}", "call-3", THREAD
+    )
+    assert not any(e["type"] == "reply_suppressed" for e in events)
+
+
+def test_marker_in_other_tool_result_is_inert_even_with_flag():
+    # Name gate as defense-in-depth: even mid-suppressed-turn, a direct
+    # foreign tool result carrying the marker emits nothing.
+    _suppressed_thread()
+    events = tool_result_extra_events(
+        "fetch_url_nymeria", f"page says {REPLY_SUPPRESSED_MARKER}", "call-4", THREAD
+    )
+    assert not any(e["type"] == "reply_suppressed" for e in events)
+
+
+def test_marker_without_thread_id_is_inert():
+    # No thread context = fail closed, never emit.
+    _suppressed_thread()
+    events = tool_result_extra_events(
+        "react", f"Queued. {REPLY_SUPPRESSED_MARKER}", "call-5"
     )
     assert not any(e["type"] == "reply_suppressed" for e in events)
 
 
 def test_react_result_without_marker_is_inert():
-    events = tool_result_extra_events("react", "Reacted with 👍.", "call-4")
+    _suppressed_thread()
+    events = tool_result_extra_events(
+        "react", "Queued a 👍 reaction.", "call-6", THREAD
+    )
     assert not any(e["type"] == "reply_suppressed" for e in events)
 
 
@@ -310,8 +365,25 @@ def test_dispatch_event_reply_suppressed_optional_for_legacy_handlers():
 
 
 # ---------------------------------------------------------------------------
-# Chat-route helper: platform_origin stamping + reaction enrichment
+# Chat-route helpers: privilege gate, per-turn stamping/clearing, enrichment
 # ---------------------------------------------------------------------------
+
+
+def test_privileged_platform_caller():
+    from nymeria.api.routers.chat import _privileged_platform_caller
+
+    # Bots and the worker: admin service token acting as the linked user.
+    assert _privileged_platform_caller(
+        SimpleNamespace(via_act_as=True, role="user")
+    ) is True
+    # Direct admin token.
+    assert _privileged_platform_caller(
+        SimpleNamespace(via_act_as=False, role="admin")
+    ) is True
+    # Everyone else.
+    assert _privileged_platform_caller(
+        SimpleNamespace(via_act_as=False, role="user")
+    ) is False
 
 
 def test_apply_platform_origin_records_and_enriches():
@@ -326,7 +398,9 @@ def test_apply_platform_origin_records_and_enriches():
             platform="discord", channel_id="456", message_id="777", kind="reaction"
         ),
     )
-    message = _apply_platform_origin(agent, request, THREAD, "u1", request.message)
+    message = _apply_platform_origin(
+        agent, request, THREAD, "u1", request.message, privileged=True
+    )
 
     origin = get_turn_origin(THREAD)
     assert origin is not None and origin["message_id"] == "777"
@@ -346,26 +420,56 @@ def test_apply_platform_origin_message_kind_no_enrichment():
         ),
     )
     message = _apply_platform_origin(
-        _AgentWithTools([]), request, THREAD, "u1", request.message
+        _AgentWithTools([]), request, THREAD, "u1", request.message, privileged=True
     )
     assert message == "hello"
     origin = get_turn_origin(THREAD)
     assert origin is not None and origin["platform"] == "telegram"
 
 
-def test_apply_platform_origin_noop_without_origin():
+def test_apply_platform_origin_clears_stale_origin_without_field():
+    # Per-turn honesty: a turn without platform_origin (desktop, CLI, worker
+    # relay) clears the previous bot turn's origin, so react errors instead
+    # of reacting to an ancient message.
     from nymeria.api.routers.chat import _apply_platform_origin
     from nymeria.api.schemas.chat import ChatRequest
 
+    set_turn_origin(
+        THREAD, platform="discord", channel_id="456", message_id="777", kind="message"
+    )
     request = ChatRequest(message="hello", thread_id=THREAD)
     message = _apply_platform_origin(
-        _AgentWithTools([]), request, THREAD, "u1", "hello"
+        _AgentWithTools([]), request, THREAD, "u1", "hello", privileged=False
     )
     assert message == "hello"
     assert get_turn_origin(THREAD) is None
 
 
-def test_turn_reply_suppressed_gated_on_platform_origin():
+def test_apply_platform_origin_ignored_for_non_privileged_caller():
+    # A non-admin direct API caller cannot fabricate an origin (cross-chat
+    # reaction write primitive): the field is silently ignored, the entry is
+    # cleared, and react then errors cleanly with no origin.
+    from nymeria.api.routers.chat import _apply_platform_origin
+    from nymeria.api.schemas.chat import ChatPlatformOrigin, ChatRequest
+
+    request = ChatRequest(
+        message="hello",
+        thread_id=THREAD,
+        platform_origin=ChatPlatformOrigin(
+            platform="telegram", channel_id="someone-elses-chat", message_id="666"
+        ),
+    )
+    message = _apply_platform_origin(
+        _AgentWithTools([]), request, THREAD, "u1", "hello", privileged=False
+    )
+    assert message == "hello"
+    assert get_turn_origin(THREAD) is None
+
+    result = asyncio.run(_react_impl("👍", False, None, _config()))
+    assert result.startswith("[react error]")
+
+
+def test_turn_reply_suppressed_gated_on_origin_and_privilege():
     from nymeria.api.routers.chat import _turn_reply_suppressed
     from nymeria.api.schemas.chat import ChatPlatformOrigin, ChatRequest
 
@@ -383,6 +487,39 @@ def test_turn_reply_suppressed_gated_on_platform_origin():
     )
     without_origin = ChatRequest(message="m", thread_id=THREAD)
     # NOTE: _turn_reply_suppressed reads the registry, which with_origin's
-    # request would have reset at turn start; here we assert the gate only.
-    assert _turn_reply_suppressed(without_origin, THREAD) is False
-    assert _turn_reply_suppressed(with_origin, THREAD) is True
+    # request would have reset at turn start; here we assert the gates only.
+    assert _turn_reply_suppressed(without_origin, THREAD, privileged=True) is False
+    assert _turn_reply_suppressed(with_origin, THREAD, privileged=False) is False
+    assert _turn_reply_suppressed(with_origin, THREAD, privileged=True) is True
+
+
+# ---------------------------------------------------------------------------
+# Reaction-fire debounce (bot-side)
+# ---------------------------------------------------------------------------
+
+
+def test_debounce_reaction_fire_ttl_and_key_scope():
+    from nymeria.core.bot_reactions import (
+        REACTION_DEBOUNCE_TTL_SECONDS,
+        debounce_reaction_fire,
+    )
+
+    kw = dict(
+        platform="discord",
+        channel_id="c1",
+        message_id="m1",
+        reactor_id="r1",
+        emoji="👍",
+    )
+    assert debounce_reaction_fire(**kw, now=100.0) is False
+    # Toggling the same emoji within the TTL is dropped.
+    assert debounce_reaction_fire(**kw, now=120.0) is True
+    # After the TTL a deliberate repeat fires again.
+    assert (
+        debounce_reaction_fire(**kw, now=100.5 + REACTION_DEBOUNCE_TTL_SECONDS)
+        is False
+    )
+    # A different emoji, reactor, or message is its own key.
+    assert debounce_reaction_fire(**{**kw, "emoji": "❤"}, now=101.0) is False
+    assert debounce_reaction_fire(**{**kw, "reactor_id": "r2"}, now=101.0) is False
+    assert debounce_reaction_fire(**{**kw, "message_id": "m2"}, now=101.0) is False

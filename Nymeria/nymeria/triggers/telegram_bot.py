@@ -2721,6 +2721,7 @@ class NymeriaTelegramBot:
         TELEGRAM_REACTION_TRIGGER_ENABLED (default off).
         """
         from ..config import get_settings
+        from ..core.bot_reactions import debounce_reaction_fire
 
         try:
             if not get_settings().telegram_reaction_trigger_enabled:
@@ -2746,6 +2747,17 @@ class NymeriaTelegramBot:
         if not added:
             return  # removal or no-op change
         emoji_text = added[0]
+
+        # Short-TTL dedupe: toggling an emoji off and on again must not fire
+        # repeated full agent turns for the same (message, reactor, emoji).
+        if debounce_reaction_fire(
+            platform="telegram",
+            channel_id=str(mr.chat.id),
+            message_id=str(mr.message_id),
+            reactor_id=str(user.id),
+            emoji=emoji_text,
+        ):
+            return
 
         nymeria_user_id = await self.resolve_user_id(user.id)
         if nymeria_user_id is None:
