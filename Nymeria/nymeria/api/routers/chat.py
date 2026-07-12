@@ -780,6 +780,26 @@ def create_chat_router(
             display_message = done_prompt
             msg_stripped = message.strip().lower()
 
+        # /resume: message-less true resume of a graceful iteration-cap halt
+        # (backlog #27). The resume runs as an ordinary holder turn, so SSE
+        # streaming, the turn replay buffer, re-attach, and DONE hooks are
+        # all inherited. Never queued: a busy thread has nothing to resume,
+        # so the busy probe acks with an error instead of enqueueing.
+        # Resumability of the tail is validated inside astream under the
+        # thread lock, surfacing as an error event with code=resume_invalid.
+        resume_halted_turn = False
+        if not request.is_self_invoke and msg_stripped == "/resume":
+            if agent._thread_locks.is_thread_busy(thread_id):
+                return _slash_sse_response(
+                    "[Error]: A turn is already running on this thread; "
+                    "there is nothing to resume.",
+                    thread_id,
+                )
+            resume_halted_turn = True
+            message = ""
+            display_message = ""
+            msg_stripped = ""
+
         # Handle /skill and /kit slash commands (chat_stream execution).
         # /skill <name> [prompt] activates a markdown-only skill, prepends
         # its body to the prompt, then continues through the normal agent
@@ -1187,7 +1207,10 @@ def create_chat_router(
         # isn't from a real user -- skip message_added so it doesn't appear in clients
         # as a user-authored message. Frontend subscribes to /autonomous/stream for
         # autonomous task events instead.
-        if not request.is_self_invoke:
+        # A /resume adds no user message, so there is nothing to echo to
+        # other clients (they learn about the continuation via turn_resumed
+        # and the streamed events instead).
+        if not request.is_self_invoke and not resume_halted_turn:
             publish_sync_event_fn(
                 event_type="message_added",
                 thread_id=thread_id,
@@ -1322,6 +1345,7 @@ def create_chat_router(
                     source_id=prompt_source_id,
                     source_label=prompt_source_label or user_id,
                     _on_turn_started=_mark_turn_started,
+                    _resume_halted_turn=resume_halted_turn,
                 ):
                     # If the client disconnected, stop yielding SSE events but
                     # keep consuming the generator so the agent finishes its
@@ -1475,10 +1499,14 @@ def create_chat_router(
                     }
 
                     # Auto-title the thread from the user's message if untitled
+                    # (skipped on /resume: there is no user message to title
+                    # from, and the thread already existed at the halt).
                     try:
-                        new_title = agent.thread_metadata_manager.auto_title(
-                            user_id, thread_id, message
-                        )
+                        new_title = None
+                        if not resume_halted_turn:
+                            new_title = agent.thread_metadata_manager.auto_title(
+                                user_id, thread_id, message
+                            )
                         if new_title:
                             done_data["title"] = new_title
                             done_data["title_source"] = "auto"
@@ -1666,6 +1694,22 @@ def create_chat_router(
             message = done_prompt
             msg_stripped = message.strip().lower()
 
+        # /resume: sync parity with the streaming intercept above (see there).
+        resume_halted_turn = False
+        if not request.is_self_invoke and msg_stripped == "/resume":
+            if agent._thread_locks.is_thread_busy(thread_id):
+                return ChatResponse(
+                    response=(
+                        "[Error]: A turn is already running on this thread; "
+                        "there is nothing to resume."
+                    ),
+                    thread_id=thread_id,
+                    tool_call_count=0,
+                )
+            resume_halted_turn = True
+            message = ""
+            msg_stripped = ""
+
         skill_tokens = msg_stripped.split(maxsplit=1)
         if skill_tokens and skill_tokens[0] in {"/skill", "/kit"}:
             from ...core.command_service import prepare_skill_slash_command
@@ -1726,6 +1770,7 @@ def create_chat_router(
             source=prompt_source,
             source_id=prompt_source_id,
             source_label=prompt_source_label or user_id,
+            _resume_halted_turn=resume_halted_turn,
         )
         if is_quick:
             response = f"{response}{_quick_continue_footer(thread_id)}"

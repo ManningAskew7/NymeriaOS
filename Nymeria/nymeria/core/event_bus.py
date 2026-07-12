@@ -329,6 +329,10 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     "compacted",
     "context_attached",
     "iteration_limit",
+    # A /resume of a graceful iteration-cap halt started re-driving the
+    # halted turn; mirrored so other clients watching the thread can flip
+    # their pause card to its resumed state.
+    "turn_resumed",
     "tool_reload",
     "provider_retry",
     "provider_fallback",

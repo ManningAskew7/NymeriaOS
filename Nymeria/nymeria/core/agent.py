@@ -1065,9 +1065,18 @@ class NymeriaAgent:
         from .agent_safety import check_iteration_limit_hit
         return check_iteration_limit_hit(self, messages, max_iterations)
 
-    def _analyze_turn_safety(self, messages: List, max_iterations: int):
+    def _analyze_turn_safety(
+        self, messages: List, max_iterations: int, tool_call_offset: int = 0
+    ):
         from .agent_safety import analyze_turn_safety
-        return analyze_turn_safety(self, messages, max_iterations)
+        return analyze_turn_safety(
+            self, messages, max_iterations, tool_call_offset=tool_call_offset
+        )
+
+    @staticmethod
+    def _is_resumable_halt(messages: List, max_iterations: int) -> bool:
+        from .agent_safety import is_resumable_halt
+        return is_resumable_halt(messages, max_iterations)
 
     @staticmethod
     def _recursion_limit_for_iterations(max_iterations: int) -> int:
@@ -1134,13 +1143,15 @@ class NymeriaAgent:
             logger.debug("hook registry resolve failed", exc_info=True)
             return None
 
-    def _turn_safety_content(self, safety) -> str:
+    def _turn_safety_content(self, safety, resumable: bool = False) -> str:
         from .agent_safety import turn_safety_content
-        return turn_safety_content(self, safety)
+        return turn_safety_content(self, safety, resumable=resumable)
 
-    def _turn_safety_event(self, safety, scope: str = "main_agent") -> Dict[str, Any]:
+    def _turn_safety_event(
+        self, safety, scope: str = "main_agent", resumable: bool = False
+    ) -> Dict[str, Any]:
         from .agent_safety import turn_safety_event
-        return turn_safety_event(self, safety, scope=scope)
+        return turn_safety_event(self, safety, scope=scope, resumable=resumable)
 
     @staticmethod
     def _extract_http_status_code(error: Exception) -> Optional[int]:
@@ -1725,9 +1736,16 @@ class NymeriaAgent:
         from .agent_callable_lifecycle import abort_with_cascade
         return abort_with_cascade(self, thread_id, restore_queue=restore_queue)
 
-    def _patch_dangling_tool_calls(self, graph, config: dict) -> int:
-        from .agent_callable_lifecycle import patch_dangling_tool_calls
-        return patch_dangling_tool_calls(self, graph, config)
+    def _patch_dangling_tool_calls(
+        self, graph, config: dict, marker: Optional[str] = None
+    ) -> int:
+        from .agent_callable_lifecycle import (
+            DANGLING_MARKER_CANCELLED,
+            patch_dangling_tool_calls,
+        )
+        return patch_dangling_tool_calls(
+            self, graph, config, marker=marker or DANGLING_MARKER_CANCELLED
+        )
 
     def should_halt_for_subturn_compaction(self, thread_id: str, messages: list) -> bool:
         """route_after_tools hook: flag + halt when the running context crosses
@@ -2031,6 +2049,7 @@ class NymeriaAgent:
         source: Optional[str] = None,
         source_id: Optional[str] = None,
         source_label: Optional[str] = None,
+        _resume_halted_turn: bool = False,
     ) -> str:
         """
         Send a message and get a response (non-streaming).
@@ -2044,6 +2063,10 @@ class NymeriaAgent:
             source: Logical origin -- see ``astream`` docstring.
             source_id: Stable id of the source (optional).
             source_label: Human-readable label (optional).
+            _resume_halted_turn: Message-less resume of a graceful
+                iteration-cap halt -- see the ``astream`` docstring. The
+                sync flavor returns the continuation's final text, or the
+                busy/invalid explanation string.
 
         Returns:
             Agent's response as a string
@@ -2054,17 +2077,21 @@ class NymeriaAgent:
         # that ran on the same pooled thread.
         self._chat_turn_local.tool_calls = 0
 
-        if not message.strip():
-            return "Please provide a message."
+        if _resume_halted_turn:
+            # Message-less resume: nothing to sandbox, nothing to queue.
+            message, image_attachments, sandbox_records = "", [], []
+        else:
+            if not message.strip():
+                return "Please provide a message."
 
-        # Sandbox non-image attachments before any lock acquisition, matching
-        # the astream() path. Errors surface as the sync turn's return string
-        # because chat() has no SSE channel.
-        message, image_attachments, sandbox_records, attachment_error = (
-            self._sandbox_pending_attachments(thread_id, user_id, message, attachments, images)
-        )
-        if attachment_error is not None:
-            return attachment_error
+            # Sandbox non-image attachments before any lock acquisition, matching
+            # the astream() path. Errors surface as the sync turn's return string
+            # because chat() has no SSE channel.
+            message, image_attachments, sandbox_records, attachment_error = (
+                self._sandbox_pending_attachments(thread_id, user_id, message, attachments, images)
+            )
+            if attachment_error is not None:
+                return attachment_error
 
         from .pending_prompt_queue import (
             PendingPromptQueueClosingError,
@@ -2090,6 +2117,12 @@ class NymeriaAgent:
             if not acquired:
                 logger.warning(f"Thread {thread_id}: Lock acquisition timed out in chat()")
                 return "Thread is busy with another request. Please try again."
+        if not acquired and _resume_halted_turn:
+            # A resume must never queue (see the astream mirror).
+            return (
+                "A turn is already running on this thread; "
+                "there is nothing to resume."
+            )
         if not acquired:
             label = source_label or user_id
             pending = make_pending_prompt(
@@ -2160,7 +2193,7 @@ class NymeriaAgent:
             holder = "autonomous" if is_autonomous_source else "user"
             self._thread_locks.set_lock_info(thread_id, holder)
 
-            if not _is_self_invoke:
+            if not _is_self_invoke and not _resume_halted_turn:
                 try:
                     from .activity_log import ActivityType, log_activity
                     preview = message.strip()[:120].replace("\n", " ")
@@ -2185,38 +2218,62 @@ class NymeriaAgent:
             if _tracked is not None and thread_id not in _tracked:
                 self._rehydrate_token_usage(thread_id)
 
-            # Prepend cache-safe turn metadata (time/trigger, plus autonomous run
-            # guidance for autonomous wake-ups) to the message tail.
-            message_with_context = self._prefix_turn_metadata(
-                message,
-                is_self_invoke=_is_self_invoke,
-                trigger_override=_trigger_override,
-                is_autonomous=is_autonomous_source,
-            )
+            # Resume validation (under the lock; see the astream mirror for
+            # why it runs BEFORE the pre-flight compact).
+            if _resume_halted_turn:
+                _resume_max_iters = self._max_iterations_for_thread(thread_id)
+                try:
+                    _resume_state = graph.get_state(
+                        {"configurable": {"thread_id": thread_id}}
+                    )
+                    _resume_messages = _resume_state.values.get("messages", [])
+                except Exception as e:
+                    logger.warning(
+                        f"Thread {thread_id}: resume state read failed in chat(): {e}"
+                    )
+                    _resume_messages = []
+                if not self._is_resumable_halt(_resume_messages, _resume_max_iters):
+                    return (
+                        "Nothing to resume on this thread. Resume only "
+                        "applies right after a turn stopped at its "
+                        "iteration limit; send a normal message instead."
+                    )
 
-            # PROMPT_SUBMIT lifecycle hooks (sync path). Never breaks a turn:
-            # dispatch isolates hook faults, and the seam swallows setup errors.
-            try:
-                from .hooks import HookEvent, dispatch as _hook_dispatch
-                _ps_reg = self._hook_registry_for_turn(thread_id, user_id)
-                _ps_out = _hook_dispatch(
-                    HookEvent.PROMPT_SUBMIT,
-                    self._prompt_submit_context(
-                        thread_id=thread_id,
-                        user_id=user_id,
-                        message=message,
-                        is_autonomous=is_autonomous_source,
-                        holder_kind=source,
-                        trigger_label=_trigger_override,
-                        registry=_ps_reg,
-                    ),
-                    registry=_ps_reg,
+            # Prepend cache-safe turn metadata (time/trigger, plus autonomous run
+            # guidance for autonomous wake-ups) to the message tail. A resume
+            # adds no message and fires no PROMPT_SUBMIT (see astream).
+            message_with_context = ""
+            if not _resume_halted_turn:
+                message_with_context = self._prefix_turn_metadata(
+                    message,
+                    is_self_invoke=_is_self_invoke,
+                    trigger_override=_trigger_override,
+                    is_autonomous=is_autonomous_source,
                 )
-                _ps_injected = self._wrap_prompt_injection(_ps_out)
-                if _ps_injected:
-                    message_with_context = f"{message_with_context}\n\n{_ps_injected}"
-            except Exception:
-                logger.debug("PROMPT_SUBMIT hook dispatch failed (sync)", exc_info=True)
+
+                # PROMPT_SUBMIT lifecycle hooks (sync path). Never breaks a turn:
+                # dispatch isolates hook faults, and the seam swallows setup errors.
+                try:
+                    from .hooks import HookEvent, dispatch as _hook_dispatch
+                    _ps_reg = self._hook_registry_for_turn(thread_id, user_id)
+                    _ps_out = _hook_dispatch(
+                        HookEvent.PROMPT_SUBMIT,
+                        self._prompt_submit_context(
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            message=message,
+                            is_autonomous=is_autonomous_source,
+                            holder_kind=source,
+                            trigger_label=_trigger_override,
+                            registry=_ps_reg,
+                        ),
+                        registry=_ps_reg,
+                    )
+                    _ps_injected = self._wrap_prompt_injection(_ps_out)
+                    if _ps_injected:
+                        message_with_context = f"{message_with_context}\n\n{_ps_injected}"
+                except Exception:
+                    logger.debug("PROMPT_SUBMIT hook dispatch failed (sync)", exc_info=True)
 
             # Pre-flight auto-compact (sync path)
             try:
@@ -2246,24 +2303,45 @@ class NymeriaAgent:
             # Fresh-thread memory init (sync path: MCP, bots, triggers, CLI).
             self._seed_memory_init_if_empty_sync(graph, config, thread_id, user_id)
 
-            # Delegate pending-summary / notepad attachment, image-content-block
-            # building, and additional_kwargs metadata to the same helper the
-            # streaming path uses, so the two entry points share one
-            # multimodal/HumanMessage construction code path.
-            from .agent_streaming_input import prepare_astream_input
-            input_state, _context_summary, input_error = prepare_astream_input(
-                self,
-                message_with_context=message_with_context,
-                thread_id=thread_id,
-                image_attachments=image_attachments,
-                sandbox_records=sandbox_records,
-                force_unsupported_attachments=force_unsupported_attachments,
-                is_self_invoke=_is_self_invoke,
-            )
-            if input_error:
-                return str(input_error.get("content") or "Failed to prepare chat input.")
-            if input_state is None:
-                return "Failed to prepare chat input."
+            resume_offset = 0
+            if _resume_halted_turn:
+                # The compaction-resume shape (see the astream mirror): empty
+                # input re-enters the graph on the halted checkpoint; the
+                # offset anchors the safety window at the resume point,
+                # computed after the pre-flight compact above.
+                input_state = {"messages": []}
+                try:
+                    _post_state = graph.get_state(config)
+                    resume_offset = self._count_current_turn_tool_calls(
+                        _post_state.values.get("messages", [])
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Thread {thread_id}: resume offset read failed in chat(): {e}"
+                    )
+                if resume_offset:
+                    config["configurable"]["turn_safety_tool_call_offset"] = (
+                        resume_offset
+                    )
+            else:
+                # Delegate pending-summary / notepad attachment, image-content-block
+                # building, and additional_kwargs metadata to the same helper the
+                # streaming path uses, so the two entry points share one
+                # multimodal/HumanMessage construction code path.
+                from .agent_streaming_input import prepare_astream_input
+                input_state, _context_summary, input_error = prepare_astream_input(
+                    self,
+                    message_with_context=message_with_context,
+                    thread_id=thread_id,
+                    image_attachments=image_attachments,
+                    sandbox_records=sandbox_records,
+                    force_unsupported_attachments=force_unsupported_attachments,
+                    is_self_invoke=_is_self_invoke,
+                )
+                if input_error:
+                    return str(input_error.get("content") or "Failed to prepare chat input.")
+                if input_state is None:
+                    return "Failed to prepare chat input."
 
             try:
                 self._prepare_tool_reload_state_for_turn(thread_id, "chat")
@@ -2314,6 +2392,21 @@ class NymeriaAgent:
                         break
                     new_messages = build_queued_prompt_messages(pending_batch)
                     try:
+                        # Patch a dangling repeated-tool-halt tail before
+                        # injecting (see the astream drain loop for the full
+                        # rationale); no-op on a clean tail.
+                        try:
+                            from .agent_callable_lifecycle import (
+                                DANGLING_MARKER_REPEATED,
+                            )
+                            self._patch_dangling_tool_calls(
+                                graph, config, marker=DANGLING_MARKER_REPEATED
+                            )
+                        except Exception as patch_err:
+                            logger.warning(
+                                f"Thread {thread_id}: pre-inject dangling patch "
+                                f"failed: {patch_err}"
+                            )
                         graph.update_state(config, {"messages": new_messages})
                         result = graph.invoke({"messages": []}, config=config)
                         messages = result.get("messages", [])
@@ -2368,8 +2461,12 @@ class NymeriaAgent:
                 )
 
                 # Detect if the agent was stopped by a turn safety guard.
+                # The resume offset keeps a resumed continuation from
+                # re-reporting the pre-resume count (see astream).
                 max_iterations = self._max_iterations_for_thread(thread_id)
-                safety = self._analyze_turn_safety(messages, max_iterations)
+                safety = self._analyze_turn_safety(
+                    messages, max_iterations, tool_call_offset=resume_offset
+                )
                 if safety.should_stop:
                     logger.warning(
                         f"Thread {thread_id}: Agent stopped by turn safety "
@@ -2377,14 +2474,22 @@ class NymeriaAgent:
                         f"tool_calls={safety.tool_call_count}/{safety.max_iterations})"
                     )
                     try:
-                        self._patch_dangling_tool_calls(graph, config)
+                        from .agent_callable_lifecycle import (
+                            dangling_marker_for_safety_reason,
+                        )
+                        self._patch_dangling_tool_calls(
+                            graph,
+                            config,
+                            marker=dangling_marker_for_safety_reason(safety.reason),
+                        )
                     except Exception as e:
                         logger.warning(
                             f"Thread {thread_id}: Failed to patch dangling tool calls "
                             f"after turn safety stop: {e}"
                         )
                     response += (
-                        f"\n\n---\n**Note:** {self._turn_safety_content(safety)}"
+                        f"\n\n---\n**Note:** "
+                        f"{self._turn_safety_content(safety, resumable=self._is_resumable_halt(messages, max_iterations))}"
                     )
 
                 # Store tool call count from this turn for callers that need
@@ -2440,6 +2545,21 @@ class NymeriaAgent:
                             break
                     new_messages = build_queued_prompt_messages(pending_batch)
                     try:
+                        # Patch a dangling repeated-tool-halt tail before
+                        # injecting (see the astream drain loop); no-op on a
+                        # clean tail.
+                        try:
+                            from .agent_callable_lifecycle import (
+                                DANGLING_MARKER_REPEATED,
+                            )
+                            self._patch_dangling_tool_calls(
+                                graph, config, marker=DANGLING_MARKER_REPEATED
+                            )
+                        except Exception as patch_err:
+                            logger.warning(
+                                f"Thread {thread_id}: pre-inject dangling patch "
+                                f"failed: {patch_err}"
+                            )
                         graph.update_state(config, {"messages": new_messages})
                         result = graph.invoke({"messages": []}, config=config)
                         messages = result.get("messages", [])
@@ -2597,6 +2717,7 @@ class NymeriaAgent:
         source_id: Optional[str] = None,
         source_label: Optional[str] = None,
         _on_turn_started: Optional[Callable[[], None]] = None,
+        _resume_halted_turn: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Async version of stream for use with FastAPI.
@@ -2628,6 +2749,15 @@ class NymeriaAgent:
                 prompts that get absorbed by a running holder never fire
                 it. Used by the chat route to key the turn stream buffer
                 to the holder turn without a wire marker.
+            _resume_halted_turn: True runs a message-less resume of a
+                graceful iteration-cap halt (backlog #27): ``message`` is
+                ignored, nothing is added to history, and the graph is
+                re-driven with ``{"messages": []}`` from the halted
+                sub-turn boundary (the compaction-resume shape), with the
+                turn-safety window anchored at the resume point. Validated
+                under the lock; an unresumable tail yields an ``error``
+                with code ``resume_invalid``, a busy thread yields code
+                ``resume_busy`` (never queued).
 
         Yields:
             Same event types as stream(), plus the queue-related
@@ -2635,21 +2765,25 @@ class NymeriaAgent:
             ``prompt_absorbed``, ``turn_halted``, ``fanout_dropped``
             and the legacy ``queued`` alias.
         """
-        if not message.strip():
-            yield {"type": "error", "content": "Please provide a message."}
-            return
+        if _resume_halted_turn:
+            # Message-less resume: nothing to sandbox, nothing to queue.
+            message, image_attachments, sandbox_records = "", [], []
+        else:
+            if not message.strip():
+                yield {"type": "error", "content": "Please provide a message."}
+                return
 
-        # Sandbox non-image attachments upfront so both the queue and the
-        # lock-held path see the same on-disk files. The preamble baked into
-        # ``message`` references the resulting sandbox paths so the agent can
-        # ``file_read`` them via existing core tools instead of carrying the
-        # bytes through every turn of context.
-        message, image_attachments, sandbox_records, attachment_error = (
-            self._sandbox_pending_attachments(thread_id, user_id, message, attachments, images)
-        )
-        if attachment_error is not None:
-            yield {"type": "error", "content": attachment_error}
-            return
+            # Sandbox non-image attachments upfront so both the queue and the
+            # lock-held path see the same on-disk files. The preamble baked into
+            # ``message`` references the resulting sandbox paths so the agent can
+            # ``file_read`` them via existing core tools instead of carrying the
+            # bytes through every turn of context.
+            message, image_attachments, sandbox_records, attachment_error = (
+                self._sandbox_pending_attachments(thread_id, user_id, message, attachments, images)
+            )
+            if attachment_error is not None:
+                yield {"type": "error", "content": attachment_error}
+                return
 
         from .pending_prompt_queue import (
             FanoutMailbox,
@@ -2693,6 +2827,20 @@ class NymeriaAgent:
                 logger.warning(f"Thread {thread_id}: Lock acquisition timed out in astream()")
                 yield {"type": "error", "content": "Thread is busy. Please try again."}
                 return
+        if not acquired and _resume_halted_turn:
+            # A resume must never queue: absorbing "/resume" into a RUNNING
+            # turn is meaningless (there is no halt to resume). The router
+            # intercept pre-checks busy for a friendlier ack; this is the
+            # authoritative under-contention guard.
+            yield {
+                "type": "error",
+                "code": "resume_busy",
+                "content": (
+                    "A turn is already running on this thread; "
+                    "there is nothing to resume."
+                ),
+            }
+            return
         if not acquired:
             # Thread is busy. Queue the prompt instead of blocking on the
             # lock -- the running turn will halt at the next sub-turn
@@ -2858,6 +3006,10 @@ class NymeriaAgent:
             # drive config below; initialized here so the error path can read
             # it even when the turn failed before the config was built.
             _llm_timing: Dict[str, Any] = {}
+            # Set by the post-drive safety detection; the finally's dangling
+            # patch uses it to pick a reason-aware marker instead of
+            # mislabeling a safety halt as a user cancel.
+            _turn_safety_reason: Optional[str] = None
             logger.info(f"[ASTREAM] === START === thread={thread_id}, user={user_id}, holder={holder}")
 
             # Get the appropriate async graph for this user (includes their memories in system prompt)
@@ -2890,6 +3042,34 @@ class NymeriaAgent:
             # starts with its persistent memory already loaded.
             await self._seed_memory_init_if_empty(graph, config, thread_id, user_id)
 
+            # Resume validation (under the lock, so it cannot race a newer
+            # turn). Runs BEFORE the pre-flight compact below: compaction
+            # legitimately rewrites the tail (summary + resume opener), and a
+            # resume of a near-trigger halted thread should compact and then
+            # continue, not refuse. The tail predicate is stateless
+            # (checkpoint-derived), so resumability survives API restarts.
+            if _resume_halted_turn:
+                _resume_max_iters = self._max_iterations_for_thread(thread_id)
+                try:
+                    _resume_state = await graph.aget_state(config)
+                    _resume_messages = _resume_state.values.get("messages", [])
+                except Exception as e:
+                    logger.warning(
+                        f"[ASTREAM] Thread {thread_id}: resume state read failed: {e}"
+                    )
+                    _resume_messages = []
+                if not self._is_resumable_halt(_resume_messages, _resume_max_iters):
+                    yield {
+                        "type": "error",
+                        "code": "resume_invalid",
+                        "content": (
+                            "Nothing to resume on this thread. Resume only "
+                            "applies right after a turn stopped at its "
+                            "iteration limit; send a normal message instead."
+                        ),
+                    }
+                    return
+
             # Log checkpoint state before processing (DEBUG level — visible with agent/llm profiles)
             if logger.isEnabledFor(logging.DEBUG):
                 try:
@@ -2911,44 +3091,49 @@ class NymeriaAgent:
                     logger.warning(f"[ASTREAM] Could not fetch existing state: {e}")
 
             # Prepend cache-safe turn metadata (time/trigger, plus autonomous run
-            # guidance for autonomous wake-ups) to the message tail.
-            message_with_context = self._prefix_turn_metadata(
-                message,
-                is_self_invoke=_is_self_invoke,
-                trigger_override=_trigger_override,
-                is_autonomous=is_autonomous_source,
-            )
-
-            # PROMPT_SUBMIT lifecycle hooks (async path). Never breaks a turn:
-            # dispatch isolates hook faults, and the seam swallows setup errors.
-            _ps_activity: list = []
-            try:
-                from .hooks import HookEvent, adispatch as _hook_adispatch
-                _ps_reg = self._hook_registry_for_turn(thread_id, user_id)
-                _ps_out = await _hook_adispatch(
-                    HookEvent.PROMPT_SUBMIT,
-                    self._prompt_submit_context(
-                        thread_id=thread_id,
-                        user_id=user_id,
-                        message=message,
-                        is_autonomous=is_autonomous_source,
-                        holder_kind=source,
-                        trigger_label=_trigger_override,
-                        registry=_ps_reg,
-                    ),
-                    registry=_ps_reg,
-                    emit=_ps_activity.append,
+            # guidance for autonomous wake-ups) to the message tail. A resume
+            # adds NO message (no metadata target) and fires no PROMPT_SUBMIT
+            # (that event's contract is "a prompt was submitted"; a resume
+            # submits nothing -- DONE still fires at the continuation's end).
+            message_with_context = ""
+            if not _resume_halted_turn:
+                message_with_context = self._prefix_turn_metadata(
+                    message,
+                    is_self_invoke=_is_self_invoke,
+                    trigger_override=_trigger_override,
+                    is_autonomous=is_autonomous_source,
                 )
-                _ps_injected = self._wrap_prompt_injection(_ps_out)
-                if _ps_injected:
-                    message_with_context = f"{message_with_context}\n\n{_ps_injected}"
-            except Exception:
-                logger.debug("PROMPT_SUBMIT hook dispatch failed (async)", exc_info=True)
-            # Ephemeral in-chat activity lines (Slice E): surface meaningful
-            # prompt_submit runs under the user message. Best-effort; nothing
-            # persists, so a dropped frame just means no line this turn.
-            for _rec in _ps_activity:
-                yield {"type": "hook_activity", **_rec}
+
+                # PROMPT_SUBMIT lifecycle hooks (async path). Never breaks a turn:
+                # dispatch isolates hook faults, and the seam swallows setup errors.
+                _ps_activity: list = []
+                try:
+                    from .hooks import HookEvent, adispatch as _hook_adispatch
+                    _ps_reg = self._hook_registry_for_turn(thread_id, user_id)
+                    _ps_out = await _hook_adispatch(
+                        HookEvent.PROMPT_SUBMIT,
+                        self._prompt_submit_context(
+                            thread_id=thread_id,
+                            user_id=user_id,
+                            message=message,
+                            is_autonomous=is_autonomous_source,
+                            holder_kind=source,
+                            trigger_label=_trigger_override,
+                            registry=_ps_reg,
+                        ),
+                        registry=_ps_reg,
+                        emit=_ps_activity.append,
+                    )
+                    _ps_injected = self._wrap_prompt_injection(_ps_out)
+                    if _ps_injected:
+                        message_with_context = f"{message_with_context}\n\n{_ps_injected}"
+                except Exception:
+                    logger.debug("PROMPT_SUBMIT hook dispatch failed (async)", exc_info=True)
+                # Ephemeral in-chat activity lines (Slice E): surface meaningful
+                # prompt_submit runs under the user message. Best-effort; nothing
+                # persists, so a dropped frame just means no line this turn.
+                for _rec in _ps_activity:
+                    yield {"type": "hook_activity", **_rec}
 
             # Pre-flight auto-compact for streaming chat. Without this, a
             # bloated thread can fail on the first provider call before the
@@ -2990,23 +3175,48 @@ class NymeriaAgent:
                         exc_info=True,
                     )
 
-            input_state, context_summary_for_ui, input_error = prepare_astream_input(
-                self,
-                message_with_context=message_with_context,
-                thread_id=thread_id,
-                image_attachments=image_attachments,
-                sandbox_records=sandbox_records,
-                force_unsupported_attachments=force_unsupported_attachments,
-                is_self_invoke=_is_self_invoke,
-            )
-            if input_error:
-                yield input_error
-                return
-            if input_state is None:
-                yield {"type": "error", "content": "Failed to prepare chat input."}
-                return
-            if context_summary_for_ui:
-                yield {"type": "context_attached", "summary": context_summary_for_ui}
+            resume_offset = 0
+            if _resume_halted_turn:
+                # The compaction-resume shape: re-enter the graph on the
+                # halted checkpoint with no new message; the executed tool
+                # results of the crossing batch drive the model's next call.
+                # The offset anchors the safety window at the resume point
+                # (there is no fresh HumanMessage to reset it), computed
+                # AFTER the pre-flight compact above so a compact-then-resume
+                # gets the naturally-reset window instead of double credit.
+                input_state = {"messages": []}
+                try:
+                    _post_state = await graph.aget_state(config)
+                    resume_offset = self._count_current_turn_tool_calls(
+                        _post_state.values.get("messages", [])
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[ASTREAM] Thread {thread_id}: resume offset read failed: {e}"
+                    )
+                yield {
+                    "type": "turn_resumed",
+                    "thread_id": thread_id,
+                    "tool_call_offset": resume_offset,
+                }
+            else:
+                input_state, context_summary_for_ui, input_error = prepare_astream_input(
+                    self,
+                    message_with_context=message_with_context,
+                    thread_id=thread_id,
+                    image_attachments=image_attachments,
+                    sandbox_records=sandbox_records,
+                    force_unsupported_attachments=force_unsupported_attachments,
+                    is_self_invoke=_is_self_invoke,
+                )
+                if input_error:
+                    yield input_error
+                    return
+                if input_state is None:
+                    yield {"type": "error", "content": "Failed to prepare chat input."}
+                    return
+                if context_summary_for_ui:
+                    yield {"type": "context_attached", "summary": context_summary_for_ui}
 
             # Pass user_id through config for tools to access. This is the config
             # handed to GraphStreamProcessor and used for the actual stream, so the
@@ -3028,6 +3238,12 @@ class NymeriaAgent:
             # Marker: opt this user turn into reasoning-passback observation
             # (same scoping rationale as llm_timing above).
             config["configurable"]["reasoning_passback"] = True
+            # Resume anchor: route_after_tools subtracts this from the window
+            # count so the continuation gets a fresh cap instead of
+            # insta-halting on the pre-resume total. Stamped only when
+            # resuming, so ordinary turn configs stay byte-identical.
+            if resume_offset:
+                config["configurable"]["turn_safety_tool_call_offset"] = resume_offset
 
             # Track final response for RAG indexing.
             # Mutated by GraphStreamProcessor across every graph invocation
@@ -3201,6 +3417,25 @@ class NymeriaAgent:
                     new_messages = build_queued_prompt_messages(pending_batch)
 
                     try:
+                        # A repeated-tool safety halt ends the drive with the
+                        # degenerate call still unanswered on the last
+                        # AIMessage (the generic finally patch only runs at
+                        # turn end). Injecting a HumanMessage after dangling
+                        # tool_calls hands the provider a malformed history
+                        # (tool_use without tool_result -> 400), so patch
+                        # first; a clean tail makes this a no-op.
+                        try:
+                            from .agent_callable_lifecycle import (
+                                DANGLING_MARKER_REPEATED,
+                            )
+                            self._patch_dangling_tool_calls(
+                                graph, config, marker=DANGLING_MARKER_REPEATED
+                            )
+                        except Exception as patch_err:
+                            logger.warning(
+                                f"Thread {thread_id}: pre-inject dangling patch "
+                                f"failed: {patch_err}"
+                            )
                         await graph.aupdate_state(config, {"messages": new_messages})
 
                         # Re-drive the graph with ``{"messages": []}`` (NOT
@@ -3286,16 +3521,29 @@ class NymeriaAgent:
                         )
 
                     # Detect if the agent was stopped by a turn safety guard.
+                    # The resume offset keeps a resumed continuation from
+                    # re-reporting the pre-resume count (and lets a genuine
+                    # second cap halt report the window count instead).
                     max_iterations = self._max_iterations_for_thread(thread_id)
-                    safety = self._analyze_turn_safety(result_messages, max_iterations)
+                    safety = self._analyze_turn_safety(
+                        result_messages, max_iterations, tool_call_offset=resume_offset
+                    )
                     if safety.should_stop:
+                        _turn_safety_reason = safety.reason
                         logger.warning(
                             f"Thread {thread_id}: Agent stopped by turn safety "
                             f"(reason={safety.reason}, "
                             f"tool_calls={safety.tool_call_count}/{safety.max_iterations}) "
                             "in astream()"
                         )
-                        yield self._turn_safety_event(safety)
+                        # A graceful cap halt (ToolMessage-terminal tail) is
+                        # resumable via /resume; repeated-tool halts are not.
+                        yield self._turn_safety_event(
+                            safety,
+                            resumable=self._is_resumable_halt(
+                                result_messages, max_iterations
+                            ),
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage: {e}")
 
@@ -3459,7 +3707,13 @@ class NymeriaAgent:
             # Always attempt patching — not just on abort, but also after errors
             # where tool_use blocks may be saved without matching tool_result blocks.
             try:
-                patched = self._patch_dangling_tool_calls(graph, config)
+                from .agent_callable_lifecycle import dangling_marker_for_safety_reason
+                _marker = (
+                    dangling_marker_for_safety_reason(_turn_safety_reason)
+                    if _turn_safety_reason
+                    else None
+                )
+                patched = self._patch_dangling_tool_calls(graph, config, marker=_marker)
                 if patched:
                     logger.info(f"[ASTREAM] Thread {thread_id}: Patched {patched} dangling tool call(s) in finally")
             except (NameError, UnboundLocalError):

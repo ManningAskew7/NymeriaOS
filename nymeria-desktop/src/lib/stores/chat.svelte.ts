@@ -5,6 +5,7 @@ import type {
   ToolCall,
   ToolCallStatus,
   ToolReloadInfo,
+  TurnPausedInfo,
   FileAttachment,
   WorkspaceArtifact,
   ContextStats,
@@ -57,6 +58,9 @@ export function createChatStore() {
   // Composer restore channel (backlog #16): texts a stop handed back, consumed
   // by InputBar, which appends them to the current composer draft.
   let composerRestore = $state('');
+  // Resume request channel (backlog #27): bumped by the pause card's Resume
+  // button, consumed by MainPanel, which runs the message-less /resume turn.
+  let resumeRequest = $state(0);
   // Texts already restored during the current stop cycle: the fallback timer,
   // the unreachable-backend path, and the (possibly late) stop response can
   // each restore, so dedupe across them. Reset when a stop starts.
@@ -148,6 +152,9 @@ export function createChatStore() {
     },
     get composerRestore() {
       return composerRestore;
+    },
+    get resumeRequest() {
+      return resumeRequest;
     },
     get pendingPrompts() {
       return pendingPrompts;
@@ -1520,6 +1527,56 @@ export function createChatStore() {
           toolReloadInfo: { tools, ttl, ttlSeconds, source, skillName, reason } as ToolReloadInfo,
         }
       ];
+    },
+
+    // Turn-safety halt card (backlog #27): the turn stopped at its iteration
+    // limit (or a repeated tool loop). Unlike handleToolReload, the pushed
+    // message is complete: the turn is over until the user resumes or sends.
+    handleTurnPaused(info: TurnPausedInfo) {
+      this._forceFlush();
+
+      const lastIndex = messages.length - 1;
+      if (lastIndex >= 0 && messages[lastIndex].role === 'assistant') {
+        messages = [
+          ...messages.slice(0, lastIndex),
+          { ...messages[lastIndex], status: 'complete' as const }
+        ];
+      }
+
+      messages = [
+        ...messages,
+        {
+          id: generateId(),
+          role: 'assistant' as const,
+          content: '',
+          steps: [],
+          timestamp: new Date(),
+          status: 'complete' as const,
+          turnPausedInfo: { ...info },
+        }
+      ];
+    },
+
+    // Flip the most recent un-resumed pause card when the turn_resumed event
+    // arrives (from this client's /resume or another client's).
+    markTurnPausedResumed() {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const info = messages[i].turnPausedInfo;
+        if (info && !info.resumed) {
+          messages = [
+            ...messages.slice(0, i),
+            { ...messages[i], turnPausedInfo: { ...info, resumed: true } },
+            ...messages.slice(i + 1)
+          ];
+          return;
+        }
+      }
+    },
+
+    // Bumped by the pause card's Resume button; MainPanel consumes it and
+    // runs the message-less /resume turn through the normal stream path.
+    requestResume() {
+      resumeRequest += 1;
     },
 
     // Context stats methods

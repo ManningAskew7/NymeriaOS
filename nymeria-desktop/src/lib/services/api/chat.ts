@@ -734,6 +734,21 @@ export class ChatApi extends CredentialsApi {
               toolCallCount: data.tool_call_count as number | undefined,
               repeatedToolName: data.repeated_tool_name as string | undefined,
               repeatedCount: data.repeated_count as number | undefined,
+              // True only for graceful main-agent cap halts; gates the
+              // Resume button on the pause card (backlog #27).
+              resumable: data.resumable === true,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
+        case 'turn_resumed':
+          // A /resume re-drive of a halted turn started (this client or
+          // another); flips the pause card to its resumed state.
+          return {
+            type: 'turn_resumed',
+            data: {
+              toolCallOffset: data.tool_call_offset as number | undefined,
             },
             timestamp: new Date(),
             threadId

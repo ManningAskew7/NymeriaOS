@@ -170,7 +170,36 @@ def abort_with_cascade(
     return restored
 
 
-def patch_dangling_tool_calls(agent: "NymeriaAgent", graph, config: dict) -> int:
+DANGLING_MARKER_CANCELLED = "[Cancelled by user before this tool completed]"
+DANGLING_MARKER_REPEATED = (
+    "[Not run: stopped by the repeated-tool-call safety guard "
+    "before this tool executed]"
+)
+DANGLING_MARKER_ITERATION_LIMIT = (
+    "[Not run: the turn reached its iteration limit before this tool executed]"
+)
+
+
+def dangling_marker_for_safety_reason(reason: Optional[str]) -> str:
+    """Marker text for a turn-safety stop, by reason.
+
+    Cap halts normally leave no dangling calls anymore (they halt at the
+    sub-turn boundary after the batch executes, backlog #27), so the
+    iteration-limit marker only appears on legacy/edge tails.
+    """
+    from ..vendor.react_agent.nodes import TURN_SAFETY_REASON_REPEATED_TOOL_RESULT
+
+    if reason == TURN_SAFETY_REASON_REPEATED_TOOL_RESULT:
+        return DANGLING_MARKER_REPEATED
+    return DANGLING_MARKER_ITERATION_LIMIT
+
+
+def patch_dangling_tool_calls(
+    agent: "NymeriaAgent",
+    graph,
+    config: dict,
+    marker: str = DANGLING_MARKER_CANCELLED,
+) -> int:
     """Patch dangling AIMessage tool_calls with synthetic ToolMessages after cancellation.
 
     When a turn is cancelled mid-execution, the checkpoint may contain
@@ -183,6 +212,12 @@ def patch_dangling_tool_calls(agent: "NymeriaAgent", graph, config: dict) -> int
     Loads the current state, detects unmatched tool_calls on the last
     AIMessage, and injects synthetic ToolMessages via update_state so
     the next turn sees a clean, valid history.
+
+    ``marker`` is the synthetic ToolMessage text the model reads on the
+    next turn (or on a /resume re-drive). It defaults to the cancellation
+    wording; turn-safety stops pass a reason-aware marker via
+    ``dangling_marker_for_safety_reason`` so a safety halt is not
+    mislabeled as a user cancel.
 
     Returns the number of synthetic ToolMessages injected (0 if state
     was clean).
@@ -212,7 +247,7 @@ def patch_dangling_tool_calls(agent: "NymeriaAgent", graph, config: dict) -> int
         for tc in last_msg.tool_calls:
             if tc.get("id") in pending_ids:
                 synthetic.append(ToolMessage(
-                    content="[Cancelled by user before this tool completed]",
+                    content=marker,
                     tool_call_id=tc["id"],
                     name=tc.get("name", ""),
                 ))
