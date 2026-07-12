@@ -6,9 +6,11 @@
   import ErrorToast from '$lib/components/common/ErrorToast.svelte';
   import StartupOverlay from '$lib/components/common/StartupOverlay.svelte';
   import AuthPromptModal from '$lib/components/credentials/AuthPromptModal.svelte';
+  import UiPromptModal from '$lib/components/artifacts/UiPromptModal.svelte';
   import RulerOverlay from '$lib/components/dev/RulerOverlay.svelte';
   import TooltipPortal from '$lib/components/common/TooltipPortal.svelte';
   import { authPromptStore } from '$lib/stores/authPrompt.svelte';
+  import { uiPromptStore } from '$lib/stores/uiPrompt.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
   import { outlookStore } from '$lib/stores/outlook.svelte';
@@ -319,6 +321,10 @@
 
 <!-- Global auth-prompt modal — opens when the agent calls request_credential. -->
 <AuthPromptModal prompt={authPromptStore.active} onResolved={() => authPromptStore.clear()} />
+
+<!-- Global ui-prompt modal: opens when the agent calls ui_prompt. Renders the
+     agent-authored HTML form in a sandboxed iframe and posts the answer back. -->
+<UiPromptModal prompt={uiPromptStore.active} onResolved={() => uiPromptStore.clear()} />
 
 <!-- Dev ruler overlay — draggable guides, crosshair, and measurement box for
      pixel-perfect alignment work. Toggle with the pin in the bottom-right

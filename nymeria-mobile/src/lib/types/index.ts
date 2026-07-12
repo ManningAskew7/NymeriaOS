@@ -1908,6 +1908,34 @@ export interface AuthPromptCancelledEvent {
   reason: 'user_exited' | 'cancelled' | 'tool_timeout' | string;
 }
 
+// ui_prompt SSE event, emitted by the agent's ui_prompt tool. Desktop-only
+// renderer for now: mobile ignores the event (no autonomous-store case) but
+// mirrors the wire types and API method for future parity.
+
+export interface UiPromptEvent {
+  prompt_id: string;
+  thread_id: string;
+  /** Modal heading; empty when the agent didn't supply one. */
+  title: string;
+  /** Agent-authored HTML fragment, rendered ONLY inside a sandboxed iframe. */
+  html: string;
+  timeout_seconds: number;
+  /** ISO-8601 UTC deadline (server clock); drives the countdown. */
+  expires_at: string | null;
+}
+
+export interface UiPromptResultRequest {
+  status: 'submitted' | 'cancelled';
+  values?: Record<string, unknown> | null;
+}
+
+export interface UiPromptAck {
+  received: boolean;
+  /** False when the prompt already resolved server-side (timeout, abort,
+   *  or another client answered first); the agent has moved on. */
+  delivered: boolean;
+}
+
 export interface CredentialBinding {
   id: string;
   credentialId: string;
