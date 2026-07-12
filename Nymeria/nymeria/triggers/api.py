@@ -1417,7 +1417,20 @@ def _register_turn_buffer_sweep_lifecycle(app: FastAPI) -> None:
     reclaims finished turns nobody re-attached to, so idle threads do not
     pin replay memory. Everything is in-memory dict work; the short interval
     bounds retention accuracy, not cost.
+
+    Also registers the API loop as the buffers' reader loop at startup, so
+    autonomous turns writing from sync worker threads (the
+    ``stream_and_collect`` tee) can wake attach-route readers thread-safely.
     """
+
+    async def _register_reader_loop() -> None:
+        import asyncio
+
+        from ..core.turn_stream_buffer import set_reader_loop
+
+        set_reader_loop(asyncio.get_running_loop())
+
+    app.router.add_event_handler("startup", _register_reader_loop)
 
     async def _run_pass() -> None:
         from ..core.turn_stream_buffer import get_turn_stream_registry

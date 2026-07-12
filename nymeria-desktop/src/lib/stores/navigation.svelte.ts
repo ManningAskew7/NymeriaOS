@@ -52,11 +52,15 @@ export async function switchToThread(
     // Start cross-client sync poller
     startSyncPoll(threadId, status);
 
-    // Stream recovery — resume if the thread has an in-flight turn. The two
+    // Stream recovery — resume if the thread has an in-flight turn. The
     // cases bind differently and must not be conflated: an interactive turn
-    // streams via chatStore alone (MainPanel's chatStream loop), while an
-    // autonomous turn renders through the autonomous store, which needs to bind
-    // its own activeMessagesByThread entry and replay the buffered turn so far.
+    // this client started streams via chatStore alone (MainPanel's
+    // chatStream loop); any other live holder turn (another client's turn,
+    // an autonomous turn, or this client's own turn surviving a dropped
+    // stream) is watched through the turn buffer attach path; the
+    // autonomous-store replay remains only as the fallback for autonomous
+    // turns with no attachable buffer (buffer expired/truncated, turns
+    // predating an API restart, or an older backend).
     const hasInteractiveStream = hasActiveStreamForThread(threadId);
     const hasAutonomousTask = autonomousStore.hasActiveTask(threadId);
 
@@ -75,17 +79,19 @@ export async function switchToThread(
         chatStore.addAssistantMessage();
       }
       chatStore.setStreaming(true);
-    } else if (hasAutonomousTask) {
-      // Bind a streaming message and replay the turn so far (applies the same
-      // graft-safe reuse rule internally), then live events render.
-      autonomousStore.attachToThread(threadId);
-    } else if (status?.turn?.state === 'live') {
-      // A holder turn is running that this client did not start (another
-      // client of the same user, or this client's own turn surviving a
-      // dropped stream): watch it live (backlog #87). MainPanel consumes
-      // the request, trims the hydrated turn-so-far, and replays + tails
-      // the turn buffer.
+    } else if (status?.turn?.state === 'live' && !status.turn.truncated) {
+      // Watch the live holder turn (backlog #87; autonomous turns since
+      // #90 slice 2): MainPanel consumes the request, trims the hydrated
+      // turn-so-far at the anchor, and replays + tails the turn buffer.
+      // Preferred over the autonomous-store replay because the buffer
+      // carries the full turn from seq 0 with server-side retention. A
+      // truncated buffer cannot replay, so it falls through to the
+      // autonomous-store path instead of stalling on an unattachable turn.
       chatStore.requestViewerAttach(threadId, status.turn);
+    } else if (hasAutonomousTask) {
+      // Fallback: bind a streaming message and replay the client-side
+      // buffered turn so far, then live bus events render.
+      autonomousStore.attachToThread(threadId);
     }
 
     return { success: true };

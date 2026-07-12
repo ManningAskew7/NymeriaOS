@@ -582,6 +582,87 @@ describe('chatStore: live-attach viewer support (backlog #87)', () => {
     expect(store.trimAfterGraphMessageId('g-missing')).toBe(false);
     expect(store.messages).toHaveLength(2);
   });
+
+  // Backlog #90 slice 2: autonomous turns are watched through the same
+  // viewer path; the anchor may be an invisible hidden-wakeup stub.
+
+  it('requestViewerAttach carries holder metadata and defaults it for older backends', () => {
+    store.requestViewerAttach('t-auto', {
+      turnId: 'turn-auto',
+      state: 'live',
+      lastSeq: 3,
+      truncated: false,
+      userMessageId: 'msg-wake',
+      holderKind: 'autonomous',
+      sourceLabel: 'daily report',
+      userMessageInternal: true,
+    });
+    expect(store.viewerAttachRequest).toMatchObject({
+      holderKind: 'autonomous',
+      sourceLabel: 'daily report',
+    });
+
+    store.requestViewerAttach('t-legacy', {
+      turnId: 'turn-legacy',
+      state: 'live',
+      lastSeq: 1,
+      truncated: false,
+    });
+    expect(store.viewerAttachRequest).toMatchObject({
+      holderKind: 'user',
+      sourceLabel: null,
+    });
+  });
+
+  it('trimAfterGraphMessageId anchors on a hidden wakeup stub', () => {
+    store.setMessages([
+      makeGraphUser('earlier prompt', 'g-1'),
+      makeCompletedAssistant('earlier reply'),
+      { ...makeGraphUser('', 'g-wake', 'u-stub'), hidden: true, content: '' },
+      makeCompletedAssistant('persisted turn-so-far', 'partial-1'),
+    ]);
+
+    expect(store.trimAfterGraphMessageId('g-wake')).toBe(true);
+    expect(store.messages).toHaveLength(3);
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.hidden).toBe(true);
+    expect(tail.graphMessageId).toBe('g-wake');
+  });
+
+  it('setBufferAttachedThread marks and clears the buffer-rendered thread', () => {
+    expect(store.bufferAttachedThreadId).toBeNull();
+    store.setBufferAttachedThread('t-watch');
+    expect(store.bufferAttachedThreadId).toBe('t-watch');
+    store.setBufferAttachedThread(null);
+    expect(store.bufferAttachedThreadId).toBeNull();
+  });
+
+  it('buffer-attach stand-down guards (mirrors autonomous.svelte.ts)', () => {
+    // While a thread renders from the turn buffer, the autonomous store must
+    // neither queue its bus transcript events (bufferPendingEvent drops
+    // them) nor let task_completed finalize through a stale binding. Update
+    // alongside autonomous.svelte.ts.
+    const shouldQueuePending = (eventThreadId: string) =>
+      store.bufferAttachedThreadId !== eventThreadId;
+    const shouldFinalizeFromTaskCompleted = (
+      eventThreadId: string,
+      hadStreamingMessage: boolean,
+    ) =>
+      store.isStreaming &&
+      hadStreamingMessage &&
+      store.bufferAttachedThreadId !== eventThreadId;
+
+    store.setStreaming(true);
+    expect(shouldQueuePending('t-watch')).toBe(true);
+    expect(shouldFinalizeFromTaskCompleted('t-watch', true)).toBe(true);
+
+    store.setBufferAttachedThread('t-watch');
+    expect(shouldQueuePending('t-watch')).toBe(false);
+    expect(shouldFinalizeFromTaskCompleted('t-watch', true)).toBe(false);
+    // Other threads are unaffected.
+    expect(shouldQueuePending('t-other')).toBe(true);
+    expect(shouldFinalizeFromTaskCompleted('t-other', true)).toBe(true);
+  });
 });
 
 describe('chatStore: turn-paused card + resume request (backlog #27)', () => {

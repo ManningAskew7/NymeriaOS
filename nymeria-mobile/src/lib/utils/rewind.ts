@@ -23,7 +23,11 @@ import { chatStore } from '$lib/stores/chat.svelte';
  * consistent between the two lists and need no special casing.
  */
 export function isCountableUserMessage(message: Message): boolean {
-  return message.role === 'user' && !message.autonomousSource;
+  // Hidden anchor stubs (invisible wakeup placeholders, backlog #90) are
+  // user-role entries in the LOCAL list only; the authoritative fetch below
+  // uses showAutonomousPrompts=true and renders wakeups with
+  // autonomousSource instead. Both filters keep the ordinals aligned.
+  return message.role === 'user' && !message.autonomousSource && !message.hidden;
 }
 
 /**
@@ -33,7 +37,9 @@ export function isCountableUserMessage(message: Message): boolean {
  */
 export function computeVisibleBlastRadius(messages: Message[], targetIndex: number): number {
   if (targetIndex < 0 || targetIndex >= messages.length) return 0;
-  return messages.length - targetIndex - 1;
+  // Hidden anchor stubs are not visible, so they do not count toward the
+  // "N messages will be removed" copy.
+  return messages.slice(targetIndex + 1).filter((m) => !m.hidden).length;
 }
 
 /**

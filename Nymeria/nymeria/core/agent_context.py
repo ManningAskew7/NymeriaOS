@@ -37,6 +37,7 @@ def get_conversation_history(
     include_internal: bool = False,
     show_autonomous_prompts: bool = False,
     show_prompt_metadata: bool = False,
+    include_hidden_anchors: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Get the conversation history for a thread.
@@ -54,6 +55,11 @@ def get_conversation_history(
                           Set to True for debugging to see all messages.
         show_autonomous_prompts: If True, include autonomous_wakeup prompts
                                  (but still hide compact_prompt/auto_resume).
+        include_hidden_anchors: If True, wakeups the show_autonomous_prompts
+                                filter would drop are emitted as invisible
+                                stub entries (hidden: true) carrying their
+                                message_id, so live-attach viewers can trim
+                                precisely (backlog #90).
 
     Returns:
         List of messages formatted for the frontend
@@ -73,6 +79,7 @@ def get_conversation_history(
             include_internal=include_internal,
             show_autonomous_prompts=show_autonomous_prompts,
             show_prompt_metadata=show_prompt_metadata,
+            include_hidden_anchors=include_hidden_anchors,
             clean_tool_result=agent._clean_tool_result_for_display,
             extract_workspace_artifacts=agent._extract_workspace_artifacts,
         )

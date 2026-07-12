@@ -327,6 +327,11 @@
       }
     };
     if (!opts.silentFirstAttempt) showReconnecting();
+    // The buffer replay is this thread's single renderer for the duration:
+    // the autonomous store stands down on bus transcript events for it
+    // (canApplyStreamingEvent), so an autonomous turn watched via attach
+    // never renders twice (backlog #90 slice 2).
+    chatStore.setBufferAttachedThread(threadId);
     let attempt = 0;
     try {
       while (true) {
@@ -390,6 +395,12 @@
         );
       }
     } finally {
+      // Only clear our own claim: a switch to another live-turn thread can
+      // start a newer recovery loop (which set the flag to its thread)
+      // before this one notices the thread change and returns.
+      if (chatStore.bufferAttachedThreadId === threadId) {
+        chatStore.setBufferAttachedThread(null);
+      }
       chatStore.setReconnecting(false);
     }
   }

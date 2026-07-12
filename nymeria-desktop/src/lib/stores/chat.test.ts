@@ -837,6 +837,60 @@ describe('chatStore: live-attach viewer support (backlog #87)', () => {
     expect(store.trimAfterGraphMessageId('g-missing')).toBe(false);
     expect(store.messages).toHaveLength(2);
   });
+
+  // Backlog #90 slice 2: autonomous turns are watched through the same
+  // viewer path; the anchor may be an invisible hidden-wakeup stub.
+
+  it('requestViewerAttach carries holder metadata and defaults it for older backends', () => {
+    store.requestViewerAttach('t-auto', {
+      turnId: 'turn-auto',
+      state: 'live',
+      lastSeq: 3,
+      truncated: false,
+      userMessageId: 'msg-wake',
+      holderKind: 'autonomous',
+      sourceLabel: 'daily report',
+      userMessageInternal: true,
+    });
+    expect(store.viewerAttachRequest).toMatchObject({
+      holderKind: 'autonomous',
+      sourceLabel: 'daily report',
+    });
+
+    store.requestViewerAttach('t-legacy', {
+      turnId: 'turn-legacy',
+      state: 'live',
+      lastSeq: 1,
+      truncated: false,
+    });
+    expect(store.viewerAttachRequest).toMatchObject({
+      holderKind: 'user',
+      sourceLabel: null,
+    });
+  });
+
+  it('trimAfterGraphMessageId anchors on a hidden wakeup stub', () => {
+    store.setMessages([
+      makeGraphUser('earlier prompt', 'g-1'),
+      makeCompletedAssistant('earlier reply'),
+      { ...makeGraphUser('', 'g-wake', 'u-stub'), hidden: true, content: '' },
+      makeCompletedAssistant('persisted turn-so-far', 'partial-1'),
+    ]);
+
+    expect(store.trimAfterGraphMessageId('g-wake')).toBe(true);
+    expect(store.messages).toHaveLength(3);
+    const tail = store.messages[store.messages.length - 1];
+    expect(tail.hidden).toBe(true);
+    expect(tail.graphMessageId).toBe('g-wake');
+  });
+
+  it('setBufferAttachedThread marks and clears the buffer-rendered thread', () => {
+    expect(store.bufferAttachedThreadId).toBeNull();
+    store.setBufferAttachedThread('t-watch');
+    expect(store.bufferAttachedThreadId).toBe('t-watch');
+    store.setBufferAttachedThread(null);
+    expect(store.bufferAttachedThreadId).toBeNull();
+  });
 });
 
 describe('chatStore: turn-paused card + resume request (backlog #27)', () => {

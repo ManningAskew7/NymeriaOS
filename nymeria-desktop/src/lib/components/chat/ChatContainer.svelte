@@ -122,7 +122,11 @@
   {:else}
     <div class="messages">
       {#each chatStore.messages as message (message.id)}
-        {#if message.turnPausedInfo}
+        {#if message.hidden}
+          <!-- Invisible anchor stub (hidden autonomous wakeup, backlog #90):
+               kept in the list so viewer attach can trim at it, never
+               rendered. -->
+        {:else if message.turnPausedInfo}
           <!-- The pause-card message is a pure carrier (empty content,
                complete); rendering the bubble too would show an empty
                assistant box under every card. -->

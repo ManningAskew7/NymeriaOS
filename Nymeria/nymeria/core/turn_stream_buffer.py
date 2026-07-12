@@ -1,12 +1,15 @@
-"""In-process per-thread buffer of interactive turn stream events.
+"""In-process per-thread buffer of holder-turn stream events.
 
-Backs turn re-attach: when a client's ``POST /chat`` SSE connection drops
-mid-turn, the backend keeps executing the turn (the deliberate
-disconnect-keeps-running posture in ``api/routers/chat.py``), and this buffer
-retains the turn's wire events so the client can rejoin via
+Backs turn re-attach and live watching: when a client's ``POST /chat`` SSE
+connection drops mid-turn, the backend keeps executing the turn (the
+deliberate disconnect-keeps-running posture in ``api/routers/chat.py``), and
+this buffer retains the turn's wire events so the client can rejoin via
 ``GET /threads/{thread_id}/turn/stream`` and re-render the full turn,
 including the terminal ``done``/``error`` event that the original response
-suppresses after a disconnect.
+suppresses after a disconnect. Autonomous turns (TODOs, triggers, dreams,
+callables, spawns, watchdog) feed the same buffer via the
+``stream_and_collect`` tee in ``core/stream_bridge.py``, so any client can
+attach to any in-flight turn regardless of who started it (backlog #90).
 
 Design notes:
 
@@ -26,10 +29,13 @@ Design notes:
   and marks the buffer truncated; re-attach then reports a replay gap and
   clients fall back to history reconciliation.
 - In-process only, safe because the API process is the sole agent runtime in
-  both deployment shapes. Writers and readers share the API event loop; the
+  both deployment shapes. Readers run on the API event loop; writers are
+  either the chat route (same loop) or sync autonomous workers on plain
+  threads. Off-loop writers marshal reader wakeups onto the loop registered
+  via ``TurnStreamRegistry.set_reader_loop`` (``call_soon_threadsafe``); the
   capture-event-then-check wakeup pattern in ``stream_payloads`` needs no
-  locks for the async side. The scalar snapshot used by REST status reads is
-  guarded by a plain mutex only because those handlers may run off-loop.
+  locks for the async side. Scalar state shared across threads is guarded by
+  a plain mutex.
 - An API restart loses the registry with the in-flight turn itself; clients
   detect this via ``GET /threads/{id}/status`` and reconcile from history.
 """
@@ -88,6 +94,9 @@ class TurnStreamBuffer:
         thread_id: str,
         user_id: str,
         user_message_id: Optional[str] = None,
+        holder_kind: str = "user",
+        source_label: Optional[str] = None,
+        user_message_internal: bool = False,
     ) -> None:
         self.thread_id = thread_id
         self.user_id = user_id
@@ -97,6 +106,18 @@ class TurnStreamBuffer:
         # same id as ``message_id``, so the viewer trims everything after the
         # anchor and rebuilds the turn from the replay without duplication.
         self.user_message_id = user_message_id
+        # Who is running the turn: "user" (interactive) or "autonomous"
+        # (self-invoke: TODOs, triggers, dreams, callables, spawns, watchdog).
+        self.holder_kind = holder_kind
+        # Short human label for the initiator (trigger name, TODO task,
+        # callable name, "watchdog"); best-effort, may be None.
+        self.source_label = source_label
+        # True when the initiating message is an internal autonomous wakeup,
+        # i.e. subject to the per-thread show_autonomous_prompts history
+        # filter. Viewers hydrate with include_hidden_anchors=true so the
+        # anchor resolves either way; this flag tells them why it may render
+        # as a hidden stub.
+        self.user_message_internal = user_message_internal
         self.turn_id = uuid.uuid4().hex
         self.started_at = time.time()
         self.state = STATE_LIVE
@@ -147,8 +168,30 @@ class TurnStreamBuffer:
         self._pulse()
 
     def _pulse(self) -> None:
-        event = self._pulse_event
-        self._pulse_event = asyncio.Event()
+        """Wake readers, marshaling onto the reader loop when off-loop.
+
+        The chat route writes from the API event loop, where a plain
+        ``Event.set()`` is correct. Autonomous turns write from sync worker
+        threads (the ``stream_and_collect`` tee); ``asyncio.Event.set`` is
+        not thread-safe, so those writers hand the set to the registered
+        reader loop via ``call_soon_threadsafe``. With no registered loop
+        (unit tests, single-loop harnesses) fall back to a direct set.
+        """
+        with self._meta_lock:
+            event = self._pulse_event
+            self._pulse_event = asyncio.Event()
+        loop = _get_reader_loop()
+        if loop is not None and loop.is_running():
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not loop:
+                try:
+                    loop.call_soon_threadsafe(event.set)
+                    return
+                except RuntimeError:
+                    pass  # loop closed between the check and the call
         event.set()
 
     # -- reader side (re-attach route, API event loop) ----------------------
@@ -180,6 +223,9 @@ class TurnStreamBuffer:
                 "last_seq": self._next_seq - 1,
                 "truncated": self.truncated,
                 "user_message_id": self.user_message_id,
+                "holder_kind": self.holder_kind,
+                "source_label": self.source_label,
+                "user_message_internal": self.user_message_internal,
             }
 
     def _entries_after(self, cursor: int) -> list[Tuple[int, str]]:
@@ -240,6 +286,9 @@ class TurnStreamRegistry:
         thread_id: str,
         user_id: str,
         user_message_id: Optional[str] = None,
+        holder_kind: str = "user",
+        source_label: Optional[str] = None,
+        user_message_internal: bool = False,
     ) -> TurnStreamBuffer:
         """Create the buffer for a new holder turn, replacing any previous one.
 
@@ -254,7 +303,14 @@ class TurnStreamRegistry:
         unaffected, and marking it terminal gives late re-attachers an honest
         end-of-stream.
         """
-        buffer = TurnStreamBuffer(thread_id, user_id, user_message_id=user_message_id)
+        buffer = TurnStreamBuffer(
+            thread_id,
+            user_id,
+            user_message_id=user_message_id,
+            holder_kind=holder_kind,
+            source_label=source_label,
+            user_message_internal=user_message_internal,
+        )
         with self._lock:
             previous = self._buffers.get(thread_id)
             self._buffers[thread_id] = buffer
@@ -302,6 +358,22 @@ class TurnStreamRegistry:
 _registry: Optional[TurnStreamRegistry] = None
 _registry_lock = threading.Lock()
 
+# Event loop the attach-route readers run on (the API loop). Registered at
+# API startup so off-loop writers (autonomous turns on sync worker threads)
+# can marshal reader wakeups onto it. None until the API app starts, which
+# is fine: nothing writes buffers before then.
+_reader_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_reader_loop(loop: Optional[asyncio.AbstractEventLoop]) -> None:
+    """Register the loop attach-route readers run on (API startup)."""
+    global _reader_loop
+    _reader_loop = loop
+
+
+def _get_reader_loop() -> Optional[asyncio.AbstractEventLoop]:
+    return _reader_loop
+
 
 def get_turn_stream_registry() -> TurnStreamRegistry:
     """Process-wide registry singleton (the API is the only agent runtime)."""
@@ -314,7 +386,8 @@ def get_turn_stream_registry() -> TurnStreamRegistry:
 
 
 def reset_turn_stream_registry() -> None:
-    """Test seam: drop the singleton so each test starts clean."""
+    """Test seam: drop the singleton (and reader loop) so tests start clean."""
     global _registry
     with _registry_lock:
         _registry = None
+    set_reader_loop(None)

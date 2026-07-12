@@ -119,19 +119,22 @@ describe('navigation stream-recovery decision', () => {
     expect(store.messages[1].status).toBe('streaming');
   });
 
-  it('viewer attach fires only when no local stream binds and a turn is live (backlog #87)', () => {
-    // Mirrors switchToThread's three-way branch: own interactive stream >
-    // autonomous attach > live-turn viewer attach. Update alongside
+  it('viewer attach outranks the autonomous-store replay for live turns (backlog #90)', () => {
+    // Mirrors switchToThread's branch order: own interactive stream >
+    // live-turn viewer attach > autonomous-store fallback. Update alongside
     // navigation.svelte.ts (same contract note as applyStreamRecovery).
     function applyAttachDecision(
       hasInteractiveStream: boolean,
       hasAutonomousTask: boolean,
       status: ThreadStatus,
-    ): void {
-      if (hasInteractiveStream || hasAutonomousTask) return;
-      if (status.turn?.state === 'live') {
+    ): 'stream' | 'attach' | 'autonomous' | 'none' {
+      if (hasInteractiveStream) return 'stream';
+      if (status.turn?.state === 'live' && !status.turn.truncated) {
         store.requestViewerAttach(status.threadId, status.turn);
+        return 'attach';
       }
+      if (hasAutonomousTask) return 'autonomous';
+      return 'none';
     }
 
     const liveTurn: ThreadStatus = {
@@ -144,29 +147,47 @@ describe('navigation stream-recovery decision', () => {
         lastSeq: 3,
         truncated: false,
         userMessageId: 'g-1',
+        holderKind: 'autonomous',
+        sourceLabel: 'daily report',
+        userMessageInternal: true,
       },
     };
 
-    applyAttachDecision(true, false, liveTurn);
+    // This client's own stream always wins.
+    expect(applyAttachDecision(true, false, liveTurn)).toBe('stream');
     expect(store.viewerAttachRequest).toBeNull();
 
-    applyAttachDecision(false, true, liveTurn);
-    expect(store.viewerAttachRequest).toBeNull();
-
-    // A finished (retained) turn buffer must not trigger a viewer attach.
-    applyAttachDecision(false, false, {
-      ...liveTurn,
-      processing: false,
-      turn: { ...liveTurn.turn!, state: 'done' },
-    });
-    expect(store.viewerAttachRequest).toBeNull();
-
-    applyAttachDecision(false, false, liveTurn);
+    // The flip (backlog #90 slice 2): a live autonomous turn with an
+    // attachable buffer is watched through the viewer path, not the
+    // client-side autonomous replay.
+    expect(applyAttachDecision(false, true, liveTurn)).toBe('attach');
     expect(store.viewerAttachRequest).toMatchObject({
       threadId: 't-1',
       turnId: 'turn-live',
       userMessageId: 'g-1',
+      holderKind: 'autonomous',
+      sourceLabel: 'daily report',
     });
+
+    // A finished (retained) buffer never attaches; an active autonomous
+    // task without a live buffer falls back to the store replay.
+    const doneTurn: ThreadStatus = {
+      ...liveTurn,
+      processing: false,
+      turn: { ...liveTurn.turn!, state: 'done' },
+    };
+    expect(applyAttachDecision(false, true, doneTurn)).toBe('autonomous');
+    expect(applyAttachDecision(false, false, doneTurn)).toBe('none');
+
+    // A live turn whose buffer overflowed cannot replay: attaching would
+    // park the panel on "Reconnecting" while the stand-down guard mutes the
+    // bus, so it must fall through to the autonomous-store replay instead.
+    const truncatedLiveTurn: ThreadStatus = {
+      ...liveTurn,
+      turn: { ...liveTurn.turn!, truncated: true },
+    };
+    expect(applyAttachDecision(false, true, truncatedLiveTurn)).toBe('autonomous');
+    expect(applyAttachDecision(false, false, truncatedLiveTurn)).toBe('none');
   });
 
   it('streamed events flow into the fresh message and leave the prior intact', () => {

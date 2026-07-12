@@ -313,6 +313,15 @@ def create_threads_router(
                 "control history filtering without mutating per-thread state."
             ),
         ),
+        include_hidden_anchors: bool = Query(
+            False,
+            description=(
+                "Emit invisible stub entries (hidden: true, message_id only) "
+                "for autonomous wakeups the show_autonomous_prompts filter "
+                "would drop, so live-attach viewers can anchor-trim precisely. "
+                "No effect with include_internal=true."
+            ),
+        ),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """
@@ -344,6 +353,7 @@ def create_threads_router(
             include_internal=include_internal,
             show_autonomous_prompts=show_autonomous,
             show_prompt_metadata=show_prompt_metadata,
+            include_hidden_anchors=include_hidden_anchors,
         )
         return ThreadHistoryResponse(thread_id=thread_id, messages=history)
 

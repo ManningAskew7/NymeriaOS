@@ -167,6 +167,7 @@ export interface Message {
   toolCalls?: ToolCall[];         // Legacy history fallback for messages without steps
   attachments?: FileAttachment[]; // File attachments for multimodal messages
   graphMessageId?: string;        // Backend LangGraph message id (user messages from history); rewind target for POST /threads/{id}/rewind
+  hidden?: boolean;               // Invisible anchor stub (hidden autonomous wakeup, backlog #90): kept for anchor trimming, never rendered
   contextSummary?: string;        // Context summary from /compact (collapsible in UI)
   messagesRemoved?: number;       // Number of messages summarized by compaction
   autoResumed?: boolean;          // True when assistant output resumed after compaction
@@ -490,6 +491,15 @@ export interface ThreadTurnStatus {
   // hydrated history; live-attach viewers trim everything after it before
   // replaying the turn (backlog #87).
   userMessageId?: string | null;
+  // Who is running the turn: 'user' (interactive) or 'autonomous'
+  // (TODOs, triggers, dreams, callables, spawns, watchdog). Backlog #90.
+  holderKind?: 'user' | 'autonomous';
+  // Short human label for the initiator (trigger name, TODO task, ...).
+  sourceLabel?: string | null;
+  // True when the anchor is an internal autonomous wakeup: hydration with
+  // include_hidden_anchors renders it as an invisible stub when the
+  // show-autonomous-prompts toggle is off, so trimming still works.
+  userMessageInternal?: boolean;
 }
 
 export interface ThreadStatus {
@@ -508,6 +518,10 @@ export interface ViewerAttachRequest {
   threadId: string;
   turnId: string;
   userMessageId: string | null;
+  // Holder metadata (backlog #90): lets the panel distinguish watching an
+  // autonomous turn from another client's interactive turn.
+  holderKind?: 'user' | 'autonomous';
+  sourceLabel?: string | null;
 }
 
 // TODO types (from backend)

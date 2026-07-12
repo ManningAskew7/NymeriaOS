@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from types import SimpleNamespace
 
@@ -403,6 +404,71 @@ def test_user_entries_expose_graph_message_id():
     )
     hidden_users = [e for e in hidden if e["role"] == "user"]
     assert [e["message_id"] for e in hidden_users] == ["graph-h1"]
+
+
+def _wakeup_history_messages():
+    return [
+        HumanMessage(content="Real prompt", id="graph-h1"),
+        AIMessage(content="Reply", id="graph-a1"),
+        HumanMessage(
+            content="[Trigger: scheduler]\n\nWake up",
+            id="graph-h2",
+            additional_kwargs={
+                "internal": True,
+                "internal_type": "autonomous_wakeup",
+            },
+        ),
+        AIMessage(content="Autonomous reply", id="graph-a2"),
+    ]
+
+
+def test_include_hidden_anchors_emits_invisible_wakeup_stub():
+    """A wakeup the show_autonomous_prompts filter would drop renders as a
+    hidden stub carrying only its graph message id, so live-attach viewers
+    can anchor-trim precisely (backlog #90). Content is never leaked."""
+    history = format_conversation_history(
+        _wakeup_history_messages(),
+        thread_id="thread-anchor",
+        show_autonomous_prompts=False,
+        include_hidden_anchors=True,
+    )
+    stubs = [e for e in history if e.get("hidden")]
+    assert len(stubs) == 1
+    stub = stubs[0]
+    assert stub["role"] == "user"
+    assert stub["message_id"] == "graph-h2"
+    assert stub["content"] == ""
+    assert "Wake up" not in json.dumps(history)
+    # Graph order preserved: the stub sits between the two turns.
+    roles = [(e["role"], bool(e.get("hidden"))) for e in history]
+    assert roles == [
+        ("user", False),
+        ("assistant", False),
+        ("user", True),
+        ("assistant", False),
+    ]
+
+
+def test_include_hidden_anchors_noop_when_wakeups_visible_or_internal():
+    """With the toggle on, the wakeup renders in full (no stub); with
+    include_internal, the debugging view is unchanged too."""
+    visible = format_conversation_history(
+        _wakeup_history_messages(),
+        thread_id="thread-anchor",
+        show_autonomous_prompts=True,
+        include_hidden_anchors=True,
+    )
+    assert not [e for e in visible if e.get("hidden")]
+    wakeups = [e for e in visible if e.get("message_id") == "graph-h2"]
+    assert len(wakeups) == 1 and "Wake up" in wakeups[0]["content"]
+
+    internal = format_conversation_history(
+        _wakeup_history_messages(),
+        thread_id="thread-anchor",
+        include_internal=True,
+        include_hidden_anchors=True,
+    )
+    assert not [e for e in internal if e.get("hidden")]
 
 
 # ---------------------------------------------------------------------------

@@ -3785,6 +3785,7 @@ class NymeriaAgent:
         include_internal: bool = False,
         show_autonomous_prompts: bool = False,
         show_prompt_metadata: bool = False,
+        include_hidden_anchors: bool = False,
     ) -> List[Dict[str, Any]]:
         from .agent_context import get_conversation_history
         return get_conversation_history(
@@ -3793,6 +3794,7 @@ class NymeriaAgent:
             include_internal=include_internal,
             show_autonomous_prompts=show_autonomous_prompts,
             show_prompt_metadata=show_prompt_metadata,
+            include_hidden_anchors=include_hidden_anchors,
         )
 
     def get_raw_checkpoint(self, thread_id: str) -> Dict[str, Any]:

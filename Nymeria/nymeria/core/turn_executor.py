@@ -65,6 +65,12 @@ class LocalAgentExecutor:
     def __init__(self, agent: "NymeriaAgent") -> None:
         self._agent = agent
 
+    @property
+    def agent(self) -> "NymeriaAgent":
+        """The wrapped in-process agent (turn-buffer tee reads context stats
+        and the effective model off it for the synthesized ``done`` event)."""
+        return self._agent
+
     async def astream(self, **astream_kwargs: Any) -> AsyncIterator[dict[str, Any]]:
         async for chunk in self._agent.astream(**astream_kwargs):
             yield chunk

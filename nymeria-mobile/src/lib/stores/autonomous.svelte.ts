@@ -419,6 +419,11 @@ function createAutonomousStore() {
   }
 
   function bufferPendingEvent(event: AutonomousEvent) {
+    // While the chat panel renders this thread from the turn buffer, bus
+    // transcript events are redundant (the buffer carries the full turn):
+    // drop them instead of queueing, or the pending replay would repaint
+    // the whole turn as a duplicate once the attach ends (backlog #90).
+    if (chatStore.bufferAttachedThreadId === event.thread_id) return;
     const buf = _pendingEvents.get(event.thread_id) || [];
     buf.push(event);
     _pendingEvents.set(event.thread_id, buf);
@@ -453,6 +458,13 @@ function createAutonomousStore() {
   }
 
   function canApplyStreamingEvent(event: AutonomousEvent, isCurrentThread: boolean, isOurTask: boolean): boolean {
+    // Stand down while the chat panel renders this thread from the turn
+    // buffer (viewer attach / dropped-stream recovery): the replay is the
+    // single renderer, and a binding left in activeMessagesByThread from
+    // before the attach would otherwise double-render the turn (backlog
+    // #90 slice 2). Lifecycle handling (task state, dashboards, thread-list
+    // spinners) does not pass through here and keeps working.
+    if (chatStore.bufferAttachedThreadId === event.thread_id) return false;
     return (
       isCurrentThread &&
       isOurTask &&
@@ -463,6 +475,12 @@ function createAutonomousStore() {
 
   function replayPendingEventsForThread(threadId: string) {
     if (threadsStore.currentThreadId !== threadId) return;
+    // The turn-buffer attach replays the turn from seq 0, so anything queued
+    // here (the pre-attach switch gap) is already covered: discard it.
+    if (chatStore.bufferAttachedThreadId === threadId) {
+      _pendingEvents.delete(threadId);
+      return;
+    }
 
     const taskId = activeTasksByThread.get(threadId);
     if (taskId) activeTaskId = taskId;
@@ -677,7 +695,18 @@ function createAutonomousStore() {
         }
         threadsStore.setThreadActive(event.thread_id, false);
 
-        if (isCurrentThread && isOurTask && chatStore.isStreaming && hadStreamingMessage) {
+        if (
+          isCurrentThread &&
+          isOurTask &&
+          chatStore.isStreaming &&
+          hadStreamingMessage &&
+          chatStore.bufferAttachedThreadId !== event.thread_id
+        ) {
+          // The buffer-attach guard mirrors canApplyStreamingEvent: while the
+          // turn-buffer replay owns this thread's rendering, a stale
+          // activeMessagesByThread binding from before the attach must not
+          // let this finalize (or error-paint) mid-attach; the buffer's own
+          // done/error event finalizes the message instead.
           chatStore.setStreaming(false);
 
           if (event.error) {

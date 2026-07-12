@@ -101,6 +101,68 @@ def test_begin_turn_stores_user_message_id_in_snapshot():
     assert bare.snapshot()["user_message_id"] is None
 
 
+def test_begin_turn_stores_holder_metadata_in_snapshot():
+    """Holder kind/label/anchor-internal flag (backlog #90) ride the snapshot,
+    so the status ``turn`` block and ``turn_attach`` preamble expose them."""
+    registry = TurnStreamRegistry()
+    auto = registry.begin_turn(
+        "t1",
+        "alice",
+        user_message_id="msg-1",
+        holder_kind="autonomous",
+        source_label="daily report",
+        user_message_internal=True,
+    )
+    snap = auto.snapshot()
+    assert snap["holder_kind"] == "autonomous"
+    assert snap["source_label"] == "daily report"
+    assert snap["user_message_internal"] is True
+
+    default = registry.begin_turn("t2", "alice")
+    snap = default.snapshot()
+    assert snap["holder_kind"] == "user"
+    assert snap["source_label"] is None
+    assert snap["user_message_internal"] is False
+
+
+def test_off_loop_append_wakes_reader_on_registered_loop():
+    """Autonomous turns write from sync worker threads; with the reader loop
+    registered, their appends must wake an awaiting reader promptly (via
+    call_soon_threadsafe) instead of relying on the 15s poll ceiling."""
+    import threading
+    import time
+
+    from nymeria.core.turn_stream_buffer import set_reader_loop
+
+    buf = TurnStreamBuffer("t-offloop", "alice")
+
+    async def read_two():
+        set_reader_loop(asyncio.get_running_loop())
+        started = time.monotonic()
+        got = []
+        async for payload in buf.stream_payloads():
+            got.append(json.loads(payload)["type"])
+        return got, time.monotonic() - started
+
+    def writer():
+        time.sleep(0.05)
+        buf.append({"type": "response", "content": "from worker"})
+        buf.append({"type": "done"})
+        buf.finish(STATE_DONE)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    try:
+        got, elapsed = asyncio.run(read_two())
+    finally:
+        thread.join()
+        set_reader_loop(None)
+
+    assert got == ["response", "done"]
+    # Well under the 15s reader poll ceiling: the wakeups were real.
+    assert elapsed < 5.0
+
+
 def test_registry_begin_turn_replaces_and_aborts_live_predecessor():
     registry = TurnStreamRegistry()
     first = registry.begin_turn("t1", "alice")
@@ -382,6 +444,45 @@ def test_holder_turn_buffer_carries_minted_user_message_id():
     assert buffer is not None
     assert buffer.user_message_id == minted
     assert buffer.snapshot()["user_message_id"] == minted
+
+
+def test_self_invoke_holder_turn_buffers_autonomous_metadata():
+    """Relay turns (the Docker worker's APIClientExecutor posts /chat with
+    is_self_invoke) get a first-class autonomous buffer: holder_kind,
+    source label, and the internal-anchor flag ride the snapshot (backlog
+    #90; previously this buffer existed but carried user-turn metadata)."""
+    agent = _FakeAgent()
+    client = TestClient(
+        _app_for(_build_router(agent, _PublishRecorder()))
+    )
+    with client.stream(
+        "POST",
+        "/chat",
+        json={
+            "message": "wake",
+            "thread_id": "t-relay",
+            "is_self_invoke": True,
+            "source": "ticker",
+            "source_label": "daily report",
+        },
+    ) as response:
+        response.read()
+
+    buffer = get_turn_stream_registry().get("t-relay")
+    assert buffer is not None
+    snap = buffer.snapshot()
+    assert snap["holder_kind"] == "autonomous"
+    assert snap["source_label"] == "daily report"
+    assert snap["user_message_internal"] is True
+    # Interactive turns keep user-holder metadata.
+    with client.stream(
+        "POST", "/chat", json={"message": "hi", "thread_id": "t-user"}
+    ) as response:
+        response.read()
+    snap = get_turn_stream_registry().get("t-user").snapshot()
+    assert snap["holder_kind"] == "user"
+    assert snap["source_label"] is None
+    assert snap["user_message_internal"] is False
 
 
 @pytest.mark.asyncio
