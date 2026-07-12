@@ -11,6 +11,7 @@ class SkillMetadataResponse(BaseModel):
     scope: str
     allowed_tools: List[str] = Field(default_factory=list)
     required_tools: List[str] = Field(default_factory=list)
+    required_skills: List[str] = Field(default_factory=list)
     tool_ttl: str = "2h"
     is_skill_kit: bool = False
     default_active: bool = False

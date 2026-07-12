@@ -42,6 +42,7 @@ def create_skills_router(
             "scope": skill.scope,
             "allowed_tools": skill.allowed_tools,
             "required_tools": skill.required_tools,
+            "required_skills": skill.required_skills,
             "tool_ttl": skill.tool_ttl,
             "is_skill_kit": skill.is_skill_kit,
             "default_active": False,

@@ -2331,6 +2331,20 @@ def activate_skill_kit(
     if skill is None:
         return False, f"[Error]: Skill '{skill_name}' not found."
 
+    # Nested required skills resolve one level deep, strictly, BEFORE any
+    # mutation: a kit that names a missing skill must not half-activate.
+    from ..skills import expanded_required_tools, resolve_nested_skills
+
+    nested_skills, missing_nested = resolve_nested_skills(
+        skill, skill_manager, user_id
+    )
+    if missing_nested:
+        return False, (
+            f"[Error]: Skill '{skill_name}' requires skills that are not "
+            f"installed: {', '.join(missing_nested)}. Nothing was activated."
+        )
+    union_tools = expanded_required_tools(skill, nested_skills)
+
     try:
         from ..tools.skill_config import _activate_skill_on_thread
 
@@ -2341,13 +2355,29 @@ def activate_skill_kit(
     if not skill.is_skill_kit:
         return True, f"[Success]: Skill '{skill_name}' activated."
 
+    nested_note = (
+        (
+            " Required skills pulled in (one level): "
+            + ", ".join(s.name for s in nested_skills)
+            + "."
+        )
+        if nested_skills
+        else ""
+    )
+
+    if not union_tools:
+        return True, (
+            f"[Success]: Skill kit '{skill_name}' activated (no tools to "
+            f"bind).{nested_note}"
+        )
+
     try:
         from ..tools.tool_search import bind_tools_for_thread
     except Exception as e:
         return False, f"[Error]: tool_search unavailable: {e}"
 
     binding = bind_tools_for_thread(
-        list(skill.required_tools),
+        union_tools,
         "",  # category not used; we pass explicit tool names
         thread_id,
         user_id,
@@ -2364,7 +2394,8 @@ def activate_skill_kit(
         )
 
     return True, (
-        f"[Success]: Skill kit '{skill_name}' activated.\n{binding.text}"
+        f"[Success]: Skill kit '{skill_name}' activated.{nested_note}\n"
+        f"{binding.text}"
     )
 
 
@@ -2405,7 +2436,15 @@ def deactivate_skill_kit(
             skill = None
 
     if skill is not None and skill.is_skill_kit:
-        for tool_name in skill.required_tools:
+        # Evict the same expanded union activation bound (outer + nested
+        # kits' tools, one level). Overlaps with another active kit's tools
+        # are evicted too, matching the existing overlapping-kit behavior.
+        from ..skills import expanded_required_tools, resolve_nested_skills
+
+        nested_skills, _missing = resolve_nested_skills(
+            skill, skill_manager, user_id
+        )
+        for tool_name in expanded_required_tools(skill, nested_skills):
             if tool_name in tc.temporary_tools:
                 del tc.temporary_tools[tool_name]
                 evicted.append(tool_name)

@@ -22,7 +22,13 @@ from langgraph.types import Command
 
 from ..core.time_utils import parse_tool_ttl
 from ..core.tool_reload import should_emit_reload_command, tool_reload_command
-from . import AVAILABLE_SKILLS_CHAR_BUDGET, Skill, SkillManager
+from . import (
+    AVAILABLE_SKILLS_CHAR_BUDGET,
+    Skill,
+    SkillManager,
+    expanded_required_tools,
+    resolve_nested_skills,
+)
 
 if TYPE_CHECKING:
     # Annotation-only; imported function-locally at runtime in
@@ -50,18 +56,20 @@ bash_execute, etc.); the skill's directory path is included in the returned
 body so you can resolve those references.
 
 Optional `ttl` argument (Skill Kits only): some skills are "Skill Kits" that
-bind extra tools onto this thread when you activate them. By default those
-tools stay bound for the kit's own declared lifetime; pass `ttl` to set a
-one-off lifetime for THIS activation instead, e.g. ttl="30m", "2h", "24h",
-"7d", or "permanent". Important: `ttl` governs ONLY the kit's bound tools
-(and, once nested skills are supported, any skills a kit pulls in the same way
-it pulls in tools). It does NOT change how long the skill's instructions stay
-with you: the body text this tool returns remains in your context until the
-conversation is compacted, cleared, or scrolls out of the sliding window, no
-matter what `ttl` you pass. Note that ttl="permanent" (or "never") makes the
-kit's tools persist on the thread beyond this turn rather than expiring; use a
-finite value like "2h" unless you intend a lasting change. `ttl` has no effect
-on skills that bind no tools.
+bind extra tools onto this thread when you activate them. A kit can also
+declare required SKILLS (one level deep): activating it fully activates those
+too, binding any tools THEY require in the same transaction. By default the
+bound tools stay bound for the kit's own declared lifetime; pass `ttl` to set
+a one-off lifetime for THIS activation instead, e.g. ttl="30m", "2h", "24h",
+"7d", or "permanent". Important: `ttl` governs ONLY the tools this activation
+binds (the kit's own plus any nested kit's). It does NOT change how long the
+skill's instructions stay with you: the body text this tool returns remains
+in your context until the conversation is compacted, cleared, or scrolls out
+of the sliding window, no matter what `ttl` you pass. Note that
+ttl="permanent" (or "never") makes the kit's tools persist on the thread
+beyond this turn rather than expiring; use a finite value like "2h" unless
+you intend a lasting change. `ttl` has no effect on skills that bind no
+tools.
 
 Optional `defer` argument (Skill Kits only): pass defer=true to load the kit's
 instructions AND its tools' argument schemas WITHOUT binding any tool to the
@@ -147,6 +155,12 @@ def _render_skill_body(skill: Skill) -> str:
             "Skill Kit required Nymeria tools: "
             + ", ".join(skill.required_tools)
             + f" (ttl: {skill.tool_ttl})"
+        )
+
+    if skill.required_skills:
+        aux_lines.append("")
+        aux_lines.append(
+            "Skill Kit required skills: " + ", ".join(skill.required_skills)
         )
 
     if aux_lines:
@@ -240,19 +254,26 @@ def _resolve_active_skill(
     return skill
 
 
-def _resolve_effective_ttl(skill: Skill, ttl: Optional[str]) -> tuple[str, str]:
+def _resolve_effective_ttl(
+    skill: Skill, ttl: Optional[str], required_tools: Optional[List[str]] = None
+) -> tuple[str, str]:
     """Resolve the effective Skill Kit tool TTL and any model-facing notice.
 
     A model-supplied ``ttl`` overrides the kit's declared ``tool_ttl``, but ONLY
     for the bound tools: the skill body is not governed by any TTL (it persists
     in conversation history until compaction, /clear, or sliding-window
-    eviction). Returns ``(effective_ttl, ttl_notice)``; ``ttl_notice`` is empty
-    when there is nothing to tell the model.
+    eviction). ``required_tools`` is the tool set this activation will actually
+    bind (the nested-expansion union); it defaults to the skill's own list.
+    Returns ``(effective_ttl, ttl_notice)``; ``ttl_notice`` is empty when there
+    is nothing to tell the model.
     """
+    effective_tools = (
+        skill.required_tools if required_tools is None else required_tools
+    )
     effective_ttl = skill.tool_ttl
     ttl_notice = ""
     if ttl is not None and str(ttl).strip():
-        if not skill.required_tools:
+        if not effective_tools:
             ttl_notice = (
                 "[note] ttl was provided but this skill binds no Skill Kit "
                 "tools, so it has no effect. TTL applies only to a kit's "
@@ -277,16 +298,24 @@ def _resolve_effective_ttl(skill: Skill, ttl: Optional[str]) -> tuple[str, str]:
 
 
 def _bind_skill_kit_tools(
-    skill: Skill, effective_ttl: str, config: RunnableConfig
+    skill: Skill,
+    effective_ttl: str,
+    config: RunnableConfig,
+    required_tools: Optional[List[str]] = None,
 ) -> _SkillKitOutcome:
     """Bind a Skill Kit's required tools and report the outcome to the caller.
 
-    Skills with no ``required_tools`` short-circuit to an empty outcome (no bind
-    call). On a strict binding failure the outcome carries ``failure_text`` for
-    the caller to return directly; on success it carries the body block to
-    append plus the reload/cap-hit flags.
+    ``required_tools`` is the tool set to bind, normally the nested-expansion
+    union (``expanded_required_tools``); it defaults to the skill's own list.
+    Activations with no tools to bind short-circuit to an empty outcome (no
+    bind call). On a strict binding failure the outcome carries
+    ``failure_text`` for the caller to return directly; on success it carries
+    the body block to append plus the reload/cap-hit flags.
     """
-    if not skill.required_tools:
+    tools_to_bind = (
+        skill.required_tools if required_tools is None else required_tools
+    )
+    if not tools_to_bind:
         return _SkillKitOutcome(
             binding=None,
             failure_text=None,
@@ -313,7 +342,7 @@ def _bind_skill_kit_tools(
     # classified every required tool as already-bound and skipped
     # binding entirely, so Skill Kit tools were never persisted.
     binding = bind_tools_for_thread(
-        skill.required_tools,
+        tools_to_bind,
         "",
         get_thread_id(config),
         get_user_id(config),
@@ -386,6 +415,70 @@ def _defer_kit_tools_block(skill: Skill) -> str:
             continue
         schema = render_tool_args_schema(tool_obj)
         lines.append(f"  - {name} args: {schema or '(no arguments)'}")
+    return "\n".join(lines)
+
+
+def _nested_skill_bodies_block(skill: Skill, nested_skills: List[Skill]) -> str:
+    """Full-activation body sections for a kit's nested skills (defer=false).
+
+    Each nested skill's full body is appended (that is what activation means
+    for a plain skill; its tools, if any, were bound by the caller's single
+    union bind). Nesting is one level deep: a nested kit's OWN required_skills
+    are listed, never expanded.
+    """
+    if not nested_skills:
+        return ""
+    parts: List[str] = []
+    for nested in nested_skills:
+        logger.info(
+            "nested skill activated: %s (required by %s)", nested.name, skill.name
+        )
+        parts.append(
+            f"\n\n---\n[Nested skill: {nested.name} (required by {skill.name})]\n\n"
+            + _render_skill_body(nested)
+        )
+        if nested.required_skills:
+            parts.append(
+                "\n\n[note] Nested kit "
+                f"{nested.name!r} declares further required skills that were "
+                "NOT auto-activated (nesting is one level deep): "
+                + ", ".join(nested.required_skills)
+                + ". Load any of them on demand with Skill(name=...)."
+            )
+    return "".join(parts)
+
+
+def _defer_required_skills_block(
+    skill: Skill,
+    skill_manager: Optional[SkillManager],
+    user_id: Optional[str],
+    snapshot_by_name: dict[str, Skill],
+) -> str:
+    """Deferred listing of a kit's nested skills: name + description only.
+
+    Nothing activates; each entry is loadable on demand via Skill(). A name
+    that does not resolve is listed as not installed rather than failing,
+    because defer binds nothing so there is no partial state to protect.
+    """
+    if not skill.required_skills:
+        return ""
+    nested, missing = resolve_nested_skills(
+        skill, skill_manager, user_id, snapshot_by_name=snapshot_by_name
+    )
+    lines = [
+        "\n\n---\n"
+        "[Required skills (deferred)] This kit pulls in the skills below. "
+        "None were activated; load one on demand with Skill(name=...) (add "
+        "defer=true to keep that load cache-safe too).",
+    ]
+    for nested_skill in nested:
+        kind = "kit" if nested_skill.is_skill_kit else "skill"
+        desc = nested_skill.description.strip().replace("\n", " ")
+        lines.append(f"  - {nested_skill.name} ({kind}): {desc}")
+    for name in missing:
+        lines.append(
+            f"  - {name}: (not installed; install_skill can fetch it if needed)"
+        )
     return "\n".join(lines)
 
 
@@ -553,10 +646,14 @@ def create_skill_meta_tool(
         logger.info("skill activated: %s (scope=%s)", skill.name, skill.scope)
         body = _render_skill_body(skill)
 
-        # Deferred activation: load the kit's tool schemas but bind nothing, so
-        # the model runs them via tool_invoke and the prompt cache is preserved.
+        # Deferred activation: load the kit's tool schemas and list its nested
+        # skills but bind nothing, so the model runs the tools via tool_invoke
+        # (and loads nested skills on demand) with the prompt cache preserved.
         if defer:
             body += _defer_kit_tools_block(skill)
+            body += _defer_required_skills_block(
+                skill, skill_manager, user_id, snapshot_by_name
+            )
             if ttl is not None and str(ttl).strip() and skill.required_tools:
                 body += (
                     "\n\n---\n[note] ttl was ignored because defer=true binds no "
@@ -565,16 +662,41 @@ def create_skill_meta_tool(
             body += _allowed_tools_advisory(skill, thread_tools_set)
             return body
 
+        # Nested required skills resolve first (one level deep) and are
+        # strict: a missing nested skill aborts before anything binds, so
+        # there is never a partial activation.
+        nested_skills: List[Skill] = []
+        if skill.required_skills:
+            nested_skills, missing_nested = resolve_nested_skills(
+                skill, skill_manager, user_id, snapshot_by_name=snapshot_by_name
+            )
+            if missing_nested:
+                return (
+                    f"[Skill Kit activation failed: {skill.name}]\n"
+                    "This kit requires skills that are not installed: "
+                    f"{', '.join(missing_nested)}.\n"
+                    "Nothing was bound or activated. Install the missing "
+                    "skills first (install_skill) or fix the kit's "
+                    "required_skills, then activate again."
+                )
+        union_tools = expanded_required_tools(skill, nested_skills)
+
         # Resolve the effective TTL for any Skill Kit tools this activation
         # binds. A model-supplied `ttl` overrides the kit's declared tool_ttl,
         # but ONLY for the bound tools: the skill body returned here is not
         # governed by any TTL (it persists in conversation history until
-        # compaction, /clear, or the sliding window evicts it).
-        effective_ttl, ttl_notice = _resolve_effective_ttl(skill, ttl)
+        # compaction, /clear, or the sliding window evicts it). The one TTL
+        # governs the whole union (outer + nested kits' tools).
+        effective_ttl, ttl_notice = _resolve_effective_ttl(
+            skill, ttl, required_tools=union_tools
+        )
 
-        outcome = _bind_skill_kit_tools(skill, effective_ttl, config)
+        outcome = _bind_skill_kit_tools(
+            skill, effective_ttl, config, required_tools=union_tools
+        )
         if outcome.failure_text is not None:
             return outcome.failure_text
+        body += _nested_skill_bodies_block(skill, nested_skills)
         body += outcome.result_suffix
 
         if ttl_notice:

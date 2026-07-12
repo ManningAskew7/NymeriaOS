@@ -221,14 +221,28 @@ def _set_required_tools_metadata(
     return data
 
 
-def _required_tools_from_frontmatter(frontmatter_data: dict[str, Any]) -> list[str]:
+def _nymeria_frontmatter(frontmatter_data: dict[str, Any]) -> dict[str, Any]:
     metadata = frontmatter_data.get("metadata")
     if not isinstance(metadata, dict):
-        return []
+        return {}
     nymeria = metadata.get("nymeria")
-    if not isinstance(nymeria, dict):
+    return nymeria if isinstance(nymeria, dict) else {}
+
+
+def _required_tools_from_frontmatter(frontmatter_data: dict[str, Any]) -> list[str]:
+    nymeria = _nymeria_frontmatter(frontmatter_data)
+    if not nymeria:
         return []
     return _normalize_tool_list(nymeria.get("required_tools"), field_name="required_tools")
+
+
+def _required_skills_from_frontmatter(frontmatter_data: dict[str, Any]) -> list[str]:
+    nymeria = _nymeria_frontmatter(frontmatter_data)
+    if not nymeria:
+        return []
+    return _normalize_tool_list(
+        nymeria.get("required_skills"), field_name="required_skills"
+    )
 
 
 def _tool_ttl_from_frontmatter(frontmatter_data: dict[str, Any]) -> str:
@@ -377,6 +391,51 @@ def _validate_required_tools(required_tools: list[str], user_id: str) -> None:
 
     if errors:
         raise ValueError("Tool dependency validation failed; no skill was written. " + " ".join(errors))
+
+
+def _validate_required_skills(
+    required_skills: list[str], skill_name: str, user_id: str
+) -> None:
+    """Strict-existence validation for ``metadata.nymeria.required_skills``.
+
+    Mirrors the ``required_tools`` posture: every named skill must be
+    installed and visible to the author, names must be kebab-case, and a kit
+    cannot require itself. Nesting stays one level deep at activation, so a
+    nested kit's own required_skills are allowed here without cycle checks.
+    """
+    if not required_skills:
+        return
+
+    from ..core.agent import get_current_agent
+
+    agent = get_current_agent()
+    skill_manager = getattr(agent, "skill_manager", None) if agent else None
+    if skill_manager is None:
+        raise ValueError("No active agent. Cannot validate required_skills.")
+
+    errors: list[str] = []
+    missing: list[str] = []
+    for name in required_skills:
+        if not KEBAB_NAME_RE.fullmatch(name):
+            errors.append(f"required_skills entry is not kebab-case: {name!r}")
+            continue
+        if name == skill_name:
+            errors.append(f"a kit cannot require itself: {name!r}")
+            continue
+        try:
+            resolved = skill_manager.get(name, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001 - lookup failure = unresolvable
+            errors.append(f"required_skills lookup failed for {name!r}: {exc}")
+            continue
+        if resolved is None:
+            missing.append(name)
+    if missing:
+        errors.append(f"[Not installed]: {', '.join(missing)}")
+    if errors:
+        raise ValueError(
+            "Skill dependency validation failed; no skill was written. "
+            + " ".join(errors)
+        )
 
 
 def _write_skill_md_atomic(target_dir: Path, markdown: str) -> None:
@@ -538,6 +597,8 @@ def _write_skill_package(
     frontmatter, frontmatter_data, _body = _parse_skill_markdown(markdown)
     required_tools = _required_tools_from_frontmatter(frontmatter_data)
     _validate_required_tools(required_tools, user_id)
+    required_skills = _required_skills_from_frontmatter(frontmatter_data)
+    _validate_required_skills(required_skills, frontmatter.name, user_id)
 
     target_parent = skill_manager.target_dir(scope, user_id=user_id if scope == "user" else None)
     target_dir = target_parent / frontmatter.name
@@ -572,8 +633,9 @@ def _write_skill_package(
             "description": frontmatter.description,
             "scope": scope,
             "required_tools": required_tools,
+            "required_skills": required_skills,
             "tool_ttl": _tool_ttl_from_frontmatter(frontmatter_data),
-            "is_skill_kit": bool(required_tools),
+            "is_skill_kit": bool(required_tools or required_skills),
         },
         "scripts": [script.path for script in scripts],
     }

@@ -179,17 +179,15 @@ def get_callable_thread_tools(agent: "NymeriaAgent", tc) -> List[BaseTool]:
     return tools
 
 
-def build_skill_meta_tool(
-    agent: "NymeriaAgent", user_id: str, tc, thread_tools: List[BaseTool]
-):
-    """Return the Skill meta-tool for this thread, or None if no skills are active.
+def _active_skills_for_thread(agent: "NymeriaAgent", user_id: str, tc) -> List:
+    """Resolve the thread's active skill set.
 
     Combines the user's enabled_global_skills with ThreadConfig overrides
-    (enabled_skills ∪ disabled_skills). Returns None when the resulting
-    active set is empty so we don't pay tool-schema overhead needlessly.
+    (enabled_skills ∪ disabled_skills). Shared by the Skill meta-tool build
+    and the kit-declared template tool build so the two cannot disagree.
     """
     if agent.skill_manager is None:
-        return None
+        return []
     try:
         profile = agent.profile_manager.get_profile(user_id)
         enabled_global = list(getattr(profile, "enabled_global_skills", []) or [])
@@ -199,12 +197,25 @@ def build_skill_meta_tool(
     enabled_thread = list(tc.enabled_skills) if tc and tc.enabled_skills else []
     disabled_thread = list(tc.disabled_skills) if tc and tc.disabled_skills else []
 
-    active = agent.skill_manager.list_for_thread(
+    return agent.skill_manager.list_for_thread(
         user_id=user_id,
         enabled_global_skills=enabled_global,
         thread_enabled_skills=enabled_thread,
         thread_disabled_skills=disabled_thread,
     )
+
+
+def build_skill_meta_tool(
+    agent: "NymeriaAgent", user_id: str, tc, thread_tools: List[BaseTool]
+):
+    """Return the Skill meta-tool for this thread, or None if no skills are active.
+
+    Returns None when the active set is empty so we don't pay tool-schema
+    overhead needlessly.
+    """
+    if agent.skill_manager is None:
+        return None
+    active = _active_skills_for_thread(agent, user_id, tc)
     if not active:
         return None
 
@@ -299,13 +310,34 @@ def _select_dream_tools_for_graph(
     return tools
 
 
+def _nested_deps_digest(agent: "NymeriaAgent", skill, user_id: str) -> str:
+    """One-level nested-dependency digest for an active skill.
+
+    Folds each ``required_skills`` entry's resolved frontmatter (name, scope,
+    required tools, TTL) so a defer=false activation's expanded bind set is
+    part of the graph-cache key; an unresolvable name folds as missing.
+    """
+    if not skill.required_skills:
+        return ""
+    from ..skills import resolve_nested_skills
+
+    nested, missing = resolve_nested_skills(skill, agent.skill_manager, user_id)
+    parts = [
+        f"{n.name}:{n.scope}:{sorted(n.required_tools)}:{n.tool_ttl}"
+        for n in nested
+    ]
+    parts.extend(f"missing:{name}" for name in missing)
+    return ";".join(parts)
+
+
 def skills_fingerprint(agent: "NymeriaAgent", user_id: str, thread_id: str) -> str:
     """Hash inputs that affect the Skill meta-tool's description.
 
     Included so the per-(user, thread) graph cache invalidates when:
     - the user toggles a skill in enabled_global_skills
     - the thread flips enabled_skills / disabled_skills
-    - an active skill's frontmatter (name, description, allowed_tools) changes on disk
+    - an active skill's frontmatter (name, description, allowed_tools,
+      required tools/skills or their one-level nested resolution) changes on disk
     """
     if agent.skill_manager is None:
         return "nosm"
@@ -325,7 +357,8 @@ def skills_fingerprint(agent: "NymeriaAgent", user_id: str, thread_id: str) -> s
     )
     parts = [
         f"{s.name}:{s.scope}:{hash(s.description)}:{sorted(s.allowed_tools)}:"
-        f"{sorted(s.required_tools)}:{s.tool_ttl}"
+        f"{sorted(s.required_tools)}:{s.tool_ttl}:"
+        f"{sorted(s.required_skills)}:{_nested_deps_digest(agent, s, user_id)}"
         for s in active
     ]
     return f"sk:{hash('|'.join(parts))}"
