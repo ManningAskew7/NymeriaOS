@@ -24,6 +24,39 @@ class ImageData(BaseModel):
     mime_type: str = Field(..., description="MIME type (image/jpeg, image/png, etc.)")
 
 
+class ChatPlatformOrigin(BaseModel):
+    """Provenance of the platform message a chat-bot turn originates from.
+
+    Sent by chat-platform bots (Discord/Telegram) on every dispatched turn so
+    the backend can (a) record the origin for the ``react`` tool (which posts
+    an emoji reaction back to this message) and (b) for ``kind == "reaction"``
+    turns, append the react-tool guidance block to the synthetic prompt when
+    the tool is not currently bound to the thread.
+    """
+
+    platform: str = Field(
+        ..., min_length=1, max_length=32,
+        description="Origin chat platform id, e.g. 'discord' or 'telegram'",
+    )
+    channel_id: str = Field(
+        ..., min_length=1, max_length=128,
+        description="Platform-native channel/chat id the message lives in",
+    )
+    message_id: str = Field(
+        ..., min_length=1, max_length=128,
+        description=(
+            "Platform-native id of the originating message: the user's "
+            "message for a normal turn, the reacted-to message for a "
+            "reaction-triggered turn"
+        ),
+    )
+    kind: str = Field(
+        default="message",
+        max_length=16,
+        description="'message' for a normal turn, 'reaction' for a reaction trigger",
+    )
+
+
 class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
 
@@ -100,6 +133,16 @@ class ChatRequest(BaseModel):
             "(e.g. trigger.name, todo task excerpt, caller_thread title)."
         ),
     )
+    platform_origin: ChatPlatformOrigin | None = Field(
+        default=None,
+        description=(
+            "Chat-platform provenance of this turn (set by the Discord/"
+            "Telegram bots). Recorded per thread so the react tool can post "
+            "an emoji reaction to the originating message; kind=='reaction' "
+            "also appends the react-tool guidance block to the prompt when "
+            "the tool is unbound."
+        ),
+    )
     publish_autonomous_events: bool = Field(
         default=True,
         description=(
@@ -121,3 +164,11 @@ class ChatResponse(BaseModel):
     response: str = Field(..., description="Agent response")
     thread_id: str = Field(..., description="Conversation thread ID")
     tool_call_count: int = Field(default=0, description="Number of tool calls made in this turn")
+    suppress_reply: bool = Field(
+        default=False,
+        description=(
+            "True when the turn's react tool call asked to suppress the "
+            "reply text (the user should see only the emoji reaction). Only "
+            "ever set for requests that carried a platform_origin."
+        ),
+    )

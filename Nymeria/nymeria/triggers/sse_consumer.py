@@ -371,6 +371,17 @@ async def dispatch_event(
             if inspect.isawaitable(result):
                 await result
 
+    elif etype == "reply_suppressed":
+        # The react tool asked to hide the turn's reply text (backlog #45).
+        # No flush here: suppression means DROP the pending buffer, which the
+        # handler does itself. Optional callback so non-bot consumers (CLI,
+        # GUIs) that render tool calls verbatim are untouched.
+        callback = getattr(handler, "on_reply_suppressed", None)
+        if callable(callback):
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
+
     elif etype == "compacting":
         await handler.flush_text(final=True)
         await handler.on_compacting(

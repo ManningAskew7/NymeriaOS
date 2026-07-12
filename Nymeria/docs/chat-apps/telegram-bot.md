@@ -403,6 +403,64 @@ Per-thread delivery is controlled from Thread Settings:
 | `notify_only` | Suppress normal autonomous output; send only explicit `notify` events and task errors. |
 | `off` | Suppress autonomous Telegram delivery for the thread. |
 
+## Emoji Reactions
+
+Two-way emoji reactions, opt-in via `TELEGRAM_REACTION_TRIGGER_ENABLED=true`
+(default off). Reaction updates already arrive on the bot's `Update.ALL_TYPES`
+subscription; the toggle only gates handling, so flipping it needs just a bot
+restart.
+
+### Inbound: reactions fire the agent
+
+In **private chats only**, when a user adds an emoji reaction to a message in
+the chat (`MessageReactionHandler`), the bot fires an agent turn in the chat's
+mapped thread with a synthetic prompt:
+
+```
+[Reaction] Alice reacted with 👍 to one of your recent messages in this chat.
+```
+
+The private-chat scope is a platform constraint turned into a guard: Telegram
+reaction updates carry the chat, message id, reactor, and old/new reaction
+lists, but NOT the reacted message's author, and bots cannot fetch messages by
+id. In a DM with the bot, a human's reaction is overwhelmingly about a bot
+message, so the own-message gate Discord enforces is approximated by scope.
+Custom (paid) emoji reactions are described as "a custom emoji".
+
+Guards, in order: toggle off → drop; non-private chat → drop; reactor missing,
+a bot, or the bot itself → drop (loop guard); no newly **added** emoji in the
+old-to-new reaction delta (i.e. a removal) → drop; reactor has no linked
+Nymeria account → silent drop. The turn runs with `is_self_invoke=true`,
+`trigger_override="reaction"`, `source="trigger"`, and a `source_label` like
+`reaction 👍`, and streams into the chat like a normal reply.
+
+### Outbound: the `react` tool
+
+The synthetic prompt tells the agent how to react back. `react` is a catalog
+tool (not bound by default); when it is unbound in the thread the prompt
+includes its compact args schema plus a `tool_invoke` recipe, so the agent can
+call it immediately without a graph rebuild:
+
+- `react(emoji="👍")` posts the reaction onto the message that started the
+  turn (the reacted-to message for reaction turns, the user's message for
+  normal ones). `message_id` overrides the target within the same chat.
+- `react(emoji="👍", suppress_reply=true)` additionally hides the turn's text
+  reply, for emoji-only acknowledgements.
+
+Delivery: the tool publishes a `reaction_request` event on the autonomous bus;
+the bot's firehose listener matches `platform == "telegram"`, validates the
+emoji against Telegram's standard reaction set
+(`telegram.constants.ReactionEmoji`; bots cannot use arbitrary emojis), and
+calls `set_message_reaction(...)`. A non-standard emoji or API failure is
+logged and never breaks the turn.
+
+Reply suppression is deterministic, not model-inferred: the tool result
+carries the marker `[nymeria:reply_suppressed]`, the stream emits a
+`reply_suppressed` event right after the `tool_result`, and the bot then drops
+buffered text, stops sending chunks, removes the Stop button, and skips the
+sync-fallback, voice-reply, and `task_completed` content fallbacks for that
+turn. Tool-call messages (when `/showtools` is on) still render.
+
 ## Key Files
 
 | What | Where |
@@ -412,5 +470,5 @@ Per-thread delivery is controlled from Thread Settings:
 | Attachment helpers (shared) | `nymeria/triggers/attachment_helpers.py` |
 | Entry point | `run.py` → `run_telegram_bot()` |
 | Docker config | `docker-compose.yml` (profile: `telegram`) |
-| Env vars | `.env.docker` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_DEFAULT_CHAT_ID`) |
+| Env vars | `.env.docker` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_DEFAULT_CHAT_ID`, `TELEGRAM_REACTION_TRIGGER_ENABLED`) |
 | Settings model | `nymeria/config/settings.py` |

@@ -925,6 +925,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `raindrop_list_collections` | `nymeria/tools/bookmark_link_service_integrations.py` | List Raindrop collections. |
 | `raindrop_list_tags` | `nymeria/tools/bookmark_link_service_integrations.py` | List Raindrop tags, optionally scoped to a collection. |
 | `raindrop_update_bookmark` | `nymeria/tools/bookmark_link_service_integrations.py` | Update a Raindrop bookmark from a JSON object. |
+| `react` | `nymeria/tools/react.py` | Post an emoji reaction to the chat-platform message behind this turn. |
 | `reddit_create_comment` | `nymeria/tools/community_publishing_service_integrations.py` | Create a Reddit comment or reply. |
 | `reddit_create_post` | `nymeria/tools/community_publishing_service_integrations.py` | Create a Reddit post. |
 | `reddit_delete_thing` | `nymeria/tools/community_publishing_service_integrations.py` | Delete a Reddit post or comment owned by the authenticated account. |

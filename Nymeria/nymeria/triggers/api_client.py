@@ -230,6 +230,7 @@ class NymeriaAPIClient:
         attachments: Optional[List[Dict[str, Any]]] = None,
         force_unsupported_attachments: bool = False,
         trigger_override: Optional[str] = None,
+        platform_origin: Optional[Dict[str, Any]] = None,
     ) -> dict:
         """Send a message and get a response (non-streaming).
 
@@ -242,7 +243,13 @@ class NymeriaAPIClient:
         Set this from chat-only frontends (Discord/Telegram) where the
         user can't dismiss the desktop's "model may not support" modal.
 
-        Returns dict with 'response' (str) and 'tool_call_count' (int).
+        ``platform_origin`` carries the originating platform message
+        (``{platform, channel_id, message_id, kind}``) so the backend can
+        target the ``react`` tool; same shape as :meth:`chat_stream`.
+
+        Returns dict with 'response' (str), 'tool_call_count' (int), and
+        'suppress_reply' (bool; when True the caller should not post the
+        response text, the user sees only the emoji reaction).
         """
         body: Dict[str, Any] = {
             "message": message,
@@ -255,6 +262,8 @@ class NymeriaAPIClient:
             body["force_unsupported_attachments"] = True
         if trigger_override:
             body["trigger_override"] = trigger_override
+        if platform_origin:
+            body["platform_origin"] = platform_origin
         return await self._post("/chat/sync", json=body, act_as=user_id)
 
     # ── Workflows ─────────────────────────────────────────────────────────
@@ -344,6 +353,7 @@ class NymeriaAPIClient:
         publish_autonomous_events: Optional[bool] = None,
         trigger_id: Optional[str] = None,
         trigger_name: Optional[str] = None,
+        platform_origin: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat events via SSE (POST /chat).
 
@@ -357,6 +367,13 @@ class NymeriaAPIClient:
 
         ``attachments`` carries multimodal file payloads; same shape as
         :meth:`chat`.
+
+        ``platform_origin`` carries the originating platform message
+        (``{platform, channel_id, message_id, kind}``), set by chat-platform
+        bots on every dispatched turn so the ``react`` tool can post an emoji
+        reaction back to it; ``kind == "reaction"`` marks a reaction-triggered
+        turn (the backend appends the react-tool guidance block while the
+        tool is unbound).
 
         ``publish_autonomous_events`` lets the Docker worker tell the API
         to suppress its own autonomous SSE mirroring (task_started,
@@ -393,6 +410,8 @@ class NymeriaAPIClient:
             body["trigger_id"] = trigger_id
         if trigger_name:
             body["trigger_name"] = trigger_name
+        if platform_origin:
+            body["platform_origin"] = platform_origin
         if publish_autonomous_events is not None:
             body["publish_autonomous_events"] = publish_autonomous_events
         stream_timeout = _SSE_TIMEOUT if is_self_invoke else _CHAT_TIMEOUT

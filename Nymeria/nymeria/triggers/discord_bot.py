@@ -159,6 +159,10 @@ class NymeriaDiscordBot(_BotBase):
         intents.guilds = True
         intents.dm_messages = True
         intents.guild_messages = True
+        # Reaction events (guild + DM) for the emoji-reaction trigger.
+        # Enabled unconditionally (intents cannot be flipped after login);
+        # the DISCORD_REACTION_TRIGGER_ENABLED toggle gates the handler.
+        intents.reactions = True
 
         super().__init__(command_prefix="!", intents=intents)
 
@@ -368,6 +372,7 @@ class NymeriaDiscordBot(_BotBase):
             self._last_edit = 0.0
             self._first_sent = False
             self._tool_msgs: Dict[str, discord.Message] = {}
+            self._reply_suppressed = False
 
         async def _send(self, content: str) -> discord.Message:
             if not self._first_sent:
@@ -376,6 +381,11 @@ class NymeriaDiscordBot(_BotBase):
             return await self._channel.send(content)
 
         async def flush_text(self, final: bool = False) -> None:
+            if self._reply_suppressed:
+                self._text_buffer = ""
+                if final:
+                    self._current_msg = None
+                return
             if not self._text_buffer:
                 if final:
                     self._current_msg = None
@@ -426,11 +436,20 @@ class NymeriaDiscordBot(_BotBase):
                 logger.debug("Failed to send typing indicator")
 
         async def on_response_chunk(self, content: str) -> None:
+            if self._reply_suppressed:
+                return
             self._text_buffer += content
             if len(self._text_buffer) > 1800:
                 await self.flush_text(final=True)
             elif time.monotonic() - self._last_edit >= self.EDIT_INTERVAL:
                 await self.flush_text()
+
+        async def on_reply_suppressed(self) -> None:
+            # The react tool asked to hide the reply: drop the pending buffer
+            # and ignore any later response text. Text already flushed to the
+            # channel stays (suppression is forward-looking).
+            self._reply_suppressed = True
+            self._text_buffer = ""
 
         async def on_compacting(self, message: str) -> None:
             await self._send(message)
@@ -529,6 +548,9 @@ class NymeriaDiscordBot(_BotBase):
                 logger.warning("Failed to send iteration-limit warning to Discord", exc_info=True)
 
         async def on_done(self, tool_call_count: int) -> None:
+            if self._reply_suppressed:
+                await self.flush_text(final=True)
+                return
             if tool_call_count and self._text_buffer:
                 self._text_buffer += f"\n\n-# Tool calls: {tool_call_count}"
             elif tool_call_count and self._current_msg:
@@ -542,6 +564,8 @@ class NymeriaDiscordBot(_BotBase):
             await self.flush_text(final=True)
 
         async def on_stream_end(self, tool_call_count: int) -> None:
+            if self._reply_suppressed:
+                return
             if self._text_buffer:
                 if tool_call_count:
                     self._text_buffer += f"\n\n-# Tool calls: {tool_call_count}"
@@ -559,8 +583,21 @@ class NymeriaDiscordBot(_BotBase):
         thread_id: str,
         user_id: str,
         attachments: Optional[List[Dict[str, Any]]] = None,
+        platform_origin: Optional[Dict[str, Any]] = None,
+        is_self_invoke: bool = False,
+        trigger_override: Optional[str] = None,
+        source: Optional[str] = None,
+        source_label: Optional[str] = None,
+        publish_autonomous_events: Optional[bool] = None,
     ) -> None:
-        """Stream SSE chat events to a Discord channel as multiple messages."""
+        """Stream SSE chat events to a Discord channel as multiple messages.
+
+        ``platform_origin`` stamps the turn's originating Discord message for
+        the ``react`` tool; the self-invoke kwargs are set by the reaction
+        trigger (`on_raw_reaction_add`), which dispatches its synthetic prompt
+        through this same path with ``publish_autonomous_events=False`` so the
+        interactive stream rendered here is the turn's only delivery.
+        """
         handler = self._InteractiveChatHandler(self, channel, first_send)
         try:
             await consume_sse_stream(
@@ -568,8 +605,14 @@ class NymeriaDiscordBot(_BotBase):
                     message,
                     thread_id,
                     user_id,
+                    is_self_invoke=is_self_invoke,
+                    trigger_override=trigger_override,
                     attachments=attachments,
                     force_unsupported_attachments=bool(attachments),
+                    source=source,
+                    source_label=source_label,
+                    publish_autonomous_events=publish_autonomous_events,
+                    platform_origin=platform_origin,
                 ),
                 handler,
             )
@@ -582,7 +625,13 @@ class NymeriaDiscordBot(_BotBase):
                     user_id,
                     attachments=attachments,
                     force_unsupported_attachments=bool(attachments),
+                    trigger_override=trigger_override,
+                    platform_origin=platform_origin,
                 )
+                if data.get("suppress_reply"):
+                    # The turn's react call hid the reply; the reaction was
+                    # delivered via the reaction_request event.
+                    return
                 response = data.get("response", "")
                 tc = data.get("tool_call_count", 0)
                 if tc:
@@ -776,6 +825,132 @@ class NymeriaDiscordBot(_BotBase):
             thread_id=thread_id,
             user_id=user_id,
             attachments=attachments or None,
+            platform_origin={
+                "platform": "discord",
+                "channel_id": str(message.channel.id),
+                "message_id": str(message.id),
+                "kind": "message",
+            },
+        )
+
+    # =========================================================================
+    # Emoji-reaction trigger (inbound half of backlog #45)
+    # =========================================================================
+
+    @staticmethod
+    def _reaction_emoji_text(emoji: Any) -> str:
+        """Render a reaction emoji for the synthetic prompt and the wire.
+
+        Unicode emojis pass through; custom guild emojis render as ``:name:``
+        (their id is meaningless to the model).
+        """
+        try:
+            if getattr(emoji, "id", None):
+                name = getattr(emoji, "name", None) or "custom"
+                return f":{name}:"
+            return str(emoji)
+        except Exception:  # noqa: BLE001 - never fail the handler on rendering
+            return "an emoji"
+
+    @staticmethod
+    def _reaction_excerpt(text: str, limit: int = 200) -> str:
+        """Whitespace-collapsed excerpt of the reacted-to message."""
+        collapsed = " ".join(str(text or "").split())
+        if len(collapsed) > limit:
+            collapsed = collapsed[: limit - 3].rstrip() + "..."
+        return collapsed
+
+    async def on_raw_reaction_add(self, payload: Any) -> None:
+        """Fire an agent turn when a user reacts to one of the bot's messages.
+
+        Mirrors the Hermes Feishu pattern: drop bot-origin reactions (the loop
+        guard), gate to reactions on the BOT'S OWN messages, then route a
+        synthetic prompt through the same guarded chat path a real message
+        uses. Any emoji fires; gated by DISCORD_REACTION_TRIGGER_ENABLED
+        (default off).
+        """
+        from ..config import get_settings
+
+        try:
+            if not get_settings().discord_reaction_trigger_enabled:
+                return
+        except Exception:  # noqa: BLE001 - settings failure means stay off
+            return
+
+        # Loop guard: ignore our own reactions and other guild bots. (DM
+        # payloads carry no member; foreign bots there are unlinked and drop
+        # at the resolve step below.)
+        if self.user is None or payload.user_id == self.user.id:
+            return
+        member = getattr(payload, "member", None)
+        if member is not None and getattr(member, "bot", False):
+            return
+
+        try:
+            channel = self.get_channel(payload.channel_id)
+            if channel is None:
+                channel = await self.fetch_channel(payload.channel_id)
+            if channel is None or not hasattr(channel, "fetch_message"):
+                return
+            reacted_message = await channel.fetch_message(payload.message_id)
+        except Exception as e:  # noqa: BLE001 - deleted message, missing perms
+            logger.debug("Reaction trigger: could not fetch message: %s", e)
+            return
+
+        # Scope: only reactions on the bot's own messages fire (Hermes gate).
+        if reacted_message.author.id != self.user.id:
+            return
+
+        user_id = await self.resolve_user_id(payload.user_id)
+        if user_id is None:
+            # A reaction is a one-tap gesture; replying with link-your-account
+            # onboarding would let anyone spam the channel by tapping emojis.
+            logger.debug(
+                "Reaction trigger: unlinked Discord user %s ignored", payload.user_id
+            )
+            return
+
+        emoji_text = self._reaction_emoji_text(payload.emoji)
+        reactor = member.display_name if member is not None else None
+        if not reactor:
+            user_obj = self.get_user(payload.user_id)
+            reactor = getattr(user_obj, "display_name", None) or "The user"
+        excerpt = self._reaction_excerpt(reacted_message.content)
+        if excerpt:
+            prompt = (
+                f"[Reaction] {reactor} reacted with {emoji_text} to your "
+                f'message: "{excerpt}"'
+            )
+        else:
+            prompt = (
+                f"[Reaction] {reactor} reacted with {emoji_text} to one of "
+                "your messages."
+            )
+
+        thread_id = make_thread_id(payload.guild_id, payload.channel_id)
+        logger.info(
+            "Reaction trigger: %s on message %s -> thread %s",
+            emoji_text,
+            payload.message_id,
+            thread_id,
+        )
+        await self._stream_to_channel(
+            channel=channel,
+            first_send=lambda content: channel.send(content),
+            message=prompt,
+            thread_id=thread_id,
+            user_id=user_id,
+            is_self_invoke=True,
+            trigger_override="reaction",
+            source="trigger",
+            source_label=f"reaction {emoji_text}",
+            publish_autonomous_events=False,
+            platform_origin={
+                "platform": "discord",
+                "channel_id": str(payload.channel_id),
+                "message_id": str(payload.message_id),
+                "kind": "reaction",
+            },
         )
 
     async def _collect_attachments(
@@ -865,6 +1040,7 @@ class NymeriaDiscordBot(_BotBase):
             self._tool_count = 0
             self._response_seen = False
             self._sent_artifacts: set = set()
+            self._reply_suppressed = False
 
         async def _send_text(self, content: str) -> Optional[discord.Message]:
             last_msg = None
@@ -873,6 +1049,11 @@ class NymeriaDiscordBot(_BotBase):
             return last_msg
 
         async def flush_text(self, final: bool = False) -> None:
+            if self._reply_suppressed:
+                self._text_buffer = ""
+                if final:
+                    self._current_msg = None
+                return
             if not self._text_buffer:
                 if final:
                     self._current_msg = None
@@ -928,11 +1109,17 @@ class NymeriaDiscordBot(_BotBase):
 
         async def on_response_chunk(self, content: str) -> None:
             self._response_seen = True
+            if self._reply_suppressed:
+                return
             self._text_buffer += content
             if len(self._text_buffer) > 1800:
                 await self.flush_text(final=True)
             elif time.monotonic() - self._last_edit >= self.EDIT_INTERVAL:
                 await self.flush_text()
+
+        async def on_reply_suppressed(self) -> None:
+            self._reply_suppressed = True
+            self._text_buffer = ""
 
         async def on_compacting(self, message: str) -> None:
             await self._send_text(message)
@@ -1198,6 +1385,41 @@ class NymeriaDiscordBot(_BotBase):
         except Exception as e:  # noqa: BLE001
             logger.debug("Failed to edit hook approval message: %s", e)
 
+    async def _on_reaction_request_event(self, event: Dict[str, Any]) -> None:
+        """Execute an outbound ``react`` tool send: add the emoji reaction.
+
+        The API process has no Discord connection, so the react tool
+        publishes a ``reaction_request`` event and this bot performs the
+        platform call. Best-effort: failures (deleted message, unknown
+        emoji, missing permission) log and drop, matching notifications.
+        """
+        emoji = str(event.get("emoji") or "").strip()
+        try:
+            channel_id = int(event.get("channel_id") or 0)
+            message_id = int(event.get("message_id") or 0)
+        except (TypeError, ValueError):
+            return
+        if not emoji or not channel_id or not message_id:
+            return
+        try:
+            channel = self.get_channel(channel_id)
+            if channel is None:
+                channel = await self.fetch_channel(channel_id)
+            if channel is None or not hasattr(channel, "fetch_message"):
+                return
+            message = await channel.fetch_message(message_id)
+            await message.add_reaction(emoji)
+            logger.info(
+                "Posted reaction %s to Discord message %s", emoji, message_id
+            )
+        except Exception as e:  # noqa: BLE001 - reaction delivery is best-effort
+            logger.warning(
+                "Failed to post Discord reaction %s to message %s: %s",
+                emoji,
+                message_id,
+                e,
+            )
+
     async def _handle_sse_event(self, event: Dict[str, Any]) -> None:
         """Process a single event from the API SSE autonomous stream.
 
@@ -1208,6 +1430,13 @@ class NymeriaDiscordBot(_BotBase):
         """
         event_type = event.get("type", "")
         thread_id = event.get("thread_id", "")
+
+        # Outbound reaction sends are platform-keyed (the event carries its
+        # own channel/message ids), so route them before the thread gate.
+        if event_type == "reaction_request":
+            if event.get("platform") == "discord":
+                await self._on_reaction_request_event(event)
+            return
 
         if not thread_id.startswith("discord_"):
             return
@@ -1274,6 +1503,10 @@ class NymeriaDiscordBot(_BotBase):
                             or "Unknown error"
                         )
                         await handler._send_text(f"Autonomous task error: {err}")
+                    elif handler._reply_suppressed:
+                        # The turn's react call hid the reply; drop the
+                        # aggregate content and footer.
+                        await handler.flush_text(final=True)
                     else:
                         if not handler._response_seen and not handler._text_buffer:
                             fallback = event.get("content") or ""

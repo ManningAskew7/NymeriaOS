@@ -62,7 +62,7 @@ try:  # pragma: no cover - python-telegram-bot ships in nymeriaos[telegram].
         Message,
         Update,
     )
-    from telegram.constants import ChatAction, ParseMode
+    from telegram.constants import ChatAction, ParseMode, ReactionEmoji
     from telegram.error import BadRequest, RetryAfter, TimedOut
     from telegram.ext import (
         AIORateLimiter,
@@ -71,6 +71,7 @@ try:  # pragma: no cover - python-telegram-bot ships in nymeriaos[telegram].
         CommandHandler,
         ContextTypes,
         MessageHandler,
+        MessageReactionHandler,
         filters,
     )
 except ImportError:  # pragma: no cover - lean installs omit python-telegram-bot.
@@ -79,10 +80,11 @@ except ImportError:  # pragma: no cover - lean installs omit python-telegram-bot
     _MISSING: Any = None
     BotCommand = InlineKeyboardButton = InlineKeyboardMarkup = _MISSING
     Message = Update = _MISSING
-    ChatAction = ParseMode = _MISSING
+    ChatAction = ParseMode = ReactionEmoji = _MISSING
     BadRequest = RetryAfter = TimedOut = _MISSING
     AIORateLimiter = ApplicationBuilder = CallbackQueryHandler = _MISSING
     CommandHandler = ContextTypes = MessageHandler = filters = _MISSING
+    MessageReactionHandler = _MISSING
 
 #: True when python-telegram-bot is importable. run.py checks this for a friendly error.
 SDK_AVAILABLE = Update is not None
@@ -983,6 +985,14 @@ class NymeriaTelegramBot:
             self._on_message,
         ))
 
+        # Emoji reactions (message_reaction updates already arrive because
+        # polling requests Update.ALL_TYPES). Registered unconditionally; the
+        # TELEGRAM_REACTION_TRIGGER_ENABLED toggle gates inside the handler.
+        app.add_handler(MessageReactionHandler(
+            self._on_message_reaction,
+            message_reaction_types=MessageReactionHandler.MESSAGE_REACTION_UPDATED,
+        ))
+
         # Error handler
         app.add_error_handler(self._error_handler)
 
@@ -1220,6 +1230,9 @@ class NymeriaTelegramBot:
             # An error event mid-stream means _full_response is a truncated
             # non-answer; the voice reply is skipped in that case.
             self._saw_error = False
+            # Set by the reply_suppressed event (the react tool asked to hide
+            # this turn's reply text); drops the buffer and the voice reply.
+            self._reply_suppressed = False
 
             self._typing_task: Optional[asyncio.Task] = asyncio.create_task(
                 self._keep_typing()
@@ -1242,6 +1255,12 @@ class NymeriaTelegramBot:
                 await asyncio.sleep(4)
 
         async def flush_text(self, final: bool = False) -> None:
+            if self._reply_suppressed:
+                self._text_buffer = ""
+                if final:
+                    await self._remove_stop_button()
+                    self._current_msg = None
+                return
             if not self._text_buffer:
                 if final:
                     self._current_msg = None
@@ -1315,15 +1334,18 @@ class NymeriaTelegramBot:
                         )
 
             if final:
-                button_msg = self._stop_button_msg or self._current_msg
-                if button_msg:
-                    try:
-                        await button_msg.edit_reply_markup(reply_markup=None)
-                    except Exception:
-                        logger.debug("Failed to remove stop button from message")
-                self._stop_button_msg = None
+                await self._remove_stop_button()
                 self._text_buffer = ""
                 self._current_msg = None
+
+        async def _remove_stop_button(self) -> None:
+            button_msg = self._stop_button_msg or self._current_msg
+            if button_msg:
+                try:
+                    await button_msg.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    logger.debug("Failed to remove stop button from message")
+            self._stop_button_msg = None
 
         # -- SSEEventHandler callbacks ----------------------------------------
 
@@ -1331,12 +1353,20 @@ class NymeriaTelegramBot:
             pass  # typing indicator already running via _keep_typing
 
         async def on_response_chunk(self, content: str) -> None:
+            if self._reply_suppressed:
+                return
             self._text_buffer += content
             self._full_response += content
             if len(self._text_buffer) > TELEGRAM_SAFE_CHUNK_LENGTH:
                 await self.flush_text(final=True)
             elif time.monotonic() - self._last_edit >= self.EDIT_INTERVAL:
                 await self.flush_text()
+
+        async def on_reply_suppressed(self) -> None:
+            # The react tool asked to hide the reply: drop the pending buffer
+            # and ignore any later response text (already-sent bubbles stay).
+            self._reply_suppressed = True
+            self._text_buffer = ""
 
         async def on_compacting(self, message: str) -> None:
             try:
@@ -1444,6 +1474,9 @@ class NymeriaTelegramBot:
                 logger.warning("Failed to send iteration-limit warning to Telegram", exc_info=True)
 
         async def on_done(self, tool_call_count: int) -> None:
+            if self._reply_suppressed:
+                await self.flush_text(final=True)
+                return
             if tool_call_count and self._text_buffer:
                 self._text_buffer += f"\n\n_Tool calls: {tool_call_count}_"
             elif tool_call_count and self._current_msg:
@@ -1457,6 +1490,8 @@ class NymeriaTelegramBot:
             await self.flush_text(final=True)
 
         async def on_stream_end(self, tool_call_count: int) -> None:
+            if self._reply_suppressed:
+                return
             if self._text_buffer:
                 if tool_call_count:
                     self._text_buffer += f"\n\n_Tool calls: {tool_call_count}_"
@@ -1472,6 +1507,12 @@ class NymeriaTelegramBot:
         attachments: Optional[List[Dict[str, Any]]] = None,
         telegram_user_id: Optional[int] = None,
         voice_reply: bool = False,
+        platform_origin: Optional[Dict[str, Any]] = None,
+        is_self_invoke: bool = False,
+        trigger_override: Optional[str] = None,
+        source: Optional[str] = None,
+        source_label: Optional[str] = None,
+        publish_autonomous_events: Optional[bool] = None,
     ) -> None:
         """Stream SSE chat events to a Telegram chat with progressive editing.
 
@@ -1479,6 +1520,13 @@ class NymeriaTelegramBot:
         giving natural visual separation via Telegram's chat bubbles.
         ``voice_reply=True`` (set when the user sent a voice message) also
         sends the final response as a voice note, best-effort.
+
+        ``platform_origin`` stamps the turn's originating Telegram message
+        for the ``react`` tool; the self-invoke kwargs are set by the
+        reaction trigger (``_on_message_reaction``), which dispatches its
+        synthetic prompt through this same path with
+        ``publish_autonomous_events=False`` so the interactive stream
+        rendered here is the turn's only delivery.
         """
         handler = self._ChatSSEHandler(
             self,
@@ -1488,12 +1536,11 @@ class NymeriaTelegramBot:
             telegram_user_id,
             context,
         )
-        trigger_override = (
-            "The user sent this as a voice message; your reply will also be "
-            "spoken aloud as a voice note, so keep it conversational."
-            if voice_reply
-            else None
-        )
+        if trigger_override is None and voice_reply:
+            trigger_override = (
+                "The user sent this as a voice message; your reply will also "
+                "be spoken aloud as a voice note, so keep it conversational."
+            )
         streamed_ok = False
         try:
             await consume_sse_stream(
@@ -1501,9 +1548,14 @@ class NymeriaTelegramBot:
                     message,
                     thread_id,
                     user_id,
+                    is_self_invoke=is_self_invoke,
                     trigger_override=trigger_override,
                     attachments=attachments,
                     force_unsupported_attachments=bool(attachments),
+                    source=source,
+                    source_label=source_label,
+                    publish_autonomous_events=publish_autonomous_events,
+                    platform_origin=platform_origin,
                 ),
                 handler,
             )
@@ -1518,7 +1570,12 @@ class NymeriaTelegramBot:
                     trigger_override=trigger_override,
                     attachments=attachments,
                     force_unsupported_attachments=bool(attachments),
+                    platform_origin=platform_origin,
                 )
+                if data.get("suppress_reply"):
+                    # The turn's react call hid the reply; the reaction was
+                    # delivered via the reaction_request event.
+                    return
                 response = data.get("response", "")
                 tc = data.get("tool_call_count", 0)
                 if tc:
@@ -1542,8 +1599,14 @@ class NymeriaTelegramBot:
         # Outside the try block: a voice-send hiccup must never trip the
         # sync fallback into re-running the whole turn. Skipped after a
         # mid-stream error event: _full_response would be a truncated
-        # non-answer delivered right after an error notice.
-        if voice_reply and streamed_ok and not handler._saw_error:
+        # non-answer delivered right after an error notice. Also skipped
+        # when the react tool suppressed the reply (voice would leak it).
+        if (
+            voice_reply
+            and streamed_ok
+            and not handler._saw_error
+            and not handler._reply_suppressed
+        ):
             await self._send_voice_reply(
                 chat_id, handler._full_response, user_id, context
             )
@@ -2603,6 +2666,7 @@ class NymeriaTelegramBot:
             # that the user sent only attachment(s).
             text = "[attachment]" if len(attachments) == 1 else "[attachments]"
 
+        message_id = getattr(update.message, "message_id", None)
         await self._stream_to_chat(
             chat_id=chat_id,
             message=text,
@@ -2612,6 +2676,116 @@ class NymeriaTelegramBot:
             attachments=attachments or None,
             telegram_user_id=telegram_user_id,
             voice_reply=voice_reply,
+            platform_origin={
+                "platform": "telegram",
+                "channel_id": str(chat_id),
+                "message_id": str(message_id),
+                "kind": "message",
+            } if message_id is not None else None,
+        )
+
+    # =========================================================================
+    # Emoji-reaction trigger (inbound half of backlog #45)
+    # =========================================================================
+
+    @staticmethod
+    def _added_reaction_emojis(mr: Any) -> List[str]:
+        """Emojis newly added by a ``message_reaction`` update.
+
+        Computed as ``new_reaction - old_reaction`` so a removal (empty delta)
+        never fires. Custom/paid reaction types render as ``a custom emoji``
+        (their ids are meaningless to the model).
+        """
+
+        def _texts(reactions: Any) -> List[str]:
+            texts = []
+            for r in reactions or []:
+                emoji = getattr(r, "emoji", None)
+                texts.append(str(emoji) if emoji else "a custom emoji")
+            return texts
+
+        old = _texts(getattr(mr, "old_reaction", None))
+        added = [e for e in _texts(getattr(mr, "new_reaction", None)) if e not in old]
+        return added
+
+    async def _on_message_reaction(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Fire an agent turn when a user adds an emoji reaction in a DM.
+
+        Telegram's ``message_reaction`` update carries only chat + message id
+        + emoji (no message text, no author, and bots cannot fetch messages),
+        so the Hermes own-message gate is unimplementable here; instead the
+        trigger is scoped to PRIVATE chats, where a reaction is always a
+        direct signal to the bot. Reaction removals never fire. Gated by
+        TELEGRAM_REACTION_TRIGGER_ENABLED (default off).
+        """
+        from ..config import get_settings
+
+        try:
+            if not get_settings().telegram_reaction_trigger_enabled:
+                return
+        except Exception:  # noqa: BLE001 - settings failure means stay off
+            return
+
+        mr = update.message_reaction
+        if mr is None or mr.chat is None:
+            return
+        if getattr(mr.chat, "type", "") != "private":
+            return
+
+        # Loop guard (defensive: Telegram does not deliver bot-set reactions,
+        # per Bot API docs, but keep the pattern explicit and cheap).
+        user = mr.user
+        if user is None or getattr(user, "is_bot", False):
+            return
+        if user.id == context.bot.id:
+            return
+
+        added = self._added_reaction_emojis(mr)
+        if not added:
+            return  # removal or no-op change
+        emoji_text = added[0]
+
+        nymeria_user_id = await self.resolve_user_id(user.id)
+        if nymeria_user_id is None:
+            # A reaction is a one-tap gesture; no onboarding reply spam.
+            logger.debug(
+                "Reaction trigger: unlinked Telegram user %s ignored", user.id
+            )
+            return
+
+        chat_id = mr.chat.id
+        thread_id = self.resolve_thread_id_for_chat(chat_id)
+        reactor = getattr(user, "first_name", None) or "The user"
+        prompt = (
+            f"[Reaction] {reactor} reacted with {emoji_text} to one of your "
+            "recent messages in this chat."
+        )
+        logger.info(
+            "Reaction trigger: %s on message %s -> thread %s",
+            emoji_text,
+            mr.message_id,
+            thread_id,
+        )
+        await self._stream_to_chat(
+            chat_id=chat_id,
+            message=prompt,
+            thread_id=thread_id,
+            user_id=nymeria_user_id,
+            context=context,
+            telegram_user_id=user.id,
+            platform_origin={
+                "platform": "telegram",
+                "channel_id": str(chat_id),
+                "message_id": str(mr.message_id),
+                "kind": "reaction",
+            },
+            is_self_invoke=True,
+            trigger_override="reaction",
+            source="trigger",
+            source_label=f"reaction {emoji_text}",
+            publish_autonomous_events=False,
         )
 
     async def _collect_attachments(
@@ -2834,6 +3008,7 @@ class NymeriaTelegramBot:
             self._text_buffer = ""
             self._tool_count = 0
             self._response_seen = False
+            self._reply_suppressed = False
 
         async def flush_text(self, final: bool = False) -> None:
             """Send the buffered response text as its own bubble, then reset.
@@ -2843,6 +3018,9 @@ class NymeriaTelegramBot:
             as a safety net. ``final`` is accepted for the ``SSEEventHandler``
             protocol; the autonomous handler always fully flushes and resets.
             """
+            if self._reply_suppressed:
+                self._text_buffer = ""
+                return
             buf = self._text_buffer
             if not buf.strip():
                 self._text_buffer = ""
@@ -2862,11 +3040,17 @@ class NymeriaTelegramBot:
 
         async def on_response_chunk(self, content: str) -> None:
             self._response_seen = True
+            if self._reply_suppressed:
+                return
             self._text_buffer += content
             # Flush early if a single segment grows large enough that we'd
             # otherwise risk hitting the 4096-char Telegram limit mid-stream.
             if len(self._text_buffer) > 3800:
                 await self.flush_text()
+
+        async def on_reply_suppressed(self) -> None:
+            self._reply_suppressed = True
+            self._text_buffer = ""
 
         async def on_compacting(self, message: str) -> None:
             try:
@@ -3135,6 +3319,54 @@ class NymeriaTelegramBot:
             return
         await query.answer("Approved." if approved else "Denied.")
 
+    async def _on_reaction_request_event(
+        self, chat_id: int, event: Dict[str, Any]
+    ) -> None:
+        """Execute an outbound ``react`` tool send: set the message reaction.
+
+        Telegram only accepts its standard reaction set from bots, so the
+        emoji is validated against ``telegram.constants.ReactionEmoji`` and
+        unsupported picks are dropped with a log line. Best-effort like
+        notifications: failures log and drop.
+        """
+        emoji = str(event.get("emoji") or "").strip()
+        try:
+            target_chat_id = int(event.get("channel_id") or chat_id)
+            message_id = int(event.get("message_id") or 0)
+        except (TypeError, ValueError):
+            return
+        if not emoji or not message_id:
+            return
+        if ReactionEmoji is not None:
+            allowed = {e.value for e in ReactionEmoji}
+            if emoji not in allowed:
+                logger.warning(
+                    "Dropping Telegram reaction %r on message %s: not in the "
+                    "standard reaction set",
+                    emoji,
+                    message_id,
+                )
+                return
+        application = self._application
+        if application is None:
+            return
+        try:
+            await application.bot.set_message_reaction(
+                chat_id=target_chat_id,
+                message_id=message_id,
+                reaction=emoji,
+            )
+            logger.info(
+                "Posted reaction %s to Telegram message %s", emoji, message_id
+            )
+        except Exception as e:  # noqa: BLE001 - reaction delivery is best-effort
+            logger.warning(
+                "Failed to post Telegram reaction %s to message %s: %s",
+                emoji,
+                message_id,
+                e,
+            )
+
     async def _handle_sse_event(self, event: Dict[str, Any]) -> None:
         """Stream an autonomous-task event to the matching Telegram chat.
 
@@ -3176,6 +3408,14 @@ class NymeriaTelegramBot:
             return
         if event_type == "hook_approval_resolved":
             await self._on_hook_approval_resolved_event(event)
+            return
+
+        # Outbound reaction sends (the react tool) are explicit agent
+        # requests like approval prompts, not autonomous transcript delivery,
+        # so they also bypass the delivery-mode gates.
+        if event_type == "reaction_request":
+            if event.get("platform") == "telegram":
+                await self._on_reaction_request_event(chat_id, event)
             return
 
         delivery_mode = await self._get_telegram_autonomous_delivery(thread_id)
@@ -3241,6 +3481,10 @@ class NymeriaTelegramBot:
                         )
                     except Exception as e:
                         logger.warning(f"Failed to send autonomous error: {e}")
+                elif handler._reply_suppressed:
+                    # The turn's react call hid the reply; drop the aggregate
+                    # content and footer.
+                    pass
                 else:
                     # If we received no per-event responses (older API or
                     # non-streaming task), fall back to the aggregated content.

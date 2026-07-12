@@ -169,6 +169,7 @@ from .twitch import TWITCH_TOOLS
 from .slash_command import slash_command, SLASH_COMMAND_TOOLS
 from .tool_order import run_tools_in_order
 from .tool_invoke import tool_invoke, TOOL_INVOKE_TOOLS
+from .react import react, REACT_TOOLS
 from .tool_search import tool_manage, tool_search, TOOL_SEARCH_TOOLS
 from .http_api import http_request, api_discover, HTTP_API_TOOLS
 from .tool_create import tool_create, TOOL_CREATE_TOOLS
@@ -1387,6 +1388,7 @@ CATALOG_TOOLS = {t.name: t for t in (
     [claude_code, hello_test, regression_echo, memory_clear_all, personality_set, rag_settings]
     + BASH_JOB_TOOLS
     + CONSULT_TOOLS
+    + REACT_TOOLS
     + WEB_SEARCH_SERVICE_TOOLS
     + WEB_SEARCH_INTEGRATION_TOOLS
     + WEB_FETCH_TOOLS
@@ -2828,6 +2830,8 @@ __all__ = [
     "SLASH_COMMAND_TOOLS",
     "tool_invoke",
     "TOOL_INVOKE_TOOLS",
+    "react",
+    "REACT_TOOLS",
     "tool_search",
     "tool_manage",
     "TOOL_SEARCH_TOOLS",

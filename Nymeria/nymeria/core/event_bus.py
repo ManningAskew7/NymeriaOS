@@ -334,6 +334,9 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     # their pause card to its resumed state.
     "turn_resumed",
     "tool_reload",
+    # The react tool asked for reply suppression; mirrored so bot autonomous
+    # handlers drop the reply text exactly like interactive consumers do.
+    "reply_suppressed",
     "provider_retry",
     "provider_fallback",
     "auth_prompt",

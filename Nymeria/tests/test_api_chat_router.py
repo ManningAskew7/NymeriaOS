@@ -191,6 +191,7 @@ def test_chat_sync_uses_authenticated_user_not_body_user_id(
         "response": "sync response",
         "thread_id": "thread-sync",
         "tool_call_count": 2,
+        "suppress_reply": False,
     }
     assert agent.chat_calls == [
         {

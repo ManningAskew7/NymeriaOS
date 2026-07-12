@@ -879,6 +879,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `TELEGRAM_BOT_TOKEN` | - | Telegram bot token from @BotFather |
 | `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | Telegram Bot API base URL for native Telegram tools |
 | `TELEGRAM_DEFAULT_CHAT_ID` | - | Default Telegram chat ID for notifications |
+| `TELEGRAM_REACTION_TRIGGER_ENABLED` | `false` | Fire an agent turn when a user adds an emoji reaction in a private Telegram chat with the bot |
 | `WHATSAPP_ACCESS_TOKEN` | - | WhatsApp Business Cloud access token fallback |
 | `WHATSAPP_BUSINESS_ACCOUNT_ID` | - | WhatsApp business account ID fallback |
 | `WHATSAPP_PHONE_NUMBER_ID` | - | WhatsApp sender phone number ID fallback |
@@ -890,6 +891,7 @@ unset it runs Claude Code locally in-process. Full runbook:
 | `DISCORD_BOT_TOKEN` | - | Discord bot token for two-way communication |
 | `DISCORD_MODE` | `gateway` | Discord connection mode: `gateway` or `webhook` |
 | `DISCORD_RESPOND_MODE` | `mention` | Guild behavior: `mention` (only @Nymeria) or `all` |
+| `DISCORD_REACTION_TRIGGER_ENABLED` | `false` | Fire an agent turn when a user adds an emoji reaction to a Discord message the bot authored |
 | `SLACK_WEBHOOK_URL` | - | Slack webhook URL for notifications |
 | `SLACK_BOT_TOKEN` | - | Slack bot token for two-way communication |
 | `SLACK_APP_TOKEN` | - | Slack app-level token for Socket Mode (`xapp-...`, requires `connections:write`) |

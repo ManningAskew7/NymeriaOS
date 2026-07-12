@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..vendor.react_agent.nodes import TURN_SAFETY_REASON_MAX_ITERATIONS
+from .bot_reactions import REPLY_SUPPRESSED_MARKER
 
 if TYPE_CHECKING:
     from .agent import NymeriaAgent  # noqa: F401
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 SUBAGENT_ERROR_MARKER_PREFIX = "[NymeriaSubAgentError]"
 _ATTACH_TAG_PATTERN = re.compile(r"\[attach:(.+?)\]")
+
+# Only the react tool itself (and tool_invoke, its deferred wrapper, which
+# returns the target's result text verbatim) may signal reply suppression.
+# Keying on the tool name means arbitrary tool output (a fetched web page, an
+# MCP tool) cannot suppress bot replies by echoing the marker.
+_REPLY_SUPPRESSING_TOOL_NAMES = frozenset({"react", "tool_invoke"})
 
 
 def extract_http_status_code(error: Exception) -> Optional[int]:
@@ -309,6 +316,20 @@ def tool_result_extra_events(
             "tool_call_id": tool_call_id,
             "tool_name": tool_name,
             **artifact,
+        })
+
+    # The react tool's deterministic suppression marker becomes a stream
+    # event immediately after its tool_result, before any later response
+    # text, so bot clients can drop the reply as it streams (backlog #45;
+    # see core/bot_reactions.py).
+    if (
+        tool_name in _REPLY_SUPPRESSING_TOOL_NAMES
+        and isinstance(raw_result, str)
+        and REPLY_SUPPRESSED_MARKER in raw_result
+    ):
+        events.append({
+            "type": "reply_suppressed",
+            "tool_call_id": tool_call_id,
         })
 
     return events

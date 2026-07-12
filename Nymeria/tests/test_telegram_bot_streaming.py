@@ -637,9 +637,14 @@ def test_telegram_plain_message_preserves_thread_mention_for_backend_dispatch():
             "message": '@"Research Notes" summarize this',
             "thread_id": "telegram_123",
             "user_id": "user-1",
+            "is_self_invoke": False,
             "trigger_override": None,
             "attachments": None,
             "force_unsupported_attachments": False,
+            "source": None,
+            "source_label": None,
+            "publish_autonomous_events": None,
+            "platform_origin": None,
         }
     ]
 

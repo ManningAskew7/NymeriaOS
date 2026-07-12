@@ -464,6 +464,7 @@ services:
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       DISCORD_MODE: ${DISCORD_MODE:-gateway}
       DISCORD_RESPOND_MODE: ${DISCORD_RESPOND_MODE:-mention}
+      DISCORD_REACTION_TRIGGER_ENABLED: ${DISCORD_REACTION_TRIGGER_ENABLED:-false}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
@@ -495,6 +496,7 @@ services:
       <<: *thin-client-env
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DEFAULT_CHAT_ID: ${TELEGRAM_DEFAULT_CHAT_ID:-}
+      TELEGRAM_REACTION_TRIGGER_ENABLED: ${TELEGRAM_REACTION_TRIGGER_ENABLED:-false}
     volumes:
       - nymeria_data:/data
       - ./nymeria:/app/nymeria:ro
