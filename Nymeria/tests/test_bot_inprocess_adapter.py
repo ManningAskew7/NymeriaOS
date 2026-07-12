@@ -527,3 +527,79 @@ def test_execute_command_unknown_user_raises_injected_error(monkeypatch):
         _run(api.execute_command("/status", user_id="ghost"))
     assert exc.value.status_code == 404
     assert service.calls == []
+
+
+# --- interactive admission (backlog #83) ------------------------------------
+
+from nymeria.core.interactive_admission import (  # noqa: E402
+    CAPACITY_DETAIL,
+    get_interactive_turn_gate,
+    reset_interactive_turn_gate_for_tests,
+)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_interactive_gate():
+    """Isolate the process-global admission gate per test in this module."""
+    reset_interactive_turn_gate_for_tests()
+    yield
+    reset_interactive_turn_gate_for_tests()
+
+
+def _capacity_agent(*, busy: bool = False) -> _FakeAgent:
+    agent = _FakeAgent()
+    agent.settings.max_concurrent_interactive = 1
+    agent.settings.interactive_admission_wait_seconds = 0
+    agent._thread_locks.is_thread_busy = lambda _tid: busy
+    return agent
+
+
+def test_chat_stream_sheds_429_at_capacity_without_message_added():
+    events: list = []
+    api, _agent = _make_adapter(_capacity_agent(), events=events)
+    held = get_interactive_turn_gate().try_acquire(1)
+    assert held is not None
+    with pytest.raises(_SentinelError) as exc:
+        _run(_collect(api.chat_stream("hi", "t1", "u1")))
+    assert exc.value.status_code == 429
+    assert exc.value.detail == CAPACITY_DETAIL
+    # Shed BEFORE the message_added publish: no ghost user bubble.
+    assert events == []
+    held.release()
+
+
+def test_chat_sync_sheds_429_at_capacity():
+    api, _agent = _make_adapter(_capacity_agent())
+    held = get_interactive_turn_gate().try_acquire(1)
+    assert held is not None
+    with pytest.raises(_SentinelError) as exc:
+        _run(api.chat("hi", "t1", "u1"))
+    assert exc.value.status_code == 429
+    assert exc.value.detail == CAPACITY_DETAIL
+    held.release()
+
+
+def test_chat_stream_busy_thread_bypasses_capacity():
+    api, _agent = _make_adapter(_capacity_agent(busy=True))
+    held = get_interactive_turn_gate().try_acquire(1)
+    assert held is not None
+    chunks = _run(_collect(api.chat_stream("hi", "t1", "u1")))
+    assert chunks[-1]["type"] == "done"
+    held.release()
+
+
+def test_chat_stream_releases_slot_at_turn_end():
+    api, _agent = _make_adapter(_capacity_agent())
+    # Two sequential turns at limit 1: the first slot must be returned.
+    for _ in range(2):
+        chunks = _run(_collect(api.chat_stream("hi", "t1", "u1")))
+        assert chunks[-1]["type"] == "done"
+    assert get_interactive_turn_gate().active == 0
+
+
+def test_chat_sync_releases_slot_at_turn_end():
+    api, _agent = _make_adapter(_capacity_agent())
+    for _ in range(2):
+        data = _run(api.chat("hi", "t1", "u1"))
+        assert data["response"] == "the-response"
+    assert get_interactive_turn_gate().active == 0

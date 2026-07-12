@@ -34,9 +34,9 @@ def _fresh_gate():
 def test_try_acquire_unlimited_always_admits_and_counts():
     gate = InteractiveTurnGate()
     slots = [gate.try_acquire(0) for _ in range(5)]
-    assert all(slot is not None for slot in slots)
     assert gate.active == 5
     for slot in slots:
+        assert slot is not None
         slot.release()
     assert gate.active == 0
 
@@ -104,6 +104,7 @@ def test_waiters_are_fifo():
 
     async def _scenario():
         holder = gate.try_acquire(1)
+        assert holder is not None
         order: list[str] = []
 
         async def _waiter(name: str):
@@ -145,6 +146,7 @@ def test_cancelled_waiter_does_not_leak_a_slot():
 
     async def _scenario():
         holder = gate.try_acquire(1)
+        assert holder is not None
 
         async def _waiter():
             await gate.acquire(1, 5.0)
@@ -285,3 +287,85 @@ def test_admit_broken_busy_probe_fails_open():
         slot.release()
 
     asyncio.run(_scenario())
+
+
+# ---------------------------------------------------------------------------
+# attach_release_backstop (the disconnect-before-first-byte leak guard)
+# ---------------------------------------------------------------------------
+
+import gc  # noqa: E402
+
+from nymeria.core.interactive_admission import (  # noqa: E402
+    attach_release_backstop,
+)
+
+
+def test_backstop_frees_slot_of_never_iterated_generator():
+    # A never-started async generator never runs its finally; the finalize
+    # attached to the generator object must return the slot on collection.
+    gate = InteractiveTurnGate()
+
+    async def _scenario():
+        slot = gate.try_acquire(1)
+        assert slot is not None
+
+        async def _gen():
+            try:
+                yield "never"
+            finally:
+                slot.release()
+
+        g = _gen()
+        attach_release_backstop(g, slot, asyncio.get_running_loop())
+        del g
+        gc.collect()
+        await asyncio.sleep(0)
+        assert gate.active == 0
+
+    asyncio.run(_scenario())
+
+
+def test_backstop_is_noop_after_normal_release():
+    gate = InteractiveTurnGate()
+
+    async def _scenario():
+        slot = gate.try_acquire(1)
+        assert slot is not None
+
+        async def _gen():
+            try:
+                yield "x"
+            finally:
+                slot.release()
+
+        g = _gen()
+        attach_release_backstop(g, slot, asyncio.get_running_loop())
+        async for _chunk in g:
+            break
+        await g.aclose()  # normal path: finally released the slot
+        assert gate.active == 0
+        del g
+        gc.collect()
+        await asyncio.sleep(0)
+        assert gate.active == 0  # backstop fired as an idempotent no-op
+
+    asyncio.run(_scenario())
+
+
+def test_backstop_releases_inline_when_loop_closed():
+    gate = InteractiveTurnGate()
+    slot = gate.try_acquire(1)
+    assert slot is not None
+
+    async def _make():
+        async def _gen():
+            yield "never"
+
+        g = _gen()
+        attach_release_backstop(g, slot, asyncio.get_running_loop())
+        return g
+
+    g = asyncio.run(_make())  # the loop is closed once run() returns
+    del g
+    gc.collect()
+    assert gate.active == 0

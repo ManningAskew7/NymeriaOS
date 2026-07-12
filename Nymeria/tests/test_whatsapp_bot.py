@@ -452,3 +452,69 @@ def test_cloud_client_sends_graph_text_payload() -> None:
         assert http.closed is False
 
     asyncio.run(run())
+
+
+def test_capacity_shed_429_skips_sync_fallback() -> None:
+    # Backlog #83: a capacity-shed BotAPIError 429 from chat_stream must NOT
+    # re-enter the admission gate via the sync fallback (that only doubles
+    # the shed latency); the busy notice is relayed directly.
+    async def run() -> None:
+        from nymeria.core.interactive_admission import CAPACITY_DETAIL
+        from nymeria.triggers.whatsapp_bot import BotAPIError, WhatsAppReplyTarget
+
+        api = FakeNymeriaAPI()
+        cloud = FakeWhatsAppCloud()
+        bot = NymeriaWhatsAppBot(api, cloud)
+
+        def shed_stream(message: str, thread_id: str, user_id: str):
+            async def events():
+                raise BotAPIError(CAPACITY_DETAIL, status_code=429)
+                yield  # pragma: no cover - marks this as an async generator
+
+            return events()
+
+        api.chat_stream = shed_stream  # type: ignore[method-assign]
+
+        await bot._stream_to_whatsapp(
+            message="hello",
+            thread_id="whatsapp_15551234567",
+            user_id="owner",
+            target=WhatsAppReplyTarget(to="15551234567"),
+        )
+
+        assert api.chat_calls == []
+        assert cloud.sent == [("15551234567", CAPACITY_DETAIL)]
+
+    asyncio.run(run())
+
+
+def test_non_capacity_stream_error_still_falls_back_to_sync() -> None:
+    # The 429 skip is scoped to the capacity shed: any other streaming
+    # failure keeps the existing sync-fallback behavior.
+    async def run() -> None:
+        from nymeria.triggers.whatsapp_bot import WhatsAppReplyTarget
+
+        api = FakeNymeriaAPI()
+        cloud = FakeWhatsAppCloud()
+        bot = NymeriaWhatsAppBot(api, cloud)
+
+        def broken_stream(message: str, thread_id: str, user_id: str):
+            async def events():
+                raise RuntimeError("stream broke")
+                yield  # pragma: no cover - marks this as an async generator
+
+            return events()
+
+        api.chat_stream = broken_stream  # type: ignore[method-assign]
+
+        await bot._stream_to_whatsapp(
+            message="hello",
+            thread_id="whatsapp_15551234567",
+            user_id="owner",
+            target=WhatsAppReplyTarget(to="15551234567"),
+        )
+
+        assert api.chat_calls == [("hello", "whatsapp_15551234567", "owner")]
+        assert cloud.sent == [("15551234567", "fallback")]
+
+    asyncio.run(run())

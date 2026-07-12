@@ -70,7 +70,17 @@ async def with_sse_keepalive(
             pending.cancel()
         aclose = getattr(iterator, "aclose", None)
         if aclose is not None:
-            await aclose()
+            try:
+                await aclose()
+            except RuntimeError:
+                # "asynchronous generator is already running": the generator
+                # frame is still owned by the just-cancelled anext task (the
+                # cancel above is only a request; the task unwinds on a later
+                # loop tick). That unwind throws CancelledError into the
+                # generator, so its try/finally cleanup still runs; closing
+                # here would be redundant. Seen when a response task is
+                # cancelled mid-read (client disconnect at stream start).
+                pass
 
 
 __all__ = [

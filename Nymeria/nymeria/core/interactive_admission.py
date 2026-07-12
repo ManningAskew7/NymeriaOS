@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from collections import deque
 from typing import Any, Optional
 
@@ -240,3 +241,35 @@ async def admit_interactive_turn(
             exc.limit,
         )
         raise
+
+
+def attach_release_backstop(
+    obj: Any, slot: TurnSlot, loop: asyncio.AbstractEventLoop
+) -> None:
+    """Release ``slot`` when ``obj`` is garbage-collected.
+
+    Backstop for the /chat streaming route's disconnect-before-first-byte
+    path: when the client is already gone as the StreamingResponse starts,
+    the server can cancel the response task before the SSE generator is ever
+    iterated, and a NEVER-STARTED generator never runs its ``finally``. The
+    slot would then leak until restart (silently drifting the counter even
+    while the ceiling is disabled). ``weakref.finalize`` fires when the
+    orphaned generator object is collected; on every normal path the
+    generator's own ``finally`` released first, so this fires as a harmless
+    idempotent no-op.
+
+    GC can run on any thread; the release is marshalled onto the owning
+    ``loop``. The finalizer holds no reference to ``obj`` (a ``finalize``
+    requirement, or the object would live until interpreter exit).
+    """
+
+    def _release() -> None:
+        try:
+            loop.call_soon_threadsafe(slot.release)
+        except RuntimeError:
+            # Loop already closed (shutdown/test teardown): release inline.
+            # The counter is process-local state; with the loop gone no
+            # waiter can be woken, so the direct decrement is safe.
+            slot.release()
+
+    weakref.finalize(obj, _release)
