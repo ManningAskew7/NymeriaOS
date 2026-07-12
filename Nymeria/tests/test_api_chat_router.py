@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -110,7 +111,9 @@ class FakeChatAgent:
         self.chat_calls.append({"message": message, **kwargs})
         return "sync response"
 
-    async def astream(self, message: str, **kwargs: Any):
+    async def astream(
+        self, message: str, **kwargs: Any
+    ) -> AsyncIterator[dict[str, Any]]:
         # Record the holder-turn callback as a presence flag so the exact
         # kwargs pins below stay comparable (the real value is a closure).
         # Deliberately NOT invoked: these tests pin the pre-buffer wire
@@ -1105,4 +1108,135 @@ def test_chat_sync_admits_and_frees_slot(tmp_path: Path, api_client_builder):
         assert response.status_code == 200
 
     assert len(agent.chat_calls) == 2
+    assert get_interactive_turn_gate().active == 0
+
+
+def _asgi_scope(path: str, token: str, body: bytes) -> dict[str, Any]:
+    """Minimal ASGI HTTP scope for driving the app without a test client."""
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"authorization", f"Bearer {token}".encode()),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+        ],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+
+
+def test_chat_stream_disconnect_before_first_byte_frees_slot(
+    tmp_path: Path, api_client_builder
+):
+    # A client that is already gone when the StreamingResponse starts can
+    # cancel the response task before the SSE generator is ever iterated; a
+    # never-started generator never runs its slot-releasing finally. The
+    # weakref backstop must return the slot regardless of whether the
+    # generator ran (normal finally), started-then-cancelled (GeneratorExit
+    # finally), or never started (backstop on GC).
+    import gc
+
+    client, agent, token = _capacity_client(tmp_path, api_client_builder)
+    app = client.app
+    body = json.dumps({"message": "hello", "thread_id": "gone-1"}).encode()
+
+    async def _scenario():
+        delivered = {"body": False}
+
+        async def receive():
+            if not delivered["body"]:
+                delivered["body"] = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        sent: list[dict[str, Any]] = []
+
+        async def send(message):
+            sent.append(message)
+
+        await app(_asgi_scope("/chat", token, body), receive, send)
+        # Force collection of any never-iterated generator, then let the
+        # backstop's call_soon_threadsafe callback run.
+        gc.collect()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return sent
+
+    sent = asyncio.run(_scenario())
+    assert sent and sent[0]["type"] == "http.response.start"
+    assert get_interactive_turn_gate().active == 0
+
+
+def test_chat_stream_bounded_wait_admits_when_slot_frees(
+    tmp_path: Path, api_client_builder
+):
+    # End-to-end bounded-wait handoff on one loop (matching production's
+    # single-loop runtime): with limit=1, a second request waits at admission
+    # while the first turn runs, then admits when the first turn's slot is
+    # released, instead of shedding.
+    class SlowAgent(FakeChatAgent):
+        def __init__(self, data_dir: Path) -> None:
+            super().__init__(data_dir)
+            self.gate_event: asyncio.Event | None = None
+
+        async def astream(self, message: str, **kwargs: Any):
+            yield {"type": "response", "content": "slow"}
+            if self.gate_event is not None:
+                await self.gate_event.wait()
+
+    settings = api_client_builder.settings(
+        tmp_path,
+        max_concurrent_interactive=1,
+        interactive_admission_wait_seconds=5.0,
+    )
+    agent = SlowAgent(tmp_path)
+    client, token = api_client_builder.authenticated_client(
+        agent, settings, user_id="alice"
+    )
+    app = client.app
+
+    async def _post(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        body = json.dumps(payload).encode()
+        delivered = {"body": False}
+
+        async def receive():
+            if not delivered["body"]:
+                delivered["body"] = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            await asyncio.Event().wait()  # connected client: never disconnects
+
+        sent: list[dict[str, Any]] = []
+
+        async def send(message):
+            sent.append(message)
+
+        await app(_asgi_scope("/chat", token, body), receive, send)
+        return sent
+
+    async def _scenario():
+        agent.gate_event = asyncio.Event()
+        first = asyncio.create_task(_post({"message": "one", "thread_id": "bw-1"}))
+        for _ in range(500):
+            if get_interactive_turn_gate().active == 1:
+                break
+            await asyncio.sleep(0.01)
+        assert get_interactive_turn_gate().active == 1
+
+        second = asyncio.create_task(_post({"message": "two", "thread_id": "bw-2"}))
+        await asyncio.sleep(0.05)  # let the second request reach the wait
+        agent.gate_event.set()  # first turn finishes; slot hands off
+        return await asyncio.wait_for(asyncio.gather(first, second), 10)
+
+    first_sent, second_sent = asyncio.run(_scenario())
+    assert first_sent[0]["status"] == 200
+    assert second_sent[0]["status"] == 200
     assert get_interactive_turn_gate().active == 0

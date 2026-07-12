@@ -113,3 +113,42 @@ def test_chat_stream_is_wrapped():
 
     source = inspect.getsource(chat_module)
     assert source.count("with_sse_keepalive(") >= 2
+
+
+def test_cancel_while_anext_task_owns_generator_still_cleans_up():
+    # Cancelling the wrapper right after it scheduled an anext read (client
+    # disconnect at stream start) used to crash its finally with
+    # "aclose(): asynchronous generator is already running", because the
+    # cancel of the pending anext task is only a request and the inner
+    # generator frame is still owned by that task. The wrapper now tolerates
+    # the busy frame; the inner generator's finally still runs when the
+    # cancelled anext task unwinds.
+    import pytest
+
+    async def _scenario():
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+
+        async def _inner():
+            try:
+                started.set()
+                await asyncio.sleep(30)
+                yield "never"
+            finally:
+                cleaned.set()
+
+        gen = with_sse_keepalive(_inner())
+
+        async def _consume():
+            async for _item in gen:
+                pass
+
+        task = asyncio.create_task(_consume())
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The inner generator's own finally runs via the anext task's unwind.
+        await asyncio.wait_for(cleaned.wait(), 2)
+
+    asyncio.run(_scenario())

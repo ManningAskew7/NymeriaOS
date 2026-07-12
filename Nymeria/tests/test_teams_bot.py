@@ -474,3 +474,79 @@ def test_active_chats_set_stays_bounded(monkeypatch) -> None:
 
     assert len(bot._active_chats) <= 10
     assert bot._active_chats  # eviction keeps the set non-empty, not cleared
+
+
+def test_capacity_shed_429_skips_sync_fallback() -> None:
+    # Backlog #83: a capacity-shed BotAPIError 429 from chat_stream must NOT
+    # re-enter the admission gate via the sync fallback (that only doubles
+    # the shed latency); the busy notice is relayed directly.
+    async def run() -> None:
+        from nymeria.core.interactive_admission import CAPACITY_DETAIL
+        from nymeria.triggers.teams_bot import BotAPIError
+
+        api = FakeTeamsAPI()
+        client = FakeTeamsClient()
+        bot = NymeriaTeamsBot(api=api, teams_client=client)
+
+        chat_calls: list[tuple[str, str, str]] = []
+
+        def shed_stream(message: str, thread_id: str, user_id: str):
+            async def events():
+                raise BotAPIError(CAPACITY_DETAIL, status_code=429)
+                yield  # pragma: no cover - marks this as an async generator
+
+            return events()
+
+        async def recording_chat(message: str, thread_id: str, user_id: str):
+            chat_calls.append((message, thread_id, user_id))
+            return {"response": "fallback", "tool_call_count": 0}
+
+        api.chat_stream = shed_stream  # type: ignore[method-assign]
+        api.chat = recording_chat  # type: ignore[method-assign]
+
+        await bot._stream_to_teams(
+            message="hello",
+            thread_id="teams_19_direct",
+            user_id="user-1",
+            target=TeamsReplyTarget(
+                service_url="https://smba.trafficmanager.net/amer/",
+                conversation_id="19:direct",
+            ),
+        )
+
+        assert chat_calls == []
+        assert [entry["text"] for entry in client.sent] == [CAPACITY_DETAIL]
+
+    asyncio.run(run())
+
+
+def test_non_capacity_stream_error_still_falls_back_to_sync() -> None:
+    # The 429 skip is scoped to the capacity shed: any other streaming
+    # failure keeps the existing sync-fallback behavior.
+    async def run() -> None:
+        api = FakeTeamsAPI()
+        client = FakeTeamsClient()
+        bot = NymeriaTeamsBot(api=api, teams_client=client)
+
+        def broken_stream(message: str, thread_id: str, user_id: str):
+            async def events():
+                raise RuntimeError("stream broke")
+                yield  # pragma: no cover - marks this as an async generator
+
+            return events()
+
+        api.chat_stream = broken_stream  # type: ignore[method-assign]
+
+        await bot._stream_to_teams(
+            message="hello",
+            thread_id="teams_19_direct",
+            user_id="user-1",
+            target=TeamsReplyTarget(
+                service_url="https://smba.trafficmanager.net/amer/",
+                conversation_id="19:direct",
+            ),
+        )
+
+        assert [entry["text"] for entry in client.sent] == ["fallback"]
+
+    asyncio.run(run())

@@ -19,6 +19,7 @@ from ...core.interactive_admission import (
     InteractiveCapacityError,
     TurnSlot,
     admit_interactive_turn,
+    attach_release_backstop,
 )
 from ...core.event_bus import (
     publish_agent_stream_chunk as default_publish_agent_stream_chunk,
@@ -1674,8 +1675,17 @@ def create_chat_router(
         # Keepalive comments bridge long silent gaps (tool calls that emit
         # nothing for minutes) so tunnel edges with idle timeouts, like
         # Cloudflare's ~100s proxy limit, do not cut the turn mid-stream.
+        stream = event_generator()
+        if turn_slot is not None:
+            # Disconnect-before-first-byte backstop: if the client is already
+            # gone when the response starts, the server can cancel the
+            # response task before `stream` is ever iterated, and a
+            # never-started generator never runs the slot-releasing finally
+            # above. The finalize fires on GC of the orphaned generator;
+            # release() is idempotent so normal turns are unaffected.
+            attach_release_backstop(stream, turn_slot, asyncio.get_running_loop())
         return StreamingResponse(
-            with_sse_keepalive(event_generator()),
+            with_sse_keepalive(stream),
             media_type="text/event-stream",
             headers=SSE_RESPONSE_HEADERS,
         )

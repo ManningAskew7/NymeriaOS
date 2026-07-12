@@ -509,6 +509,13 @@ class NymeriaWhatsAppBot:
         try:
             await consume_sse_stream(self.api.chat_stream(message, thread_id, user_id), handler)
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, BotAPIError) and exc.status_code == 429:
+                # Capacity shed (backlog #83): the sync fallback re-enters
+                # the same admission gate, so retrying at saturation only
+                # doubles the shed latency. Relay the busy notice directly.
+                logger.info("WhatsApp turn shed at interactive capacity")
+                await self._send_text(target, exc.detail)
+                return
             logger.exception("WhatsApp streaming failed; falling back to sync")
             try:
                 data = await self.api.chat(message, thread_id, user_id)

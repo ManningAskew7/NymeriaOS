@@ -79,7 +79,9 @@ class _AuthUser:
         self.id = user_id
 
 
-def _build_client(recorder: _PublishRecorder) -> TestClient:
+def _build_client(
+    recorder: _PublishRecorder, settings: Any | None = None
+) -> TestClient:
     agent = _FakeAgent()
 
     def verify_api_key() -> _AuthUser:
@@ -91,7 +93,7 @@ def _build_client(recorder: _PublishRecorder) -> TestClient:
     router = create_chat_router(
         verify_api_key=verify_api_key,
         get_agent_fn=lambda: agent,
-        get_settings_fn=lambda: SimpleNamespace(),
+        get_settings_fn=lambda: settings if settings is not None else SimpleNamespace(),
         require_thread_access_fn=require_thread_access,
         publish_sync_event_fn=recorder.publish_sync_event,
         publish_agent_stream_chunk_fn=recorder.publish_agent_stream_chunk,
@@ -199,3 +201,42 @@ def test_non_self_invoke_never_publishes_autonomous_events():
     assert recorder.autonomous_events == []
     assert recorder.stream_chunks == []
     assert recorder.notifications == []
+
+
+def test_capacity_shed_publishes_no_message_added():
+    """A 429 shed happens BEFORE the message_added publish (backlog #83).
+
+    Frontends echo user bubbles from the ``message_added`` sync event; a
+    shed turn was never started, so no ghost bubble may be broadcast.
+    """
+    from nymeria.core.interactive_admission import (
+        CAPACITY_DETAIL,
+        get_interactive_turn_gate,
+        reset_interactive_turn_gate_for_tests,
+    )
+
+    reset_interactive_turn_gate_for_tests()
+    try:
+        recorder = _PublishRecorder()
+        client = _build_client(
+            recorder,
+            settings=SimpleNamespace(
+                max_concurrent_interactive=1,
+                interactive_admission_wait_seconds=0,
+            ),
+        )
+        held = get_interactive_turn_gate().try_acquire(1)
+        assert held is not None
+
+        response = client.post(
+            "/chat",
+            json={"message": "hi", "thread_id": "thread-shed"},
+        )
+
+        assert response.status_code == 429
+        assert response.json() == {"detail": CAPACITY_DETAIL}
+        assert recorder.sync_events == []
+        assert recorder.autonomous_events == []
+        held.release()
+    finally:
+        reset_interactive_turn_gate_for_tests()
