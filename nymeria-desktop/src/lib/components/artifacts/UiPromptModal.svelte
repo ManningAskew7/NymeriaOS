@@ -23,7 +23,14 @@
    * Security invariants (see docs/private/plans/ui-prompt-tool.md):
    * - sandbox="allow-scripts" ONLY. NEVER add allow-same-origin: the agent's
    *   script would inherit the app origin (Tauri IPC, tokens, backend).
-   * - The srcdoc carries CSP connect-src 'none'; all assets are inlined.
+   * - The srcdoc carries a default-src 'none' CSP (only inline script/style
+   *   and data: assets), so no network request of any kind leaves the frame;
+   *   all assets are inlined. See buildArtifactSrcdoc.ts for the policy.
+   * - The one channel that CSP cannot close is the frame navigating ITSELF
+   *   to an external URL (the sandbox only blocks TOP navigation). The load
+   *   guard below cancels the prompt on any iframe load event after the
+   *   initial srcdoc render, so a navigating document loses the form and
+   *   the agent gets a definitive "cancelled".
    * - Messages are accepted only from this iframe's contentWindow with a
    *   matching prompt id.
    */
@@ -39,6 +46,7 @@
   const DEFAULT_FRAME_HEIGHT = 320;
 
   let iframeEl = $state<HTMLIFrameElement | null>(null);
+  let frameLoads = 0;
   let frameHeight = $state(DEFAULT_FRAME_HEIGHT);
   let submitting = $state(false);
   let submitError = $state<string | null>(null);
@@ -70,6 +78,7 @@
       frameHeight = DEFAULT_FRAME_HEIGHT;
       submitting = false;
       submitError = null;
+      frameLoads = 0;
       deadlineMs = prompt.timeout_seconds > 0 ? Date.now() + prompt.timeout_seconds * 1000 : null;
     } else {
       deadlineMs = null;
@@ -142,6 +151,20 @@
     }
   }
 
+  // Residual-channel guard: a sandboxed document can always navigate ITSELF
+  // (CSP's abandoned navigate-to never shipped; the sandbox only withholds
+  // TOP navigation), and a self-navigation's URL can carry data. The srcdoc
+  // fires exactly one load event, so any later load means the agent HTML
+  // navigated the frame: cancel the prompt so the form (and any further
+  // interaction with it) is gone. The counter resets per prompt alongside
+  // the {#key}-driven iframe recreation.
+  function handleFrameLoad() {
+    frameLoads += 1;
+    if (frameLoads > 1) {
+      void resolvePrompt('cancelled');
+    }
+  }
+
   function handleKeydown(event: KeyboardEvent) {
     if (isOpen && event.key === 'Escape') {
       void resolvePrompt('cancelled');
@@ -185,6 +208,7 @@
             title={heading}
             sandbox="allow-scripts"
             {srcdoc}
+            onload={handleFrameLoad}
             style={`height: ${frameHeight}px;`}
           ></iframe>
         {/key}
