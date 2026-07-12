@@ -41,6 +41,12 @@ class ActionSpec:
     exception (a mutate guardrail/injector on prompt_submit/pre_tool_use, a
     fire-and-forget side effect on post_tool_use/done), so plane is resolved
     per (action, event) via :func:`plane_for`.
+
+    ``system`` marks an action reserved for a built-in system hook definition
+    (``turn_metadata``): it is excluded from the authoring legality map
+    (:func:`event_actions`), so users cannot create hooks with it, but the
+    engine/store tables still carry it so the system definition validates,
+    edits through the normal surfaces, and dispatches through the engine.
     """
 
     name: str
@@ -48,6 +54,7 @@ class ActionSpec:
     events: Tuple[str, ...]  # events the action may attach to
     text_action: bool = False  # sole config is a single `text` field (alias-authorable)
     observe_events: Tuple[str, ...] = ()  # events where the plane flips to observe
+    system: bool = False  # reserved for a built-in system hook; not user-authorable
 
 
 ACTION_SPECS: Dict[str, ActionSpec] = {
@@ -78,16 +85,50 @@ ACTION_SPECS: Dict[str, ActionSpec] = {
             ("prompt_submit", "pre_tool_use", "post_tool_use", "done"),
             observe_events=("post_tool_use", "done"),
         ),
+        # The system turn-metadata hook's logic (backlog #66): renders the
+        # [Time:]/[Trigger:] block on the dedicated turn-entry seam. Reserved
+        # (system=True): excluded from the authoring legality map, carried by
+        # the engine/store tables so the built-in definition rides the normal
+        # when/logic/return machinery. text_action=True so its template edits
+        # through the shared `text` flat field on every surface.
+        ActionSpec(
+            "turn_metadata", "mutate", ("prompt_submit",),
+            text_action=True, system=True,
+        ),
     )
 }
 
 
 def event_actions() -> Dict[str, Set[str]]:
-    """Derive the event -> legal-action-set map (``hook_manager.EVENT_ACTIONS``)."""
+    """Derive the event -> legal-action-set map (``hook_manager.EVENT_ACTIONS``).
+
+    System actions are excluded: this map is the AUTHORING legality surface
+    (create/switch validation, ``GET /hooks/schema`` event lists, the frontend
+    action pickers). The system definition validates against
+    :func:`system_event_actions` instead.
+    """
     out: Dict[str, Set[str]] = {event: set() for event in EVENTS}
     for spec in ACTION_SPECS.values():
+        if spec.system:
+            continue
         for event in spec.events:
             out[event].add(spec.name)
+    return out
+
+
+def system_actions() -> Tuple[str, ...]:
+    """Actions reserved for built-in system hook definitions."""
+    return tuple(name for name, spec in ACTION_SPECS.items() if spec.system)
+
+
+def system_event_actions() -> Dict[str, Set[str]]:
+    """Event -> system-action legality map (the system definitions' validator)."""
+    out: Dict[str, Set[str]] = {}
+    for spec in ACTION_SPECS.values():
+        if not spec.system:
+            continue
+        for event in spec.events:
+            out.setdefault(event, set()).add(spec.name)
     return out
 
 

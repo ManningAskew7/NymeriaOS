@@ -66,11 +66,18 @@ def test_list_and_enabled_filter(client_env):
     b = _create(client, headers, name="b").json()
     client.patch(f"/hooks/{b['id']}", headers=headers, json={"enabled": False})
 
-    all_hooks = client.get("/hooks", headers=headers).json()
+    all_hooks = [
+        h for h in client.get("/hooks", headers=headers).json() if not h["system"]
+    ]
+    # The virtual system turn-metadata hook always rides the list, marked.
+    assert any(
+        h["system"] and h["id"] == "turn-metadata"
+        for h in client.get("/hooks", headers=headers).json()
+    )
     assert {h["id"] for h in all_hooks} == {a["id"], b["id"]}
 
     enabled = client.get("/hooks?enabled_only=true", headers=headers).json()
-    assert {h["id"] for h in enabled} == {a["id"]}
+    assert {h["id"] for h in enabled if not h["system"]} == {a["id"]}
 
 
 def test_create_rejects_bad_event(client_env):
@@ -307,7 +314,11 @@ def test_cross_user_isolation(client_env):
     # A second authenticated user must not see or fetch the first user's hook.
     agent.accounts_repo.create_user("intruder", "intruder@example.com", "Intruder")
     other_headers = builder.auth(agent.accounts_repo.issue_token("intruder"))
-    assert client.get("/hooks", headers=other_headers).json() == []
+    # Only the intruder's own virtual system hook shows, never the owner's hook.
+    assert [
+        h for h in client.get("/hooks", headers=other_headers).json()
+        if not h["system"]
+    ] == []
     assert client.get(f"/hooks/{hook['id']}", headers=other_headers).status_code == 404
 
 

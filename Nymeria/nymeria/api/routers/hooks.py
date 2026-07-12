@@ -167,9 +167,14 @@ class HookResponse(BaseModel):
     created_by: str
     created_at: str
     updated_at: str
+    # True for built-in system definitions (the turn-metadata hook): editable
+    # within locked bounds, delete = reset to defaults, never removable.
+    system: bool = False
 
     @classmethod
     def from_definition(cls, h: HookDefinition) -> "HookResponse":
+        from ...core.hook_manager import is_system_hook_id
+
         logic = h.logic.model_dump()
         return cls(
             id=h.id,
@@ -189,6 +194,7 @@ class HookResponse(BaseModel):
             created_by=h.created_by,
             created_at=h.created_at.isoformat(),
             updated_at=h.updated_at.isoformat(),
+            system=is_system_hook_id(h.id),
         )
 
 
@@ -340,6 +346,10 @@ def create_hook_router(
                 "text_action": spec.text_action,
                 # True when authoring is admin + HOOKS_RUN_COMMAND_ENABLED gated.
                 "gated": name in GATED_ACTIONS,
+                # True for actions reserved for built-in system hooks
+                # (turn_metadata): edit the existing system definition, never
+                # offer them in a create picker.
+                "system": spec.system,
                 "params_schema": schema,
             }
         from ...core.hooks.bridge import (
@@ -593,10 +603,15 @@ def create_hook_router(
         user_id: str = Query(default="default"),
         user: AuthenticatedUser = Depends(verify_api_key_fn),
     ):
-        """Delete a hook."""
+        """Delete a hook (system hooks: reset to built-in defaults)."""
         user_id = user.id
         if not _get_manager().delete_hook(user_id, hook_id):
-            raise HTTPException(status_code=404, detail="Hook not found")
+            from ...core.hook_manager import is_system_hook_id
+
+            # A pristine system hook has nothing stored to remove; the reset
+            # is idempotent, so 204 (a 404 would contradict GET succeeding).
+            if not is_system_hook_id(hook_id):
+                raise HTTPException(status_code=404, detail="Hook not found")
 
     @router.post("/{hook_id}/test")
     async def test_hook(

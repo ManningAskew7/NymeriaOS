@@ -4026,6 +4026,15 @@ there is no public fire/webhook endpoint. See
 `docs/agent-systems/hooks.md`. All routes require a Bearer token and
 operate on the authenticated user's own hooks.
 
+Every list also carries the reserved SYSTEM hook `turn-metadata` (`system:
+true` on the payload, action `turn_metadata`): the built-in `[Time:]/[Trigger:]`
+turn-metadata block as an editable hook. It exists virtually until first edited
+(PATCH materializes it), `event`/`scope`/`action`/`single_use` are locked (400),
+its `text` template must keep the fixed two-line `[Time: ...]`/`[Trigger: ...]`
+frame, and DELETE means "reset to built-in defaults" (204 even when already
+pristine, log entries kept). The `turn_metadata` action is not creatable
+(reserved); `GET /hooks/schema` marks it `system: true`.
+
 ### List Hooks
 
 ```http
@@ -4123,7 +4132,9 @@ always toggle or rename. `scope`/`thread_id` are
 deliberately not patchable (every authoring surface enforces this): a re-scope
 needs a thread binding and its access gate, so it is a delete + create.
 `DELETE` returns `204` and purges the hook's execution-log entries. All return
-`404` if the hook does not exist for the authenticated user.
+`404` if the hook does not exist for the authenticated user. The system
+`turn-metadata` hook is the exception: DELETE resets it to built-in defaults
+(idempotent `204`, log kept) and it can never 404 on GET.
 
 ### Test Hook (Dry Run)
 

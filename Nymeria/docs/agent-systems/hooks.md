@@ -31,6 +31,7 @@ actions that ship today, and the events they attach to (`EVENT_ACTIONS` in
 | `webhook` | observe | `post_tool_use`, `done` | POST a JSON payload to a URL |
 | `run_command` | mutate on `prompt_submit`/`pre_tool_use`, observe on `post_tool_use`/`done` | all four | run a shell command with the hook context as JSON on stdin (admin + flag gated) |
 | `run_workflow` | mutate on `prompt_submit`/`pre_tool_use`, observe on `post_tool_use`/`done` | all four | run a published, approved `nym` workflow with the hook context as its `event` param |
+| `turn_metadata` | mutate | `prompt_submit` (reserved: the system hook only) | render the built-in `[Time:]/[Trigger:]` block (see "The system turn-metadata hook" below) |
 
 **`inject_context`** appends its text to the model-facing tail (`prompt_submit`), to the
 matching tool's result (`post_tool_use`, scope with `matcher`), or re-drives once as a
@@ -428,6 +429,51 @@ Both thread fields are set/cleared through `PATCH /threads/{id}/config`
 this as a tri-state master (Inherit / On / Off, where Inherit sends `clear_hooks_enabled`)
 plus per-hook Default / On / Off overrides, folded into the panel's Save batch.
 
+### The system turn-metadata hook (backlog #66)
+
+The `[Time:]/[Trigger:]` metadata block every turn carries on its message tail is
+itself a hook: the reserved system definition `turn-metadata` (action
+`turn_metadata`, event `prompt_submit`, global scope, `created_by: "system"`,
+`system: true` on the REST payload). It appears in every user's hook list without
+being stored anywhere: the definition is **virtual until edited**. The first edit
+(any surface: `/hook edit turn-metadata ...`, `hook_config(action="update",
+hook_id="turn-metadata", ...)`, `PATCH /hooks/turn-metadata`) materializes a
+stored copy (copy-on-write, exempt from the per-user cap); **delete = reset**: it
+removes the stored copy and the built-in default reappears (the hook is never
+truly deletable; log entries survive a reset). With no stored copy the turn takes
+a byte-identical built-in fast path (no engine dispatch at all), so the pristine
+default is exactly the pre-#66 behavior.
+
+What you can change: `text` (the template), `enabled`, `name`, `fire_conditions`,
+and `once`. What is locked: `event`, `scope`, `action`, and `single_use` (and the
+action can never be authored onto another hook). The template is constrained to a
+fixed two-line frame, `[Time: <interior>]` newline `[Trigger: <interior>]`, with
+non-empty interiors containing no `]` and no newlines; interiors may use
+`{time}` (the wall clock in the user's timezone), `{trigger}` (the resolved
+trigger label), and the standard hook vars. The frame guarantees the
+history-strip regex (`core/agent_history.py`) keeps matching, so customized
+metadata never leaks into compaction; the seam also re-validates the RENDERED
+block against the strip pattern and, on any mismatch, dispatch fault, or
+unbindable definition, **falls back to the built-in block** with a visible entry
+in the execution log (a broken edit can never silently kill turn metadata).
+Metadata is omitted only deliberately: `enabled=false`, a per-thread
+`hook_overrides["turn-metadata"]` off, or an unfired `fire_conditions`/`once`
+gate (e.g. gate on `is_autonomous` to stamp only autonomous wake-ups).
+
+Enablement deviates from the standard model in ONE way: the master kill switch
+(`hooks_enabled`, global or per-thread) does NOT apply. It governs user hook
+logic; turn metadata predates it, and honoring it would silently strip metadata
+on deployments that disabled hooks. Resolution is per-thread
+`hook_overrides["turn-metadata"]`, else the definition's `enabled`
+(`agent_safety.get_effective_system_hook_enabled`). Two more deltas from
+ordinary prompt_submit hooks: the block lands at the message PREFIX (not the
+`<hook_context>` sentinel tail), and the dispatch context carries no
+context-usage signal (numeric context fire conditions are non-matches). A
+customized hook records one execution-log entry per turn like any other
+prompt_submit hook; the pristine fast path records nothing.
+`AUTONOMOUS_MODE_RULES` and the queued-prompt drain headers stay hardcoded
+(deliberate scope cut; see `docs/private/plans/metadata-injection-hook.md`).
+
 ### Execution log
 
 Every hook run is recorded to a bounded per-user log (cap 200, mirroring the
@@ -450,7 +496,8 @@ to the per-turn registry (`HookRegistry.recorder`, set by the bridge; the empty
 store buffers entries in memory and flushes them on a single worker off the
 turn, so recording adds no file I/O to a tool call. Surfaced through
 `hook_info(action="log")`, `/hook log [id] [--limit N]`, and
-`GET /hooks/executions`; deleting a hook purges its entries.
+`GET /hooks/executions`; deleting a hook purges its entries (except a system-hook
+reset, which keeps them so fallback history survives).
 
 ## The model: when → logic → return
 

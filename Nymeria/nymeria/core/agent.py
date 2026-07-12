@@ -647,23 +647,54 @@ class NymeriaAgent:
         is_self_invoke: bool,
         trigger_override: Optional[str],
         is_autonomous: bool,
+        thread_id: str = "",
+        user_id: str = "",
+        source: Optional[str] = None,
     ) -> str:
-        """Prepend the cache-safe turn metadata to the message.
+        """Prepend the cache-safe turn metadata to the message (sync path).
 
         This metadata lives on the message tail, not in the system prompt, so the
         system prompt stays cache-stable across user vs autonomous turns on the
         same thread. It carries the ``[Time:]``/``[Trigger:]`` line for every turn
         and, for autonomous turns, the general autonomous run guidance.
-        """
-        from .prompts import get_autonomous_tail_guidance
 
-        time_context = self._get_time_context(
-            is_autonomous=is_self_invoke, trigger_override=trigger_override
+        The block is the system ``turn-metadata`` lifecycle hook (backlog #66):
+        pristine (no stored override) takes the byte-identical built-in fast
+        path; a stored override rides the hooks engine with built-in fallback
+        on any fault (see ``core/agent_turn_metadata.py``).
+        """
+        from .agent_turn_metadata import prefix_turn_metadata
+        return prefix_turn_metadata(
+            self, message,
+            is_self_invoke=is_self_invoke, trigger_override=trigger_override,
+            is_autonomous=is_autonomous, thread_id=thread_id, user_id=user_id,
+            source=source,
         )
-        guidance = get_autonomous_tail_guidance(is_autonomous)
-        if guidance:
-            return f"{time_context}\n\n{guidance}\n\n{message}"
-        return f"{time_context}\n\n{message}"
+
+    async def _aprefix_turn_metadata(
+        self,
+        message: str,
+        *,
+        is_self_invoke: bool,
+        trigger_override: Optional[str],
+        is_autonomous: bool,
+        thread_id: str = "",
+        user_id: str = "",
+        source: Optional[str] = None,
+    ) -> str:
+        """Async twin of ``_prefix_turn_metadata`` (the astream path).
+
+        A customized turn-metadata hook dispatches through the engine's async
+        plane so the event loop is never blocked; the pristine default path is
+        identical to the sync facade.
+        """
+        from .agent_turn_metadata import aprefix_turn_metadata
+        return await aprefix_turn_metadata(
+            self, message,
+            is_self_invoke=is_self_invoke, trigger_override=trigger_override,
+            is_autonomous=is_autonomous, thread_id=thread_id, user_id=user_id,
+            source=source,
+        )
 
     def _hook_context_stats(self, thread_id: str) -> Dict[str, Optional[int]]:
         from .agent_compaction import hook_context_stats
@@ -1159,11 +1190,16 @@ class NymeriaAgent:
             return None
         try:
             from .agent_safety import get_effective_hook_enabled
-            from .hook_manager import make_execution_recorder
+            from .hook_manager import SYSTEM_HOOK_IDS, make_execution_recorder
             from .hooks import build_registry
+            # System definitions (turn metadata) fire on their own dedicated
+            # seam (core/agent_turn_metadata.py); excluding them here keeps a
+            # stored override from double-dispatching through the sentinel
+            # path of the general PROMPT_SUBMIT fire point.
             defs = [
                 d for d in hm.get_hooks_cached(user_id)
-                if (d.scope == "global" or d.thread_id == thread_id)
+                if d.id not in SYSTEM_HOOK_IDS
+                and (d.scope == "global" or d.thread_id == thread_id)
                 and get_effective_hook_enabled(
                     d, thread_id,
                     thread_config_manager=self.thread_config_manager,
@@ -2282,6 +2318,9 @@ class NymeriaAgent:
                     is_self_invoke=_is_self_invoke,
                     trigger_override=_trigger_override,
                     is_autonomous=is_autonomous_source,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    source=source,
                 )
 
                 # PROMPT_SUBMIT lifecycle hooks (sync path). Never breaks a turn:
@@ -3151,11 +3190,14 @@ class NymeriaAgent:
             # submits nothing -- DONE still fires at the continuation's end).
             message_with_context = ""
             if not _resume_halted_turn:
-                message_with_context = self._prefix_turn_metadata(
+                message_with_context = await self._aprefix_turn_metadata(
                     message,
                     is_self_invoke=_is_self_invoke,
                     trigger_override=_trigger_override,
                     is_autonomous=is_autonomous_source,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    source=source,
                 )
 
                 # PROMPT_SUBMIT lifecycle hooks (async path). Never breaks a turn:

@@ -691,6 +691,11 @@ def test_interactive_turn_on_temporary_spawned_thread_refreshes_idle_clock(
 
 # --- /done: one-shot DONE-hook arming (backlog #70) --------------------------
 
+def _user_hooks(agent):
+    """Alice's hooks minus the ever-present virtual system turn-metadata hook."""
+    from nymeria.core.hook_manager import SYSTEM_HOOK_IDS
+    return [h for h in agent.hook_manager.get_hooks("alice") if h.id not in SYSTEM_HOOK_IDS]
+
 def test_done_stream_busy_arms_single_use_hook(tmp_path: Path, api_client_builder):
     client, agent, token = _chat_client(tmp_path, api_client_builder)
     agent._thread_locks.busy_responses = [True, True]  # probe + race re-check
@@ -710,7 +715,7 @@ def test_done_stream_busy_arms_single_use_hook(tmp_path: Path, api_client_builde
     )
     # No turn ran; the hook is stored, single-use, bound to the busy thread.
     assert agent.astream_calls == []
-    (hook,) = agent.hook_manager.get_hooks("alice")
+    (hook,) = _user_hooks(agent)
     assert hook.event == "done"
     assert hook.logic.text == "check the tests"
     assert hook.single_use is True
@@ -743,7 +748,7 @@ def test_done_stream_hooks_disabled_errors_without_arming(
         for e in events
     )
     assert agent.astream_calls == []
-    assert agent.hook_manager.get_hooks("alice") == []
+    assert _user_hooks(agent) == []
 
 
 def test_done_stream_idle_runs_prompt_now(tmp_path: Path, api_client_builder):
@@ -762,7 +767,7 @@ def test_done_stream_idle_runs_prompt_now(tmp_path: Path, api_client_builder):
     assert len(agent.astream_calls) == 1
     assert agent.astream_calls[0]["message"] == "check the tests"
     assert agent.astream_calls[0]["thread_id"] == "caller-1"
-    assert agent.hook_manager.get_hooks("alice") == []
+    assert _user_hooks(agent) == []
 
 
 def test_done_stream_empty_prompt_is_usage_error(tmp_path: Path, api_client_builder):
@@ -781,7 +786,7 @@ def test_done_stream_empty_prompt_is_usage_error(tmp_path: Path, api_client_buil
         e["type"] == "response" and "Usage: `/done" in e["content"] for e in events
     )
     assert agent.astream_calls == []
-    assert agent.hook_manager.get_hooks("alice") == []
+    assert _user_hooks(agent) == []
 
 
 def test_done_stream_race_claimed_back_runs_now(tmp_path: Path, api_client_builder):
@@ -800,7 +805,7 @@ def test_done_stream_race_claimed_back_runs_now(tmp_path: Path, api_client_build
 
     assert len(agent.astream_calls) == 1
     assert agent.astream_calls[0]["message"] == "follow up"
-    assert agent.hook_manager.get_hooks("alice") == []
+    assert _user_hooks(agent) == []
 
 
 def test_done_stream_race_already_fired_acks(
@@ -840,7 +845,7 @@ def test_done_sync_parity(tmp_path: Path, api_client_builder):
     assert resp.status_code == 200
     assert "Follow-up armed" in resp.json()["response"]
     assert agent.chat_calls == []
-    (hook,) = agent.hook_manager.get_hooks("alice")
+    (hook,) = _user_hooks(agent)
     assert hook.single_use is True and hook.logic.text == "wrap up"
 
     # Idle: the prompt runs as a normal sync turn.

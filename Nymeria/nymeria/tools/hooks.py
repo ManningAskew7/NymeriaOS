@@ -335,8 +335,19 @@ def _hook_update(
 def _hook_delete(*, hook_id: str, config: RunnableConfig) -> str:
     user_id = get_user_id(config)
     manager = _get_hook_manager()
+    from ..core.hook_manager import is_system_hook_id
     if manager.delete_hook(user_id, hook_id):
+        if is_system_hook_id(hook_id):
+            # A system hook is never truly deleted: removing the stored
+            # override resets it to its built-in defaults.
+            return f"[Success]: Reset system hook '{hook_id}' to its built-in defaults."
         return f"[Success]: Deleted hook {hook_id}."
+    if is_system_hook_id(hook_id):
+        return (
+            f"[Info]: System hook '{hook_id}' is already at its built-in defaults "
+            "(nothing to reset). Use hook_config(action='update') to customize it "
+            "or set enabled=false to turn it off."
+        )
     return f"[Error]: no hook found with id '{hook_id}'."
 
 
@@ -476,6 +487,19 @@ def render_hook_test(hook: HookDefinition) -> str:
     Pure (no store access) so the ``/hook test`` command reuses it verbatim.
     """
     logic = hook.logic
+    if logic.action == "turn_metadata":
+        sample = dict(_SAMPLE_VARS)
+        sample["event"] = hook.event
+        sample["time"] = "Sunday, July 12, 2026 at 09:00 AM (Australia/Sydney)"
+        sample["trigger"] = "User Message"
+        rendered = safe_format(getattr(logic, "text", ""), sample)
+        return (
+            f"[Info]: Test render of the system hook {hook.id} (turn_metadata). "
+            "With sample data the block is PREPENDED to every turn's message "
+            "(the [Time:]/[Trigger:] metadata position); a rendered block that "
+            "breaks the history-strip frame falls back to the built-in block:"
+            f"\n---\n{rendered}\n---"
+        )
     if logic.action in _TEXT_ACTIONS:
         sample = dict(_SAMPLE_VARS)
         sample["event"] = hook.event
@@ -625,6 +649,14 @@ def hook_config(
     action="install" to instantiate a bundled template (see
     hook_info(action="templates") for the catalog). Hooks auto-bind to the
     current thread unless scope="global".
+
+    The built-in [Time:]/[Trigger:] turn metadata is the system hook
+    'turn-metadata' (action turn_metadata, listed for every user): update its
+    text to customize the template (fixed two-line "[Time: ...]\\n[Trigger:
+    ...]" frame; {time}/{trigger} placeholders), set enabled=false to turn it
+    off, add fire_conditions to scope it, and delete to RESET it to defaults
+    (it cannot be removed; a broken customization falls back to the built-in
+    block).
 
     Args:
         action: "create", "update", "delete", or "install".

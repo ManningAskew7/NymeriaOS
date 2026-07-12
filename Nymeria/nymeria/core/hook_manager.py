@@ -31,8 +31,15 @@ from typing import Annotated, Any, Dict, Iterable, List, Literal, Optional, Set,
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from .conditions import HookCondition
-from .hook_spec import TOOL_EVENTS, event_actions, text_actions
+from .hook_spec import (
+    TOOL_EVENTS,
+    event_actions,
+    system_actions,
+    system_event_actions,
+    text_actions,
+)
 from .keyed_locks import KeyedRLockMap
+from .prompts import DEFAULT_TURN_METADATA_TEMPLATE, TURN_METADATA_TEMPLATE_PATTERN
 from .storage_paths import (
     quarantine_corrupt_file,
     read_store_fingerprint,
@@ -75,6 +82,26 @@ TEXT_ACTIONS = text_actions()
 # authoring one is remote code execution on the backend host. Shared by every
 # authoring surface via ``run_command_authoring_error``.
 GATED_ACTIONS = frozenset({"run_command"})
+
+# Actions reserved for built-in system hook definitions (backlog #66): users
+# can never create a hook with one or switch an existing hook to one; the
+# system definitions themselves validate against SYSTEM_EVENT_ACTIONS.
+SYSTEM_ACTIONS = frozenset(system_actions())
+_SYSTEM_EVENT_ACTIONS: Dict[str, set] = system_event_actions()
+
+# The reserved id of the system turn-metadata hook. Human-readable and
+# collision-free by construction (add_hook generates 8-char hex ids). The
+# definition is VIRTUAL until edited: get_hooks/get_hook synthesize the
+# built-in default when no stored record carries this id, update_hook
+# materializes it copy-on-write, and delete_hook resets it to defaults.
+SYSTEM_TURN_METADATA_ID = "turn-metadata"
+SYSTEM_HOOK_IDS = frozenset({SYSTEM_TURN_METADATA_ID})
+
+# Fields locked on a system hook definition: its identity (event/action) and
+# binding (scope/thread) are fixed, and single_use would let one successful
+# run self-delete (reset) it, which is nonsensical for a standing system
+# block. Editable: name, enabled, text (template), fire_conditions, once.
+_SYSTEM_LOCKED_FIELDS = frozenset({"event", "scope", "thread_id", "single_use"})
 
 
 def run_command_authoring_error(action: str, *, is_admin: Optional[bool]) -> Optional[str]:
@@ -339,6 +366,45 @@ class RunWorkflowLogic(BaseModel):
     )
 
 
+class TurnMetadataLogic(BaseModel):
+    """Render the built-in ``[Time:]/[Trigger:]`` turn-metadata block (#66).
+
+    The logic of the reserved system ``turn-metadata`` hook (system action:
+    users cannot author another hook with it). ``text`` is the template,
+    constrained to the fixed two-line frame so the history-strip regex in
+    ``core/agent_history.py`` keeps matching whatever it emits: interiors are
+    customizable ({time}/{trigger} plus the standard hook vars), the frame is
+    not. The turn-entry seam additionally re-validates the RENDERED block
+    against the strip pattern and falls back to the built-in block on a
+    mismatch, so a placeholder that expands to ``]``/newlines at render time
+    cannot leak metadata into compaction.
+    """
+
+    action: Literal["turn_metadata"] = "turn_metadata"
+    text: str = Field(
+        default=DEFAULT_TURN_METADATA_TEMPLATE,
+        min_length=1,
+        max_length=300,
+        description=(
+            "Turn-metadata template: exactly '[Time: ...]' newline "
+            "'[Trigger: ...]' with customizable interiors (no ']' or "
+            "newlines inside); {time} and {trigger} are substituted per turn"
+        ),
+    )
+
+    @field_validator("text")
+    @classmethod
+    def _validate_frame(cls, value: str) -> str:
+        if not TURN_METADATA_TEMPLATE_PATTERN.fullmatch(value):
+            raise ValueError(
+                "turn-metadata template must be exactly two lines, "
+                "'[Time: <interior>]' then '[Trigger: <interior>]', with "
+                "non-empty interiors containing no ']' and no newlines "
+                "(placeholders like {time} and {trigger} are allowed)"
+            )
+        return value
+
+
 # Discriminated union on ``action``. Store-compatible with legacy inject_context
 # records ({"action":"inject_context","text":...}). Adding an action is a new
 # variant here + an ``ACTIONS``/``ACTION_PLANES`` entry + an ``EVENT_ACTIONS``
@@ -348,7 +414,7 @@ HookLogic = Annotated[
         InjectContextLogic, BlockIfMatchesLogic, RewriteArgLogic,
         RequireApprovalLogic,
         NotifyLogic, CreateTodoLogic, WebhookLogic, RunCommandLogic,
-        RunWorkflowLogic,
+        RunWorkflowLogic, TurnMetadataLogic,
     ],
     Field(discriminator="action"),
 ]
@@ -364,6 +430,7 @@ HOOK_LOGIC_BY_ACTION: Dict[str, type[BaseModel]] = {
     "webhook": WebhookLogic,
     "run_command": RunCommandLogic,
     "run_workflow": RunWorkflowLogic,
+    "turn_metadata": TurnMetadataLogic,
 }
 
 
@@ -452,9 +519,14 @@ class HookDefinition(BaseModel):
         if allowed is None:
             raise ValueError(f"Unsupported hook event: {self.event!r}")
         if self.logic.action not in allowed:
-            raise ValueError(
-                f"Action {self.logic.action!r} is not valid for event {self.event!r}"
-            )
+            # System actions are excluded from the authoring legality map but
+            # legal on their spec'd events, so the built-in system definitions
+            # (and their materialized copies) validate. add_hook/update_hook
+            # separately refuse to author/switch-to a system action.
+            if self.logic.action not in _SYSTEM_EVENT_ACTIONS.get(self.event, set()):
+                raise ValueError(
+                    f"Action {self.logic.action!r} is not valid for event {self.event!r}"
+                )
         # Normalize an empty/whitespace matcher to None (match every tool). An
         # empty-string matcher would parse to [""] and silently match nothing,
         # disabling a tool hook a caller meant to apply to all tools.
@@ -466,6 +538,32 @@ class HookDefinition(BaseModel):
         if self.event not in TOOL_EVENTS and self.matcher:
             self.matcher = None
         return self
+
+
+def system_turn_metadata_definition() -> HookDefinition:
+    """The built-in system turn-metadata hook, in its default (pristine) shape.
+
+    Synthesized fresh per call: the definition is VIRTUAL until a user edits
+    it (copy-on-write materialization in ``update_hook``), so "no stored
+    record" is a self-healing pristine state and no user store is ever
+    written implicitly. The turn-entry seam takes its byte-identical legacy
+    fast path whenever no stored record exists.
+    """
+    return HookDefinition(
+        id=SYSTEM_TURN_METADATA_ID,
+        name="Turn metadata",
+        event="prompt_submit",
+        logic=TurnMetadataLogic(),
+        enabled=True,
+        scope="global",
+        thread_id="",
+        created_by="system",
+    )
+
+
+def is_system_hook_id(hook_id: Optional[str]) -> bool:
+    """True when ``hook_id`` names a built-in system hook definition."""
+    return hook_id in SYSTEM_HOOK_IDS
 
 
 # ---------------------------------------------------------------------------
@@ -848,6 +946,11 @@ class HookManager:
         ``require_approval`` (matching ``params_from_fields``, so every
         surface's bare-text authoring lands on the right field).
         """
+        if action in SYSTEM_ACTIONS:
+            raise ValueError(
+                f"Action {action!r} is reserved for the built-in system hook. "
+                f"Edit the '{SYSTEM_TURN_METADATA_ID}' hook instead of creating one."
+            )
         if params is None and text is not None:
             params = {"prompt": text} if action == "require_approval" else {"text": text}
         logic = build_logic(action, params)  # ValueError on bad action/params
@@ -888,9 +991,39 @@ class HookManager:
         ``event``/``matcher``/logic changes re-run model validation via
         ``model_validate`` so an illegal combination is rejected rather than
         silently persisted. Raises ``ValueError`` on an unknown action.
+
+        System hooks (``SYSTEM_HOOK_IDS``): the first edit MATERIALIZES the
+        virtual built-in default into the store (copy-on-write, cap-exempt),
+        then applies the update; identity/binding fields
+        (``_SYSTEM_LOCKED_FIELDS``) and action switches are rejected. Ordinary
+        hooks may never switch TO a system action.
         """
+        if hook_id in SYSTEM_HOOK_IDS:
+            locked = _SYSTEM_LOCKED_FIELDS & set(kwargs)
+            if locked:
+                raise ValueError(
+                    f"Field(s) {', '.join(sorted(locked))} cannot be changed on the "
+                    f"system hook '{hook_id}'."
+                )
+            if kwargs.get("action") not in (None, "turn_metadata"):
+                raise ValueError(
+                    f"The system hook '{hook_id}' cannot switch action."
+                )
+        elif kwargs.get("action") in SYSTEM_ACTIONS:
+            raise ValueError(
+                f"Action {kwargs['action']!r} is reserved for the built-in system "
+                f"hook '{SYSTEM_TURN_METADATA_ID}'."
+            )
         with self.atomic_update(user_id) as store:
             hook = store.get_hook(hook_id)
+            materialize = False
+            if hook is None and hook_id == SYSTEM_TURN_METADATA_ID:
+                # Copy-on-write: the edit lands on a materialized copy of the
+                # virtual default. Deliberately cap-exempt (not user-authored
+                # growth); the store is only touched after validation passes,
+                # so a rejected edit leaves the hook virtual (pristine).
+                hook = system_turn_metadata_definition()
+                materialize = True
             if hook is None:
                 return False
             data = hook.model_dump()
@@ -925,8 +1058,11 @@ class HookManager:
                     data[key] = value
             data["updated_at"] = utc_now()
             updated = HookDefinition.model_validate(data)  # re-validates legality
-            # Replace in place, preserving order.
-            store.hooks = [updated if h.id == hook_id else h for h in store.hooks]
+            if materialize:
+                store.hooks.append(updated)
+            else:
+                # Replace in place, preserving order.
+                store.hooks = [updated if h.id == hook_id else h for h in store.hooks]
         return True
 
     def delete_hook(self, user_id: str, hook_id: str, *, purge_log: bool = True) -> bool:
@@ -935,12 +1071,18 @@ class HookManager:
         ``purge_log=False`` keeps the log entries: the single_use self-cleanup
         path uses it so a spent one-shot hook's fire stays visible in
         ``/hook log`` (orphaned entries age out via the log cap).
+
+        System hooks are never truly deleted: removing the stored record
+        RESETS the hook to its built-in defaults (the virtual definition
+        reappears in the authoring views). Log entries are kept so fault and
+        fallback history survives a reset; a pristine system hook (nothing
+        stored) returns False.
         """
         with self.atomic_update(user_id) as store:
             before = len(store.hooks)
             store.hooks = [h for h in store.hooks if h.id != hook_id]
             deleted = len(store.hooks) < before
-        if deleted and purge_log:
+        if deleted and purge_log and hook_id not in SYSTEM_HOOK_IDS:
             self.delete_executions_for_hooks(user_id, [hook_id])
         return deleted
 
@@ -962,12 +1104,27 @@ class HookManager:
         return deleted
 
     def get_hooks(self, user_id: str) -> List[HookDefinition]:
-        """All hooks for a user (fresh read, for authoring/listing)."""
-        return list(self._load(user_id).hooks)
+        """All hooks for a user (fresh read, for authoring/listing).
+
+        Includes the virtual system turn-metadata definition when no stored
+        record carries its reserved id, so every list surface (the tool, the
+        ``/hook`` command, REST) exposes it for inspection without any store
+        write. The hot per-turn read (``get_hooks_cached``) deliberately stays
+        a raw store view: the turn-entry seam treats "no stored record" as
+        the byte-identical built-in fast path.
+        """
+        hooks = list(self._load(user_id).hooks)
+        if not any(h.id == SYSTEM_TURN_METADATA_ID for h in hooks):
+            hooks.append(system_turn_metadata_definition())
+        return hooks
 
     def get_hook(self, user_id: str, hook_id: str) -> Optional[HookDefinition]:
-        """A single hook by ID (fresh read)."""
-        return self._load(user_id).get_hook(hook_id)
+        """A single hook by ID (fresh read; system ids resolve to the virtual
+        built-in default when nothing is stored)."""
+        hook = self._load(user_id).get_hook(hook_id)
+        if hook is None and hook_id == SYSTEM_TURN_METADATA_ID:
+            return system_turn_metadata_definition()
+        return hook
 
     def get_hooks_cached(self, user_id: str) -> List[HookDefinition]:
         """All hooks for a user, fingerprint-cached for the hot per-turn path.

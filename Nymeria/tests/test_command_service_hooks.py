@@ -55,8 +55,14 @@ def _run(cmd: str, thread_id: str | None = "thread-1"):
     return run(CommandService().execute(_ctx(thread_id), cmd))
 
 
+def _user_hooks(manager: HookManager):
+    """Alice's hooks minus the ever-present virtual system turn-metadata hook."""
+    from nymeria.core.hook_manager import SYSTEM_HOOK_IDS
+    return [h for h in manager.get_hooks("alice") if h.id not in SYSTEM_HOOK_IDS]
+
+
 def _only(manager: HookManager):
-    hooks = manager.get_hooks("alice")
+    hooks = _user_hooks(manager)
     assert len(hooks) == 1, hooks
     return hooks[0]
 
@@ -136,7 +142,7 @@ def test_create_thread_scope_without_thread_errors(manager: HookManager) -> None
     )
     assert result.success is False
     assert "active thread" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_create_illegal_event_action_pair(manager: HookManager) -> None:
@@ -192,7 +198,7 @@ def test_create_rejects_unknown_flag(manager: HookManager) -> None:
     )
     assert result.success is False
     assert "unknown option" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_plural_alias_routes_subcommand(manager: HookManager) -> None:
@@ -240,9 +246,11 @@ def test_list_table_and_filters(manager: HookManager) -> None:
 
 
 def test_list_empty(manager: HookManager) -> None:
+    # A pristine store still lists the virtual system turn-metadata hook.
     result = _run("/hook list")
     assert result.success is True
-    assert "No hooks found" in result.markdown
+    assert "turn-metadata" in result.markdown
+    assert "turn_metadata" in result.markdown
 
 
 def test_bare_hook_lists(manager: HookManager) -> None:
@@ -291,7 +299,7 @@ def test_delete_removes(manager: HookManager) -> None:
     assert hook is not None
     result = _run(f"/hook delete {hook.id} --yes")
     assert result.success is True
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_show_unknown_id(manager: HookManager) -> None:
@@ -429,7 +437,7 @@ def test_run_command_create_edit_roundtrip(
     assert hook.logic.timeout_seconds == 20
     edited = _run(f'/hook edit {hook.id[:6]} command="echo bye"')
     assert edited.success is True, edited.markdown
-    assert manager.get_hooks("alice")[0].logic.command == "echo bye"
+    assert _user_hooks(manager)[0].logic.command == "echo bye"
 
 
 def test_run_command_requires_command_flag(
@@ -439,7 +447,7 @@ def test_run_command_requires_command_flag(
     result = _run('/hook create RC --event done --action run_command')
     assert result.success is False
     assert "requires --command" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_run_command_denied_when_flag_off(
@@ -451,7 +459,7 @@ def test_run_command_denied_when_flag_off(
     )
     assert result.success is False
     assert "HOOKS_RUN_COMMAND_ENABLED" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_run_command_denied_for_non_admin(
@@ -468,7 +476,7 @@ def test_run_command_denied_for_non_admin(
     )
     assert result.success is False
     assert "admin-only" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 class _UserRoleAccountsRepo:
@@ -495,7 +503,7 @@ def test_run_command_edit_denied_for_non_admin(
     result = _run(f'/hook edit {hook.id[:6]} command="echo bye"')
     assert result.success is False
     assert "admin-only" in result.markdown
-    assert manager.get_hooks("alice")[0].logic.command == "echo hi"
+    assert _user_hooks(manager)[0].logic.command == "echo hi"
 
 
 def test_run_command_edit_enabled_allowed_for_non_admin(
@@ -514,7 +522,7 @@ def test_run_command_edit_enabled_allowed_for_non_admin(
     )
     result = _run(f'/hook edit {hook.id[:6]} enabled=false')
     assert result.success is True, result.markdown
-    updated = manager.get_hooks("alice")[0]
+    updated = _user_hooks(manager)[0]
     assert updated.enabled is False
     assert updated.logic.command == "echo hi"
 
@@ -713,7 +721,7 @@ def test_create_rejects_bad_fire_cond_operator(manager):
     )
     assert result.success is False
     assert "invalid condition operator" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_edit_fire_gate(manager):
@@ -757,7 +765,7 @@ def test_hook_install_is_idempotent(manager):
     result = _run("/hook install context-checkpoint-advisory")
     assert result.success is True, result.markdown
     assert "already installed" in result.markdown
-    assert len(manager.get_hooks("alice")) == 1
+    assert len(_user_hooks(manager)) == 1
 
 
 def test_hook_install_thread_scope_binds_current_thread(manager):
@@ -780,7 +788,7 @@ def test_hook_install_unknown_template(manager):
     result = _run("/hook install no-such-template")
     assert result.success is False
     assert "Unknown template" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_hook_install_requires_template_id(manager):
@@ -840,7 +848,7 @@ def test_run_workflow_create_edit_roundtrip(
         f'/hook edit {hook.id[:6]} workflow_params=\'{{"mode": "lax"}}\' on_fault=allow'
     )
     assert edited.success is True, edited.markdown
-    updated = manager.get_hooks("alice")[0]
+    updated = _user_hooks(manager)[0]
     assert updated.logic.params == {"mode": "lax"}
     assert updated.logic.on_fault == "allow"
     assert updated.logic.workflow_id == "wf_guard"  # untouched fields survive
@@ -850,7 +858,7 @@ def test_run_workflow_requires_workflow_flag(manager: HookManager) -> None:
     result = _run("/hook create G --event done --action run_workflow")
     assert result.success is False
     assert "--workflow" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_run_workflow_rejects_bad_params_json(manager: HookManager) -> None:
@@ -860,7 +868,7 @@ def test_run_workflow_rejects_bad_params_json(manager: HookManager) -> None:
     )
     assert result.success is False
     assert "JSON object" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []
 
 
 def test_run_workflow_create_surfaces_binding_error(
@@ -872,4 +880,4 @@ def test_run_workflow_create_surfaces_binding_error(
     )
     assert result.success is False
     assert "no published workflow tool named 'wf_x'" in result.markdown
-    assert manager.get_hooks("alice") == []
+    assert _user_hooks(manager) == []

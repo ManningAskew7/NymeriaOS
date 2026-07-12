@@ -289,8 +289,9 @@ def test_cascade_delete_thread_removes_active_and_ui_resources(tmp_path: Path, a
 
     assert result.deleted["hooks_deleted"] == 1
     assert hook_manager.get_hook("default", doomed_hook.id) is None
+    # The virtual system turn-metadata hook always lists alongside user hooks.
     remaining_hooks = {h.name for h in hook_manager.get_hooks("default")}
-    assert remaining_hooks == {"global", "kept"}
+    assert remaining_hooks == {"global", "kept", "Turn metadata"}
 
     assert agent.accounts_repo.get_thread_owner(target) is None
     assert agent.accounts_repo.get_thread_owner(survivor) == "default"

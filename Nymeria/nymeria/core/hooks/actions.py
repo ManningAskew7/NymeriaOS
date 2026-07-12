@@ -171,6 +171,37 @@ def inject_context(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     return None  # PRE_TOOL_USE and anything else: not an injection target
 
 
+def turn_metadata(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
+    """Render the ``[Time:]/[Trigger:]`` turn-metadata block (system hook, #66).
+
+    The logic behind the reserved system ``turn-metadata`` definition. It only
+    fires on the dedicated turn-entry seam (``core/agent_turn_metadata.py``),
+    which places the rendered block at the message PREFIX (not the
+    ``<hook_context>`` sentinel tail) and re-validates it against the
+    history-strip frame, falling back to the built-in block on any fault.
+
+    ``params['text']`` is the frame-validated template; two action-local vars
+    join the standard map: ``{time}`` (the user-timezone wall clock at
+    dispatch) and ``{trigger}`` (the resolved trigger label the seam carries
+    on ``ctx.trigger_label``). They are deliberately NOT added to the general
+    ``_template_vars`` map so existing hooks' literal ``{time}`` text keeps
+    rendering untouched.
+    """
+    if ctx.event is not HookEvent.PROMPT_SUBMIT:
+        return None
+    from ..prompts import DEFAULT_TURN_METADATA_TEMPLATE
+    from ..time_utils import format_user_time
+
+    template = (params or {}).get("text") or DEFAULT_TURN_METADATA_TEMPLATE
+    vars_ = _template_vars(ctx)
+    vars_["time"] = format_user_time()
+    vars_["trigger"] = ctx.trigger_label or ""
+    text = safe_format(str(template), vars_)
+    if not text:
+        return None
+    return PromptOutcome(inject_context=text)
+
+
 def block_if_matches(ctx: HookContext, params: dict) -> Optional[HookOutcome]:
     """Deny a tool call when all conditions match its args (else allow).
 
@@ -990,6 +1021,7 @@ ACTIONS: Dict[str, ActionFn] = {
     "webhook": webhook,
     "run_command": run_command,
     "run_workflow": run_workflow,
+    "turn_metadata": turn_metadata,
 }
 
 # Each action's dispatch plane, derived from ``core/hook_spec.py``. Mutate-plane
