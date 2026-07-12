@@ -693,8 +693,11 @@ def test_run_dream_cycle_dispatches_with_dream_source(stub_agent, monkeypatch):
 def test_log_user_turn_activity_gates_and_records(monkeypatch):
     """The shared chat/astream activity helper feeds the dream gates.
 
-    Genuine user turns record USER_MESSAGE (turns/idle gate inputs);
-    autonomous turns and message-less resumes are excluded.
+    Only genuine user turns record USER_MESSAGE (turns/idle gate inputs).
+    Excluded: self-invoked turns, every non-"user" source (autonomous
+    trigger/ticker/watchdog/dream AND programmatic callable/mcp), and
+    message-less resumes. A None source counts as "user" (the default for
+    direct user turns).
     """
     import nymeria.core.activity_log as al
     from nymeria.core.agent import NymeriaAgent
@@ -709,20 +712,34 @@ def test_log_user_turn_activity_gates_and_records(monkeypatch):
     )
 
     NymeriaAgent._log_user_turn_activity(
-        "hello\nworld", user_id="u1", thread_id="t1", is_autonomous=False
+        "hello\nworld", user_id="u1", thread_id="t1",
+        source="user", is_self_invoke=False,
     )
-    assert len(calls) == 1
+    NymeriaAgent._log_user_turn_activity(
+        "via default source", user_id="u1", thread_id="t1",
+        source=None, is_self_invoke=False,
+    )
+    assert len(calls) == 2
     assert calls[0][0] == al.ActivityType.USER_MESSAGE
     assert calls[0][1] == "hello world"
     assert calls[0][2:] == ("u1", "t1")
 
+    for source, self_invoke in (
+        ("dream", True),      # dream cycle
+        ("ticker", True),     # scheduled TODO
+        ("callable", False),  # agent-to-agent ask: programmatic, not a user
+        ("mcp", False),       # MCP client relay
+        ("user", True),       # self-invoked wakeup on a user-source path
+    ):
+        NymeriaAgent._log_user_turn_activity(
+            "x", user_id="u1", thread_id="t1",
+            source=source, is_self_invoke=self_invoke,
+        )
     NymeriaAgent._log_user_turn_activity(
-        "x", user_id="u1", thread_id="t1", is_autonomous=True
+        "x", user_id="u1", thread_id="t1",
+        source="user", is_self_invoke=False, resumed=True,
     )
-    NymeriaAgent._log_user_turn_activity(
-        "x", user_id="u1", thread_id="t1", is_autonomous=False, resumed=True
-    )
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 def test_dream_prompt_covers_scoped_surfaces():
