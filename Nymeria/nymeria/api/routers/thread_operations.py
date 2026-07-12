@@ -575,7 +575,9 @@ def create_thread_operations_router(
         events after ``from_seq``; same fallback. An in-flight turn whose
         writer died without a terminal event replays with state ``aborted``.
         """
-        require_thread_access_fn(user, thread_id)
+        # claim=False: this is a read endpoint like the sibling status and
+        # history GETs, so it must not TOFU-claim an ownerless thread.
+        require_thread_access_fn(user, thread_id, claim=False)
         buffer = get_turn_stream_registry().get(thread_id)
         if buffer is None or (turn_id is not None and buffer.turn_id != turn_id):
             raise HTTPException(

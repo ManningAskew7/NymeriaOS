@@ -636,6 +636,13 @@ def test_astream_drain_rejects_cross_user_prompts_and_absorbs_own():
     # Same-user prompt: injected, mirrored stream, absorbed sentinel.
     own_types = [e["type"] for e in own_mailbox.events]
     assert own_types[0] == "prompt_injected"
+    # The inject event carries the raw prompt texts (index-parallel with
+    # sources) so ANY same-thread client (cross-client queuer, live-attach
+    # viewer) can render the injected user bubbles without a local copy.
+    inject_evt = own_mailbox.events[0]
+    assert inject_evt["sources"] == ["user"]
+    assert [p["text"] for p in inject_evt["prompts"]] == ["follow up"]
+    assert inject_evt["prompts"][0]["user_id"] == "user-a"
     assert own_types[-1] == _SENTINEL_PROMPT_ABSORBED
     assert "response" in own_types
     assert own_mailbox.closed is True

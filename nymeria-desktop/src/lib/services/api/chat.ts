@@ -642,16 +642,33 @@ export class ChatApi extends CredentialsApi {
             threadId
           };
 
-        case 'prompt_injected':
+        case 'prompt_injected': {
+          // `prompts` (raw texts, index-parallel with `sources`) lets any
+          // same-thread client render the injected user bubbles: a viewer
+          // or cross-client queuer has no local copy of another client's
+          // queued prompt text (backlog #87).
+          const rawPrompts = (data.prompts as Array<{
+            text?: string;
+            source_label?: string;
+            user_id?: string;
+            enqueued_at?: number;
+          }> | undefined) ?? undefined;
           return {
             type: 'prompt_injected',
             data: {
               count: (data.count as number) ?? 1,
-              sources: (data.sources as string[]) || []
+              sources: (data.sources as string[]) || [],
+              prompts: rawPrompts?.map((p) => ({
+                text: p.text ?? '',
+                sourceLabel: p.source_label ?? '',
+                userId: p.user_id ?? '',
+                enqueuedAt: p.enqueued_at ?? 0
+              }))
             },
             timestamp: new Date(),
             threadId
           };
+        }
 
         case 'prompt_absorbed':
           return {

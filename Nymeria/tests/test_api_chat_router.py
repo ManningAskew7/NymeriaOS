@@ -117,6 +117,12 @@ class FakeChatAgent:
         # shape; the tee/turn_started behavior is pinned in
         # test_turn_stream_buffer.py.
         kwargs["_on_turn_started"] = kwargs.get("_on_turn_started") is not None
+        # Same presence-flag treatment: the route mints a random uuid per
+        # turn (None on /resume), so pin "a string id was passed" instead of
+        # the value.
+        kwargs["_turn_user_message_id"] = isinstance(
+            kwargs.get("_turn_user_message_id"), str
+        )
         self.astream_calls.append({"message": message, **kwargs})
         yield {"type": "thinking", "content": "working"}
         yield {"type": "response", "content": "stream response"}
@@ -395,6 +401,7 @@ def test_chat_stream_preserves_sse_shape_and_attachment_conversion(
             "source_label": "alice",
             "_on_turn_started": True,
             "_resume_halted_turn": False,
+            "_turn_user_message_id": True,
         }
     ]
     assert agent.thread_metadata_manager.auto_title_calls == [
@@ -530,6 +537,7 @@ def test_quick_stream_creates_temporary_thread_and_streams_inline(
             "source_label": "alice",
             "_on_turn_started": True,
             "_resume_halted_turn": False,
+            "_turn_user_message_id": True,
         }
     ]
 
@@ -887,6 +895,9 @@ def test_resume_stream_idle_runs_message_less_resume(
     assert call["message"] == ""
     assert call["_resume_halted_turn"] is True
     assert call["thread_id"] == "caller-1"
+    # A resume adds no HumanMessage, so no anchor id is minted (the
+    # presence-flag in FakeChatAgent.astream records None as False).
+    assert call["_turn_user_message_id"] is False
     # The streamed continuation still flows to the client.
     assert any(e["type"] == "response" for e in _sse_events(body))
 

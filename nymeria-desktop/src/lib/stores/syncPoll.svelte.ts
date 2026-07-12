@@ -80,6 +80,20 @@ async function pollThreadStatus(threadId: string) {
     const status = await api.getThreadStatus(threadId);
     if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
 
+    // Live-attach (backlog #87): a holder turn started elsewhere while this
+    // thread was already open (no thread switch, so navigation's attach
+    // branch never saw it). Hand off to the viewer attach instead of the
+    // history-refresh below; the attach flow owns rendering from here.
+    // Streaming self-suppression above keeps this off this client's own
+    // turns, and an autonomous turn the firehose has attached also holds
+    // isStreaming. isLoadingHistory is unset here by construction (the poll
+    // only starts after switchToThread's history load completes).
+    if (status.turn?.state === 'live') {
+      chatStore.requestViewerAttach(threadId, status.turn);
+      updateThreadStatusBaseline(status);
+      return;
+    }
+
     const revisionChanged = baselineKnown && status.revision !== lastKnownRevision;
     const processingJustFinished = wasProcessing && !status.processing;
     const needsBaseline = !baselineKnown;

@@ -83,9 +83,20 @@ class TurnReplayGapError(Exception):
 class TurnStreamBuffer:
     """Bounded, replayable event buffer for one holder turn."""
 
-    def __init__(self, thread_id: str, user_id: str) -> None:
+    def __init__(
+        self,
+        thread_id: str,
+        user_id: str,
+        user_message_id: Optional[str] = None,
+    ) -> None:
         self.thread_id = thread_id
         self.user_id = user_id
+        # Graph message id of the turn's initiating HumanMessage (None for
+        # message-less turns, e.g. /resume). Lets a live-attach viewer anchor
+        # its hydrated history to the turn start: history entries expose the
+        # same id as ``message_id``, so the viewer trims everything after the
+        # anchor and rebuilds the turn from the replay without duplication.
+        self.user_message_id = user_message_id
         self.turn_id = uuid.uuid4().hex
         self.started_at = time.time()
         self.state = STATE_LIVE
@@ -168,6 +179,7 @@ class TurnStreamBuffer:
                 "state": self.state,
                 "last_seq": self._next_seq - 1,
                 "truncated": self.truncated,
+                "user_message_id": self.user_message_id,
             }
 
     def _entries_after(self, cursor: int) -> list[Tuple[int, str]]:
@@ -223,7 +235,12 @@ class TurnStreamRegistry:
         self._buffers: Dict[str, TurnStreamBuffer] = {}
         self._lock = threading.Lock()
 
-    def begin_turn(self, thread_id: str, user_id: str) -> TurnStreamBuffer:
+    def begin_turn(
+        self,
+        thread_id: str,
+        user_id: str,
+        user_message_id: Optional[str] = None,
+    ) -> TurnStreamBuffer:
         """Create the buffer for a new holder turn, replacing any previous one.
 
         The per-thread lock serializes holder turns. A still-live previous
@@ -237,7 +254,7 @@ class TurnStreamRegistry:
         unaffected, and marking it terminal gives late re-attachers an honest
         end-of-stream.
         """
-        buffer = TurnStreamBuffer(thread_id, user_id)
+        buffer = TurnStreamBuffer(thread_id, user_id, user_message_id=user_message_id)
         with self._lock:
             previous = self._buffers.get(thread_id)
             self._buffers[thread_id] = buffer

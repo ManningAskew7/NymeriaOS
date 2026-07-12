@@ -12,7 +12,9 @@ import type {
   DispatchInfo,
   PendingPrompt,
   PendingPromptStatus,
-  StopThreadResult
+  StopThreadResult,
+  ThreadTurnStatus,
+  ViewerAttachRequest
 } from '$lib/types';
 import { abortCurrentStream, api } from '$lib/services/api.svelte';
 import { generateId } from '$lib/utils/ids';
@@ -61,6 +63,12 @@ export function createChatStore() {
   // Resume request channel (backlog #27): bumped by the pause card's Resume
   // button, consumed by MainPanel, which runs the message-less /resume turn.
   let resumeRequest = $state(0);
+  // Live-attach request channel (backlog #87): set by navigation (thread
+  // open) and the sync poll when the thread has an in-flight holder turn
+  // this client does not own; consumed by MainPanel, which replays and
+  // tails the turn buffer as a viewer.
+  let viewerAttachRequest = $state<ViewerAttachRequest | null>(null);
+  let viewerAttachSeq = 0;
   // Texts already restored during the current stop cycle: the fallback timer,
   // the unreachable-backend path, and the (possibly late) stop response can
   // each restore, so dedupe across them. Reset when a stop starts.
@@ -155,6 +163,9 @@ export function createChatStore() {
     },
     get resumeRequest() {
       return resumeRequest;
+    },
+    get viewerAttachRequest() {
+      return viewerAttachRequest;
     },
     get pendingPrompts() {
       return pendingPrompts;
@@ -1577,6 +1588,39 @@ export function createChatStore() {
     // runs the message-less /resume turn through the normal stream path.
     requestResume() {
       resumeRequest += 1;
+    },
+
+    // Ask the chat panel to live-attach to a holder turn this client did
+    // not start (backlog #87). Callers pass the status `turn` block; the
+    // panel replays the turn buffer from seq 0 and tails it live.
+    requestViewerAttach(threadId: string, turn: ThreadTurnStatus) {
+      viewerAttachSeq += 1;
+      viewerAttachRequest = {
+        seq: viewerAttachSeq,
+        threadId,
+        turnId: turn.turnId,
+        userMessageId: turn.userMessageId ?? null
+      };
+    },
+
+    /**
+     * Drop every message after the one carrying this LangGraph message id
+     * (the live turn's initiating user message). A viewer trims the
+     * hydrated turn-so-far before replaying the turn buffer, which
+     * re-renders the whole assistant side; without the trim the persisted
+     * partial turn would render twice. Returns false when the anchor is
+     * not in the current message list (nothing is trimmed).
+     */
+    trimAfterGraphMessageId(graphMessageId: string): boolean {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].graphMessageId === graphMessageId) {
+          if (i < messages.length - 1) {
+            messages = messages.slice(0, i + 1);
+          }
+          return true;
+        }
+      }
+      return false;
     },
 
     // Context stats methods

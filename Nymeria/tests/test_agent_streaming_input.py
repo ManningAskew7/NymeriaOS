@@ -102,6 +102,82 @@ def test_no_attachments_self_invoke_marks_internal():
     }
 
 
+def test_user_message_id_stamped_on_text_and_image_paths(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The route-minted anchor id becomes the HumanMessage's graph id.
+
+    LangGraph's add_messages preserves caller-set ids, so the persisted
+    message carries the same id the turn stream buffer exposes to
+    live-attach viewers (history renders it as ``message_id``).
+    """
+    agent = _fake_agent()
+    state, _summary, _error = prepare_astream_input(
+        cast(Any, agent),
+        message_with_context="hello",
+        thread_id="t1",
+        image_attachments=None,
+        sandbox_records=None,
+        force_unsupported_attachments=False,
+        is_self_invoke=False,
+        user_message_id="anchor-1",
+    )
+    assert state is not None
+    assert state["messages"][0].id == "anchor-1"
+
+    _patch_image_compatibility(monkeypatch, compatible=True)
+    state, _summary, _error = prepare_astream_input(
+        cast(Any, agent),
+        message_with_context="look at this",
+        thread_id="t1",
+        image_attachments=[
+            {"data_url": "data:image/png;base64,AAAA", "mime_type": "image/png"}
+        ],
+        sandbox_records=None,
+        force_unsupported_attachments=False,
+        is_self_invoke=False,
+        user_message_id="anchor-2",
+    )
+    assert state is not None
+    assert state["messages"][0].id == "anchor-2"
+
+
+def test_user_message_id_default_leaves_id_unset():
+    agent = _fake_agent()
+    state, _summary, _error = prepare_astream_input(
+        cast(Any, agent),
+        message_with_context="hello",
+        thread_id="t1",
+        image_attachments=None,
+        sandbox_records=None,
+        force_unsupported_attachments=False,
+        is_self_invoke=False,
+    )
+    assert state is not None
+    assert state["messages"][0].id is None
+
+
+def test_add_messages_reducer_preserves_caller_set_id():
+    """Pin the vendor behavior the live-attach anchor relies on.
+
+    The whole anchor chain is: the chat route mints ``user_message_id``,
+    ``prepare_astream_input`` stamps it as ``HumanMessage.id`` (pinned
+    above), the graph's ``add_messages`` reducer persists it unchanged
+    (pinned HERE), and history rendering re-exposes it as ``message_id``
+    (pinned in test_agent_history.py). If LangGraph ever started
+    reassigning caller-set ids, viewers could never resolve the anchor.
+    """
+    from langchain_core.messages import HumanMessage
+    from langgraph.graph.message import add_messages
+
+    merged = add_messages([], [HumanMessage(content="hi", id="anchor-9")])
+    assert [m.id for m in merged] == ["anchor-9"]
+
+    # And merging further messages must not rewrite the existing id.
+    merged = add_messages(merged, [HumanMessage(content="again")])
+    assert merged[0].id == "anchor-9"
+
+
 def test_no_compaction_resume_attachment():
     """prepare_astream_input no longer glues a pending summary/notepad onto the
     user message; carried context lives in the retained resume-tail in state."""
