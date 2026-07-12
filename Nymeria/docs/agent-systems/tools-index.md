@@ -1130,7 +1130,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `twitter_repost` | `nymeria/tools/community_publishing_service_integrations.py` | Repost an X/Twitter post as the authenticated user. |
 | `twitter_search_recent` | `nymeria/tools/community_publishing_service_integrations.py` | Search recent X/Twitter posts. |
 | `twitter_send_direct_message` | `nymeria/tools/community_publishing_service_integrations.py` | Send an X/Twitter direct message to a user. |
-| `ui_prompt` | `nymeria/tools/ui_prompt.py` | Show an interactive HTML form to the user in the desktop app and wait |
+| `ui_prompt` | `nymeria/tools/ui_prompt.py` | Show an interactive HTML form in the desktop app and return the user's answers. |
 | `unleashed_get_stock_on_hand` | `nymeria/tools/commerce_billing_service_integrations.py` | Get Unleashed stock-on-hand for one product. |
 | `unleashed_list_sales_orders` | `nymeria/tools/commerce_billing_service_integrations.py` | List Unleashed sales orders. |
 | `unleashed_list_stock_on_hand` | `nymeria/tools/commerce_billing_service_integrations.py` | List Unleashed stock-on-hand records. |
