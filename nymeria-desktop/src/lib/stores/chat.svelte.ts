@@ -69,6 +69,12 @@ export function createChatStore() {
   // tails the turn buffer as a viewer.
   let viewerAttachRequest = $state<ViewerAttachRequest | null>(null);
   let viewerAttachSeq = 0;
+  // Thread the chat panel is currently rendering from the turn buffer
+  // (viewer attach or dropped-stream recovery). While set, the autonomous
+  // store must not apply bus transcript events for that thread: the buffer
+  // replay is the single renderer, and a stale autonomous-store binding
+  // could otherwise double-render the turn (backlog #90 slice 2).
+  let bufferAttachedThreadId = $state<string | null>(null);
   // Texts already restored during the current stop cycle: the fallback timer,
   // the unreachable-backend path, and the (possibly late) stop response can
   // each restore, so dedupe across them. Reset when a stop starts.
@@ -166,6 +172,12 @@ export function createChatStore() {
     },
     get viewerAttachRequest() {
       return viewerAttachRequest;
+    },
+    get bufferAttachedThreadId() {
+      return bufferAttachedThreadId;
+    },
+    setBufferAttachedThread(threadId: string | null) {
+      bufferAttachedThreadId = threadId;
     },
     get pendingPrompts() {
       return pendingPrompts;
@@ -1599,7 +1611,9 @@ export function createChatStore() {
         seq: viewerAttachSeq,
         threadId,
         turnId: turn.turnId,
-        userMessageId: turn.userMessageId ?? null
+        userMessageId: turn.userMessageId ?? null,
+        holderKind: turn.holderKind ?? 'user',
+        sourceLabel: turn.sourceLabel ?? null
       };
     },
 

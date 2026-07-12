@@ -27,6 +27,17 @@ class ThreadTurnStatus(BaseModel):
     # persisting the message, so its buffer still advertises an id no history
     # entry carries. Clients must treat anchor-not-found as reconcilable.
     user_message_id: str | None = None
+    # Who is running the turn: "user" (interactive) or "autonomous"
+    # (self-invoke: TODOs, triggers, dreams, callables, spawns, watchdog).
+    holder_kind: str = "user"
+    # Short human label for the initiator (trigger name, TODO task, callable
+    # name, "watchdog"); best-effort.
+    source_label: str | None = None
+    # True when the initiating message is an internal autonomous wakeup,
+    # subject to the per-thread show_autonomous_prompts history filter.
+    # Viewers hydrate history with include_hidden_anchors=true so the anchor
+    # resolves either way (as a hidden stub when the filter would drop it).
+    user_message_internal: bool = False
 
 
 class ThreadStatusResponse(BaseModel):
@@ -36,7 +47,8 @@ class ThreadStatusResponse(BaseModel):
     revision: str | None
     processing: bool
     # The thread's current (or most recently finished, within retention)
-    # interactive turn buffer, if any. None when nothing is attachable.
+    # holder-turn buffer, if any (interactive or autonomous). None when
+    # nothing is attachable.
     turn: ThreadTurnStatus | None = None
 
 

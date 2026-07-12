@@ -199,3 +199,119 @@ describe('attachToThread message binding (replay-on-join)', () => {
     expect(newSteps.some((s) => s.type === 'response' && (s.content ?? '').includes('Dream summary.'))).toBe(true);
   });
 });
+
+// --- Stand-down during buffer attach (backlog #90 slice 2) -------------------
+
+/**
+ * Mirrors the guard at the top of canApplyStreamingEvent in
+ * autonomous.svelte.ts: while the chat panel renders a thread from the turn
+ * buffer (chatStore.bufferAttachedThreadId), bus transcript events for that
+ * thread must not apply, even when a pre-attach binding is still present in
+ * activeMessagesByThread. Update alongside autonomous.svelte.ts (same
+ * contract note as applyAutonomousAttach above).
+ */
+describe('canApplyStreamingEvent stand-down during buffer attach', () => {
+  function applyGuard(
+    store: ReturnType<typeof createChatStore>,
+    eventThreadId: string,
+    isCurrentThread: boolean,
+    isOurTask: boolean,
+    hasBinding: boolean,
+  ): boolean {
+    if (store.bufferAttachedThreadId === eventThreadId) return false;
+    return isCurrentThread && isOurTask && store.isStreaming && hasBinding;
+  }
+
+  let store: ReturnType<typeof createChatStore>;
+
+  beforeEach(() => {
+    store = createChatStore();
+  });
+
+  it('applies transcript events normally when no buffer attach is active', () => {
+    store.setStreaming(true);
+    expect(applyGuard(store, 't-1', true, true, true)).toBe(true);
+  });
+
+  it('stands down for the buffer-attached thread even with a stale binding', () => {
+    store.setStreaming(true);
+    store.setBufferAttachedThread('t-1');
+    expect(applyGuard(store, 't-1', true, true, true)).toBe(false);
+    // Other threads are unaffected (their events stay buffered/applied by
+    // the usual rules).
+    expect(applyGuard(store, 't-2', true, true, true)).toBe(true);
+  });
+
+  it('resumes applying once the attach ends', () => {
+    store.setStreaming(true);
+    store.setBufferAttachedThread('t-1');
+    store.setBufferAttachedThread(null);
+    expect(applyGuard(store, 't-1', true, true, true)).toBe(true);
+  });
+});
+
+/**
+ * Mirrors the buffer-attach guards added alongside canApplyStreamingEvent
+ * (backlog #90 review pass): bufferPendingEvent drops (never queues) events
+ * for the buffer-attached thread, and the task_completed finalization block
+ * requires bufferAttachedThreadId !== event.thread_id so a stale pre-attach
+ * binding cannot finalize or error-paint the message mid-attach. Update
+ * alongside autonomous.svelte.ts.
+ */
+describe('pending-buffer and task_completed stand-down during buffer attach', () => {
+  function shouldQueuePending(
+    store: ReturnType<typeof createChatStore>,
+    eventThreadId: string,
+  ): boolean {
+    return store.bufferAttachedThreadId !== eventThreadId;
+  }
+
+  function shouldFinalizeFromTaskCompleted(
+    store: ReturnType<typeof createChatStore>,
+    eventThreadId: string,
+    isCurrentThread: boolean,
+    isOurTask: boolean,
+    hadStreamingMessage: boolean,
+  ): boolean {
+    return (
+      isCurrentThread &&
+      isOurTask &&
+      store.isStreaming &&
+      hadStreamingMessage &&
+      store.bufferAttachedThreadId !== eventThreadId
+    );
+  }
+
+  let store: ReturnType<typeof createChatStore>;
+
+  beforeEach(() => {
+    store = createChatStore();
+  });
+
+  it('queues pending transcript events when no attach is active', () => {
+    expect(shouldQueuePending(store, 't-1')).toBe(true);
+  });
+
+  it('drops pending transcript events for the buffer-attached thread', () => {
+    store.setBufferAttachedThread('t-1');
+    expect(shouldQueuePending(store, 't-1')).toBe(false);
+    // Other threads keep queueing for their own later switch-in replay.
+    expect(shouldQueuePending(store, 't-2')).toBe(true);
+  });
+
+  it('task_completed finalizes normally when no attach is active', () => {
+    store.setStreaming(true);
+    expect(shouldFinalizeFromTaskCompleted(store, 't-1', true, true, true)).toBe(true);
+  });
+
+  it('task_completed does not finalize mid-attach despite a stale binding', () => {
+    // The reviewer scenario: switch away and back during the same autonomous
+    // turn leaves activeMessagesByThread bound while the buffer attach owns
+    // rendering; the bus terminal event must not setStreaming(false) or
+    // inject content under the replay.
+    store.setStreaming(true);
+    store.setBufferAttachedThread('t-1');
+    expect(shouldFinalizeFromTaskCompleted(store, 't-1', true, true, true)).toBe(false);
+    expect(shouldFinalizeFromTaskCompleted(store, 't-2', true, true, true)).toBe(true);
+  });
+});

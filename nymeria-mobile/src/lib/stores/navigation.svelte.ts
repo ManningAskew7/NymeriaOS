@@ -65,12 +65,15 @@ export async function switchToThread(
         chatStore.addAssistantMessage();
       }
       chatStore.setStreaming(true);
-    } else if (status?.turn?.state === 'live') {
+    } else if (status?.turn?.state === 'live' && !status.turn.truncated) {
       // A holder turn is running that this client did not start (another
-      // client of the same user, or this client's own turn surviving a
-      // dropped stream): watch it live (backlog #87). ChatPanel consumes
-      // the request, trims the hydrated turn-so-far, and replays + tails
-      // the turn buffer.
+      // client of the same user, an autonomous turn since #90 slice 2, or
+      // this client's own turn surviving a dropped stream): watch it live
+      // (backlog #87). ChatPanel consumes the request, trims the hydrated
+      // turn-so-far at the anchor (hidden-wakeup stubs included), and
+      // replays + tails the turn buffer. A truncated buffer cannot replay,
+      // so skip the attach and let the autonomous bus events render the
+      // turn instead of stalling on an unattachable one.
       chatStore.requestViewerAttach(threadId, status.turn);
     }
 

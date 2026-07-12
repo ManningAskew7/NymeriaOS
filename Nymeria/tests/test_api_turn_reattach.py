@@ -309,6 +309,9 @@ def test_thread_status_reports_attachable_turn(tmp_path: Path, api_client_builde
         "last_seq": 4,
         "truncated": False,
         "user_message_id": None,
+        "holder_kind": "user",
+        "source_label": None,
+        "user_message_internal": False,
     }
 
 

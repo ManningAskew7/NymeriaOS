@@ -66,6 +66,12 @@ describe('isCountableUserMessage', () => {
       isCountableUserMessage(makeMessage({ id: 'u2', autonomousSource: 'scheduler' }))
     ).toBe(false);
   });
+
+  it('skips hidden anchor stubs so ordinals stay aligned (backlog #90)', () => {
+    expect(
+      isCountableUserMessage(makeMessage({ id: 'u3', hidden: true, content: '' }))
+    ).toBe(false);
+  });
 });
 
 describe('computeVisibleBlastRadius', () => {
@@ -80,6 +86,15 @@ describe('computeVisibleBlastRadius', () => {
     expect(computeVisibleBlastRadius(transcript, 0)).toBe(3);
     expect(computeVisibleBlastRadius(transcript, 2)).toBe(1);
     expect(computeVisibleBlastRadius(transcript, 3)).toBe(0);
+  });
+
+  it('excludes hidden anchor stubs from the removal copy (backlog #90)', () => {
+    const withStub = [
+      makeMessage({ id: 'u1' }),
+      makeMessage({ id: 'stub', hidden: true, content: '' }),
+      makeMessage({ id: 'a1', role: 'assistant' }),
+    ];
+    expect(computeVisibleBlastRadius(withStub, 0)).toBe(1);
   });
 
   it('is zero for out-of-range targets', () => {

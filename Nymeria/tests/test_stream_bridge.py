@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -12,6 +14,10 @@ from nymeria.vendor.react_agent import providers
 from nymeria.vendor.react_agent.config import LLMConfig
 from nymeria.vendor.react_agent.providers import create_llm
 from nymeria.core.stream_bridge import iter_agent_astream, stream_and_collect
+from nymeria.core.turn_stream_buffer import (
+    get_turn_stream_registry,
+    reset_turn_stream_registry,
+)
 
 
 class _FakeAgent:
@@ -304,3 +310,297 @@ def test_autonomous_callers_use_stream_and_collect_for_collection_loops():
 
     for path in paths:
         assert "for chunk in iter_agent_astream(" not in path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Turn-buffer tee (backlog #90 slice 1): local turns consumed through
+# stream_and_collect feed the per-thread turn stream buffer so any client can
+# attach to them; remote (relayed) turns are buffered by the chat route.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_turn_registry():
+    reset_turn_stream_registry()
+    yield
+    reset_turn_stream_registry()
+
+
+class _HolderAgent:
+    """Fake agent honoring the holder-turn callback like NymeriaAgent.astream."""
+
+    def __init__(self, chunks, mid_stream_exc: BaseException | None = None):
+        self._chunks = list(chunks)
+        self._mid_stream_exc = mid_stream_exc
+        self.seen_kwargs: dict = {}
+
+    async def astream(self, **kwargs):
+        self.seen_kwargs = kwargs
+        on_started = kwargs.get("_on_turn_started")
+        if on_started is not None:
+            on_started()
+        for chunk in self._chunks:
+            yield chunk
+        if self._mid_stream_exc is not None:
+            raise self._mid_stream_exc
+
+
+def _buffered_events(thread_id: str) -> list[dict]:
+    buffer = get_turn_stream_registry().get(thread_id)
+    assert buffer is not None
+    return [json.loads(payload) for _, payload in buffer._entries]
+
+
+def test_stream_and_collect_tees_local_holder_turn_into_buffer():
+    agent = _HolderAgent([
+        {"type": "thinking", "content": "hm"},
+        {"type": "response", "content": "done"},
+    ])
+
+    stream_and_collect(
+        agent,
+        astream_kwargs={
+            "message": "wake",
+            "thread_id": "t-tee",
+            "user_id": "owner",
+            "_is_self_invoke": True,
+            "source": "ticker",
+            "source_label": "daily report",
+        },
+    )
+
+    buffer = get_turn_stream_registry().get("t-tee")
+    assert buffer is not None
+    snap = buffer.snapshot()
+    assert snap["state"] == "done"
+    assert snap["holder_kind"] == "autonomous"
+    assert snap["source_label"] == "daily report"
+    assert snap["user_message_internal"] is True
+    # The minted anchor reached both the buffer and the agent kwargs (so the
+    # wakeup HumanMessage gets stamped with the same id).
+    minted = agent.seen_kwargs["_turn_user_message_id"]
+    assert minted and snap["user_message_id"] == minted
+
+    events = _buffered_events("t-tee")
+    assert [e["type"] for e in events] == [
+        "turn_started",
+        "thinking",
+        "response",
+        "done",
+    ]
+    assert all(e["thread_id"] == "t-tee" for e in events)
+    assert [e["seq"] for e in events] == [1, 2, 3, 4]
+    assert events[0]["turn_id"] == buffer.turn_id
+
+
+def test_stream_and_collect_does_not_tee_remote_executor():
+    class _RemoteExecutor:
+        is_remote = True
+
+        def __init__(self):
+            self.seen_kwargs: dict = {}
+
+        async def astream(self, **kwargs):
+            self.seen_kwargs = kwargs
+            yield {"type": "response", "content": "relayed"}
+
+    executor = _RemoteExecutor()
+    stream_and_collect(
+        executor,
+        astream_kwargs={
+            "message": "wake",
+            "thread_id": "t-remote",
+            "user_id": "owner",
+            "_is_self_invoke": True,
+        },
+    )
+
+    # The API-side chat route buffers relay turns; the worker side must not.
+    assert get_turn_stream_registry().get("t-remote") is None
+    assert "_on_turn_started" not in executor.seen_kwargs
+    assert "_turn_user_message_id" not in executor.seen_kwargs
+
+
+def test_stream_and_collect_error_chunk_finishes_buffer_error():
+    agent = _HolderAgent([
+        {"type": "thinking", "content": "hm"},
+        {"type": "error", "content": "boom", "code": "provider"},
+    ])
+
+    with pytest.raises(RuntimeError, match="boom"):
+        stream_and_collect(
+            agent,
+            astream_kwargs={
+                "message": "wake",
+                "thread_id": "t-err",
+                "user_id": "owner",
+                "_is_self_invoke": True,
+            },
+        )
+
+    buffer = get_turn_stream_registry().get("t-err")
+    assert buffer is not None
+    assert buffer.state == "error"
+    assert [e["type"] for e in _buffered_events("t-err")] == [
+        "turn_started",
+        "thinking",
+        "error",
+    ]
+
+
+def test_stream_and_collect_raised_exception_buffers_error_event():
+    """A raised exception mirrors the chat route: a synthesized error wire
+    event followed by the error terminal state, so an attached watcher sees
+    the failure instead of a bare abort."""
+    agent = _HolderAgent(
+        [{"type": "thinking", "content": "hm"}],
+        mid_stream_exc=RuntimeError("transport died"),
+    )
+
+    with pytest.raises(RuntimeError, match="transport died"):
+        stream_and_collect(
+            agent,
+            astream_kwargs={
+                "message": "wake",
+                "thread_id": "t-raise",
+                "user_id": "owner",
+                "_is_self_invoke": True,
+            },
+        )
+
+    buffer = get_turn_stream_registry().get("t-raise")
+    assert buffer is not None
+    assert buffer.state == "error"
+    events = _buffered_events("t-raise")
+    assert [e["type"] for e in events] == ["turn_started", "thinking", "error"]
+    assert events[-1]["content"] == "transport died"
+
+
+def test_stream_and_collect_cancellation_marks_buffer_aborted():
+    """Cancellation (a BaseException) skips the error synthesis and lands on
+    the aborted backstop, matching the route's GeneratorExit handling."""
+    agent = _HolderAgent(
+        [{"type": "thinking", "content": "hm"}],
+        mid_stream_exc=asyncio.CancelledError(),
+    )
+
+    # The bridge surfaces a cancelled future as concurrent.futures
+    # CancelledError (an Exception subclass on some stdlib layouts).
+    with pytest.raises((asyncio.CancelledError, concurrent.futures.CancelledError)):
+        stream_and_collect(
+            agent,
+            astream_kwargs={
+                "message": "wake",
+                "thread_id": "t-abort",
+                "user_id": "owner",
+                "_is_self_invoke": True,
+            },
+        )
+
+    buffer = get_turn_stream_registry().get("t-abort")
+    assert buffer is not None
+    assert buffer.state == "aborted"
+    assert [e["type"] for e in _buffered_events("t-abort")] == [
+        "turn_started",
+        "thinking",
+    ]
+
+
+def test_stream_and_collect_user_holder_turn_carries_no_source_label():
+    """Non-self-invoke turns (e.g. a user-initiated callable handoff) are
+    user-holder turns: no source label, visible anchor (the route's rule)."""
+    agent = _HolderAgent([{"type": "response", "content": "ok"}])
+
+    stream_and_collect(
+        agent,
+        astream_kwargs={
+            "message": "hello",
+            "thread_id": "t-user-holder",
+            "user_id": "owner",
+            "_is_self_invoke": False,
+            "source": "callable",
+            "source_label": "research assistant",
+        },
+    )
+
+    buffer = get_turn_stream_registry().get("t-user-holder")
+    assert buffer is not None
+    snap = buffer.snapshot()
+    assert snap["holder_kind"] == "user"
+    assert snap["source_label"] is None
+    assert snap["user_message_internal"] is False
+
+
+def test_stream_and_collect_no_buffer_when_turn_never_holds_lock():
+    """Queued/absorbed self-invoke calls never fire the holder callback, so
+    no buffer is created (the running holder's buffer owns the thread)."""
+
+    class _QueuedAgent:
+        async def astream(self, **kwargs):
+            yield {"type": "prompt_absorbed", "thread_id": "t-queued"}
+
+    stream_and_collect(
+        _QueuedAgent(),
+        astream_kwargs={
+            "message": "wake",
+            "thread_id": "t-queued",
+            "user_id": "owner",
+            "_is_self_invoke": True,
+        },
+    )
+
+    assert get_turn_stream_registry().get("t-queued") is None
+
+
+def test_stream_and_collect_preserves_caller_anchor_and_holder_callback():
+    fired = []
+    agent = _HolderAgent([{"type": "response", "content": "ok"}])
+
+    stream_and_collect(
+        agent,
+        astream_kwargs={
+            "message": "wake",
+            "thread_id": "t-chain",
+            "user_id": "owner",
+            "_is_self_invoke": True,
+            "_turn_user_message_id": "caller-anchor",
+            "_on_turn_started": lambda: fired.append(True),
+        },
+    )
+
+    buffer = get_turn_stream_registry().get("t-chain")
+    assert buffer is not None
+    assert buffer.user_message_id == "caller-anchor"
+    assert agent.seen_kwargs["_turn_user_message_id"] == "caller-anchor"
+    assert fired == [True]
+
+
+def test_stream_and_collect_done_carries_context_stats_and_model():
+    """The synthesized done mirrors the chat route's payload garnish when the
+    local executor exposes its agent."""
+
+    class _StatsAgent(_HolderAgent):
+        def __init__(self):
+            super().__init__([{"type": "response", "content": "ok"}])
+            self.settings = type("S", (), {"llm_model": "global-model"})()
+
+        def get_context_stats(self, thread_id):
+            return {"total_tokens": 42, "thread": thread_id}
+
+        def _get_llm_config_for_thread(self, thread_id):
+            return type("Cfg", (), {"model": "thread-model"})()
+
+    stream_and_collect(
+        _StatsAgent(),
+        astream_kwargs={
+            "message": "wake",
+            "thread_id": "t-done",
+            "user_id": "owner",
+            "_is_self_invoke": True,
+        },
+    )
+
+    done = _buffered_events("t-done")[-1]
+    assert done["type"] == "done"
+    assert done["context_stats"] == {"total_tokens": 42, "thread": "t-done"}
+    assert done["model"] == "thread-model"

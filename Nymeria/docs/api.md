@@ -649,15 +649,21 @@ and only refreshes full history/context when the revision changes, processing
 finishes, or it has no local revision baseline. Mobile remains primarily
 event/reconnect driven.
 
-`turn` describes the thread's attachable interactive turn buffer (the current
-holder turn, or the most recent one within its ~5-minute retention window):
+`turn` describes the thread's attachable holder-turn buffer (the current
+turn, or the most recent one within its ~5-minute retention window):
 `turn_id` matches the stream's `turn_started` event, `state` is one of
 `live | done | error | aborted`, `last_seq` is the highest buffered `seq`,
 `truncated` reports replay-buffer overflow, and `user_message_id` is the
 graph message id of the turn's user message (the anchor viewers use to trim
 hydrated history before replaying the turn; `null` for message-less `/resume`
-turns). `null` when nothing is attachable (no recent turn, retention expired,
-or an API restart, which loses in-flight turns and their buffers).
+turns). `holder_kind` is `user` (interactive) or `autonomous` (TODOs,
+triggers, dreams, callables, spawns, watchdog), `source_label` is a
+best-effort short label for the autonomous initiator, and
+`user_message_internal` is true when the anchor is an internal autonomous
+wakeup (hydrate history with `include_hidden_anchors=true` so the anchor
+resolves even when the show-autonomous-prompts filter hides it). `null` when
+nothing is attachable (no recent turn, retention expired, or an API restart,
+which loses in-flight turns and their buffers).
 
 **Response:**
 ```json
@@ -670,14 +676,17 @@ or an API restart, which loses in-flight turns and their buffers).
     "state": "done",
     "last_seq": 42,
     "truncated": false,
-    "user_message_id": "3f6e2b1a-8c4d-4e5f-9a0b-1c2d3e4f5a6b"
+    "user_message_id": "3f6e2b1a-8c4d-4e5f-9a0b-1c2d3e4f5a6b",
+    "holder_kind": "user",
+    "source_label": null,
+    "user_message_internal": false
   }
 }
 ```
 
 ---
 
-### Re-attach to an Interactive Turn
+### Re-attach to a Turn (Recovery and Live Watching)
 
 ```http
 GET /threads/{thread_id}/turn/stream?turn_id=<id>&from_seq=<n>
@@ -701,8 +710,21 @@ before replaying, so the persisted turn-so-far is not rendered twice. The
 desktop and mobile GUIs do this automatically on thread open (desktop also
 on its 5-second sync poll); the viewer's composer stays live in
 compose-and-queue mode, and Stop/Resume work from the viewer like any other
-client. Only interactive streaming turns buffer: synchronous `/chat` turns
-(bot platforms) and dispatched (`@thread`) turns are not watchable.
+client.
+
+Autonomous turns buffer too: every locally-executed turn (scheduled TODOs,
+triggers, dreams, callable invocations, spawned threads, the watchdog) and
+every Docker-worker-relayed turn feeds the same per-thread buffer, so
+watching an autonomous turn is the same attach flow (the status `turn` block
+carries `holder_kind: "autonomous"` plus a `source_label`). Their anchor is
+the internal wakeup prompt: viewers hydrate history with
+`include_hidden_anchors=true`, which represents a filtered wakeup as an
+invisible stub entry (`hidden: true`) carrying the anchor `message_id`, so
+the trim contract is identical whether the per-thread
+`show_autonomous_prompts` toggle renders the wakeup or hides it. The GUIs
+prefer this attach path over the legacy client-side autonomous replay
+whenever a live buffer exists. Not watchable: synchronous `/chat` turns (bot
+platforms) and dispatched (`@thread`) turns.
 
 Query parameters: `turn_id` (optional) pins the attach to the turn the client
 was streaming (from its `turn_started` event); omit it to attach to the
@@ -711,7 +733,8 @@ replays only events with `seq` greater than the value; recovery clients
 normally pass 0 and rebuild the whole assistant turn from the replay.
 
 **Response:** SSE. The stream opens with a `turn_attach` meta event
-(`turn_id`, `state`, `last_seq`, `truncated`, `user_message_id`), then the
+(`turn_id`, `state`, `last_seq`, `truncated`, `user_message_id`,
+`holder_kind`, `source_label`, `user_message_internal`), then the
 replayed/live turn events follow. For a finished turn the stream ends after the last buffered
 event; `state: "aborted"` means the turn died without a terminal event
 (stop-cancelled turns instead carry their `error` event with
@@ -794,6 +817,8 @@ Authorization: Bearer <token>
 Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups and compact prompts) that are hidden by default. Compaction markers are visible by default as `system` messages with `kind: "compaction_notice"`.
 
 Optional query: `show_autonomous_prompts=true|false` overrides the per-thread `show_autonomous_prompts` config for this request only (without mutating thread state). When omitted, the backend falls back to the per-thread field. The desktop and mobile clients pass this query param based on their global "Show autonomous prompts" preference (combined with the per-thread force-on override), so a single global setting can drive history filtering without flipping every thread's config. MCP and CLI callers don't pass it and keep today's behavior. Ignored when `include_internal=true` (which always returns everything).
+
+Optional query: `include_hidden_anchors=true` (default false) emits an invisible stub entry for each autonomous wakeup the `show_autonomous_prompts` filter would drop: `{"role": "user", "hidden": true, "content": "", "message_id": "<graph id>"}` in graph order, with the wakeup text never included. Live-attach viewers use the stubs to trim hydrated history at an autonomous turn's anchor (`user_message_id` in the status `turn` block) even when the wakeup is hidden; clients must render nothing for `hidden` entries and exclude them from rewind/edit targeting. The desktop and mobile GUIs always pass it. No effect when wakeups are visible or with `include_internal=true`.
 
 **Response:**
 ```json

@@ -161,6 +161,10 @@ export class ThreadsApi extends ChatApi {
       (configStore.showAutonomousPrompts || Boolean(perThreadCfg?.showAutonomousPrompts));
     const params = new URLSearchParams({
       show_autonomous_prompts: String(effectiveShowAutonomousPrompts),
+      // Hidden autonomous wakeups come back as invisible stub entries
+      // (hidden: true, message_id only) so live-attach viewers can trim at
+      // the turn anchor even when the toggle hides the prompt (backlog #90).
+      include_hidden_anchors: 'true',
     });
     const response = await fetch(
       `${this.getBaseUrl()}/threads/${threadId}/history?${params.toString()}`,
@@ -204,6 +208,7 @@ export class ThreadsApi extends ChatApi {
           : undefined,
         attachments: m.attachments as Message['attachments'],
         graphMessageId: m.message_id as string | undefined,
+        hidden: m.hidden === true ? true : undefined,
         contextSummary: (m.context_summary as string | undefined) || (m.contextSummary as string | undefined),
         messagesRemoved: (m.messages_removed as number | undefined) ?? (m.messagesRemoved as number | undefined),
         autoResumed: (m.auto_resumed as boolean | undefined) ?? (m.autoResumed as boolean | undefined),
@@ -251,6 +256,10 @@ export class ThreadsApi extends ChatApi {
             lastSeq: (rawTurn.last_seq as number) ?? 0,
             truncated: Boolean(rawTurn.truncated),
             userMessageId: (rawTurn.user_message_id as string | null | undefined) ?? null,
+            holderKind:
+              rawTurn.holder_kind === 'autonomous' ? 'autonomous' : 'user',
+            sourceLabel: (rawTurn.source_label as string | null | undefined) ?? null,
+            userMessageInternal: rawTurn.user_message_internal === true,
           }
         : null,
     };

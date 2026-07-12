@@ -249,6 +249,10 @@ class _HistoryFormatContext:
     tool_results: Dict[str, Any]
     clean_tool_result: ToolResultCleaner
     extract_workspace_artifacts: WorkspaceArtifactExtractor
+    # When True, autonomous wakeups the show_autonomous_prompts filter would
+    # drop are emitted as invisible stub entries (hidden: true, message_id
+    # only) so live-attach viewers can anchor-trim precisely (backlog #90).
+    include_hidden_anchors: bool = False
     tool_timings: Dict[str, Any] = field(default_factory=dict)
     history: List[Dict[str, Any]] = field(default_factory=list)
     msg_counter: int = 0
@@ -276,6 +280,7 @@ def format_conversation_history(
     include_internal: bool = False,
     show_autonomous_prompts: bool = False,
     show_prompt_metadata: bool = False,
+    include_hidden_anchors: bool = False,
     clean_tool_result: Optional[ToolResultCleaner] = None,
     extract_workspace_artifacts: Optional[WorkspaceArtifactExtractor] = None,
 ) -> List[Dict[str, Any]]:
@@ -284,10 +289,15 @@ def format_conversation_history(
     clean_tool_result = clean_tool_result or _default_clean_tool_result
     extract_workspace_artifacts = extract_workspace_artifacts or _default_extract_workspace_artifacts
 
+    # Hidden-anchor stubs only make sense when the internal filter runs;
+    # include_internal renders wakeups in full already.
+    include_hidden_anchors = include_hidden_anchors and not include_internal
+
     if not include_internal:
         messages = _filter_internal_messages(
             messages,
             show_autonomous_prompts=show_autonomous_prompts,
+            include_hidden_anchors=include_hidden_anchors,
         )
 
     tool_results: Dict[str, Any] = {}
@@ -307,6 +317,7 @@ def format_conversation_history(
         tool_results=tool_results,
         clean_tool_result=clean_tool_result,
         extract_workspace_artifacts=extract_workspace_artifacts,
+        include_hidden_anchors=include_hidden_anchors,
         tool_timings=tool_timings,
     )
 
@@ -373,6 +384,28 @@ def _handle_human_history_message(
             "reason": msg.additional_kwargs.get("tool_reload_reason"),
             "resume_prompt": content_str,
         }
+        return
+
+    if (
+        ctx.include_hidden_anchors
+        and not ctx.show_autonomous_prompts
+        and msg.additional_kwargs.get("internal_type") == "autonomous_wakeup"
+    ):
+        # Present only for anchoring: the show_autonomous_prompts filter
+        # would have dropped this wakeup, so emit an invisible stub carrying
+        # the graph message id. Clients render nothing for hidden entries
+        # (and exclude them from rewind/edit targets); live-attach viewers
+        # trim after the stub exactly as they would after a visible anchor.
+        ctx.flush_current_turn()
+        stub: Dict[str, Any] = {
+            "id": ctx.next_entry_id(),
+            "role": "user",
+            "hidden": True,
+            "content": "",
+        }
+        if msg.id:
+            stub["message_id"] = msg.id
+        ctx.history.append(stub)
         return
 
     ctx.flush_current_turn()
@@ -519,6 +552,7 @@ def _filter_internal_messages(
     messages: List[Any],
     *,
     show_autonomous_prompts: bool,
+    include_hidden_anchors: bool = False,
 ) -> List[Any]:
     """Filter internal system prompts while preserving displayable outputs."""
     filtered_messages = []
@@ -531,11 +565,13 @@ def _filter_internal_messages(
             if is_internal:
                 internal_type = msg.additional_kwargs.get("internal_type", "")
                 if internal_type == "autonomous_wakeup":
-                    if show_autonomous_prompts:
-                        skip_until_next_human = False
+                    skip_until_next_human = False
+                    # include_hidden_anchors keeps an otherwise-filtered
+                    # wakeup in the stream; the human handler renders it as
+                    # an invisible stub so live-attach viewers can trim at
+                    # its message_id (backlog #90).
+                    if show_autonomous_prompts or include_hidden_anchors:
                         filtered_messages.append(msg)
-                    else:
-                        skip_until_next_human = False
                     continue
                 if internal_type == "compaction_marker":
                     skip_until_next_human = False

@@ -35,6 +35,7 @@ class FakeAgent:
         include_internal: bool,
         show_autonomous_prompts: bool,
         show_prompt_metadata: bool,
+        include_hidden_anchors: bool = False,
     ):
         self.history_calls.append(
             {
@@ -42,6 +43,7 @@ class FakeAgent:
                 "include_internal": include_internal,
                 "show_autonomous_prompts": show_autonomous_prompts,
                 "show_prompt_metadata": show_prompt_metadata,
+                "include_hidden_anchors": include_hidden_anchors,
             }
         )
         return [{"role": "user", "content": "hello"}]
@@ -146,12 +148,14 @@ def test_thread_history_visibility_flags_and_context_processing_state(
             "include_internal": False,
             "show_autonomous_prompts": True,
             "show_prompt_metadata": True,
+            "include_hidden_anchors": False,
         },
         {
             "thread_id": thread_id,
             "include_internal": True,
             "show_autonomous_prompts": False,
             "show_prompt_metadata": False,
+            "include_hidden_anchors": False,
         },
     ]
     assert context.status_code == 200
@@ -226,24 +230,28 @@ def test_thread_history_show_autonomous_prompts_query_param_overrides_thread_con
             "include_internal": False,
             "show_autonomous_prompts": False,
             "show_prompt_metadata": False,
+            "include_hidden_anchors": False,
         },
         {
             "thread_id": thread_id,
             "include_internal": False,
             "show_autonomous_prompts": True,
             "show_prompt_metadata": False,
+            "include_hidden_anchors": False,
         },
         {
             "thread_id": thread_id,
             "include_internal": False,
             "show_autonomous_prompts": False,
             "show_prompt_metadata": False,
+            "include_hidden_anchors": False,
         },
         {
             "thread_id": thread_id,
             "include_internal": True,
             "show_autonomous_prompts": False,
             "show_prompt_metadata": False,
+            "include_hidden_anchors": False,
         },
     ]
 

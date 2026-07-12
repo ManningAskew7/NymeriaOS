@@ -1290,10 +1290,29 @@ def create_chat_router(
 
             def _mark_turn_started() -> None:
                 nonlocal turn_buffer, turn_started_pending
+                # Holder metadata: relay turns (the Docker worker's
+                # APIClientExecutor) are self-invoke, so their buffer is a
+                # first-class attachable autonomous turn, matching the
+                # in-process tee in core/stream_bridge.py.
+                buffer_label = (
+                    request.trigger_name
+                    or request.source_label
+                    or request.trigger_override
+                    or request.source
+                )
                 turn_buffer = get_turn_stream_registry().begin_turn(
                     thread_id,
                     user_id,
                     user_message_id=turn_user_message_id,
+                    holder_kind=(
+                        "autonomous" if request.is_self_invoke else "user"
+                    ),
+                    source_label=(
+                        str(buffer_label)[:80]
+                        if request.is_self_invoke and buffer_label
+                        else None
+                    ),
+                    user_message_internal=request.is_self_invoke,
                 )
                 turn_started_pending = True
 
