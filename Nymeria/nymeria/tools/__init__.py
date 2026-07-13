@@ -1613,10 +1613,16 @@ def _derive_public_exports() -> list[str]:
             continue
         if isinstance(_value, BaseTool):
             names.add(_name)
-        elif isinstance(_value, list) and _value and all(
+        elif isinstance(_value, list) and all(
             isinstance(_item, BaseTool) for _item in _value
         ):
-            names.add(_name)
+            # Include tool lists. An empty list qualifies only if it is a
+            # conventionally named ``*_TOOLS`` var, so a plugin that is stripped
+            # in the public mirror (its ``_PRV_A_*_TOOLS`` become ``[]``) still
+            # exports the same names as here, keeping the pinned literal and
+            # this derivation environment-independent.
+            if _value or _name.endswith("_TOOLS"):
+                names.add(_name)
     return sorted(names)
 
 

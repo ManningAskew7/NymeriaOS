@@ -222,6 +222,23 @@ def test_all_covers_seed_and_group_list_vars():
     assert "SEED_TOOLS" in T.__all__
 
 
+def test_derive_exports_is_environment_independent():
+    # A *_TOOLS var that is an empty list (e.g. a plugin stripped in the public
+    # NymeriaOS mirror, where _PRV_A_*_TOOLS become []) is still exported, so the
+    # pinned literal and the derivation agree in every environment. A non-*_TOOLS
+    # empty list is not exported.
+    module_globals = vars(T)
+    module_globals["ZZZ_PROBE_TOOLS"] = []
+    module_globals["ZZZ_PROBE_MISC"] = []
+    try:
+        derived = T._derive_public_exports()
+        assert "ZZZ_PROBE_TOOLS" in derived
+        assert "ZZZ_PROBE_MISC" not in derived
+    finally:
+        module_globals.pop("ZZZ_PROBE_TOOLS", None)
+        module_globals.pop("ZZZ_PROBE_MISC", None)
+
+
 BASELINE_SEED_NAMES = [
     "bash_execute",
     "file_read",
