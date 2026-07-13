@@ -120,6 +120,38 @@ def test_delete_hook(store):
     assert store.get_hook("u1", h.id) is None
 
 
+def test_delete_pristine_system_hook_reports_already_at_defaults(store):
+    """Deleting the never-edited system hook is a no-op reset, not a delete."""
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "delete", "hook_id": "turn-metadata"},
+        _cfg(),
+    )
+    assert "[Info]" in out
+    assert "already at its built-in defaults" in out
+
+
+def test_delete_customized_system_hook_resets(store):
+    """Deleting a materialized (customized) system hook RESETS it to defaults."""
+    _invoke(
+        hook_tools.hook_config,
+        {"action": "update", "hook_id": "turn-metadata",
+         "text": "[Time: {time}]\n[Trigger: mine]"},
+        _cfg(),
+    )
+    # A stored override now exists (materialized copy-on-write).
+    assert any(h.id == "turn-metadata" for h in store.get_hooks_cached("u1"))
+    out = _invoke(
+        hook_tools.hook_config,
+        {"action": "delete", "hook_id": "turn-metadata"},
+        _cfg(),
+    )
+    assert "[Success]" in out
+    assert "Reset system hook 'turn-metadata'" in out
+    # Back to virtual (nothing stored), the default template resolves again.
+    assert store.get_hooks_cached("u1") == []
+
+
 def test_unknown_action(store):
     out = _invoke(hook_tools.hook_config, {"action": "frobnicate"}, _cfg())
     assert "[Error]" in out

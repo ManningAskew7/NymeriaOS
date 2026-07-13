@@ -660,9 +660,10 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
 
 ## What is deferred (not yet shipped)
 
-- All nine canned actions ship (`inject_context`, `block_if_matches`, `rewrite_arg`,
-  `require_approval`, `notify`, `create_todo`, `webhook`, `run_command`,
-  `run_workflow`), including the `nym` workflow substrate. Deferred on
+- All ten canned actions ship: the nine user-authorable ones (`inject_context`,
+  `block_if_matches`, `rewrite_arg`, `require_approval`, `notify`, `create_todo`,
+  `webhook`, `run_command`, `run_workflow`, including the `nym` workflow substrate)
+  plus the reserved system `turn_metadata`. Deferred on
   `run_workflow`: a delivery path for the result of a workflow that suspends via
   `nym.approve` mid-hook (today: observe = out-of-band success, mutate = fault).
 - Observe fire points for `PROMPT_SUBMIT` / `PRE_TOOL_USE` (a registration on those
@@ -679,21 +680,26 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `_mutate_pool`/`_observe_pool` + the off-turn `schedule_observe` on its own
   `_observe_dispatch_pool` + the queue-wait-vs-execution timeout split; reports each run to
   the recorder and, on the mutate plane, to an optional `emit` sink for in-chat lines),
-  `actions.py` (the nine actions incl. `require_approval`, `run_command`, and
-  `run_workflow` with its `hook_event_payload` context dump; per-event planes via the spec's
+  `actions.py` (the ten actions incl. `require_approval`, `run_command`,
+  `run_workflow` with its `hook_event_payload` context dump, and the reserved system
+  `turn_metadata`; per-event planes via the spec's
   `plane_for`/`plane_by_event`; `context_usage_fields` + the context template vars),
   `bridge.py` (definitions → per-turn registry, registering
   each on its per-event plane with its `definition_id`, a per-registration timeout, + the
   recorder; the `_FireGate` wrapper evaluating `fire_conditions`/`once` against
   `fire_condition_data` before any logic runs).
 - `core/hook_spec.py`: the taxonomy single source (`ActionSpec`: base plane, legal events,
-  `observe_events` for per-event plane flips, text-action flag; `plane_for`/`plane_by_event`).
+  `observe_events` for per-event plane flips, text-action flag, and the `system` flag
+  marking reserved actions like `turn_metadata`; `plane_for`/`plane_by_event`).
   `EVENT_ACTIONS`/`TEXT_ACTIONS` (store) and `ACTION_PLANES` (engine) derive from it;
-  `GET /hooks/schema` exposes it (including `plane_by_event` and a `gated` flag);
+  `event_actions()` excludes system actions from authoring legality (which is why the
+  frontend taxonomy never sees them) while `system_event_actions()` validates the
+  system record itself; `GET /hooks/schema` exposes it (including `plane_by_event`,
+  a `gated` flag, and a `system` flag);
   `tests/test_hook_spec.py` pins the independent copies (the engine `ACTIONS` table,
   the logic variants, the frontend `HOOK_EVENT_ACTIONS`) in lockstep.
-- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (nine
-  variants) + `HookStore` records + the per-user `HookManager` (store-only, no engine
+- `core/hook_manager.py`: `HookDefinition` + the `HookLogic` discriminated union (ten
+  variants incl. `TurnMetadataLogic`) + `HookStore` records + the per-user `HookManager` (store-only, no engine
   import; `run_workflow` create/logic-edit validates the binding via
   `run_workflow_authoring_error`, delegating to the shared trigger-side
   `workflow_binding_error`; a corrupt store file is quarantined to

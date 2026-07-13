@@ -976,7 +976,9 @@ class HookManager:
             created_by=created_by,
         )
         with self.atomic_update(user_id) as store:
-            if len(store.hooks) >= store.MAX_HOOKS:
+            # Materialized system hooks are cap-exempt both ways: they neither
+            # count against nor consume the user's authorable-hook budget.
+            if sum(1 for h in store.hooks if h.id not in SYSTEM_HOOK_IDS) >= store.MAX_HOOKS:
                 logger.warning("Hook limit reached for user %s", user_id)
                 return None
             store.hooks.append(hook)

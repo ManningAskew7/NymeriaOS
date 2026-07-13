@@ -146,6 +146,41 @@ def test_delete(client_env):
     assert client.get(f"/hooks/{hook['id']}", headers=headers).status_code == 404
 
 
+def test_delete_pristine_system_hook_is_idempotent_204(client_env):
+    """DELETE on the virtual (never-edited) system hook resets: 204, not 404.
+
+    Nothing is stored to remove, but GET on the same id succeeds (the virtual
+    default), so a 404 would contradict it; the reset is idempotent.
+    """
+    client, _agent, headers, _b = client_env
+    assert client.get("/hooks/turn-metadata", headers=headers).status_code == 200
+    resp = client.delete("/hooks/turn-metadata", headers=headers)
+    assert resp.status_code == 204
+    # Still resolvable afterward (reset, never removed).
+    assert client.get("/hooks/turn-metadata", headers=headers).status_code == 200
+
+
+def test_patch_system_hook_materializes_then_locked_field_400(client_env):
+    """PATCH text materializes the virtual system hook; a locked field 400s."""
+    client, _agent, headers, _b = client_env
+    # A text (template) edit is allowed and materializes the copy-on-write record.
+    ok = client.patch(
+        "/hooks/turn-metadata",
+        headers=headers,
+        json={"text": "[Time: {time}]\n[Trigger: mine]"},
+    )
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["system"] is True
+    assert body["text"] == "[Time: {time}]\n[Trigger: mine]"
+    # An identity/binding field is locked on the system hook -> 400.
+    locked = client.patch(
+        "/hooks/turn-metadata", headers=headers, json={"event": "done"}
+    )
+    assert locked.status_code == 400
+    assert "cannot be changed" in locked.json()["detail"]
+
+
 def test_get_missing_404(client_env):
     client, _agent, headers, _b = client_env
     assert client.get("/hooks/nope", headers=headers).status_code == 404
