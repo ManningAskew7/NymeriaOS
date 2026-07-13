@@ -97,7 +97,9 @@ These settings give power users fine-grained control over LLM behavior. All are 
 | `LLM_STREAM_MAX_RETRIES` | `2` | 0 - 10 | Retries for transient LLM call/stream failures. If a streaming call fails after partial output, Nymeria rewinds to the latest checkpoint and retries from that stable point. |
 | `LLM_STREAM_RETRY_INITIAL_DELAY` | `1.0` | 0 - 60 | Initial retry backoff delay in seconds |
 | `LLM_STREAM_RETRY_MAX_DELAY` | `8.0` | 0 - 300 | Maximum retry backoff delay in seconds |
-| `LLM_FALLBACK_HOLD_SECONDS` | `7200` | 0 - 604800 | Seconds to keep a fallback provider/model active for a thread after primary retries are exhausted. `0` disables the timed hold. |
+| `LLM_FALLBACK_HOLD_SECONDS` | `7200` | 0 - 604800 | Seconds to keep a fallback provider/model active for a thread after primary retries are exhausted. `0` disables the timed hold. Default hold for auto-applied or timed-out switches; a consented switch may pick its own hold (including permanent). |
+| `LLM_FALLBACK_SWITCH_MODE` | `auto` | `auto`, `ask` | How an automatic fallback switch is applied. `auto` swaps silently (unchanged behavior). `ask` pauses a consent-capable interactive turn to ask swap-vs-fail, auto-swapping on timeout. Autonomous/background turns and non-interactive channels always auto-swap. Per-thread overridable. |
+| `LLM_FALLBACK_PROMPT_TIMEOUT_SECONDS` | `180` | 10 - 600 | How long an `ask`-mode consent prompt waits before auto-swapping. |
 
 **Note:** For model dropdowns and context metadata, Nymeria asks the selected provider's `/models` endpoint through `GET /models/available`. Provider-returned context fields such as `context_length`, `context_window`, or `max_context_tokens` are cached for frontend context-window percentage calculations. Chat Completions itself standardizes usage token fields, not context-window limits. Local endpoints get extra probing: Ollama `/api/show`, LM Studio `/api/v1/models`, llama.cpp `/props`, and common OpenAI-compatible `max_model_len` fields are checked when the base URL is loopback, container-local, private LAN, or Tailscale.
 

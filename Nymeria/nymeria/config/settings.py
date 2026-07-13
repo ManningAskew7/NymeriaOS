@@ -485,7 +485,30 @@ class Settings(BaseSettings):
         le=604800,
         description=(
             "Seconds to keep a successful fallback provider/model active for a "
-            "thread after primary retry exhaustion. 0 disables timed thread hold."
+            "thread after primary retry exhaustion. 0 disables timed thread hold. "
+            "Used as the default hold when a switch is auto-applied or a consent "
+            "prompt times out; a consented switch may choose its own hold."
+        ),
+    )
+    llm_fallback_switch_mode: Literal["auto", "ask"] = Field(
+        default="auto",
+        description=(
+            "How an automatic model fallback (primary exhausted its retries on a "
+            "retryable error) is applied. 'auto' switches silently (default, "
+            "unchanged behavior). 'ask' pauses a consent-capable interactive turn "
+            "and asks whether to swap to the fallback or fail the turn; if "
+            "unanswered within llm_fallback_prompt_timeout_seconds it auto-swaps. "
+            "Autonomous/background turns and non-interactive channels always "
+            "auto-swap regardless of this setting."
+        ),
+    )
+    llm_fallback_prompt_timeout_seconds: int = Field(
+        default=180,
+        ge=10,
+        le=600,
+        description=(
+            "How long an 'ask'-mode fallback consent prompt waits for the user "
+            "before auto-swapping to the fallback model."
         ),
     )
     llm_temperature: float = Field(default=1.0, ge=0.0, le=2.0)
