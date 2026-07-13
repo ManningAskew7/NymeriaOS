@@ -802,8 +802,10 @@ def _fetch_anthropic_models(
         # without a capabilities block. Do NOT assert text-only in that case: it
         # would mark every vision-capable Claude model as non-vision in the live
         # cache (which is authoritative over the static fallback) and silently
-        # disable all image input. Defer to the catalog/static fallbacks for any
-        # modality the provider did not explicitly report.
+        # disable all image input. Defer to the fallbacks for any modality the
+        # provider did not explicitly report; their terminal default is now
+        # OPTIMISTIC (vision/document unless a non-visual model type), so a
+        # brand-new multimodal slug this proxy omits is not marked vision-blind.
         if not image_reported and _vision_fallback(model_id):
             input_modalities.add("image")
         if not pdf_reported and _documents_fallback(model_id):
@@ -1197,7 +1199,12 @@ def _fallback_check(model_id: str, model_set: Set[str]) -> bool:
 #   tables for e.g. the codex and image-generation families. The catalog
 #   answers only for models the curated tables do not know at all; uncurated
 #   siblings of curated families (e.g. "codex-mini-latest") take the catalog
-#   verdict, which beats a blanket False.
+#   verdict. Below the catalog the terminal default is OPTIMISTIC (vision +
+#   document) rather than a blanket False, denied only for non-vision model
+#   TYPES (``_is_non_visual_model``): capability-blind gateways such as CLIProxy
+#   report no modalities at all, so a brand-new multimodal model would otherwise
+#   be marked vision-blind (image input silently stripped) until it was
+#   hand-added to the curated table. See ``_vision_fallback``.
 #
 # The catalog's per-effort-level booleans are deliberately NOT wired into the
 # reasoning-effort ladders: those stay on the curated family tables, which
@@ -1221,30 +1228,80 @@ def _catalog_capabilities(model_id: str) -> "Optional[CatalogCapabilities]":
     return pricing_table.get_catalog_capabilities("", normalized)
 
 
+# Model families that, by TYPE, do not accept image input, so the optimistic
+# terminal default of the capability fallbacks must not mark them vision/document
+# capable. This is a stable, type-based guard (model categories, not versioned
+# slugs), so it does not reintroduce per-model maintenance. Legacy text-only CHAT
+# models (claude-2, gpt-3.5) are NOT listed here: the catalog's positive
+# "text-only" verdict already denies them one tier above the terminal default.
+# Curated image-editing models (e.g. gemini-*-image) resolve True from the curated
+# tables above this guard, so listing image-generation brand tokens cannot
+# override them.
+_NON_VISUAL_MODEL_MARKERS: tuple = (
+    "embed",                    # text-embedding-3, embedding-001, nomic-embed, voyage-*
+    "whisper", "tts", "stt", "speech",   # audio in/out
+    "moderation",               # text moderation classifiers
+    "rerank",                   # rerankers
+    # Image-GENERATION families (produce images; not vision-input chat models).
+    "dall-e", "dalle", "gpt-image", "imagen",
+    "stable-diffusion", "flux", "midjourney",
+)
+
+
+def _is_non_visual_model(model_id: str) -> bool:
+    """Whether a model is, by type, not a vision-input chat model.
+
+    Used only by the OPTIMISTIC terminal default of the capability fallbacks: an
+    unknown model is assumed vision/document capable UNLESS it matches one of
+    these stable non-chat / image-generation categories. An empty id is treated
+    as non-visual so a blank model never resolves optimistically.
+    """
+    if not model_id:
+        return True
+    lowered = model_id.lower()
+    return any(marker in lowered for marker in _NON_VISUAL_MODEL_MARKERS)
+
+
 def _vision_fallback(model_id: str) -> bool:
-    """Vision capability with no live metadata cached: curated, then catalog."""
+    """Vision capability with no live metadata cached.
+
+    Tiering: the curated tables (a definite opinion) win, then the offline
+    LiteLLM catalog when it carries a verdict (True OR False), then an OPTIMISTIC
+    default: an unknown model is assumed vision-capable unless it is a non-vision
+    model TYPE (``_is_non_visual_model``). The default is optimistic because
+    capability-blind gateways (notably CLIProxy) report no modalities at all, so
+    a brand-new multimodal model would otherwise be marked vision-blind until it
+    was hand-added to the curated table. The error-driven strip-and-retry (a
+    later phase) is the provider-truth safety net for the rare new text-only chat
+    model that slips through.
+    """
     if _fallback_check(model_id, VISION_CAPABLE_MODELS):
         return True
     catalog = _catalog_capabilities(model_id)
     if catalog is not None and catalog.supports_vision is not None:
         return catalog.supports_vision
-    return False
+    return not _is_non_visual_model(model_id)
 
 
 def _documents_fallback(model_id: str) -> bool:
-    """Document capability with no live metadata cached: curated, then catalog.
+    """Document capability with no live metadata cached.
 
     Membership in the VISION set marks a model as curated at all (document is
     a pinned subset of vision), so for those models the DOCUMENT set is the
     curated verdict in both directions and the catalog is not consulted (see
-    the tiering note above).
+    the tiering note above). Uncurated models take the catalog's explicit
+    ``supports_pdf_input`` verdict, then DEFER to the vision verdict: document is
+    a subset of vision, so the optimistic terminal default must not grant
+    documents to a model that resolves non-vision (e.g. a catalog model with a
+    definite ``supports_vision=False`` and no pdf flag). ``_vision_fallback``
+    itself applies the optimistic default and the non-visual-type guard.
     """
     if _fallback_check(model_id, VISION_CAPABLE_MODELS):
         return _fallback_check(model_id, DOCUMENT_CAPABLE_MODELS)
     catalog = _catalog_capabilities(model_id)
     if catalog is not None and catalog.supports_pdf_input is not None:
         return catalog.supports_pdf_input
-    return False
+    return _vision_fallback(model_id)
 
 
 # ============================================================================
