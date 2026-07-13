@@ -71,6 +71,11 @@ def is_ancestor_invocation(
     call (i.e. target is waiting -- directly or transitively -- for
     child's output).
     """
+    if child_thread_id and child_thread_id == target_thread_id:
+        # Direct self-call: no invocation edge exists yet, but a blocking
+        # ask would wait on the thread's own lock (held by the calling
+        # turn) until tool timeout. Reject it up front.
+        return True
     with agent._invocations_lock:
         visited = set()
         queue = [child_thread_id]

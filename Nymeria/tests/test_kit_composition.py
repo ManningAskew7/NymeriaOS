@@ -110,6 +110,35 @@ metadata:
 # Broken Kit
 """
 
+SIMPLE_BINDABLE_KIT_MD = """---
+name: simple-bindable-kit
+description: Kit binding a single required tool.
+metadata:
+  nymeria:
+    required_tools:
+      - hello_test
+    tool_ttl: 30m
+---
+
+# Simple Bindable Kit
+"""
+
+BINDABLE_TEMPLATE_KIT_MD = """---
+name: bindable-template-kit
+description: Kit with a required tool AND a thread template.
+metadata:
+  nymeria:
+    required_tools:
+      - hello_test
+    tool_ttl: 30m
+    thread_templates:
+      - name: helper-thread
+        description: A helper thread.
+---
+
+# Bindable Template Kit
+"""
+
 
 class _FakeRegistry:
     def get_tool(self, name: str):
@@ -512,6 +541,82 @@ def test_deactivate_skill_kit_evicts_expanded_union(tmp_path: Path):
     assert "memory_clear_all" not in tc.temporary_tools
 
 
+def test_activate_skill_kit_bind_failure_leaves_kit_inactive(tmp_path: Path, monkeypatch):
+    """Strict-fail: a bind failure must NOT enable the kit (review fix, #41).
+
+    The original order enabled the kit first, so a failed bind still left the
+    kit in enabled_skills and its #26 template tools surfaced at the next graph
+    build despite the reported failure. Bind runs first now.
+    """
+    manager = _manager_with(
+        tmp_path, {"bindable-template-kit": BINDABLE_TEMPLATE_KIT_MD}
+    )
+    agent = _FakeAgent(tmp_path / "data", skill_manager=manager)
+    # Fetch the real submodule from sys.modules: the "tool_search" NAME on the
+    # nymeria.tools package is the tool object, which shadows the submodule for
+    # both attribute access and `import ... as`.
+    import importlib
+
+    tool_search_mod = importlib.import_module("nymeria.tools.tool_search")
+    monkeypatch.setattr(
+        tool_search_mod,
+        "bind_tools_for_thread",
+        lambda *a, **k: SimpleNamespace(ok=False, text="tool 'hello_test' unavailable"),
+    )
+    set_current_agent(agent)
+    try:
+        ok, msg = activate_skill_kit(
+            agent=agent,
+            thread_id="thread-a",
+            user_id="user-a",
+            skill_name="bindable-template-kit",
+        )
+    finally:
+        set_current_agent(None)
+
+    assert ok is False
+    assert "was NOT activated" in msg
+    # The old message admitted a half-activated state; it must not resurface.
+    assert "added to enabled_skills" not in msg
+    # Nothing was written: the kit is not enabled, so its template tool cannot
+    # surface at the next build.
+    assert agent.thread_config_manager.get_config("thread-a") is None
+
+
+def test_activate_skill_kit_enable_failure_rolls_back_binding(
+    tmp_path: Path, monkeypatch
+):
+    """Bind succeeds but the enable write fails: the bound tools roll back so no
+    partial activation survives (review fix, #41)."""
+    manager = _manager_with(
+        tmp_path, {"simple-bindable-kit": SIMPLE_BINDABLE_KIT_MD}
+    )
+    agent = _FakeAgent(tmp_path / "data", skill_manager=manager)
+
+    def boom(agent_arg, thread_id, skill_name):
+        raise RuntimeError("store write failed")
+
+    monkeypatch.setattr("nymeria.tools.skill_config._activate_skill_on_thread", boom)
+    set_current_agent(agent)
+    try:
+        ok, msg = activate_skill_kit(
+            agent=agent,
+            thread_id="thread-a",
+            user_id="user-a",
+            skill_name="simple-bindable-kit",
+        )
+    finally:
+        set_current_agent(None)
+
+    assert ok is False
+    assert "Failed to add skill to thread" in msg
+    tc = agent.thread_config_manager.get_config("thread-a")
+    # The real bind wrote hello_test; rollback popped it and the kit was never
+    # enabled, so nothing partial survives.
+    assert tc is None or "hello_test" not in (tc.temporary_tools or {})
+    assert tc is None or "simple-bindable-kit" not in (tc.enabled_skills or [])
+
+
 # ---------------------------------------------------------------------------
 # #41: graph-cache fingerprint folds nested deps
 # ---------------------------------------------------------------------------
@@ -766,6 +871,35 @@ def test_build_template_thread_tools_derivation_rules(tmp_path: Path):
         build_template_thread_tools(agent, "user-a", active_tc, {"research_helper"})
         == []
     )
+
+
+def test_build_template_thread_tools_skips_own_callable_name(tmp_path: Path):
+    """Self-invocation guard (review fix, #26): a callable thread whose own
+    callable_name equals a template name (the declaring kit active on the
+    materialized child via kit= or a global skill) must NOT be handed a tool
+    that invokes itself; an ask would block on its own thread lock until tool
+    timeout.
+    """
+    manager = _manager_with(tmp_path, {"template-kit": TEMPLATE_KIT_MD})
+    agent = _FakeAgent(tmp_path / "data", skill_manager=manager)
+
+    own_tc = ThreadConfig(
+        thread_id="child-1",
+        enabled_skills=["template-kit"],
+        callable=True,
+        callable_name="research_helper",
+    )
+    assert build_template_thread_tools(agent, "user-a", own_tc, set()) == []
+
+    # A DIFFERENT callable name still gets the template (no self-loop to skip).
+    other_tc = ThreadConfig(
+        thread_id="child-2",
+        enabled_skills=["template-kit"],
+        callable=True,
+        callable_name="something_else",
+    )
+    tools = build_template_thread_tools(agent, "user-a", other_tc, set())
+    assert [t.name for t in tools] == ["research_helper"]
 
 
 def _graph_agent(tmp_path: Path, manager: SkillManager):
@@ -1026,6 +1160,62 @@ def test_template_first_call_materializes_then_routes(tmp_path: Path, monkeypatc
     ]
 
 
+def test_template_materialization_drives_real_spawn_thread_func(
+    tmp_path: Path, monkeypatch
+):
+    """End-to-end (review fix, #26): the first call runs the REAL
+    _spawn_template_thread -> spawn_thread.func keyword wiring (only
+    _invoke_materialized, an LLM turn, is stubbed). A spawn_thread signature
+    drift now fails loudly here instead of passing silently under a mock.
+    """
+    _, agent, tool = _template_fixture(tmp_path)
+    # spawn_thread claims ownership through accounts_repo; record it so the
+    # materialized thread is owned, mirroring production. (No agent.settings is
+    # needed: the template declares no model, so the tier-alias branch that
+    # reads settings is skipped.)
+    agent.accounts_repo.claim_thread = lambda tid, uid: agent.owned_threads.append(tid)
+
+    invoked: list = []
+
+    def fake_invoke(child_tc, task, mode, config):
+        invoked.append((child_tc.thread_id, child_tc.callable_name, task, mode))
+        return "child answer"
+
+    monkeypatch.setattr(tool_factory, "_invoke_materialized", fake_invoke)
+
+    import importlib
+
+    spawn_mod = importlib.import_module("nymeria.tools.spawn_thread")
+    with spawn_mod._spawn_rate_lock:
+        spawn_mod._spawn_counts.clear()
+    monkeypatch.setattr(
+        "nymeria.core.event_bus.publish_sync_event", lambda *a, **k: None
+    )
+
+    set_current_agent(agent)
+    try:
+        result = tool.func(task="dig in", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+
+    # Exactly one real spawn happened; the call carries the materialization
+    # receipt and the child's answer.
+    assert result.startswith("[Materialized]: thread_id=spawned-")
+    assert result.endswith("child answer")
+    spawned_ids = [t for t in agent.owned_threads if t.startswith("spawned-")]
+    assert len(spawned_ids) == 1
+
+    child = agent.thread_config_manager.get_config(spawned_ids[0])
+    assert child is not None
+    # Finalize renamed the spawn's callable_name to the template tool name.
+    assert child.callable is True
+    assert child.callable_name == "research_helper"
+    # The template.tools list survived the REAL spawn tool-resolution pass.
+    assert "memory_clear_all" in (child.enabled_tools or [])
+    # The route went through the renamed child via the real keyword wiring.
+    assert invoked == [(spawned_ids[0], "research_helper", "dig in", "ask")]
+
+
 def test_template_concurrent_first_calls_spawn_once(tmp_path: Path, monkeypatch):
     _, agent, tool = _template_fixture(tmp_path)
     spawn_calls: list[str] = []
@@ -1085,6 +1275,57 @@ def test_template_call_fails_closed_when_kit_uninstalled(tmp_path: Path, monkeyp
 
     assert "no longer declares thread template 'research_helper'" in result
     assert "stale" in result
+    assert spawned == []
+
+
+def test_template_call_fails_closed_on_ownership_lookup_error(
+    tmp_path: Path, monkeypatch
+):
+    """Fail-closed materialization (review fix, #26): if the owned-thread lookup
+    itself ERRORS, the tool must not treat that as "not materialized" and spawn
+    a duplicate (which would be renamed onto the same callable_name, making name
+    routing arbitrary forever). It returns a retryable error and spawns nothing.
+    """
+    _, agent, tool = _template_fixture(tmp_path)
+    spawned: list = []
+    monkeypatch.setattr(
+        tool_factory,
+        "_spawn_template_thread",
+        lambda *a, **k: spawned.append(1) or "[Spawned]: thread_id=nope",
+    )
+
+    # First lookup point: list_threads_for_user raises.
+    def boom_list(user_id):
+        raise RuntimeError("db down")
+
+    agent.accounts_repo.list_threads_for_user = boom_list
+    set_current_agent(agent)
+    try:
+        result = tool.func(task="x", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+
+    assert "ownership lookup failed" in result
+    assert "Retry" in result
+    assert spawned == []
+
+    # Second lookup point: the by-name callable lookup raises (owned is
+    # non-empty so we reach it).
+    agent.accounts_repo.list_threads_for_user = lambda user_id: ["some-thread"]
+
+    def boom_by_name(*a, **k):
+        raise RuntimeError("index corrupt")
+
+    monkeypatch.setattr(
+        agent.thread_config_manager, "get_callable_thread_by_name", boom_by_name
+    )
+    set_current_agent(agent)
+    try:
+        result2 = tool.func(task="y", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+
+    assert "ownership lookup failed" in result2
     assert spawned == []
 
 

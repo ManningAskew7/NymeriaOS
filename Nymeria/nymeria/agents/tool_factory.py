@@ -311,6 +311,11 @@ _template_locks: Dict[Tuple[str, str], threading.Lock] = {}
 
 _SPAWN_RECEIPT_RE = re.compile(r"^\[Spawned\]: thread_id=(\S+)", re.MULTILINE)
 
+# Sentinel returned by _find_materialized_thread when the lookup itself
+# failed: the caller must NOT treat that as "not materialized" and spawn
+# (a duplicate rename would make name-based routing arbitrary forever).
+_LOOKUP_FAILED = object()
+
 
 def _template_lock(user_id: str, tool_name: str) -> threading.Lock:
     key = (user_id, tool_name)
@@ -351,30 +356,34 @@ def _resolve_declared_template(agent, skill_name: str, tool_name: str, user_id: 
 
 
 def _find_materialized_thread(agent, user_id: str, tool_name: str):
-    """Find the user's already-materialized thread for this template, or None.
+    """Find the user's already-materialized thread for this template.
 
     Routing is by ``callable_name`` equality: materialization renames the
     spawned thread's callable_name to the template tool name, so subsequent
     calls (and ordinary graph builds) reach it like any callable thread.
+    Returns the ThreadConfig, ``None`` when genuinely not materialized, or
+    ``_LOOKUP_FAILED`` when a lookup errored (fail closed, mirroring
+    ``_check_callable_ownership``: the caller returns a retryable error
+    instead of spawning a duplicate).
     """
     try:
         owned = set(agent.accounts_repo.list_threads_for_user(user_id))
-    except Exception:  # noqa: BLE001 - no ownership data = no match
+    except Exception:  # noqa: BLE001 - fail closed, never spawn blind
         logger.warning(
             "template %r: owned-thread lookup failed", tool_name, exc_info=True
         )
-        return None
+        return _LOOKUP_FAILED
     if not owned:
         return None
     try:
         return agent.thread_config_manager.get_callable_thread_by_name(
             tool_name, owned_thread_ids=owned
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - fail closed, never spawn blind
         logger.warning(
             "template %r: callable lookup failed", tool_name, exc_info=True
         )
-        return None
+        return _LOOKUP_FAILED
 
 
 def _spawn_template_thread(agent, template, config) -> str:
@@ -518,6 +527,13 @@ mode="handoff" to dispatch work without waiting.
         materialized_receipt = ""
         with _template_lock(user_id, _tool_name):
             child_tc = _find_materialized_thread(agent, user_id, _tool_name)
+            if child_tc is _LOOKUP_FAILED:
+                return (
+                    f"[Error]: Could not verify whether template "
+                    f"'{_tool_name}' already has a thread (ownership lookup "
+                    "failed), so nothing was spawned to avoid a duplicate. "
+                    "Retry shortly."
+                )
             if child_tc is None:
                 spawn_result = _spawn_template_thread(agent, template_now, config)
                 match = _SPAWN_RECEIPT_RE.search(spawn_result or "")

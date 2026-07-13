@@ -252,10 +252,18 @@ def build_template_thread_tools(
         return []
 
     disabled = set(tc.disabled_tools or []) if tc else set()
+    own_callable_name = (
+        tc.callable_name if tc is not None and getattr(tc, "callable", False) else None
+    )
     seen = set(existing_names)
     tools: List[BaseTool] = []
     for skill in active:
         for template in skill.thread_templates:
+            if own_callable_name and template.name == own_callable_name:
+                # Mirror get_callable_thread_tools' self-exclusion: never
+                # hand a callable thread a tool that invokes itself (an ask
+                # would block on the thread's own lock until tool timeout).
+                continue
             if template.name in disabled:
                 continue
             if template.name in seen:
