@@ -56,6 +56,10 @@ class ThreadLLMConfig(BaseModel):
     compact_proactive_enabled: Optional[bool] = None
     compact_proactive_idle_seconds: Optional[int] = Field(default=None, ge=30, le=3600)
     compact_proactive_min_pct: Optional[int] = Field(default=None, ge=10, le=100)
+    # Consent policy for automatic model fallback. None inherits the global
+    # llm_fallback_switch_mode; "auto" swaps silently, "ask" prompts on a
+    # consent-capable interactive turn (see agent_llm_config / fallback gate).
+    fallback_switch_mode: Optional[Literal["auto", "ask"]] = None
 
     @field_validator("reasoning_effort", mode="before")
     @classmethod
@@ -81,7 +85,13 @@ class ThreadLLMConfig(BaseModel):
 
 
 class ActiveLLMFallback(BaseModel):
-    """Temporary provider/model fallback currently active for a thread."""
+    """Temporary provider/model fallback currently active for a thread.
+
+    ``expires_at is None`` marks a PERMANENT hold (kept until manually reverted),
+    distinct from "no hold at all" (which is represented by the absence of an
+    ``ActiveLLMFallback`` record entirely). A timed hold carries a concrete
+    ``expires_at``.
+    """
 
     provider: str
     model: str
@@ -89,7 +99,7 @@ class ActiveLLMFallback(BaseModel):
     source_model: str
     hold_seconds: int = Field(default=7200, ge=0, le=604800)
     activated_at: datetime = Field(default_factory=utc_now)
-    expires_at: datetime
+    expires_at: Optional[datetime] = None
     provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
     reason: Optional[str] = None
@@ -97,8 +107,9 @@ class ActiveLLMFallback(BaseModel):
 
     @field_validator("activated_at", "expires_at")
     @classmethod
-    def _datetimes_as_utc(cls, value: datetime) -> datetime:
-        return ensure_aware_utc(value)
+    def _datetimes_as_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
+        # expires_at is None for a permanent hold; leave it untouched.
+        return ensure_aware_utc(value) if value is not None else None
 
 
 class TemporaryToolEntry(BaseModel):

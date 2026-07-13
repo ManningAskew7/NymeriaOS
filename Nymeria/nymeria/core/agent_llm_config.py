@@ -132,6 +132,9 @@ def _split_llm_fallback_ref(
 
 
 def _active_fallback_is_expired(active: ActiveLLMFallback) -> bool:
+    # expires_at is None for a permanent hold, which never auto-expires.
+    if active.expires_at is None:
+        return False
     return ensure_aware_utc(active.expires_at) <= utc_now()
 
 
@@ -222,24 +225,40 @@ def activate_temporary_llm_fallback(
     thread_id: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Persist the selected fallback as this thread's temporary effective LLM."""
-    try:
-        hold_seconds = int(getattr(host.settings, "llm_fallback_hold_seconds", 7200) or 0)
-    except (TypeError, ValueError):
-        hold_seconds = 7200
-    hold_seconds = max(0, min(604800, hold_seconds))
-    if not thread_id or hold_seconds <= 0:
-        return {"hold_seconds": hold_seconds, "expires_at": None}
+    """Persist the selected fallback as this thread's temporary effective LLM.
+
+    The hold duration is taken from a user-approved choice on the payload when
+    present (``hold_permanent`` for an until-manually-reverted hold, or
+    ``hold_seconds`` for a specific duration), otherwise from the global
+    ``llm_fallback_hold_seconds`` default. A permanent hold persists an
+    ``ActiveLLMFallback`` with ``expires_at=None``; a non-positive,
+    non-permanent hold persists nothing (no cross-turn hold).
+    """
+    permanent = bool(payload.get("hold_permanent"))
+    if not permanent:
+        raw_hold = payload.get("hold_seconds")
+        if raw_hold is None:
+            raw_hold = getattr(host.settings, "llm_fallback_hold_seconds", 7200)
+        try:
+            hold_seconds = int(raw_hold or 0)
+        except (TypeError, ValueError):
+            hold_seconds = 7200
+        hold_seconds = max(0, min(604800, hold_seconds))
+    else:
+        hold_seconds = 0
+
+    if not thread_id or (not permanent and hold_seconds <= 0):
+        return {"hold_seconds": hold_seconds, "expires_at": None, "permanent": permanent}
 
     provider = str(payload.get("to_provider") or "").strip()
     model = str(payload.get("to_model") or "").strip()
     source_provider = str(payload.get("from_provider") or "").strip()
     source_model = str(payload.get("from_model") or "").strip()
     if not provider or not model:
-        return {"hold_seconds": hold_seconds, "expires_at": None}
+        return {"hold_seconds": hold_seconds, "expires_at": None, "permanent": permanent}
 
     activated_at = utc_now()
-    expires_at = activated_at + timedelta(seconds=hold_seconds)
+    expires_at = None if permanent else activated_at + timedelta(seconds=hold_seconds)
     tc = host.thread_config_manager.get_config(thread_id)
     if tc is None:
         tc = ThreadConfig(thread_id=thread_id)
@@ -258,17 +277,20 @@ def activate_temporary_llm_fallback(
     )
     if not host.thread_config_manager.save_config(tc):
         logger.warning("Failed to activate LLM fallback for thread %s", thread_id)
-        return {"hold_seconds": hold_seconds, "expires_at": expires_at.isoformat()}
-
-    host.invalidate_thread_config_cache(thread_id)
-    logger.warning(
-        "Activated temporary LLM fallback for thread %s: %s/%s for %ss",
-        thread_id,
-        provider,
-        model,
-        hold_seconds,
-    )
-    return {"hold_seconds": hold_seconds, "expires_at": expires_at.isoformat()}
+    else:
+        host.invalidate_thread_config_cache(thread_id)
+        logger.warning(
+            "Activated temporary LLM fallback for thread %s: %s/%s for %s",
+            thread_id,
+            provider,
+            model,
+            "permanent (until reverted)" if permanent else f"{hold_seconds}s",
+        )
+    return {
+        "hold_seconds": hold_seconds,
+        "expires_at": expires_at.isoformat() if expires_at is not None else None,
+        "permanent": permanent,
+    }
 
 
 def get_llm_config_for_thread(
