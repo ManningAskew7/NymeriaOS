@@ -16,6 +16,7 @@ conversion:
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -230,8 +231,16 @@ def test_action_fault_falls_back_with_log(frozen_time, tmp_path, monkeypatch):
     )
 
 
-def test_unbindable_planted_definition_falls_back_with_log(frozen_time, tmp_path):
-    """A store-planted record the bridge cannot bind still yields metadata."""
+def test_quarantined_planted_definition_falls_back_to_builtin(frozen_time, tmp_path):
+    """A store-planted UNKNOWN action quarantines the store: built-in, no log.
+
+    This exercises the quarantine path, NOT the seam's bind-fault path: an
+    unknown action fails HookLogic validation at LOAD, so the whole store
+    file quarantines and the load reads pristine (no stored override, no
+    dispatch, no hook-execution entry). The built-in block emits either way.
+    The genuinely-unbindable-but-valid case (a load-legal record that binds
+    off the PROMPT_SUBMIT mutate plane) is covered separately below.
+    """
     agent = make_agent(tmp_path)
     assert agent.hook_manager.update_hook(
         "default", SYSTEM_TURN_METADATA_ID, name="planted"
@@ -241,10 +250,43 @@ def test_unbindable_planted_definition_falls_back_with_log(frozen_time, tmp_path
     raw = path.read_text(encoding="utf-8").replace('"turn_metadata"', '"no_such_action"')
     path.write_text(raw, encoding="utf-8")
     out = prefix(agent, "hello there")
-    # The record now fails HookLogic validation entirely, so the whole store
-    # quarantines and the load reads pristine: built-in bytes either way.
     golden = f"[Time: {FROZEN_TIME}]\n[Trigger: User Message]\n\nhello there"
     assert out == golden
+    # Nothing dispatched, so nothing lands in the hook execution log (the
+    # quarantine itself is recorded in the activity log, a different store).
+    assert _executions(agent) == []
+
+
+def test_unbindable_valid_definition_falls_back_with_log(frozen_time, tmp_path):
+    """A load-legal record the seam cannot BIND still yields metadata + a log.
+
+    This is the seam's own bind-fault path (``_prepare_dispatch`` returns
+    None -> ``_log_seam_fault``), distinct from the quarantine case above: a
+    record carrying the reserved id but a wrong event (``done``) and a
+    done-legal action (``inject_context``) is INDIVIDUALLY valid, so it loads
+    without quarantining, but it registers off the PROMPT_SUBMIT mutate plane
+    and cannot be bound as turn metadata. Reachable only by a raw store edit
+    (``update_hook`` locks the event/action on the system id). The seam falls
+    back to the built-in block AND records the "could not be bound" entry.
+    """
+    agent = make_agent(tmp_path)
+    # Materialize the system record first, then raw-edit it into the valid-but-
+    # wrong-plane shape.
+    assert agent.hook_manager.update_hook(
+        "default", SYSTEM_TURN_METADATA_ID, name="planted"
+    )
+    path = agent.hook_manager._path_for("default")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for hook in data["hooks"]:
+        if hook["id"] == SYSTEM_TURN_METADATA_ID:
+            hook["event"] = "done"
+            hook["logic"] = {"action": "inject_context", "text": "planted"}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    out = prefix(agent, "hello there")
+    golden = f"[Time: {FROZEN_TIME}]\n[Trigger: User Message]\n\nhello there"
+    assert out == golden
+    details = [e.get("detail", "") for e in _executions(agent)]
+    assert any("could not be bound" in d for d in details)
 
 
 def test_dispatch_status_none_is_conservative_builtin(frozen_time, tmp_path, monkeypatch):

@@ -302,6 +302,26 @@ def test_delete_removes(manager: HookManager) -> None:
     assert _user_hooks(manager) == []
 
 
+def test_delete_pristine_system_hook_says_already_at_defaults(manager: HookManager) -> None:
+    """/hook delete on the never-edited system hook is an idempotent reset."""
+    result = _run("/hook delete turn-metadata --yes")
+    assert result.success is True
+    assert "already at its built-in defaults" in result.markdown
+
+
+def test_delete_customized_system_hook_resets(manager: HookManager) -> None:
+    """/hook delete on a materialized system hook RESETS it (reset copy, not delete)."""
+    # A name edit materializes the copy-on-write record via the command surface.
+    edited = _run("/hook edit turn-metadata name=mine")
+    assert edited.success is True, edited.markdown
+    assert any(h.id == "turn-metadata" for h in manager.get_hooks_cached("alice"))
+    result = _run("/hook delete turn-metadata --yes")
+    assert result.success is True
+    assert "Reset system hook `turn-metadata`" in result.markdown
+    # Back to virtual: nothing stored to remove.
+    assert manager.get_hooks_cached("alice") == []
+
+
 def test_show_unknown_id(manager: HookManager) -> None:
     result = _run("/hook show deadbeef")
     assert result.success is False
