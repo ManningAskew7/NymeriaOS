@@ -627,7 +627,10 @@ def test_refresh_anthropic_models_falls_back_when_capabilities_absent(monkeypatc
     # CLIProxy (and some Anthropic-compatible gateways) return /v1/models with
     # no capabilities block. Without a fallback this marks every Claude model
     # text-only in the authoritative live cache, silently disabling all image
-    # input. Known vision models must still resolve as image/file capable.
+    # input. Known vision models must still resolve as image/file capable, and
+    # an unknown model resolves OPTIMISTICALLY (vision + document) so a brand-new
+    # multimodal slug is not marked vision-blind. A non-visual model TYPE stays
+    # text-only.
     _set_model_cache(monkeypatch, {})
     monkeypatch.setattr(capabilities, "_live_model_cache", {})
 
@@ -641,6 +644,11 @@ def test_refresh_anthropic_models_falls_back_when_capabilities_absent(monkeypatc
             {
                 "id": "some-unknown-model-xyz",
                 "display_name": "Unknown",
+                "max_input_tokens": 8000,
+            },
+            {
+                "id": "text-embedding-3-large",
+                "display_name": "Embed",
                 "max_input_tokens": 8000,
             },
         ]
@@ -660,15 +668,20 @@ def test_refresh_anthropic_models_falls_back_when_capabilities_absent(monkeypatc
         api_key="sk-test",
     )
 
-    assert count == 2
+    assert count == 3
     opus = capabilities._lookup_model("claude-opus-4-6")
     assert opus is not None
     assert "image" in opus.input_modalities  # static fallback applied
     assert "file" in opus.input_modalities
     assert capabilities.supports_vision("claude-opus-4-6") is True
+    # Unknown slug -> optimistic vision + document in the authoritative cache.
     unknown = capabilities._lookup_model("some-unknown-model-xyz")
     assert unknown is not None
-    assert unknown.input_modalities == {"text"}  # no static match -> text only
+    assert unknown.input_modalities == {"text", "image", "file"}
+    # Non-visual model TYPE stays text-only despite the optimistic default.
+    embed = capabilities._lookup_model("text-embedding-3-large")
+    assert embed is not None
+    assert embed.input_modalities == {"text"}
 
 
 def test_refresh_anthropic_models_noop_without_key(monkeypatch):
@@ -980,9 +993,13 @@ def test_f7_behavioral_spot_checks(monkeypatch):
     assert capabilities.supports_vision("meta-llama/llama-3.2-90b-vision-instruct")
     assert not capabilities.supports_documents("meta-llama/llama-3.2-90b-vision-instruct")
 
-    # Unlisted model: neither (no live metadata, no static match).
-    assert not capabilities.supports_vision("acme/not-a-real-model")
-    assert not capabilities.supports_documents("acme/not-a-real-model")
+    # Unlisted normal model: now OPTIMISTICALLY vision + document (a
+    # capability-blind gateway reports no modalities, so the default must not be
+    # blind). A non-visual model TYPE still resolves to neither.
+    assert capabilities.supports_vision("acme/not-a-real-model")
+    assert capabilities.supports_documents("acme/not-a-real-model")
+    assert not capabilities.supports_vision("acme/fake-embed-9")
+    assert not capabilities.supports_documents("acme/fake-embed-9")
 
 
 # ============================================================================
@@ -1103,14 +1120,80 @@ def test_curated_vision_only_verdict_beats_catalog_pdf_flag(monkeypatch):
     assert capabilities.supports_documents("gpt-5.2-codex") is False
 
 
-def test_catalog_absent_flag_falls_through_not_false(monkeypatch):
+def test_catalog_absent_vision_flag_falls_through_to_optimistic_default(monkeypatch):
     _offline(monkeypatch)
-    # Catalog knows the context window but carries no vision flag; the model
-    # is uncurated, so vision resolves to the conservative False.
+    # Catalog knows the context window but carries no vision flag; the model is
+    # uncurated and not a non-visual type, so vision resolves to the OPTIMISTIC
+    # default (True), not a blanket False. The context limit still comes from
+    # the catalog.
     _set_catalog(monkeypatch, {"opaque-model": {"max_input_tokens": 32000}})
 
-    assert capabilities.supports_vision("opaque-model") is False
+    assert capabilities.supports_vision("opaque-model") is True
     assert capabilities.get_context_limit("opaque-model") == 32000
+
+
+def test_uncurated_modern_models_default_optimistic(monkeypatch):
+    # A capability-blind gateway (CLIProxy) reports no modalities and a brand-new
+    # slug is in neither the curated tables nor the offline catalog. The
+    # optimistic terminal default keeps such models vision + document capable so
+    # image input is not silently stripped (the claude-sonnet-5 non-vision bug).
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+
+    for model in (
+        "claude-sonnet-5",
+        "claude-opus-5",
+        "anthropic/claude-sonnet-5",
+        "gpt-5.9",
+        "google/gemini-9-pro",
+    ):
+        assert capabilities.supports_vision(model) is True, model
+        assert capabilities.supports_documents(model) is True, model
+
+
+def test_non_visual_model_types_stay_non_vision(monkeypatch):
+    # Isolates the marker tier: with the catalog forced EMPTY, the optimistic
+    # terminal default excludes model TYPES that do not take image input. NOTE
+    # the real LiteLLM catalog outranks this guard, so a catalogued image/tts
+    # model (e.g. gpt-image-2) may still resolve vision=True in production via
+    # its catalog verdict; the marker only decides when the catalog is silent.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+
+    for model in (
+        "text-embedding-3-large",
+        "openai/text-embedding-ada-002",
+        "whisper-1",
+        "tts-1-hd",
+        "dall-e-3",
+        "gpt-image-2",
+        "black-forest-labs/flux-1.1-pro",
+        "some/reranker-v2",
+    ):
+        assert capabilities.supports_vision(model) is False, model
+        assert capabilities.supports_documents(model) is False, model
+
+
+def test_catalog_negative_vision_flag_still_denies_uncurated_model(monkeypatch):
+    # A model the catalog positively marks text-only stays non-vision: the
+    # catalog verdict wins one tier above the optimistic terminal default.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {"legacy-chat-model": {"supports_vision": False}})
+
+    assert capabilities.supports_vision("legacy-chat-model") is False
+
+
+def test_documents_follow_vision_at_optimistic_default(monkeypatch):
+    # Document is a subset of vision, so the optimistic terminal default must
+    # NOT grant documents to a model that resolves non-vision. A catalog model
+    # with a definite supports_vision=False and no pdf flag resolves BOTH axes
+    # False (regression guard: the documents fallback defers to the vision
+    # verdict, not the marker guard independently).
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {"text-only-chat": {"supports_vision": False}})
+
+    assert capabilities.supports_vision("text-only-chat") is False
+    assert capabilities.supports_documents("text-only-chat") is False
 
 
 def test_max_output_tokens_from_catalog_with_safety_cap(monkeypatch):
