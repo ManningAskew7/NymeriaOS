@@ -1018,6 +1018,7 @@ def _offline(monkeypatch) -> None:
     """Empty-but-populated live caches: no OpenRouter fetch, no live data."""
     _set_model_cache(monkeypatch, {})
     monkeypatch.setattr(capabilities, "_live_model_cache", {})
+    monkeypatch.setattr(capabilities, "_input_unsupported_marks", {})
 
 
 def test_context_limit_resolves_from_catalog_when_live_metadata_missing(monkeypatch):
@@ -1250,3 +1251,126 @@ def test_anthropic_gateway_fallback_uses_catalog_for_uncurated_model(monkeypatch
     assert info is not None
     assert "image" in info.input_modalities
     assert "file" in info.input_modalities
+
+
+def test_mark_model_input_unsupported_drops_image_and_file(monkeypatch):
+    # A model the live cache believes is fully multimodal (the optimistic
+    # default, or a real capabilities response) is corrected in place when the
+    # provider rejects the attachment: image/file go, text stays.
+    _offline(monkeypatch)
+    capabilities._live_model_cache["some-model"] = ModelInfo(
+        id="some-model", input_modalities={"text", "image", "file"}
+    )
+
+    capabilities.mark_model_input_unsupported("some-model", "image", "file")
+
+    info = capabilities.get_model_info("some-model")
+    assert info is not None
+    assert info.input_modalities == {"text"}
+    assert capabilities.supports_vision("some-model") is False
+    assert capabilities.supports_documents("some-model") is False
+
+
+def test_mark_model_input_unsupported_creates_text_only_when_absent(monkeypatch):
+    # An uncached model (the common CLIProxy case) gets a fresh text-only entry
+    # so the optimistic default stops firing for it.
+    _offline(monkeypatch)
+
+    capabilities.mark_model_input_unsupported("brand-new-model")  # defaults to image+file
+
+    info = capabilities.get_model_info("brand-new-model")
+    assert info is not None
+    assert info.input_modalities == {"text"}
+    assert capabilities.supports_vision("brand-new-model") is False
+
+
+def test_mark_model_input_unsupported_preserves_other_modalities(monkeypatch):
+    # Dropping only "image" leaves "file" intact (a hypothetical image-blind but
+    # PDF-capable model).
+    _offline(monkeypatch)
+    capabilities._live_model_cache["doc-only-model"] = ModelInfo(
+        id="doc-only-model", input_modalities={"text", "image", "file"}
+    )
+
+    capabilities.mark_model_input_unsupported("doc-only-model", "image")
+
+    info = capabilities.get_model_info("doc-only-model")
+    assert info is not None
+    assert info.input_modalities == {"text", "file"}
+
+
+def test_mark_model_input_unsupported_ignores_empty_and_text_only(monkeypatch):
+    # No-op guards: empty id, and a request to drop only "text".
+    _offline(monkeypatch)
+    capabilities._live_model_cache["keep-model"] = ModelInfo(
+        id="keep-model", input_modalities={"text", "image"}
+    )
+
+    capabilities.mark_model_input_unsupported("")
+    capabilities.mark_model_input_unsupported("keep-model", "text")
+
+    info = capabilities.get_model_info("keep-model")
+    assert info is not None
+    assert info.input_modalities == {"text", "image"}
+
+
+def test_mark_model_input_unsupported_absent_selective_drop_keeps_others(monkeypatch):
+    # Dropping only "image" on an UNCACHED model must not also strip file/doc:
+    # the fresh entry seeds from the optimistic default minus only what was named.
+    _offline(monkeypatch)
+
+    capabilities.mark_model_input_unsupported("uncached-doc-model", "image")
+
+    info = capabilities.get_model_info("uncached-doc-model")
+    assert info is not None
+    assert info.input_modalities == {"text", "file"}
+    assert capabilities.supports_vision("uncached-doc-model") is False
+    assert capabilities.supports_documents("uncached-doc-model") is True
+
+
+def test_mark_model_input_unsupported_canonicalizes_key(monkeypatch):
+    # The write key must match the read canonicalization (reasoning-suffix
+    # stripped) so the learned verdict is actually resolvable and does not
+    # re-mark forever under an unreachable key.
+    _offline(monkeypatch)
+
+    capabilities.mark_model_input_unsupported("gpt-suffix-5(xhigh)", "image", "file")
+
+    # Both the suffixed and the bare form resolve to the same marked entry.
+    assert capabilities.supports_vision("gpt-suffix-5(xhigh)") is False
+    assert capabilities.supports_vision("gpt-suffix-5") is False
+    assert "gpt-suffix-5" in capabilities._input_unsupported_marks
+
+
+def test_mark_overrides_curated_and_catalog_vision_verdict(monkeypatch):
+    # The learned live-cache entry must win the tiering over BOTH a curated
+    # vision verdict and a catalog vision flag (this override is the whole point
+    # of the self-correcting learning).
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {"catalog-vision-model": {"supports_vision": True}})
+
+    # Curated model (gpt-4o) and a catalog-vision model both start True.
+    assert capabilities.supports_vision("gpt-4o") is True
+    assert capabilities.supports_vision("catalog-vision-model") is True
+
+    capabilities.mark_model_input_unsupported("gpt-4o", "image", "file")
+    capabilities.mark_model_input_unsupported("catalog-vision-model", "image", "file")
+
+    assert capabilities.supports_vision("gpt-4o") is False
+    assert capabilities.supports_vision("catalog-vision-model") is False
+
+
+def test_mark_model_input_unsupported_self_heals_after_ttl(monkeypatch):
+    # A mark is a backstop, not a durable verdict: once its TTL lapses it is
+    # evicted on the next lookup so a (rare) misclassified model re-derives its
+    # real capability instead of staying blind for the whole process.
+    _offline(monkeypatch)
+
+    capabilities.mark_model_input_unsupported("gpt-4o", "image", "file")
+    # Within the TTL the learned verdict holds.
+    assert capabilities.supports_vision("gpt-4o") is False
+
+    # Force the mark to be considered expired: the next lookup evicts it.
+    monkeypatch.setattr(capabilities, "_INPUT_UNSUPPORTED_MARK_TTL_SECONDS", -1.0)
+    assert capabilities.supports_vision("gpt-4o") is True
+    assert "gpt-4o" not in capabilities._input_unsupported_marks

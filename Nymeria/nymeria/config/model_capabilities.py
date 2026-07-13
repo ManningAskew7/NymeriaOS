@@ -85,6 +85,16 @@ _CACHE_FAILURE_TTL_SECONDS = 60  # Avoid repeated sync fetches during outages
 _cache_lock = threading.Lock()
 _cache_refresh_lock = threading.Lock()
 
+# Provider-rejection learning (see mark_model_input_unsupported): canonical
+# model key -> wall-clock time the model was marked image/file-incapable. The
+# mark is a self-correcting backstop, not a durable verdict, so it self-heals:
+# an expired mark is evicted from the live cache on the next lookup so the model
+# re-derives its real capability (a genuinely text-only model simply re-learns
+# on its next rejected turn). This bounds the blast radius of a rare
+# misclassified/transient rejection to the TTL instead of the process lifetime.
+_input_unsupported_marks: Dict[str, float] = {}
+_INPUT_UNSUPPORTED_MARK_TTL_SECONDS = 3600.0  # re-probe a marked model hourly
+
 # Default context limits for common models (fallback when API unavailable)
 DEFAULT_CONTEXT_LIMITS = {
     "anthropic/claude-3-opus": 200000,
@@ -931,12 +941,33 @@ def _ensure_cache() -> Dict[str, ModelInfo]:
             return _model_cache
 
 
+def _prune_expired_input_marks(candidates: List[str]) -> None:
+    """Evict any provider-rejection mark (see mark_model_input_unsupported) whose
+    TTL has lapsed, so the model re-derives its real capability on this lookup.
+
+    Fast no-op in the overwhelmingly common case (no model has ever been marked).
+    Only prunes the candidate keys for this lookup, under the cache lock.
+    """
+    if not _input_unsupported_marks:
+        return
+    now = time.time()
+    with _cache_lock:
+        for candidate in candidates:
+            marked_at = _input_unsupported_marks.get(candidate)
+            if marked_at is None:
+                continue
+            if now - marked_at > _INPUT_UNSUPPORTED_MARK_TTL_SECONDS:
+                _input_unsupported_marks.pop(candidate, None)
+                _live_model_cache.pop(candidate, None)
+
+
 def _lookup_model(model_id: str) -> Optional[ModelInfo]:
     """Look up a model by ID with prefix-match fallback."""
     if not model_id:
         return None
 
     candidates = _model_id_candidates(model_id)
+    _prune_expired_input_marks(candidates)
 
     # Runtime /models responses from the selected provider are authoritative
     # for that exact provider, and this lookup avoids an OpenRouter fetch when
@@ -945,7 +976,10 @@ def _lookup_model(model_id: str) -> Optional[ModelInfo]:
         if candidate in _live_model_cache:
             return _live_model_cache[candidate]
 
-    for cached_id, info in _live_model_cache.items():
+    # Snapshot the live cache before iterating: a concurrent turn can insert a
+    # new key here (mark_model_input_unsupported runs on the send-time hot path),
+    # which would otherwise raise "dictionary changed size during iteration".
+    for cached_id, info in list(_live_model_cache.items()):
         if any(_is_safe_cache_variant_match(candidate, cached_id) for candidate in candidates):
             return info
 
@@ -1425,6 +1459,63 @@ def register_model_metadata(
         )
         _live_model_cache[key] = info
         _model_cache[key] = info
+
+
+def mark_model_input_unsupported(model_id: str, *modalities: str) -> None:
+    """Record that a model does NOT accept one or more input modalities.
+
+    Self-correcting learning for the optimistic capability default (Phase 1): the
+    provider is the ground truth. When a model rejects an image/PDF at send time
+    (see the strip-and-retry in ``vendor/react_agent/nodes.py``), drop those
+    modalities from the model's authoritative live-cache entry so subsequent
+    turns strip the attachment proactively via the image window instead of
+    re-hitting the provider. Creates a text-only entry when the model was not
+    cached. In-process only (a restart re-arms the optimistic default and the
+    first rejected turn re-learns), which is acceptable for a backstop.
+
+    ``modalities`` defaults to ("image", "file") when omitted. "text" is never
+    removed.
+    """
+    if not model_id:
+        return
+    drop = {m for m in (modalities or ("image", "file")) if m and m != "text"}
+    if not drop:
+        return
+
+    # Key on the SAME canonical form every read path uses (reasoning-suffix
+    # stripped, lowercased): keying on a bare ``model_id.lower()`` would land the
+    # mark under an id the ``supports_vision`` lookup never resolves, so the model
+    # would re-hit the provider rejection and re-mark every turn forever.
+    candidates = _model_id_candidates(model_id)
+    if not candidates:
+        return
+    key = candidates[0]
+    with _cache_lock:
+        base = _live_model_cache.get(key) or _model_cache.get(key)
+        if base is not None:
+            remaining = set(base.input_modalities) - drop
+            remaining.add("text")
+            if remaining == base.input_modalities:
+                return
+            info = replace(base, id=base.id, input_modalities=remaining)
+        else:
+            # Absent model: seed from the optimistic default (text + the image/
+            # file modalities Phase 1 assumes) and remove ONLY what was named, so
+            # marking just "file" does not silently also drop image.
+            remaining = {"text", "image", "file"} - drop
+            info = ModelInfo(id=model_id, name=model_id, input_modalities=remaining)
+        # Write ONLY the live cache: it is consulted first and always wins the
+        # tiering, so mirroring into _model_cache would be redundant and would
+        # widen the concurrent new-key-insert surface on the large OpenRouter
+        # cache that lock-free readers iterate.
+        _live_model_cache[key] = info
+        _input_unsupported_marks[key] = time.time()
+    logger.info(
+        "[CAPABILITIES] Marked %s input-unsupported for %s (provider rejection); "
+        "future turns will strip these attachments",
+        model_id,
+        ", ".join(sorted(drop)),
+    )
 
 
 def get_context_limit(model_id: str) -> int:
