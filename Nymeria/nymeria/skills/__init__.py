@@ -25,6 +25,7 @@ import re
 import shutil
 import threading
 import time
+from functools import cached_property
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
@@ -219,7 +220,7 @@ class Skill(BaseModel):
         """
         return self._nymeria_name_list("required_skills")
 
-    @property
+    @cached_property
     def thread_templates(self) -> List["ThreadTemplate"]:
         """Kit-declared callable-thread templates (lenient at read time).
 
@@ -227,6 +228,10 @@ class Skill(BaseModel):
         logged and skipped here (matching the ``tool_ttl`` fallback posture for
         hand-edited files); ``skill_write``/``skill_edit`` reject the same
         input strictly. Duplicate template names keep the first entry.
+        Parsed once per Skill instance (the property is hit several times per
+        turn: graph build, fingerprint, payload surfaces), so a malformed
+        hand-edited entry warns once per load, not once per access; skill
+        refreshes build fresh instances, so edits still take effect.
         """
         raw = self._nymeria_metadata.get("thread_templates", [])
         if not isinstance(raw, list):

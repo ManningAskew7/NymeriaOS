@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage
 
 from nymeria.core.agent_callable_lifecycle import (
     abort_with_cascade,
+    is_ancestor_invocation,
     on_tool_timeout,
     resolve_callable_timeout_thread_id,
 )
@@ -107,3 +108,28 @@ def test_abort_with_cascade_uses_agent_facade_for_recursion():
 
     assert agent.signal_aborts == ["parent"]
     assert sorted(agent.recursion_calls) == ["child-a", "child-b"]
+
+
+class _AncestorAgent:
+    def __init__(self, invocations: dict[str, set[str]] | None = None) -> None:
+        self._invocations_lock = threading.Lock()
+        self._active_callable_invocations: dict[str, set[str]] = invocations or {}
+
+
+def test_is_ancestor_invocation_rejects_direct_self_call():
+    # Defense in depth for the template self-invocation stall (backlog #26
+    # review fix): a thread targeting ITSELF has no invocation edge yet, but a
+    # blocking ask would wait on its own lock until tool timeout. Reject it up
+    # front, even with an empty invocation graph.
+    agent = _AncestorAgent()
+    assert is_ancestor_invocation(cast(Any, agent), "thread-x", "thread-x") is True
+
+
+def test_is_ancestor_invocation_true_for_real_ancestor():
+    agent = _AncestorAgent({"parent": {"child"}})
+    assert is_ancestor_invocation(cast(Any, agent), "child", "parent") is True
+
+
+def test_is_ancestor_invocation_false_for_unrelated_target():
+    agent = _AncestorAgent({"parent": {"child"}})
+    assert is_ancestor_invocation(cast(Any, agent), "child", "stranger") is False

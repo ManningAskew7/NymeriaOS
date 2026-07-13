@@ -191,8 +191,9 @@ cannot collide with built-in commands:
   attached to the same turn.
 - `/skill <name> off` deactivates a markdown-only skill on the current thread.
 - `/kit <name>` activates a Skill Kit on the current thread using the kit's
-  `tool_ttl`, binds its required tools, and sends the kit body into the current
-  model turn.
+  `tool_ttl`: it binds the required tools first and only then enables the kit
+  (a binding failure leaves the kit fully inactive, matching the `Skill()`
+  order), then sends the kit body into the current model turn.
 - `/kit <name> <ttl>` activates it with a one-time TTL override such as `30m`,
   `1h`, `24h`, or `permanent`.
 - `/kit <name> <ttl> <prompt>` uses the TTL override and appends the prompt

@@ -2345,14 +2345,19 @@ def activate_skill_kit(
         )
     union_tools = expanded_required_tools(skill, nested_skills)
 
-    try:
-        from ..tools.skill_config import _activate_skill_on_thread
+    def _enable_on_thread() -> str | None:
+        try:
+            from ..tools.skill_config import _activate_skill_on_thread
 
-        _activate_skill_on_thread(agent, thread_id, skill_name)
-    except Exception as e:
-        return False, f"[Error]: Failed to add skill to thread: {e}"
+            _activate_skill_on_thread(agent, thread_id, skill_name)
+            return None
+        except Exception as e:  # noqa: BLE001 - surfaced to the caller
+            return f"[Error]: Failed to add skill to thread: {e}"
 
     if not skill.is_skill_kit:
+        error = _enable_on_thread()
+        if error:
+            return False, error
         return True, f"[Success]: Skill '{skill_name}' activated."
 
     nested_note = (
@@ -2366,6 +2371,9 @@ def activate_skill_kit(
     )
 
     if not union_tools:
+        error = _enable_on_thread()
+        if error:
+            return False, error
         return True, (
             f"[Success]: Skill kit '{skill_name}' activated (no tools to "
             f"bind).{nested_note}"
@@ -2376,6 +2384,10 @@ def activate_skill_kit(
     except Exception as e:
         return False, f"[Error]: tool_search unavailable: {e}"
 
+    # Bind FIRST, enable after (the Skill() meta-tool order): a strict
+    # binding failure must leave the kit fully inactive. Enabling first
+    # would leave a half-activated kit whose thread-template tools still
+    # surface at the next graph build despite the reported failure.
     binding = bind_tools_for_thread(
         union_tools,
         "",  # category not used; we pass explicit tool names
@@ -2389,9 +2401,27 @@ def activate_skill_kit(
     )
     if not binding.ok:
         return False, (
-            f"[Error]: Skill '{skill_name}' was added to enabled_skills, "
-            f"but tool binding failed:\n{binding.text}"
+            f"[Error]: Skill kit '{skill_name}' was NOT activated; tool "
+            f"binding failed:\n{binding.text}"
         )
+
+    error = _enable_on_thread()
+    if error:
+        # The bind succeeded but the enable write failed: roll the bound
+        # tools back (best-effort) so no partial activation survives.
+        try:
+            tc = agent.thread_config_manager.get_config(thread_id)
+            if tc is not None and tc.temporary_tools:
+                for tool_name in union_tools:
+                    tc.temporary_tools.pop(tool_name, None)
+                agent.thread_config_manager.save_config(tc)
+                agent.invalidate_thread_config_cache(thread_id)
+        except Exception:  # noqa: BLE001 - rollback is best-effort
+            logger.warning(
+                "skill kit activation rollback failed for %s on %s",
+                skill_name, thread_id, exc_info=True,
+            )
+        return False, error
 
     return True, (
         f"[Success]: Skill kit '{skill_name}' activated.{nested_note}\n"
