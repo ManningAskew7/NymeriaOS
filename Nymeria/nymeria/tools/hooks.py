@@ -19,6 +19,7 @@ default (``scope="thread"``); use ``scope="global"`` for all the user's threads.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Optional
@@ -900,3 +901,7 @@ HOOK_TOOLS = [
     hook_config,
     hook_info,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="hook", tools=tuple(HOOK_TOOLS)))

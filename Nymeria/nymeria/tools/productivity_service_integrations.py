@@ -1,6 +1,7 @@
 """Productivity service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Any, Optional
@@ -847,3 +848,7 @@ PRODUCTIVITY_SERVICE_TOOLS = [
     trello_update_card,
     trello_add_card_comment,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="productivity", tools=tuple(PRODUCTIVITY_SERVICE_TOOLS)))

@@ -1,6 +1,7 @@
 """Agent-facing validated Skill and Skill Kit authoring workflow."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 import shutil
@@ -997,3 +998,7 @@ def skill_edit(
 
 
 SKILL_CONFIG_TOOLS = [skill_write, skill_edit]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="skill_config", tools=tuple(SKILL_CONFIG_TOOLS)))

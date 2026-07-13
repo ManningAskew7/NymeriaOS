@@ -7,6 +7,7 @@ text content using the appropriate method:
 - XLSX/XLS: openpyxl extraction to markdown tables
 - PDF/DOCX/images: Gemini multimodal extraction for high-accuracy OCR
 """
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import io
@@ -356,3 +357,7 @@ def outlook_get_attachments(
 
 
 OUTLOOK_ATTACHMENT_TOOLS = [outlook_get_attachments]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="outlook_attachment", tools=tuple(OUTLOOK_ATTACHMENT_TOOLS)))

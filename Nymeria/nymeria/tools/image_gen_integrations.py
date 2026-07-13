@@ -20,6 +20,7 @@ policy via ``download_image_bytes``. ``tools/__init__.py`` folds
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import functools
 import logging
@@ -657,3 +658,7 @@ IMAGE_GEN_INTEGRATION_TOOLS = [
     image_gen_replicate,
     image_gen_fal,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="image_gen", tools=tuple(IMAGE_GEN_INTEGRATION_TOOLS)))

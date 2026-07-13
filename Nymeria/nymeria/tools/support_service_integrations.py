@@ -1,6 +1,7 @@
 """Support and customer messaging service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import logging
@@ -2526,3 +2527,7 @@ SUPPORT_SERVICE_TOOLS = [
     drift_delete_contact,
     drift_list_contact_attributes,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="support", tools=tuple(SUPPORT_SERVICE_TOOLS)))

@@ -1,6 +1,7 @@
 """Messaging and transactional email service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import json
@@ -2330,3 +2331,7 @@ MESSAGING_DELIVERY_SERVICE_TOOLS = [
     seven_send_sms,
     seven_get_balance,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="messaging_delivery", tools=tuple(MESSAGING_DELIVERY_SERVICE_TOOLS)))

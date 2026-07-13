@@ -11,6 +11,7 @@ carry the (name, description) index for the current thread's active skills.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 import json
@@ -815,3 +816,7 @@ __all__ = [
     "install_skill",
     "SEARCH_SKILLS_TOOLS",
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="search_skills", tools=tuple(SEARCH_SKILLS_TOOLS)))

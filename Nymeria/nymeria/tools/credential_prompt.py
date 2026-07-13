@@ -31,6 +31,7 @@ other tool calls in a parallel batch.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import asyncio
 import json
@@ -699,3 +700,7 @@ REQUEST_CREDENTIAL_TOOLS = [request_credential]
 
 
 __all__ = ["request_credential", "REQUEST_CREDENTIAL_TOOLS"]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="request_credential", tools=tuple(REQUEST_CREDENTIAL_TOOLS)))

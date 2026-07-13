@@ -1,6 +1,7 @@
 """Build and CI service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Any, Optional
@@ -858,3 +859,7 @@ BUILD_CI_SERVICE_TOOLS = [
     jenkins_restart_instance,
     jenkins_shutdown_instance,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="build_ci", tools=tuple(BUILD_CI_SERVICE_TOOLS)))

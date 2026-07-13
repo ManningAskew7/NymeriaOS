@@ -1,6 +1,7 @@
 """Customer engagement service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import hashlib
@@ -1120,3 +1121,7 @@ CUSTOMER_ENGAGEMENT_SERVICE_TOOLS = [
     mailchimp_update_member_tags,
     mailchimp_list_campaigns,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="customer_engagement", tools=tuple(CUSTOMER_ENGAGEMENT_SERVICE_TOOLS)))

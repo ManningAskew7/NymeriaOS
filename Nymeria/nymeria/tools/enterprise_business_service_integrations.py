@@ -1,6 +1,7 @@
 """Enterprise resource and invoicing service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -1043,3 +1044,7 @@ ENTERPRISE_BUSINESS_SERVICE_TOOLS = [
     invoiceninja_delete_record,
     invoiceninja_email_invoice_or_quote,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="enterprise_business", tools=tuple(ENTERPRISE_BUSINESS_SERVICE_TOOLS)))

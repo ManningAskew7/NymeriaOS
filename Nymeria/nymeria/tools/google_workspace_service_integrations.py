@@ -1,6 +1,7 @@
 """Google Workspace productivity service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import functools
 import io
@@ -1310,3 +1311,7 @@ GOOGLE_WORKSPACE_SERVICE_TOOLS = [
     google_chat_update_message,
     google_chat_delete_message,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="google_workspace", tools=tuple(GOOGLE_WORKSPACE_SERVICE_TOOLS)))

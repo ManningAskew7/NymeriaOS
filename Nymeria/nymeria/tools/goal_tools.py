@@ -18,6 +18,7 @@ defence-in-depth.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Optional
@@ -356,3 +357,7 @@ __all__ = [
     "mark_task_done",
     "provide_review_feedback",
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="goal", tools=tuple(GOAL_TOOLS)))

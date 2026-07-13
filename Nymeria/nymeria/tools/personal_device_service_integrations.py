@@ -1,6 +1,7 @@
 """Personal health, activity, and home device service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -878,3 +879,7 @@ PERSONAL_DEVICE_SERVICE_TOOLS = [
     philips_hue_update_light_state,
     philips_hue_delete_light,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="personal_device", tools=tuple(PERSONAL_DEVICE_SERVICE_TOOLS)))

@@ -1,6 +1,7 @@
 """Chat and community platform service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Any, Optional
@@ -714,3 +715,7 @@ CHAT_PLATFORM_SERVICE_TOOLS = [
     discord_send_channel_message,
     discord_delete_message,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="chat_platform", tools=tuple(CHAT_PLATFORM_SERVICE_TOOLS)))

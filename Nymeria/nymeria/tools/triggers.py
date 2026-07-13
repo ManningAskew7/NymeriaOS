@@ -3,6 +3,7 @@
 Triggers react to external events (webhooks, API changes, incoming data).
 They complement recurring TODOs, which handle time-based autonomous work.
 """
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -691,3 +692,7 @@ TRIGGER_TOOLS = [
     trigger_config,
     trigger_info,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="trigger", tools=tuple(TRIGGER_TOOLS)))

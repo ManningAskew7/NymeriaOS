@@ -1,6 +1,7 @@
 """Agent-safe credential vault management tool."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import time
@@ -1051,3 +1052,7 @@ async def auth_write(
 
 
 AUTH_MANAGER_TOOLS = [auth_inspect, auth_cleanup, auth_bindings, auth_test, auth_write]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="auth_manager", tools=tuple(AUTH_MANAGER_TOOLS)))

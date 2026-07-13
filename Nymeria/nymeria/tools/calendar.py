@@ -8,6 +8,7 @@ mid-migration users via :func:`auth_cache_utils.resolve_oauth_cache`.
 
 Optional tools, enable per-thread via thread config.
 """
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from datetime import datetime, timezone
@@ -697,3 +698,7 @@ CALENDAR_TOOLS = [
     calendar_get_current_time,
     calendar_list_colors,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="calendar", tools=tuple(CALENDAR_TOOLS)))

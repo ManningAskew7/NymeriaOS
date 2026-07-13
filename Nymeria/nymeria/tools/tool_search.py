@@ -10,6 +10,7 @@ a fresh graph, and resumes via an internal `tool_reload_resume` message. See
 `core/agent.py::_do_tool_reload` for the legacy orchestration and
 `docs/tools.md` for the full flow.
 """
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -1514,3 +1515,7 @@ def tool_manage(
 
 
 TOOL_SEARCH_TOOLS = [tool_search, tool_manage]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="tool_search", tools=tuple(TOOL_SEARCH_TOOLS)))

@@ -1,6 +1,7 @@
 """Google Business Profile native service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -633,3 +634,7 @@ GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS = [
     google_business_profile_update_post,
     google_business_profile_delete_post,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="google_business_profile", tools=tuple(GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS)))

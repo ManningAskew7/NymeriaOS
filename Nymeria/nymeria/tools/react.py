@@ -31,6 +31,7 @@ themselves, so neither rule can drift from what actually runs.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Optional
@@ -236,3 +237,7 @@ def reaction_guidance_block(agent, user_id: str, thread_id: str) -> str:
 
 
 REACT_TOOLS = [react]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="react", tools=tuple(REACT_TOOLS)))

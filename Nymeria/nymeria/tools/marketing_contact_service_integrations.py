@@ -1,6 +1,7 @@
 """Marketing and contact-list service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import json
@@ -4179,3 +4180,7 @@ MARKETING_CONTACT_SERVICE_TOOLS = [
     mautic_send_email_to_contact,
     mautic_send_segment_email,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="marketing_contact", tools=tuple(MARKETING_CONTACT_SERVICE_TOOLS)))

@@ -9,6 +9,7 @@ Features:
 - Graceful error handling with detailed error messages
 - Fallback to requests+BeautifulSoup if Playwright unavailable
 """
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import importlib.util
@@ -860,3 +861,7 @@ BROWSER_TOOLS = [
     browser_press_key,
     browser_status,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="browser", tools=tuple(BROWSER_TOOLS)))

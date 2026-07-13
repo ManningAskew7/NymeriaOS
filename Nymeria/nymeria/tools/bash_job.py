@@ -10,6 +10,7 @@ stdout/stderr paths), so it is convenience, not a dependency.
 All actions are scoped to the calling user: a job started by another user is
 never listed, shown, or killable here.
 """
+from .registry import ToolGroup, register_tool_group
 
 import logging
 import os
@@ -220,3 +221,7 @@ def _short(value: str, limit: int) -> str:
 
 
 BASH_JOB_TOOLS = [bash_job]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="bash_job", tools=tuple(BASH_JOB_TOOLS)))

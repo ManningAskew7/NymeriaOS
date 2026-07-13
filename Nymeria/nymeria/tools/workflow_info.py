@@ -11,6 +11,7 @@ can never satisfy the authoring gate on the user's behalf.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Any, Optional
@@ -255,3 +256,7 @@ def workflow_info(
 
 # Grouped export for CATALOG_TOOLS registration (opt-in).
 WORKFLOW_INFO_TOOLS = [workflow_info]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="workflow_info", tools=tuple(WORKFLOW_INFO_TOOLS)))

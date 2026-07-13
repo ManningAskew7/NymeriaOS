@@ -1,6 +1,7 @@
 """Commerce, storefront, and billing service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import hashlib
@@ -3543,3 +3544,7 @@ COMMERCE_BILLING_SERVICE_TOOLS = [
     xero_create_invoice,
     xero_update_invoice,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="commerce_billing", tools=tuple(COMMERCE_BILLING_SERVICE_TOOLS)))

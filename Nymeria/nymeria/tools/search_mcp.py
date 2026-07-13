@@ -16,6 +16,7 @@ smooth that over; these tools are just a thin @tool wrapper around it.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -743,3 +744,7 @@ def mcp_manage(
 SEARCH_MCP_TOOLS = [mcp_manage, search_mcp, install_mcp_server]
 
 __all__ = ["mcp_manage", "search_mcp", "install_mcp_server", "SEARCH_MCP_TOOLS"]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="search_mcp", tools=tuple(SEARCH_MCP_TOOLS)))

@@ -1,6 +1,7 @@
 """Microsoft Graph productivity and collaboration service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Any, Optional
@@ -987,3 +988,7 @@ MICROSOFT_GRAPH_SERVICE_TOOLS = [
     microsoft_excel_list_tables,
     microsoft_excel_add_table_row,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="microsoft_graph", tools=tuple(MICROSOFT_GRAPH_SERVICE_TOOLS)))

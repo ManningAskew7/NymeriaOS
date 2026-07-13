@@ -9,6 +9,7 @@ module). The definitions are kept on purpose: the Helix API call logic is the
 reusable part for a future rewrite that binds them to the standard optional-tool
 pattern (their own OAuth plus direct Helix calls) instead of a running bot.
 """
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from collections.abc import Callable, Coroutine
@@ -785,3 +786,7 @@ _TWITCH_DISABLED_PREFIX = "[DISABLED: pending migration off the removed Twitch b
 for _twitch_tool in TWITCH_TOOLS:
     if not _twitch_tool.description.startswith(_TWITCH_DISABLED_PREFIX):
         _twitch_tool.description = _TWITCH_DISABLED_PREFIX + _twitch_tool.description
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="twitch", tools=tuple(TWITCH_TOOLS)))

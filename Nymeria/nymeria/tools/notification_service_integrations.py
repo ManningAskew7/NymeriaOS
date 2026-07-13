@@ -1,6 +1,7 @@
 """Notification, push, and alerting service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Any, Optional
@@ -860,3 +861,7 @@ NOTIFICATION_SERVICE_TOOLS = [
     signl4_send_alert,
     signl4_resolve_alert,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="notification", tools=tuple(NOTIFICATION_SERVICE_TOOLS)))
