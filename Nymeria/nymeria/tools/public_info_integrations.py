@@ -1,6 +1,7 @@
 """Public information service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -743,3 +744,7 @@ PUBLIC_INFO_TOOLS = [
     openweathermap_forecast,
     quickchart_create_url,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="public_info", tools=tuple(PUBLIC_INFO_TOOLS)))

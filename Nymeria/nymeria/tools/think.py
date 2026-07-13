@@ -3,6 +3,7 @@
 Sends a question to a Gemini model (with reasoning tokens enabled) and
 returns its analysis.  This is an external LLM call, not internal reasoning.
 """
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Optional
@@ -157,3 +158,7 @@ def consult(
 
 # Export
 CONSULT_TOOLS = [consult]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="consult", tools=tuple(CONSULT_TOOLS)))
