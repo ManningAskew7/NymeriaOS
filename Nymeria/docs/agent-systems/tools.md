@@ -2594,7 +2594,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Utility tools: `claude_code`, `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_write`, `skill_edit` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
 
 **How it works:**
-1. `CATALOG_TOOLS` in `tools/__init__.py` maps tool names to tool objects
+1. `CATALOG_TOOLS` in `tools/__init__.py` maps tool names to tool objects. It is assembled by auto-discovery: each tool family self-registers a `ToolGroup` on import via `register_tool_group` (`tools/registry.py`, mirroring how `triggers/sources` derives `AVAILABLE_SOURCES` from `register_source`). `CATALOG_TOOLS`, `__all__`, the tool count, and the `ADMIN_ONLY_TOOL_NAMES` / `DEVELOPER_ONLY_TOOL_NAMES` role-gate sets all derive from `all_tool_groups()` (the group `admin_only` / `developer_only` flags for the gates), not a hand-maintained list. Category and security metadata still live in `tools/metadata.py`.
 2. Per-thread config has an `enabled_tools` list (tool names)
 3. The profile-level `default_thread_tools` list is the default-bound core set for each thread; an empty list means no core tools
 4. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set
@@ -2872,7 +2872,9 @@ def my_tool(param: str) -> str:
     return f"[Success]: Result is {result}"
 ```
 
-### 2. Export in `__init__.py`
+### 2. Register the Tool
+
+For an always-on **seed** tool, import it and add it to `SEED_TOOLS`:
 
 ```python
 # nymeria/tools/__init__.py
@@ -2884,12 +2886,34 @@ SEED_TOOLS = [
 ]
 ```
 
+For an opt-in **catalog** tool (the usual case), self-register a `ToolGroup` at
+the bottom of the family module. `CATALOG_TOOLS`, `__all__`, the tool count, and
+the role-gate sets are derived from `all_tool_groups()`, so nothing in
+`__init__.py` needs editing for a catalog family:
+
+```python
+# nymeria/tools/my_family.py
+from .registry import ToolGroup, register_tool_group
+
+MY_FAMILY_TOOLS = [my_tool, my_other_tool]
+
+register_tool_group(ToolGroup(name="my_family", tools=tuple(MY_FAMILY_TOOLS)))
+```
+
+Set `admin_only=True` (mutates the running codebase or runs a nested agent) or
+`developer_only=True` (diagnostic-only) on the group to flow into
+`ADMIN_ONLY_TOOL_NAMES` / `DEVELOPER_ONLY_TOOL_NAMES`. `__init__.py` still
+imports the family so its `register_tool_group` fires (mirroring how
+`triggers/sources` imports each source module).
+
 ### 3. Tool is Automatically Available
 
 The tool is available on next startup, or call `reload_all()` for hot-reload.
 Metadata is generated automatically from the registered tool object, so adding a
-tool to `SEED_TOOLS` or `CATALOG_TOOLS` is enough to get a metadata entry.
-Use clear docstrings: the first paragraph becomes the discovery description.
+tool to `SEED_TOOLS` or a catalog `ToolGroup` is enough to get a metadata entry;
+`__all__` is regenerated from the module namespace (a golden test fails if the
+literal drifts). Use clear docstrings: the first paragraph becomes the
+discovery description.
 
 ---
 

@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1236 tools found.**
+**1237 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
