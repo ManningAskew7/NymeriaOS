@@ -1363,7 +1363,7 @@ from .microsoft_graph_service_integrations import (
     MICROSOFT_GRAPH_SERVICE_TOOLS,
 )
 from ..core.self_agent import SELF_AGENT_TOOLS
-from .registry import all_tool_groups
+from .registry import ToolGroup, all_tool_groups, register_tool_group
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
 
@@ -1379,6 +1379,13 @@ _PRV_TOOLS_A = (
     + _PRV_TOOLS_A4
     + _PRV_TOOLS_A5
 )
+
+# Groups that are not owned by a single tools/*.py module register here rather
+# than self-registering: SELF_AGENT_TOOLS lives in core/self_agent.py (imported
+# by core/__init__ before this package, so a self-register there would cycle).
+# It is admin-only, so its group carries admin_only=True and the role-gate
+# derivation below picks it up from the flag.
+register_tool_group(ToolGroup(name="self_agent", tools=tuple(SELF_AGENT_TOOLS), admin_only=True))
 
 # CATALOG_TOOLS: the bindable tool catalog (name -> tool object). Bound per
 # thread when named in a thread's enabled_tools, or when promoted into a user's
@@ -1409,8 +1416,6 @@ CATALOG_TOOLS = {t.name: t for t in (
     + UI_PROMPT_TOOLS
     + CLI_STATUSBAR_TOOLS
     + CALENDAR_TOOLS
-    + SELF_AGENT_TOOLS
-    + RUNTIME_ADMIN_TOOLS
     + GOOGLE_DOCS_TOOLS
     + GOOGLE_WORKSPACE_SERVICE_TOOLS
     + GOOGLE_ANALYTICS_SERVICE_TOOLS
@@ -1498,15 +1503,22 @@ CAPABILITY_EXPANSION_TOOL_NAMES = frozenset(
 # every agent-callable write site (tool_search, spawn_thread, slash
 # /tools), and as defense-in-depth at graph-build time. Names — not tool
 # objects — so the gate survives reload_all().
+# Population is derived from the admin_only tool groups (self_agent +
+# runtime_admin) plus claude_code, which lives in the mixed "core" group and so
+# is unioned in by name. This frozenset stays the single object the role-gate
+# chokepoint reads; only how it is populated moved from hand-listed to derived.
 ADMIN_ONLY_TOOL_NAMES = frozenset(
-    [t.name for t in (SELF_AGENT_TOOLS + RUNTIME_ADMIN_TOOLS)]
-    + [claude_code.name]
-)
+    t.name for g in all_tool_groups() if g.admin_only for t in g.tools
+) | {claude_code.name}
 
 # Optional tools that exist for development/regression validation rather than
 # production use. Admins can still discover and bind them when deliberately
 # testing dynamic tool loading; regular users should not see or enable them.
-DEVELOPER_ONLY_TOOL_NAMES = frozenset([hello_test.name])
+# Derived from the developer_only tool groups (none today) plus hello_test,
+# which also lives in the mixed "core" group and is unioned in by name.
+DEVELOPER_ONLY_TOOL_NAMES = frozenset(
+    t.name for g in all_tool_groups() if g.developer_only for t in g.tools
+) | {hello_test.name}
 
 
 def filter_developer_only_tools(

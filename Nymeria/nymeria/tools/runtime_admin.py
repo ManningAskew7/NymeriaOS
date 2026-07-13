@@ -1,4 +1,5 @@
 """Runtime administration tools: full reload and self-modification rollback."""
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from pathlib import Path
@@ -110,3 +111,7 @@ RUNTIME_ADMIN_TOOLS = [
     reload_all,
     self_modify_rollback,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="runtime_admin", tools=tuple(RUNTIME_ADMIN_TOOLS), admin_only=True))
