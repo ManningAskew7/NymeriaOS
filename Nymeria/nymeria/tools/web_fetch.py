@@ -14,6 +14,7 @@ with DNS pinning. This is the same path rss_source and the credential probes use
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import hashlib
 import html as html_mod
@@ -475,3 +476,7 @@ def fetch_url_nymeria(
 # providers (fetch_url_firecrawl, fetch_url_jina, ...) land later as separate
 # opt-in tools in the same Web group.
 WEB_FETCH_TOOLS = [fetch_url_nymeria]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="web_fetch", tools=tuple(WEB_FETCH_TOOLS)))

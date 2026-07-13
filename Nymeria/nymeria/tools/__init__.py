@@ -1363,6 +1363,7 @@ from .microsoft_graph_service_integrations import (
     MICROSOFT_GRAPH_SERVICE_TOOLS,
 )
 from ..core.self_agent import SELF_AGENT_TOOLS
+from .registry import all_tool_groups
 
 WATCHDOG_TOOLS = ACTIVITY_FEED_TOOLS + WATCHDOG_DISPATCH_TOOLS
 
@@ -1384,14 +1385,21 @@ _PRV_TOOLS_A = (
 # default_thread_tools. These objects are bound by name directly at graph-build
 # (agent_graph.select_tools_for_graph / static_tool_catalog), NOT registered in
 # the ToolRegistry (which holds only SEED_TOOLS + callable/custom/MCP tools).
+#
+# Assembly (backlog #51, Workstream A): each tool family self-registers a
+# ToolGroup on import (register_tool_group in the family module, fired by the
+# imports above), so all_tool_groups() supplies the migrated families. Families
+# not yet migrated to the registry are still hand-listed below and unioned in;
+# the two sets are disjoint by tool name, so the merge is order-independent.
+# The end state (once every family is migrated) is
+# ``{t.name: t for g in all_tool_groups() for t in g.tools}`` with no hand list.
 CATALOG_TOOLS = {t.name: t for t in (
-    [claude_code, hello_test, regression_echo, memory_clear_all, personality_set, rag_settings]
+    [t for g in all_tool_groups() for t in g.tools]
+    + [claude_code, hello_test, regression_echo, memory_clear_all, personality_set, rag_settings]
     + BASH_JOB_TOOLS
-    + CONSULT_TOOLS
     + REACT_TOOLS
     + WEB_SEARCH_SERVICE_TOOLS
     + WEB_SEARCH_INTEGRATION_TOOLS
-    + WEB_FETCH_TOOLS
     + OUTLOOK_TOOLS
     + OUTLOOK_ATTACHMENT_TOOLS
     + TRIGGER_TOOLS
@@ -1425,7 +1433,6 @@ CATALOG_TOOLS = {t.name: t for t in (
     + IMAGE_GEN_INTEGRATION_TOOLS
     + UTILITY_INTEGRATION_TOOLS
     + TRANSFORM_UTILITY_TOOLS
-    + PUBLIC_INFO_TOOLS
     + MEDIA_DISCOVERY_SERVICE_TOOLS
     + COMMUNITY_PUBLISHING_SERVICE_TOOLS
     + TIME_HR_SERVICE_TOOLS
