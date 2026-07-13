@@ -638,7 +638,7 @@ class NymeriaAgent:
         trigger_override: Optional[str] = None,
     ) -> str:
         from .agent_prompt import get_time_context_for_agent
-        return get_time_context_for_agent(self, is_autonomous, trigger_override)
+        return get_time_context_for_agent(is_autonomous, trigger_override)
 
     def _prefix_turn_metadata(
         self,

@@ -6,15 +6,20 @@ rules), compute the hash of that input set used for graph-cache keys, and
 manage the per-user :class:`MemoryIndex` used for RAG retrieval and
 conversation-turn indexing.
 
-Each function takes the owning :class:`NymeriaAgent` as its first argument
-and reads/writes the same attributes the original methods did. The class
-methods on ``NymeriaAgent`` are preserved as thin facades that delegate
-here, so external callers (``agent_graph``, ``api/routers/rag``,
-``api/routers/memory``, ``command_service``, ``thread_deletion``, tests)
-keep working unchanged. Internal calls between extracted functions go
-through ``agent.<method>(…)`` so they dispatch through the class facade —
-the same recursion-through-class pattern used by :mod:`agent_graph` and
-:mod:`agent_tools`.
+The host-dependent functions take a narrow ``PromptHost`` capability bundle
+(a ``Protocol``) instead of the whole ``NymeriaAgent`` god-object: it
+enumerates exactly the managers, settings, and facade methods they read.
+``NymeriaAgent`` satisfies the Protocol structurally, so its class methods
+stay thin facades that pass ``self`` unchanged, external callers
+(``agent_graph``, ``api/routers/rag``, ``api/routers/memory``,
+``command_service``, ``thread_deletion``, tests) keep working, and internal
+calls between extracted functions still go through ``host.<method>(…)`` so the
+class facade (and its monkey-patch seam) intercepts them. A hand-built stub
+satisfies the same Protocol, so each function is unit-testable without a
+``NymeriaAgent``. The seam mirrors ``core/turn_executor.py``.
+
+``get_time_context_for_agent`` is a genuinely pure leaf (it ignored the
+agent), so it takes no host at all.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from .memory_index import MemoryIndex
 from .prompts import (
@@ -32,13 +37,41 @@ from .prompts import (
 from .storage_paths import safe_path_segment
 from .todo_constants import STATUS_ICONS, STATUS_ORDER
 
-if TYPE_CHECKING:
-    from .agent import NymeriaAgent
-
 logger = logging.getLogger(__name__)
 
 
-def build_user_profile_section(agent: "NymeriaAgent", user_id: str) -> str:
+@runtime_checkable
+class PromptHost(Protocol):
+    """Narrow capability surface the prompt/memory functions need from a host.
+
+    ``NymeriaAgent`` satisfies this structurally, so the facade methods pass
+    ``self`` unchanged; a hand-built stub satisfies it for isolated unit
+    tests. Manager/settings collaborators are typed ``Any`` (their surfaces
+    are large and the functions read heterogeneous attributes); the facade
+    methods carry real signatures because routing through them is what keeps
+    the test monkey-patch seams (``NymeriaAgent._get_memory_index`` etc.)
+    intercepting the call.
+    """
+
+    profile_manager: Any
+    todo_manager: Any
+    thread_config_manager: Any
+    settings: Any
+    _memory_indexes: Any
+    _base_system_prompt: str
+
+    def _resolve_temporary_tools(self, tc: Any) -> set: ...
+
+    def _skills_fingerprint(self, user_id: str, thread_id: str) -> str: ...
+
+    def _build_user_profile_section(self, user_id: str) -> str: ...
+
+    def _build_active_todos_section(self, user_id: str, thread_id: str = "") -> str: ...
+
+    def _get_memory_index(self, user_id: str) -> Any: ...
+
+
+def build_user_profile_section(host: PromptHost, user_id: str) -> str:
     """
     Build the user profile section for the system prompt.
 
@@ -50,7 +83,7 @@ def build_user_profile_section(agent: "NymeriaAgent", user_id: str) -> str:
     Returns:
         Formatted profile section to append to system prompt
     """
-    profile = agent.profile_manager.get_profile(user_id)
+    profile = host.profile_manager.get_profile(user_id)
 
     if not profile.memories and not profile.personality_overrides:
         return ""
@@ -97,7 +130,7 @@ def build_user_profile_section(agent: "NymeriaAgent", user_id: str) -> str:
 
 
 def build_active_todos_section(
-    agent: "NymeriaAgent", user_id: str, thread_id: str = ""
+    host: PromptHost, user_id: str, thread_id: str = ""
 ) -> str:
     """
     Build the active TODOs section for the system prompt.
@@ -112,7 +145,7 @@ def build_active_todos_section(
     Returns:
         Formatted TODOs section to append to system prompt
     """
-    todo_list = agent.todo_manager.get_todos(user_id)
+    todo_list = host.todo_manager.get_todos(user_id)
     if thread_id:
         active = todo_list.get_active_todos_for_thread(thread_id)
     else:
@@ -164,12 +197,12 @@ def build_active_todos_section(
 
 
 def get_memory_hash(
-    agent: "NymeriaAgent", user_id: str, thread_id: str = ""
+    host: PromptHost, user_id: str, thread_id: str = ""
 ) -> str:
     """Get a hash of the user's memories, thread-scoped TODOs, and tool preferences to detect changes."""
     # For callable threads with custom system_prompt, skip memory/TODO/personality hash
-    tc = agent.thread_config_manager.get_config(thread_id) if thread_id else None
-    live_temp_tools = sorted(agent._resolve_temporary_tools(tc)) if tc else []
+    tc = host.thread_config_manager.get_config(thread_id) if thread_id else None
+    live_temp_tools = sorted(host._resolve_temporary_tools(tc)) if tc else []
     if tc and tc.callable and tc.system_prompt:
         thread_config_str = (
             f"sp:{hash(tc.system_prompt or '')}"
@@ -182,10 +215,10 @@ def get_memory_hash(
             f"|ds:{sorted(tc.disabled_skills)}"
             f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
         )
-        skills_str = agent._skills_fingerprint(user_id, thread_id)
+        skills_str = host._skills_fingerprint(user_id, thread_id)
         return f"{hash(thread_config_str + skills_str)}"
 
-    profile = agent.profile_manager.get_profile(user_id)
+    profile = host.profile_manager.get_profile(user_id)
     # Only include profile in hash if this thread injects it
     memory_str = ""
     personality_str = ""
@@ -196,7 +229,7 @@ def get_memory_hash(
     # Include thread-scoped TODOs in the hash (only if injected into prompt)
     todo_str = ""
     if tc and tc.inject_todos_in_prompt:
-        todo_list = agent.todo_manager.get_todos(user_id)
+        todo_list = host.todo_manager.get_todos(user_id)
         if thread_id:
             active_todos = todo_list.get_active_todos_for_thread(thread_id)
         else:
@@ -223,13 +256,13 @@ def get_memory_hash(
             f"|llm:{tc.llm_config.model_dump_json() if tc.llm_config else ''}"
         )
 
-    skills_str = agent._skills_fingerprint(user_id, thread_id)
+    skills_str = host._skills_fingerprint(user_id, thread_id)
 
     return f"{hash(memory_str + personality_str + todo_str + tool_prefs_str + thread_config_str + skills_str)}"
 
 
 def build_full_system_prompt(
-    agent: "NymeriaAgent",
+    host: PromptHost,
     user_id: str,
     thread_id: str = "",
 ) -> str:
@@ -253,7 +286,7 @@ def build_full_system_prompt(
     Returns:
         Full system prompt with base content + user memories + thread-scoped TODOs
     """
-    tc = agent.thread_config_manager.get_config(thread_id) if thread_id else None
+    tc = host.thread_config_manager.get_config(thread_id) if thread_id else None
 
     # Callable threads with system_prompt: focused context (no memories/TODOs/instructions).
     # Time/source come from the [Time:]/[Trigger:] tail metadata, not the system prompt.
@@ -261,14 +294,14 @@ def build_full_system_prompt(
         return tc.system_prompt
 
     # Determine base prompt: custom system_prompt or default soul.md
-    base = tc.system_prompt if (tc and tc.system_prompt) else agent._base_system_prompt
+    base = tc.system_prompt if (tc and tc.system_prompt) else host._base_system_prompt
 
     profile_section = ""
     if tc and tc.inject_profile_in_prompt:
-        profile_section = agent._build_user_profile_section(user_id)
+        profile_section = host._build_user_profile_section(user_id)
     todos_section = ""
     if tc and tc.inject_todos_in_prompt:
-        todos_section = agent._build_active_todos_section(user_id, thread_id)
+        todos_section = host._build_active_todos_section(user_id, thread_id)
     prompt = base + profile_section + todos_section
 
     # Inject per-thread instructions (appended last)
@@ -279,15 +312,17 @@ def build_full_system_prompt(
 
 
 def get_time_context_for_agent(
-    agent: "NymeriaAgent",
     is_autonomous: bool = False,
     trigger_override: Optional[str] = None,
 ) -> str:
-    """Get current time context. Delegates to prompts.get_time_context()."""
+    """Get current time context. Delegates to prompts.get_time_context().
+
+    A genuinely pure leaf: it never needed the agent, so it takes no host.
+    """
     return get_time_context(is_autonomous, trigger_override=trigger_override)
 
 
-def get_memory_index(agent: "NymeriaAgent", user_id: str) -> Optional[MemoryIndex]:
+def get_memory_index(host: PromptHost, user_id: str) -> Optional[MemoryIndex]:
     """
     Get or create a memory index for a user.
 
@@ -300,20 +335,20 @@ def get_memory_index(agent: "NymeriaAgent", user_id: str) -> Optional[MemoryInde
         MemoryIndex instance, or None if RAG is disabled for user
     """
     # Check if user has RAG enabled
-    profile = agent.profile_manager.get_profile(user_id)
+    profile = host.profile_manager.get_profile(user_id)
     if not profile.opt_in.rag_enabled:
         return None
 
     # Check cache
-    if user_id in agent._memory_indexes:
-        return agent._memory_indexes[user_id]
+    if user_id in host._memory_indexes:
+        return host._memory_indexes[user_id]
 
     # Create new index
     try:
         safe_user_id = safe_path_segment(user_id)
-        db_path = agent.settings.data_dir / "users" / safe_user_id / "memory.db"
+        db_path = host.settings.data_dir / "users" / safe_user_id / "memory.db"
         index = MemoryIndex(db_path)
-        agent._memory_indexes[user_id] = index
+        host._memory_indexes[user_id] = index
         logger.info(f"Created memory index for user {user_id}")
         return index
     except Exception as e:
@@ -322,7 +357,7 @@ def get_memory_index(agent: "NymeriaAgent", user_id: str) -> Optional[MemoryInde
 
 
 def get_rag_context(
-    agent: "NymeriaAgent",
+    host: PromptHost,
     user_id: str,
     query: str,
     is_autonomous: bool = False,
@@ -338,12 +373,12 @@ def get_rag_context(
     Returns:
         List of ChunkResult objects from RAG search, or empty list
     """
-    memory_index = agent._get_memory_index(user_id)
+    memory_index = host._get_memory_index(user_id)
     if not memory_index:
         return []
 
     try:
-        profile = agent.profile_manager.get_profile(user_id)
+        profile = host.profile_manager.get_profile(user_id)
         rag_prefs = profile.get_rag_preferences()
 
         # Build chunk types filter based on preferences
@@ -501,7 +536,7 @@ def _build_tool_activity_section(activity: List[dict]):
 
 
 def index_tool_results(
-    agent: "NymeriaAgent",
+    host: PromptHost,
     user_id: str,
     thread_id: str,
     activity: List[dict],
@@ -515,10 +550,10 @@ def index_tool_results(
     hard-deduped at ingest: the canonical-JSON exact hash collapses byte/format
     twins cross-thread, and the semantic guard collapses near-identical payloads.
     """
-    settings = getattr(agent, "settings", None)
+    settings = getattr(host, "settings", None)
     if settings is None or not getattr(settings, "rag_embed_tool_results", True):
         return
-    memory_index = agent._get_memory_index(user_id)
+    memory_index = host._get_memory_index(user_id)
     if not memory_index:
         return
     max_chars = getattr(settings, "rag_tool_result_max_chars", 2000)
@@ -555,7 +590,7 @@ def index_tool_results(
 
 
 def index_conversation_turn(
-    agent: "NymeriaAgent",
+    host: PromptHost,
     user_id: str,
     thread_id: str,
     user_message: str,
@@ -574,7 +609,7 @@ def index_conversation_turn(
             the turn's tool calls + results are summarized into the embedded
             chunk (and stored raw in metadata) so tool activity is retrievable.
     """
-    memory_index = agent._get_memory_index(user_id)
+    memory_index = host._get_memory_index(user_id)
     if not memory_index:
         return
 
@@ -584,7 +619,7 @@ def index_conversation_turn(
     activity = extract_turn_tool_activity(messages) if messages else []
     if activity:
         try:
-            index_tool_results(agent, user_id, thread_id, activity)
+            index_tool_results(host, user_id, thread_id, activity)
         except Exception as e:
             logger.warning(f"Failed to index tool results: {e}")
 
@@ -611,13 +646,16 @@ def index_conversation_turn(
             metadata["tool_names"] = [a["name"] for a in activity]
 
         # Optional contextual-retrieval blurb (off by default; adds one LLM call).
+        # ``generate_contextual_blurb`` still reads from the host (it resolves an
+        # LLM off it); this opt-in path is the one place agent_prompt hands its
+        # host to another module, and it is only reached when the setting is on.
         context = None
-        settings = getattr(agent, "settings", None)
+        settings = getattr(host, "settings", None)
         try:
             if settings is not None and getattr(settings, "rag_contextual_enabled", False):
                 from .rag_quality import generate_contextual_blurb
                 context = generate_contextual_blurb(
-                    agent, thread_id, turn_content, "conversation"
+                    host, thread_id, turn_content, "conversation"
                 )
         except Exception as e:
             logger.warning(f"Contextual blurb skipped: {e}")
