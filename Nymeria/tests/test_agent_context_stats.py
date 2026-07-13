@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from nymeria.core.agent_compaction import CompactionManager
 from nymeria.core.agent_context_stats import (
+    ContextStatsHost,
     get_context_stats,
     record_turn_usage,
     rehydrate_token_usage,
@@ -695,3 +696,86 @@ def test_record_turn_usage_passes_llm_seconds_through():
 
     _tid, kwargs = agent._record_turn_calls[0]
     assert kwargs["turn_llm_seconds"] == 3.25
+
+
+# ----- narrow ContextStatsHost Protocol (Workstream B) ------------------------
+#
+# The existing tests above lean on SimpleNamespace + cast(Any, ...) to bypass
+# the type checker. These prove the tighter contract: a plain object annotated
+# as ``ContextStatsHost`` (no cast, no NymeriaAgent) satisfies the seam both
+# statically and at runtime, which is the whole point of the narrow input.
+
+
+class _ProtocolHost:
+    """Minimal, fully typed ContextStatsHost stub built without NymeriaAgent."""
+
+    def __init__(self, usage: Any, *, model: str = "gpt-4o") -> None:
+        self._usage_obj = usage
+        self.settings = SimpleNamespace(context_management="none")
+        self._token_tracker = SimpleNamespace(get_usage=lambda _tid: usage)
+        self._default_graph = SimpleNamespace(
+            get_state=lambda _cfg: SimpleNamespace(values={"messages": []})
+        )
+        self._compaction = SimpleNamespace(
+            _estimate_messages_tokens=lambda _m, _model: 0,
+            _resolve_threshold_config=lambda _tid: ("tokens", 0.8, 200_000),
+        )
+        self.thread_metadata_manager = None
+        self.accounts_repo = None
+        self._model = model
+
+    def _get_llm_config_for_thread(
+        self, thread_id: str = "", acting_user_id: str | None = None
+    ) -> Any:
+        return SimpleNamespace(model=self._model)
+
+    def _rehydrate_token_usage(self, thread_id: str) -> None:
+        return None
+
+    def _extract_tokens_from_response(self, messages: list) -> tuple:
+        return (0, 0)
+
+    def _compute_turn_usage_and_cost(
+        self, thread_id: str, messages: list, llm_config: Any
+    ) -> tuple:
+        return (0, 0, None, False)
+
+    def _record_turn_cost(
+        self, thread_id: str, user_id: str, cost_usd: Any, cost_unavailable: bool
+    ) -> None:
+        return None
+
+    def _compact_trigger_tokens(
+        self,
+        model_limit: int,
+        threshold: float = 0.8,
+        *,
+        mode: str = "tokens",
+        tokens: int = 200_000,
+    ) -> int:
+        return CompactionManager.compact_trigger_tokens(
+            model_limit, threshold, mode=mode, tokens=tokens
+        )
+
+
+def test_protocol_host_is_runtime_checkable():
+    host = _ProtocolHost(_fake_usage(last_input=42))
+    # runtime_checkable Protocol: a non-agent object structurally conforms.
+    assert isinstance(host, ContextStatsHost)
+
+
+def test_get_context_stats_runs_against_typed_host(monkeypatch: pytest.MonkeyPatch):
+    import nymeria.core.agent_context_stats as acs
+
+    monkeypatch.setattr(acs, "get_context_limit", lambda _model: 100_000)
+
+    # No cast(Any, ...): the variable is declared as the narrow Protocol, so
+    # pyrefly must accept a plain non-NymeriaAgent host here.
+    host: ContextStatsHost = _ProtocolHost(_fake_usage(last_input=2_500), model="gpt-4o")
+
+    stats = get_context_stats(host, "t-typed")
+
+    assert stats["thread_id"] == "t-typed"
+    assert stats["model"] == "gpt-4o"
+    assert stats["total_tokens"] == 2_500
+    assert stats["usage_percentage"] == 2.5
