@@ -339,6 +339,9 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     "reply_suppressed",
     "provider_retry",
     "provider_fallback",
+    # A model rejected image/PDF input; the backend stripped the attachment and
+    # retried once. Mirrored so autonomous/relayed turns surface the drop too.
+    "image_input_unsupported",
     "auth_prompt",
     "auth_prompt_resolved",
     "auth_prompt_cancelled",

@@ -550,6 +550,304 @@ def test_tools_node_leaves_under_limit_tool_output_unchanged():
     assert message.content == payload
 
 
+# ---------------------------------------------------------------------------
+# Image strip-and-retry (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+class _StatusError(RuntimeError):
+    """RuntimeError carrying an optional HTTP status_code, like provider SDKs."""
+
+    def __init__(self, message: str, status_code=None):
+        super().__init__(message)
+        if status_code is not None:
+            self.status_code = status_code
+
+
+def test_is_image_unsupported_error_matches_capability_rejections():
+    matches = [
+        "Invalid content type. image_url is only supported by certain models.",
+        "This model does not support image input.",
+        "The model does not support vision.",
+        "does not support the requested modality: image",
+        "Fine-tuned model does not support image message content types",
+        "PDF input is not supported for this model.",
+    ]
+    for msg in matches:
+        assert nodes_module.is_image_unsupported_error(_StatusError(msg, 400)) is True, msg
+    # 422 is also allowed; unknown status (None) still matches on a strong phrase.
+    assert nodes_module.is_image_unsupported_error(_StatusError("does not support image input", 422)) is True
+    assert nodes_module.is_image_unsupported_error(_StatusError("does not support image input")) is True
+
+
+def test_is_image_unsupported_error_excludes_fixable_and_wrong_status():
+    fixable = [
+        "Could not process image",
+        "Image does not match the provided media type image/jpeg",
+        "A maximum of 100 PDF pages may be provided.",
+        "Failed to download file from https://x/y.png",
+        "text content blocks must be non-empty",
+        "You uploaded an unsupported image.",
+        "Invalid value: 'image'. Supported values are: 'text', 'image_url'.",
+    ]
+    for msg in fixable:
+        assert nodes_module.is_image_unsupported_error(_StatusError(msg, 400)) is False, msg
+    # Anthropic's generic capability template without a modality term must not match.
+    assert (
+        nodes_module.is_image_unsupported_error(
+            _StatusError("Prefilling assistant messages is not supported for this model.", 400)
+        )
+        is False
+    )
+    # Right phrasing, but a non-capability status: never strip.
+    for status in (401, 402, 403, 408, 429, 500, 503):
+        assert (
+            nodes_module.is_image_unsupported_error(_StatusError("does not support image input", status))
+            is False
+        ), status
+
+
+def test_is_image_unsupported_error_reads_gateway_nested_text():
+    # LiteLLM/OpenRouter wrap the upstream message; the flattened text still matches.
+    exc = _StatusError(
+        "litellm.BadRequestError: OpenAIException - Invalid content type. "
+        "image_url is only supported by certain models.",
+        400,
+    )
+    assert nodes_module.is_image_unsupported_error(exc) is True
+
+
+def test_is_image_unsupported_error_template_uses_word_boundaries():
+    # The generic "not supported for this model" template only counts with a
+    # modality WORD, matched with word boundaries. An unrelated capability 400
+    # whose text merely contains a bound tool name (`file_read`), `profile`, or
+    # `documentation` must NOT be read as an image rejection (which would strip a
+    # valid attachment AND mark the model non-vision).
+    false_positives = [
+        "tools.0.function.name 'file_read': strict function calling is not supported for this model.",
+        "Updating your profile is not supported for this model.",
+        "Streaming documentation lookups is not supported for this model.",
+    ]
+    for msg in false_positives:
+        assert nodes_module.is_image_unsupported_error(_StatusError(msg, 400)) is False, msg
+    # A genuine modality word still matches through the template branch.
+    for msg in [
+        "Image input is not supported for this model.",
+        "Documents are not supported for this model.",
+        "Multimodal input is not supported for this model.",
+    ]:
+        assert nodes_module.is_image_unsupported_error(_StatusError(msg, 400)) is True, msg
+
+
+class _ImageUnsupportedError(RuntimeError):
+    status_code = 400
+
+
+class _ImageUnsupportedThenOkModel(BaseChatModel):
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "image-unsupported-then-ok-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="sync"))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise _ImageUnsupportedError(
+                "Invalid content type. image_url is only supported by certain models."
+            )
+        chunk = ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+        if run_manager:
+            await run_manager.on_llm_new_token("ok", chunk=chunk)
+        yield chunk
+
+
+class _ImageProcessingFailModel(BaseChatModel):
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "image-processing-fail-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="sync"))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        if False:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=""))
+        # An EXCLUDED 400 (fixable, not a capability rejection): must NOT strip-retry.
+        raise _ImageUnsupportedError("Could not process image")
+
+
+def _image_human_message() -> HumanMessage:
+    return HumanMessage(
+        content=[
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+    )
+
+
+def test_async_graph_strips_image_and_retries_on_capability_rejection(monkeypatch):
+    # Keep the outbound image intact on attempt 1 (the provider-specific image
+    # window's stripping is tested separately) so the capability rejection can
+    # trigger exactly one strip-and-retry.
+    monkeypatch.setattr(
+        nodes_module,
+        "_window_images_for_llm",
+        lambda messages, llm_config, thread_id=None: messages,
+    )
+    from nymeria.config import model_capabilities as capabilities
+
+    monkeypatch.setattr(capabilities, "_live_model_cache", {})
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+
+    model = _ImageUnsupportedThenOkModel()
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                model="text-only-fake",
+                custom_llm=model,
+                stream_max_retries=0,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    async def collect():
+        events = []
+        chunks = []
+        async for event in graph.astream_events(
+            {"messages": [_image_human_message()]},
+            config={"configurable": {"thread_id": "img-strip-test"}},
+            version="v2",
+        ):
+            if event.get("event") == "on_custom_event":
+                events.append(event.get("name"))
+            elif event.get("event") == "on_chat_model_stream":
+                content = getattr(event["data"]["chunk"], "content", "")
+                if content:
+                    chunks.append(content)
+        return events, chunks
+
+    events, chunks = asyncio.run(collect())
+
+    assert model.calls == 2  # one strip-retry
+    assert "image_input_unsupported" in events
+    assert chunks == ["ok"]
+    # The model was learned as image/file-incapable for subsequent turns.
+    info = capabilities.get_model_info("text-only-fake")
+    assert info is not None
+    assert "image" not in info.input_modalities
+    assert "file" not in info.input_modalities
+
+
+def test_async_graph_does_not_strip_on_fixable_image_400(monkeypatch):
+    monkeypatch.setattr(
+        nodes_module,
+        "_window_images_for_llm",
+        lambda messages, llm_config, thread_id=None: messages,
+    )
+    model = _ImageProcessingFailModel()
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                model="text-only-fake",
+                custom_llm=model,
+                stream_max_retries=0,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    async def collect_until_error():
+        events = []
+        with pytest.raises(_ImageUnsupportedError):
+            async for event in graph.astream_events(
+                {"messages": [_image_human_message()]},
+                config={"configurable": {"thread_id": "img-nostrip-test"}},
+                version="v2",
+            ):
+                if event.get("event") == "on_custom_event":
+                    events.append(event.get("name"))
+        return events
+
+    events = asyncio.run(collect_until_error())
+
+    assert model.calls == 1  # no strip-retry on a fixable 400
+    assert "image_input_unsupported" not in events
+
+
+class _ImageUnsupportedThenOkSyncModel(BaseChatModel):
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "image-unsupported-then-ok-sync-fake"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise _ImageUnsupportedError("This model does not support image input.")
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok-sync"))])
+
+
+def test_sync_graph_strips_image_and_retries_on_capability_rejection(monkeypatch):
+    # The sync agent_node (graph.invoke path) shares the one-shot strip-retry.
+    monkeypatch.setattr(
+        nodes_module,
+        "_window_images_for_llm",
+        lambda messages, llm_config, thread_id=None: messages,
+    )
+    from nymeria.config import model_capabilities as capabilities
+
+    monkeypatch.setattr(capabilities, "_live_model_cache", {})
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+
+    model = _ImageUnsupportedThenOkSyncModel()
+    graph = create_graph(
+        config=AgentConfig(
+            llm=LLMConfig(
+                provider="custom",
+                model="text-only-sync-fake",
+                custom_llm=model,
+                stream_max_retries=0,
+                stream_retry_initial_delay=0.0,
+                stream_retry_max_delay=0.0,
+            ),
+            checkpointer=CheckpointerConfig(backend="memory"),
+            system_prompt="test system",
+        ),
+        tools=[],
+    )
+
+    result = graph.invoke(
+        {"messages": [_image_human_message()]},
+        config={"configurable": {"thread_id": "img-strip-sync-test"}},
+    )
+
+    assert model.calls == 2  # one strip-retry
+    assert result["messages"][-1].content == "ok-sync"
+    info = capabilities.get_model_info("text-only-sync-fake")
+    assert info is not None
+    assert "image" not in info.input_modalities
+    assert "file" not in info.input_modalities
+
+
 def _invoke_single_tool_graph(*, tool, tool_name: str, call_id: str, tool_output_max_chars: int):
     calls = {"agent": 0}
 

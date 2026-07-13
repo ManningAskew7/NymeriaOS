@@ -124,6 +124,87 @@ _NON_RETRYABLE_ERROR_MARKERS = (
     "billing",
 )
 
+# ---------------------------------------------------------------------------
+# Image/document input-unsupported detection (strip-and-retry, Phase 2).
+#
+# When a provider rejects a turn because the model cannot accept image (or PDF)
+# input, the agent nodes strip the attachment and retry once (see
+# is_image_unsupported_error + the agent-node strip-retry). The dominant risk is
+# FALSE POSITIVES: most 400s that mention "image" are fixable (bad media type,
+# size/count, fetch, decode, empty block), and stripping those is wrong. So the
+# classifier requires a positive capability signature AND status 400/422 AND the
+# absence of any exclusion marker (exclusions win). Signatures are drawn from a
+# cross-provider research brief (OpenAI/Anthropic/OpenRouter/Gemini/LiteLLM/vLLM).
+# Match against the flattened, lowercased error text (`_llm_exception_text`),
+# which already folds in nested/gateway messages (OpenRouter metadata.raw,
+# "OpenAIException - ..."), so no envelope-specific parsing is needed.
+_IMAGE_UNSUPPORTED_MATCH_MARKERS = (
+    "image_url is only supported by certain models",
+    "image urls are only supported by certain models",
+    "only supported by certain models",
+    "does not support image message content types",
+    "does not support image input",
+    "does not support image",
+    "does not support vision",
+    "vision is not supported",
+    "does not support multimodal",
+    "multimodal input is not supported",
+    "does not support the requested modalit",
+    "unsupported modalit",
+    "no endpoints found that support image",
+    # File / document axis.
+    "does not support document",
+    "does not support pdf",
+    "does not support file input",
+    "document input is not supported",
+)
+# Anthropic's generic capability template ("... is not supported for this
+# model.") over-matches on its own, so it only counts as an image/file rejection
+# when it co-occurs with a modality WORD. Matched with word boundaries, not bare
+# substrings: an unrelated capability 400 whose text happens to contain a bound
+# tool name like "file_read" (or "profile"/"documentation"/"provision") must NOT
+# be read as an image rejection and strip a valid attachment.
+_IMAGE_UNSUPPORTED_TEMPLATE_MARKER = "not supported for this model"
+_IMAGE_UNSUPPORTED_TEMPLATE_MODALITY_RE = re.compile(
+    r"\b(?:image|images|vision|document|documents|pdf|pdfs|file|files"
+    r"|modality|modalities|multimodal)\b"
+)
+_IMAGE_UNSUPPORTED_EXCLUDE_MARKERS = (
+    # Decode / format / media-type: fixable by re-encode/convert, not stripping.
+    "could not process image",
+    "could not process pdf",
+    "image does not match the provided media type",
+    "input should be 'image/jpeg'",
+    "acceptable media types are",
+    "unsupported media type",
+    "unsupported image",
+    "invalid image",
+    "invalid image data",
+    "provided image is not valid",
+    "image url not in expected format",
+    "expected an image url, but got an object",
+    "required oneof field 'data'",
+    # Fetch / URL.
+    "failed to download",
+    "cannot fetch content from the provided url",
+    "invalid or unsupported file uri",
+    "invalid_image_url",
+    # Size / count / page limits.
+    "image too large",
+    "pdf pages may be provided",
+    "image(s) is allowed per prompt",
+    "too many images",
+    "maximum number of images",
+    # Structure / wrong-key / wrong-endpoint (not a modality rejection).
+    "text content blocks must be non-empty",
+    "cache_control cannot be set for empty text blocks",
+    "invalid value: 'image'. supported values are",
+    "does not support chat completions api",
+)
+# Statuses that are never a capability rejection (auth/credits/moderation/
+# rate-limit/server), so a stray phrase match must not trigger a strip-retry.
+_IMAGE_UNSUPPORTED_HARD_EXCLUDE_STATUSES = {401, 402, 403, 408, 429}
+
 
 @dataclass(frozen=True)
 class TurnSafetyResult:
@@ -268,6 +349,64 @@ def is_context_overflow_error(exc: BaseException) -> bool:
     """Return True when a provider error means the request exceeded context."""
     text = _llm_exception_text(exc)
     return any(marker in text for marker in _CONTEXT_OVERFLOW_ERROR_MARKERS)
+
+
+def is_image_unsupported_error(exc: BaseException) -> bool:
+    """Return True when a provider rejected the request because the model cannot
+    accept image (or PDF/file) input, so the attachment can be stripped and the
+    turn retried once.
+
+    Conservative and false-positive-averse (see the marker tables above): a
+    fixable 400 that merely mentions "image" (bad media type, size/count, fetch,
+    decode, empty block, wrong content-type key) is NOT a capability rejection
+    and must not trigger a strip-retry. Requires status 400/422 (or unknown),
+    a positive capability signature, and no exclusion marker.
+    """
+    status = _extract_status_code(exc)
+    if status is not None and (
+        status in _IMAGE_UNSUPPORTED_HARD_EXCLUDE_STATUSES
+        or status >= 500
+        or status not in (400, 422)
+    ):
+        return False
+
+    text = _llm_exception_text(exc)
+    if not text:
+        return False
+    if any(marker in text for marker in _IMAGE_UNSUPPORTED_EXCLUDE_MARKERS):
+        return False
+    if any(marker in text for marker in _IMAGE_UNSUPPORTED_MATCH_MARKERS):
+        return True
+    if (
+        _IMAGE_UNSUPPORTED_TEMPLATE_MARKER in text
+        and _IMAGE_UNSUPPORTED_TEMPLATE_MODALITY_RE.search(text)
+    ):
+        return True
+    return False
+
+
+# Only ``image_url`` blocks are what the outbound image window actually strips
+# (`generated_image_context._is_image_url_block`), so the strip-retry gate is
+# scoped to that exact type: gating on a block the window cannot remove would
+# rebuild an identical request and burn a wasted LLM round-trip before raising.
+_ATTACHMENT_BLOCK_TYPES = frozenset({"image_url"})
+
+
+def _messages_have_attachment_blocks(messages: List[BaseMessage]) -> bool:
+    """True if any message carries an inline image content block the window can strip.
+
+    Gates the image strip-and-retry: with no strippable attachment present,
+    stripping cannot change the request, so a capability-shaped error is left to
+    the normal raise path instead of a pointless retry.
+    """
+    for message in messages:
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in _ATTACHMENT_BLOCK_TYPES:
+                return True
+    return False
 
 
 def _llm_retry_delay(llm_config: Optional[LLMConfig], retry_index: int) -> float:
@@ -1330,6 +1469,37 @@ def create_agent_node(
             SystemMessage(content=_format_system_prompt(system_prompt, llm_config))
         ] + messages
 
+    def _image_stripped_retry_messages(
+        exc: BaseException,
+        state: AgentState,
+        config: Any,
+    ) -> Optional[List[BaseMessage]]:
+        """If ``exc`` is a model-can't-see-images rejection, learn it and rebuild.
+
+        Records the model as image/file incapable in the capability live cache
+        (self-correcting: subsequent turns strip proactively), then returns fresh
+        outbound messages, which now route through the image window that strips
+        the attachment and inserts the "cannot view images. It is saved at
+        <path>." placeholder so the model knows what happened. Returns None when
+        ``exc`` is not an image/file capability rejection, so the caller falls
+        through to the normal retry/raise path. Marks the primary
+        ``llm_config.model`` (not a mid-fallback candidate); acceptable for a
+        backstop.
+        """
+        if not is_image_unsupported_error(exc):
+            return None
+        from ...config.model_capabilities import mark_model_input_unsupported
+
+        model = getattr(llm_config, "model", "") or ""
+        mark_model_input_unsupported(model, "image", "file")
+        logger.warning(
+            "[LLM] Model %s rejected image/file input; stripping attachment and "
+            "retrying once: %s",
+            model or "?",
+            exc,
+        )
+        return _prepare_messages(state, config)
+
     def _finish_response(response: AIMessage) -> dict:
         # Sanitize tool call names — some models emit leading/trailing whitespace
         # (e.g. ' CalendarAgent' instead of 'CalendarAgent') which breaks routing.
@@ -1376,13 +1546,39 @@ def create_agent_node(
         # accumulated duration includes backoff sleeps; acceptable for the
         # sync path, which the live tokens/s display does not ride.
         call_started_at = time.monotonic()
-        response = _invoke_llm_with_retries(
-            lambda candidate: candidate.invoke(messages_with_system),
-            llm_config,
-            llm_with_tools,
-            tools,
-            config,
-        )
+        image_strip_attempted = False
+        while True:
+            try:
+                response = _invoke_llm_with_retries(
+                    lambda candidate, _msgs=messages_with_system: candidate.invoke(_msgs),
+                    llm_config,
+                    llm_with_tools,
+                    tools,
+                    config,
+                )
+                break
+            except Exception as exc:
+                # One-shot image strip-and-retry: a model that rejects image/file
+                # input gets the attachment stripped (with a placeholder note) and
+                # one more try, instead of failing the turn.
+                if (
+                    not image_strip_attempted
+                    and _messages_have_attachment_blocks(messages_with_system)
+                ):
+                    rebuilt = _image_stripped_retry_messages(exc, state, config)
+                    if rebuilt is not None:
+                        messages_with_system = rebuilt
+                        image_strip_attempted = True
+                        _dispatch_provider_event(
+                            "image_input_unsupported",
+                            {
+                                "reason": "image_input_unsupported",
+                                "model": getattr(llm_config, "model", "") or "",
+                            },
+                            config,
+                        )
+                        continue
+                raise
         _accumulate_llm_seconds(config, time.monotonic() - call_started_at)
         return _finish_response(response)
 
@@ -1410,6 +1606,7 @@ def create_agent_node(
 
         controller = _RetryFallbackController(llm_config)
         candidate_cache = {0: llm_with_tools}
+        image_strip_attempted = False
         while True:
             chunks_this_attempt = 0
             try:
@@ -1496,6 +1693,29 @@ def create_agent_node(
                         exc,
                     )
                     raise
+
+                # One-shot image strip-and-retry (chunks_this_attempt == 0 here,
+                # so no partial output was emitted): a model that rejects
+                # image/file input gets the attachment stripped (with a
+                # placeholder note) and one more try before the normal
+                # retry/fallback/raise path.
+                if (
+                    not image_strip_attempted
+                    and _messages_have_attachment_blocks(messages_with_system)
+                ):
+                    rebuilt = _image_stripped_retry_messages(exc, state, config)
+                    if rebuilt is not None:
+                        messages_with_system = rebuilt
+                        image_strip_attempted = True
+                        await _adispatch_provider_event(
+                            "image_input_unsupported",
+                            {
+                                "reason": "image_input_unsupported",
+                                "model": getattr(llm_config, "model", "") or "",
+                            },
+                            config,
+                        )
+                        continue
 
                 decision = controller.classify(exc)
                 if decision.action == "raise":
