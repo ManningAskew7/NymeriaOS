@@ -37,7 +37,10 @@
 
   interface Props {
     prompt: UiPromptEvent | null;
-    onResolved: () => void;
+    // Carries the id of the prompt that was actually resolved, so the parent
+    // clears THAT prompt and never a newer one that displaced it mid-resolve
+    // (cross-thread prompts can replace `prompt` during the submit round trip).
+    onResolved: (promptId: string) => void;
   }
 
   let { prompt, onResolved }: Props = $props();
@@ -101,8 +104,8 @@
   });
 
   $effect(() => {
-    if (isOpen && secondsLeft === 0) {
-      onResolved();
+    if (isOpen && prompt && secondsLeft === 0) {
+      onResolved(prompt.prompt_id);
     }
   });
 
@@ -114,18 +117,22 @@
 
   async function resolvePrompt(status: 'submitted' | 'cancelled', values?: Record<string, unknown>) {
     if (!prompt || submitting) return;
+    // Capture the id we are resolving BEFORE the await: a second cross-thread
+    // prompt can displace `prompt` during the POST, and both the POST target
+    // and the parent's clear must be the prompt we actually resolved.
+    const resolvedId = prompt.prompt_id;
     submitting = true;
     submitError = null;
     try {
-      await api.submitUiPromptResult(prompt.prompt_id, {
+      await api.submitUiPromptResult(resolvedId, {
         status,
         values: status === 'submitted' ? (values ?? {}) : null,
       });
-      onResolved();
+      onResolved(resolvedId);
     } catch (err) {
       if (status === 'cancelled') {
         // Dismissal must always work; the backend timeout covers delivery.
-        onResolved();
+        onResolved(resolvedId);
         return;
       }
       submitError = err instanceof Error ? err.message : String(err);

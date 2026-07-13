@@ -324,7 +324,7 @@
 
 <!-- Global ui-prompt modal: opens when the agent calls ui_prompt. Renders the
      agent-authored HTML form in a sandboxed iframe and posts the answer back. -->
-<UiPromptModal prompt={uiPromptStore.active} onResolved={() => uiPromptStore.clear()} />
+<UiPromptModal prompt={uiPromptStore.active} onResolved={(id) => uiPromptStore.clearById(id)} />
 
 <!-- Dev ruler overlay — draggable guides, crosshair, and measurement box for
      pixel-perfect alignment work. Toggle with the pin in the bottom-right
