@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from nymeria.config.settings import DEFAULT_LLM_FALLBACK_MODELS
 from nymeria.core.agent import NymeriaAgent
+from nymeria.core.agent_llm_config import (
+    LLMConfigHost,
+    activate_temporary_llm_fallback,
+    get_llm_config_for_thread,
+)
 from nymeria.core.thread_config import ActiveLLMFallback, ThreadConfig, ThreadLLMConfig
 from nymeria.core.time_utils import utc_now
 
@@ -483,3 +489,72 @@ def test_public_accessor_forwards_acting_user_and_keeps_one_arg_seam():
     agent.get_llm_config_for_thread("t-1")
 
     assert calls == [("t-1", "user-5"), ("t-1", None)]
+
+
+# --- narrow LLMConfigHost Protocol (Workstream B) ----------------------------
+#
+# The tests above build a bare NymeriaAgent (patched __init__) and call the
+# facade. These prove the tighter contract: the free functions run against a
+# plain object annotated as ``LLMConfigHost`` (no cast, no NymeriaAgent).
+
+
+class _LLMConfigHost:
+    """Minimal, fully typed LLMConfigHost stub (no NymeriaAgent)."""
+
+    def __init__(self, *, settings, thread_config_manager, thread_locks=None) -> None:
+        self.settings = settings
+        self.thread_config_manager = thread_config_manager
+        self.accounts_repo = SimpleNamespace(get_thread_owner=lambda _tid: None)
+        self.credential_vault = None
+        self._thread_locks = thread_locks
+        self.invalidated: list[str] = []
+
+    def invalidate_thread_config_cache(self, thread_id: str) -> None:
+        self.invalidated.append(thread_id)
+
+
+def _typed_host(**settings_overrides) -> _LLMConfigHost:
+    settings = _Settings()
+    for key, value in settings_overrides.items():
+        setattr(settings, key, value)
+    manager = MagicMock()
+    manager.get_config.return_value = None
+    manager.save_config.return_value = True
+    return _LLMConfigHost(settings=settings, thread_config_manager=manager)
+
+
+def test_llm_config_host_is_runtime_checkable():
+    assert isinstance(_typed_host(), LLMConfigHost)
+
+
+def test_get_llm_config_against_typed_host_without_agent():
+    # No cast(Any, ...): declared as the narrow Protocol, so a plain
+    # non-NymeriaAgent object must be accepted as the host.
+    host: LLMConfigHost = _typed_host()
+
+    config = get_llm_config_for_thread(host, "thread-x")
+
+    assert config.provider == "anthropic"
+    assert config.model == "claude-sonnet-4-6"
+    assert config.base_url is None
+    assert config.api_key == "anthropic-direct-key"
+
+
+def test_activate_temporary_fallback_drives_typed_host_cache_invalidation():
+    host = _typed_host()
+
+    result = activate_temporary_llm_fallback(
+        host,
+        "thread-x",
+        {
+            "to_provider": "openai",
+            "to_model": "gpt-5.5",
+            "from_provider": "anthropic",
+            "from_model": "claude-sonnet-4-6",
+        },
+    )
+
+    assert result["hold_seconds"] == 7200
+    assert result["expires_at"] is not None
+    host.thread_config_manager.save_config.assert_called_once()
+    assert host.invalidated == ["thread-x"]
