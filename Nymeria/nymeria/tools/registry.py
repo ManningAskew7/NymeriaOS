@@ -60,8 +60,31 @@ def register_tool_group(group: ToolGroup) -> None:
     """Register (or replace, by name) a tool family's group.
 
     Called at module level by each family; last registration under a given
-    name wins, which keeps a module reload idempotent.
+    name wins, which keeps a module reload idempotent (the same family
+    re-registering an equivalent group replaces its entry in place).
+
+    A re-registration may never RELAX a role gate, though. Silently replacing
+    an ``admin_only`` or ``developer_only`` group with an ungated one under the
+    same name would drop that family's tools out of the role chokepoint
+    (``ADMIN_ONLY_TOOL_NAMES`` / ``DEVELOPER_ONLY_TOOL_NAMES``), a privilege
+    escalation. That case raises at import time instead of shadowing, turning a
+    silent gate-drop into a loud failure; the golden catalog tests are the
+    backstop, this is defense in depth at the source. Tightening a gate
+    (ungated -> gated) and same-flags reloads are both allowed.
     """
+    existing = _TOOL_GROUPS.get(group.name)
+    if existing is not None:
+        if existing.admin_only and not group.admin_only:
+            raise ValueError(
+                f"tool group {group.name!r} is already registered admin_only; "
+                "refusing to re-register it without the admin gate"
+            )
+        if existing.developer_only and not group.developer_only:
+            raise ValueError(
+                f"tool group {group.name!r} is already registered "
+                "developer_only; refusing to re-register it without the "
+                "developer gate"
+            )
     _TOOL_GROUPS[group.name] = group
 
 

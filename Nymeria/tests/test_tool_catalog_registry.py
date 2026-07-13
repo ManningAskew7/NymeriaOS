@@ -133,7 +133,9 @@ def test_registry_register_and_all_groups():
         assert registry.all_tool_groups() == (g1, g2)  # registration order
         assert registry.get_tool_group("g2") is g2
         # Re-registration under a name replaces in place (idempotent reload).
-        g2b = registry.ToolGroup(name="g2", tools=())
+        # The flags are preserved (a reload re-registers an equivalent group);
+        # relaxing them is a separate, rejected case (see below).
+        g2b = registry.ToolGroup(name="g2", tools=(), admin_only=True)
         registry.register_tool_group(g2b)
         assert registry.all_tool_groups() == (g1, g2b)
     finally:
@@ -160,6 +162,74 @@ def test_no_duplicate_names_across_groups():
         assert derived.keys() == T.CATALOG_TOOLS.keys()
         for name in derived:
             assert derived[name] is T.CATALOG_TOOLS[name]
+
+
+def _with_isolated_registry():
+    """Snapshot + clear the registry, returning a restore callable."""
+    saved = registry.all_tool_groups()
+
+    def restore():
+        registry.clear_tool_groups()
+        for group in saved:
+            registry.register_tool_group(group)
+
+    registry.clear_tool_groups()
+    return restore
+
+
+def test_reregister_may_not_drop_admin_gate():
+    # A different family re-using an admin-only group's name (or a buggy edit)
+    # must not silently un-gate its tools out of ADMIN_ONLY_TOOL_NAMES.
+    import pytest
+
+    restore = _with_isolated_registry()
+    try:
+        registry.register_tool_group(
+            registry.ToolGroup(name="dupe", tools=(), admin_only=True)
+        )
+        with pytest.raises(ValueError, match="admin gate"):
+            registry.register_tool_group(registry.ToolGroup(name="dupe", tools=()))
+        # The admin group is still the one registered (the drop was rejected).
+        assert registry.get_tool_group("dupe").admin_only is True
+    finally:
+        restore()
+
+
+def test_reregister_may_not_drop_developer_gate():
+    import pytest
+
+    restore = _with_isolated_registry()
+    try:
+        registry.register_tool_group(
+            registry.ToolGroup(name="dupe", tools=(), developer_only=True)
+        )
+        with pytest.raises(ValueError, match="developer gate"):
+            registry.register_tool_group(registry.ToolGroup(name="dupe", tools=()))
+        assert registry.get_tool_group("dupe").developer_only is True
+    finally:
+        restore()
+
+
+def test_reregister_same_flags_and_tightening_allowed():
+    # Reload (same flags) and tightening (ungated -> gated) both replace in
+    # place; only relaxing a gate raises.
+    restore = _with_isolated_registry()
+    try:
+        registry.register_tool_group(
+            registry.ToolGroup(name="dupe", tools=(), admin_only=True)
+        )
+        # Same-flags reload: allowed.
+        reloaded = registry.ToolGroup(name="dupe", tools=(), admin_only=True)
+        registry.register_tool_group(reloaded)
+        assert registry.get_tool_group("dupe") is reloaded
+        # Tighten an ungated group to admin_only: allowed.
+        registry.register_tool_group(registry.ToolGroup(name="plain", tools=()))
+        registry.register_tool_group(
+            registry.ToolGroup(name="plain", tools=(), admin_only=True)
+        )
+        assert registry.get_tool_group("plain").admin_only is True
+    finally:
+        restore()
 
 
 # ---------------------------------------------------------------------------

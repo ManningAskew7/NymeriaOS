@@ -41,16 +41,13 @@ export const uiPromptStore = {
   },
 
   /** Clear the active prompt iff it matches `promptId` (no-op otherwise).
-   * Used for `ui_prompt_result` SSE events so a stale result can't close a
-   * newer prompt that replaced an older one. */
+   * The one clear path: the `ui_prompt_result` SSE handler and the modal's
+   * own resolve both call it by id, so a stale result (or a resolve of a
+   * prompt that was already displaced) can never close a newer prompt that
+   * replaced an older one. */
   clearById(promptId: string): void {
     if (state.active?.prompt_id === promptId) {
       state.active = null;
     }
-  },
-
-  /** Unconditional clear, used by the modal after it resolves the prompt. */
-  clear(): void {
-    state.active = null;
   },
 };

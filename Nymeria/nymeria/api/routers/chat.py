@@ -1321,32 +1321,36 @@ def create_chat_router(
                 headers={"Retry-After": str(exc.retry_after)},
             ) from exc
 
-        # Chat-platform provenance (Discord/Telegram bots): record the origin
-        # message for the react tool and, on reaction-triggered turns, append
-        # the react-tool guidance block while the tool is unbound (backlog
-        # #45; core/bot_reactions.py + tools/react.py). AFTER the admission
-        # gate, so a shed request never touches the origin registry.
-        message = _apply_platform_origin(
-            agent,
-            request,
-            thread_id,
-            user_id,
-            message,
-            privileged=_privileged_platform_caller(user),
-        )
+        # Everything from here until the response generator is created (which
+        # then owns slot release via its finally + backstop) must release the
+        # admission slot on failure, or the ceiling leaks a permit.
+        try:
+            # Chat-platform provenance (Discord/Telegram bots): record the
+            # origin message for the react tool and, on reaction-triggered
+            # turns, append the react-tool guidance block while the tool is
+            # unbound (backlog #45; core/bot_reactions.py + tools/react.py).
+            # AFTER the admission gate, so a shed request never touches the
+            # origin registry.
+            message = _apply_platform_origin(
+                agent,
+                request,
+                thread_id,
+                user_id,
+                message,
+                privileged=_privileged_platform_caller(user),
+            )
 
-        # Read client ID from header for sync event origin filtering
-        client_id = http_request.headers.get("x-nymeria-client-id", "")
+            # Read client ID from header for sync event origin filtering
+            client_id = http_request.headers.get("x-nymeria-client-id", "")
 
-        # For autonomous/self-invoke calls (e.g. watchdog worker), the "user message"
-        # isn't from a real user -- skip message_added so it doesn't appear in clients
-        # as a user-authored message. Frontend subscribes to /autonomous/stream for
-        # autonomous task events instead.
-        # A /resume adds no user message, so there is nothing to echo to
-        # other clients (they learn about the continuation via turn_resumed
-        # and the streamed events instead).
-        if not request.is_self_invoke and not resume_halted_turn:
-            try:
+            # For autonomous/self-invoke calls (e.g. watchdog worker), the "user
+            # message" isn't from a real user -- skip message_added so it doesn't
+            # appear in clients as a user-authored message. Frontend subscribes
+            # to /autonomous/stream for autonomous task events instead.
+            # A /resume adds no user message, so there is nothing to echo to
+            # other clients (they learn about the continuation via turn_resumed
+            # and the streamed events instead).
+            if not request.is_self_invoke and not resume_halted_turn:
                 publish_sync_event_fn(
                     event_type="message_added",
                     thread_id=thread_id,
@@ -1354,13 +1358,10 @@ def create_chat_router(
                     data={"role": "user", "content": display_message},
                     origin_client_id=client_id,
                 )
-            except BaseException:
-                # The admission slot is otherwise released by the response
-                # generator's finally; a failure before the response exists
-                # must not strand it.
-                if turn_slot is not None:
-                    turn_slot.release()
-                raise
+        except BaseException:
+            if turn_slot is not None:
+                turn_slot.release()
+            raise
 
         # Autonomous task bookends: publish task_started/task_completed to Redis so
         # /autonomous/stream subscribers see watchdog/ticker activity live. Matches
@@ -1980,23 +1981,25 @@ def create_chat_router(
                 headers={"Retry-After": str(exc.retry_after)},
             ) from exc
 
-        # Chat-platform provenance (mirrors the streaming route): record the
-        # origin for the react tool and enrich reaction-triggered prompts.
-        # AFTER the admission gate, so a shed request never touches the
-        # origin registry.
-        message = _apply_platform_origin(
-            agent,
-            request,
-            thread_id,
-            user_id,
-            message,
-            privileged=_privileged_platform_caller(user),
-        )
-
-        # The whole synchronous turn (LLM round trips, tools, checkpoint
-        # writes) runs off the event loop; running it inline would freeze
-        # every SSE stream and probe in the process for the turn's duration.
+        # Both the origin stamp and the turn run under one guard so a failure
+        # on either path releases the admission slot (no leak to turn end).
         try:
+            # Chat-platform provenance (mirrors the streaming route): record
+            # the origin for the react tool and enrich reaction-triggered
+            # prompts. AFTER the admission gate, so a shed request never
+            # touches the origin registry.
+            message = _apply_platform_origin(
+                agent,
+                request,
+                thread_id,
+                user_id,
+                message,
+                privileged=_privileged_platform_caller(user),
+            )
+
+            # The whole synchronous turn (LLM round trips, tools, checkpoint
+            # writes) runs off the event loop; running it inline would freeze
+            # every SSE stream and probe in the process for the turn's duration.
             response, tool_call_count = await asyncio.to_thread(
                 run_sync_turn_with_tool_count,
                 agent,
