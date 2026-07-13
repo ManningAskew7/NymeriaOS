@@ -1,6 +1,7 @@
 """Collaboration and data service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -1103,3 +1104,7 @@ COLLABORATION_DATA_SERVICE_TOOLS = [
     airtable_update_records,
     airtable_delete_record,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="collaboration_data", tools=tuple(COLLABORATION_DATA_SERVICE_TOOLS)))

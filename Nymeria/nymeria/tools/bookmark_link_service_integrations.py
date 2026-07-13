@@ -1,6 +1,7 @@
 """Bookmark and link-management service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -545,3 +546,7 @@ BOOKMARK_LINK_SERVICE_TOOLS = [
     yourls_get_url_stats,
     yourls_get_db_stats,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="bookmark_link", tools=tuple(BOOKMARK_LINK_SERVICE_TOOLS)))

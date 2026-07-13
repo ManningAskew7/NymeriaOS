@@ -1,6 +1,7 @@
 """Event, webinar, and meeting service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -1116,3 +1117,7 @@ EVENT_MEETING_SERVICE_TOOLS = [
     gotowebinar_create_registrant,
     gotowebinar_delete_registrant,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="event_meeting", tools=tuple(EVENT_MEETING_SERVICE_TOOLS)))

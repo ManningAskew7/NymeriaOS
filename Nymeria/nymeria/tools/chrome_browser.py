@@ -25,6 +25,7 @@ Phase 2 ships single-worker.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import asyncio
 import json
@@ -435,3 +436,7 @@ __all__ = [
     "chrome_dialog",
     "chrome_cdp",
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="chrome_browser", tools=tuple(CHROME_BROWSER_TOOLS)))

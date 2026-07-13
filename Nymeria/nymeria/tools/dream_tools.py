@@ -8,6 +8,7 @@ even if a user manually enabled the tool name.
 The parent thread is the *target* of every operation: ``thread_instructions_set``
 writes to the parent's ``ThreadConfig.instructions``, not the shadow's own.
 """
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Optional
@@ -144,3 +145,7 @@ def thread_instructions_set(
 
 
 DREAM_TOOLS = [thread_instructions_set]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="dream", tools=tuple(DREAM_TOOLS)))

@@ -1,6 +1,7 @@
 """Work tracking service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Any, Optional
@@ -1236,3 +1237,7 @@ WORK_TRACKING_SERVICE_TOOLS = [
     linear_add_issue_comment,
     linear_add_issue_link,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="work_tracking", tools=tuple(WORK_TRACKING_SERVICE_TOOLS)))

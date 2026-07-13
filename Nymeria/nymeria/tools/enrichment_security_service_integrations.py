@@ -1,6 +1,7 @@
 """Data enrichment, URL intelligence, and web extraction service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from datetime import datetime, timezone
@@ -2181,3 +2182,7 @@ ENRICHMENT_SECURITY_SERVICE_TOOLS = [
     elastic_security_create_case,
     elastic_security_add_case_comment,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="enrichment_security", tools=tuple(ENRICHMENT_SECURITY_SERVICE_TOOLS)))

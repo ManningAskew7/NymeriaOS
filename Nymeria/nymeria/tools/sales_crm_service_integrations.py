@@ -1,6 +1,7 @@
 """Sales CRM service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -1577,3 +1578,7 @@ SALES_CRM_SERVICE_TOOLS = [
     pipedrive_delete_record,
     pipedrive_list_users,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="sales_crm", tools=tuple(SALES_CRM_SERVICE_TOOLS)))

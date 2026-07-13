@@ -1,6 +1,7 @@
 """No-code database and document-table service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -3234,3 +3235,7 @@ DATA_TABLE_SERVICE_TOOLS = [
     kobotoolbox_delete_file,
     kobotoolbox_create_file_from_url,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="data_table", tools=tuple(DATA_TABLE_SERVICE_TOOLS)))

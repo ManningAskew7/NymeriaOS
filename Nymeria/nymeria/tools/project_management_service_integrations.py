@@ -1,6 +1,7 @@
 """Project management service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import json
@@ -2770,3 +2771,7 @@ PROJECT_MANAGEMENT_SERVICE_TOOLS = [
     wekan_list_card_comments,
     wekan_add_card_comment,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="project_management", tools=tuple(PROJECT_MANAGEMENT_SERVICE_TOOLS)))

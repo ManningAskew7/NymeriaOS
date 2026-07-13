@@ -1,6 +1,7 @@
 """Cloud file storage service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import json
@@ -1140,3 +1141,7 @@ FILE_STORAGE_SERVICE_TOOLS = [
     s3_create_bucket,
     s3_delete_bucket,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="file_storage", tools=tuple(FILE_STORAGE_SERVICE_TOOLS)))

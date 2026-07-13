@@ -1,6 +1,7 @@
 """Developer platform service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -1024,3 +1025,7 @@ DEVELOPER_PLATFORM_TOOLS = [
     gitlab_list_user_projects,
     graphql_execute_query,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="developer_platform", tools=tuple(DEVELOPER_PLATFORM_TOOLS)))

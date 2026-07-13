@@ -15,6 +15,7 @@ Kit binds them.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import asyncio
 import json
@@ -184,3 +185,7 @@ async def cli_statusbar_set(
 CLI_STATUSBAR_TOOLS = [cli_statusbar_get, cli_statusbar_set]
 
 __all__ = ["CLI_STATUSBAR_TOOLS", "cli_statusbar_get", "cli_statusbar_set"]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="cli_statusbar", tools=tuple(CLI_STATUSBAR_TOOLS)))

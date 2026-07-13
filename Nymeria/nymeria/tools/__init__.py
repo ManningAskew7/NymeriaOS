@@ -1381,11 +1381,24 @@ _PRV_TOOLS_A = (
 )
 
 # Groups that are not owned by a single tools/*.py module register here rather
-# than self-registering: SELF_AGENT_TOOLS lives in core/self_agent.py (imported
-# by core/__init__ before this package, so a self-register there would cycle).
-# It is admin-only, so its group carries admin_only=True and the role-gate
-# derivation below picks it up from the flag.
+# than self-registering, because their tool list is assembled (or lives) in
+# this package's __init__:
+#   - self_agent: SELF_AGENT_TOOLS lives in core/self_agent.py (imported by
+#     core/__init__ before this package, so a self-register there would cycle);
+#     admin-only, so the group carries admin_only=True and the role-gate
+#     derivation below picks it up from the flag.
+#   - core: a handful of individually imported tools (claude_code, hello_test,
+#     regression_echo, and the optional memory tools) with no home module; the
+#     group is mixed, so claude_code / hello_test are unioned into the role-gate
+#     sets by name below rather than via a group flag.
+#   - _prv_a / watchdog: lists composed above from several modules.
 register_tool_group(ToolGroup(name="self_agent", tools=tuple(SELF_AGENT_TOOLS), admin_only=True))
+register_tool_group(ToolGroup(
+    name="core",
+    tools=(claude_code, hello_test, regression_echo, memory_clear_all, personality_set, rag_settings),
+))
+register_tool_group(ToolGroup(name="_prv_a", tools=tuple(_PRV_TOOLS_A)))
+register_tool_group(ToolGroup(name="watchdog", tools=tuple(WATCHDOG_TOOLS)))
 
 # CATALOG_TOOLS: the bindable tool catalog (name -> tool object). Bound per
 # thread when named in a thread's enabled_tools, or when promoted into a user's
@@ -1393,83 +1406,17 @@ register_tool_group(ToolGroup(name="self_agent", tools=tuple(SELF_AGENT_TOOLS), 
 # (agent_graph.select_tools_for_graph / static_tool_catalog), NOT registered in
 # the ToolRegistry (which holds only SEED_TOOLS + callable/custom/MCP tools).
 #
-# Assembly (backlog #51, Workstream A): each tool family self-registers a
-# ToolGroup on import (register_tool_group in the family module, fired by the
-# imports above), so all_tool_groups() supplies the migrated families. Families
-# not yet migrated to the registry are still hand-listed below and unioned in;
-# the two sets are disjoint by tool name, so the merge is order-independent.
-# The end state (once every family is migrated) is
-# ``{t.name: t for g in all_tool_groups() for t in g.tools}`` with no hand list.
-CATALOG_TOOLS = {t.name: t for t in (
-    [t for g in all_tool_groups() for t in g.tools]
-    + [claude_code, hello_test, regression_echo, memory_clear_all, personality_set, rag_settings]
-    + BASH_JOB_TOOLS
-    + REACT_TOOLS
-    + WEB_SEARCH_SERVICE_TOOLS
-    + WEB_SEARCH_INTEGRATION_TOOLS
-    + OUTLOOK_TOOLS
-    + OUTLOOK_ATTACHMENT_TOOLS
-    + TRIGGER_TOOLS
-    + HOOK_TOOLS
-    + BROWSER_TOOLS
-    + CHROME_BROWSER_TOOLS
-    + UI_PROMPT_TOOLS
-    + CLI_STATUSBAR_TOOLS
-    + CALENDAR_TOOLS
-    + GOOGLE_DOCS_TOOLS
-    + GOOGLE_WORKSPACE_SERVICE_TOOLS
-    + GOOGLE_ANALYTICS_SERVICE_TOOLS
-    + GOOGLE_BUSINESS_PROFILE_SERVICE_TOOLS
-    + _PRV_TOOLS_A
-    + TWITCH_TOOLS
-    + TOOL_SEARCH_TOOLS
-    + SEARCH_SKILLS_TOOLS
-    + SEARCH_MCP_TOOLS
-    + HTTP_API_TOOLS
-    + TOOL_CREATE_TOOLS
-    + WORKFLOW_INFO_TOOLS
-    + SKILL_CONFIG_TOOLS
-    + AUTH_MANAGER_TOOLS
-    + REQUEST_CREDENTIAL_TOOLS
-    + WATCHDOG_TOOLS
-    + SPAWN_THREAD_TOOLS
-    + DREAM_TOOLS
-    + GOAL_TOOLS
-    + IMAGE_GEN_INTEGRATION_TOOLS
-    + UTILITY_INTEGRATION_TOOLS
-    + TRANSFORM_UTILITY_TOOLS
-    + MEDIA_DISCOVERY_SERVICE_TOOLS
-    + COMMUNITY_PUBLISHING_SERVICE_TOOLS
-    + TIME_HR_SERVICE_TOOLS
-    + PERSONAL_DEVICE_SERVICE_TOOLS
-    + MARKETING_CONTACT_SERVICE_TOOLS
-    + DEVELOPER_PLATFORM_TOOLS
-    + BUILD_CI_SERVICE_TOOLS
-    + FILE_STORAGE_SERVICE_TOOLS
-    + AWS_SERVICE_TOOLS
-    + BUSINESS_SERVICE_TOOLS
-    + ENTERPRISE_BUSINESS_SERVICE_TOOLS
-    + EVENT_MEETING_SERVICE_TOOLS
-    + PRODUCTIVITY_SERVICE_TOOLS
-    + BOOKMARK_LINK_SERVICE_TOOLS
-    + WORK_TRACKING_SERVICE_TOOLS
-    + PROJECT_MANAGEMENT_SERVICE_TOOLS
-    + COLLABORATION_DATA_SERVICE_TOOLS
-    + CUSTOMER_ENGAGEMENT_SERVICE_TOOLS
-    + SUPPORT_SERVICE_TOOLS
-    + SALES_CRM_SERVICE_TOOLS
-    + RELATIONSHIP_CRM_SERVICE_TOOLS
-    + MESSAGING_DELIVERY_SERVICE_TOOLS
-    + COMMERCE_BILLING_SERVICE_TOOLS
-    + NOTIFICATION_SERVICE_TOOLS
-    + CONTENT_MANAGEMENT_SERVICE_TOOLS
-    + OPERATIONS_MONITORING_SERVICE_TOOLS
-    + ENRICHMENT_SECURITY_SERVICE_TOOLS
-    + LEAD_ENRICHMENT_SERVICE_TOOLS
-    + DATA_TABLE_SERVICE_TOOLS
-    + CHAT_PLATFORM_SERVICE_TOOLS
-    + MICROSOFT_GRAPH_SERVICE_TOOLS
-)}
+# Assembly (backlog #51, Workstream A): fully derived from the tool-group
+# registry. Each tool family self-registers a ToolGroup on import
+# (register_tool_group at the bottom of the family module, fired by the imports
+# above), plus the composed / cross-package groups registered just above. No
+# family is hand-concatenated here anymore: adding a family means adding its
+# register_tool_group call to its module, not editing this dict. Group names are
+# disjoint by tool name, so insertion order (registration order) never changes
+# which object wins, and no consumer's behavior depends on catalog iteration
+# order (every read is a keyed lookup, a membership test, or an
+# iterate-then-sort-by-name path).
+CATALOG_TOOLS = {t.name: t for g in all_tool_groups() for t in g.tools}
 
 # Capability expansion tools are deliberately opt-in through the bundled
 # capability kits (tool-management, skill-management, mcp-management). They are
@@ -2765,10 +2712,12 @@ __all__ = [
     "HOOK_TOOLS",
     "EMAIL_TOOLS",
     "OUTLOOK_TOOLS",
+    "OUTLOOK_ATTACHMENT_TOOLS",
     "BROWSER_TOOLS",
     "CHROME_BROWSER_TOOLS",
     "ui_prompt",
     "UI_PROMPT_TOOLS",
+    "CLI_STATUSBAR_TOOLS",
     "CALENDAR_TOOLS",
     "SELF_AGENT_TOOLS",
     "CATALOG_TOOLS",
@@ -2892,4 +2841,5 @@ __all__ = [
     "SPAWN_THREAD_TOOLS",
     "thread_instructions_set",
     "DREAM_TOOLS",
+    "GOAL_TOOLS",
 ]

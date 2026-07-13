@@ -1,6 +1,7 @@
 """Operations, monitoring, and infrastructure service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -2612,3 +2613,7 @@ OPERATIONS_MONITORING_SERVICE_TOOLS = [
     rundeck_get_job_metadata,
     rundeck_execute_job,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="operations_monitoring", tools=tuple(OPERATIONS_MONITORING_SERVICE_TOOLS)))

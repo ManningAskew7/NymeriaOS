@@ -10,6 +10,7 @@ env); ``web_search_ddgs`` needs no credential at all. Every provider is
 appended to ``WEB_SEARCH_INTEGRATION_TOOLS``, which ``tools/__init__.py`` folds
 into ``CATALOG_TOOLS`` alongside ``WEB_SEARCH_SERVICE_TOOLS``.
 """
+from .registry import ToolGroup, register_tool_group
 
 import logging
 import re
@@ -1269,3 +1270,7 @@ WEB_SEARCH_INTEGRATION_TOOLS = [
     web_search_searxng,
     web_search_ddgs,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="web_search_integration", tools=tuple(WEB_SEARCH_INTEGRATION_TOOLS)))

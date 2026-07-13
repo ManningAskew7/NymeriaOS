@@ -1,4 +1,5 @@
 """Web search tool for Nymeria."""
+from .registry import ToolGroup, register_tool_group
 
 import logging
 from typing import Annotated, Optional
@@ -193,3 +194,7 @@ def web_search_perplexity(
 # planned in docs/private/plans/web-search-integrations.md and will be appended
 # here as they land.
 WEB_SEARCH_SERVICE_TOOLS = [web_search_perplexity]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="web_search_service", tools=tuple(WEB_SEARCH_SERVICE_TOOLS)))

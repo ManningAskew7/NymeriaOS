@@ -14,6 +14,7 @@ REST router and the ``workflow_info`` tool share one implementation.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import logging
 import re
@@ -1351,3 +1352,7 @@ async def tool_create(
 
 
 TOOL_CREATE_TOOLS = [tool_create]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="tool_create", tools=tuple(TOOL_CREATE_TOOLS)))

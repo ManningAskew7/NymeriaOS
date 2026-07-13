@@ -16,6 +16,7 @@ limitation: the coordinator lives in this API process.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import asyncio
 import json
@@ -195,3 +196,7 @@ __all__ = [
     "UI_PROMPT_TOOLS",
     "ui_prompt",
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="ui_prompt", tools=tuple(UI_PROMPT_TOOLS)))

@@ -9,6 +9,7 @@ migration window via :func:`auth_cache_utils.resolve_oauth_cache`.
 
 Optional tools, enable per-thread via thread config.
 """
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -1621,3 +1622,7 @@ GOOGLE_DOCS_TOOLS = [
     google_docs_table_update_cell,
     google_docs_table_append_row,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="google_docs", tools=tuple(GOOGLE_DOCS_TOOLS)))

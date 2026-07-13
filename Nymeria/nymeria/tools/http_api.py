@@ -1,6 +1,7 @@
 """General-purpose HTTP and API discovery tools for Nymeria."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -1200,3 +1201,7 @@ def api_discover(
 
 
 HTTP_API_TOOLS = [http_request, api_discover]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="http_api", tools=tuple(HTTP_API_TOOLS)))

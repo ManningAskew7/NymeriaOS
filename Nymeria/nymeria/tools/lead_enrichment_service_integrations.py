@@ -1,6 +1,7 @@
 """Lead enrichment and contact intelligence service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import logging
@@ -1014,3 +1015,7 @@ LEAD_ENRICHMENT_SERVICE_TOOLS = [
     uproc_get_profile,
     uproc_process,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="lead_enrichment", tools=tuple(LEAD_ENRICHMENT_SERVICE_TOOLS)))

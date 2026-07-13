@@ -1,6 +1,7 @@
 """Time tracking and HR service integration tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import json
@@ -1071,3 +1072,7 @@ TIME_HR_SERVICE_TOOLS = [
     harvest_stop_time_entry,
     harvest_delete_time_entry,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="time_hr", tools=tuple(TIME_HR_SERVICE_TOOLS)))

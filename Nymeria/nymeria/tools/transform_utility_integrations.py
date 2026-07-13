@@ -1,6 +1,7 @@
 """Local transform utility tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import calendar
@@ -1151,3 +1152,7 @@ TRANSFORM_UTILITY_TOOLS = [
     compression_zip_text_files,
     compression_unzip_text_files,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="transform_utility", tools=tuple(TRANSFORM_UTILITY_TOOLS)))

@@ -1,6 +1,7 @@
 """Google Analytics native service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import json
 import logging
@@ -249,3 +250,7 @@ GOOGLE_ANALYTICS_SERVICE_TOOLS = [
     google_analytics_run_report,
     google_analytics_run_realtime_report,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="google_analytics", tools=tuple(GOOGLE_ANALYTICS_SERVICE_TOOLS)))

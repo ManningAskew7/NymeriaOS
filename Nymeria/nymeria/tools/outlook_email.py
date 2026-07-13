@@ -5,6 +5,7 @@ are minted by ``request_credential(provider="outlook", kind="oauth")`` and
 live in the vault; legacy ``microsoft.json`` files are still honoured during
 the migration window via :func:`auth_cache_utils.resolve_oauth_cache`.
 """
+from .registry import ToolGroup, register_tool_group
 
 import logging
 import re
@@ -1405,3 +1406,7 @@ EMAIL_TOOLS = [
     outlook_forward_email,
     outlook_set_category,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="outlook", tools=tuple(EMAIL_TOOLS)))

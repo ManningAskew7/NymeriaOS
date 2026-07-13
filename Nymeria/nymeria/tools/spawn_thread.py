@@ -22,6 +22,7 @@ The tool exposes three ergonomic knobs over the raw thread config:
 It only exposes the *append* path for system prompts
 (ThreadConfig.instructions); it cannot replace soul.md.
 """
+from .registry import ToolGroup, register_tool_group
 
 import logging
 import os
@@ -1296,3 +1297,7 @@ def _invoke_spawned(
 
 
 SPAWN_THREAD_TOOLS = [spawn_thread]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="spawn_thread", tools=tuple(SPAWN_THREAD_TOOLS)))

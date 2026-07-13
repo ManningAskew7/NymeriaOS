@@ -5,6 +5,7 @@ LangChain/community utilities, plus a local safe calculator.
 """
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import ast
 import logging
@@ -276,3 +277,7 @@ UTILITY_INTEGRATION_TOOLS = [
     wikipedia_search,
     wolfram_alpha_query,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="utility", tools=tuple(UTILITY_INTEGRATION_TOOLS)))

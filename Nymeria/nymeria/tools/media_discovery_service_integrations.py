@@ -1,6 +1,7 @@
 """Media, book, and video catalog service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import logging
@@ -789,3 +790,7 @@ MEDIA_DISCOVERY_SERVICE_TOOLS = [
     spotify_get_album,
     spotify_get_playlist,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="media_discovery", tools=tuple(MEDIA_DISCOVERY_SERVICE_TOOLS)))

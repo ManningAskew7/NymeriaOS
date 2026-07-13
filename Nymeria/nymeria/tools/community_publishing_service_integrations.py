@@ -1,6 +1,7 @@
 """Community forum and publishing service tools."""
 
 from __future__ import annotations
+from .registry import ToolGroup, register_tool_group
 
 import base64
 import hashlib
@@ -1942,3 +1943,7 @@ COMMUNITY_PUBLISHING_SERVICE_TOOLS = [
     facebook_page_list_accounts,
     facebook_page_create_post,
 ]
+
+
+# Register this tool family for catalog auto-discovery (backlog #51).
+register_tool_group(ToolGroup(name="community_publishing", tools=tuple(COMMUNITY_PUBLISHING_SERVICE_TOOLS)))
