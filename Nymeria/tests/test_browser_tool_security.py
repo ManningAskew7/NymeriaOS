@@ -1,24 +1,16 @@
 import base64
-import importlib.util
-from pathlib import Path
 
 import pytest
 import requests
 
 from nymeria.core.generated_image_context import NATIVE_IMAGE_ARTIFACT_KEY
+from nymeria.tools import browser as browser_module
 
-
-_BROWSER_MODULE_PATH = (
-    Path(__file__).resolve().parents[1] / "nymeria" / "tools" / "browser.py"
-)
-_BROWSER_SPEC = importlib.util.spec_from_file_location(
-    "browser_tool_under_test",
-    _BROWSER_MODULE_PATH,
-)
-assert _BROWSER_SPEC is not None
-assert _BROWSER_SPEC.loader is not None
-browser_module = importlib.util.module_from_spec(_BROWSER_SPEC)
-_BROWSER_SPEC.loader.exec_module(browser_module)
+# Import the real module (not an isolated spec-load): the tool family now
+# self-registers its ToolGroup with a package-relative import, so the module
+# must load under its real package. `browser_module.<attr>` is therefore the
+# same object the catalog holds; the tests monkeypatch module-level functions
+# (auto-reverted per test), so no isolation is needed.
 
 
 @pytest.mark.parametrize(
