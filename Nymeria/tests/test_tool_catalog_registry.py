@@ -190,6 +190,38 @@ def test_tool_config_hash_ignores_catalog():
     )
 
 
+# ---------------------------------------------------------------------------
+# __all__ is a generated literal pinned to the derived export set
+# ---------------------------------------------------------------------------
+
+def test_all_equals_derived_export_set():
+    # __all__ is a plain literal (so ruff/pyrefly see the re-exports), written
+    # as the materialized output of _derive_public_exports(). If a new tool or
+    # *_TOOLS list is added but __all__ is not regenerated, this fails.
+    assert T.__all__ == T._derive_public_exports()
+
+
+def test_all_is_sorted_and_unique():
+    assert T.__all__ == sorted(T.__all__)
+    assert len(T.__all__) == len(set(T.__all__))
+
+
+def test_all_entries_are_real_module_attributes():
+    for name in T.__all__:
+        assert hasattr(T, name), f"__all__ exports missing attribute {name!r}"
+
+
+def test_all_covers_seed_and_group_list_vars():
+    # Every seed tool name and every registered group's *_TOOLS list variable
+    # is exported. (regression_echo was silently missing from the pre-refactor
+    # hand list; generation fixes that drift.)
+    for seed_name in T.seed_tool_names():
+        assert seed_name in T.__all__
+    assert "regression_echo" in T.__all__
+    assert "CATALOG_TOOLS" in T.__all__
+    assert "SEED_TOOLS" in T.__all__
+
+
 BASELINE_SEED_NAMES = [
     "bash_execute",
     "file_read",
