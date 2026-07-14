@@ -50,6 +50,14 @@
   // can just bucket catalog specs by tier. See utils/providerGroups.ts.
   let activeTab = $state<Tab>('connection');
   let isAdmin = $derived(configStore.identity?.role === 'admin');
+  // Tabs whose Save action rides the sticky footer (#25). Mirrors each tab
+  // block's own admin gate. Mobile has no Dreaming tab, so no dream save.
+  let footerVisible = $derived(
+    (activeTab === 'llm' && isAdmin) ||
+    (activeTab === 'agent' && isAdmin) ||
+    activeTab === 'rag' ||
+    (activeTab === 'voice' && isAdmin)
+  );
 
   function isAdminServerTab(tab: Tab): boolean {
     return adminServerTabs.includes(tab);
@@ -956,9 +964,6 @@
             {/if}
           </div>
 
-          <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving…' : 'Save LLM Settings'}
-          </Button>
         {/if}
 
       <!-- Agent Tab -->
@@ -1085,9 +1090,6 @@
             </div>
           {/if}
 
-          <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving…' : 'Save Agent Settings'}
-          </Button>
         {/if}
 
       {:else if activeTab === 'rag'}
@@ -1161,12 +1163,6 @@
             </label>
           </div>
 
-          <Button onclick={handleSaveRagUserSettings} disabled={ragUserSaving}>
-            {ragUserSaving ? 'Saving…' : 'Save My RAG Settings'}
-          </Button>
-          {#if ragUserMessage}
-            <p class="hint">{ragUserMessage}</p>
-          {/if}
         {/if}
 
         {#if isAdmin}
@@ -1216,9 +1212,6 @@
                 <input class="setting-input" type="text" bind:value={ragRerankModel} placeholder="e.g. rerank-2.5-lite" />
               </div>
             {/if}
-            <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-              {savingSettings ? 'Saving…' : 'Save RAG Engine'}
-            </Button>
           {/if}
         {/if}
 
@@ -1399,10 +1392,6 @@
             </select>
             <p class="hint">Thread used by the watch app and /voice/chat endpoint when no thread is specified</p>
           </div>
-
-          <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving…' : 'Save Voice Settings'}
-          </Button>
         {/if}
 
       <!-- Account Tab (current user identity + sign out) -->
@@ -1426,6 +1415,43 @@
         {testMessage}
       </div>
     {/if}
+
+    <!-- Tab-aware sticky save footer (#25): the per-tab Save action is
+         relocated here so it stays visible instead of being buried at the end
+         of the scrolling tab body. Hidden on tabs with no panel-level save. -->
+    {#if footerVisible}
+      <footer class="settings-footer">
+        <div class="footer-status">
+          {#if activeTab === 'rag' && ragUserMessage}
+            <span class="hint">{ragUserMessage}</span>
+          {/if}
+        </div>
+        <div class="footer-actions">
+          {#if activeTab === 'llm' && isAdmin}
+            <Button onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+              {savingSettings ? 'Saving…' : 'Save LLM Settings'}
+            </Button>
+          {:else if activeTab === 'agent' && isAdmin}
+            <Button onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+              {savingSettings ? 'Saving…' : 'Save Agent Settings'}
+            </Button>
+          {:else if activeTab === 'rag'}
+            <Button onclick={handleSaveRagUserSettings} disabled={ragUserSaving || ragUserLoading}>
+              {ragUserSaving ? 'Saving…' : 'Save My RAG Settings'}
+            </Button>
+            {#if isAdmin}
+              <Button onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+                {savingSettings ? 'Saving…' : 'Save RAG Engine'}
+              </Button>
+            {/if}
+          {:else if activeTab === 'voice' && isAdmin}
+            <Button onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+              {savingSettings ? 'Saving…' : 'Save Voice Settings'}
+            </Button>
+          {/if}
+        </div>
+      </footer>
+    {/if}
   </div>
 {/if}
 
@@ -1437,6 +1463,32 @@
     background: var(--bg-base);
     display: flex;
     flex-direction: column;
+  }
+
+  /* Sticky, tab-aware save footer (#25). Sibling of .settings-body so it pins
+     to the modal bottom while the tab body scrolls. Mirrors the mobile
+     ThreadSettingsPanel .settings-footer (incl. the safe-area inset). */
+  .settings-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    padding-bottom: calc(var(--spacing-sm) + var(--safe-area-bottom));
+    border-top: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+
+  .footer-status {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .footer-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    margin-left: auto;
   }
 
   .settings-header {

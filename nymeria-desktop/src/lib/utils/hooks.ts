@@ -173,6 +173,24 @@ export const HOOK_OPERATORS: { value: HookCondition['operator']; label: string }
 ];
 
 /**
+ * Operators for the definition-level fire gate. Superset of HOOK_OPERATORS: adds
+ * the numeric comparisons (float-coerced backend-side) the context-usage fields
+ * (`context_pct_of_trigger`, `context_tokens`, ...) rely on. Matches the backend
+ * `ConditionOperator` set (core/conditions.py).
+ */
+export const FIRE_GATE_OPERATORS: { value: HookCondition['operator']; label: string }[] = [
+  { value: 'contains', label: 'contains' },
+  { value: 'equals', label: 'equals' },
+  { value: 'not_equals', label: 'not equals' },
+  { value: 'starts_with', label: 'starts with' },
+  { value: 'matches_regex', label: 'matches regex' },
+  { value: 'gt', label: '> (greater than)' },
+  { value: 'gte', label: '>= (at least)' },
+  { value: 'lt', label: '< (less than)' },
+  { value: 'lte', label: '<= (at most)' },
+];
+
+/**
  * One-line human summary of a hook's logic for the feed row. Reads the flat
  * `logic` dict the backend returns (discriminated on `action`).
  */

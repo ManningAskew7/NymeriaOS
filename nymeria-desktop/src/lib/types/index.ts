@@ -2483,7 +2483,19 @@ export interface TriggerSourceInfo {
 
 export interface TriggerCondition {
   field: string;
-  operator: 'equals' | 'contains' | 'starts_with' | 'matches_regex' | 'not_equals';
+  // The backend condition operator set (core/conditions.py ConditionOperator).
+  // The numeric operators (gt/gte/lt/lte, float-coerced) are used by the hook
+  // fire gate's context-usage fields; triggers/guardrails offer the string ops.
+  operator:
+    | 'equals'
+    | 'contains'
+    | 'starts_with'
+    | 'matches_regex'
+    | 'not_equals'
+    | 'gt'
+    | 'gte'
+    | 'lt'
+    | 'lte';
   value: string;
   case_sensitive?: boolean;
 }
@@ -2596,6 +2608,16 @@ export interface Hook {
   /** Convenience mirror of the text body for the text actions; "" otherwise. */
   text: string;
   matcher: string | null;
+  /**
+   * Definition-level fire gate (any event/action): the hook only fires when
+   * every condition matches. Matches meta fields, tool args (`args.<name>`),
+   * and context-usage numbers. Empty = always fire.
+   */
+  fire_conditions?: HookCondition[];
+  /** Fire once per gate crossing; re-arms when `fire_conditions` stop matching. */
+  once?: boolean;
+  /** Delete the hook after its first successful run (log kept). */
+  single_use?: boolean;
   enabled: boolean;
   scope: HookScope;
   thread_id: string;
@@ -2619,6 +2641,9 @@ export interface HookCreateRequest {
   on_fault?: 'allow' | 'deny';
   timeout_seconds?: number;
   matcher?: string | null;
+  fire_conditions?: HookCondition[];
+  once?: boolean;
+  single_use?: boolean;
   scope: HookScope;
   thread_id?: string;
   enabled?: boolean;
@@ -2639,6 +2664,9 @@ export interface HookUpdateRequest {
   on_fault?: 'allow' | 'deny';
   timeout_seconds?: number;
   matcher?: string | null;
+  fire_conditions?: HookCondition[];
+  once?: boolean;
+  single_use?: boolean;
   enabled?: boolean;
 }
 

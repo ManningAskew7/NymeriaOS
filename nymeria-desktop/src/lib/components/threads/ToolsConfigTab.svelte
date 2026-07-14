@@ -436,6 +436,10 @@
       Install or remove MCP servers and create custom tools in
       <strong>Settings → Tools / MCP</strong>. Changes there appear here automatically.
     </p>
+    <p class="tools-foot-hint">
+      Changing which tools are bound to this thread re-primes the prompt cache on
+      the next turn (a one-time cost).
+    </p>
   {/if}
 </div>
 

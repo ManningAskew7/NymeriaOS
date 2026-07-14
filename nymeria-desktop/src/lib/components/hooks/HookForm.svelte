@@ -26,6 +26,7 @@
     HOOK_EVENT_ACTIONS,
     HOOK_EVENT_META,
     HOOK_OPERATORS,
+    FIRE_GATE_OPERATORS,
     HOOK_TOOL_EVENTS,
   } from '$lib/utils/hooks';
 
@@ -94,6 +95,12 @@
               value: String(value),
             }))
           : [],
+      // Fire gate + lifecycle (top-level on the hook, not inside `logic`).
+      fireConditions: Array.isArray(h?.fire_conditions)
+        ? (h.fire_conditions as HookCondition[]).map((c) => ({ ...c }))
+        : [],
+      once: h?.once ?? false,
+      singleUse: h?.single_use ?? false,
       enabled: h?.enabled ?? true,
     };
   }
@@ -117,6 +124,9 @@
   let workflowTimeoutSeconds = $state(init.workflowTimeoutSeconds);
   let conditions = $state<HookCondition[]>(init.conditions);
   let updateRows = $state<UpdateRow[]>(init.updateRows);
+  let fireConditions = $state<HookCondition[]>(init.fireConditions);
+  let once = $state(init.once);
+  let singleUse = $state(init.singleUse);
   let enabled = $state(init.enabled);
 
   let saving = $state(false);
@@ -159,6 +169,17 @@
   }
   function updateCondition(i: number, patch: Partial<HookCondition>) {
     conditions = conditions.map((c, idx) => (idx === i ? { ...c, ...patch } : c));
+  }
+
+  // Fire-gate condition rows (mirror the logic-condition helpers above).
+  function addFireCondition() {
+    fireConditions = [...fireConditions, { field: '', operator: 'contains', value: '' }];
+  }
+  function removeFireCondition(i: number) {
+    fireConditions = fireConditions.filter((_, idx) => idx !== i);
+  }
+  function updateFireCondition(i: number, patch: Partial<HookCondition>) {
+    fireConditions = fireConditions.map((c, idx) => (idx === i ? { ...c, ...patch } : c));
   }
 
   function addUpdateRow() {
@@ -227,6 +248,13 @@
     return { cleanConditions, updates };
   }
 
+  /** Drop incomplete fire-gate rows (the gate is optional; no hard error). */
+  function buildFireConditions(): HookCondition[] {
+    return fireConditions
+      .filter((c) => c.field.trim())
+      .map((c) => ({ ...c, field: c.field.trim() }));
+  }
+
   async function handleSave() {
     const err = validate();
     if (err) { saveError = err; return; }
@@ -234,6 +262,7 @@
     saveError = null;
 
     const { cleanConditions, updates } = buildLogicFields();
+    const fireConditionsClean = buildFireConditions();
     const trimmedMatcher = matcher.trim();
 
     try {
@@ -248,6 +277,12 @@
           // (any tool) by HookDefinition's validator. null would silently keep
           // the old, narrower matcher.
           matcher: showMatcher ? (trimmedMatcher || '') : '',
+          // Fire gate + lifecycle apply to every event/action. Always send them
+          // on update so clearing the rows / toggling off actually persists
+          // (empty list clears fire_conditions; the bools apply as-is).
+          fire_conditions: fireConditionsClean,
+          once,
+          single_use: singleUse,
         };
         if (isTextAction || action === 'webhook') req.text = text;
         if (action === 'webhook') req.url = url.trim();
@@ -290,7 +325,10 @@
           enabled,
           thread_id: scope === 'thread' ? resolvedThreadId : undefined,
           matcher: showMatcher && trimmedMatcher ? trimmedMatcher : undefined,
+          once,
+          single_use: singleUse,
         };
+        if (fireConditionsClean.length) req.fire_conditions = fireConditionsClean;
         if (isTextAction || action === 'webhook') req.text = text;
         if (action === 'webhook') req.url = url.trim();
         if (action === 'block_if_matches') {
@@ -691,9 +729,67 @@
         </div>
       {/if}
 
+      <!-- Fire gate (applies to every event/action; distinct from the
+           action-specific guardrail conditions above) -->
+      <div class="field-row">
+        <span class="field-label">
+          Fire gate
+          <span class="optional-badge">optional</span>
+        </span>
+        <span class="field-hint">
+          Only fire when all of these match: meta fields like <code>event</code>,
+          <code>tool_name</code>, <code>prompt</code>; tool args as
+          <code>args.name</code>; context numbers like
+          <code>context_pct_of_trigger</code> (with the numeric operators). Blank = always fire.
+        </span>
+        {#each fireConditions as condition, i (i)}
+          <div class="condition-row">
+            <input
+              class="condition-field"
+              type="text"
+              placeholder="field (e.g. tool_name)"
+              value={condition.field}
+              oninput={(e) => updateFireCondition(i, { field: (e.target as HTMLInputElement).value })}
+            />
+            <select
+              class="condition-op"
+              value={condition.operator}
+              onchange={(e) => updateFireCondition(i, { operator: (e.target as HTMLSelectElement).value as HookCondition['operator'] })}
+            >
+              {#each FIRE_GATE_OPERATORS as op}
+                <option value={op.value}>{op.label}</option>
+              {/each}
+            </select>
+            <input
+              class="condition-value"
+              type="text"
+              placeholder="value"
+              value={condition.value}
+              oninput={(e) => updateFireCondition(i, { value: (e.target as HTMLInputElement).value })}
+            />
+            <button class="row-remove" onclick={() => removeFireCondition(i)} type="button" aria-label="Remove fire condition">
+              <Icon name="x" size={12} />
+            </button>
+          </div>
+        {/each}
+        <button class="add-row-btn" onclick={addFireCondition} type="button">
+          <Icon name="plus" size={12} /> <span>Add fire condition</span>
+        </button>
+      </div>
+
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={once} />
+        <span>Fire once, re-arm when the gate stops matching</span>
+      </label>
+
       <label class="checkbox-label">
         <input type="checkbox" bind:checked={enabled} />
         <span>Enabled</span>
+      </label>
+
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={singleUse} />
+        <span>Delete after its first successful run (single-use)</span>
       </label>
 
       {#if saveError}
