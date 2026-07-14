@@ -50,6 +50,45 @@ const BASE_RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
 const IDLE_TIMEOUT_MS = 30000;
 
+// Per-thread cap on the replay buffer (backlog #89, mirrors the desktop store).
+// Streaming events for a thread that is not on screen are buffered so switching
+// into it can replay what already streamed. These bounds cover a long
+// multi-tool turn while tripping on a runaway turn; on overflow the buffer is
+// dropped and the join falls back to the history snapshot (graceful
+// degradation to the pre-replay behavior).
+export const MAX_BUFFERED_EVENTS_PER_THREAD = 4000;
+export const MAX_BUFFERED_CHARS_PER_THREAD = 2_000_000;
+
+export interface PendingBuffer {
+  events: AutonomousEvent[];
+  chars: number;
+  overflowed: boolean;
+}
+
+/**
+ * Flip a thread's replay buffer to overflowed once it exceeds either bound.
+ * Returns true if overflowed (caller should stop appending). The events array
+ * is dropped to free memory; the join then replays nothing and falls back to
+ * the history snapshot. Pure (module-scoped) so it is unit testable.
+ */
+export function markBufferOverflowIfNeeded(buf: PendingBuffer, threadId = ''): boolean {
+  if (buf.overflowed) return true;
+  if (
+    buf.events.length >= MAX_BUFFERED_EVENTS_PER_THREAD ||
+    buf.chars >= MAX_BUFFERED_CHARS_PER_THREAD
+  ) {
+    buf.overflowed = true;
+    buf.events = [];
+    console.warn(
+      `[Autonomous] Replay buffer overflow for thread ${threadId} ` +
+      `(events>=${MAX_BUFFERED_EVENTS_PER_THREAD} or chars>=${MAX_BUFFERED_CHARS_PER_THREAD}); ` +
+      `will fall back to history on join`
+    );
+    return true;
+  }
+  return false;
+}
+
 function createAutonomousStore() {
   let connected = $state(false);
   let streamAbortController: AbortController | null = null;
@@ -71,8 +110,9 @@ function createAutonomousStore() {
   let activeTasksByThread = $state<Map<string, string>>(new Map());
   let activeMessagesByThread = $state<Map<string, string>>(new Map());
 
-  // Buffer events during thread switch gap
-  let _pendingEvents = new Map<string, AutonomousEvent[]>();
+  // Buffer events during thread switch gap (bounded per-thread; see
+  // markBufferOverflowIfNeeded, backlog #89).
+  let _pendingEvents = new Map<string, PendingBuffer>();
   let _pendingReplayTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function getStreamUrl(): string {
@@ -424,9 +464,15 @@ function createAutonomousStore() {
     // drop them instead of queueing, or the pending replay would repaint
     // the whole turn as a duplicate once the attach ends (backlog #90).
     if (chatStore.bufferAttachedThreadId === event.thread_id) return;
-    const buf = _pendingEvents.get(event.thread_id) || [];
-    buf.push(event);
-    _pendingEvents.set(event.thread_id, buf);
+    let buf = _pendingEvents.get(event.thread_id);
+    if (!buf) {
+      buf = { events: [], chars: 0, overflowed: false };
+      _pendingEvents.set(event.thread_id, buf);
+    }
+    if (buf.overflowed) return;
+    buf.events.push(event);
+    buf.chars += JSON.stringify(event).length;
+    markBufferOverflowIfNeeded(buf, event.thread_id);
     schedulePendingReplay(event.thread_id);
   }
 
@@ -442,7 +488,17 @@ function createAutonomousStore() {
 
   function ensureStreamingForCurrentTask(event: AutonomousEvent): boolean {
     const taskId = event.task_id as string | undefined;
-    if (!taskId || event.thread_id !== threadsStore.currentThreadId || chatStore.isStreaming) {
+    // While a thread switch is loading history, the message list is about to be
+    // replaced, so do not bind a streaming message yet (that binding would be
+    // wiped by the history swap). Live turns are re-rendered by the #87
+    // viewer-attach path (navigation's requestViewerAttach); this guard just
+    // avoids a bind-then-wipe flicker during the swap (backlog #89).
+    if (
+      !taskId ||
+      event.thread_id !== threadsStore.currentThreadId ||
+      chatStore.isStreaming ||
+      chatStore.isLoadingHistory
+    ) {
       return false;
     }
 
@@ -475,6 +531,12 @@ function createAutonomousStore() {
 
   function replayPendingEventsForThread(threadId: string) {
     if (threadsStore.currentThreadId !== threadId) return;
+    // Defer while history is loading so the 250ms replay timer does not apply
+    // buffered events into a list the history swap is about to replace. Unlike
+    // desktop, mobile has no post-load autonomous drain (attachToThread); the
+    // #87 viewer-attach path is the authoritative live-turn renderer, and any
+    // gap buffer left here is discarded at task end (backlog #89).
+    if (chatStore.isLoadingHistory) return;
     // The turn-buffer attach replays the turn from seq 0, so anything queued
     // here (the pre-attach switch gap) is already covered: discard it.
     if (chatStore.bufferAttachedThreadId === threadId) {
@@ -486,10 +548,11 @@ function createAutonomousStore() {
     if (taskId) activeTaskId = taskId;
 
     const pending = _pendingEvents.get(threadId);
-    if (!pending || pending.length === 0) return;
+    if (!pending || pending.overflowed || pending.events.length === 0) return;
 
+    const events = pending.events;
     _pendingEvents.delete(threadId);
-    for (const evt of pending) {
+    for (const evt of events) {
       handleEvent(evt);
     }
   }

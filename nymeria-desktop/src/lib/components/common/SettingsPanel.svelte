@@ -595,6 +595,17 @@
 
   let activeTab = $state<SettingsTab>(getInitialTab());
   let isAdmin = $derived(configStore.identity?.role === 'admin');
+  // Tabs whose Save action rides the sticky footer (#25). Mirrors each tab
+  // block's own admin gate so the footer never offers a save the body hides.
+  // The rag tab is always saveable (its per-user save is not admin-gated; the
+  // engine save is added in the footer only when isAdmin).
+  let footerVisible = $derived(
+    (activeTab === 'llm' && isAdmin) ||
+    (activeTab === 'agent' && isAdmin) ||
+    activeTab === 'rag' ||
+    (activeTab === 'dream' && isAdmin) ||
+    (activeTab === 'voice' && isAdmin)
+  );
   let connectionAdvancedTouched = $state(false);
   let showConnectionAdvanced = $state(true);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -2125,12 +2136,6 @@
           </p>
         </div>
         {/if}
-
-        <div class="actions">
-          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving…' : 'Save LLM Settings'}
-          </Button>
-        </div>
       {/if}
     </div>
   {/if}
@@ -2317,11 +2322,6 @@
           </div>
         {/if}
 
-        <div class="actions">
-          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving…' : 'Save Agent Settings'}
-          </Button>
-        </div>
       {/if}
     </div>
   {/if}
@@ -2387,14 +2387,6 @@
           <p class="hint">Preserve important context to memory before the window is trimmed</p>
         </div>
 
-        <div class="actions">
-          <Button variant="primary" onclick={handleSaveRagUserSettings} disabled={ragUserSaving}>
-            {ragUserSaving ? 'Saving…' : 'Save My RAG Settings'}
-          </Button>
-          {#if ragUserMessage}
-            <span class="hint">{ragUserMessage}</span>
-          {/if}
-        </div>
       {/if}
 
       {#if isAdmin}
@@ -2442,11 +2434,6 @@
               <input id="rag-rerank-model" type="text" bind:value={ragRerankModel} placeholder="e.g. rerank-2.5-lite" />
             </div>
           {/if}
-          <div class="actions">
-            <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-              {savingSettings ? 'Saving…' : 'Save RAG Engine'}
-            </Button>
-          </div>
         {/if}
       {/if}
     </div>
@@ -2521,12 +2508,6 @@
             maxlength={120}
           />
           <p class="hint">Model dream turns run on. Leave blank to use the global default model.</p>
-        </div>
-
-        <div class="actions">
-          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings}>
-            {savingSettings ? 'Saving…' : 'Save Dreaming Settings'}
-          </Button>
         </div>
 
         <DreamPromptEditor />
@@ -2746,15 +2727,18 @@
           </select>
           <p class="hint">Thread used by the watch app and /voice/chat endpoint when no thread is specified</p>
         </div>
-
-        <Button onclick={handleSaveServerSettings} disabled={savingSettings}>
-          {savingSettings ? 'Saving…' : 'Save Voice Settings'}
-        </Button>
       {/if}
     </div>
   {/if}
 
-  <!-- Status message -->
+      </div>
+      {/key}
+    </main>
+  </div>
+
+  <!-- Save / Test status (server saves + connection test). Sibling of the
+       layout so it stays pinned at the panel bottom (visible alongside the
+       footer) instead of scrolling out of view inside the tab body (#25). -->
   {#if testMessage}
     <div class="message" class:success={testStatus === 'success'} class:error={testStatus === 'error'}>
       {#if testStatus === 'success'}
@@ -2766,10 +2750,46 @@
     </div>
   {/if}
 
+  <!-- Tab-aware sticky save footer (#25): the per-tab Save action is relocated
+       here so it stays visible instead of being buried at the end of the
+       scrolling tab body. Hidden on tabs with no panel-level save. -->
+  {#if footerVisible}
+    <footer class="settings-footer">
+      <div class="footer-status">
+        {#if activeTab === 'rag' && ragUserMessage}
+          <span class="hint">{ragUserMessage}</span>
+        {/if}
       </div>
-      {/key}
-    </main>
-  </div>
+      <div class="footer-actions">
+        {#if activeTab === 'llm' && isAdmin}
+          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+            {savingSettings ? 'Saving…' : 'Save LLM Settings'}
+          </Button>
+        {:else if activeTab === 'agent' && isAdmin}
+          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+            {savingSettings ? 'Saving…' : 'Save Agent Settings'}
+          </Button>
+        {:else if activeTab === 'rag'}
+          <Button variant="primary" onclick={handleSaveRagUserSettings} disabled={ragUserSaving || ragUserLoading}>
+            {ragUserSaving ? 'Saving…' : 'Save My RAG Settings'}
+          </Button>
+          {#if isAdmin}
+            <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+              {savingSettings ? 'Saving…' : 'Save RAG Engine'}
+            </Button>
+          {/if}
+        {:else if activeTab === 'dream' && isAdmin}
+          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+            {savingSettings ? 'Saving…' : 'Save Dreaming Settings'}
+          </Button>
+        {:else if activeTab === 'voice' && isAdmin}
+          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+            {savingSettings ? 'Saving…' : 'Save Voice Settings'}
+          </Button>
+        {/if}
+      </div>
+    </footer>
+  {/if}
 
   <ProviderSetupWizard
     isOpen={showProviderSetupWizard}
@@ -2800,6 +2820,32 @@
     flex: 1;
     min-height: 0;
     gap: 0;
+  }
+
+  /* Sticky, tab-aware save footer (#25). Sibling of .settings-layout so it
+     pins to the panel bottom while the tab body scrolls above it. Mirrors the
+     ThreadSettingsPanel .modal-footer idiom. */
+  .settings-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-md) var(--spacing-lg);
+    border-top: 1px solid var(--border-default);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+
+  .footer-status {
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .footer-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    margin-left: auto;
   }
 
   /* --- Left sidebar --- */
@@ -3247,6 +3293,9 @@
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
+    /* Sits below the scrolling layout now (#25), so it carries its own inset
+       instead of inheriting .settings-content's padding. */
+    margin: var(--spacing-sm) var(--spacing-lg);
     padding: var(--spacing-sm) var(--spacing-md);
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);

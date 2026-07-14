@@ -197,6 +197,10 @@ KNOWN_DRIFT: set[str] = {
     "lib/utils/rewind.ts",
     "lib/utils/rewind.test.ts",
     "lib/stores/chat.test.ts",
+    # Autonomous store + its buffer-cap test diverge per platform (backlog #89
+    # added the mobile buffer cap mirroring desktop; the store itself is
+    # KNOWN_DRIFT above, so its test is too).
+    "lib/stores/autonomous.test.ts",
 }
 
 SCAN_EXTENSIONS = {".ts", ".svelte", ".css"}

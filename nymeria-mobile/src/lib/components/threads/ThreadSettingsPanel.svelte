@@ -1604,6 +1604,11 @@
 
         {/if}
 
+        <p class="hint">
+          Changing which tools are bound to this thread re-primes the prompt cache
+          on the next turn (a one-time cost).
+        </p>
+
       {:else if activeTab === 'mcp'}
         {#if toolsLoadError}
           <div class="loading-state">{toolsLoadError}</div>
