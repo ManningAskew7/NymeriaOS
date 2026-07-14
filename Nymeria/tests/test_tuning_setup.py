@@ -98,22 +98,41 @@ def test_model_tier_fields_emit_and_round_trip():
     state = WizardState(extras={
         "llm_fast_model": "openai:gpt-4o-mini",
         "llm_smart_model": "anthropic:claude-opus-4-8",
+        "llm_background_model": "anthropic:claude-haiku-4-5-20251001",
         "llm_fallback_models": "anthropic:claude-haiku-4-5-20251001, openai:gpt-4o-mini",
+        "llm_fallback_hold_seconds": "3600",
     })
     env = tuning_env_for_state(state)
     assert env["LLM_FAST_MODEL"] == "openai:gpt-4o-mini"
     assert env["LLM_SMART_MODEL"] == "anthropic:claude-opus-4-8"
+    assert env["LLM_BACKGROUND_MODEL"] == "anthropic:claude-haiku-4-5-20251001"
     assert env["LLM_FALLBACK_MODELS"] == (
         "anthropic:claude-haiku-4-5-20251001, openai:gpt-4o-mini"
     )
+    assert env["LLM_FALLBACK_HOLD_SECONDS"] == "3600"
     # Reconfigure reads the same lines back into wizard extras.
     from nymeria.setup.tuning_catalog import tuning_extras_from_env
 
     back = tuning_extras_from_env(lambda key: env.get(key))
     assert back["llm_fast_model"] == "openai:gpt-4o-mini"
     assert back["llm_smart_model"] == "anthropic:claude-opus-4-8"
+    assert back["llm_background_model"] == "anthropic:claude-haiku-4-5-20251001"
+    assert back["llm_fallback_hold_seconds"] == "3600"
     # The tiers appear on the review screen.
     assert any("Model tiers:" in line for line in tuning_summary_lines(state))
+
+
+def test_fallback_hold_field_bounds():
+    """0 disables the timed hold, so the field's minimum is 0 (not 1); the max
+    mirrors the settings le=604800 (7 days)."""
+    field = tuning_catalog.FALLBACK_HOLD_FIELD
+    assert parse_field(field, "0") == ("0", None)
+    assert parse_field(field, "7200") == ("7200", None)
+    assert parse_field(field, "604800") == ("604800", None)
+    assert parse_field(field, "-1")[1] is not None  # below minimum
+    assert parse_field(field, "604801")[1] is not None  # above maximum
+    assert parse_field(field, "2h")[1] is not None  # not a number
+    assert parse_field(field, "7200.5")[1] is not None  # whole numbers only
 
 
 def test_tokens_strategy_writes_mode_and_trigger():
@@ -393,6 +412,47 @@ def test_cli_rejects_bad_timezone():
     args = parser.parse_args(["--timezone", "Mars/Olympus"])
     with pytest.raises(SystemExit, match="timezone"):
         _build_state(args)
+
+
+def test_cli_model_tier_and_fallback_flags_land_in_state():
+    parser = build_parser()
+    args = parser.parse_args([
+        "--fast-model", "openai:gpt-4o-mini",
+        "--smart-model", "anthropic:claude-opus-4-8",
+        "--background-model", "anthropic:claude-haiku-4-5-20251001",
+        "--fallback-models", "anthropic:claude-haiku-4-5-20251001",
+        "--fallback-hold-seconds", "3600",
+    ])
+    state = _build_state(args)
+    assert state.extras["llm_fast_model"] == "openai:gpt-4o-mini"
+    assert state.extras["llm_smart_model"] == "anthropic:claude-opus-4-8"
+    assert state.extras["llm_background_model"] == "anthropic:claude-haiku-4-5-20251001"
+    assert state.extras["llm_fallback_models"] == "anthropic:claude-haiku-4-5-20251001"
+    assert state.extras["llm_fallback_hold_seconds"] == "3600"
+    # Background tier and hold flow through to env (fast/smart/fallback are
+    # covered by test_model_tier_fields_emit_and_round_trip).
+    env = tuning_env_for_state(state)
+    assert env["LLM_BACKGROUND_MODEL"] == "anthropic:claude-haiku-4-5-20251001"
+    assert env["LLM_FALLBACK_HOLD_SECONDS"] == "3600"
+
+
+def test_cli_rejects_bad_fallback_hold_seconds():
+    parser = build_parser()
+    args = parser.parse_args(["--fallback-hold-seconds", "nope"])
+    with pytest.raises(SystemExit, match="fallback-hold-seconds"):
+        _build_state(args)
+
+
+def test_cli_fallback_hold_seconds_zero_survives_and_emits():
+    """0 (disable the timed hold) is a truthy string, so it must survive the
+    `if value:` gates in _build_state and finalize, not silently drop. The flag
+    deliberately has no argparse type=int (which would keep 0 an int and pass
+    the truthy gate too, but the string form is what the wizard extras expect)."""
+    parser = build_parser()
+    args = parser.parse_args(["--fallback-hold-seconds", "0"])
+    state = _build_state(args)
+    assert state.extras["llm_fallback_hold_seconds"] == "0"
+    assert tuning_env_for_state(state)["LLM_FALLBACK_HOLD_SECONDS"] == "0"
 
 
 # ── catalog/settings agreement ───────────────────────────────────────────────

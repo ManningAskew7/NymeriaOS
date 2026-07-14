@@ -261,9 +261,10 @@ class _LLMTuningStep(_TuningFormStep):
         )
         yield from self._compose_field_grid(SAMPLING_FIELDS)
         yield Static(
-            "Optional model tiers used by /fast, /smart, and the fallback "
-            "chain. Blank uses sensible defaults. Prefix with provider: to "
-            "route a tier to a different provider (e.g. openai:gpt-4o-mini).",
+            "Optional model tiers used by /fast, /smart, /background, and the "
+            "fallback chain, plus how long a fallback stays active. Blank uses "
+            "sensible defaults. Prefix a model with provider: to route a tier "
+            "to a different provider (e.g. openai:gpt-4o-mini).",
             classes="section-note",
         )
         yield from self._compose_field_grid(MODEL_TIER_FIELDS)

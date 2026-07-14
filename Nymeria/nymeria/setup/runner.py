@@ -324,10 +324,24 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--background-model", default=None, metavar="MODEL",
+        help=(
+            "Background model tier (LLM_BACKGROUND_MODEL) for extraction and "
+            "background tasks; a model id or provider:model"
+        ),
+    )
+    parser.add_argument(
         "--fallback-models", default=None, metavar="LIST",
         help=(
             "Comma-separated fallback chain (LLM_FALLBACK_MODELS); entries may "
             "be model ids or provider:model"
+        ),
+    )
+    parser.add_argument(
+        "--fallback-hold-seconds", default=None, metavar="SECONDS",
+        help=(
+            "Seconds a fallback stays active after primary retry exhaustion "
+            "(LLM_FALLBACK_HOLD_SECONDS, 0-604800; 0 disables the timed hold)"
         ),
     )
     parser.add_argument(
@@ -442,7 +456,9 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         ("reasoning_effort", "llm_effort"),
         ("fast_model", "llm_fast_model"),
         ("smart_model", "llm_smart_model"),
+        ("background_model", "llm_background_model"),
         ("fallback_models", "llm_fallback_models"),
+        ("fallback_hold_seconds", "llm_fallback_hold_seconds"),
     ):
         value = getattr(args, attr, None)
         if value:
@@ -452,6 +468,11 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         _, error = tuning_catalog.parse_field(tuning_catalog.TIMEZONE_FIELD, timezone)
         if error:
             raise SystemExit(f"--timezone: {error}")
+    hold = extras.get("llm_fallback_hold_seconds")
+    if isinstance(hold, str):
+        _, error = tuning_catalog.parse_field(tuning_catalog.FALLBACK_HOLD_FIELD, hold)
+        if error:
+            raise SystemExit(f"--fallback-hold-seconds: {error}")
 
     hosting = None
     if getattr(args, "hosting", None):

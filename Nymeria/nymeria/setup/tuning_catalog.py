@@ -303,6 +303,20 @@ SAMPLING_FIELDS: tuple[TuningField, ...] = (
     ),
 )
 
+# Fallback hold: how long a successful fallback stays active on a thread after
+# primary retry exhaustion (LLM_FALLBACK_HOLD_SECONDS; mirrors the settings
+# ge=0/le=604800 bounds). An int, not a model name, but grouped with the
+# fallback chain it modifies; 0 disables the timed hold.
+FALLBACK_HOLD_FIELD = TuningField(
+    key="llm_fallback_hold_seconds",
+    env_var="LLM_FALLBACK_HOLD_SECONDS",
+    label="Fallback hold (seconds, optional)",
+    placeholder="7200 (2h default); 0 disables the timed hold",
+    kind="int",
+    minimum=0,
+    maximum=604800,
+)
+
 MODEL_TIER_FIELDS: tuple[TuningField, ...] = (
     TuningField(
         key="llm_fast_model",
@@ -332,6 +346,7 @@ MODEL_TIER_FIELDS: tuple[TuningField, ...] = (
         placeholder="e.g. anthropic:claude-haiku-4-5-20251001, openai:gpt-4o-mini",
         kind="str",
     ),
+    FALLBACK_HOLD_FIELD,
 )
 
 ALL_FIELDS: tuple[TuningField, ...] = (
@@ -722,6 +737,7 @@ __all__ = [
     "CONTEXT_VALUES",
     "EFFORT_CHOICES",
     "EFFORT_VALUES",
+    "FALLBACK_HOLD_FIELD",
     "LIMIT_FIELDS",
     "MODEL_TIER_FIELDS",
     "RECOMMENDED_EFFORT",
