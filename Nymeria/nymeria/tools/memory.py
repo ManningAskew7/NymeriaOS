@@ -178,8 +178,9 @@ def memory_add(
 ) -> str:
     """
     Add to memory: append to the thread notepad, or create/set one global key.
-    Purely additive: it never deletes or clobbers existing notes. Use
-    memory_edit to revise, clear, or remove memory.
+    Never deletes: a thread add appends (it never overwrites existing notes); a
+    global add sets only its named key (replacing that key's value, others
+    untouched). Use memory_edit to revise, clear, or remove memory.
 
     scope="global": persistent fact about the user. Requires `key` (e.g.
         "occupation", "favorite_language"). Auto-injected into every future
@@ -268,7 +269,8 @@ def memory_edit(
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
     """
-    Edit existing memory: find/replace a substring; owns clearing and removing.
+    Edit existing memory: find/replace a substring (first exact match only);
+    owns clearing and removing.
 
     scope="global": find/replace within a single profile memory's value.
         Requires `key`. Empty `find` operates on the whole value: a non-empty
