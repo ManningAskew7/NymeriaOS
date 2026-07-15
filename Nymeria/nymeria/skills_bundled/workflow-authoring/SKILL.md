@@ -51,8 +51,11 @@ First decide the artifact:
 
 Budget per run (overridable per workflow, admin-clamped): 50 verb calls, 10
 AI calls, nesting depth 2, 600s wall clock (up to 3600s), 30KB per result.
-Structured results are plain dicts (`triage["urgent"]`); pass schemas as
-top-level kwargs only.
+Note the wall clock you declare is an upper bound, not a guarantee: a workflow
+invoked as a TOOL is lowered to `tool_timeout - 2` (298s by default), and only
+headless surfaces (recurring TODO, trigger, REST execute) keep the full
+declared budget. Structured results are plain dicts (`triage["urgent"]`); pass
+schemas as top-level kwargs only.
 
 ## Economics: nym.llm vs nym.thread
 
@@ -94,20 +97,40 @@ The canonical unattended shape: poll in code, remember in state, alert only
 on real change, spend tokens never (or only on a real change).
 
 ```python
+import hashlib
+
+
+def state_key(prefix: str, url: str) -> str:
+    # nym.state is namespaced by (workflow_id, user_id) ONLY, never by your
+    # parameters. One workflow fired for two URLs shares one state document, so
+    # fold any parameter you key on into the key yourself: otherwise the two
+    # fires overwrite each other's digest and BOTH report a change every fire.
+    return f"{prefix}:{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}"
+
+
 def run(url: str, alert_after_failures: int = 3):
+    digest_key, failures_key = state_key("last_digest", url), state_key("fails", url)
+    # fetch_url_nymeria signals failure by RETURNING "[Error]: ...", not by
+    # raising, so detect failure on the return value (try/except is a backstop).
     try:
         page = nym.tools.fetch_url_nymeria(url=url)
+        failed = isinstance(page, str) and page.startswith("[Error]")
     except Exception as e:
-        fails = (nym.state.get("consecutive_failures") or 0) + 1
-        nym.state.set("consecutive_failures", fails)
+        page, failed = f"[Error]: {e}", True
+    if failed:
+        fails = (nym.state.get(failures_key) or 0) + 1
+        nym.state.set(failures_key, fails)
         if fails == alert_after_failures:  # a blip never pages; a streak does
-            nym.notify(f"Watcher cannot reach {url} ({fails} tries): {e}")
+            nym.notify(f"Watcher cannot reach {url} ({fails} tries): {page}")
         return {"checked": False, "failures": fails}
 
-    nym.state.set("consecutive_failures", 0)
-    digest = str(hash(page))
-    previous = nym.state.get("last_digest")
-    nym.state.set("last_digest", digest)
+    nym.state.set(failures_key, 0)
+    # A stable content hash, NOT the builtin hash(): each fire runs in a fresh
+    # subprocess where hash() of a str is salted per process, so it would never
+    # match across runs and every check would look "changed".
+    digest = hashlib.sha256(str(page).encode("utf-8")).hexdigest()
+    previous = nym.state.get(digest_key)
+    nym.state.set(digest_key, digest)
     if previous is None or previous == digest:
         return {"changed": False}  # nothing wakes, nothing spends
 
@@ -118,9 +141,98 @@ def run(url: str, alert_after_failures: int = 3):
 Fire it every 30 minutes with a recurring TODO bound to the workflow
 (`workflow_id` + `workflow_params` on the TODO), or from a trigger via the
 `run_workflow` action (declare an `event: dict` parameter to receive the raw
-trigger event). When a change needs INTERPRETATION rather than a fixed
-message, replace `nym.notify` with `nym.thread(prompt=..., id_or_title=...)`
-so an agent reasons about the diff in a visible thread.
+trigger event). Note `fetch_url_nymeria` is an opt-in catalog tool: it must be
+enabled on the thread the TODO runs in, since a workflow resolves tools against
+its thread. When a change needs INTERPRETATION rather than a fixed message,
+replace `nym.notify` with `nym.thread(prompt=..., id_or_title=...)` so an agent
+reasons about the diff in a visible thread. This watcher ships as the bundled
+`url_watcher` recipe (see "Install a bundled recipe"), so you can install and
+schedule it without writing it.
+
+## Worked example: a two-thread conversation
+
+Two of your callable threads talking to each other: each thread's reply
+becomes the other's next prompt. Orchestration is external and sequential
+(one `nym.thread` ask at a time), so the ancestor-deadlock guard never
+triggers. Stop on a content sentinel or a hard exchange cap.
+
+Budget this shape deliberately, because the runner does not hand your script
+its deadline and delivery only happens at the END: a run that overruns its
+wall clock is SIGKILLed and the whole transcript dies with it, not just the
+last reply. Each reply is one AI call, so a long conversation must raise
+`max_ai_calls` above the engine default of 10.
+
+The trap is the wall clock. **Your declared `wall_clock_seconds` is not what
+you get on the tool path**: when a workflow runs as a TOOL (which is what
+`install_template` and a normal thread call do), the engine lowers the run's
+wall clock to `tool_timeout - 2` (298s by default) whatever the definition
+declares, because the tool node is already bounding the call. Only headless
+surfaces (a recurring TODO, a trigger, REST execute) keep the full declared
+budget. So do not clamp your loop against the number you declared. Keep your
+OWN clock and stop while there is still room to deliver:
+
+```python
+# budget={"wall_clock_seconds": 3600, "max_calls": 40, "max_ai_calls": 25}
+import time
+
+MAX_EXCHANGES = 20  # coarse backstop; the time budget is the real governor
+
+
+def run(thread_a: str, thread_b: str, opening: str, max_exchanges: int = 6,
+        end_marker: str = "[END CONVERSATION]",
+        time_budget_seconds: int = 240):  # fits the 298s tool path; raise headless
+    speakers = [thread_a, thread_b]
+    transcript, message = [], opening
+    started, slowest = time.monotonic(), 0.0
+    for turn in range(min(max(1, max_exchanges), MAX_EXCHANGES)):
+        # Stop BEFORE a reply you cannot afford; the slowest so far is the
+        # estimate for the next. Overrunning costs the whole transcript.
+        if transcript and (time.monotonic() - started) + slowest > time_budget_seconds:
+            break
+        speaker = speakers[turn % 2]
+        reply_started = time.monotonic()
+        reply = str(nym.thread(
+            prompt=f"Reply with your next message only. To end, include "
+                   f"{end_marker}.\n\nTheir message:\n{message}",
+            id_or_title=speaker, mode="ask",
+        ))
+        slowest = max(slowest, time.monotonic() - reply_started)
+        transcript.append(f"[{speaker}]: {reply}")
+        if end_marker in reply:
+            break
+        message = reply
+    nym.notify("Conversation:\n\n" + "\n\n".join(transcript))
+    return {"replies": len(transcript), "transcript": transcript}
+```
+
+The general rule: any workflow whose useful output is delivered at the end and
+whose runtime is measured in minutes either needs a self-imposed time budget
+like this one, or belongs on a headless surface. Work that legitimately needs
+more than `tool_timeout` should not be invoked as a tool at all.
+
+Both threads must be your own callable threads (`nym.thread` enforces
+ownership and the callable flag). This ships as the bundled
+`two_thread_conversation` recipe.
+
+## Install a bundled recipe
+
+Nymeria ships example workflows you can install in one step instead of
+authoring from scratch. List them, then install by id (admin only, because
+install publishes an approved GLOBAL workflow tool):
+
+```
+workflow_info(action="templates")
+tool_create(action="install_template", template_id="url_watcher")
+```
+
+Install self-approves the trusted bundled revision and enables the tool on
+this thread. It is idempotent by tool id: installing an already-installed
+recipe publishes nothing, returns the existing tool with `created: false`, and
+still enables it on this thread, so it is the right call from any new thread
+that wants the recipe. It never overwrites an existing tool: an id held by
+another tool, or by an edited copy of the recipe, is a clear error instead.
+After that the installed tool behaves like any workflow tool: run it, schedule
+it on a recurring TODO, or bind it to a trigger.
 
 ## The approval checkpoint idiom
 

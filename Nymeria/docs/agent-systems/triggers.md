@@ -188,6 +188,42 @@ itself: delivery is the workflow's explicit job (`nym.thread` /
 `nym.notify`), so a headless fire cannot leak output to a guessed
 destination.
 
+## Scheduled (time-based) workflows
+
+Triggers are event-based. For time-based recurring work, bind a published
+workflow to a recurring **TODO** instead: set `workflow_id` (and optional
+`workflow_params`) on the TODO and the ticker runs that workflow headlessly on
+schedule, with no agent turn. A workflow that calls no AI verbs (`nym.llm` /
+`nym.thread`) is genuinely zero-LLM, so a scheduled pure-tool job costs zero
+tokens per fire, the counterpart to the `run_workflow` trigger action for a
+clock rather than an event.
+
+```
+nym_todo(
+    task="Watch the changelog",
+    scheduled_for="30m",
+    recurrence="30m",
+    workflow_id="url_watcher",
+    workflow_params={"url": "https://example.com/changelog"},
+)
+```
+
+The same shape over REST is `POST /todos` with `workflow_id` /
+`workflow_params`. The binding is validated at creation (the workflow must
+exist, its revision must be admin-approved, and every required parameter must
+be covered; a TODO-bound workflow may not declare an `event` parameter). The
+binding is create-only, delete and recreate the TODO to rebind. Recurrence,
+retries, and the missed-work policy apply exactly as they do to ordinary
+scheduled TODOs; a non-recurring workflow TODO closes itself when the run
+finishes (there is no agent turn to close it). Delivery is the workflow's own
+job (`nym.notify` / `nym.thread`), the ticker only fires it.
+
+`url_watcher` above is the bundled zero-LLM recipe: poll a URL, remember the
+last content digest in workflow state, and notify only on a real change.
+Install it (admin) with `tool_create(action="install_template",
+template_id="url_watcher")`, or author your own zero-AI watcher from the
+`workflow-authoring` skill kit's cookbook.
+
 ## Conditions
 
 Filter events before they trigger actions. All conditions use AND logic.

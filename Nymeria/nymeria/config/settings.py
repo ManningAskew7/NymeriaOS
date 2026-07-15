@@ -1941,6 +1941,11 @@ class Settings(BaseSettings):
         return PACKAGE_ROOT / "hooks_bundled"
 
     @property
+    def bundled_workflows_dir(self) -> Path:
+        """Get the repo-bundled workflow-template directory (ships with Nymeria)."""
+        return PACKAGE_ROOT / "workflows_bundled"
+
+    @property
     def cors_origins_list(self) -> List[str]:
         """Get CORS origins as a list."""
         if self.cors_origins == "*":

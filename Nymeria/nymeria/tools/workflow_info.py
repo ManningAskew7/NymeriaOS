@@ -182,6 +182,25 @@ def _approvals(user_id: str, admin: bool) -> str:
     return "\n".join(lines)
 
 
+def _templates() -> str:
+    from ..core.workflow_templates import load_templates, template_parameter_names
+
+    templates = load_templates()
+    if not templates:
+        return "[Info]: no bundled workflow templates are available."
+    lines = [
+        f"{len(templates)} bundled workflow template(s). Install one (admin) "
+        "with tool_create(action='install_template', template_id=<id>):"
+    ]
+    for template in templates:
+        params = template_parameter_names(template)
+        param_part = f" params={','.join(params)}" if params else ""
+        lines.append(f"- {template.id}: {template.description}{param_part}")
+        if template.notes:
+            lines.append(f"    {template.notes}")
+    return "\n".join(lines)
+
+
 def _pending() -> str:
     from .tool_create import list_pending_workflows
 
@@ -216,14 +235,15 @@ def workflow_info(
     approval states, "show" for one workflow's detail including its source,
     "log" for its recent run records (status, steps, budget consumption, and
     the failing error if any), "approvals" for your suspended runs awaiting a
-    nym.approve decision, and "pending" (admin only) for the revisions
-    awaiting approval. Resolving either kind of approval happens over REST
-    (/workflows/approve|decline for revisions,
+    nym.approve decision, "templates" for the bundled workflow recipes you can
+    install (via tool_create action='install_template'), and "pending" (admin
+    only) for the revisions awaiting approval. Resolving either kind of approval
+    happens over REST (/workflows/approve|decline for revisions,
     /workflows/approvals/{id}/resolve for suspensions), never through an
     agent tool.
 
     Args:
-        action: "list", "show", "log", "approvals", or "pending".
+        action: "list", "show", "log", "approvals", "templates", or "pending".
         workflow_id: Required for show/log (tool id, or your draft id).
         limit: Max run records for log (default 20).
     """
@@ -244,11 +264,16 @@ def workflow_info(
             return _log(user_id, admin, workflow_id, limit)
         if action_key == "approvals":
             return _approvals(user_id, admin)
+        if action_key == "templates":
+            return _templates()
         if action_key == "pending":
             if not admin:
                 return "[Error]: the pending approval queue is admin-only."
             return _pending()
-        return "[Error]: action must be one of: list, show, log, approvals, pending."
+        return (
+            "[Error]: action must be one of: list, show, log, approvals, "
+            "templates, pending."
+        )
     except Exception as exc:  # noqa: BLE001 - a read surface must not crash a turn
         logger.error("workflow_info failed", exc_info=True)
         return f"[Error]: workflow_info failed: {exc}"

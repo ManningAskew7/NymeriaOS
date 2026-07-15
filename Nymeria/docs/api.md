@@ -2941,6 +2941,33 @@ The revision approval gate is re-checked at call time. Refusals map to
 The run never delivers output anywhere by itself; delivery is the workflow's
 own explicit job (`nym.thread` / `nym.notify`).
 
+### Workflow Templates
+
+```http
+GET  /workflows/templates
+POST /workflows/templates/{template_id}/install
+Authorization: Bearer <token>
+```
+
+`GET` lists the bundled workflow-recipe catalog (curated JSONs shipped in
+`nymeria/workflows_bundled/`, each statically validated at load, so a broken
+bundled file is skipped rather than listed): `{"templates": [{id, name,
+description, notes, parameters}], "total"}`, where `parameters` are the names
+derived from the recipe's entrypoint signature.
+
+`POST` installs one as a published workflow tool. **Admin-only**, unlike the
+per-user hook-template install: a workflow tool is GLOBAL and its execution is
+gated on an admin-approved revision, so installing one publishes and
+self-approves a trusted revision. The (currently empty) JSON body is reserved
+for forward-compatible options. The response is `{"created", "already_installed",
+"template_id", "approval", "tool"}`. Install is idempotent by tool id:
+re-installing returns the existing tool with `created=false` and overwrites
+nothing; an id occupied by a *different* tool is a **400** conflict rather
+than an overwrite, as is an unknown template id. The installed tool records
+its origin in `tags` (`bundled`, `template:<id>`) and is otherwise an ordinary
+workflow tool. This route publishes only; it does not enable the tool on any
+thread (the agent-facing `tool_create(action="install_template")` does both).
+
 ---
 
 ## Callable Threads API
