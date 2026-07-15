@@ -5,6 +5,7 @@ fall back to the bundled LiteLLM catalog (via pricing_table, offline), then
 to the static lists in this module.
 """
 
+import asyncio
 import logging
 import math
 import re
@@ -823,7 +824,16 @@ def _fetch_anthropic_models(
         reasoning_efforts = parse_anthropic_reasoning_capabilities(capabilities_obj)
 
         context_length = int(model.get("max_input_tokens") or 0)
-        max_output = model.get("max_output_tokens")
+        # Anthropic names the output ceiling ``max_tokens`` on the model object:
+        # the same name as the request parameter it bounds. There is NO
+        # ``max_output_tokens`` field in the API, so reading that name silently
+        # resolved to None for every model and this tier never learned a single
+        # cap (the fallthrough to the catalog tier hid it). ``max_output_tokens``
+        # is kept only as a secondary alias for Anthropic-compatible gateways
+        # that invent the friendlier name.
+        max_output = model.get("max_tokens")
+        if max_output is None:
+            max_output = model.get("max_output_tokens")
         max_completion_tokens = (
             int(max_output) if isinstance(max_output, (int, float)) and max_output > 0 else None
         )
@@ -901,6 +911,220 @@ def refresh_anthropic_models(
             # OpenRouter refresh cycle still see Anthropic data.
             _model_cache.setdefault(key, info)
     return len(fetched)
+
+
+# ============================================================================
+# Provider cap probe
+# ============================================================================
+#
+# Why this exists. Every other tier depends on someone having written the
+# model down in advance: the provider's own /models response, a curated table,
+# or the vendored community catalog. All three fail on a model newer than the
+# data, and a metadata-blind gateway (CLIProxy's /v1/models returns a bare
+# ``{id, object, created, owned_by}`` list; OpenAI's is the same shape) fails
+# on every model, forever, no matter how well maintained the catalogs are.
+#
+# The provider itself always knows. An over-limit ``max_tokens`` is rejected
+# with a message that names the real ceiling, and the rejection happens BEFORE
+# inference, so asking costs nothing. This is the only tier that was correct
+# about every model measured, including ones absent from every catalog.
+
+# Discovered ceilings keyed by "<base_url>|<model>". A cached None is a
+# negative result (the probe ran and learned nothing), so a gateway that does
+# not speak this dialect is asked at most once per failure TTL rather than on
+# every LLM construction.
+_probe_cache: Dict[str, Optional[int]] = {}
+_probe_cache_ts: Dict[str, float] = {}
+_PROBE_TTL_SECONDS = 24 * 60 * 60
+_PROBE_FAILURE_TTL_SECONDS = 15 * 60
+
+# Keys with a background warm already running, so N concurrent turns that all
+# miss the cache spawn one thread between them rather than one thread each.
+_probe_inflight: Set[str] = set()
+
+# Anthropic's rejection, verbatim:
+#   "max_tokens: 99999999 > 128000, which is the maximum allowed number of
+#    output tokens for claude-sonnet-5"
+_MAX_TOKENS_CEILING_RE = re.compile(
+    r">\s*(\d[\d_]*)\s*,?\s*which is the maximum allowed number of output tokens",
+    re.IGNORECASE,
+)
+
+# Chosen to exceed any plausible real ceiling so the request is always refused.
+# Note ``max_tokens`` is a ceiling and not an allocation: in the pathological
+# case where a provider ACCEPTS this, the model answers the one-word prompt and
+# stops at end_turn, costing a handful of tokens rather than the full budget.
+_PROBE_REQUEST_MAX_TOKENS = 99_999_999
+
+
+def _probe_cache_key(model_id: str, base_url: str) -> str:
+    return f"{base_url.rstrip('/')}|{model_id.strip().lower()}"
+
+
+def _probe_cached(key: str) -> tuple[bool, Optional[int]]:
+    """Read the probe cache. Returns (hit, ceiling); a hit can carry None."""
+    now = time.time()
+    with _cache_lock:
+        if key not in _probe_cache:
+            return False, None
+        cached = _probe_cache[key]
+        age = now - _probe_cache_ts.get(key, 0.0)
+        ttl = _PROBE_TTL_SECONDS if cached is not None else _PROBE_FAILURE_TTL_SECONDS
+        if age > ttl:
+            return False, None
+        return True, cached
+
+
+def _warm_probe_in_background(
+    model_id: str, *, base_url: str, api_key: str, timeout: float
+) -> None:
+    """Run the blocking probe on a throwaway thread, once per key at a time."""
+    key = _probe_cache_key(model_id, base_url)
+    with _cache_lock:
+        if key in _probe_inflight:
+            return
+        _probe_inflight.add(key)
+
+    def _run() -> None:
+        try:
+            _probe_max_output_tokens_blocking(
+                model_id, base_url=base_url, api_key=api_key, timeout=timeout
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"background max_tokens probe failed for {model_id}: {exc}")
+        finally:
+            with _cache_lock:
+                _probe_inflight.discard(key)
+
+    threading.Thread(
+        target=_run, name=f"probe-max-tokens-{model_id}", daemon=True
+    ).start()
+
+
+def probe_max_output_tokens(
+    model_id: str,
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: float = 8.0,
+) -> Optional[int]:
+    """Loop-safe front door to the provider ceiling probe.
+
+    THE POINT OF THIS WRAPPER: the probe is blocking ``httpx`` I/O, and its
+    callers (the Anthropic LLM factory, and the streaming opt-up in
+    ``nodes.py``) both run on the API's asyncio loop. Calling the blocking body
+    from there stalls EVERY request in the process for up to ``timeout``
+    seconds, and the failure TTL is short, so an endpoint that simply does not
+    speak this dialect would re-stall the loop every 15 minutes forever. Both
+    call sites were measured doing exactly that before this split existed.
+
+    So: a cache hit answers inline on any thread. A miss on a thread with a
+    running loop NEVER blocks it; it kicks off a background warm and reports
+    "unknown" for this turn, which costs that one turn the opt-up and nothing
+    else. Off-loop callers (and the background warm itself) take the blocking
+    path and populate the cache for everyone.
+    """
+    if not model_id or not base_url or not api_key:
+        return None
+
+    key = _probe_cache_key(model_id, base_url)
+    hit, cached = _probe_cached(key)
+    if hit:
+        return cached
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _probe_max_output_tokens_blocking(
+            model_id, base_url=base_url, api_key=api_key, timeout=timeout
+        )
+
+    _warm_probe_in_background(
+        model_id, base_url=base_url, api_key=api_key, timeout=timeout
+    )
+    return None
+
+
+def _probe_max_output_tokens_blocking(
+    model_id: str,
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: float = 8.0,
+) -> Optional[int]:
+    """Ask the provider for ``model_id``'s real output ceiling.
+
+    Sends a deliberately over-limit ``max_tokens`` and reads the ceiling out of
+    the ``invalid_request_error``. Returns None when the endpoint does not
+    speak this dialect, which is a normal outcome, not an error: the caller
+    falls through to the next tier.
+
+    Cached per (base_url, model) so the network cost is once per TTL, not once
+    per LLM construction. Fails soft on every unexpected shape: only a 4xx
+    carrying the documented message is trusted, so a 200, a 5xx, an auth
+    failure, or a reworded error all resolve to None rather than to a wrong
+    number.
+    """
+    if not model_id or not base_url or not api_key:
+        return None
+
+    key = f"{base_url.rstrip('/')}|{model_id.strip().lower()}"
+    now = time.time()
+    with _cache_lock:
+        if key in _probe_cache:
+            cached = _probe_cache[key]
+            age = now - _probe_cache_ts.get(key, 0.0)
+            ttl = _PROBE_TTL_SECONDS if cached is not None else _PROBE_FAILURE_TTL_SECONDS
+            if age <= ttl:
+                return cached
+
+    ceiling: Optional[int] = None
+    try:
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": model_id,
+                "max_tokens": _PROBE_REQUEST_MAX_TOKENS,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            timeout=timeout,
+        )
+        # Only a client-side rejection carries the ceiling. Anything else means
+        # the endpoint does not validate this the way we expect.
+        if 400 <= response.status_code < 500:
+            message = ""
+            try:
+                payload = response.json()
+                error = payload.get("error")
+                if isinstance(error, dict):
+                    message = str(error.get("message") or "")
+                elif isinstance(error, str):
+                    message = error
+            except ValueError:
+                message = response.text or ""
+            match = _MAX_TOKENS_CEILING_RE.search(message)
+            if match:
+                parsed = int(match.group(1).replace("_", ""))
+                if parsed > 0:
+                    ceiling = parsed
+    except Exception as exc:
+        logger.debug(f"max_tokens probe failed for {model_id}: {exc}")
+
+    with _cache_lock:
+        _probe_cache[key] = ceiling
+        _probe_cache_ts[key] = time.time()
+
+    if ceiling:
+        logger.info(
+            f"[LLM] Probed provider for {model_id} output ceiling: {ceiling} "
+            f"(no catalog tier knew this model)"
+        )
+    return ceiling
 
 
 def _ensure_cache() -> Dict[str, ModelInfo]:

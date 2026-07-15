@@ -448,11 +448,43 @@ def test_openrouter_chat_mode_off_sends_disabled_reasoning_extra_body():
 
 
 def test_anthropic_legacy_budget_map_covers_xhigh_and_max():
+    """The xhigh/max map entries exist, but both now land on the same clamp.
+
+    This test used to assert the raw map values (32768 / 49152). Those are no
+    longer reachable on a legacy-thinking model, and the change is deliberate,
+    not a bug to bend the test around:
+
+    The shared instance is pinned to `NONSTREAMING_MAX_OUTPUT_TOKENS` (21333)
+    because async non-streaming callers reach it and the Anthropic SDK refuses
+    that shape above the ceiling. `budget_tokens` must stay strictly below
+    `max_tokens`, so any effort tier asking for more than ~21333 clamps to
+    `21333 - 1024`. High (16384) still fits; xhigh and max both collapse onto
+    20309. The factory logs a WARNING when this happens.
+
+    It cannot be fixed by opting up per call the way `max_tokens` is: langchain
+    applies `payload["thinking"] = self.thinking` AFTER **kwargs, so a per-call
+    `thinking` override is ignored (measured 2026-07-15). Fixing the collapse
+    properly needs per-path instances or resolution at the LLMConfig choke
+    point; see the deferred note in
+    docs/private/plans/shipped/07-config-providers-and-vendor.md.
+
+    Scope: legacy thinking only (`uses_adaptive` is 4.6+), so every current
+    model (sonnet-5, opus-4-8, fable-5, opus-4-6/4-7) is unaffected. Those
+    models were also ALREADY broken on async non-streaming before the clamp
+    (langchain invented 64000 > 21333 -> ValueError), so this is still net
+    positive for them.
+    """
+    from nymeria.vendor.react_agent.providers import NONSTREAMING_MAX_OUTPUT_TOKENS
+
     xhigh_llm = _create_anthropic(extended_thinking=True, reasoning_effort="xhigh")
     max_llm = _create_anthropic(extended_thinking=True, reasoning_effort="max")
 
-    assert xhigh_llm.thinking == {"type": "enabled", "budget_tokens": 32768}
-    assert max_llm.thinking == {"type": "enabled", "budget_tokens": 49152}
+    ceiling = NONSTREAMING_MAX_OUTPUT_TOKENS - 1024
+    assert xhigh_llm.thinking == {"type": "enabled", "budget_tokens": ceiling}
+    assert max_llm.thinking == {"type": "enabled", "budget_tokens": ceiling}
+    # The map itself still distinguishes the tiers below the clamp.
+    high_llm = _create_anthropic(extended_thinking=True, reasoning_effort="high")
+    assert high_llm.thinking == {"type": "enabled", "budget_tokens": 16384}
 
 
 def test_anthropic_legacy_budget_clamped_strictly_below_max_tokens():

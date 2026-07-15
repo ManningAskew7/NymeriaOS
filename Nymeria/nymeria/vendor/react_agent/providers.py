@@ -22,7 +22,7 @@ import weakref
 from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
 from importlib import metadata as importlib_metadata
-from typing import Any, AsyncIterator, Iterator, List
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 from urllib.parse import urlparse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -1477,6 +1477,323 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
         raise ValueError(f"Unknown provider: {config.provider}")
 
 
+# The Anthropic SDK refuses a NON-streaming request whose max_tokens implies
+# more than ten minutes of generation, raising ValueError before the call is
+# made (anthropic/_base_client.py::_calculate_nonstreaming_timeout):
+#
+#     expected_time = 3600 * max_tokens / 128_000
+#     if expected_time > 600: raise ValueError("Streaming is required ...")
+#
+# which puts the ceiling at exactly 21333. Streaming has no such limit: the
+# guard is skipped entirely when stream=True.
+#
+# WHICH OF OUR PATHS THIS BITES, AND WHY READING langchain's SOURCE MISLEADS.
+# Measure what `_create_anthropic_llm` RETURNS; a bare ChatAnthropic answers a
+# different question.
+#
+# The guard is gated on `self._client.timeout == DEFAULT_TIMEOUT`. langchain
+# passes `timeout=None` explicitly for both of its clients, which defeats that
+# check, so on a BARE ChatAnthropic the guard really is dead code. Two separate
+# reviews read langchain's source, concluded exactly that, and were wrong about
+# US: the factory below does not return a bare ChatAnthropic. Our subclass
+# overrides `_async_client` to keep the SDK HTTP pool loop-local, and that
+# override POPS `timeout` when it is None (search
+# `_nymeria_uses_instance_async_client` below). Popping it makes the SDK see
+# NOT_GIVEN, substitute DEFAULT_TIMEOUT, and ARM the guard. We arm it ourselves,
+# on the async client only. Measured on both the pin (anthropic==0.102.0,
+# langchain-anthropic==1.4.3) and 0.97.0/1.4.2, 2026-07-15:
+#
+#     _create_anthropic_llm(...)._client.timeout       -> None  (DISARMED)
+#     _create_anthropic_llm(...)._async_client.timeout -> DEFAULT_TIMEOUT (ARMED)
+#
+# So at max_tokens above the ceiling: sync .invoke() reaches the network, async
+# .astream() reaches the network (stream=True exempts it), and async .ainvoke()
+# RAISES. Async-non-streaming is the only path that breaks, and it is the path
+# `nym.llm`, structured output, callable threads and RAG quality all use.
+#
+# Do not take this comment's word for it. test_provider_max_tokens.py pins
+# REACHABILITY functionally (build via the factory; assert ainvoke raises above
+# the ceiling and does NOT at the clamped value) as well as the constant, so if
+# the `_async_client` override, langchain, or the SDK moves, a test fails
+# instead of this prose quietly becoming a lie.
+NONSTREAMING_MAX_OUTPUT_TOKENS = 21_333
+
+# Anthropic's floor for legacy `thinking.budget_tokens`, which must also stay
+# strictly below max_tokens. Both halves matter: they make any max_tokens at or
+# below this value unsatisfiable with thinking enabled.
+MIN_THINKING_BUDGET_TOKENS = 1024
+
+# The lowest value langchain-anthropic can invent for max_tokens (its
+# `_FALLBACK_MAX_OUTPUT_TOKENS`). Used as the degrade value when we cannot read
+# its profile table at all: see langchain_fallback_max_tokens for why the
+# polarity matters.
+_LANGCHAIN_MIN_INVENTED_MAX_TOKENS = 4096
+
+
+def _model_nonstreaming_ceiling(model: str) -> Optional[int]:
+    """The SDK's per-model non-streaming cap, if it pins one for ``model``.
+
+    The guard has a second clause the formula above does not cover: the SDK
+    carries a table of models whose non-streaming cap is lower still (the
+    claude-opus-4 and opus-4-1 families sit at 8192), and `messages.create`
+    passes `MODEL_NONSTREAMING_TOKENS.get(model)` into the same check. Read it
+    from the SDK rather than copying the numbers here, so the table cannot go
+    stale on a dependency bump. Vendor internals, hence the defensive import:
+    an unknown model, a renamed constant or a restructured SDK all mean "no
+    extra pin", which is the pre-existing behaviour.
+    """
+    try:
+        from anthropic._constants import MODEL_NONSTREAMING_TOKENS
+    except Exception:  # noqa: BLE001
+        return None
+    value = MODEL_NONSTREAMING_TOKENS.get(model)
+    return int(value) if isinstance(value, int) and value > 0 else None
+
+
+def anthropic_probe_base_url(config: "LLMConfig") -> Optional[str]:
+    """The Anthropic ``/v1/messages`` endpoint to probe, or None if there isn't one.
+
+    SECURITY GATE, not a tidy-up. The ceiling probe posts Anthropic-shaped
+    headers (``x-api-key`` + ``anthropic-version``) to ``{base_url}/v1/messages``
+    and reads an Anthropic-worded error out of the response. Against any other
+    vendor that request is meaningless AND harmful: it hands that vendor's
+    credential to whatever host ``base_url`` names, and when ``base_url`` is
+    unset it defaulted to ``api.anthropic.com``, so an OpenAI / Google /
+    OpenRouter key went straight to Anthropic. That was measured, not theorised.
+
+    So the gate lives HERE, at the resolver every caller shares, rather than in
+    each caller: a call site that forgets to pass ``probe=False`` for a
+    non-Anthropic config now gets None and no egress, instead of leaking.
+    Returning the URL (rather than a bool) keeps the "is it Anthropic" decision
+    and the "where do we send it" decision in one place, so they cannot drift
+    apart into a gate that passes while the URL still points somewhere wrong.
+    """
+    try:
+        provider = normalize_llm_provider(config.provider)
+    except Exception:  # noqa: BLE001
+        return None
+
+    speaks_anthropic = provider == "anthropic"
+    if not speaks_anthropic:
+        try:
+            route = resolve_provider_route(
+                provider, route_override=getattr(config, "provider_route", None)
+            )
+            speaks_anthropic = route == "anthropic_messages" and provider_supports_route(
+                provider, "anthropic_messages"
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    if not speaks_anthropic:
+        return None
+    if config.base_url:
+        # A gateway (CLIProxy and friends) serving Claude over its own
+        # /v1/messages. Probing it with its own key is the intended case.
+        return config.base_url
+    # No base_url: only the native provider implies Anthropic's own endpoint.
+    # A gateway route with no base_url must NOT fall back to api.anthropic.com
+    # carrying the gateway's credential.
+    return "https://api.anthropic.com" if provider == "anthropic" else None
+
+
+def resolve_max_output_tokens(
+    config: LLMConfig,
+    *,
+    probe: bool = False,
+) -> Optional[int]:
+    """Resolve the output-token ceiling to send for ``config``.
+
+    An explicit setting always wins. Otherwise the model's true maximum is
+    DISCOVERED rather than hardcoded per slug, because every table-driven
+    source is wrong sooner or later: a curated table needs hand-maintenance, a
+    vendored community catalog goes stale (and can be wrong even at head), and
+    both are blank for any model newer than the data. Order:
+
+    1. Live provider metadata (the provider's own /models response).
+    2. The vendored catalog tier.
+    3. The provider itself, via ``probe_max_output_tokens`` (opt-in, since it
+       speaks the Anthropic dialect). This is the only tier that works through
+       a metadata-blind gateway such as CLIProxy.
+
+    The probe result is returned RAW, deliberately. Tiers 1-2 run through
+    ``get_max_output_tokens``, which caps its answer at 50% of the context
+    window; the probe does not, and a review flagged that inconsistency. It is
+    intentional. That cap is computed from a GUESSED context length, and the
+    guess is wrong for exactly the models the probe exists to serve: measured
+    2026-07-15, claude-sonnet-5 and claude-fable-5 both guess a 128k context
+    (truth: 1M), so the cap would halve their probed-and-verified 128000
+    ceiling to 64000, while changing nothing for opus-4-8 or haiku-4-5 whose
+    guesses are right. Capping a measured value with a guessed one is the
+    failure mode this whole module exists to end. If the cap is worth keeping,
+    the fix belongs in tier 2, not here.
+
+    Returns None only when nothing knows, in which case the caller must not
+    send max_tokens at all and the client library's own default silently
+    applies. That is logged at WARNING because it is precisely the condition
+    that capped every Claude turn at langchain-anthropic's 4096 fallback for
+    two and a half weeks without emitting a single diagnostic.
+
+    WHY ONLY SOME FACTORIES CALL THIS (do not "fix" the asymmetry):
+
+    Leaving max_tokens unset is normally the CORRECT dynamic behaviour. The
+    parameter is omitted from the request, the provider applies its own
+    server-side default, and that default is both current and generous (for
+    OpenAI-shaped APIs it is effectively the model's remaining context). No
+    catalog can beat it, and forcing a value from a stale table can only cap
+    the model LOWER than the provider would have.
+
+    langchain-anthropic is the sole exception: its ``set_default_max_tokens``
+    validator substitutes ``_FALLBACK_MAX_OUTPUT_TOKENS = 4096`` whenever its
+    bundled profile table does not recognise the model, so the request never
+    reaches Anthropic blank and the server default never gets a chance to
+    apply. Measured 2026-07-15: anthropic -> 4096; openai, google-genai,
+    ollama and bedrock all -> None. That is why the Anthropic factory must
+    resolve a real ceiling and the others must not.
+    """
+    if config.max_tokens is not None:
+        return config.max_tokens
+
+    model = config.model or ""
+    limit: Optional[int] = None
+    try:
+        from nymeria.config.model_capabilities import get_max_output_tokens
+        limit = get_max_output_tokens(model)
+    except Exception as e:
+        logger.debug(f"Could not look up model output limit: {e}")
+
+    if limit is None and probe and config.api_key:
+        probe_url = anthropic_probe_base_url(config)
+        if probe_url:
+            try:
+                from nymeria.config.model_capabilities import probe_max_output_tokens
+                limit = probe_max_output_tokens(
+                    model,
+                    base_url=probe_url,
+                    api_key=config.api_key,
+                )
+            except Exception as e:
+                logger.debug(f"max_tokens probe unavailable for {model}: {e}")
+
+    if limit:
+        logger.info(
+            f"[LLM] max_tokens not set, using model limit: {limit} for {model}"
+        )
+        return limit
+
+    logger.warning(
+        f"[LLM] No output ceiling known for {model} and the provider did not "
+        f"report one. Falling back to the client library's own default, which "
+        f"can sit far below the model's real limit (langchain-anthropic uses "
+        f"4096). Set LLM_MAX_TOKENS to override."
+    )
+    return None
+
+
+def langchain_fallback_max_tokens(model: str) -> Optional[int]:
+    """What langchain-anthropic will invent if we send no ``max_tokens``.
+
+    Anthropic is the one provider where omitting the parameter does NOT reach
+    the server blank: `set_default_max_tokens` fills it from a bundled profile
+    table, falling back to `_FALLBACK_MAX_OUTPUT_TOKENS` (4096) for any model
+    the pinned library has not heard of. That substitution is the entire reason
+    this module resolves a ceiling at all.
+
+    It matters a second time for legacy `thinking.budget_tokens`, which must
+    stay below whatever `max_tokens` ends up on the wire. When no tier knows
+    the ceiling we omit the parameter and the invented value applies, so the
+    budget has to be sized against THAT rather than against nothing. Asking the
+    library what it will do is the only way to keep the invariant
+    unconditional; the alternative is guessing, which is how the 4096 bug
+    happened.
+
+    Reads vendor privates, so it degrades rather than raises. Note the POLARITY
+    of that degrade: it returns the documented 4096 floor, NOT None. None would
+    make the caller skip the budget clamp entirely, so a mere library rename
+    would ship `budget_tokens` above an invented cap and hard-400 every turn.
+    4096 is the lowest value langchain can invent, so sizing against it is
+    always safe and at worst costs a smaller thinking budget until someone
+    notices. Degrade, never crash: the same rule instance_max_output_tokens
+    follows.
+    """
+    try:
+        from langchain_anthropic.chat_models import (  # type: ignore[attr-defined]
+            _FALLBACK_MAX_OUTPUT_TOKENS,
+            _get_default_model_profile,
+        )
+    except Exception:  # noqa: BLE001
+        return _LANGCHAIN_MIN_INVENTED_MAX_TOKENS
+    try:
+        profile = _get_default_model_profile(model) or {}
+    except Exception:  # noqa: BLE001
+        profile = {}
+    value = profile.get("max_output_tokens", _FALLBACK_MAX_OUTPUT_TOKENS)
+    if isinstance(value, int) and value > 0:
+        return int(value)
+    return _LANGCHAIN_MIN_INVENTED_MAX_TOKENS
+
+
+def instance_max_output_tokens(resolved: Optional[int], model: str = "") -> Optional[int]:
+    """Clamp a resolved ceiling to what is safe for ANY caller of the instance.
+
+    A single ChatAnthropic instance is reached by many call paths: both graph
+    nodes, `nym.llm`, structured output, callable threads, RAG quality checks.
+    Several of those are async non-streaming, which is precisely the shape the
+    SDK guard rejects (see NONSTREAMING_MAX_OUTPUT_TOKENS above).
+
+    So the instance carries the SAFE value and streaming opts UP
+    (``streaming_call_kwargs``), rather than the instance carrying the true
+    maximum and every non-streaming caller having to remember to clamp down.
+    That polarity matters: the first shape degrades (a smaller cap) if a caller
+    is overlooked, the second one crashes. A default that silently bites the
+    caller who did not know to think about it is the exact shape of the 4096
+    bug this module now guards against.
+    """
+    if resolved is None:
+        return None
+    ceiling = NONSTREAMING_MAX_OUTPUT_TOKENS
+    per_model = _model_nonstreaming_ceiling(model) if model else None
+    if per_model is not None:
+        ceiling = min(ceiling, per_model)
+    return min(resolved, ceiling)
+
+
+def streaming_call_kwargs(candidate: Any, resolved: Optional[int]) -> Dict[str, Any]:
+    """Per-call kwargs raising a STREAMING request to the model's true ceiling.
+
+    Streaming is exempt from the SDK's non-streaming guard (both its clauses),
+    so the interactive path (which is every user-facing turn) can carry the
+    full ceiling even though the shared instance is pinned to the safe value.
+    No-op when nothing was clamped, and on every non-Anthropic provider.
+    """
+    model = getattr(candidate, "bound", candidate)
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError:
+        return {}
+    if not isinstance(model, ChatAnthropic):
+        return {}
+    model_name = getattr(model, "model", "") or ""
+    if resolved is None:
+        # Mirror the factory: when no tier knew the ceiling, the instance was
+        # clamped against the cap LANGCHAIN invented, so streaming has to opt
+        # back up to that same invention or it would sit at the clamp (e.g.
+        # 8192 for claude-opus-4-0 instead of the 32000 it can actually do).
+        # Resolved AFTER the isinstance gate on purpose: this is only ever
+        # meaningful for a ChatAnthropic candidate.
+        resolved = langchain_fallback_max_tokens(model_name)
+    if resolved is None:
+        return {}
+    # Ask the clamp itself whether anything was taken away, rather than
+    # re-deriving the ceiling here. The two must never disagree: a per-model
+    # pin can clamp a ceiling that is already under
+    # NONSTREAMING_MAX_OUTPUT_TOKENS, so testing against that constant alone
+    # would silently strand such a model at the clamped value.
+    if instance_max_output_tokens(resolved, model_name) == resolved:
+        return {}
+    return {"max_tokens": resolved}
+
+
 def create_llm_with_tools(config: LLMConfig, tools: List[BaseTool]) -> BaseChatModel:
     """
     Create an LLM with tools bound to it.
@@ -1547,23 +1864,11 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
     if config.request_timeout is not None:
         kwargs["timeout"] = config.request_timeout
 
-    if config.max_tokens is not None:
-        kwargs["max_tokens"] = config.max_tokens
-    else:
-        # User selected "Default (model limit)" -- look up the model's actual
-        # max output tokens from OpenRouter so we don't rely on the upstream
-        # provider's default (which can be very low for some models).
-        try:
-            from nymeria.config.model_capabilities import get_max_output_tokens
-            model_limit = get_max_output_tokens(config.model)
-            if model_limit:
-                kwargs["max_tokens"] = model_limit
-                logger.info(
-                    f"[LLM] max_tokens not set, using model limit: "
-                    f"{model_limit} for {config.model}"
-                )
-        except Exception as e:
-            logger.debug(f"Could not look up model output limit: {e}")
+    # Was the only factory that resolved an unset cap; the logic now lives in
+    # resolve_max_output_tokens and every provider shares it.
+    resolved_max_tokens = resolve_max_output_tokens(config)
+    if resolved_max_tokens is not None:
+        kwargs["max_tokens"] = resolved_max_tokens
 
     if config.top_p is not None:
         kwargs["top_p"] = config.top_p
@@ -1766,6 +2071,9 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
             )
         _merge_extra_body(kwargs, _local_llm_extra_body(config, base_url))
 
+    # Deliberately omitted when unset: langchain-openai leaves max_tokens None,
+    # so the server's own (generous) default applies. See the asymmetry note in
+    # resolve_max_output_tokens before adding a fallback here.
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens
     if config.top_p is not None:
@@ -2063,6 +2371,7 @@ def _create_openai_compatible_llm(config: LLMConfig) -> BaseChatModel:
         kwargs["temperature"] = config.temperature
     if config.request_timeout is not None:
         kwargs["timeout"] = config.request_timeout
+    # Omitted when unset on purpose: see resolve_max_output_tokens.
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens
     if config.top_p is not None:
@@ -2708,8 +3017,26 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
     if config.request_timeout is not None:
         kwargs["timeout"] = config.request_timeout
 
-    if config.max_tokens is not None:
-        kwargs["max_tokens"] = config.max_tokens
+    # Probe enabled: this is the route where a metadata-blind gateway (CLIProxy
+    # fronting a Claude subscription) serves no capability data at all, so the
+    # provider itself is the only source that can know a new model's ceiling.
+    # The instance takes the non-streaming-safe clamp of that ceiling; the
+    # streaming graph node opts back up per call. See instance_max_output_tokens.
+    #
+    # Do NOT omit max_tokens when no tier resolves one. Omitting it does not
+    # send the request uncapped: langchain SUBSTITUTES a cap of its own, and a
+    # cap we never see is a cap we never clamp. Measured: claude-opus-4-0 is
+    # absent from every catalog, so resolve returned None, langchain invented
+    # 32000, the SDK pins that model's non-streaming ceiling at 8192, and every
+    # ainvoke raised ValueError before reaching the network. Reading langchain's
+    # own number and clamping THAT is not a hardcoded catalog: it is the same
+    # value that would have gone out anyway, made visible so the clamp applies.
+    ceiling = resolve_max_output_tokens(config, probe=True)
+    if ceiling is None:
+        ceiling = langchain_fallback_max_tokens(config.model)
+    resolved_max_tokens = instance_max_output_tokens(ceiling, config.model)
+    if resolved_max_tokens is not None:
+        kwargs["max_tokens"] = resolved_max_tokens
     if not is_47_plus and config.top_p is not None:
         kwargs["top_p"] = config.top_p
     if not is_47_plus and config.top_k is not None:
@@ -2723,6 +3050,31 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
         # adaptive block entirely (4.6 and legacy disable the same way).
         pass
     elif config.extended_thinking or config.reasoning_effort is not None:
+        # Thinking tokens bill against max_tokens, and thinking blocks are
+        # emitted FIRST, so a cap that cannot fit the reasoning does not
+        # truncate the answer: it starves it entirely. The response arrives as
+        # a lone thinking block with no text and no tool_use, which the graph
+        # reads as a clean finish. Both branches below size against
+        # ``effective_max_tokens`` for that reason.
+        #
+        # When no tier resolved a ceiling we send no max_tokens, but the
+        # request does NOT go out uncapped: langchain substitutes its own
+        # value. Size against that, so the budget invariant holds on every
+        # path rather than only the paths where discovery happened to work.
+        # `ceiling` is the pre-clamp number actually on the wire for the
+        # streaming path; `resolved_max_tokens` is its non-streaming clamp.
+        # Size the budget against the clamp, which is the smaller of the two,
+        # so the invariant holds on BOTH paths.
+        effective_max_tokens = resolved_max_tokens
+        if effective_max_tokens is None:
+            effective_max_tokens = langchain_fallback_max_tokens(config.model)
+        thinking_budget_map = {
+            "low": 1024,
+            "medium": 4096,
+            "high": 16384,
+            "xhigh": 32768,
+            "max": 49152,
+        }
         if uses_adaptive:
             # Adaptive: Claude decides when/how much to think
             thinking_config = {"type": "adaptive"}
@@ -2739,28 +3091,77 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
                 effort_value = "max"
             if effort_value is not None:
                 kwargs["model_kwargs"] = {"output_config": {"effort": effort_value}}
+            # Adaptive exposes no budget knob to clamp, so the only lever is a
+            # cap large enough to fit the reasoning. Warn when it is not: the
+            # legacy budget for the same effort is the closest available
+            # estimate of what this tier will actually spend.
+            likely_thinking = thinking_budget_map.get(effort_value or "medium", 4096)
+            if (
+                effective_max_tokens is not None
+                and effective_max_tokens < likely_thinking + 1024
+            ):
+                logger.warning(
+                    f"[LLM] max_tokens={effective_max_tokens} is too small for "
+                    f"adaptive thinking at effort={effort_value or 'default'} "
+                    f"(reasoning alone typically runs ~{likely_thinking} tokens "
+                    f"on {config.model}). Thinking is billed against max_tokens "
+                    f"and is emitted before any text, so this turn may return "
+                    f"reasoning with no answer. Raise LLM_MAX_TOKENS or lower "
+                    f"the reasoning effort."
+                )
         else:
             # Legacy: explicit budget_tokens for older models (4.5, 3.7, etc.)
-            thinking_budget_map = {
-                "low": 1024,
-                "medium": 4096,
-                "high": 16384,
-                "xhigh": 32768,
-                "max": 49152,
-            }
             effort = effort_text or "medium"
             budget = thinking_budget_map.get(effort, 4096)
-            # budget_tokens must stay strictly below max_tokens.
-            if config.max_tokens is not None and budget >= config.max_tokens:
-                budget = max(1024, config.max_tokens - 1024)
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-            # Legacy thinking requires temperature=1
-            if "temperature" in kwargs and kwargs["temperature"] != 1:
-                logger.warning(
-                    "Extended thinking (type=enabled) requires temperature=1, "
-                    f"overriding configured value of {kwargs['temperature']}"
-                )
-            kwargs["temperature"] = 1
+            # budget_tokens must stay strictly below max_tokens. This guards
+            # against the RESOLVED cap, not config.max_tokens: the latter is
+            # None whenever the user left the setting unset, which is exactly
+            # when the client library substitutes a low default and the budget
+            # would otherwise exceed it.
+            if effective_max_tokens is not None and budget >= effective_max_tokens:
+                if effective_max_tokens <= MIN_THINKING_BUDGET_TOKENS:
+                    # No valid pair exists: Anthropic floors budget_tokens at
+                    # 1024 and requires it strictly below max_tokens. Clamping
+                    # anyway would ship budget == max_tokens and 400 on every
+                    # turn, so drop thinking and say so.
+                    logger.warning(
+                        f"[LLM] max_tokens={effective_max_tokens} cannot fit "
+                        f"extended thinking on {config.model} (the minimum "
+                        f"budget is {MIN_THINKING_BUDGET_TOKENS} and it must "
+                        f"stay below max_tokens). Disabling thinking for this "
+                        f"model. Raise LLM_MAX_TOKENS above "
+                        f"{MIN_THINKING_BUDGET_TOKENS} to use it."
+                    )
+                    budget = None
+                else:
+                    clamped = max(
+                        MIN_THINKING_BUDGET_TOKENS,
+                        effective_max_tokens - MIN_THINKING_BUDGET_TOKENS,
+                    )
+                    # Say so. The user asked for a specific effort and is not
+                    # getting it, and `thinking` (unlike `max_tokens`) cannot be
+                    # opted back up per call: langchain applies `self.thinking`
+                    # AFTER **kwargs, so the streaming path cannot recover this
+                    # the way it recovers max_tokens. Silently delivering a
+                    # fraction of a requested reasoning budget is the same
+                    # species of quiet capability loss this pass exists to end.
+                    logger.warning(
+                        f"[LLM] Reasoning effort '{effort}' asks for a "
+                        f"{budget}-token thinking budget on {config.model}, but "
+                        f"max_tokens resolves to {effective_max_tokens}, so it "
+                        f"is clamped to {clamped} (budget_tokens must stay "
+                        f"below max_tokens)."
+                    )
+                    budget = clamped
+            if budget is not None:
+                kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                # Legacy thinking requires temperature=1
+                if "temperature" in kwargs and kwargs["temperature"] != 1:
+                    logger.warning(
+                        "Extended thinking (type=enabled) requires temperature=1, "
+                        f"overriding configured value of {kwargs['temperature']}"
+                    )
+                kwargs["temperature"] = 1
 
     chat_model_cls = _anthropic_chat_model_class_for_config(ChatAnthropic, config)
     return chat_model_cls(**kwargs)
@@ -2818,6 +3219,7 @@ def _create_google_genai_llm(config: LLMConfig) -> BaseChatModel:
         kwargs["top_p"] = config.top_p
     if config.top_k is not None:
         kwargs["top_k"] = config.top_k
+    # Omitted when unset on purpose: see resolve_max_output_tokens.
     if config.max_tokens is not None:
         # Note: Gemini uses max_output_tokens, not max_tokens.
         kwargs["max_output_tokens"] = config.max_tokens
@@ -2908,6 +3310,7 @@ def _create_bedrock_llm(config: LLMConfig) -> BaseChatModel:
         kwargs["temperature"] = config.temperature
     if config.top_p is not None:
         kwargs["top_p"] = config.top_p
+    # Omitted when unset on purpose: see resolve_max_output_tokens.
     if config.max_tokens is not None:
         kwargs["max_tokens"] = config.max_tokens
     if config.request_timeout is not None:
@@ -2959,6 +3362,7 @@ def _create_ollama_native_llm(config: LLMConfig) -> BaseChatModel:
         kwargs["top_p"] = config.top_p
     if config.top_k is not None:
         kwargs["top_k"] = config.top_k
+    # Omitted when unset on purpose: see resolve_max_output_tokens.
     if config.max_tokens is not None:
         # Ollama uses num_predict (max tokens to generate).
         kwargs["num_predict"] = config.max_tokens

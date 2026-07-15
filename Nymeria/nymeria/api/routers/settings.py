@@ -1,5 +1,6 @@
 """Global settings and model-catalog routes."""
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable
@@ -23,7 +24,6 @@ from ...config.llm_providers import (
 from ...config.env_file import format_env_value, parse_env_value, write_env_file
 from ...config.settings import get_env_file_paths, get_env_write_path
 from ...config.model_capabilities import (
-    get_max_output_tokens,
     list_all_models,
     max_reasoning_effort,
     parse_anthropic_reasoning_capabilities,
@@ -44,6 +44,7 @@ from ...core.llm_provider_utils import (
     provider_probe_headers,
     redact_secrets,
 )
+from ...vendor.react_agent.providers import resolve_max_output_tokens
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
     server_settings_env_mapping,
@@ -1101,12 +1102,30 @@ def create_settings_router(
         agent = get_agent_fn()
         llm_cfg = agent._get_llm_config_for_thread("")
 
+        # Report the ceiling a real turn actually gets. This used to resolve for
+        # OpenRouter only, so once the Anthropic factory started discovering a
+        # ceiling too the diagnostic reported None while the wire carried a real
+        # number: the one place a user looks to check this was the last place to
+        # learn it. Route through the same resolver the factories use.
+        #
+        # The probe speaks the Anthropic dialect, so it is opt-in per provider,
+        # exactly as in the factories. It is cached and normally warm here (the
+        # agent's own LLM primed it), but resolution can do blocking HTTP, and
+        # this is an async route: hand it to a thread rather than stalling the
+        # event loop for every other request in flight.
+        #
+        # Reports the UNCLAMPED ceiling deliberately: interactive turns stream,
+        # and streaming opts back up past the instance's non-streaming clamp.
         effective_max_tokens = llm_cfg.max_tokens
-        if effective_max_tokens is None and llm_cfg.provider == "openrouter":
+        if effective_max_tokens is None:
             try:
-                effective_max_tokens = get_max_output_tokens(llm_cfg.model)
+                effective_max_tokens = await asyncio.to_thread(
+                    resolve_max_output_tokens,
+                    llm_cfg,
+                    probe=llm_cfg.provider == "anthropic",
+                )
             except Exception as e:
-                logger.warning("Failed to resolve OpenRouter max output tokens: %s", e)
+                logger.warning("Failed to resolve max output tokens: %s", e)
 
         source_env_files = [
             str(path)

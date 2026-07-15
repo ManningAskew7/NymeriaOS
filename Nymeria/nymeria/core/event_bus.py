@@ -342,6 +342,11 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     # A model rejected image/PDF input; the backend stripped the attachment and
     # retried once. Mirrored so autonomous/relayed turns surface the drop too.
     "image_input_unsupported",
+    # A turn hit its output cap. Mirrored because the autonomous turns are
+    # exactly the ones nobody is watching: a briefing that dies inside its
+    # thinking block delivers silence, and dropping this event here is what
+    # made that silence a mystery rather than a report.
+    "output_truncated",
     "auth_prompt",
     "auth_prompt_resolved",
     "auth_prompt_cancelled",

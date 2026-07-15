@@ -566,13 +566,18 @@ def test_refresh_anthropic_models_parses_capability_block(monkeypatch):
         {},
     )
 
+    # NB: the output ceiling is `max_tokens` on Anthropic's model object (the
+    # same name as the request parameter it bounds). `max_output_tokens` does
+    # not exist in the API; this fixture used to carry that phantom name, which
+    # is part of how the real parser went two and a half weeks reading a field
+    # that was always absent. See test_refresh_anthropic_models_reads_max_tokens.
     sample_response = {
         "data": [
             {
                 "id": "claude-opus-4-7",
                 "display_name": "Claude Opus 4.7",
                 "max_input_tokens": 200000,
-                "max_output_tokens": 8192,
+                "max_tokens": 8192,
                 "capabilities": {
                     "image_input": {"supported": True},
                     "pdf_input": {"supported": True},
@@ -617,10 +622,300 @@ def test_refresh_anthropic_models_parses_capability_block(monkeypatch):
     assert opus is not None
     assert "image" in opus.input_modalities
     assert "file" in opus.input_modalities
+    assert opus.context_length == 200000
+    assert opus.max_completion_tokens == 8192
     haiku = capabilities._lookup_model("claude-haiku-3-5")
     assert haiku is not None
     assert "image" in haiku.input_modalities
     assert "file" not in haiku.input_modalities
+    # Absent on the wire stays None rather than becoming a bogus 0.
+    assert haiku.max_completion_tokens is None
+
+
+def _fake_models_response(monkeypatch, payload):
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(
+        capabilities.httpx, "get", lambda url, headers=None, timeout=None: _FakeResponse()
+    )
+
+
+def test_refresh_anthropic_models_reads_max_tokens_not_max_output_tokens(monkeypatch):
+    # Anthropic's model object names the output ceiling `max_tokens`. There is
+    # no `max_output_tokens` field in the API, so reading that name resolved to
+    # None for every model and this tier silently learned nothing (the
+    # fallthrough to the catalog tier hid it) until a model absent from the
+    # catalog (claude-sonnet-5) fell all the way through to langchain's 4096.
+    _set_model_cache(monkeypatch, {})
+    monkeypatch.setattr(capabilities, "_live_model_cache", {})
+    _fake_models_response(
+        monkeypatch,
+        {
+            "data": [
+                {
+                    "id": "claude-sonnet-5",
+                    "display_name": "Claude Sonnet 5",
+                    "max_input_tokens": 1000000,
+                    "max_tokens": 128000,
+                }
+            ]
+        },
+    )
+
+    assert capabilities.refresh_anthropic_models(
+        base_url="https://api.anthropic.com", api_key="sk-test"
+    ) == 1
+    info = capabilities._lookup_model("claude-sonnet-5")
+    assert info is not None
+    assert info.max_completion_tokens == 128000
+
+
+def test_refresh_anthropic_models_accepts_max_output_tokens_alias(monkeypatch):
+    # Retained only for Anthropic-compatible gateways that invent the
+    # friendlier name; the real API never sends it.
+    _set_model_cache(monkeypatch, {})
+    monkeypatch.setattr(capabilities, "_live_model_cache", {})
+    _fake_models_response(
+        monkeypatch,
+        {"data": [{"id": "gateway-model", "max_output_tokens": 4242}]},
+    )
+
+    capabilities.refresh_anthropic_models(
+        base_url="https://gateway.example", api_key="sk-test"
+    )
+    info = capabilities._lookup_model("gateway-model")
+    assert info is not None
+    assert info.max_completion_tokens == 4242
+
+
+def _clear_probe_cache(monkeypatch) -> None:
+    monkeypatch.setattr(capabilities, "_probe_cache", {})
+    monkeypatch.setattr(capabilities, "_probe_cache_ts", {})
+
+
+def _fake_probe_post(monkeypatch, status_code, payload, calls=None):
+    class _FakeResponse:
+        def __init__(self):
+            self.status_code = status_code
+            self.text = json.dumps(payload) if isinstance(payload, dict) else str(payload)
+
+        def json(self):
+            if not isinstance(payload, dict):
+                raise ValueError("not json")
+            return payload
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        if calls is not None:
+            calls.append(json)
+        return _FakeResponse()
+
+    monkeypatch.setattr(capabilities.httpx, "post", fake_post)
+
+
+def test_probe_max_output_tokens_parses_ceiling_from_rejection(monkeypatch):
+    # The provider is the only source that knows a model it has just shipped.
+    # An over-limit request is refused BEFORE inference, and the refusal names
+    # the real ceiling. This is the only tier that works through a gateway
+    # serving no capability metadata at all (CLIProxy).
+    _clear_probe_cache(monkeypatch)
+    calls: list = []
+    _fake_probe_post(
+        monkeypatch,
+        400,
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": (
+                    "max_tokens: 99999999 > 128000, which is the maximum "
+                    "allowed number of output tokens for claude-sonnet-5"
+                ),
+            },
+        },
+        calls=calls,
+    )
+
+    assert capabilities.probe_max_output_tokens(
+        "claude-sonnet-5", base_url="http://proxy:8317", api_key="k"
+    ) == 128000
+    # The probe must deliberately overshoot so the request is ALWAYS refused:
+    # it learns the ceiling from the rejection, so a value a real model could
+    # accept returns a completion instead of an answer, and the probe silently
+    # stops working. Assert the PROPERTY, not equality with the constant:
+    # comparing to `_PROBE_REQUEST_MAX_TOKENS` is a tautology that holds for any
+    # value the constant might be changed to, including 100 (verified: setting
+    # it to 100 broke the probe and this assertion still passed).
+    assert calls[0]["max_tokens"] >= 1_000_000, (
+        "the probe must overshoot any plausible real ceiling, or it will be "
+        f"answered instead of refused (sent {calls[0]['max_tokens']})"
+    )
+
+
+def test_probe_max_output_tokens_caches_and_does_not_refetch(monkeypatch):
+    _clear_probe_cache(monkeypatch)
+    calls: list = []
+    _fake_probe_post(
+        monkeypatch,
+        400,
+        {"error": {"message": "max_tokens: 99999999 > 64000, which is the maximum allowed number of output tokens for m"}},
+        calls=calls,
+    )
+
+    for _ in range(3):
+        assert capabilities.probe_max_output_tokens(
+            "m", base_url="http://proxy:8317", api_key="k"
+        ) == 64000
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "status_code,payload",
+    [
+        (200, {"content": [{"type": "text", "text": "hi"}]}),   # accepted, no ceiling
+        (500, {"error": {"message": "upstream exploded"}}),      # server error
+        (401, {"error": {"message": "invalid api key"}}),        # auth failure
+        (400, {"error": {"message": "some reworded validation error"}}),
+        (400, "not json at all"),
+    ],
+)
+def test_probe_max_output_tokens_fails_soft(monkeypatch, status_code, payload):
+    # Only a 4xx carrying the documented message is trusted. Everything else
+    # resolves to None so the caller falls through to the next tier, rather
+    # than to a confidently wrong number.
+    _clear_probe_cache(monkeypatch)
+    _fake_probe_post(monkeypatch, status_code, payload)
+    assert capabilities.probe_max_output_tokens(
+        "m", base_url="http://proxy:8317", api_key="k"
+    ) is None
+
+
+def test_probe_max_output_tokens_survives_network_failure(monkeypatch):
+    _clear_probe_cache(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(capabilities.httpx, "post", boom)
+    assert capabilities.probe_max_output_tokens(
+        "m", base_url="http://proxy:8317", api_key="k"
+    ) is None
+
+
+def test_probe_max_output_tokens_noop_without_credentials(monkeypatch):
+    _clear_probe_cache(monkeypatch)
+    calls: list = []
+    # Counted, never raised: probe_max_output_tokens wraps the request in
+    # `except Exception`, and AssertionError is an Exception, so a raising fake
+    # is swallowed and the test would pass even with the gate deleted.
+    monkeypatch.setattr(
+        capabilities.httpx, "post", lambda *a, **k: calls.append(a) or _unreachable()
+    )
+    assert capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="") is None
+    assert capabilities.probe_max_output_tokens("m", base_url="", api_key="k") is None
+    assert capabilities.probe_max_output_tokens("", base_url="http://p", api_key="k") is None
+    assert calls == []
+
+
+def _unreachable():  # pragma: no cover - only runs if a gate regresses
+    raise RuntimeError("unreachable")
+
+
+def test_probe_trusts_only_a_4xx_even_when_the_message_matches(monkeypatch):
+    """Isolates the status gate.
+
+    Every other fails-soft case is rejected by the regex, so none of them prove
+    the status check does anything. This one carries a perfectly parseable
+    ceiling on a 500: a server error is not a validation verdict, and treating
+    it as one would cache a number nobody asserted.
+    """
+    _clear_probe_cache(monkeypatch)
+    _fake_probe_post(
+        monkeypatch,
+        500,
+        {
+            "error": {
+                "message": (
+                    "max_tokens: 99999999 > 128000, which is the maximum "
+                    "allowed number of output tokens for m"
+                )
+            }
+        },
+    )
+    assert (
+        capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="k")
+        is None
+    )
+
+
+def test_probe_caches_negatives_so_a_blind_gateway_is_asked_once(monkeypatch):
+    """The negative cache is what bounds live construction-time I/O.
+
+    The probe runs from _create_anthropic_llm, so an endpoint that does not
+    speak this dialect would otherwise cost a fresh 8s-timeout round trip on
+    EVERY LLM construction, in production and in CI alike.
+    """
+    _clear_probe_cache(monkeypatch)
+    calls: list = []
+    _fake_probe_post(monkeypatch, 200, {"content": []}, calls=calls)
+
+    for _ in range(3):
+        assert (
+            capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="k")
+            is None
+        )
+    assert len(calls) == 1
+
+
+def test_probe_negative_cache_expires_sooner_than_a_positive_one(monkeypatch):
+    """A blind gateway may start answering; a known ceiling will not change.
+
+    Hence the split TTL. Both halves are pinned here because nothing else
+    advances the clock, and a TTL that silently became infinite (or zero) would
+    look identical to a working cache in every other test.
+    """
+    _clear_probe_cache(monkeypatch)
+    calls: list = []
+    _fake_probe_post(monkeypatch, 200, {"content": []}, calls=calls)
+    now = [1_000_000.0]
+    monkeypatch.setattr(capabilities.time, "time", lambda: now[0])
+
+    assert capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="k") is None
+    assert len(calls) == 1
+
+    now[0] += capabilities._PROBE_FAILURE_TTL_SECONDS - 1
+    assert capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="k") is None
+    assert len(calls) == 1  # still inside the negative TTL
+
+    now[0] += 2
+    assert capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="k") is None
+    assert len(calls) == 2  # negative TTL expired: re-probed
+
+
+def test_probe_positive_cache_survives_the_negative_ttl(monkeypatch):
+    _clear_probe_cache(monkeypatch)
+    calls: list = []
+    _fake_probe_post(
+        monkeypatch,
+        400,
+        {"error": {"message": "max_tokens: 99999999 > 64000, which is the maximum allowed number of output tokens for m"}},
+        calls=calls,
+    )
+    now = [1_000_000.0]
+    monkeypatch.setattr(capabilities.time, "time", lambda: now[0])
+
+    assert capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="k") == 64000
+    now[0] += capabilities._PROBE_FAILURE_TTL_SECONDS + 1
+    assert capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="k") == 64000
+    assert len(calls) == 1  # a real ceiling is held for the long TTL
+
+    now[0] += capabilities._PROBE_TTL_SECONDS
+    assert capabilities.probe_max_output_tokens("m", base_url="http://p", api_key="k") == 64000
+    assert len(calls) == 2  # positive TTL expired: re-probed
 
 
 def test_refresh_anthropic_models_falls_back_when_capabilities_absent(monkeypatch):
@@ -1374,3 +1669,128 @@ def test_mark_model_input_unsupported_self_heals_after_ttl(monkeypatch):
     monkeypatch.setattr(capabilities, "_INPUT_UNSUPPORTED_MARK_TTL_SECONDS", -1.0)
     assert capabilities.supports_vision("gpt-4o") is True
     assert "gpt-4o" not in capabilities._input_unsupported_marks
+
+
+# ---------------------------------------------------------------------------
+# The probe is blocking HTTP and its callers run on the API event loop.
+# ---------------------------------------------------------------------------
+
+
+class TestProbeNeverBlocksTheEventLoop:
+    """The probe must never do HTTP on a running loop, but must still work.
+
+    Both halves matter and they pull against each other. Blocking the loop
+    stalls EVERY request in the process for up to the probe timeout; refusing to
+    probe at all reinstates the 4096 cap the probe exists to discover past. The
+    split (cache hit inline, miss warms on a worker thread) is what buys both,
+    so both halves are pinned here.
+    """
+
+    def _rejecting_post(self, calls, loop_calls):
+        import asyncio as _asyncio
+
+        class _Rejected:
+            status_code = 400
+            text = ""
+
+            @staticmethod
+            def json():
+                return {
+                    "error": {
+                        "message": (
+                            "max_tokens: 99999999 > 4096000, which is the maximum "
+                            "allowed number of output tokens for probe-model"
+                        )
+                    }
+                }
+
+        def _post(url, **kwargs):
+            calls.append(url)
+            try:
+                _asyncio.get_running_loop()
+                loop_calls.append(url)
+            except RuntimeError:
+                pass
+            return _Rejected()
+
+        return _post
+
+    def test_off_loop_callers_probe_normally(self, monkeypatch):
+        calls: list = []
+        loop_calls: list = []
+        monkeypatch.setattr(
+            capabilities.httpx, "post", self._rejecting_post(calls, loop_calls)
+        )
+        capabilities._probe_cache.clear()
+        capabilities._probe_cache_ts.clear()
+
+        got = capabilities.probe_max_output_tokens(
+            "probe-model", base_url="https://api.anthropic.com", api_key="k"
+        )
+        assert got == 4096000
+        assert len(calls) == 1
+        assert loop_calls == []
+
+    def test_a_running_loop_gets_no_http_and_the_warm_lands_anyway(self, monkeypatch):
+        """A miss on the loop: zero on-loop HTTP now, correct answer shortly.
+
+        Asserting the background warm actually POPULATES the cache (not merely
+        that the loop was spared) is the point: a version that skipped the probe
+        entirely would also record zero on-loop HTTP, and would silently pin
+        every Claude model to 4096 forever.
+        """
+        import asyncio as _asyncio
+
+        calls: list = []
+        loop_calls: list = []
+        monkeypatch.setattr(
+            capabilities.httpx, "post", self._rejecting_post(calls, loop_calls)
+        )
+        capabilities._probe_cache.clear()
+        capabilities._probe_cache_ts.clear()
+
+        async def _on_the_loop():
+            first = capabilities.probe_max_output_tokens(
+                "probe-model", base_url="https://api.anthropic.com", api_key="k"
+            )
+            for _ in range(100):
+                await _asyncio.sleep(0.02)
+                hit, cached = capabilities._probe_cached(
+                    capabilities._probe_cache_key(
+                        "probe-model", "https://api.anthropic.com"
+                    )
+                )
+                if hit:
+                    return first, cached
+            return first, "warm never landed"
+
+        first, warmed = _asyncio.run(_on_the_loop())
+
+        assert first is None, "a cold miss on the loop must not block for an answer"
+        assert loop_calls == [], f"probe HTTP ran on the event loop: {loop_calls}"
+        assert warmed == 4096000, "the background warm must populate the cache"
+
+    def test_a_warm_cache_answers_inline_even_on_the_loop(self, monkeypatch):
+        """The steady state: a hit is pure memory, so the loop is never involved."""
+        import asyncio as _asyncio
+
+        calls: list = []
+        loop_calls: list = []
+        monkeypatch.setattr(
+            capabilities.httpx, "post", self._rejecting_post(calls, loop_calls)
+        )
+        capabilities._probe_cache.clear()
+        capabilities._probe_cache_ts.clear()
+        capabilities.probe_max_output_tokens(
+            "probe-model", base_url="https://api.anthropic.com", api_key="k"
+        )
+        assert len(calls) == 1
+
+        async def _on_the_loop():
+            return capabilities.probe_max_output_tokens(
+                "probe-model", base_url="https://api.anthropic.com", api_key="k"
+            )
+
+        assert _asyncio.run(_on_the_loop()) == 4096000
+        assert len(calls) == 1, "a warm hit must not re-issue HTTP"
+        assert loop_calls == []
