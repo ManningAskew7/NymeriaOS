@@ -852,6 +852,104 @@ def test_runtime_diagnostics_uses_configured_project_root_for_env_sources(
     assert body["source_env_files"] == [str(tmp_path / ".env")]
 
 
+def test_runtime_diagnostics_resolves_the_ceiling_when_max_tokens_is_unset(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The branch the default fake never reached.
+
+    FakeLLMConfig ships max_tokens=4096, so `if effective_max_tokens is None`
+    never ran and the whole resolve-report path was unpinned. Unset it: the
+    endpoint must report the model's real ceiling rather than echoing None.
+
+    It reports the UNCLAMPED ceiling on purpose. Interactive turns stream, and
+    streaming opts back up past the non-streaming clamp, so reporting the
+    clamped 21333 here would tell the user their model is 6x smaller than the
+    one they are actually talking to.
+    """
+    from nymeria.api.routers import settings as settings_router
+
+    resolved: list = []
+
+    def _fake_resolve(cfg, probe=False):
+        resolved.append((cfg.provider, probe))
+        return 128000
+
+    monkeypatch.setattr(settings_router, "resolve_max_output_tokens", _fake_resolve)
+    llm_config = FakeLLMConfig(
+        provider="anthropic", model="claude-sonnet-5", max_tokens=None
+    )
+    client, _agent, token, _provider = _client(
+        monkeypatch, tmp_path, llm_config=llm_config
+    )
+
+    response = client.get("/settings/llm/runtime", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.json()["effective_max_tokens"] == 128000
+    assert resolved == [("anthropic", True)], (
+        "anthropic must be probed here: on a metadata-blind gateway the probe "
+        f"is the only thing that knows the ceiling (got {resolved})"
+    )
+
+
+def test_runtime_diagnostics_does_not_probe_a_non_anthropic_provider(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The probe speaks Anthropic's dialect and carries the caller's API key.
+
+    Enabling it for other providers would post THEIR credential to an Anthropic
+    endpoint, so the route gates it on the provider. Pinned because the gate is
+    a one-line comparison that reads like a tidy-up and is not.
+    """
+    from nymeria.api.routers import settings as settings_router
+
+    resolved: list = []
+
+    def _fake_resolve(cfg, probe=False):
+        resolved.append((cfg.provider, probe))
+        return None
+
+    monkeypatch.setattr(settings_router, "resolve_max_output_tokens", _fake_resolve)
+    llm_config = FakeLLMConfig(provider="openai", model="gpt-5.5", max_tokens=None)
+    client, _agent, token, _provider = _client(
+        monkeypatch, tmp_path, llm_config=llm_config
+    )
+
+    response = client.get("/settings/llm/runtime", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert resolved == [("openai", False)], (
+        f"a non-Anthropic provider must not be probed (got {resolved})"
+    )
+
+
+def test_runtime_diagnostics_survives_a_resolver_failure(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Diagnostics must degrade, never 500: it is what you call WHEN things break."""
+
+    from nymeria.api.routers import settings as settings_router
+
+    def _boom(cfg, probe=False):
+        raise RuntimeError("provider unreachable")
+
+    monkeypatch.setattr(settings_router, "resolve_max_output_tokens", _boom)
+    llm_config = FakeLLMConfig(
+        provider="anthropic", model="claude-sonnet-5", max_tokens=None
+    )
+    client, _agent, token, _provider = _client(
+        monkeypatch, tmp_path, llm_config=llm_config
+    )
+
+    response = client.get("/settings/llm/runtime", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.json()["effective_max_tokens"] is None
+
+
 def test_patch_settings_hot_reloads_env_and_rebuilds_graphs(
     tmp_path: Path,
     monkeypatch,

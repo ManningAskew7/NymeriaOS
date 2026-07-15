@@ -78,11 +78,11 @@ A gateway's OpenAI-compatible path corrupts Claude's signed extended-thinking bl
 
 ### Advanced LLM Settings (Optional)
 
-These settings give power users fine-grained control over LLM behavior. All are optional and only sent to the API if explicitly set.
+These settings give power users fine-grained control over LLM behavior. All are optional, and leaving them unset normally lets the provider apply its own current defaults, because an unset knob is simply not sent. `LLM_MAX_TOKENS` is a partial exception: on Anthropic and OpenRouter an unset value is resolved rather than omitted, because on those two an omitted value does not reach the provider blank. On every other provider it behaves like the rest and is omitted. See its row for why.
 
 | Variable | Default | Range | Description |
 |----------|---------|-------|-------------|
-| `LLM_MAX_TOKENS` | (model limit) | 1 - 1,000,000 | Maximum output tokens |
+| `LLM_MAX_TOKENS` | (model limit, discovered on Anthropic/OpenRouter) | 1 - 1,000,000 | Maximum output tokens. On **Anthropic and OpenRouter**, leaving this unset does **not** simply defer to the provider: their client libraries substitute a value of their own rather than sending nothing, and `langchain-anthropic` substitutes 4096 for any model its bundled profile table does not recognise, which caps new Claude models at 4096 **total** output (thinking included) and, at high reasoning effort, can consume the whole budget before any answer is produced. So on those two, an unset value is discovered rather than omitted: live provider metadata, then the bundled catalog, then (Anthropic only) the provider itself, since an over-limit request is refused before inference and the refusal names the ceiling. That last source is the only one that works through a gateway serving no capability metadata, such as CLIProxy. On **every other provider** (OpenAI, Gemini, Bedrock, Ollama, ...) an unset value is omitted exactly like the other knobs, because their clients leave it alone and the provider's own current default is better than any local catalog. Set explicitly to override anywhere. Note that non-streaming Anthropic requests are additionally clamped, to 21,333 by the SDK's 10-minute guard and to a lower per-model pin where one exists (8,192 on the opus-4 and opus-4.1 families); streaming turns, which is all interactive traffic, use the full ceiling. |
 | `LLM_TOP_P` | (provider default) | 0.0 - 1.0 | Nucleus sampling threshold |
 | `LLM_TOP_K` | (provider default) | 1 - 100 | Top-k sampling (limits vocabulary per step) |
 | `LLM_FREQUENCY_PENALTY` | (provider default) | -2.0 - 2.0 | Reduce repetition of token sequences |
@@ -1608,7 +1608,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 # LLM_STREAM_MAX_RETRIES=2            # Retry transient failures, rewinding to checkpoints after partial streams
 # LLM_STREAM_RETRY_INITIAL_DELAY=1.0
 # LLM_STREAM_RETRY_MAX_DELAY=8.0
-# LLM_MAX_TOKENS=4096
+# LLM_MAX_TOKENS=                      # Unset = discover the model's real ceiling (recommended). A low
+                                      # explicit value also caps thinking tokens, which are spent first.
 # LLM_TOP_P=0.95
 # LLM_TOP_K=40
 # LLM_FREQUENCY_PENALTY=0.0

@@ -39,7 +39,11 @@ from .cliproxy import (
 )
 from .state import AgentState
 from .config import AgentConfig, LLMConfig, default_config
-from .providers import create_llm_with_tools
+from .providers import (
+    create_llm_with_tools,
+    resolve_max_output_tokens,
+    streaming_call_kwargs,
+)
 from .reasoning_passback import record_passback_observation
 
 logger = logging.getLogger(__name__)
@@ -652,6 +656,73 @@ def _activate_llm_fallback(
     return payload
 
 
+def _visible_text_of(content: Any) -> str:
+    """Return only the text a user would actually see.
+
+    ``str(content)`` is not a substitute: on a block-shaped response it renders
+    thinking blocks and their base64 signatures too, which turns "produced
+    nothing" into a five-figure character count.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") in (
+                "text",
+                "output_text",
+            ):
+                # "output_text" is the OpenAI-Responses spelling of the same
+                # thing, and every other extractor in this codebase accepts both
+                # (agent_streaming.py, agent_text_extract.py, and the sibling
+                # accumulator further down THIS file). Accepting only "text"
+                # here would read a productive turn as having produced nothing,
+                # so a truncated-but-useful answer would be logged as a dead
+                # turn and get the "ran out of budget" notice stapled onto real
+                # content.
+                parts.append(str(block.get("text") or ""))
+        return "".join(parts)
+    return ""
+
+
+_TRUNCATION_NOTICE = (
+    "I ran out of output budget while reasoning about this and did not get to "
+    "an answer. Nothing was lost on your end, but the turn produced no result. "
+    "Raising the model's max output tokens or lowering the reasoning effort "
+    "will fix it. Ask again and I'll retry."
+)
+
+
+def _with_truncation_notice(response: AIMessage) -> AIMessage:
+    """Attach a user-visible note to an otherwise empty truncated response.
+
+    Returns a copy rather than mutating in place, but be clear about what that
+    does and does not buy: the caller rebinds ``response`` to this copy and
+    returns it, so the PATCHED message is what reaches the checkpoint. The copy
+    protects the caller's local reference, not the persisted history.
+
+    Deliberate: a turn that produced only a truncated thinking block is
+    indistinguishable from success to `should_continue`, so the message itself
+    has to carry the explanation. Appending keeps thinking blocks first and
+    their signatures untouched, which is what Anthropic validates on replay.
+    """
+    try:
+        notice = {"type": "text", "text": _TRUNCATION_NOTICE}
+        if isinstance(response.content, list):
+            new_content: Any = [*response.content, notice]
+        elif isinstance(response.content, str) and not response.content:
+            new_content = _TRUNCATION_NOTICE
+        else:
+            return response
+        patched = response.model_copy(update={"content": new_content})
+        return patched
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"[LLM] Could not attach truncation notice: {exc}")
+        return response
+
+
 def _dispatch_provider_event(
     name: str,
     payload: dict[str, Any],
@@ -745,6 +816,121 @@ def _llm_config_for_fallback(
         fallbacks=[],
         custom_llm=None,
     )
+
+
+
+
+def _config_for_candidate(
+    llm_config: Optional[LLMConfig], candidate_index: int
+) -> Optional[LLMConfig]:
+    """The LLMConfig for a given retry/fallback candidate, or None if invalid.
+
+    Mid-fallback the candidate is a DIFFERENT model, so resolving a ceiling
+    against the primary's config is how you 400 a rescue attempt.
+    """
+    if llm_config is None:
+        return None
+    if candidate_index <= 0:
+        return llm_config
+    fallbacks = _llm_fallbacks(llm_config)
+    if candidate_index - 1 >= len(fallbacks):
+        return None
+    return _llm_config_for_fallback(llm_config, fallbacks[candidate_index - 1])
+
+
+async def _warm_max_output_ceiling(
+    llm_config: Optional[LLMConfig], candidate_index: int
+) -> None:
+    """Resolve this candidate's output ceiling OFF the event loop.
+
+    WHY THIS EXISTS. The ceiling probe is blocking HTTP, and LLM construction
+    (which resolves it) happens inside this async node, i.e. ON the API loop.
+    That left two bad options and no good one: probe on the loop and stall every
+    request in the process for up to the probe timeout, or refuse to probe on
+    the loop and let the factory bake langchain's invented 4096 into an LLM that
+    the graph then CACHES, which is the exact dead-turn bug this whole change
+    exists to kill (measured: a cold-start graph build pinned sonnet-5 at 4096).
+
+    So resolve it here first, on a worker thread, before anything constructs an
+    LLM. By the time the factory asks, the answer is a warm cache hit and no I/O
+    happens on the loop at all. The probe's own loop guard stays as the backstop
+    for any path that forgets to warm; this is what makes it never fire.
+    """
+    if llm_config is None:
+        return
+    config_for_candidate = _config_for_candidate(llm_config, candidate_index)
+    if config_for_candidate is None:
+        return
+    try:
+        await asyncio.to_thread(
+            resolve_max_output_tokens, config_for_candidate, probe=True
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"[LLM] Could not warm max_tokens ceiling: {exc}")
+
+
+def _streaming_max_tokens_kwargs(
+    candidate: Any,
+    llm_config: Optional[LLMConfig],
+    candidate_index: int = 0,
+    cache: Optional[dict[int, int]] = None,
+) -> dict:
+    """Opt a STREAMING call up to the model's true output ceiling.
+
+    The shared instance is pinned to the non-streaming-safe clamp because
+    several async non-streaming callers reach it (`nym.llm`, structured output,
+    callable threads, RAG quality, the zero-chunk stream fallback), and async
+    non-streaming is the one shape the Anthropic SDK guard rejects. Streaming
+    is exempt, so the user-facing path recovers the full ceiling here.
+
+    Resolved against the CANDIDATE's own config, not the primary's: a fallback
+    candidate is a different model with a different ceiling, and handing it the
+    primary's would turn a rescue attempt into a 400.
+
+    ``cache`` memoizes the resolved ceiling per candidate index for the life of
+    the node, and it is NOT an optimisation. This runs on the asyncio event loop
+    inside the astream retry loop, and resolution can do blocking HTTP:
+    `get_max_output_tokens` -> `_ensure_cache` -> a blocking openrouter fetch
+    (10s), then the probe (8s). Those have their own caches, but
+    `model_capabilities._CACHE_FAILURE_TTL_SECONDS` is only 60s, so on a host
+    that cannot reach openrouter.ai (a keyless public fetch with no opt-out)
+    an un-memoized call would stall the whole event loop for up to 10s on every
+    streaming attempt, forever. Memoizing bounds it to once per graph build.
+    The proper fix is resolving at the `get_llm_config_for_thread` choke point;
+    see the deferred note in the shipped doc.
+
+    Module-level rather than a closure so it can be tested directly: the
+    fallback branch is otherwise only reachable by driving a real stream
+    failure, which is exactly the kind of thing that ends up untested.
+
+    Best-effort throughout: an override that cannot be computed costs the turn
+    some output budget, never the turn itself.
+    """
+    if llm_config is None:
+        return {}
+    try:
+        # Plain membership, no sentinel: only a REAL ceiling is ever stored
+        # (see below), so "present" and "known" are the same question. The
+        # sentinel this used to need existed solely to tell a cached None from
+        # an absent key, and nothing caches None any more.
+        if cache is not None and candidate_index in cache:
+            return streaming_call_kwargs(candidate, cache[candidate_index])
+
+        config_for_candidate = _config_for_candidate(llm_config, candidate_index)
+        if config_for_candidate is None:
+            return {}
+        resolved = resolve_max_output_tokens(config_for_candidate, probe=True)
+        # Memoize a real ceiling only. Caching a None would pin this graph to
+        # the degraded value for its whole life: the cache is per graph build,
+        # and a None here means the probe was merely COLD (warming off-loop),
+        # not that the model has no ceiling. Re-asking next turn costs a dict
+        # lookup, because probe_max_output_tokens caches for a day itself.
+        if cache is not None and resolved is not None:
+            cache[candidate_index] = resolved
+        return streaming_call_kwargs(candidate, resolved)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"[LLM] Could not resolve streaming max_tokens: {exc}")
+        return {}
 
 
 def _llm_candidate(
@@ -1500,7 +1686,13 @@ def create_agent_node(
         )
         return _prepare_messages(state, config)
 
-    def _finish_response(response: AIMessage) -> dict:
+    # Resolved streaming ceiling per candidate index, for the life of this node
+    # (i.e. per graph build, and graphs are cached per thread). Keeps blocking
+    # discovery HTTP off the event loop on every astream attempt; see
+    # _streaming_max_tokens_kwargs.
+    streaming_ceiling_cache: dict[int, int] = {}
+
+    def _finish_response(response: AIMessage, config: Any = None) -> dict:
         # Sanitize tool call names — some models emit leading/trailing whitespace
         # (e.g. ' CalendarAgent' instead of 'CalendarAgent') which breaks routing.
         if hasattr(response, 'tool_calls') and response.tool_calls:
@@ -1509,23 +1701,83 @@ def create_agent_node(
                     logger.warning(f"[LLM] Stripped whitespace from tool call name: {tc['name']!r} -> {tc['name'].strip()!r}")
                     tc['name'] = tc['name'].strip()
 
-        # Log response summary at INFO
-        resp_content = response.content if isinstance(response.content, str) else str(response.content)
+        # Log response summary at INFO. Measure the USER-VISIBLE text, not
+        # str(response.content): stringifying the block list counts thinking
+        # blocks and their multi-KB base64 signatures, so a turn that returned
+        # nothing but truncated reasoning used to log
+        # "[LLM] Response: 19626 chars, final answer": a large number, on the
+        # one line an operator would grep, for a turn the user never saw.
+        visible_text = _visible_text_of(response.content)
         has_tools = bool(response.tool_calls) if hasattr(response, 'tool_calls') else False
         tool_names = [tc.get('name', '?') for tc in response.tool_calls] if has_tools else []
         logger.info(
-            f"[LLM] Response: {len(resp_content)} chars"
+            f"[LLM] Response: {len(visible_text)} chars"
             + (f", tool_calls={tool_names}" if has_tools else ", final answer")
         )
 
-        # Check if response was truncated due to hitting max_tokens
-        if hasattr(response, 'response_metadata'):
-            finish_reason = response.response_metadata.get('finish_reason')
-            if finish_reason == 'length':
+        # Truncation detection. Providers spell this two different ways and the
+        # check previously only knew the OpenAI one, so it was dead code on the
+        # Anthropic path: measured across 658 Anthropic messages, `finish_reason`
+        # was present in exactly zero of them.
+        metadata = getattr(response, "response_metadata", None) or {}
+        truncated = (
+            metadata.get("finish_reason") == "length"          # OpenAI-shaped
+            or metadata.get("stop_reason") == "max_tokens"     # Anthropic-shaped
+        )
+        if truncated:
+            reason = (
+                "stop_reason='max_tokens'"
+                if metadata.get("stop_reason") == "max_tokens"
+                else "finish_reason='length'"
+            )
+            output_tokens = (getattr(response, "usage_metadata", None) or {}).get(
+                "output_tokens"
+            )
+            if not visible_text and not has_tools:
+                # The fatal shape. Thinking tokens bill against max_tokens and
+                # are emitted BEFORE any text or tool_use, so exhausting the cap
+                # inside the thinking block yields a message with nothing in it.
+                # `should_continue` sees no tool_calls, routes to "end", and the
+                # turn "succeeds" while delivering silence. Never let that pass
+                # quietly again.
+                logger.error(
+                    f"[LLM] DEAD TURN: the model hit its output cap ({reason}, "
+                    f"output_tokens={output_tokens}) before emitting any text or "
+                    f"tool call, so this turn produced nothing to deliver. This "
+                    f"is almost always reasoning consuming the whole max_tokens "
+                    f"budget: raise max_tokens or lower the reasoning effort."
+                )
+                _dispatch_provider_event(
+                    "output_truncated",
+                    {
+                        "reason": "max_tokens",
+                        "produced_output": False,
+                        "output_tokens": output_tokens,
+                        "model": getattr(llm_config, "model", "") or "",
+                    },
+                    config,
+                )
+                # Give the turn a body. Silence is indistinguishable from a
+                # healthy no-op to every downstream consumer (the bots drop an
+                # empty text buffer, the graph ends cleanly); a visible note is
+                # the difference between a bug report and a mystery.
+                response = _with_truncation_notice(response)
+            else:
                 logger.warning(
-                    f"[LLM] TRUNCATED — Response hit max_tokens limit "
-                    f"(finish_reason='length', content_length={len(resp_content)}). "
-                    f"The model's output was cut off mid-generation."
+                    f"[LLM] TRUNCATED: response hit the max_tokens cap "
+                    f"({reason}, output_tokens={output_tokens}, "
+                    f"visible_chars={len(visible_text)}). Output was cut off "
+                    f"mid-generation."
+                )
+                _dispatch_provider_event(
+                    "output_truncated",
+                    {
+                        "reason": "max_tokens",
+                        "produced_output": True,
+                        "output_tokens": output_tokens,
+                        "model": getattr(llm_config, "model", "") or "",
+                    },
+                    config,
                 )
 
         return {"messages": [response]}
@@ -1549,6 +1801,9 @@ def create_agent_node(
         image_strip_attempted = False
         while True:
             try:
+                # No clamp needed here: the instance already carries the
+                # non-streaming-safe ceiling (see instance_max_output_tokens).
+                # Only the streaming node opts up.
                 response = _invoke_llm_with_retries(
                     lambda candidate, _msgs=messages_with_system: candidate.invoke(_msgs),
                     llm_config,
@@ -1580,7 +1835,7 @@ def create_agent_node(
                         continue
                 raise
         _accumulate_llm_seconds(config, time.monotonic() - call_started_at)
-        return _finish_response(response)
+        return _finish_response(response, config)
 
     async def async_agent_node(state: AgentState, config: Any = None) -> dict:
         """
@@ -1610,6 +1865,10 @@ def create_agent_node(
         while True:
             chunks_this_attempt = 0
             try:
+                # Off-loop FIRST: _llm_candidate constructs the LLM, and the
+                # Anthropic factory resolves (and may probe for) the output
+                # ceiling while doing so. See _warm_max_output_ceiling.
+                await _warm_max_output_ceiling(llm_config, controller.candidate_index)
                 candidate = _llm_candidate(
                     llm_with_tools,
                     candidate_index=controller.candidate_index,
@@ -1622,7 +1881,21 @@ def create_agent_node(
                 # log), it resets on every retry/fallback attempt so backoff
                 # sleeps never count as generation time.
                 attempt_started_at = time.monotonic()
-                async for chunk in candidate.astream(messages_with_system):
+                # Streaming is exempt from the SDK's non-streaming guard, so the
+                # user-facing path opts back up to the model's true ceiling that
+                # the shared instance had to clamp for its non-streaming callers.
+                # Keyed on the candidate index, never on llm_config alone: mid
+                # fallback the candidate is a DIFFERENT model, and handing it
+                # the primary's ceiling is how you 400 a rescue attempt.
+                async for chunk in candidate.astream(
+                    messages_with_system,
+                    **_streaming_max_tokens_kwargs(
+                        candidate,
+                        llm_config,
+                        controller.candidate_index,
+                        cache=streaming_ceiling_cache,
+                    ),
+                ):
                     chunks_this_attempt += 1
                     stream_chunks += 1
                     if first_chunk_ms is None:
@@ -1764,7 +2037,7 @@ def create_agent_node(
             first_chunk_ms if first_chunk_ms is not None else "none",
             int((time.monotonic() - stream_started_at) * 1000),
         )
-        return _finish_response(response)
+        return _finish_response(response, config)
 
     return RunnableLambda(agent_node, afunc=async_agent_node, name="agent")
 
