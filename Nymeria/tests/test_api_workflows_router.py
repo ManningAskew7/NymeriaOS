@@ -8,11 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import nymeria
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.chat_bindings import ChatBindingsRepo
 from nymeria.core.custom_tools import CustomToolLoader
 
 tool_create_module = importlib.import_module("nymeria.tools.tool_create")
+
+BUNDLED_WORKFLOWS_DIR = Path(nymeria.__file__).parent / "workflows_bundled"
 
 WF_SOURCE = "def run(name: str):\n    return name\n"
 
@@ -505,3 +508,95 @@ def test_execute_endpoint_maps_refusals(tmp_path, api_client_builder, monkeypatc
         "/workflows/wf_exec/execute", json={"params": {}}, headers=headers
     )
     assert ungated.status_code == 403
+
+
+# --- bundled workflow templates ------------------------------------------------
+
+
+def _sandbox_with_templates(monkeypatch, tmp_path: Path):
+    """Sandbox tool_create AND expose the real bundled-workflow catalog."""
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    fake_settings = SimpleNamespace(
+        data_dir=tmp_path,
+        custom_tools_dir=tmp_path / "custom_tools",
+        bundled_workflows_dir=BUNDLED_WORKFLOWS_DIR,
+    )
+    monkeypatch.setattr(tool_create_module, "get_custom_tool_loader", lambda: loader)
+    monkeypatch.setattr(tool_create_module, "get_settings", lambda: fake_settings)
+    monkeypatch.setattr("nymeria.config.settings.get_settings", lambda: fake_settings)
+    monkeypatch.setattr("nymeria.config.get_settings", lambda: fake_settings)
+    # Keep install off any ambient agent (publish-only, loader.load_all path).
+    monkeypatch.setattr("nymeria.core.agent.get_current_agent", lambda: None)
+    return loader
+
+
+def test_templates_list_available_to_any_user(tmp_path, api_client_builder, monkeypatch):
+    _sandbox_with_templates(monkeypatch, tmp_path)
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    resp = client.get("/workflows/templates", headers=api_client_builder.auth(token))
+    assert resp.status_code == 200
+    body = resp.json()
+    ids = {t["id"] for t in body["templates"]}
+    assert {"two_thread_conversation", "url_watcher"} <= ids
+    watcher = next(t for t in body["templates"] if t["id"] == "url_watcher")
+    assert watcher["parameters"] == ["alert_after_failures", "url"]
+
+
+def test_template_install_admin_then_idempotent(tmp_path, api_client_builder, monkeypatch):
+    loader = _sandbox_with_templates(monkeypatch, tmp_path)
+    client, token = _client(tmp_path, api_client_builder, role="admin")
+    headers = api_client_builder.auth(token)
+
+    first = client.post("/workflows/templates/url_watcher/install", json={}, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["created"] is True
+    assert first.json()["approval"] == "approved"
+    assert loader.get_definition("url_watcher") is not None
+
+    again = client.post("/workflows/templates/url_watcher/install", json={}, headers=headers)
+    assert again.status_code == 200
+    assert again.json()["created"] is False
+    assert again.json()["already_installed"] is True
+
+
+def test_template_install_works_with_no_body(tmp_path, api_client_builder, monkeypatch):
+    """A body-less POST must install, not 422.
+
+    The request model is deliberately field-less (reserved for future options),
+    so a mandatory body would reject a plain `curl -X POST .../install` for a
+    field nobody can supply. This endpoint has no GUI or slash surface, so
+    curl/scripts ARE the callers.
+    """
+    loader = _sandbox_with_templates(monkeypatch, tmp_path)
+    client, token = _client(tmp_path, api_client_builder, role="admin")
+
+    resp = client.post(
+        "/workflows/templates/url_watcher/install",
+        headers=api_client_builder.auth(token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["created"] is True
+    assert loader.get_definition("url_watcher") is not None
+
+
+def test_template_install_forbidden_for_non_admin(tmp_path, api_client_builder, monkeypatch):
+    _sandbox_with_templates(monkeypatch, tmp_path)
+    client, token = _client(tmp_path, api_client_builder, role="user")
+    resp = client.post(
+        "/workflows/templates/url_watcher/install",
+        json={},
+        headers=api_client_builder.auth(token),
+    )
+    assert resp.status_code == 403
+
+
+def test_template_install_unknown_id_400(tmp_path, api_client_builder, monkeypatch):
+    _sandbox_with_templates(monkeypatch, tmp_path)
+    client, token = _client(tmp_path, api_client_builder, role="admin")
+    resp = client.post(
+        "/workflows/templates/nope/install",
+        json={},
+        headers=api_client_builder.auth(token),
+    )
+    assert resp.status_code == 400
+    assert "Unknown workflow template" in resp.json()["detail"]

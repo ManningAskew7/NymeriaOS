@@ -87,12 +87,89 @@ class WorkflowExecuteRequest(BaseModel):
     )
 
 
+class WorkflowTemplateInstallRequest(BaseModel):
+    """Install a bundled workflow template (admin-only)."""
+
+    # No fields today; kept as an OPTIONAL body for forward-compatible options.
+    # Install always publishes the approved global tool; the request carries no
+    # per-thread binding (REST install does not enable on a thread).
+    pass
+
+
 def create_workflows_router(
     require_admin_user: Callable[..., Any],
     verify_api_key: Callable[..., Any],
 ) -> APIRouter:
     """Create the workflows router with app dependencies injected."""
     router = APIRouter(prefix="/workflows", tags=["Workflows"])
+
+    @router.get("/templates")
+    async def list_workflow_templates(
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ) -> dict:
+        """The bundled workflow-template catalog (install via the sibling POST)."""
+        from ...core.workflow_templates import load_templates, template_parameter_names
+
+        def _load() -> list[dict]:
+            return [
+                {
+                    "id": t.id,
+                    "name": t.name,
+                    "description": t.description,
+                    "notes": t.notes,
+                    "parameters": template_parameter_names(t),
+                }
+                for t in load_templates()
+            ]
+
+        templates = await asyncio.to_thread(_load)
+        return {"templates": templates, "total": len(templates)}
+
+    @router.post("/templates/{template_id}/install")
+    async def install_workflow_template_endpoint(
+        template_id: str,
+        # Optional, not just field-less: a mandatory body would 422 a plain
+        # `curl -X POST .../install`, and curl/scripts are the intended callers
+        # (this endpoint deliberately has no GUI or slash surface).
+        body: Optional[WorkflowTemplateInstallRequest] = None,
+        user: AuthenticatedUser = Depends(require_admin_user),
+    ) -> dict:
+        """Install a bundled workflow template as an approved global tool (admin).
+
+        Idempotent: reinstalling a template whose tool id already exists returns
+        the existing tool with ``created: false`` and does not overwrite it.
+        Publishes only; REST install does not enable the tool on any thread.
+        """
+        from ...core.workflows.authoring import approval_state
+        from ...tools.tool_create import (
+            _published_summary,
+            install_workflow_template,
+        )
+
+        def _install() -> dict:
+            definition, created = install_workflow_template(
+                user_id=user.id,
+                template_id=template_id,
+                agent=None,
+                is_admin=True,
+            )
+            approval = (
+                approval_state(definition.workflow_config, definition.parameters)
+                if definition is not None and definition.workflow_config is not None
+                else "unknown"
+            )
+            return {
+                "created": created,
+                "already_installed": not created,
+                "template_id": definition.id if definition is not None else template_id,
+                "approval": approval,
+                "tool": _published_summary(definition) if definition is not None else {"tool_id": template_id},
+            }
+
+        try:
+            return await asyncio.to_thread(_install)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/pending")
     async def pending_workflows(

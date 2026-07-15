@@ -848,6 +848,161 @@ def _announce_workflow_approval_request(draft: HTTPToolDraft, author_user_id: st
         _notify_user(admin_id, summary)
 
 
+def _definition_on_disk(tool_id: str) -> Optional[CustomToolDefinition]:
+    """One global tool definition read straight from disk, INCLUDING disabled.
+
+    The loader cache deliberately drops disabled definitions
+    (``CustomToolLoader._load_tool_file`` returns before caching them), so a
+    cache read cannot tell "installed but disabled" from "absent" while the file
+    check still sees the file. Matching on the definition's own ``id`` rather
+    than the filename also survives a tool stored under a non-conventional file
+    name. Mirrors ``_iter_workflow_definitions``' disk read.
+    """
+    import json as _json
+
+    try:
+        paths = sorted(get_settings().custom_tools_dir.glob("*.json"))
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            definition = CustomToolDefinition(
+                **_json.loads(path.read_text(encoding="utf-8"))
+            )
+        except Exception:  # noqa: BLE001 - skip invalid/corrupt definitions
+            continue
+        if definition.id == tool_id:
+            return definition
+    return None
+
+
+def install_workflow_template(
+    *,
+    user_id: str,
+    template_id: str,
+    agent: Any = None,
+    is_admin: Optional[bool] = None,
+) -> tuple[Optional[CustomToolDefinition], bool]:
+    """Publish a bundled workflow template as an approved global workflow tool.
+
+    Admin-gated: unlike a per-user hook-template install, publishing an
+    approved GLOBAL workflow tool is an admin action (the workflow trust model
+    gates execution on admin approval). Idempotent by tool id: if this exact
+    bundled revision is already installed it returns ``(existing, False)``
+    unchanged (including when it is installed-but-disabled, which the caller can
+    see on the returned definition). It NEVER overwrites: an id held by a
+    different tool, or by a DIVERGENT copy of this template (edited, planted, or
+    installed from an older release), raises a conflict naming which case it is.
+    Identity is verified against the shipped revision hash, not a self-asserted
+    tag, since the custom-tools dir is an agent-writable resource surface. On a
+    fresh install it self-approves the trusted bundled revision (admins approve
+    their own saves), saves it to the global registry, and hot-loads it,
+    returning ``(definition, True)``. The check-then-save is best-effort (not a
+    lock), matching the existing publish path. Raises ``ValueError`` for a
+    non-admin caller, an unknown template, an id conflict, or (defensively) a
+    bundled file that fails static validation.
+
+    Enabling the new tool on a thread is the caller's job (the tool surface does
+    it via ``_enable``); this function only publishes.
+    """
+    from ..core.agent import get_current_agent
+    from ..core.workflow_templates import get_template as _get_wf_template
+    from ..core.workflow_templates import load_templates as _load_wf_templates
+
+    if agent is None:
+        agent = get_current_agent()
+    admin = _user_is_admin(user_id) if is_admin is None else bool(is_admin)
+    if not admin:
+        raise ValueError(
+            "Installing a bundled workflow publishes an approved global workflow "
+            "tool, which requires an admin. Ask an admin to install it, or draft "
+            "your own with tool_create (implementation_type='workflow')."
+        )
+
+    template = _get_wf_template(template_id)
+    if template is None:
+        known = ", ".join(t.id for t in _load_wf_templates()) or "(none)"
+        raise ValueError(
+            f"Unknown workflow template '{template_id}'. Available: {known}."
+        )
+
+    workflow = template.workflow or {}
+    config = _coerce_workflow_config(
+        str(workflow.get("source_code") or ""),
+        str(workflow.get("entrypoint") or "run"),
+        list(workflow.get("continuations") or []),
+        workflow.get("budget") or None,
+    ).model_copy(update={"created_by": user_id})
+    derived, errors = validate_workflow_static(config=config)
+    if errors:
+        # A shipped bundled file validates at load; reaching here is a
+        # packaging bug, surfaced rather than silently publishing a broken tool.
+        raise ValueError("; ".join(errors))
+    config = stamp_revision(config, derived)
+
+    loader = get_custom_tool_loader()
+    if _global_definition_exists(template.id, agent):
+        # Read from disk, not the loader cache: the cache hides disabled
+        # definitions, so a cache read would call an admin's own disabled
+        # template a foreign tool. (The check-then-save is best-effort, not a
+        # lock.)
+        existing = _definition_on_disk(template.id)
+        installed_config = existing.workflow_config if existing is not None else None
+        if existing is not None and f"template:{template.id}" in (existing.tags or []):
+            # RECOMPUTE the installed revision from its own content rather than
+            # reading its stored revision_hash, exactly as workflow_execution_gate
+            # does: on an agent-writable dir the stored hash is as self-asserted
+            # as the tag, so a planted file could otherwise carry the shipped
+            # hash over foreign source and be waved through as "already
+            # installed".
+            if (
+                installed_config is not None
+                and config_revision_hash(installed_config, existing.parameters)
+                == config.revision_hash
+            ):
+                # Idempotent: this exact bundled revision is already installed.
+                return existing, False
+            # Tagged as ours but the source does not match what we ship. Never
+            # publish over it, and never call it "already installed" either: an
+            # admin who believes the vetted recipe is live would be the one
+            # approving the divergent revision in the pending queue.
+            raise ValueError(
+                f"tool id '{template.id}' holds a DIVERGENT copy of this bundled "
+                "template: its source does not match the shipped recipe (edited "
+                "in place, installed from an older release, or planted). "
+                "Refusing to overwrite it. Review it with workflow_info "
+                "(action='show'), then delete it to install the shipped version."
+            )
+        # The id is occupied by a different tool, a corrupt file, or a builtin
+        # name; refuse with a clear conflict rather than a misleading "already
+        # installed".
+        raise ValueError(
+            f"tool id '{template.id}' is already in use by another tool; "
+            "cannot install this bundled template (remove or rename the "
+            "conflicting tool first)."
+        )
+
+    config = approve_revision(config, derived, approved_by=user_id)
+
+    definition = CustomToolDefinition(
+        id=template.id,
+        name=(template.name or template.id)[:64],
+        description=(template.description or template.id)[:1000],
+        parameters=derived,
+        implementation_type="workflow",
+        workflow_config=config,
+        enabled=True,
+        tags=["bundled", "workflow", f"template:{template.id}"],
+    )
+    loader.save_definition(definition)
+    retain_source_revision(definition.id, config.revision_hash, config.source_code)
+    if agent is not None:
+        agent.reload_custom_tools()
+    else:
+        loader.load_all()
+    return definition, True
+
+
 # --- workflow approval service (shared by the REST router and workflow_info) --
 
 
@@ -1147,6 +1302,7 @@ async def tool_create(
     continuations: Optional[list[str]] = None,
     budget: Optional[dict[str, Any]] = None,
     draft_id: str = "",
+    template_id: str = "",
     sample_params: Optional[dict[str, Any]] = None,
     ttl: str = DEFAULT_TTL,
     validation_timeout_seconds: int = DEFAULT_VALIDATION_TIMEOUT_SECONDS,
@@ -1198,6 +1354,13 @@ async def tool_create(
                without exposing request headers or bodies.
       delete:  Delete this user's draft only. It does not delete a globally
                published tool.
+      install_template: Install a bundled workflow recipe (see
+               workflow_info action='templates') as a published workflow tool
+               and enable it on this thread. Admin-only: it publishes an
+               approved GLOBAL tool. Idempotent by tool id: re-installing
+               publishes nothing but still enables the recipe on this thread,
+               so call it from any thread that needs it. Never overwrites an
+               existing tool. Pass template_id.
 
     Published tools are globally discoverable via tool_search but are not
     added to default_thread_tools and do not affect other users unless they
@@ -1213,8 +1376,10 @@ async def tool_create(
            signature (state, decision).
       budget: Workflow-only. Budget overrides, e.g. {"wall_clock_seconds":
            900, "max_calls": 100, "max_ai_calls": 20}.
-      ttl: Publish-only TTL for enabling the new tool on this thread. Format:
+      ttl: Publish/install TTL for enabling the new tool on this thread. Format:
            Nm/Nh/Nd/Nw or "never"/"permanent". Default "2h".
+      template_id: install_template-only. Id of the bundled workflow recipe to
+           install (list them with workflow_info action='templates').
       validation_timeout_seconds: Python test/publish timeout. Default 60s.
     """
     user_id = get_user_id(config)
@@ -1335,11 +1500,65 @@ async def tool_create(
                 error=None if deleted else {"type": "not_found", "message": f"Draft not found: {target_draft_id}"},
             )
 
+        if action_key == "install_template":
+            requested = (template_id or tool_id).strip()
+            if not requested:
+                return _json_result(
+                    ok=False,
+                    error={
+                        "type": "validation_error",
+                        "message": "install_template requires template_id (workflow_info action='templates' lists them).",
+                    },
+                )
+            from ..core.agent import get_current_agent
+
+            agent = get_current_agent()
+            definition, created = install_workflow_template(
+                user_id=user_id, template_id=requested, agent=agent
+            )
+            approval = (
+                approval_state(definition.workflow_config, definition.parameters)
+                if definition is not None and definition.workflow_config is not None
+                else "unknown"
+            )
+            publish_text = _json_result(
+                ok=True,
+                action="install_template",
+                created=created,
+                already_installed=not created,
+                template_id=definition.id if definition is not None else requested,
+                approval=approval,
+                tool=_published_summary(definition) if definition is not None else {"tool_id": requested},
+            )
+            # Enable on re-install too, not just on a fresh publish: an agent
+            # calling install_template in a thread wants to USE the recipe
+            # there, and the common case (already installed globally, new
+            # thread) would otherwise return "already_installed" with no
+            # binding. A definition disabled at the registry level has nothing
+            # to bind, so it is left alone and reported as enabled: false.
+            if agent is None or definition is None or not definition.enabled:
+                return publish_text
+            try:
+                ttl_key, _ = parse_tool_ttl(DEFAULT_TTL if ttl is None else ttl)
+            except ValueError:
+                return publish_text
+            enable_result = _enable(
+                [definition.id],
+                "",
+                thread_id,
+                user_id,
+                ttl=ttl_key,
+                tool_call_id=tool_call_id,
+                source="tool_create",
+                reason="workflow_template_installed",
+            )
+            return _prefix_command_result(enable_result, publish_text, tool_call_id)
+
         return _json_result(
             ok=False,
             error={
                 "type": "validation_error",
-                "message": "action must be one of: draft, test, publish, list, delete",
+                "message": "action must be one of: draft, test, publish, list, delete, install_template",
             },
         )
     except WorkflowApprovalRequired as exc:

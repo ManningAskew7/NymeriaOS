@@ -285,6 +285,8 @@ EXPECTED_ROUTES = [
     ('/workflows/runs', ('GET',)),
     ('/workflows/runs/{workflow_id}', ('GET',)),
     ('/workflows/source', ('GET',)),
+    ('/workflows/templates', ('GET',)),
+    ('/workflows/templates/{template_id}/install', ('POST',)),
     ('/workflows/{workflow_id}/execute', ('POST',)),
     ('/workspace/download', ('GET',)),
 ]
