@@ -85,10 +85,13 @@ async function pollThreadStatus(threadId: string) {
     // branch never saw it). Hand off to the viewer attach instead of the
     // history-refresh below; the attach flow owns rendering from here.
     // Streaming self-suppression above keeps this off this client's own
-    // turns, and an autonomous turn the firehose has attached also holds
-    // isStreaming. isLoadingHistory is unset here by construction (the poll
-    // only starts after switchToThread's history load completes).
-    if (status.turn?.state === 'live') {
+    // turns (including turns already being watched via attach, which hold
+    // isStreaming). isLoadingHistory is unset here by construction (the poll
+    // only starts after switchToThread's history load completes). A
+    // truncated buffer cannot replay: attaching to it would park the panel
+    // on "Reconnecting" (same gate as navigation), so skip and let the
+    // normal refresh below reconcile from history instead.
+    if (status.turn?.state === 'live' && !status.turn.truncated) {
       chatStore.requestViewerAttach(threadId, status.turn);
       updateThreadStatusBaseline(status);
       return;

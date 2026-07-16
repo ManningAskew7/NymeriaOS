@@ -145,6 +145,7 @@ class TurnStreamBuffer:
             self._next_seq += 1
         event["seq"] = seq
         payload = json.dumps(event)
+        overflowed_now = False
         with self._meta_lock:
             self._entries.append((seq, payload))
             self._bytes += len(payload)
@@ -154,7 +155,25 @@ class TurnStreamBuffer:
             ):
                 _, dropped = self._entries.popleft()
                 self._bytes -= len(dropped)
-                self.truncated = True
+                if not self.truncated:
+                    self.truncated = True
+                    overflowed_now = True
+        if overflowed_now:
+            # Log once per turn, at the latch flip (outside the lock). Without
+            # this line overflow is unobservable: ``truncated`` lives only in
+            # memory and clients that see it just fall back to history, so no
+            # amount of soaking can evidence the overflow mode from logs.
+            logger.warning(
+                "Turn stream buffer overflow for thread %s (turn %s, "
+                "holder=%s): evicting oldest events past %d events / %d "
+                "bytes; re-attach will report a replay gap and clients fall "
+                "back to history",
+                self.thread_id,
+                self.turn_id,
+                self.holder_kind,
+                MAX_EVENTS_PER_TURN,
+                MAX_BYTES_PER_TURN,
+            )
         self._pulse()
         return seq, payload
 

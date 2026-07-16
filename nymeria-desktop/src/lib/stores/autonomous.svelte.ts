@@ -11,7 +11,6 @@ import { chatStore } from './chat.svelte';
 import { threadsStore } from './threads.svelte';
 import { activityStore } from './activity.svelte';
 import { todosStore } from './todos.svelte';
-import { threadConfigStore } from './threadConfig.svelte';
 import { notificationStore } from './notifications.svelte';
 import { workflowsStore } from './workflows.svelte';
 import { authPromptStore } from './authPrompt.svelte';
@@ -21,6 +20,7 @@ import { refreshThreadSyncBaseline } from './syncPoll.svelte';
 import { api } from '$lib/services/api.svelte';
 import { debugLog, debugLoggingEnabled } from '$lib/utils/debug';
 import { isTodoTool } from '$lib/utils/todoTools';
+import type { ThreadTurnStatus } from '$lib/types';
 import {
   isSkillMutationReloadSource,
   isSkillMutationToolName,
@@ -36,9 +36,6 @@ interface AutonomousEvent {
   [key: string]: unknown;
 }
 
-/**
- * Classify the source of an autonomous task from its SSE event data.
- */
 /**
  * Reload the on-screen transcript after another client rewound this thread.
  * If the user was mid-edit, the target bubble no longer resolves after a
@@ -65,14 +62,11 @@ async function reloadAfterExternalRewind(threadId: string): Promise<void> {
   }
 }
 
-function classifyAutonomousSource(event: AutonomousEvent): string {
-  if (event.todo_id) return 'scheduler';
-  if (event.source === 'watchdog') return 'watchdog';
-  if (event.trigger_id || event.trigger_name) return 'trigger';
-  return 'autonomous';
-}
-
-const STREAMING_AUTONOMOUS_EVENT_TYPES = new Set([
+// Turn-output events drive LIFECYCLE only (task late-binding, thread-list
+// spinners, the live-attach signal): the turn buffer attach path is the
+// single transcript renderer for autonomous turns (backlog #90 slice 3),
+// so these events are never painted into the chat view from the bus.
+const TURN_OUTPUT_EVENT_TYPES = new Set([
   'thinking',
   'tool_call_delta',
   'tool_call',
@@ -89,45 +83,28 @@ const BASE_RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
 const IDLE_TIMEOUT_MS = 30000;
 
-// Per-thread cap on the replay buffer. Streaming events for a thread that is
-// not on screen are buffered for the whole in-flight turn (so switching into it
-// can replay what already streamed), not just for a 250ms switch gap. These
-// bounds cover a long multi-tool turn (hundreds to low-thousands of small
-// thinking / tool_call_delta / response deltas) while tripping on a runaway
-// turn. On overflow the buffer is dropped and the join falls back to the
-// history snapshot (graceful degradation to the pre-replay behavior).
-export const MAX_BUFFERED_EVENTS_PER_THREAD = 4000;
-export const MAX_BUFFERED_CHARS_PER_THREAD = 2_000_000;
-
-export interface PendingBuffer {
-  events: AutonomousEvent[];
-  chars: number;
-  overflowed: boolean;
-}
-
 /**
- * Flip a thread's replay buffer to overflowed once it exceeds either bound.
- * Returns true if the buffer is overflowed (caller should stop appending). The
- * events array is dropped to free memory; the join then replays nothing and
- * falls back to the history snapshot. Pure (module-scoped) so it is unit
- * testable; the only side effect is a debug log.
+ * Attach-gate for autonomous turn signals (backlog #90 slice 3): a bus
+ * signal (task_started, a late-bound first output event, an SSE reconnect
+ * with a task in flight) hands the on-screen thread to the viewer attach
+ * only when the turn is live and replayable and this client is not already
+ * rendering it (own interactive turn or an attach in progress). A truncated
+ * buffer cannot replay, so attaching would park the panel on "Reconnecting";
+ * skip and let history reconciliation settle the turn instead. Pure
+ * (module-scoped) so it is unit testable with the real rule.
  */
-export function markBufferOverflowIfNeeded(buf: PendingBuffer, threadId = ''): boolean {
-  if (buf.overflowed) return true;
-  if (
-    buf.events.length >= MAX_BUFFERED_EVENTS_PER_THREAD ||
-    buf.chars >= MAX_BUFFERED_CHARS_PER_THREAD
-  ) {
-    buf.overflowed = true;
-    buf.events = [];
-    debugLog(
-      `[Autonomous] Replay buffer overflow for thread ${threadId} ` +
-      `(events>=${MAX_BUFFERED_EVENTS_PER_THREAD} or chars>=${MAX_BUFFERED_CHARS_PER_THREAD}); ` +
-      `will fall back to history on join`
-    );
-    return true;
-  }
-  return false;
+export function shouldRequestViewerAttach(
+  turn: ThreadTurnStatus | null | undefined,
+  isCurrentThread: boolean,
+  isStreaming: boolean
+): turn is ThreadTurnStatus {
+  return Boolean(
+    isCurrentThread &&
+    !isStreaming &&
+    turn &&
+    turn.state === 'live' &&
+    !turn.truncated
+  );
 }
 
 debugLog('[Autonomous] Store module loading...');
@@ -146,20 +123,12 @@ function createAutonomousStore() {
   let idleAbortReason: string | null = null;
   let eventCounts = new Map<string, number>();
   let totalEventCount = 0;
-  let activeTaskId = $state<string | null>(null); // Track which autonomous task we're streaming
-  let activeMessageId = $state<string | null>(null); // Track the message we created for this task
 
-  // Multi-thread task tracking
-  let activeTasksByThread = $state<Map<string, string>>(new Map()); // thread_id -> task_id
-  let activeMessagesByThread = $state<Map<string, string>>(new Map()); // thread_id -> message_id
-
-  // Per-thread buffer of streaming events not yet rendered into the chat view.
-  // Two cases populate it: (a) the brief switch gap between prepareForThreadSwitch
-  // clearing isStreaming and the post-history-load recovery re-arming it, and
-  // (b) an active turn on a thread that is not currently on screen, retained for
-  // the whole turn so switching into it can replay what already streamed.
-  let _pendingEvents = new Map<string, PendingBuffer>();
-  let _pendingReplayTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Multi-thread task tracking: thread_id -> task_id for in-flight autonomous
+  // turns. Lifecycle only (thread-list spinners via setThreadActive, the
+  // late-binding dedupe, task_completed cleanup); transcript rendering is
+  // owned by the turn buffer attach path (backlog #90 slice 3).
+  let activeTasksByThread = $state<Map<string, string>>(new Map());
 
   function getStreamUrl(): string {
     const baseUrl = configStore.apiUrl.replace(/\/$/, '');
@@ -225,13 +194,12 @@ function createAutonomousStore() {
       api.getThreadHistory(currentThread).then((history) => {
         if (threadsStore.currentThreadId === currentThread && !chatStore.isStreaming) {
           chatStore.setMessages(history.messages);
-          // If a turn is still in flight on this thread, the reload just replaced
-          // the message any prior binding pointed at. Drop the (now possibly
-          // duplicate-vs-history) buffer and rebind so post-reconnect events
-          // render; forward streaming repopulates the turn.
+          // If a turn is still in flight on this thread, re-join it through
+          // the turn buffer attach (its replay-from-seq-0 supersedes the
+          // history snapshot just applied); a task registered before the
+          // disconnect gets no fresh task_started, so this is its re-entry.
           if (activeTasksByThread.has(currentThread)) {
-            _pendingEvents.delete(currentThread);
-            attachToThread(currentThread);
+            void requestAttachForLiveTurn(currentThread);
           }
         }
       }).catch(() => {});
@@ -469,17 +437,11 @@ function createAutonomousStore() {
     streamAbortController = null;
     connecting = false;
 
-    for (const timer of _pendingReplayTimers.values()) {
-      clearTimeout(timer);
-    }
-    _pendingReplayTimers.clear();
-    // Intentional disconnect (logout / teardown): drop replay buffers and
-    // per-thread tracking so a later connect starts clean. The involuntary
-    // reconnect path does NOT call disconnect(), so buffers survive a reconnect
-    // and catchUpAfterReconnect resyncs from history.
-    _pendingEvents.clear();
+    // Intentional disconnect (logout / teardown): drop per-thread tracking so
+    // a later connect starts clean. The involuntary reconnect path does NOT
+    // call disconnect(), so task tracking survives a reconnect and
+    // catchUpAfterReconnect resyncs from history.
     activeTasksByThread = new Map();
-    activeMessagesByThread = new Map();
     connected = false;
     debugLog(`[Autonomous] Stream intentionally disconnected (events={${eventCountSummary()}})`);
   }
@@ -516,152 +478,30 @@ function createAutonomousStore() {
     }
   }
 
-  function bufferPendingEvent(event: AutonomousEvent) {
-    // While the chat panel renders this thread from the turn buffer, bus
-    // transcript events are redundant (the buffer carries the full turn):
-    // drop them instead of queueing, or the pending replay would repaint
-    // the whole turn as a duplicate once the attach ends (backlog #90).
-    if (chatStore.bufferAttachedThreadId === event.thread_id) return;
-    let buf = _pendingEvents.get(event.thread_id);
-    if (!buf) {
-      buf = { events: [], chars: 0, overflowed: false };
-      _pendingEvents.set(event.thread_id, buf);
-    }
-    if (buf.overflowed) return;
-    buf.events.push(event);
-    buf.chars += JSON.stringify(event).length;
-    markBufferOverflowIfNeeded(buf, event.thread_id);
-
-    // The 250ms auto-replay timer only serves the switch-gap on the thread the
-    // user is actually viewing. A non-current thread's buffer is drained by
-    // attachToThread when the user switches in, so it needs no timer.
-    if (event.thread_id === threadsStore.currentThreadId) {
-      schedulePendingReplay(event.thread_id);
-    }
-  }
-
-  function schedulePendingReplay(threadId: string) {
-    if (_pendingReplayTimers.has(threadId)) return;
-
-    const timer = setTimeout(() => {
-      _pendingReplayTimers.delete(threadId);
-      replayPendingEventsForThread(threadId);
-    }, 250);
-    _pendingReplayTimers.set(threadId, timer);
-  }
-
-  function ensureStreamingForCurrentTask(event: AutonomousEvent, placeholder = 'Autonomous task in progress…'): boolean {
-    const taskId = event.task_id as string | undefined;
-    // While a thread switch is loading history, the message list is about to be
-    // replaced, so do not bind a streaming message yet: buffer and let
-    // attachToThread bind authoritatively once the load completes.
-    if (
-      !taskId ||
-      event.thread_id !== threadsStore.currentThreadId ||
-      chatStore.isStreaming ||
-      chatStore.isLoadingHistory
-    ) {
-      return false;
-    }
-
-    activeTaskId = taskId;
-    let messageId = activeMessagesByThread.get(event.thread_id);
-    if (!messageId) {
-      messageId = chatStore.addAssistantMessage();
-      activeMessagesByThread = new Map(activeMessagesByThread).set(event.thread_id, messageId);
-    }
-    activeMessageId = messageId;
-    chatStore.setStreaming(true);
-    chatStore.setIntermediateContent(placeholder);
-    return true;
-  }
-
-  function canApplyStreamingEvent(event: AutonomousEvent, isCurrentThread: boolean, isOurTask: boolean): boolean {
-    // Stand down while the chat panel renders this thread from the turn
-    // buffer (viewer attach / dropped-stream recovery): the replay is the
-    // single renderer, and a binding left in activeMessagesByThread from
-    // before the attach would otherwise double-render the turn (backlog
-    // #90 slice 2). Lifecycle handling (task state, dashboards, thread-list
-    // spinners) does not pass through here and keeps working.
-    if (chatStore.bufferAttachedThreadId === event.thread_id) return false;
-    return (
-      isCurrentThread &&
-      isOurTask &&
-      chatStore.isStreaming &&
-      activeMessagesByThread.has(event.thread_id)
-    );
-  }
-
-  function replayPendingEventsForThread(threadId: string) {
-    if (threadsStore.currentThreadId !== threadId) return;
-    // Defer while history is loading: attachToThread drives the replay once the
-    // load completes and a streaming message is bound. Returning before the
-    // delete preserves the buffer for that drain.
-    if (chatStore.isLoadingHistory) return;
-    // The turn-buffer attach replays the turn from seq 0, so anything queued
-    // here (the pre-attach switch gap) is already covered: discard it.
-    if (chatStore.bufferAttachedThreadId === threadId) {
-      _pendingEvents.delete(threadId);
-      return;
-    }
-
-    const taskId = activeTasksByThread.get(threadId);
-    if (taskId) activeTaskId = taskId;
-
-    const pending = _pendingEvents.get(threadId);
-    if (!pending || pending.overflowed || pending.events.length === 0) return;
-
-    const events = pending.events;
-    _pendingEvents.delete(threadId);
-    for (const evt of events) {
-      handleEvent(evt);
-    }
-  }
-
   /**
-   * Join an in-flight autonomous turn for a thread that is now on screen: bind a
-   * streaming chat message and replay everything buffered for the turn so far,
-   * then live events flow through canApplyStreamingEvent. This is the single
-   * authoritative binding entrypoint for the switch-in case (navigation calls it
-   * after loading history); the step appenders render into chatStore's last
-   * message, so binding just needs that message to be a streaming assistant.
-   * Strictly thread-keyed (no currentThread reads) so it ports to multi-view.
+   * Ask the chat panel to live-attach to this thread's holder turn (backlog
+   * #90 slice 3). The turn buffer attach is the single transcript renderer
+   * for autonomous turns, so bus signals (task_started, a late-bound first
+   * output event, an SSE reconnect with a task in flight) request an attach
+   * instead of painting the transcript from bus chunks. One cheap status
+   * fetch resolves the `turn` block the attach needs (mirrors syncPoll's
+   * proven shape). No 404 race: every publish site fires task_started from
+   * inside its on_chunk callback, and the stream tee records the chunk into
+   * the buffer before on_chunk runs (pinned by test_stream_bridge.py), so
+   * the buffer exists and is live before the signal reaches any client.
    */
-  function attachToThread(threadId: string) {
-    if (!activeTasksByThread.has(threadId)) return;
-
-    // Reuse the in-flight assistant bubble only if it is actually streaming; a
-    // completed assistant at the tail is the PREVIOUS turn's reply, so a new turn
-    // needs its own bubble (mirrors navigation's graft-safe rule).
-    const lastMsg = chatStore.messages[chatStore.messages.length - 1];
-    let messageId: string;
-    let created: boolean;
-    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.status === 'streaming') {
-      chatStore.setLastMessageStreaming();
-      messageId = lastMsg.id;
-      created = false;
-    } else {
-      messageId = chatStore.addAssistantMessage();
-      created = true;
+  async function requestAttachForLiveTurn(threadId: string) {
+    if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
+    try {
+      const status = await api.getThreadStatus(threadId);
+      const isCurrentThread = threadsStore.currentThreadId === threadId;
+      if (shouldRequestViewerAttach(status.turn, isCurrentThread, chatStore.isStreaming)) {
+        chatStore.requestViewerAttach(threadId, status.turn);
+      }
+    } catch {
+      // Best-effort: navigation and the sync poll own the fallback attach
+      // entry points; never break the bus loop on a status fetch.
     }
-
-    activeMessagesByThread = new Map(activeMessagesByThread).set(threadId, messageId);
-    activeMessageId = messageId;
-    activeTaskId = activeTasksByThread.get(threadId) ?? activeTaskId;
-    chatStore.setStreaming(true);
-    if (created) {
-      chatStore.setIntermediateContent('Autonomous task in progress…');
-    }
-
-    const buf = _pendingEvents.get(threadId);
-    if (buf?.overflowed) {
-      debugLog(
-        `[Autonomous] Join skipping replay for ${threadId} (buffer overflowed); ` +
-        `relying on the loaded history snapshot`
-      );
-      return;
-    }
-    replayPendingEventsForThread(threadId);
   }
 
   function handleEvent(event: AutonomousEvent) {
@@ -669,26 +509,24 @@ function createAutonomousStore() {
 
     const currentThreadId = threadsStore.currentThreadId;
     const isCurrentThread = event.thread_id === currentThreadId;
-    // Check both the legacy single-task tracking and per-thread tracking
-    let isOurTask = activeTaskId === event.task_id ||
+    const isRegisteredTask =
       activeTasksByThread.get(event.thread_id) === event.task_id;
-    const isStreamingAutonomousEvent = STREAMING_AUTONOMOUS_EVENT_TYPES.has(event.type);
+    const isTurnOutputEvent = TURN_OUTPUT_EVENT_TYPES.has(event.type);
 
-    // Late-bind the task for ANY thread on its first streaming event, not just
-    // the current one. A background thread (or one whose task_started we missed
-    // after an SSE reconnect) must be registered so hasActiveTask is reliable and
-    // its events get buffered for replay-on-join. setThreadActive is thread-keyed
-    // and safe ungated.
-    if (isStreamingAutonomousEvent && event.task_id && !isOurTask) {
+    // Late-bind the task for ANY thread on its first turn-output event, not
+    // just the current one. A background thread (or one whose task_started we
+    // missed after an SSE reconnect) must be registered so the thread-list
+    // spinner is reliable. For the on-screen thread this doubles as the
+    // attach trigger when the task_started signal itself was missed.
+    // setThreadActive is thread-keyed and safe ungated.
+    if (isTurnOutputEvent && event.task_id && !isRegisteredTask) {
       activeTasksByThread = new Map(activeTasksByThread).set(
         event.thread_id, event.task_id as string
       );
       threadsStore.setThreadActive(event.thread_id, true);
-      isOurTask = true;
-    }
-
-    if (isCurrentThread && isStreamingAutonomousEvent && isOurTask && !chatStore.isStreaming) {
-      ensureStreamingForCurrentTask(event);
+      if (isCurrentThread) {
+        void requestAttachForLiveTurn(event.thread_id);
+      }
     }
 
     switch (event.type) {
@@ -706,116 +544,36 @@ function createAutonomousStore() {
         activeTasksByThread = new Map(activeTasksByThread).set(
           event.thread_id, event.task_id as string
         );
-        _pendingEvents.delete(event.thread_id); // clear stale buffer from previous task
         threadsStore.setThreadActive(event.thread_id, true);
 
-        // If on the same thread and not already streaming (user typing),
-        // show that autonomous activity is starting
-        if (isCurrentThread && !chatStore.isStreaming) {
-          // Show autonomous prompt if the global toggle is on OR the per-thread
-          // override is force-on. Only for scheduler/watchdog/trigger tasks, not
-          // callable thread invocations.
-          const threadCfg = threadConfigStore.getConfig(event.thread_id);
-          const effective =
-            configStore.showAutonomousPrompts || Boolean(threadCfg?.showAutonomousPrompts);
-          if (effective && event.prompt && !event.callable_name) {
-            const sourceLabel = classifyAutonomousSource(event);
-            chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
-          }
-
-          ensureStreamingForCurrentTask(event, 'Autonomous task started…');
+        // Turn started on the thread the user is looking at: watch it live
+        // through the turn buffer attach (backlog #90 slice 3). The wakeup
+        // prompt bubble is no longer painted client-side; the attach anchors
+        // to history, which carries it with show_autonomous_prompts honored
+        // server-side (hidden stub vs real bubble, autonomous_source badge
+        // included).
+        if (isCurrentThread) {
+          void requestAttachForLiveTurn(event.thread_id);
         }
         break;
 
+      // Turn-output transcript events: consumed for lifecycle only (the
+      // late-binding above). Rendering is owned by the turn buffer attach
+      // path (backlog #90 slice 3); the buffer replays the full turn from
+      // seq 0, so nothing is painted or queued from the bus. Acknowledged
+      // here so the default-branch debugLog does not flag them as unknown.
       case 'thinking':
-        // Only update if this is our autonomous task on the current thread
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          chatStore.addThinkingStep(event.content as string || 'Thinking…');
-        } else if (isOurTask) {
-          // Buffer for replay: during the current thread's switch gap (or while a
-          // user chat is still streaming), and for a thread not on screen so a
-          // later switch-in can replay the turn so far.
-          bufferPendingEvent(event);
-        }
-        break;
-
       case 'provider_retry':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          if (event.rewound) chatStore.rewindLastAssistantToStablePoint();
-          chatStore.addProviderStatusStep({
-            providerStatus: 'retry',
-            provider: event.provider as string | undefined,
-            model: event.model as string | undefined,
-            attempt: event.attempt as number | undefined,
-            maxRetries: event.max_retries as number | undefined,
-            delaySeconds: event.delay_seconds as number | undefined,
-            reason: event.reason as string | undefined,
-            httpStatus: event.http_status as number | null | undefined,
-            rewound: event.rewound as boolean | undefined,
-            streamChunks: event.stream_chunks as number | undefined,
-          });
-        } else if (isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-
       case 'provider_fallback':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          if (event.rewound) chatStore.rewindLastAssistantToStablePoint();
-          chatStore.addProviderStatusStep({
-            providerStatus: 'fallback',
-            fromProvider: event.from_provider as string | undefined,
-            fromModel: event.from_model as string | undefined,
-            toProvider: event.to_provider as string | undefined,
-            toModel: event.to_model as string | undefined,
-            holdSeconds: event.hold_seconds as number | undefined,
-            expiresAt: event.expires_at as string | null | undefined,
-            reason: event.reason as string | undefined,
-            httpStatus: event.http_status as number | null | undefined,
-            rewound: event.rewound as boolean | undefined,
-            streamChunks: event.stream_chunks as number | undefined,
-          });
-        } else if (isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-
       case 'tool_call_delta':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          chatStore.flushStreamingBuffers();
-          chatStore.setAssistantActivityPhase('formulating');
-        } else if (isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-
       case 'tool_call':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          const toolId = (event.id as string) || `${event.name}-${Date.now()}`;
-          chatStore.addToolCallStep(
-            toolId,
-            event.name as string,
-            (event.args as Record<string, unknown>) || {},
-            typeof event.timeout_seconds === 'number' ? event.timeout_seconds : undefined
-          );
-        } else if (isOurTask) {
-          bufferPendingEvent(event);
-        }
+      case 'workspace_artifact':
+      case 'response':
         break;
 
       case 'tool_result':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          const toolId = event.id as string;
-          chatStore.updateToolCallStepResult(
-            toolId,
-            event.result as string || '',
-            'success',
-            typeof event.duration_ms === 'number' ? event.duration_ms : undefined
-          );
-        } else if (isOurTask) {
-          bufferPendingEvent(event);
-        }
-        // Refresh relevant stores based on tool
+        // Dashboard side effects keyed off the tool name (rendering is the
+        // attach path's job).
         if (isTodoTool(event.name as string | undefined)) {
           todosStore.onTodoToolCompleted();
           activityStore.fetch();
@@ -830,41 +588,9 @@ function createAutonomousStore() {
         }
         break;
 
-      case 'tool_reload': {
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          const ttlSeconds = event.ttl_seconds ?? event.ttlSeconds;
-          chatStore.handleToolReload(
-            (event.tools as string[]) || [],
-            (event.ttl as string) || '',
-            typeof ttlSeconds === 'number' ? ttlSeconds : null,
-            event.source as string | undefined,
-            (event.skill_name as string | undefined) || (event.skillName as string | undefined),
-            event.reason as string | undefined
-          );
-        } else if (isOurTask) {
-          bufferPendingEvent(event);
-        }
+      case 'tool_reload':
         if (isSkillMutationReloadSource(event.source as string | undefined)) {
           refreshSkillStateAfterMutation(event.thread_id);
-        }
-        break;
-      }
-
-      case 'workspace_artifact':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          const toolId = event.tool_call_id as string | undefined;
-          const path = event.path as string | undefined;
-          const name = event.name as string | undefined;
-          if (toolId && path && name) {
-            chatStore.addToolCallArtifacts(toolId, [{
-              path,
-              name,
-              mimeType: (event.mime_type as string) || 'application/octet-stream',
-              sizeBytes: (event.size_bytes as number) || 0
-            }]);
-          }
-        } else if (isOurTask) {
-          bufferPendingEvent(event);
         }
         break;
 
@@ -979,14 +705,6 @@ function createAutonomousStore() {
         break;
       }
 
-      case 'response':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          chatStore.addResponseStep(event.content as string || '');
-        } else if (isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-
       case 'task_completed':
         // Always refresh these
         todosStore.fetch();
@@ -1001,84 +719,16 @@ function createAutonomousStore() {
           threadsStore.markThreadUnread(event.thread_id);
         }
 
-        if (
-          isCurrentThread &&
-          isOurTask &&
-          !activeMessagesByThread.has(event.thread_id) &&
-          !chatStore.isStreaming
-        ) {
-          replayPendingEventsForThread(event.thread_id);
-        }
-        const hadStreamingMessage = activeMessagesByThread.has(event.thread_id);
-
-        // Clear per-thread tracking
+        // Clear per-thread tracking. Transcript finalization is the attach
+        // path's job (the buffer's own done/error event ends the turn), and
+        // the sync poll reconciles the on-screen thread from history if this
+        // client never attached (backlog #90 slice 3).
         {
           const nextTasks = new Map(activeTasksByThread);
           nextTasks.delete(event.thread_id);
           activeTasksByThread = nextTasks;
-          const nextMsgs = new Map(activeMessagesByThread);
-          nextMsgs.delete(event.thread_id);
-          activeMessagesByThread = nextMsgs;
-          _pendingEvents.delete(event.thread_id);
         }
         threadsStore.setThreadActive(event.thread_id, false);
-
-        if (
-          isCurrentThread &&
-          isOurTask &&
-          chatStore.isStreaming &&
-          hadStreamingMessage &&
-          chatStore.bufferAttachedThreadId !== event.thread_id
-        ) {
-          // The buffer-attach guard mirrors canApplyStreamingEvent: while the
-          // turn-buffer replay owns this thread's rendering, a stale
-          // activeMessagesByThread binding from before the attach must not
-          // let this finalize (or error-paint) mid-attach; the buffer's own
-          // done/error event finalizes the message instead.
-          chatStore.setStreaming(false);
-
-          // Handle error case - task failed
-          if (event.error) {
-            const errorMsg = (event.error_message as string) || (event.content as string) || 'Task failed';
-            debugLog('[Autonomous] Task failed:', errorMsg);
-            chatStore.setLastMessageError(errorMsg);
-            chatStore.clearActiveToolCalls();
-            activeTaskId = null;
-            activeMessageId = null;
-            break;
-          }
-
-          // Reclassify trailing thinking as response (same as regular chat done handler)
-          chatStore.reclassifyThinkingAsResponse();
-
-          // Only set content from task_completed if nothing was streamed via steps.
-          const parsedContent = event.content as string;
-          const lastMsg = chatStore.messages[chatStore.messages.length - 1];
-          const hasResponseSteps = lastMsg?.steps?.some(s => s.type === 'response');
-          if (parsedContent && lastMsg?.role === 'assistant' && !hasResponseSteps) {
-            chatStore.addResponseStep(parsedContent);
-          }
-          chatStore.setLastMessageComplete();
-
-          chatStore.clearActiveToolCalls();
-          activeTaskId = null;
-          activeMessageId = null;
-        }
-
-        // If we were tracking this task, clear it
-        if (isOurTask) {
-          activeTaskId = null;
-          activeMessageId = null;
-        }
-
-        // Reload canonical history to fill gaps from mid-stream thread switch
-        if (isCurrentThread) {
-          api.getThreadHistory(event.thread_id).then((history) => {
-            if (threadsStore.currentThreadId === event.thread_id && !chatStore.isStreaming) {
-              chatStore.setMessages(history.messages);
-            }
-          }).catch(() => {});
-        }
         break;
 
       case 'webhook_message':
@@ -1227,34 +877,17 @@ function createAutonomousStore() {
         break;
       }
 
-      // ================================================================
-      // Mid-turn pending-prompt drain on an autonomous holder.
-      // The interactive path handles these in MainPanel.svelte for
-      // user-started turns. For TODO/trigger-started turns there is no
-      // interactive chatStream, so we have to convert queued prompts
-      // into real user bubbles here too.
-      // ================================================================
-      case 'prompt_injected': {
-        if (!isCurrentThread || !isOurTask) break;
-        // Flat wire (see the workflow cases above): `count` is top-level.
-        const injected = chatStore.consumeQueuedPrompts((event.count as number) ?? 0);
-        chatStore.flushStreamingBuffers();
-        chatStore.setLastMessageComplete();
-        chatStore.clearActiveToolCalls();
-        for (const p of injected) {
-          chatStore.addUserMessage(p.content);
-        }
-        chatStore.addAssistantMessage();
-        break;
-      }
-
+      case 'prompt_injected':
       case 'prompt_queued':
       case 'prompt_absorbed':
       case 'turn_halted':
       case 'fanout_dropped':
-        // Lifecycle signals already surfaced by the per-prompt queue stream
-        // in queueOnBusyThread(); acknowledged here so the default-branch
-        // debugLog doesn't flag them as unknown.
+        // Queue-lifecycle signals already surfaced elsewhere: the per-prompt
+        // queue stream in queueOnBusyThread() handles queue transitions, and
+        // the turn buffer carries prompt_injected so the attach path's
+        // interactive handler converts queued prompts into user bubbles.
+        // Acknowledged here so the default-branch debugLog doesn't flag
+        // them as unknown.
         break;
 
       default:
@@ -1269,32 +902,8 @@ function createAutonomousStore() {
     get reconnectAttempts() {
       return reconnectAttempts;
     },
-    get activeTaskId() {
-      return activeTaskId;
-    },
-    get isAutonomousStreaming() {
-      return activeTaskId !== null;
-    },
     connect,
-    disconnect,
-    hasActiveTask(threadId: string): boolean {
-      return activeTasksByThread.has(threadId);
-    },
-    getActiveTaskId(threadId: string): string | undefined {
-      return activeTasksByThread.get(threadId);
-    },
-    /**
-     * Join an in-flight autonomous turn for a thread that has just become
-     * visible: bind a streaming message and replay the buffered turn so far,
-     * then live events render. Called from the thread-switch recovery.
-     */
-    attachToThread(threadId: string) {
-      attachToThread(threadId);
-    },
-    /** Backward-compatible alias for attachToThread (older call sites). */
-    resumeStreamingForThread(threadId: string) {
-      attachToThread(threadId);
-    }
+    disconnect
   };
 }
 

@@ -1,66 +1,81 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  MAX_BUFFERED_EVENTS_PER_THREAD,
-  MAX_BUFFERED_CHARS_PER_THREAD,
-  markBufferOverflowIfNeeded,
-  type PendingBuffer,
-} from './autonomous.svelte';
+import { shouldRequestViewerAttach } from './autonomous.svelte';
+import { createChatStore } from './chat.svelte';
+import type { ThreadTurnStatus } from '$lib/types';
 
 /**
- * Per-thread replay-buffer cap (backlog #89). Mirrors the desktop store's
- * `markBufferOverflowIfNeeded` coverage: the pure overflow decision is the
- * genuinely new logic mobile gained, so it is what we pin. The buffer/replay
- * wiring around it is closure-internal and covered by `npm run check` (types).
+ * Autonomous turns render through the turn buffer attach path (backlog #90
+ * slice 3): the store consumes bus events for lifecycle only and hands the
+ * on-screen thread to the viewer attach on task_started / late-bound
+ * turn-output signals. The attach decision is the exported pure gate
+ * `shouldRequestViewerAttach` (imported here, so this tests the REAL rule,
+ * not a mirror); the request/consume plumbing (requestViewerAttach,
+ * bufferAttachedThreadId, watchLiveTurn) is covered by chat.test.ts and the
+ * chat panel. The store singleton's SSE wiring is closure-internal and
+ * covered by `npm run check` (types) plus the live verification procedure
+ * in the slice 3 plan.
  */
 
-function freshBuffer(): PendingBuffer {
-  return { events: [], chars: 0, overflowed: false };
+function liveTurn(overrides: Partial<ThreadTurnStatus> = {}): ThreadTurnStatus {
+  return {
+    turnId: 'turn-live',
+    state: 'live',
+    lastSeq: 3,
+    truncated: false,
+    userMessageId: 'g-1',
+    holderKind: 'autonomous',
+    sourceLabel: 'daily report',
+    userMessageInternal: true,
+    ...overrides,
+  };
 }
 
-describe('markBufferOverflowIfNeeded', () => {
-  it('does not overflow an under-cap buffer', () => {
-    const buf = freshBuffer();
-    buf.events = new Array(10).fill({ type: 'response', thread_id: 't', task_id: 'a', timestamp: '' });
-    buf.chars = 1000;
-    expect(markBufferOverflowIfNeeded(buf, 't')).toBe(false);
-    expect(buf.overflowed).toBe(false);
-    expect(buf.events.length).toBe(10);
+describe('shouldRequestViewerAttach (autonomous signals → viewer attach)', () => {
+  it('attaches a live, replayable turn on the open thread', () => {
+    expect(shouldRequestViewerAttach(liveTurn(), true, false)).toBe(true);
   });
 
-  it('overflows and drops events at the event-count cap', () => {
-    const buf = freshBuffer();
-    buf.events = new Array(MAX_BUFFERED_EVENTS_PER_THREAD).fill({
-      type: 'thinking', thread_id: 't', task_id: 'a', timestamp: '',
+  it('never fires for a background thread', () => {
+    expect(shouldRequestViewerAttach(liveTurn(), false, false)).toBe(false);
+  });
+
+  it('skips when this client is already streaming (own turn or active attach)', () => {
+    expect(shouldRequestViewerAttach(liveTurn(), true, true)).toBe(false);
+  });
+
+  it('skips a truncated live turn (cannot replay; settles from history)', () => {
+    expect(
+      shouldRequestViewerAttach(liveTurn({ truncated: true }), true, false)
+    ).toBe(false);
+  });
+
+  it('skips a finished turn (nothing live to watch)', () => {
+    expect(
+      shouldRequestViewerAttach(liveTurn({ state: 'done' }), true, false)
+    ).toBe(false);
+  });
+
+  it('skips when the backend has no turn block (older backend)', () => {
+    expect(shouldRequestViewerAttach(undefined, true, false)).toBe(false);
+    expect(shouldRequestViewerAttach(null, true, false)).toBe(false);
+  });
+});
+
+describe('viewer attach request is a signal, not a render', () => {
+  it('requestViewerAttach does not itself set streaming', () => {
+    // task_started must not flip the UI into streaming (the old firehose
+    // behavior that starved the attach path): the request only records the
+    // turn; the chat panel's watchLiveTurn consumer owns isStreaming.
+    const store = createChatStore();
+    store.requestViewerAttach('t-1', liveTurn());
+    expect(store.isStreaming).toBe(false);
+    expect(store.viewerAttachRequest).toMatchObject({
+      threadId: 't-1',
+      turnId: 'turn-live',
+      userMessageId: 'g-1',
+      holderKind: 'autonomous',
+      sourceLabel: 'daily report',
     });
-    buf.chars = 5000;
-    expect(markBufferOverflowIfNeeded(buf, 't')).toBe(true);
-    expect(buf.overflowed).toBe(true);
-    expect(buf.events).toEqual([]); // dropped to free memory
-  });
-
-  it('overflows at the char-budget cap even with few events', () => {
-    const buf = freshBuffer();
-    buf.events = [{ type: 'tool_result', thread_id: 't', task_id: 'a', timestamp: '' }];
-    buf.chars = MAX_BUFFERED_CHARS_PER_THREAD;
-    expect(markBufferOverflowIfNeeded(buf, 't')).toBe(true);
-    expect(buf.overflowed).toBe(true);
-    expect(buf.events).toEqual([]);
-  });
-
-  it('is idempotent once overflowed', () => {
-    const buf: PendingBuffer = { events: [], chars: 0, overflowed: true };
-    expect(markBufferOverflowIfNeeded(buf, 't')).toBe(true);
-    expect(markBufferOverflowIfNeeded(buf, 't')).toBe(true);
-  });
-
-  it('stays just under the boundary', () => {
-    const buf = freshBuffer();
-    buf.events = new Array(MAX_BUFFERED_EVENTS_PER_THREAD - 1).fill({
-      type: 'response', thread_id: 't', task_id: 'a', timestamp: '',
-    });
-    buf.chars = MAX_BUFFERED_CHARS_PER_THREAD - 1;
-    expect(markBufferOverflowIfNeeded(buf, 't')).toBe(false);
-    expect(buf.overflowed).toBe(false);
   });
 });

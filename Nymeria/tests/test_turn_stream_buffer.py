@@ -80,6 +80,26 @@ def test_byte_overflow_truncates_from_front():
     assert buf.first_available_seq > 1
 
 
+def test_overflow_logs_a_warning_once_per_turn(caplog):
+    """The truncation latch emits exactly one warning (backlog #90 slice 3).
+
+    ``truncated`` is in-memory only and clients that hit it silently fall
+    back to history, so this log line is the only operator-visible evidence
+    that a turn outgrew the buffer. One line per turn, not per evicted event.
+    """
+    buf = TurnStreamBuffer("t-overflow", "alice")
+    with caplog.at_level("WARNING", logger="nymeria.core.turn_stream_buffer"):
+        for i in range(MAX_EVENTS_PER_TURN + 50):
+            buf.append({"type": "response", "content": str(i)})
+    overflow_records = [
+        r for r in caplog.records if "overflow" in r.getMessage()
+    ]
+    assert len(overflow_records) == 1
+    message = overflow_records[0].getMessage()
+    assert "t-overflow" in message
+    assert buf.turn_id in message
+
+
 def test_finish_is_terminal_and_idempotent():
     buf = TurnStreamBuffer("t1", "alice")
     assert buf.state == STATE_LIVE

@@ -1,6 +1,5 @@
 import { threadsStore } from './threads.svelte';
 import { chatStore } from './chat.svelte';
-import { autonomousStore } from './autonomous.svelte';
 import { startSyncPoll } from './syncPoll.svelte';
 import { api, hasActiveStreamForThread } from '$lib/services/api.svelte';
 
@@ -57,12 +56,11 @@ export async function switchToThread(
     // this client started streams via chatStore alone (MainPanel's
     // chatStream loop); any other live holder turn (another client's turn,
     // an autonomous turn, or this client's own turn surviving a dropped
-    // stream) is watched through the turn buffer attach path; the
-    // autonomous-store replay remains only as the fallback for autonomous
-    // turns with no attachable buffer (buffer expired/truncated, turns
-    // predating an API restart, or an older backend).
+    // stream) is watched through the turn buffer attach path (the single
+    // transcript renderer since backlog #90 slice 3). An unattachable turn
+    // (truncated buffer, pre-restart turn, older backend without the status
+    // `turn` block) settles from history at task end / the next sync poll.
     const hasInteractiveStream = hasActiveStreamForThread(threadId);
-    const hasAutonomousTask = autonomousStore.hasActiveTask(threadId);
 
     if (hasInteractiveStream) {
       // Only reuse the last assistant message when it represents the in-flight
@@ -83,15 +81,9 @@ export async function switchToThread(
       // Watch the live holder turn (backlog #87; autonomous turns since
       // #90 slice 2): MainPanel consumes the request, trims the hydrated
       // turn-so-far at the anchor, and replays + tails the turn buffer.
-      // Preferred over the autonomous-store replay because the buffer
-      // carries the full turn from seq 0 with server-side retention. A
-      // truncated buffer cannot replay, so it falls through to the
-      // autonomous-store path instead of stalling on an unattachable turn.
+      // A truncated buffer cannot replay, so skip the attach instead of
+      // stalling on an unattachable turn.
       chatStore.requestViewerAttach(threadId, status.turn);
-    } else if (hasAutonomousTask) {
-      // Fallback: bind a streaming message and replay the client-side
-      // buffered turn so far, then live bus events render.
-      autonomousStore.attachToThread(threadId);
     }
 
     return { success: true };

@@ -246,6 +246,29 @@ export class ApiBase {
     return new Date(timestamp);
   }
 
+  /**
+   * Parse the backend's JSON error `detail` string, if present. No side
+   * effects. Returns null when the body is missing, non-JSON, or `detail` is
+   * not a string (FastAPI validation errors arrive as a list, which we
+   * deliberately do not surface verbatim). Mirrors desktop base.ts.
+   */
+  protected async _parseDetail(response: Response): Promise<string | null> {
+    const detail = await response.json().catch(() => ({}));
+    return typeof detail?.detail === 'string' ? detail.detail : null;
+  }
+
+  /**
+   * Non-toasting error extractor for endpoints whose callers render an inline
+   * error. Surfaces the backend `detail` when present, else a
+   * "<fallback> (status)" string, so the downstream humanizer has a real
+   * message to work with. Mirrors desktop base.ts (ported for the mirrored
+   * ui-prompts API, which referenced it without the base ever gaining it).
+   */
+  protected async _extractError(response: Response, fallback: string): Promise<string> {
+    const detailMessage = await this._parseDetail(response);
+    return detailMessage || `${fallback} (${response.status})`;
+  }
+
   // =========================================================================
   // Custom Tools API
   // =========================================================================
