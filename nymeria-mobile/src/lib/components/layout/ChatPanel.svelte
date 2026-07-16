@@ -314,19 +314,27 @@
     }
   });
 
-  // Live-attach request (backlog #87): navigation saw an in-flight holder
-  // turn this client did not start when the thread was opened. Same
-  // consumed-counter pattern as resume: the store value is a session-long
-  // singleton, so initialize the high-water mark from it to keep a panel
-  // remount from replaying a stale request.
+  // Live-attach request (backlog #87): navigation (thread open) or the
+  // autonomous store (task_started / turn-output signals on the open thread,
+  // backlog #90 slice 3) saw an in-flight holder turn this client did not
+  // start. Same consumed-counter pattern as resume: the store value is a
+  // session-long singleton, so initialize the high-water mark from it to
+  // keep a panel remount from replaying a stale request.
   let consumedViewerAttachSeq = chatStore.viewerAttachRequest?.seq ?? 0;
   $effect(() => {
     const req = chatStore.viewerAttachRequest;
-    if (req && req.seq > consumedViewerAttachSeq) {
-      consumedViewerAttachSeq = req.seq;
-      if (!chatStore.isStreaming && threadsStore.currentThreadId === req.threadId) {
-        void watchLiveTurn(req.threadId, req.turnId, req.userMessageId);
-      }
+    if (!req || req.seq <= consumedViewerAttachSeq) return;
+    // Defer, without consuming, while a thread switch is loading history:
+    // watchLiveTurn would bail on isLoadingHistory and the request would be
+    // swallowed (navigation's own status snapshot predates a turn that
+    // started mid-load, and mobile has no sync poll to re-fire it). Reading
+    // isLoadingHistory here makes it a dependency: the effect re-runs when
+    // the load completes and consumes the request then (backlog #90 slice 3
+    // review).
+    if (chatStore.isLoadingHistory) return;
+    consumedViewerAttachSeq = req.seq;
+    if (!chatStore.isStreaming && threadsStore.currentThreadId === req.threadId) {
+      void watchLiveTurn(req.threadId, req.turnId, req.userMessageId);
     }
   });
 
@@ -440,10 +448,11 @@
       }
     };
     if (!opts.silentFirstAttempt) showReconnecting();
-    // The buffer replay is this thread's single renderer for the duration:
-    // the autonomous store stands down on bus transcript events for it
-    // (canApplyStreamingEvent), so an autonomous turn watched via attach
-    // never renders twice (backlog #90 slice 2).
+    // The buffer replay is this thread's single renderer for the duration.
+    // The autonomous store never paints transcripts from the bus anymore
+    // (backlog #90 slice 3), so no double-render is possible; the flag now
+    // serves as this recovery loop's self-guard (see the finally below) and
+    // marks the attach for anything that wants to know.
     chatStore.setBufferAttachedThread(threadId);
     let attempt = 0;
     try {

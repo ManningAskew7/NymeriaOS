@@ -11,13 +11,13 @@ import { chatStore } from './chat.svelte';
 import { threadsStore } from './threads.svelte';
 import { activityStore } from './activity.svelte';
 import { todosStore } from './todos.svelte';
-import { threadConfigStore } from './threadConfig.svelte';
 import { notificationStore } from './notifications.svelte';
 import { workflowsStore } from './workflows.svelte';
 import { api } from '$lib/services/api.svelte';
 import { isTodoTool } from '$lib/utils/todoTools';
 import { Network } from '@capacitor/network';
 import type { PluginListenerHandle } from '@capacitor/core';
+import type { ThreadTurnStatus } from '$lib/types';
 
 interface AutonomousEvent {
   type: string;
@@ -27,14 +27,11 @@ interface AutonomousEvent {
   [key: string]: unknown;
 }
 
-function classifyAutonomousSource(event: AutonomousEvent): string {
-  if (event.todo_id) return 'scheduler';
-  if (event.source === 'watchdog') return 'watchdog';
-  if (event.trigger_id || event.trigger_name) return 'trigger';
-  return 'autonomous';
-}
-
-const STREAMING_AUTONOMOUS_EVENT_TYPES = new Set([
+// Turn-output events drive LIFECYCLE only (task late-binding, thread-list
+// spinners, the live-attach signal): the turn buffer attach path is the
+// single transcript renderer for autonomous turns (backlog #90 slice 3),
+// so these events are never painted into the chat view from the bus.
+const TURN_OUTPUT_EVENT_TYPES = new Set([
   'thinking',
   'tool_call_delta',
   'tool_call',
@@ -50,43 +47,28 @@ const BASE_RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
 const IDLE_TIMEOUT_MS = 30000;
 
-// Per-thread cap on the replay buffer (backlog #89, mirrors the desktop store).
-// Streaming events for a thread that is not on screen are buffered so switching
-// into it can replay what already streamed. These bounds cover a long
-// multi-tool turn while tripping on a runaway turn; on overflow the buffer is
-// dropped and the join falls back to the history snapshot (graceful
-// degradation to the pre-replay behavior).
-export const MAX_BUFFERED_EVENTS_PER_THREAD = 4000;
-export const MAX_BUFFERED_CHARS_PER_THREAD = 2_000_000;
-
-export interface PendingBuffer {
-  events: AutonomousEvent[];
-  chars: number;
-  overflowed: boolean;
-}
-
 /**
- * Flip a thread's replay buffer to overflowed once it exceeds either bound.
- * Returns true if overflowed (caller should stop appending). The events array
- * is dropped to free memory; the join then replays nothing and falls back to
- * the history snapshot. Pure (module-scoped) so it is unit testable.
+ * Attach-gate for autonomous turn signals (backlog #90 slice 3): a bus
+ * signal (task_started, a late-bound first output event, an SSE reconnect
+ * with a task in flight) hands the on-screen thread to the viewer attach
+ * only when the turn is live and replayable and this client is not already
+ * rendering it (own interactive turn or an attach in progress). A truncated
+ * buffer cannot replay, so attaching would park the panel on "Reconnecting";
+ * skip and let history reconciliation settle the turn instead. Pure
+ * (module-scoped) so it is unit testable with the real rule.
  */
-export function markBufferOverflowIfNeeded(buf: PendingBuffer, threadId = ''): boolean {
-  if (buf.overflowed) return true;
-  if (
-    buf.events.length >= MAX_BUFFERED_EVENTS_PER_THREAD ||
-    buf.chars >= MAX_BUFFERED_CHARS_PER_THREAD
-  ) {
-    buf.overflowed = true;
-    buf.events = [];
-    console.warn(
-      `[Autonomous] Replay buffer overflow for thread ${threadId} ` +
-      `(events>=${MAX_BUFFERED_EVENTS_PER_THREAD} or chars>=${MAX_BUFFERED_CHARS_PER_THREAD}); ` +
-      `will fall back to history on join`
-    );
-    return true;
-  }
-  return false;
+export function shouldRequestViewerAttach(
+  turn: ThreadTurnStatus | null | undefined,
+  isCurrentThread: boolean,
+  isStreaming: boolean
+): turn is ThreadTurnStatus {
+  return Boolean(
+    isCurrentThread &&
+    !isStreaming &&
+    turn &&
+    turn.state === 'live' &&
+    !turn.truncated
+  );
 }
 
 function createAutonomousStore() {
@@ -103,17 +85,12 @@ function createAutonomousStore() {
   let networkOnline = true;
   let networkListener: PluginListenerHandle | null = null;
   let networkListenerReady = false;
-  let activeTaskId = $state<string | null>(null);
-  let activeMessageId = $state<string | null>(null);
 
-  // Multi-thread task tracking
+  // Multi-thread task tracking: thread_id -> task_id for in-flight autonomous
+  // turns. Lifecycle only (thread-list spinners via setThreadActive, the
+  // late-binding dedupe, task_completed cleanup); transcript rendering is
+  // owned by the turn buffer attach path (backlog #90 slice 3).
   let activeTasksByThread = $state<Map<string, string>>(new Map());
-  let activeMessagesByThread = $state<Map<string, string>>(new Map());
-
-  // Buffer events during thread switch gap (bounded per-thread; see
-  // markBufferOverflowIfNeeded, backlog #89).
-  let _pendingEvents = new Map<string, PendingBuffer>();
-  let _pendingReplayTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function getStreamUrl(): string {
     const baseUrl = configStore.apiUrl.replace(/\/$/, '');
@@ -172,6 +149,13 @@ function createAutonomousStore() {
       api.getThreadHistory(currentThread).then((history) => {
         if (threadsStore.currentThreadId === currentThread && !chatStore.isStreaming) {
           chatStore.setMessages(history.messages);
+          // If a turn is still in flight on this thread, re-join it through
+          // the turn buffer attach (its replay-from-seq-0 supersedes the
+          // history snapshot just applied); a task registered before the
+          // disconnect gets no fresh task_started, so this is its re-entry.
+          if (activeTasksByThread.has(currentThread)) {
+            void requestAttachForLiveTurn(currentThread);
+          }
         }
       }).catch(() => {});
       api.getThreadContextStats(currentThread).then((stats) => {
@@ -422,10 +406,11 @@ function createAutonomousStore() {
     networkListener = null;
     networkListenerReady = false;
 
-    for (const timer of _pendingReplayTimers.values()) {
-      clearTimeout(timer);
-    }
-    _pendingReplayTimers.clear();
+    // Intentional disconnect (logout / teardown): drop per-thread tracking so
+    // a later connect starts clean. The involuntary reconnect path does NOT
+    // call disconnect(), so task tracking survives a reconnect and
+    // catchUpAfterReconnect resyncs from history.
+    activeTasksByThread = new Map();
     connected = false;
   }
 
@@ -458,102 +443,30 @@ function createAutonomousStore() {
     }
   }
 
-  function bufferPendingEvent(event: AutonomousEvent) {
-    // While the chat panel renders this thread from the turn buffer, bus
-    // transcript events are redundant (the buffer carries the full turn):
-    // drop them instead of queueing, or the pending replay would repaint
-    // the whole turn as a duplicate once the attach ends (backlog #90).
-    if (chatStore.bufferAttachedThreadId === event.thread_id) return;
-    let buf = _pendingEvents.get(event.thread_id);
-    if (!buf) {
-      buf = { events: [], chars: 0, overflowed: false };
-      _pendingEvents.set(event.thread_id, buf);
-    }
-    if (buf.overflowed) return;
-    buf.events.push(event);
-    buf.chars += JSON.stringify(event).length;
-    markBufferOverflowIfNeeded(buf, event.thread_id);
-    schedulePendingReplay(event.thread_id);
-  }
-
-  function schedulePendingReplay(threadId: string) {
-    if (_pendingReplayTimers.has(threadId)) return;
-
-    const timer = setTimeout(() => {
-      _pendingReplayTimers.delete(threadId);
-      replayPendingEventsForThread(threadId);
-    }, 250);
-    _pendingReplayTimers.set(threadId, timer);
-  }
-
-  function ensureStreamingForCurrentTask(event: AutonomousEvent): boolean {
-    const taskId = event.task_id as string | undefined;
-    // While a thread switch is loading history, the message list is about to be
-    // replaced, so do not bind a streaming message yet (that binding would be
-    // wiped by the history swap). Live turns are re-rendered by the #87
-    // viewer-attach path (navigation's requestViewerAttach); this guard just
-    // avoids a bind-then-wipe flicker during the swap (backlog #89).
-    if (
-      !taskId ||
-      event.thread_id !== threadsStore.currentThreadId ||
-      chatStore.isStreaming ||
-      chatStore.isLoadingHistory
-    ) {
-      return false;
-    }
-
-    activeTaskId = taskId;
-    let messageId = activeMessagesByThread.get(event.thread_id);
-    if (!messageId) {
-      messageId = chatStore.addAssistantMessage();
-      activeMessagesByThread = new Map(activeMessagesByThread).set(event.thread_id, messageId);
-    }
-    activeMessageId = messageId;
-    chatStore.setStreaming(true);
-    return true;
-  }
-
-  function canApplyStreamingEvent(event: AutonomousEvent, isCurrentThread: boolean, isOurTask: boolean): boolean {
-    // Stand down while the chat panel renders this thread from the turn
-    // buffer (viewer attach / dropped-stream recovery): the replay is the
-    // single renderer, and a binding left in activeMessagesByThread from
-    // before the attach would otherwise double-render the turn (backlog
-    // #90 slice 2). Lifecycle handling (task state, dashboards, thread-list
-    // spinners) does not pass through here and keeps working.
-    if (chatStore.bufferAttachedThreadId === event.thread_id) return false;
-    return (
-      isCurrentThread &&
-      isOurTask &&
-      chatStore.isStreaming &&
-      activeMessagesByThread.has(event.thread_id)
-    );
-  }
-
-  function replayPendingEventsForThread(threadId: string) {
-    if (threadsStore.currentThreadId !== threadId) return;
-    // Defer while history is loading so the 250ms replay timer does not apply
-    // buffered events into a list the history swap is about to replace. Unlike
-    // desktop, mobile has no post-load autonomous drain (attachToThread); the
-    // #87 viewer-attach path is the authoritative live-turn renderer, and any
-    // gap buffer left here is discarded at task end (backlog #89).
-    if (chatStore.isLoadingHistory) return;
-    // The turn-buffer attach replays the turn from seq 0, so anything queued
-    // here (the pre-attach switch gap) is already covered: discard it.
-    if (chatStore.bufferAttachedThreadId === threadId) {
-      _pendingEvents.delete(threadId);
-      return;
-    }
-
-    const taskId = activeTasksByThread.get(threadId);
-    if (taskId) activeTaskId = taskId;
-
-    const pending = _pendingEvents.get(threadId);
-    if (!pending || pending.overflowed || pending.events.length === 0) return;
-
-    const events = pending.events;
-    _pendingEvents.delete(threadId);
-    for (const evt of events) {
-      handleEvent(evt);
+  /**
+   * Ask the chat panel to live-attach to this thread's holder turn (backlog
+   * #90 slice 3). The turn buffer attach is the single transcript renderer
+   * for autonomous turns, so bus signals (task_started, a late-bound first
+   * output event, an SSE reconnect with a task in flight) request an attach
+   * instead of painting the transcript from bus chunks. One cheap status
+   * fetch resolves the `turn` block the attach needs. No 404 race: every
+   * publish site fires task_started from inside its on_chunk callback, and
+   * the stream tee records the chunk into the buffer before on_chunk runs
+   * (pinned by test_stream_bridge.py), so the buffer exists and is live
+   * before the signal reaches any client.
+   */
+  async function requestAttachForLiveTurn(threadId: string) {
+    if (threadsStore.currentThreadId !== threadId || chatStore.isStreaming) return;
+    try {
+      const status = await api.getThreadStatus(threadId);
+      const isCurrentThread = threadsStore.currentThreadId === threadId;
+      if (shouldRequestViewerAttach(status.turn, isCurrentThread, chatStore.isStreaming)) {
+        chatStore.requestViewerAttach(threadId, status.turn);
+      }
+    } catch {
+      // Best-effort: navigation owns the fallback attach entry point, and
+      // task_completed reconciles from history; never break the bus loop on
+      // a status fetch.
     }
   }
 
@@ -562,20 +475,24 @@ function createAutonomousStore() {
 
     const currentThreadId = threadsStore.currentThreadId;
     const isCurrentThread = event.thread_id === currentThreadId;
-    let isOurTask = activeTaskId === event.task_id ||
+    const isRegisteredTask =
       activeTasksByThread.get(event.thread_id) === event.task_id;
-    const isStreamingAutonomousEvent = STREAMING_AUTONOMOUS_EVENT_TYPES.has(event.type);
+    const isTurnOutputEvent = TURN_OUTPUT_EVENT_TYPES.has(event.type);
 
-    if (isCurrentThread && isStreamingAutonomousEvent && event.task_id && !isOurTask) {
+    // Late-bind the task for ANY thread on its first turn-output event, not
+    // just the current one. A background thread (or one whose task_started we
+    // missed after an SSE reconnect) must be registered so the thread-list
+    // spinner is reliable. For the on-screen thread this doubles as the
+    // attach trigger when the task_started signal itself was missed.
+    // setThreadActive is thread-keyed and safe ungated.
+    if (isTurnOutputEvent && event.task_id && !isRegisteredTask) {
       activeTasksByThread = new Map(activeTasksByThread).set(
         event.thread_id, event.task_id as string
       );
       threadsStore.setThreadActive(event.thread_id, true);
-      isOurTask = true;
-    }
-
-    if (isCurrentThread && isStreamingAutonomousEvent && isOurTask && !chatStore.isStreaming) {
-      ensureStreamingForCurrentTask(event);
+      if (isCurrentThread) {
+        void requestAttachForLiveTurn(event.thread_id);
+      }
     }
 
     switch (event.type) {
@@ -590,142 +507,39 @@ function createAutonomousStore() {
         activeTasksByThread = new Map(activeTasksByThread).set(
           event.thread_id, event.task_id as string
         );
-        _pendingEvents.delete(event.thread_id);
         threadsStore.setThreadActive(event.thread_id, true);
 
-        if (isCurrentThread && !chatStore.isStreaming) {
-          const threadCfg = threadConfigStore.getConfig(event.thread_id);
-          const effective =
-            configStore.showAutonomousPrompts || Boolean(threadCfg?.showAutonomousPrompts);
-          if (effective && event.prompt && !event.callable_name) {
-            const sourceLabel = classifyAutonomousSource(event);
-            chatStore.addAutonomousPromptMessage(event.prompt as string, sourceLabel);
-          }
-
-          ensureStreamingForCurrentTask(event);
+        // Turn started on the thread the user is looking at: watch it live
+        // through the turn buffer attach (backlog #90 slice 3). The wakeup
+        // prompt bubble is no longer painted client-side; the attach anchors
+        // to history, which carries it with show_autonomous_prompts honored
+        // server-side (hidden stub vs real bubble, autonomous_source badge
+        // included).
+        if (isCurrentThread) {
+          void requestAttachForLiveTurn(event.thread_id);
         }
         break;
 
+      // Turn-output transcript events: consumed for lifecycle only (the
+      // late-binding above). Rendering is owned by the turn buffer attach
+      // path (backlog #90 slice 3); the buffer replays the full turn from
+      // seq 0, so nothing is painted or queued from the bus.
       case 'thinking':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          chatStore.addThinkingStep(event.content as string || 'Thinking…');
-        } else if (isCurrentThread && isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-
       case 'provider_retry':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          if (event.rewound) chatStore.rewindLastAssistantToStablePoint();
-          chatStore.addProviderStatusStep({
-            providerStatus: 'retry',
-            provider: event.provider as string | undefined,
-            model: event.model as string | undefined,
-            attempt: event.attempt as number | undefined,
-            maxRetries: event.max_retries as number | undefined,
-            delaySeconds: event.delay_seconds as number | undefined,
-            reason: event.reason as string | undefined,
-            httpStatus: event.http_status as number | null | undefined,
-            rewound: event.rewound as boolean | undefined,
-            streamChunks: event.stream_chunks as number | undefined,
-          });
-        } else if (isCurrentThread && isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-
       case 'provider_fallback':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          if (event.rewound) chatStore.rewindLastAssistantToStablePoint();
-          chatStore.addProviderStatusStep({
-            providerStatus: 'fallback',
-            fromProvider: event.from_provider as string | undefined,
-            fromModel: event.from_model as string | undefined,
-            toProvider: event.to_provider as string | undefined,
-            toModel: event.to_model as string | undefined,
-            holdSeconds: event.hold_seconds as number | undefined,
-            expiresAt: event.expires_at as string | null | undefined,
-            reason: event.reason as string | undefined,
-            httpStatus: event.http_status as number | null | undefined,
-            rewound: event.rewound as boolean | undefined,
-            streamChunks: event.stream_chunks as number | undefined,
-          });
-        } else if (isCurrentThread && isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-
+      case 'tool_call_delta':
       case 'tool_call':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          const toolId = (event.id as string) || `${event.name}-${Date.now()}`;
-          chatStore.addToolCallStep(
-            toolId,
-            event.name as string,
-            (event.args as Record<string, unknown>) || {},
-            typeof event.timeout_seconds === 'number' ? event.timeout_seconds : undefined
-          );
-        } else if (isCurrentThread && isOurTask) {
-          bufferPendingEvent(event);
-        }
+      case 'tool_reload':
+      case 'workspace_artifact':
+      case 'response':
         break;
 
       case 'tool_result':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          chatStore.updateToolCallStepResult(
-            event.id as string,
-            event.result as string || '',
-            'success',
-            typeof event.duration_ms === 'number' ? event.duration_ms : undefined
-          );
-        } else if (isCurrentThread && isOurTask) {
-          bufferPendingEvent(event);
-        }
+        // Dashboard side effects keyed off the tool name (rendering is the
+        // attach path's job).
         if (isTodoTool(event.name as string | undefined)) {
           todosStore.onTodoToolCompleted();
           activityStore.fetch();
-        }
-        break;
-
-      case 'tool_reload': {
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          const ttlSeconds = event.ttl_seconds ?? event.ttlSeconds;
-          chatStore.handleToolReload(
-            (event.tools as string[]) || [],
-            (event.ttl as string) || '',
-            typeof ttlSeconds === 'number' ? ttlSeconds : null,
-            event.source as string | undefined,
-            (event.skill_name as string | undefined) || (event.skillName as string | undefined),
-            event.reason as string | undefined
-          );
-        } else if (isCurrentThread && isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-      }
-
-      case 'workspace_artifact':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          const toolId = event.tool_call_id as string | undefined;
-          const path = event.path as string | undefined;
-          const name = event.name as string | undefined;
-          if (toolId && path && name) {
-            chatStore.addToolCallArtifacts(toolId, [{
-              path,
-              name,
-              mimeType: (event.mime_type as string) || 'application/octet-stream',
-              sizeBytes: (event.size_bytes as number) || 0
-            }]);
-          }
-        } else if (isCurrentThread && isOurTask) {
-          bufferPendingEvent(event);
-        }
-        break;
-
-      case 'response':
-        if (canApplyStreamingEvent(event, isCurrentThread, isOurTask)) {
-          chatStore.addResponseStep(event.content as string || '');
-        } else if (isCurrentThread && isOurTask) {
-          bufferPendingEvent(event);
         }
         break;
 
@@ -737,69 +551,20 @@ function createAutonomousStore() {
         }
         refreshThreadTaskCounts();
 
-        if (
-          isCurrentThread &&
-          isOurTask &&
-          !activeMessagesByThread.has(event.thread_id) &&
-          !chatStore.isStreaming
-        ) {
-          replayPendingEventsForThread(event.thread_id);
-        }
-        const hadStreamingMessage = activeMessagesByThread.has(event.thread_id);
-
+        // Clear per-thread tracking. Transcript finalization is the attach
+        // path's job (the buffer's own done/error event ends the turn).
         {
           const nextTasks = new Map(activeTasksByThread);
           nextTasks.delete(event.thread_id);
           activeTasksByThread = nextTasks;
-          const nextMsgs = new Map(activeMessagesByThread);
-          nextMsgs.delete(event.thread_id);
-          activeMessagesByThread = nextMsgs;
-          _pendingEvents.delete(event.thread_id);
         }
         threadsStore.setThreadActive(event.thread_id, false);
 
-        if (
-          isCurrentThread &&
-          isOurTask &&
-          chatStore.isStreaming &&
-          hadStreamingMessage &&
-          chatStore.bufferAttachedThreadId !== event.thread_id
-        ) {
-          // The buffer-attach guard mirrors canApplyStreamingEvent: while the
-          // turn-buffer replay owns this thread's rendering, a stale
-          // activeMessagesByThread binding from before the attach must not
-          // let this finalize (or error-paint) mid-attach; the buffer's own
-          // done/error event finalizes the message instead.
-          chatStore.setStreaming(false);
-
-          if (event.error) {
-            const errorMsg = (event.error_message as string) || (event.content as string) || 'Task failed';
-            chatStore.setLastMessageError(errorMsg);
-            chatStore.clearActiveToolCalls();
-            activeTaskId = null;
-            activeMessageId = null;
-            break;
-          }
-
-          chatStore.reclassifyThinkingAsResponse();
-
-          const parsedContent = event.content as string;
-          const lastMsg = chatStore.messages[chatStore.messages.length - 1];
-          const hasResponseSteps = lastMsg?.steps?.some(s => s.type === 'response');
-          if (parsedContent && lastMsg?.role === 'assistant' && !hasResponseSteps) {
-            chatStore.addResponseStep(parsedContent);
-          }
-          chatStore.setLastMessageComplete();
-          chatStore.clearActiveToolCalls();
-          activeTaskId = null;
-          activeMessageId = null;
-        }
-
-        if (isOurTask) {
-          activeTaskId = null;
-          activeMessageId = null;
-        }
-
+        // Terminal reconcile from canonical history. Mobile keeps this
+        // (unlike desktop, whose sync poll owns reconciliation): with no
+        // poll, this is the only settle path when the attach never ran
+        // (missed signals, a failed status fetch, an unattachable turn).
+        // The isStreaming guard keeps it off an attach still in progress.
         if (isCurrentThread) {
           api.getThreadHistory(event.thread_id).then((history) => {
             if (threadsStore.currentThreadId === event.thread_id && !chatStore.isStreaming) {
@@ -881,19 +646,8 @@ function createAutonomousStore() {
   return {
     get connected() { return connected; },
     get reconnectAttempts() { return reconnectAttempts; },
-    get activeTaskId() { return activeTaskId; },
-    get isAutonomousStreaming() { return activeTaskId !== null; },
     connect,
-    disconnect,
-    hasActiveTask(threadId: string): boolean {
-      return activeTasksByThread.has(threadId);
-    },
-    getActiveTaskId(threadId: string): string | undefined {
-      return activeTasksByThread.get(threadId);
-    },
-    resumeStreamingForThread(threadId: string) {
-      replayPendingEventsForThread(threadId);
-    }
+    disconnect
   };
 }
 

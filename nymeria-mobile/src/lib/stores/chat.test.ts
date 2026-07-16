@@ -637,32 +637,6 @@ describe('chatStore: live-attach viewer support (backlog #87)', () => {
     expect(store.bufferAttachedThreadId).toBeNull();
   });
 
-  it('buffer-attach stand-down guards (mirrors autonomous.svelte.ts)', () => {
-    // While a thread renders from the turn buffer, the autonomous store must
-    // neither queue its bus transcript events (bufferPendingEvent drops
-    // them) nor let task_completed finalize through a stale binding. Update
-    // alongside autonomous.svelte.ts.
-    const shouldQueuePending = (eventThreadId: string) =>
-      store.bufferAttachedThreadId !== eventThreadId;
-    const shouldFinalizeFromTaskCompleted = (
-      eventThreadId: string,
-      hadStreamingMessage: boolean,
-    ) =>
-      store.isStreaming &&
-      hadStreamingMessage &&
-      store.bufferAttachedThreadId !== eventThreadId;
-
-    store.setStreaming(true);
-    expect(shouldQueuePending('t-watch')).toBe(true);
-    expect(shouldFinalizeFromTaskCompleted('t-watch', true)).toBe(true);
-
-    store.setBufferAttachedThread('t-watch');
-    expect(shouldQueuePending('t-watch')).toBe(false);
-    expect(shouldFinalizeFromTaskCompleted('t-watch', true)).toBe(false);
-    // Other threads are unaffected.
-    expect(shouldQueuePending('t-other')).toBe(true);
-    expect(shouldFinalizeFromTaskCompleted('t-other', true)).toBe(true);
-  });
 });
 
 describe('chatStore: turn-paused card + resume request (backlog #27)', () => {

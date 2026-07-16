@@ -72,8 +72,8 @@ export async function switchToThread(
       // (backlog #87). ChatPanel consumes the request, trims the hydrated
       // turn-so-far at the anchor (hidden-wakeup stubs included), and
       // replays + tails the turn buffer. A truncated buffer cannot replay,
-      // so skip the attach and let the autonomous bus events render the
-      // turn instead of stalling on an unattachable one.
+      // so skip the attach instead of stalling on an unattachable turn; the
+      // thread settles from history at task end (backlog #90 slice 3).
       chatStore.requestViewerAttach(threadId, status.turn);
     }
 

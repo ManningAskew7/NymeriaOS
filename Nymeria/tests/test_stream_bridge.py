@@ -552,6 +552,51 @@ def test_stream_and_collect_no_buffer_when_turn_never_holds_lock():
     assert get_turn_stream_registry().get("t-queued") is None
 
 
+def test_stream_and_collect_buffers_each_chunk_before_on_chunk_fires():
+    """Pin the tee-before-callback ordering (backlog #90 slice 3).
+
+    Every autonomous publish site (ticker, trigger manager, thread agent
+    executor, dreaming, watchdog) fires its ``task_started`` bus event from
+    inside its ``on_chunk`` callback. GUI clients attach to the turn buffer
+    on that signal, so by the time ``on_chunk`` runs for any chunk the
+    buffer MUST already exist, be live, and contain that chunk; otherwise
+    the attach could race a buffer that does not exist yet. The ordering is
+    currently guaranteed by ``stream_and_collect`` recording into the tee
+    before invoking ``on_chunk``: this test makes that load-bearing order
+    explicit instead of emergent.
+    """
+    agent = _HolderAgent([
+        {"type": "thinking", "content": "hm"},
+        {"type": "response", "content": "done"},
+    ])
+    observed: list[tuple[str, str, str]] = []
+
+    def on_chunk(chunk, collection):
+        buffer = get_turn_stream_registry().get("t-order")
+        assert buffer is not None, "buffer missing when on_chunk fired"
+        types = [json.loads(payload)["type"] for _, payload in buffer._entries]
+        assert types, "buffer empty when on_chunk fired"
+        observed.append((chunk["type"], buffer.state, types[-1]))
+
+    stream_and_collect(
+        agent,
+        astream_kwargs={
+            "message": "wake",
+            "thread_id": "t-order",
+            "user_id": "owner",
+            "_is_self_invoke": True,
+        },
+        on_chunk=on_chunk,
+    )
+
+    # Each callback saw a live buffer whose newest entry was the very chunk
+    # it was invoked with (turn_started precedes the first one).
+    assert observed == [
+        ("thinking", "live", "thinking"),
+        ("response", "live", "response"),
+    ]
+
+
 def test_stream_and_collect_preserves_caller_anchor_and_holder_callback():
     fired = []
     agent = _HolderAgent([{"type": "response", "content": "ok"}])

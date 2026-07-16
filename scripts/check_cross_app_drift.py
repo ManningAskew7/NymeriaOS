@@ -56,6 +56,7 @@ EXACT_MATCH: set[str] = {
     "lib/services/api/index.ts",
     "lib/services/api/ui-prompts.ts",
     "lib/services/api/workflows.ts",
+    "lib/stores/autonomous.test.ts",
     "lib/stores/workflows.svelte.ts",
     "lib/utils/fileProcessing.ts",
     "lib/utils/hooks.ts",
@@ -197,10 +198,10 @@ KNOWN_DRIFT: set[str] = {
     "lib/utils/rewind.ts",
     "lib/utils/rewind.test.ts",
     "lib/stores/chat.test.ts",
-    # Autonomous store + its buffer-cap test diverge per platform (backlog #89
-    # added the mobile buffer cap mirroring desktop; the store itself is
-    # KNOWN_DRIFT above, so its test is too).
-    "lib/stores/autonomous.test.ts",
+    # (The autonomous store stays KNOWN_DRIFT above, but its test is
+    # EXACT_MATCH since backlog #90 slice 3: both apps export the identical
+    # pure attach gate, and the test exercises only that plus the shared
+    # chat-store request plumbing.)
 }
 
 SCAN_EXTENSIONS = {".ts", ".svelte", ".css"}
