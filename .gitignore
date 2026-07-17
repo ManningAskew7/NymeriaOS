@@ -137,6 +137,11 @@ initial-load.png
 /Nymeria/docker-compose.hexstrike.yml
 /Nymeria/docker/hexstrike/
 
+# === Operator-local compose override (never ship deployment-specific infra) ===
+# docker compose auto-loads this file; each deployment may carry its own
+# (e.g. the beta private-index sidecar on the reference host).
+/Nymeria/docker-compose.override.yml
+
 # === Agent scratch dirs (plans, logs, snapshots from in-flight work) ===
 # Coding agents write throwaway working notes here per the repo workflow
 # (e.g. a plan .md for a complex slice); these are never tracked.
