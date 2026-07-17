@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -70,7 +71,12 @@ def _write_fixture(root: Path, version: str = "0.1.0") -> None:
 def test_checkout_version_files_are_synced() -> None:
     version, versions = sync_versions.ensure_versions_synced(PROJECT_ROOT)
 
-    assert version == "0.1.0"
+    # Shape check, not a hard-coded literal: pinning the exact checkout
+    # version here breaks on every release bump (it did on the
+    # 0.1.0 -> 0.1.0-beta.1 bump) while adding no safety beyond the
+    # release workflow's own `sync_versions.py --check --tag` gate. What
+    # this test pins is that all five manifests agree.
+    assert re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", version)
     assert set(versions.values()) == {version}
 
 
