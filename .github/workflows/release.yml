@@ -216,7 +216,12 @@ jobs:
           python-version: "3.11"
 
       - name: Install Twine
-        run: python -m pip install --upgrade pip twine
+        # Pinned below 6.1: twine 6.1+ refuses --skip-existing against
+        # repositories it does not recognize as Warehouse-like, which
+        # includes pypiserver-style private indexes (verified 2026-07-17:
+        # 6.x latest fails with UnsupportedConfiguration, 6.0.1 uploads and
+        # skips duplicates correctly).
+        run: python -m pip install --upgrade pip "twine==6.0.1"
 
       - name: Publish to private Python index
         env:
