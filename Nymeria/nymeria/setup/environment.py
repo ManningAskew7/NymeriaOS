@@ -457,6 +457,7 @@ def recommend_hosting(
     has_docker: bool,
     in_container: bool = False,
     native_deps_missing: bool = False,
+    service_blocked: bool = True,
 ) -> HostingOption:
     """Pick a default hosting shape from what we detected.
 
@@ -464,13 +465,20 @@ def recommend_hosting(
     to build), so a container is preferred there when Docker exists; the same
     holds anywhere the runtime's Python packages are missing (the container
     image carries them). Inside a container the foreground process is the only
-    sensible shape. Everywhere else a plain local process is the simplest
-    starting point.
+    sensible shape. On Linux/macOS with a working service manager and the
+    runtime deps present, the background service is the better default: it
+    survives the terminal closing and starts on login, which is what a
+    non-technical install actually wants. ``service_blocked`` defaults to True
+    (= keep recommending LOCAL) so direct callers without detection data get
+    the conservative pre-2026-07 behavior; ``detect_environment`` passes the
+    real ``service_manager_block`` verdict.
     """
     if in_container:
         return HostingOption.LOCAL
     if has_docker and (is_windows or native_deps_missing):
         return HostingOption.DOCKER
+    if not service_blocked and not native_deps_missing and not is_windows:
+        return HostingOption.SERVICE
     return HostingOption.LOCAL
 
 
@@ -581,6 +589,7 @@ def detect_environment(*, port: int = 8000, deep: bool = False) -> EnvironmentRe
         has_docker=has_docker,
         in_container=in_container,
         native_deps_missing=bool(missing_deps),
+        service_blocked=bool(service_reason),
     )
 
     daemon: bool | None = None

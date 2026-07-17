@@ -719,3 +719,371 @@ def test_finalize_docker_start_failure_falls_back_to_printing(monkeypatch, tmp_p
     assert rc == 0  # config was written; a failed start is non-fatal
     assert "did not start cleanly" in out
     assert "docker compose -f docker-compose.single.yml up -d" in out
+
+
+# --- first-run browser token handoff ------------------------------------------
+
+
+def _allow_browser_handoff(monkeypatch):
+    """Make the handoff gates pass deterministically (tty + launchable browser)."""
+    from types import SimpleNamespace
+
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(
+        finalize_mod.sys, "stdin", SimpleNamespace(isatty=lambda: True)
+    )
+    monkeypatch.setattr(env_mod, "browser_launch_blocked_reason", lambda **kw: "")
+
+
+def test_browser_token_handoff_gate_matrix(monkeypatch):
+    from types import SimpleNamespace
+
+    from nymeria.setup import environment as env_mod
+    from nymeria.setup.state import WizardState
+
+    _allow_browser_handoff(monkeypatch)
+    allowed = finalize_mod.browser_token_handoff_allowed
+
+    # Both native shapes on this machine may auto-open.
+    for hosting in (HostingOption.LOCAL, HostingOption.SERVICE):
+        assert (
+            allowed(
+                WizardState(hosting=hosting),
+                connect_token="nym_x",
+                non_interactive=False,
+            )
+            is True
+        )
+
+    base = WizardState(hosting=HostingOption.LOCAL)
+    # No token minted this run (reconfigure, pre-existing admin): never open.
+    assert allowed(base, connect_token=None, non_interactive=False) is False
+    # Headless runs never open a browser.
+    assert allowed(base, connect_token="nym_x", non_interactive=True) is False
+    # print_credentials off = the user opted out of credential surfacing.
+    assert (
+        allowed(
+            WizardState(hosting=HostingOption.LOCAL, print_credentials=False),
+            connect_token="nym_x",
+            non_interactive=False,
+        )
+        is False
+    )
+    # Docker mints in-container; its print path owns the token handoff.
+    assert (
+        allowed(
+            WizardState(hosting=HostingOption.DOCKER),
+            connect_token="nym_x",
+            non_interactive=False,
+        )
+        is False
+    )
+    # A blocked browser (SSH, container, display-less host) would open on the
+    # wrong machine or nowhere.
+    monkeypatch.setattr(
+        env_mod, "browser_launch_blocked_reason", lambda **kw: "SSH session"
+    )
+    assert allowed(base, connect_token="nym_x", non_interactive=False) is False
+    monkeypatch.setattr(env_mod, "browser_launch_blocked_reason", lambda **kw: "")
+    # A non-tty stdin (pipe, CI harness) is not a human watching the terminal.
+    monkeypatch.setattr(
+        finalize_mod.sys, "stdin", SimpleNamespace(isatty=lambda: False)
+    )
+    assert allowed(base, connect_token="nym_x", non_interactive=False) is False
+
+
+def test_open_browser_with_token_builds_fragment_url(monkeypatch):
+    import webbrowser
+
+    opened: list[str] = []
+    monkeypatch.setattr(
+        webbrowser, "open", lambda url: (opened.append(url), True)[1]
+    )
+    assert finalize_mod._open_browser_with_token("http://localhost:8000", "nym_x")
+    assert opened == ["http://localhost:8000/#token=nym_x"]
+
+    def _boom(url):
+        raise RuntimeError("no browser")
+
+    # A broken launcher reports False, never raises (printed handoff remains).
+    monkeypatch.setattr(webbrowser, "open", _boom)
+    assert (
+        finalize_mod._open_browser_with_token("http://localhost:8000", "nym_x")
+        is False
+    )
+
+
+def test_run_next_action_gates_the_handoff_token(monkeypatch, tmp_path):
+    from nymeria.onboarding import NextAction
+    from nymeria.setup.state import WizardState
+
+    _allow_browser_handoff(monkeypatch)
+    seen: list = []
+    monkeypatch.setattr(
+        finalize_mod,
+        "_start_now_service",
+        lambda console, *, state, root, handoff_token=None: (
+            seen.append(handoff_token),
+            0,
+        )[1],
+    )
+    console, _out = _capture_console()
+    state = WizardState(
+        hosting=HostingOption.SERVICE,
+        next_action=NextAction.START_API_OPEN_FRONTEND,
+    )
+    assert (
+        finalize_mod.run_next_action(
+            state, console, root=tmp_path, connect_token="nym_x",
+            non_interactive=False,
+        )
+        == 0
+    )
+    assert (
+        finalize_mod.run_next_action(
+            state, console, root=tmp_path, connect_token="nym_x",
+            non_interactive=True,
+        )
+        == 0
+    )
+    # Gates pass -> the token reaches the start path; headless -> it never does.
+    assert seen == ["nym_x", None]
+
+
+def test_finalize_service_start_opens_browser_after_health(monkeypatch, tmp_path):
+    import nymeria.service_install as si
+
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    (root / "data").mkdir(parents=True)
+
+    class _FakeManager:
+        name = "systemd user service"
+
+        def install(self, *, exec_argv, root):
+            return si.InstallReport(
+                artifact=tmp_path / "nymeria.service",
+                lines=("Installed systemd user unit: fake",),
+            )
+
+        def log_hint(self):
+            return "journalctl --user -u nymeria.service"
+
+    monkeypatch.setattr(si, "service_manager", lambda: _FakeManager())
+    monkeypatch.setattr(
+        si, "resolve_exec_argv", lambda: ["/usr/bin/python3", "slim"]
+    )
+    import threading
+
+    health_seen = threading.Event()
+    monkeypatch.setattr(
+        finalize_mod,
+        "wait_for_health",
+        lambda **kw: (health_seen.set(), True)[1],
+    )
+    opened: list[tuple[str, str, bool]] = []
+    open_done = threading.Event()
+
+    def fake_open(base_url, token):
+        # The open runs from a daemon thread (a $BROWSER GenericBrowser open()
+        # BLOCKS until the browser exits); record that health already passed.
+        opened.append((base_url, token, health_seen.is_set()))
+        open_done.set()
+        return True
+
+    monkeypatch.setattr(finalize_mod, "_open_browser_with_token", fake_open)
+    console, out_buffer = _capture_console()
+    state = WizardState(hosting=HostingOption.SERVICE, skip_llm_test=True)
+
+    rc = finalize_mod._start_now_service(
+        console, state=state, root=root, handoff_token="nym_tok"
+    )
+    out = out_buffer.getvalue()
+    assert rc == 0
+    # The browser opens (off-thread) only once the backend answers /health.
+    assert open_done.wait(2.0)
+    assert opened == [("http://localhost:8000", "nym_tok", True)]
+    assert "signed in" in out
+    # The opened URL carries the raw token; it must never be printed.
+    assert "#token" not in out
+
+
+def test_finalize_service_start_health_timeout_never_opens(monkeypatch, tmp_path):
+    import nymeria.service_install as si
+
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    (root / "data").mkdir(parents=True)
+
+    class _FakeManager:
+        name = "systemd user service"
+
+        def install(self, *, exec_argv, root):
+            return si.InstallReport(
+                artifact=tmp_path / "nymeria.service", lines=("Installed: fake",)
+            )
+
+        def log_hint(self):
+            return "journalctl --user -u nymeria.service"
+
+    monkeypatch.setattr(si, "service_manager", lambda: _FakeManager())
+    monkeypatch.setattr(
+        si, "resolve_exec_argv", lambda: ["/usr/bin/python3", "slim"]
+    )
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: False)
+    monkeypatch.setattr(
+        finalize_mod,
+        "_open_browser_with_token",
+        lambda *a: pytest.fail("an unhealthy backend must not open a browser"),
+    )
+    console, out_buffer = _capture_console()
+    state = WizardState(hosting=HostingOption.SERVICE, skip_llm_test=True)
+
+    rc = finalize_mod._start_now_service(
+        console, state=state, root=root, handoff_token="nym_tok"
+    )
+    assert rc == 0
+    assert "health check has not passed" in out_buffer.getvalue()
+
+
+def test_finalize_service_start_without_token_keeps_manual_copy(
+    monkeypatch, tmp_path
+):
+    import nymeria.service_install as si
+
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    (root / "data").mkdir(parents=True)
+
+    class _FakeManager:
+        name = "systemd user service"
+
+        def install(self, *, exec_argv, root):
+            return si.InstallReport(
+                artifact=tmp_path / "nymeria.service", lines=("Installed: fake",)
+            )
+
+        def log_hint(self):
+            return "journalctl --user -u nymeria.service"
+
+    monkeypatch.setattr(si, "service_manager", lambda: _FakeManager())
+    monkeypatch.setattr(
+        si, "resolve_exec_argv", lambda: ["/usr/bin/python3", "slim"]
+    )
+    monkeypatch.setattr(finalize_mod, "wait_for_health", lambda **kw: True)
+    monkeypatch.setattr(
+        finalize_mod,
+        "_open_browser_with_token",
+        lambda *a: pytest.fail("no handoff token must mean no browser open"),
+    )
+    console, out_buffer = _capture_console()
+    state = WizardState(hosting=HostingOption.SERVICE, skip_llm_test=True)
+
+    rc = finalize_mod._start_now_service(
+        console, state=state, root=root, handoff_token=None
+    )
+    assert rc == 0
+    assert "paste the" in out_buffer.getvalue()
+
+
+def test_finalize_local_start_spawns_browser_open_thread(monkeypatch, tmp_path):
+    import threading
+
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "runtime"
+    root.mkdir()
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        finalize_mod.subprocess,
+        "run",
+        lambda cmd, **kw: (calls.append(cmd), _Result())[1],
+    )
+    monkeypatch.setattr(
+        finalize_mod,
+        "wait_for_health",
+        lambda **kw: pytest.fail("local foreground start must not health-poll"),
+    )
+    worker_args: list = []
+    stopped = threading.Event()
+
+    def fake_worker(base_url, token, stop):
+        worker_args.append((base_url, token))
+        if stop.wait(5.0):
+            stopped.set()
+
+    monkeypatch.setattr(finalize_mod, "_local_browser_open_worker", fake_worker)
+    console, out_buffer = _capture_console()
+    state = WizardState(hosting=HostingOption.LOCAL, skip_llm_test=True)
+
+    rc = finalize_mod._start_now_local(
+        console, state=state, root=root, handoff_token="nym_tok"
+    )
+    assert rc == 0
+    # Still exactly one subprocess (the slim server); the browser worker ran
+    # in a thread and was stop-signalled when the server exited.
+    assert len(calls) == 1
+    assert worker_args == [("http://localhost:8000", "nym_tok")]
+    assert stopped.wait(2.0)
+    assert "browser opens already signed in" in out_buffer.getvalue()
+
+
+def test_local_browser_open_worker_opens_after_health(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(finalize_mod, "_smoke_health_ok", lambda url: True)
+    opened: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        finalize_mod,
+        "_open_browser_with_token",
+        lambda base_url, token: (opened.append((base_url, token)), True)[1],
+    )
+    finalize_mod._local_browser_open_worker(
+        "http://localhost:8000", "nym_x", threading.Event()
+    )
+    assert opened == [("http://localhost:8000", "nym_x")]
+
+
+def test_local_browser_open_worker_exits_silently_on_stop(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(
+        finalize_mod,
+        "_open_browser_with_token",
+        lambda *a: pytest.fail("a stopped worker must not open a browser"),
+    )
+    stop = threading.Event()
+    stop.set()
+    finalize_mod._local_browser_open_worker("http://localhost:8000", "nym_x", stop)
+
+
+def test_finalize_non_interactive_never_opens_a_browser(monkeypatch, tmp_path):
+    import webbrowser
+
+    _stub_llm(monkeypatch)
+    root = tmp_path / "runtime"
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(finalize_mod.subprocess, "run", lambda *a, **kw: _Result())
+    monkeypatch.setattr(
+        webbrowser,
+        "open",
+        lambda url: pytest.fail("a non-interactive run must never open a browser"),
+    )
+
+    rc = setup_main(
+        ["--provider", "anthropic", "--model", "claude-test-model",
+         "--api-key", "sk-ant-test-key", "--hosting", "local",
+         "--root", str(root), "--start", "--non-interactive", "--skip-llm-test"]
+    )
+    assert rc == 0
