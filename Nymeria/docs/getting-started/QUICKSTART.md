@@ -113,6 +113,15 @@ and a capability summary print to the terminal after the wizard closes. Optional
 provider keys (embeddings, OpenAI tools, Gemini, Perplexity) can be supplied with
 flags now and will get their own wizard steps later.
 
+On a fresh interactive install that starts the backend from the wizard ("Start
+now" with local or background-service hosting), the wizard also opens your
+browser once the backend is healthy, already signed in: the web UI consumes a
+one-time `#token=` URL fragment, exchanges it for a long-lived personal token,
+and scrubs it from the address bar. You never have to see or paste a token on
+that path. The printed handoff remains for every other case (Docker, SSH,
+headless, reconfigures), and pasting the bootstrap token still works as
+before.
+
 For unattended setup, `nymeria init --non-interactive` takes flags instead of
 prompting (see "Scripted setup" below). `nymeria doctor` checks the installed
 Python version, config files, data directory, LLM connectivity, local databases,
@@ -207,7 +216,9 @@ first time setup or API boot finds an empty accounts DB it auto-creates a
 `default` admin user and writes the raw account token to
 `<data_dir>/BOOTSTRAP_TOKEN.txt` (mode 0600). `nymeria init` prints the token
 file path and a platform-specific copy command that reads the `nym_<token>` value
-from the file without putting the token itself in shell history. Paste that
+from the file without putting the token itself in shell history (and, on the
+interactive local happy path, opens the browser already signed in so no paste
+is needed at all). Paste that
 `nym_<token>` account token into the desktop/mobile Setup Wizard, not an
 Anthropic/OpenAI/OpenRouter provider API key, then delete the file. See
 `docs/accounts.md` for the full account model and the `python3 run.py users`

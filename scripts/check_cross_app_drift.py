@@ -66,6 +66,8 @@ EXACT_MATCH: set[str] = {
     "lib/utils/reasoningEffort.ts",
     "lib/utils/time.ts",
     "lib/utils/todoTools.ts",
+    "lib/utils/tokenHandoff.ts",
+    "lib/utils/tokenHandoff.test.ts",
     "lib/utils/toolSearch.ts",
     "lib/utils/toolSummary.ts",
     "lib/utils/transitions.ts",

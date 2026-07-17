@@ -19,9 +19,15 @@
   import { chatStore } from '$lib/stores/chat.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { startSyncPoll, stopSyncPoll } from '$lib/stores/syncPoll.svelte';
-  import { api } from '$lib/services/api.svelte';
+  import { api, probeConnection } from '$lib/services/api.svelte';
   import { debugLog } from '$lib/utils/debug';
   import { createInitGate } from '$lib/utils/appInit';
+  import {
+    extractTokenFromHash,
+    consumeTokenHandoff,
+    issuePersonalToken,
+  } from '$lib/utils/tokenHandoff';
+  import Spinner from '$lib/components/common/Spinner.svelte';
 
   debugLog('[Page] Script executing - setupCompleted:', configStore.setupCompleted, 'isConfigured:', configStore.isConfigured);
 
@@ -30,6 +36,48 @@
   if (configStore.isConfigured && !configStore.setupCompleted) {
     debugLog('[Page] Config valid but setupCompleted=false, auto-completing setup');
     configStore.setupCompleted = true;
+  }
+
+  // First-run token handoff: `nymeria init` opens the served web UI with a
+  // one-shot `#token=nym_...` fragment once the backend is healthy. Detected
+  // synchronously at script init so the render gate below shows a connecting
+  // splash instead of flashing the SetupWizard and yanking it away (the probe
+  // is sub-second on localhost). Inert under Tauri: its window never carries
+  // a fragment, so this stays false and nothing changes.
+  let consumingTokenHandoff = $state(
+    typeof window !== 'undefined' && extractTokenFromHash(window.location.hash) !== null
+  );
+
+  async function runTokenHandoff() {
+    try {
+      const adopted = await consumeTokenHandoff({
+        hash: window.location.hash,
+        origin: window.location.origin,
+        // Scrub FIRST (before the probe) so the raw token leaves the address
+        // bar and its history entry as early as possible.
+        scrub: () =>
+          history.replaceState(null, '', window.location.pathname + window.location.search),
+        probe: probeConnection,
+        // The fragment carries the 24h bootstrap token; exchange it for a
+        // long-lived personal token so the session survives past day one.
+        issueToken: issuePersonalToken,
+        adopt: (url, key) => {
+          configStore.apiUrl = url;
+          configStore.apiKey = key;
+          // Flips isConfigured, which the initGate effect below reacts to with
+          // the normal boot (refreshIdentity, connection upsert, thread sync).
+          configStore.completeSetup();
+        },
+      });
+      debugLog('[Page] Token handoff', adopted ? 'adopted' : 'not adopted');
+      // On failure this falls through to the SetupWizard silently; the origin
+      // autodetect there prefills the backend URL, so the user just pastes a
+      // token as before. The bad fragment is never shown or persisted.
+    } finally {
+      // The splash gate below must ALWAYS clear, even if a future edit makes
+      // something above throw: a stuck flag would brick boot on this path.
+      consumingTokenHandoff = false;
+    }
   }
 
   // Auto-configure from Tauri on first run
@@ -189,6 +237,12 @@
     // Initialize Outlook bridge (no-ops if not in Outlook)
     outlookStore.initialize();
 
+    // Consume a first-run #token fragment before anything else can render the
+    // SetupWizard (the template gates on consumingTokenHandoff meanwhile).
+    if (consumingTokenHandoff) {
+      void runTokenHandoff();
+    }
+
     // Pull any auto-config (Tauri source-checkout dev or build-time defaults)
     // into the config store. This may flip isConfigured to true, which the
     // init effect below picks up. initializeApp() is driven by that effect, not
@@ -276,6 +330,13 @@
 <svelte:boundary onerror={(error) => console.error('[App] Render boundary caught a fatal error:', error)}>
   {#if !backendProcessStore.isReady && backendProcessStore.isTauri}
     <StartupOverlay />
+  {:else if consumingTokenHandoff}
+    <!-- First-run token handoff in flight: a real connecting state instead of
+         flashing the SetupWizard and yanking it away when the probe lands. -->
+    <div class="token-handoff" role="status">
+      <Spinner size="lg" />
+      <p>Connecting to your Nymeria server...</p>
+    </div>
   {:else if configStore.needsSetup}
     <SetupWizard />
   {:else}
@@ -337,6 +398,25 @@
 <TooltipPortal />
 
 <style>
+  /* First-run token-handoff splash: centered, token-styled, motion-free apart
+     from the Spinner (which already animates linearly and reads fine static). */
+  .token-handoff {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-md);
+    background: var(--bg-base);
+  }
+
+  .token-handoff p {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+
   /* Fallback shown by the render boundary above when the main view throws.
      Styled with theme tokens so it stays legible across Midnight/Light/Platinum. */
   .app-crash {

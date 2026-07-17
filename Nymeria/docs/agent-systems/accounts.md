@@ -76,6 +76,32 @@ OpenAI, or OpenRouter key. The `default` user ID lines up with existing
 per-user file paths (`data/todos/default.json`, `data/profiles/default.json`,
 etc.) so no data migration is needed for the first user.
 
+### First-run browser handoff (`#token=` fragment)
+
+On a fresh interactive `nymeria init` that starts the backend from the wizard
+(local foreground or background-service hosting), the wizard opens the served
+web UI as `http://localhost:<port>/#token=<raw>` once `/health` answers. The
+web client consumes the fragment exactly once: it scrubs it from the address
+bar (`history.replaceState`) BEFORE any network call, validates the token
+(`/health` + `GET /me`), exchanges it for a long-lived personal token via
+`POST /me/tokens` (the bootstrap token expires after 24 hours, and the
+validation itself is the "first successful auth" that deletes
+`BOOTSTRAP_TOKEN.txt`), and stores only the exchanged token in the normal
+token store. On any failure it falls back to the Setup Wizard silently.
+
+Security properties: a URL fragment is never sent to the server, so it cannot
+land in access logs or a Referer header. The residual exposure is the browser
+history entry between page load and the scrub (why the scrub runs first), the
+terminal scrollback (same class as the printed handoff), and the URL passing
+briefly through the browser launcher's process arguments on the local
+machine; the wizard itself never prints or logs the URL. The auto-open is gated hard in the wizard
+(`browser_token_handoff_allowed`): only for a token minted THAT run, only on
+an interactive tty with credential printing enabled, only for local/service
+hosting, and never over SSH, in a container, or on a display-less host
+(`browser_launch_blocked_reason`). Everything else (the printed handoff,
+`BOOTSTRAP_TOKEN.txt`, `run.py users` minting, the paste-a-token wizard flow)
+is unchanged and remains fully supported.
+
 ### Slim-launcher service token (`data/SLIM_SERVICE_TOKEN.txt`)
 
 `python3 run.py slim` provisions a separate `bot-service` admin user and

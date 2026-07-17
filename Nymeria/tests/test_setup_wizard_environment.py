@@ -265,6 +265,81 @@ def test_recommend_hosting_prefers_docker_when_native_deps_missing():
     )
 
 
+def test_recommend_hosting_prefers_service_when_manager_available():
+    from nymeria.setup.environment import recommend_hosting
+
+    # Linux/macOS with a working service manager and deps present: the
+    # background service survives the terminal closing and starts on login,
+    # which is what a non-technical install actually wants.
+    assert (
+        recommend_hosting(is_windows=False, has_docker=False, service_blocked=False)
+        is HostingOption.SERVICE
+    )
+    # Docker being present does not outrank the service on a healthy native
+    # host (Docker is only preferred where the native install is painful).
+    assert (
+        recommend_hosting(is_windows=False, has_docker=True, service_blocked=False)
+        is HostingOption.SERVICE
+    )
+    # A blocked service manager (and the conservative default for direct
+    # callers without detection data) keeps the old LOCAL recommendation.
+    assert (
+        recommend_hosting(is_windows=False, has_docker=False, service_blocked=True)
+        is HostingOption.LOCAL
+    )
+    assert recommend_hosting(is_windows=False, has_docker=False) is HostingOption.LOCAL
+    # Missing runtime deps degrade both native shapes: never nudge toward a
+    # background service that would fail at launch.
+    assert (
+        recommend_hosting(
+            is_windows=False,
+            has_docker=False,
+            native_deps_missing=True,
+            service_blocked=False,
+        )
+        is HostingOption.LOCAL
+    )
+    # In-container and Windows behavior are unchanged by the nudge.
+    assert (
+        recommend_hosting(
+            is_windows=False, has_docker=True, in_container=True, service_blocked=False
+        )
+        is HostingOption.LOCAL
+    )
+    assert (
+        recommend_hosting(is_windows=True, has_docker=True, service_blocked=False)
+        is HostingOption.DOCKER
+    )
+    assert (
+        recommend_hosting(is_windows=True, has_docker=False, service_blocked=False)
+        is HostingOption.LOCAL
+    )
+
+
+def test_detect_environment_feeds_service_verdict_into_recommendation(monkeypatch):
+    from nymeria.setup import environment as env_mod
+
+    monkeypatch.setattr(env_mod.shutil, "which", lambda _name: None)  # no docker
+    monkeypatch.setattr(env_mod, "port_free", lambda *_a, **_k: True)
+    monkeypatch.setattr(env_mod, "_detect_in_container", lambda: False)
+    monkeypatch.setattr(env_mod, "missing_python_deps", lambda *_a, **_k: ())
+    monkeypatch.setattr(
+        env_mod, "service_manager_block", lambda **_kw: ("systemd user service", "")
+    )
+    if env_mod.sys.platform.startswith("win"):  # pragma: no cover (posix CI)
+        pytest.skip("service recommendation is a posix behavior")
+    assert (
+        env_mod.detect_environment().recommended_hosting is HostingOption.SERVICE
+    )
+
+    monkeypatch.setattr(
+        env_mod,
+        "service_manager_block",
+        lambda **_kw: ("systemd user service", "systemd is not running"),
+    )
+    assert env_mod.detect_environment().recommended_hosting is HostingOption.LOCAL
+
+
 def test_browser_launch_blocked_reason_matrix(monkeypatch):
     from nymeria.setup import environment as env_mod
 

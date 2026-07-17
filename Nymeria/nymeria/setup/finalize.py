@@ -688,7 +688,13 @@ def finalize(
     if doctor_status != 0:
         return doctor_status
 
-    return run_next_action(state, console, root=root, connect_token=connect_token)
+    return run_next_action(
+        state,
+        console,
+        root=root,
+        connect_token=connect_token,
+        non_interactive=non_interactive,
+    )
 
 
 # --- config writing ---------------------------------------------------------
@@ -1883,12 +1889,56 @@ def _print_docker_next_steps(console: Console, state: WizardState) -> None:
 # --- opt-in start -----------------------------------------------------------
 
 
+def browser_token_handoff_allowed(
+    state: WizardState, *, connect_token: str | None, non_interactive: bool
+) -> bool:
+    """Whether the post-start browser auto-open (#token fragment) may run.
+
+    All conditions required: a token minted THIS run (a reconfigure or a
+    Docker install leaves ``connect_token`` None), an interactive terminal a
+    human is actually watching, credential surfacing not opted out, a native
+    hosting shape on this machine, and a browser that would land in front of
+    this user (``browser_launch_blocked_reason``: SSH would open it on the
+    wrong machine, containers and display-less hosts have nowhere to open
+    one). The opened URL carries the raw token in its fragment, so it is
+    never printed or logged; the printed handoff above stays the fallback.
+    """
+    if not connect_token:
+        return False
+    if non_interactive or not sys.stdin.isatty():
+        return False
+    if not state.print_credentials:
+        return False
+    if state.hosting not in (HostingOption.LOCAL, HostingOption.SERVICE):
+        return False
+    from .environment import browser_launch_blocked_reason
+
+    return browser_launch_blocked_reason() == ""
+
+
+def _open_browser_with_token(base_url: str, token: str) -> bool:
+    """Open the served web UI pre-authenticated via a ``#token=`` fragment.
+
+    The fragment never reaches the server, its access logs, or a Referer
+    header; the frontend scrubs it from the address bar before using it. The
+    URL contains the raw token: never print or log it.
+    """
+    import webbrowser
+
+    try:
+        return webbrowser.open(f"{base_url}/#token={token}")
+    except Exception as exc:  # noqa: BLE001 (best effort; printed handoff remains)
+        logger.debug("webbrowser.open failed: %s", exc)
+        return False
+
+
 def run_next_action(
     state: WizardState,
     console: Console,
     *,
     root: Path,
     connect_token: str | None = None,
+    non_interactive: bool = False,
 ) -> int:
     """Hand off after config is written.
 
@@ -1899,15 +1949,31 @@ def run_next_action(
     exit code, which is non-zero only when a foreground local start exits
     non-zero. A failed auto-start falls back to printing the manual command
     and returns 0 (config was written fine).
+
+    ``handoff_token`` below is the pre-gated browser auto-open credential: on
+    a fresh interactive native install, the started backend's web UI is
+    opened already signed in (the URL fragment carries the token), so the
+    local happy path never requires learning what a token is.
     """
 
     if state.next_action is NextAction.START_API_OPEN_FRONTEND:
+        handoff_token = (
+            connect_token
+            if browser_token_handoff_allowed(
+                state, connect_token=connect_token, non_interactive=non_interactive
+            )
+            else None
+        )
         if state.hosting is HostingOption.DOCKER:
             return _start_now_docker(console, state=state, root=root)
         if state.hosting is HostingOption.LOCAL:
-            return _start_now_local(console, state=state, root=root)
+            return _start_now_local(
+                console, state=state, root=root, handoff_token=handoff_token
+            )
         if state.hosting is HostingOption.SERVICE:
-            return _start_now_service(console, state=state, root=root)
+            return _start_now_service(
+                console, state=state, root=root, handoff_token=handoff_token
+            )
     print_next_action(state, console, connect_token=connect_token)
     return 0
 
@@ -1979,12 +2045,24 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
     return 0
 
 
-def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int:
+def _start_now_local(
+    console: Console,
+    *,
+    state: WizardState,
+    root: Path,
+    handoff_token: str | None = None,
+) -> int:
     console.print("\nStarting Nymeria in the foreground (Ctrl+C to stop).")
-    console.print(
-        f"Once it is up, open {local_base_url(state)} and paste the bootstrap "
-        "token shown above."
-    )
+    if handoff_token:
+        console.print(
+            "Once it is up, your browser opens already signed in (the token "
+            f"printed above and {local_base_url(state)} are the fallback)."
+        )
+    else:
+        console.print(
+            f"Once it is up, open {local_base_url(state)} and paste the bootstrap "
+            "token shown above."
+        )
     if active_public_url(state):
         console.print(
             f"Remote devices use {public_origin(active_public_url(state))} "
@@ -1998,9 +2076,15 @@ def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int
     env = dict(os.environ)
     env["NYMERIA_PROJECT_ROOT"] = str(root)
     # The server owns this terminal from here, so the smoke turn runs from a
-    # daemon thread that prints one [smoke] line into the server's output.
+    # daemon thread that prints one [smoke] line into the server's output, and
+    # the pre-gated browser auto-open waits for health from its own thread.
     stop = threading.Event()
     smoke_thread = _spawn_local_smoke_thread(state, root=root, stop=stop)
+    browser_thread = (
+        _spawn_local_browser_open_thread(state, token=handoff_token, stop=stop)
+        if handoff_token
+        else None
+    )
     try:
         result = subprocess.run(command, cwd=str(root), env=env)
     except KeyboardInterrupt:
@@ -2014,11 +2098,12 @@ def _start_now_local(console: Console, *, state: WizardState, root: Path) -> int
         return 0
     finally:
         stop.set()
-        if smoke_thread is not None:
-            try:
-                smoke_thread.join(timeout=2.0)
-            except KeyboardInterrupt:
-                pass  # second Ctrl+C during the bounded join: just leave
+        for worker in (smoke_thread, browser_thread):
+            if worker is not None:
+                try:
+                    worker.join(timeout=2.0)
+                except KeyboardInterrupt:
+                    pass  # second Ctrl+C during the bounded join: just leave
     return result.returncode
 
 
@@ -2032,7 +2117,13 @@ def _service_install_command(state: WizardState) -> str:
     return f"nymeria service install --root {shlex.quote(str(state.root))}"
 
 
-def _start_now_service(console: Console, *, state: WizardState, root: Path) -> int:
+def _start_now_service(
+    console: Console,
+    *,
+    state: WizardState,
+    root: Path,
+    handoff_token: str | None = None,
+) -> int:
     """Install the background service, start it, and verify the backend is up.
 
     Failures never fail setup (config was written fine): unavailable or broken
@@ -2083,16 +2174,38 @@ def _start_now_service(console: Console, *, state: WizardState, root: Path) -> i
         )
         return 0
     console.print("[green]Nymeria is up.[/green]")
+    if handoff_token:
+        # Health passed, so the fragment lands on the served web UI, which
+        # consumes it and signs in without the user ever seeing the token.
+        # Fire-and-forget from a daemon thread: with $BROWSER set to a bare
+        # command, webbrowser resolves a GenericBrowser whose open() BLOCKS
+        # (Popen().wait()) until the browser exits, which would freeze the
+        # wizard here (the LOCAL path isolates the same call for the same
+        # reason).
+        threading.Thread(
+            target=_open_browser_with_token,
+            args=(local_base_url(state), handoff_token),
+            daemon=True,
+            name="init-browser-open",
+        ).start()
     verify_public_url_now(state, console)
     smoke_token = None
     if not state.skip_llm_test:
         smoke_token = _wait_for_host_service_token(resolve_data_dir(state, root=root))
     _run_inline_chat_smoke(state, console, token=smoke_token)
-    console.print(
-        f"\nOpen {local_base_url(state)} to finish in the browser (paste the "
-        "one-time bootstrap token if one was printed above). The service "
-        "starts on login from now on; check it with `nymeria service status`."
-    )
+    if handoff_token:
+        console.print(
+            "\nYour browser should open already signed in; if it does not, "
+            f"open {local_base_url(state)} and paste the token printed above. "
+            "The service starts on login from now on; check it with "
+            "`nymeria service status`."
+        )
+    else:
+        console.print(
+            f"\nOpen {local_base_url(state)} to finish in the browser (paste the "
+            "one-time bootstrap token if one was printed above). The service "
+            "starts on login from now on; check it with `nymeria service status`."
+        )
     return 0
 
 
@@ -2285,6 +2398,50 @@ def _spawn_local_smoke_thread(
     )
     thread.start()
     return thread
+
+
+def _spawn_local_browser_open_thread(
+    state: WizardState, *, token: str, stop: threading.Event
+) -> threading.Thread:
+    """Start the foreground shape's browser auto-open worker.
+
+    The caller has already gated the handoff (`browser_token_handoff_allowed`);
+    this only defers the open until the server answers /health.
+    """
+    thread = threading.Thread(
+        target=_local_browser_open_worker,
+        args=(local_base_url(state), token, stop),
+        daemon=True,
+        name="init-browser-open",
+    )
+    thread.start()
+    return thread
+
+
+def _local_browser_open_worker(
+    base_url: str, token: str, stop: threading.Event
+) -> None:
+    """Wait for the foreground server to become healthy, then open the browser.
+
+    Same discipline as `_local_smoke_worker`: quiet health polling (never
+    `wait_for_health`, never a subprocess of its own beyond what
+    `webbrowser.open` does), never raises, exits silently once `stop` is set.
+    The opened URL carries the raw token in its fragment: nothing here prints.
+    """
+    try:
+        deadline = time.monotonic() + CHAT_SMOKE_HEALTH_TIMEOUT_SECONDS
+        while True:
+            if stop.is_set():
+                return
+            if _smoke_health_ok(f"{base_url}/health"):
+                break
+            if time.monotonic() >= deadline:
+                return
+            if stop.wait(1.0):
+                return
+        _open_browser_with_token(base_url, token)
+    except Exception:  # noqa: BLE001 (best effort; must never disturb the server)
+        return
 
 
 def _local_smoke_worker(
@@ -2573,6 +2730,7 @@ __all__ = [
     "print_capability_summary",
     "print_deployment_summary",
     "print_next_action",
+    "browser_token_handoff_allowed",
     "run_next_action",
     "wait_for_health",
     "run_doctor_for_root",

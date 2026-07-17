@@ -11,8 +11,14 @@
   import { notificationStore } from '$lib/stores/notifications.svelte';
   import { autonomousStore } from '$lib/stores/autonomous.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
-  import { api } from '$lib/services/api.svelte';
+  import { api, probeConnection } from '$lib/services/api.svelte';
   import { initLifecycle, destroyLifecycle, backupToPreferences, restoreFromPreferences } from '$lib/utils/lifecycle';
+  import {
+    extractTokenFromHash,
+    consumeTokenHandoff,
+    issuePersonalToken,
+  } from '$lib/utils/tokenHandoff';
+  import Spinner from '$lib/components/common/Spinner.svelte';
 
   // If config is valid but setupCompleted is false, auto-complete
   function completeSetupIfConfigured() {
@@ -21,6 +27,42 @@
     }
   }
   completeSetupIfConfigured();
+
+  // First-run token handoff (`#token=nym_...` fragment planted by the setup
+  // wizard's browser auto-open). Inert under Capacitor: the webview URL never
+  // carries a fragment, so this stays false. Mirrored from desktop for parity
+  // (a served mobile web build would consume it the same way).
+  let consumingTokenHandoff = $state(
+    typeof window !== 'undefined' && extractTokenFromHash(window.location.hash) !== null
+  );
+
+  async function runTokenHandoff() {
+    try {
+      await consumeTokenHandoff({
+        hash: window.location.hash,
+        origin: window.location.origin,
+        // Scrub FIRST (before the probe) so the raw token leaves the address
+        // bar and its history entry as early as possible.
+        scrub: () =>
+          history.replaceState(null, '', window.location.pathname + window.location.search),
+        probe: probeConnection,
+        // The fragment carries the 24h bootstrap token; exchange it for a
+        // long-lived personal token so the session survives past day one.
+        issueToken: issuePersonalToken,
+        adopt: (url, key) => {
+          configStore.apiUrl = url;
+          configStore.apiKey = key;
+          configStore.completeSetup();
+        },
+      });
+      // On failure this falls through to the SetupWizard silently; the bad
+      // fragment is never shown or persisted.
+    } finally {
+      // The splash gate below must ALWAYS clear, even if a future edit makes
+      // something above throw: a stuck flag would brick boot on this path.
+      consumingTokenHandoff = false;
+    }
+  }
 
   function loadThreadHistory(threadId: string) {
     chatStore.clearMessages();
@@ -92,6 +134,13 @@
     let destroyed = false;
 
     async function startMobileRuntime() {
+      // Consume a first-run #token fragment before the isConfigured checks
+      // below run (the template gates on consumingTokenHandoff meanwhile).
+      if (consumingTokenHandoff) {
+        await runTokenHandoff();
+        if (destroyed) return;
+      }
+
       const restored = await restoreFromPreferences();
       if (destroyed) return;
       if (restored) {
@@ -148,7 +197,14 @@
   });
 </script>
 
-{#if configStore.needsSetup}
+{#if consumingTokenHandoff}
+  <!-- First-run token handoff in flight: a real connecting state instead of
+       flashing the SetupWizard and yanking it away when the probe lands. -->
+  <div class="token-handoff" role="status">
+    <Spinner size="lg" />
+    <p>Connecting to your Nymeria server...</p>
+  </div>
+{:else if configStore.needsSetup}
   <SetupWizard />
 {:else}
   <MobileShell />
@@ -158,3 +214,24 @@
      responses from the account/admin endpoints stay visible regardless of
      which panel/modal is on top. -->
 <ErrorToast />
+
+<style>
+  /* First-run token-handoff splash: centered, token-styled, motion-free apart
+     from the Spinner (which already animates linearly and reads fine static). */
+  .token-handoff {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-md);
+    background: var(--bg-base);
+  }
+
+  .token-handoff p {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+</style>
