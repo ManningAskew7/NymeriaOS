@@ -69,6 +69,24 @@ def _provider_note(provider_id: str | None) -> str:
     return escape(spec.notes_for_user) if spec else ""
 
 
+def _provider_signup(provider_id: str | None) -> str:
+    """The highlighted provider's "get a key" guidance, or "" when uncurated.
+
+    Sourced from the registry spec (beta-readiness 03) so the TUI and any
+    future GUI wizard render from one place. Escaped like the note: guidance
+    is prose and the Static parses markup.
+    """
+    spec = get_llm_provider_spec(provider_id) if provider_id else None
+    if spec is None or not (spec.signup_guidance or spec.signup_url):
+        return ""
+    parts: list[str] = []
+    if spec.signup_url:
+        parts.append(f"Get a key: {spec.signup_url}")
+    if spec.signup_guidance:
+        parts.append(spec.signup_guidance)
+    return escape("\n".join(parts))
+
+
 def _first_provider_id() -> str | None:
     groups = grouped_provider_specs()
     if groups and groups[0][1]:
@@ -113,6 +131,10 @@ class ProviderStep(WizardStep):
         note = Static(note_text, id="provider-note")
         note.display = bool(note_text)
         yield note
+        signup_text = _provider_signup(initial)
+        signup = Static(signup_text, id="provider-signup")
+        signup.display = bool(signup_text)
+        yield signup
         yield Static("API key", classes="field-label")
         yield Input(
             value=self.state.api_key,
@@ -146,6 +168,11 @@ class ProviderStep(WizardStep):
         note = self.query_one("#provider-note", Static)
         note.update(note_text)
         note.display = bool(note_text)
+        # The "get a key" panel follows the highlight the same way.
+        signup_text = _provider_signup(event.value)
+        signup = self.query_one("#provider-signup", Static)
+        signup.update(signup_text)
+        signup.display = bool(signup_text)
 
     def on_searchable_list_selected(self, event: SearchableList.Selected) -> None:
         # Mouse click on a provider: update the hint and move to the key field.

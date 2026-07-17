@@ -123,7 +123,13 @@ visible output.
 
 ### API Keys
 
-Set the API key for your chosen provider:
+Set the API key for your chosen provider. Where keys come from: the init
+wizard's provider picker shows per-provider "get a key" guidance sourced
+from the provider registry (`config/llm_providers.py`, `signup_url` /
+`signup_guidance`), including the no-card free tiers (Google AI Studio,
+OpenRouter `:free` models, NVIDIA NIM) and a spend-limit reminder for paid
+keys. Free-tier quotas and slugs churn; the provider's own console is
+authoritative. Local Ollama needs no key at all.
 
 | Variable | Provider | Required |
 |----------|----------|----------|

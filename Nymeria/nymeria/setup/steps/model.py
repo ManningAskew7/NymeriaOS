@@ -90,10 +90,20 @@ class ModelStep(WizardStep):
         else:
             self._models_by_id = {}
             picker.set_placeholder("type the exact model id")
-            self.show_error(
-                "Could not list models for this provider. "
-                "Type the exact model id and press Enter."
-            )
+            if spec.api_format == "ollama_native":
+                # The local branch's most likely stumble: Ollama not running,
+                # or running with no models pulled yet.
+                self.show_error(
+                    "Could not list models from Ollama. Make sure it is "
+                    "installed (ollama.com) and running, and pull a model "
+                    "first (for example: ollama pull qwen3:8b), then press "
+                    "Esc and Enter to retry, or type a model id."
+                )
+            else:
+                self.show_error(
+                    "Could not list models for this provider. "
+                    "Type the exact model id and press Enter."
+                )
 
     def on_searchable_list_highlighted(self, event: SearchableList.Highlighted) -> None:
         choice = self._models_by_id.get(event.value or "")

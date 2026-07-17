@@ -285,7 +285,8 @@ SelectionList > .selection-list--button-selected-highlighted {
 }
 
 #model-hint,
-#provider-note {
+#provider-note,
+#provider-signup {
     color: #b6c1ce;
     height: auto;
     padding: 1 0 0 0;

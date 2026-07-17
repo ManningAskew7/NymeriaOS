@@ -988,3 +988,37 @@ def test_noninteractive_rejects_bad_key_prefix(monkeypatch, tmp_path):
     )
     assert rc == 2
     assert not (root / "config.env").exists()
+
+
+def test_hydrate_infers_local_model_branch_from_ollama_provider(tmp_path):
+    """An on-disk Ollama config renders as the local-model branch (like the
+    CLIProxy base-URL inference: auth_method is never written to disk)."""
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.hydrate import hydrate_state_from_disk
+    from nymeria.setup.state import WizardState
+
+    root = tmp_path / "ollama"
+    root.mkdir()
+    (root / ".env.docker").write_text(
+        "LLM_PROVIDER=ollama\nLLM_MODEL=qwen3:8b\n", encoding="utf-8"
+    )
+    state = WizardState(root=root)
+    assert hydrate_state_from_disk(state) is True
+    assert state.auth_method is ProviderAuthMethod.LOCAL_MODEL
+
+    # Any other provider stays on the API-key branch.
+    other = tmp_path / "anthropic"
+    other.mkdir()
+    (other / ".env.docker").write_text("LLM_PROVIDER=anthropic\n", encoding="utf-8")
+    ostate = WizardState(root=other)
+    assert hydrate_state_from_disk(ostate) is True
+    assert ostate.auth_method is ProviderAuthMethod.API_KEY
+
+    # An explicit --auth-method flag wins over the inference.
+    explicit = WizardState(
+        root=root,
+        auth_method=ProviderAuthMethod.API_KEY,
+        auth_method_explicit=True,
+    )
+    assert hydrate_state_from_disk(explicit) is True
+    assert explicit.auth_method is ProviderAuthMethod.API_KEY

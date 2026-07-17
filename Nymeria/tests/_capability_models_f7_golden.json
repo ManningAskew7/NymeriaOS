@@ -116,6 +116,7 @@
     "google/gemini-3.1-flash-lite-preview",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.1-pro-preview-customtools",
+    "google/gemini-3.5-flash",
     "openai/gpt-4.1",
     "openai/gpt-4.1-mini",
     "openai/gpt-4.1-nano",
@@ -156,7 +157,8 @@
     "google/gemini-3-pro-preview",
     "google/gemini-3.1-flash-lite-preview",
     "google/gemini-3.1-pro-preview",
-    "google/gemini-3.1-pro-preview-customtools"
+    "google/gemini-3.1-pro-preview-customtools",
+    "google/gemini-3.5-flash"
   ],
   "GEMINI_VISION_CAPABLE_MODELS": [
     "google/gemini-1.5-flash",
@@ -176,7 +178,8 @@
     "google/gemini-3.1-flash-image-preview",
     "google/gemini-3.1-flash-lite-preview",
     "google/gemini-3.1-pro-preview",
-    "google/gemini-3.1-pro-preview-customtools"
+    "google/gemini-3.1-pro-preview-customtools",
+    "google/gemini-3.5-flash"
   ],
   "OPENAI_DOCUMENT_CAPABLE_MODELS": [
     "openai/gpt-4.1",
@@ -289,6 +292,7 @@
     "google/gemini-3.1-flash-lite-preview",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.1-pro-preview-customtools",
+    "google/gemini-3.5-flash",
     "meta-llama/llama-3.2-11b-vision-instruct",
     "meta-llama/llama-3.2-90b-vision-instruct",
     "openai/gpt-4-turbo",

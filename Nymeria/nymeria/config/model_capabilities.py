@@ -1336,6 +1336,8 @@ _GEMINI_CAPABILITY_MODELS: Dict[str, frozenset[str]] = {
     "gemini-3.1-pro-preview-customtools": _VISION_DOCUMENT,
     "gemini-3.1-flash-lite-preview": _VISION_DOCUMENT,
     "gemini-3.1-flash-image-preview": _VISION,
+    # Current stable Flash (the registry default for the google provider).
+    "gemini-3.5-flash": _VISION_DOCUMENT,
 }
 
 # Vision-capable models that live only in the VISION_CAPABLE_MODELS union (no
