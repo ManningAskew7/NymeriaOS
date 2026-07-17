@@ -24,14 +24,16 @@ class ProviderAuthMethod(StrEnum):
     """Supported ways to authenticate the primary LLM provider.
 
     `CLIPROXY_OAUTH` is the provider-generic subscription branch (the concrete
-    CLI is a separate pick from the CLIProxy catalog). The two legacy
-    per-provider values stay valid inputs because the desktop setup flow
-    hardcodes them; `legacy_cliproxy_provider` maps them onto the generic
-    branch.
+    CLI is a separate pick from the CLIProxy catalog). `LOCAL_MODEL` is the
+    no-auth local branch: it pins the provider to Ollama and skips the
+    provider picker (there is no key to collect). The two legacy per-provider
+    values stay valid inputs because the desktop setup flow hardcodes them;
+    `legacy_cliproxy_provider` maps them onto the generic branch.
     """
 
     API_KEY = "api_key"
     CLIPROXY_OAUTH = "cliproxy_oauth"
+    LOCAL_MODEL = "local_model"
     CLIPROXY_CLAUDE_OAUTH = "cliproxy_claude_oauth"
     CLIPROXY_CODEX_OAUTH = "cliproxy_codex_oauth"
 
@@ -165,11 +167,13 @@ HOSTING_ORDER = (
 # runtime settings model.
 HOSTING_MARKER_ENV = "NYMERIA_HOSTING"
 
-# Visible order in the auth step: the generic subscription branch replaced the
+# Visible order in the auth step: three equal, capability-gated paths (the
+# beta-readiness 03 flattening). The generic subscription branch replaced the
 # two legacy per-provider rows (which stay valid enum inputs, just not shown).
 PROVIDER_AUTH_METHOD_ORDER = (
     ProviderAuthMethod.API_KEY,
     ProviderAuthMethod.CLIPROXY_OAUTH,
+    ProviderAuthMethod.LOCAL_MODEL,
 )
 
 SETUP_STYLE_ORDER = (
@@ -218,18 +222,31 @@ PROVIDER_AUTH_METHOD_CHOICES = {
     ProviderAuthMethod.API_KEY: OnboardingChoice(
         value=ProviderAuthMethod.API_KEY,
         label="Direct API key",
-        description="Use an Anthropic, OpenAI, or OpenRouter API key directly.",
+        description=(
+            "Pick a provider (Anthropic, OpenAI, Google Gemini, OpenRouter, "
+            "and many more) and paste an API key. Several providers have "
+            "free tiers; the picker shows how to get each key."
+        ),
     ),
     ProviderAuthMethod.CLIPROXY_OAUTH: OnboardingChoice(
         value=ProviderAuthMethod.CLIPROXY_OAUTH,
-        label="Subscription OAuth via CLIProxy",
+        label="Subscription login via CLIProxy",
         description=(
             "Route an existing AI subscription (Claude Max/Pro, ChatGPT "
             "Plus/Pro, Gemini, Kimi, Grok, and more) through a CLIProxy "
-            "deployment instead of paying per token. Advanced path with "
+            "deployment instead of paying per token. Carries "
             "terms-of-service risk; a disclaimer follows."
         ),
-        advanced=True,
+    ),
+    ProviderAuthMethod.LOCAL_MODEL: OnboardingChoice(
+        value=ProviderAuthMethod.LOCAL_MODEL,
+        label="Local model (Ollama)",
+        description=(
+            "Run a free open model on this machine with Ollama "
+            "(ollama.com). No account or API key, and chats stay local. "
+            "Expect a multi-GB model download; a capable machine (16GB+ "
+            "RAM or a GPU) makes it comfortable."
+        ),
     ),
     ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH: OnboardingChoice(
         value=ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH,

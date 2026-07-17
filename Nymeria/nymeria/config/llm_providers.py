@@ -114,6 +114,14 @@ class LLMProviderSpec:
     # depends on api mode / route, so it cannot be a static per-spec value).
     # Surfaced in the catalog and the /provider reasoning-passback command.
     reasoning_passback_verified: bool = False
+    # "Get a key" guidance for setup flows (beta-readiness 03): where to sign
+    # up plus 2-3 plain steps and the caveat that matters (free-tier
+    # limitations, or the spend-real-money warning for paid keys). Kept
+    # provider-page-first: no hard-coded quota numbers, free tiers churn.
+    # Rendered by the init wizard's provider picker; any future GUI wizard
+    # reads the same fields. Empty for providers without curated guidance.
+    signup_url: str | None = None
+    signup_guidance: str = ""
 
     @property
     def verified(self) -> bool:
@@ -151,6 +159,8 @@ def _spec(
     anthropic_native_for_claude: bool = False,
     anthropic_messages_base_url: str | None = None,
     reasoning_passback_verified: bool = False,
+    signup_url: str | None = None,
+    signup_guidance: str = "",
 ) -> LLMProviderSpec:
     # Default route inference: native partner-package providers default to
     # ("native",), while generic OpenAI-compatible providers default to
@@ -192,6 +202,8 @@ def _spec(
         anthropic_native_for_claude=anthropic_native_for_claude,
         anthropic_messages_base_url=anthropic_messages_base_url,
         reasoning_passback_verified=reasoning_passback_verified,
+        signup_url=signup_url,
+        signup_guidance=signup_guidance,
     )
 
 
@@ -214,6 +226,13 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         tier="native",
         # Native /v1/messages: signed thinking blocks round-trip natively.
         reasoning_passback_verified=True,
+        signup_url="https://console.anthropic.com",
+        signup_guidance=(
+            "Sign up at console.anthropic.com (phone verification "
+            "required), then create a key under API Keys. New accounts "
+            "get a small trial credit that expires quickly; after that "
+            "this spends real money, so set a spend limit in the console."
+        ),
     ),
     _spec(
         "openai",
@@ -227,6 +246,13 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         tier="native",
         # Responses API replays checkpointed reasoning items via `input`.
         reasoning_passback_verified=True,
+        signup_url="https://platform.openai.com/api-keys",
+        signup_guidance=(
+            "Sign up at platform.openai.com and add a payment method "
+            "(prepaid; a card is required, there is no free tier), then "
+            "create a key. This spends real money: set a usage limit in "
+            "the billing console."
+        ),
     ),
     _spec(
         "openrouter",
@@ -238,6 +264,13 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         supports_responses=True,
         default_api_mode="responses",
         tier="gateway",
+        signup_url="https://openrouter.ai/keys",
+        signup_guidance=(
+            "Sign in at openrouter.ai and create a key (no card needed). "
+            "Models tagged :free cost nothing on a modest daily cap (a "
+            "one-time credit purchase raises it); paid models spend real "
+            "money, so set a spend limit in the console."
+        ),
     ),
     _spec(
         "azure-openai",
@@ -270,7 +303,9 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         "Google Gemini",
         base_url=None,
         env=("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"),
-        default_model="gemini-2.5-flash",
+        # gemini-2.5-flash is legacy (reported sunset ~Oct 2026); 3.5 is the
+        # current stable Flash per the official models page (2026-07-17).
+        default_model="gemini-3.5-flash",
         docs_url="https://ai.google.dev/gemini-api/docs",
         aliases=("gemini", "google-gemini"),
         api_format="google_genai",
@@ -283,6 +318,13 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         supported_routes=("native", "openai_compat"),
         default_route="native",
         openai_compat_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        signup_url="https://aistudio.google.com/apikey",
+        signup_guidance=(
+            "Create a free key in Google AI Studio (sign in with a Google "
+            "account, Get API key). No card needed; the free tier covers "
+            "the Flash models (pick gemini-3.5-flash), and free-tier "
+            "prompts may be used by Google for training."
+        ),
     ),
     _spec(
         "google-vertex",
@@ -421,6 +463,12 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         supports_responses=True,
         default_api_mode="responses",
         notes_for_user="Responses API (GA on the hosted endpoint) is the default and round-trips reasoning (Nemotron, DeepSeek, Qwen). Self-hosted NIM needs a recent version with /v1/responses.",
+        signup_url="https://build.nvidia.com",
+        signup_guidance=(
+            "Sign up at build.nvidia.com (no card needed) and generate a "
+            "key. Free hosted open models (Nemotron, DeepSeek, Qwen, "
+            "Llama), rate-limited per minute rather than per day."
+        ),
     ),
     _spec(
         "huggingface",

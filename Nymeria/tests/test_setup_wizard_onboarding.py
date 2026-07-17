@@ -317,3 +317,128 @@ def test_every_keyed_catalog_backend_has_a_key_spec():
     ]
     missing = [name for name in keyed_backends if name not in BACKEND_KEY_SPECS]
     assert not missing, f"backends missing a BACKEND_KEY_SPECS entry: {missing}"
+
+# --- flattened auth step (beta-readiness 03) ---------------------------------
+
+
+def test_auth_method_choices_are_flat_and_ordered(monkeypatch):
+    """Three equal paths, no "(recommended)"/"(advanced)" labels, and no
+    capability warnings when Docker and Ollama are both present."""
+    import shutil
+
+    from nymeria.onboarding import PROVIDER_AUTH_METHOD_ORDER, ProviderAuthMethod
+    from nymeria.setup.steps.auth import _auth_choices
+    from nymeria.setup.state import WizardState
+
+    assert PROVIDER_AUTH_METHOD_ORDER == (
+        ProviderAuthMethod.API_KEY,
+        ProviderAuthMethod.CLIPROXY_OAUTH,
+        ProviderAuthMethod.LOCAL_MODEL,
+    )
+
+    monkeypatch.setattr("nymeria.setup.environment.docker_available", lambda: True)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/ollama")
+    choices = _auth_choices(WizardState())
+
+    assert [c.value for c in choices] == list(PROVIDER_AUTH_METHOD_ORDER)
+    for choice in choices:
+        assert "(recommended)" not in choice.label
+        assert "(advanced)" not in choice.label
+        assert "Warning:" not in choice.description
+        assert not choice.disabled  # capability gaps warn, never disable
+    # The ToS disclaimer pointer stays impossible to miss on the CLIProxy row.
+    assert "disclaimer" in choices[1].description
+
+
+def test_auth_choices_append_capability_warnings(monkeypatch):
+    import shutil
+
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.steps.auth import _auth_choices
+    from nymeria.setup.state import WizardState
+
+    monkeypatch.setattr("nymeria.setup.environment.docker_available", lambda: False)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    by_value = {c.value: c for c in _auth_choices(WizardState())}
+
+    cliproxy = by_value[ProviderAuthMethod.CLIPROXY_OAUTH]
+    assert "existing CLIProxy endpoint" in cliproxy.description
+    assert not cliproxy.disabled  # selectable: the endpoint step takes a URL
+    local = by_value[ProviderAuthMethod.LOCAL_MODEL]
+    assert "ollama.com" in local.description
+    assert not local.disabled
+
+    # A known management endpoint (hydrated reconfigure / flag) means no
+    # local deploy is needed, so the Docker warning drops out.
+    state = WizardState(cliproxy_management_url="http://localhost:8318")
+    by_value = {c.value: c for c in _auth_choices(state)}
+    assert "Warning:" not in by_value[ProviderAuthMethod.CLIPROXY_OAUTH].description
+
+
+def test_store_auth_method_local_pins_ollama_and_clears_stale_details():
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.steps.auth import store_auth_method
+    from nymeria.setup.state import WizardState
+
+    # Switching from a keyed provider: the key and connection details belong
+    # to the old provider and must not leak into the Ollama config.
+    state = WizardState(
+        provider="anthropic",
+        api_key="sk-ant-stale",
+        api_mode="responses",
+        base_url="https://api.anthropic.com",
+    )
+    store_auth_method(state, ProviderAuthMethod.LOCAL_MODEL)
+    assert state.auth_method is ProviderAuthMethod.LOCAL_MODEL
+    assert state.provider == "ollama"
+    assert state.api_key == "" and state.api_mode == "" and state.base_url == ""
+
+    # Re-selecting the local branch keeps a customized Ollama base URL.
+    state.base_url = "http://box:11434"
+    store_auth_method(state, ProviderAuthMethod.LOCAL_MODEL)
+    assert state.base_url == "http://box:11434"
+
+    # No provider chosen yet: flag-provided values are intent for THIS
+    # branch (e.g. `--base-url` naming a remote Ollama) and must survive.
+    fresh = WizardState(base_url="http://box:11434", api_key="proxy-token")
+    store_auth_method(fresh, ProviderAuthMethod.LOCAL_MODEL)
+    assert fresh.provider == "ollama"
+    assert fresh.base_url == "http://box:11434"
+    assert fresh.api_key == "proxy-token"
+
+    # The other branches store the method and touch nothing else.
+    store_auth_method(state, ProviderAuthMethod.API_KEY)
+    assert state.auth_method is ProviderAuthMethod.API_KEY
+    assert state.provider == "ollama" and state.base_url == "http://box:11434"
+
+
+def test_runner_local_model_pins_ollama_unless_provider_given():
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.runner import _build_state, build_parser
+
+    args = build_parser().parse_args(["--auth-method", "local_model"])
+    state = _build_state(args)
+    assert state.auth_method is ProviderAuthMethod.LOCAL_MODEL
+    assert state.provider == "ollama"
+
+    # An explicit --provider wins: LM Studio and friends are local too.
+    args = build_parser().parse_args(
+        ["--auth-method", "local_model", "--provider", "lmstudio"]
+    )
+    state = _build_state(args)
+    assert state.provider == "lmstudio"
+
+
+def test_provider_signup_guidance_renders_from_registry():
+    """The "get a key" panel is registry-sourced (one place for TUI + GUI)."""
+    from nymeria.setup.steps.provider import _provider_signup
+
+    text = _provider_signup("google")
+    assert "https://aistudio.google.com/apikey" in text
+    assert "gemini-3.5-flash" in text  # free-tier steering rides as copy
+
+    # Paid keys carry the spend-real-money line.
+    assert "spend" in _provider_signup("openai")
+    # Uncurated providers render nothing (the panel hides itself).
+    assert _provider_signup("groq") == ""
+    assert _provider_signup(None) == ""

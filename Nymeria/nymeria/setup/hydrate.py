@@ -207,6 +207,7 @@ def hydrate_state_from_disk(state: WizardState, *, console: Optional[Console] = 
 
     _record_present_keys(state, values)
     _hydrate_cliproxy(state, values)
+    _hydrate_local_model(state)
 
     if for_docker:
         _hydrate_carrier_picks(state, values)
@@ -301,6 +302,27 @@ def _hydrate_cliproxy(state: WizardState, values: dict[str, str]) -> None:
             state.cliproxy_provider = "claude"
         elif provider == "openai" and on_v1 and api_mode == "responses":
             state.cliproxy_provider = "codex"
+
+
+def _hydrate_local_model(state: WizardState) -> None:
+    """Render an on-disk Ollama config as the local-model branch.
+
+    Like the CLIProxy inference above, `auth_method` is never written to
+    disk; a hydrated Ollama provider means the install came through (or is
+    equivalent to) the local branch, so the auth step, review screen, and
+    reconfigure echoes show "Local model" instead of "Direct API key". An
+    explicit --auth-method or --provider flag wins, and the CLIProxy
+    inference (which runs first) is never overridden.
+    """
+    from ..config.llm_providers import normalize_llm_provider
+    from ..onboarding import ProviderAuthMethod
+
+    if state.auth_method_explicit:
+        return
+    if state.auth_method is not ProviderAuthMethod.API_KEY:
+        return
+    if state.provider and normalize_llm_provider(state.provider) == "ollama":
+        state.auth_method = ProviderAuthMethod.LOCAL_MODEL
 
 
 def _apply_tool_picks(state: WizardState, default_tools: list[str]) -> None:

@@ -87,8 +87,14 @@ or combine extras like `nymeriaos[postgres,redis,voice]`. Available extras:
 
 `nymeria init` opens an interactive setup wizard. The first screen picks the
 setup depth. Quickstart (the recommended default) asks only the essentials:
-how to host the backend, your LLM provider and key (or subscription OAuth),
-your timezone (detected, you just confirm it), and remote access. Everything
+how to host the backend, the LLM, your timezone (detected, you just confirm
+it), and remote access. The LLM step offers three equal paths: paste a
+provider API key (the picker shows where to get each key, including the free
+tiers: Google AI Studio, OpenRouter `:free` models, NVIDIA NIM), log in with
+an existing AI subscription through CLIProxy (behind a terms-of-service
+disclaimer), or run a free local model with Ollama (no account at all; the
+wizard lists your installed models and checks the server is running).
+Everything
 else gets free, keyless defaults you can change later in the app: local
 semantic memory, keyless web search (the bundled SearXNG container on Docker,
 in-process metasearch elsewhere), the built-in page fetcher, local voice on
@@ -259,7 +265,9 @@ OpenAI-backed features.
 For scripted setup in CI or an offline support session, `nymeria init` accepts
 `--non-interactive` plus `--provider`, `--model`, and `--api-key` (all three are
 required for a fresh install), and `--root` / `--data-dir` to control where
-config and data are written. Optional connection flags are `--base-url` and
+config and data are written. `--auth-method local_model` scripts the local
+branch: it pins `--provider ollama` (an explicit `--provider` wins) and
+needs no `--api-key`, just `--model` (for example `qwen3:8b`). Optional connection flags are `--base-url` and
 `--api-mode responses|chat_completions` for OpenAI-compatible providers, plus
 `--hosting local|service|docker` and `--port` (the API listen port, default
 8000; the wizard asks the same question interactively and warns when the port

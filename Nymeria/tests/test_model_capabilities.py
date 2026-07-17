@@ -1255,8 +1255,10 @@ def test_f7_openai_and_gemini_are_provider_form_only(set_name, prefix):
     [
         (33, 32, ("ANTHROPIC_VISION_CAPABLE_MODELS", "ANTHROPIC_DOCUMENT_CAPABLE_MODELS")),
         (31, 24, ("OPENAI_VISION_CAPABLE_MODELS", "OPENAI_DOCUMENT_CAPABLE_MODELS")),
-        (18, 15, ("GEMINI_VISION_CAPABLE_MODELS", "GEMINI_DOCUMENT_CAPABLE_MODELS")),
-        (84, 71, ("VISION_CAPABLE_MODELS", "DOCUMENT_CAPABLE_MODELS")),
+        # 19/16 and 85/72 since gemini-3.5-flash joined the curated table (the
+        # registry default for the google provider, beta-readiness 03).
+        (19, 16, ("GEMINI_VISION_CAPABLE_MODELS", "GEMINI_DOCUMENT_CAPABLE_MODELS")),
+        (85, 72, ("VISION_CAPABLE_MODELS", "DOCUMENT_CAPABLE_MODELS")),
     ],
 )
 def test_f7_capability_set_counts(vision_count, document_count, set_pair):

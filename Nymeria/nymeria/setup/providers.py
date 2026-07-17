@@ -178,7 +178,27 @@ def _models_request(
             return None
         url = f"{base.rstrip('/')}/models"
         return url, {"Authorization": f"Bearer {key}"}
-    # google_genai / ollama_native / bedrock_converse: no OpenAI-shaped /models.
+    if spec.api_format == "google_genai":
+        # Gemini's documented OpenAI-compat shim is the one surface with an
+        # OpenAI-shaped GET /models, so it both lists models for the picker
+        # and validates the key honestly (the native route has no cheap
+        # keyed probe). A custom base URL wins: the user is pointing at an
+        # OpenAI-compatible Gemini endpoint of their own.
+        base = ((base_url or "").strip() or spec.openai_compat_base_url or "").rstrip("/")
+        if not base or not key:
+            return None
+        return f"{base}/models", {"Authorization": f"Bearer {key}"}
+    if spec.api_format == "ollama_native":
+        # Native tags listing: lists the locally pulled models AND doubles as
+        # the "is Ollama running" probe, so a stopped server is caught at
+        # init instead of on the first turn. No auth by default; a key means
+        # an auth proxy sits in front, so pass it along.
+        base = ((base_url or "").strip() or spec.default_base_url or "").rstrip("/")
+        if not base:
+            return None
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        return f"{base}/api/tags", headers
+    # bedrock_converse (and anything else): no OpenAI-shaped /models.
     return None
 
 
@@ -208,14 +228,20 @@ async def fetch_models_for_spec(
         logger.warning("setup: could not list models from %s: %s", url, exc)
         return []
 
-    rows = data.get("data") if isinstance(data, dict) else None
+    # OpenAI-shaped listings put rows under "data" with an "id" per row;
+    # Ollama's /api/tags puts them under "models" with a "name" per row.
+    rows = None
+    if isinstance(data, dict):
+        rows = data.get("data")
+        if not isinstance(rows, list):
+            rows = data.get("models")
     if not isinstance(rows, list):
         return []
     choices: list[ModelChoice] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        model_id = str(row.get("id") or "").strip()
+        model_id = str(row.get("id") or row.get("name") or "").strip()
         if not model_id:
             continue
         metadata = extract_model_metadata(row)
@@ -243,10 +269,11 @@ def check_llm_connection_for_spec(
     """Validate provider credentials with one tiny live request.
 
     The three first-class providers keep their original POST smoke-test (when no
-    custom base URL is set); every other provider is validated with a GET /models
-    probe. Providers that cannot be checked without non-key auth (locals with no
-    base URL, bedrock, vertex) return `tested=False` instead of raising, so
-    finalize still writes a usable config.
+    custom base URL is set); every other provider is validated with a GET probe
+    (`_models_request`: OpenAI-shaped /models, Gemini's OpenAI-compat shim, or
+    Ollama's /api/tags). Providers that cannot be checked without non-key auth
+    (bedrock, vertex) return `tested=False` instead of raising, so finalize
+    still writes a usable config.
     """
     provider_id = normalize_llm_provider(spec.id)
     custom_base = bool(base_url and base_url.strip())
@@ -261,6 +288,8 @@ def check_llm_connection_for_spec(
             with httpx.Client(timeout=15.0) as client:
                 client.get(url, headers=headers).raise_for_status()
     except httpx.TimeoutException as exc:
+        if spec.api_format == "ollama_native":
+            raise LLMConnectionError(_ollama_unreachable_hint(spec, base_url)) from exc
         raise LLMConnectionError("provider did not respond before the 15s timeout") from exc
     except httpx.HTTPStatusError as exc:
         detail = _http_error_detail(exc.response)
@@ -268,9 +297,24 @@ def check_llm_connection_for_spec(
             f"{spec.label} returned HTTP {exc.response.status_code}: {detail}"
         ) from exc
     except httpx.HTTPError as exc:
+        if spec.api_format == "ollama_native":
+            raise LLMConnectionError(_ollama_unreachable_hint(spec, base_url)) from exc
         raise LLMConnectionError(str(exc)) from exc
 
     return LLMConnectionResult(model=model, tested=True)
+
+
+def _ollama_unreachable_hint(spec: LLMProviderSpec, base_url: str | None) -> str:
+    """Actionable message for the local branch's most likely failure."""
+    base = (
+        (base_url or "").strip() or spec.default_base_url or "http://localhost:11434"
+    ).rstrip("/")
+    return (
+        f"Ollama is not reachable at {base}. Install it from ollama.com and "
+        "make sure it is running, then pull a model (for example: "
+        "ollama pull qwen3:8b). Re-run with --skip-llm-test to write the "
+        "config without the check."
+    )
 
 
 def _smoke_test_post(provider_id: str, model: str, api_key: str) -> None:

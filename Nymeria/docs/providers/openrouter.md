@@ -34,6 +34,19 @@ Primary references:
   by Nymeria. It is not guaranteed to be readable by the model on later turns.
   Do not rely on a model being able to quote prior hidden thinking.
 
+## Free models
+
+OpenRouter serves a rotating set of zero-cost models under slugs tagged
+`:free` (for example `qwen/qwen3-coder:free` as of July 2026). Free models
+run on a modest daily request cap; a one-time credit purchase raises it
+substantially. The roster churns, so check https://openrouter.ai/models for
+the current list rather than hard-coding a slug, and note that a `:free`
+slug can disappear (older guides cite free DeepSeek/Mistral variants that no
+longer exist). Everything below (Responses vs Chat Completions, reasoning,
+tool calls) applies to free slugs the same as paid ones, subject to the
+upstream host's capabilities. The init wizard's provider picker points at
+this option in its "get a key" guidance.
+
 ## Configuration
 
 Global settings live in `Nymeria/nymeria/config/settings.py`. Per-thread settings

@@ -111,9 +111,11 @@ def add_init_arguments(parser: argparse.ArgumentParser) -> None:
         choices=choice_values(ProviderAuthMethod),
         default=None,
         help=(
-            "LLM auth method: api_key (direct key) or cliproxy_oauth "
+            "LLM auth method: api_key (direct key), cliproxy_oauth "
             "(subscription via CLIProxy; the legacy cliproxy_claude_oauth / "
-            "cliproxy_codex_oauth values map onto it)"
+            "cliproxy_codex_oauth values map onto it), or local_model "
+            "(Ollama on this machine; pins --provider ollama unless one is "
+            "given)"
         ),
     )
     parser.add_argument(
@@ -503,6 +505,13 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         auth_method = ProviderAuthMethod.CLIPROXY_OAUTH
         cliproxy_provider = cliproxy_provider or legacy_provider
 
+    provider_flag = getattr(args, "provider", None)
+    if auth_method is ProviderAuthMethod.LOCAL_MODEL and not provider_flag:
+        # The local branch pins Ollama (there is no provider step to pick it
+        # in). An explicit --provider wins: LM Studio and friends are local
+        # too, and the flag is the scripted user saying which one.
+        provider_flag = "ollama"
+
     docker_stack = None
     if getattr(args, "docker_stack", None):
         docker_stack = parse_choice(
@@ -593,7 +602,7 @@ def _build_state(args: argparse.Namespace) -> WizardState:
         ).strip(),
         external_access=external_access,
         public_url=public_url,
-        provider=getattr(args, "provider", None),
+        provider=provider_flag,
         api_key=(getattr(args, "api_key", None) or "").strip(),
         model=(getattr(args, "model", None) or "").strip(),
         base_url=(getattr(args, "base_url", None) or "").strip(),
