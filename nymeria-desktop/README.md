@@ -1,6 +1,6 @@
-# Nymeria Desktop
+# NymeriaOS Desktop
 
-A modern desktop UI for the Nymeria AI agent, built with Tauri 2.x and Svelte 5.
+A modern desktop UI for the NymeriaOS AI agent, built with Tauri 2.x and Svelte 5.
 
 ## Features
 
