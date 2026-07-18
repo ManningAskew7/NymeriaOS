@@ -388,7 +388,7 @@ services:
       - ./run.py:/app/run.py:ro          # Bind mount: live entry point
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro
       - ./google_credentials.json:/app/google_credentials.json:ro  # Google OAuth creds
-      - ../nymeria-desktop/build:/app/frontend:ro  # Outlook add-in / web UI frontend
+      - ../nymeria-desktop/build:/app/frontend:ro  # Fallback web UI; the bundled nymeria/frontend wins when it holds a build (scripts/build_frontend.sh)
     depends_on:
       postgres:
         condition: service_healthy

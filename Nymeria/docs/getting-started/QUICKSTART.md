@@ -136,7 +136,8 @@ server.
 
 Packaged installs store config and writable data under `~/.nymeria/` by
 default. After `nymeria api` starts, open `http://localhost:8000`; the backend
-serves the bundled web UI from the same origin.
+serves the bundled web UI from the same origin (the full client, see
+[frontends/web-client.md](../frontends/web-client.md)).
 
 ### Docker From A Source Checkout
 
@@ -373,7 +374,10 @@ http://localhost:8000
 ```
 
 The backend-served web UI auto-detects the current origin as the API URL after
-`/health` succeeds.
+`/health` succeeds. It is the same app as the desktop build and the primary
+GUI for the beta; see [frontends/web-client.md](../frontends/web-client.md)
+for the first-run flow, what stays desktop-only, token storage, and remote
+access.
 
 For the Windows desktop app:
 

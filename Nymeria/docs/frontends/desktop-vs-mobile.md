@@ -2,6 +2,8 @@
 
 This document maps the major desktop app areas (`/nymeria-desktop`) to their mobile counterparts (`/nymeria-mobile`) and documents the important differences. It is a maintenance guide, not a byte-for-byte file inventory, because the two codebases have already diverged in a number of platform-specific and feature-specific areas.
 
+There is a third client surface with no codebase of its own: the backend serves the desktop app's static build as a full web client (see [web-client.md](web-client.md)). Anything added to the desktop app ships in the web client automatically, so desktop-only OS affordances must hide or fail soft without Tauri.
+
 **Drift checker**: `python scripts/check_cross_app_drift.py` enforces that shared files stay in sync and new overlap files are classified. It runs in CI and flags exact-match files that have drifted and unclassified new overlaps. Add new shared files to `EXACT_MATCH` or `KNOWN_DRIFT` in the script.
 
 ## Shared-Code Strategy

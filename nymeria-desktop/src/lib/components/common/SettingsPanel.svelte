@@ -622,10 +622,7 @@
     if (!connectionAdvancedTouched) {
       showConnectionAdvanced = !backendProcessStore.isManagedBackend;
     }
-    if (
-      (!isAdmin && isAdminServerTab(activeTab))
-      || (activeTab === 'proxy' && backendProcessStore.isExternalBackend)
-    ) {
+    if (!isAdmin && isAdminServerTab(activeTab)) {
       activeTab = 'connection';
     }
   });
@@ -1185,18 +1182,16 @@
             <Icon name="chat" size={14} />
             <span>Voice</span>
           </button>
-          {#if backendProcessStore.isManagedBackend}
-            <button
-              class="nav-item"
-              class:active={activeTab === 'proxy'}
-              onclick={() => (activeTab = 'proxy')}
-              aria-current={activeTab === 'proxy' ? 'page' : undefined}
-              type="button"
-            >
-              <Icon name="server" size={14} />
-              <span>CLI Proxy</span>
-            </button>
-          {/if}
+          <button
+            class="nav-item"
+            class:active={activeTab === 'proxy'}
+            onclick={() => (activeTab = 'proxy')}
+            aria-current={activeTab === 'proxy' ? 'page' : undefined}
+            type="button"
+          >
+            <Icon name="server" size={14} />
+            <span>CLI Proxy</span>
+          </button>
           <button
             class="nav-item"
             class:active={activeTab === 'users'}
@@ -1368,8 +1363,11 @@
     </div>
   {/if}
 
-  <!-- Proxy Tab (CLIProxy management, source-checkout Tauri only) -->
-  {#if activeTab === 'proxy' && isAdmin && backendProcessStore.isManagedBackend}
+  <!-- Proxy Tab. CLIProxy management is backend-first (the admin /cliproxy
+       REST routes), so it works from any client incl. the served web UI;
+       only the local-sidecar start/stop controls inside the panel stay
+       behind the desktop shell (they self-gate on Tauri-derived state). -->
+  {#if activeTab === 'proxy' && isAdmin}
     <CLIProxyPanel />
   {/if}
 
