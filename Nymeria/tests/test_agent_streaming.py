@@ -378,7 +378,12 @@ def test_graph_stream_processor_streams_reasoning_tool_delta_and_response_text()
                         },
                         {"type": "text", "text": "Answer"},
                     ],
-                    additional_kwargs={"reasoning_content": "think"},
+                    # A real chunk carries reasoning from ONE source: Responses
+                    # mode via content reasoning blocks, chat-completions via
+                    # additional_kwargs.reasoning_content, never both for the
+                    # same text. (The old cross-source per-delta deduper was
+                    # removed; see test_repeated_reasoning_deltas_pass_through.)
+                    additional_kwargs={},
                 )
             },
         },
@@ -396,6 +401,44 @@ def test_graph_stream_processor_streams_reasoning_tool_delta_and_response_text()
         {"type": "response", "content": "Answer"},
     ]
     assert response_parts == ["Answer"]
+
+
+def test_repeated_reasoning_deltas_pass_through():
+    """Reasoning token streams legitimately repeat short strings; the live path
+    must emit every delta verbatim. The prior per-delta exact-string deduper
+    dropped repeats (e.g. a recurring ' the') and fused adjacent words."""
+    def _reasoning_stream_event(text):
+        return {
+            "event": "on_chat_model_stream",
+            "run_id": "model-1",
+            "data": {
+                "chunk": SimpleNamespace(
+                    tool_call_chunks=[],
+                    content=[{
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": text}],
+                    }],
+                    additional_kwargs={},
+                )
+            },
+        }
+
+    # "The", " the", " the" repeats the exact delta " the" twice.
+    deltas = ["The", " user", " counts", " the", " r", " the", " r"]
+    chunks, _response_parts, _graph = _collect_processor_events(
+        [{"event": "on_chat_model_start", "run_id": "model-1"}]
+        + [_reasoning_stream_event(d) for d in deltas]
+        + [{
+            "event": "on_chat_model_end",
+            "run_id": "model-1",
+            "data": {"output": AIMessage(content="")},
+        }]
+    )
+
+    emitted = [c["content"] for c in chunks if c.get("type") == "thinking"]
+    # Every delta survives, repeats included; "".join reconstructs the text.
+    assert emitted == deltas
+    assert "".join(emitted) == "The user counts the r the r"
 
 
 def test_graph_stream_processor_recovers_midstream_provider_failure_from_checkpoint():
