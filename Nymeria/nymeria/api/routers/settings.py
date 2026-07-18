@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config import Settings
 from ...config.llm_providers import (
+    get_llm_provider_spec,
     is_openai_compatible_provider,
     list_llm_provider_specs,
     normalize_llm_provider,
@@ -58,6 +59,10 @@ from ..schemas.settings import (
     LLMProviderTestSuiteResponse,
     LLMRuntimeDiagnosticsResponse,
     OpenRouterKeyDiagnostics,
+    RagCatalogResponse,
+    RagComboResponse,
+    RagEmbedderOptionResponse,
+    RagRerankerOptionResponse,
     ServerSettingsResponse,
     ServerSettingsUpdate,
     SystemPromptResponse,
@@ -74,6 +79,11 @@ _CLEARABLE_NULL_SETTINGS = {
     # this the frontend "Default" option could never unset a saved effort.
     "llm_reasoning_effort",
     "embedding_dimensions",
+    # Base URL / input type cleared = back to the provider's own endpoint;
+    # switching e.g. from a Voyage embedder (custom base URL) to Cohere must
+    # be able to drop the stale override.
+    "embedding_base_url",
+    "embedding_input_type",
     "rag_rerank_model",
     # Voice model/voice/base-URL cleared = back to the per-provider default
     # (core/voice.py); a stale explicit value breaks provider switches.
@@ -429,11 +439,13 @@ def serialize_server_settings(settings: Any) -> ServerSettingsResponse:
         compact_proactive_min_pct=settings.compact_proactive_min_pct,
         sliding_window_cycles=settings.sliding_window_cycles,
         tool_output_max_chars=settings.tool_output_max_chars,
+        tool_timeout=settings.tool_timeout,
         tool_timing_in_results=settings.tool_timing_in_results,
         memory_char_limit=settings.memory_char_limit,
         memory_max_entries=settings.memory_max_entries,
         memory_value_max_chars=settings.memory_value_max_chars,
         agent_max_iterations=settings.agent_max_iterations,
+        user_timezone=settings.user_timezone,
         log_level=settings.log_level,
         watchdog_enabled=settings.watchdog_enabled,
         watchdog_interval_minutes=settings.watchdog_interval_minutes,
@@ -457,6 +469,8 @@ def serialize_server_settings(settings: Any) -> ServerSettingsResponse:
         embedding_provider=settings.embedding_provider,
         embedding_model=settings.embedding_model,
         embedding_dimensions=settings.embedding_dimensions,
+        embedding_base_url=settings.embedding_base_url,
+        embedding_input_type=settings.embedding_input_type,
         rag_retrieval_mode=settings.rag_retrieval_mode,
         rag_embed_tool_results=settings.rag_embed_tool_results,
         rag_rerank_enabled=settings.rag_rerank_enabled,
@@ -568,8 +582,25 @@ _LLM_CREDENTIAL_FIELDS = frozenset(
         "anthropic_direct_api_key",
         "openai_api_key",
         "openrouter_api_key",
+        # The generic slot (routed to the selected provider's declared key var)
+        # is a credential change like the four above: the key is baked into the
+        # model client at graph build, so it must trigger a rebuild too.
+        "llm_api_key",
     }
 )
+
+
+def _llm_api_key_env_var(provider: str) -> str | None:
+    """The env var the generic ``llm_api_key`` slot writes for ``provider``.
+
+    Mirrors the CLI wizard finalize: the FIRST entry of the spec's
+    ``api_key_env_vars`` (e.g. GROQ_API_KEY, or ANTHROPIC_DIRECT_API_KEY for
+    anthropic). None when the provider is unknown or declares no key slot.
+    """
+    spec = get_llm_provider_spec(provider)
+    if spec is None or not spec.api_key_env_vars:
+        return None
+    return spec.api_key_env_vars[0]
 # tool_timeout is captured into SafeToolNode at graph build, so a hot PATCH must
 # rebuild the graph (otherwise the cached kill-timeout drifts from settings; the
 # claude_code tool's inline-vs-detach budget depends on the two staying in sync).
@@ -606,6 +637,28 @@ def apply_server_settings_update(
         or (k in _CLEARABLE_NULL_SETTINGS and k in explicitly_set)
     }
 
+    # The generic llm_api_key slot has no fixed env var (VIRTUAL_UPDATE_FIELDS):
+    # route it to the declared key var of the provider being configured, the same
+    # var the CLI wizard finalize writes. Resolved against the update's provider
+    # when the caller switches provider and key together (the normal GUI flow),
+    # falling back to the currently configured provider for a key-only rotation.
+    extra_env_pairs: list[tuple[str, str]] = []
+    llm_api_key = (updates_dict.get("llm_api_key") or "").strip()
+    if "llm_api_key" in updates_dict and not llm_api_key:
+        updates_dict.pop("llm_api_key")
+    elif llm_api_key:
+        target_provider = updates_dict.get("llm_provider") or settings.llm_provider
+        key_env_var = _llm_api_key_env_var(target_provider)
+        if not key_env_var:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Provider '{target_provider}' does not declare an API key "
+                    "slot, so llm_api_key cannot be stored for it."
+                ),
+            )
+        extra_env_pairs.append((key_env_var, format_env_value(llm_api_key)))
+
     if not updates_dict:
         return {"message": "No updates provided", "updated": [], "restart_required": False}
 
@@ -617,9 +670,12 @@ def apply_server_settings_update(
         (env_mapping[name], format_env_value(value))
         for name, value in updates_dict.items()
         if name in env_mapping
-    ]
+    ] + extra_env_pairs
     new_lines = write_env_file(env_path, produced, merge=True)
-    _sync_process_env(new_lines, set(env_mapping.values()))
+    _sync_process_env(
+        new_lines,
+        set(env_mapping.values()) | {var for var, _ in extra_env_pairs},
+    )
 
     _clear_settings_cache(get_settings_fn)
     new_settings = get_settings_fn()
@@ -1086,9 +1142,79 @@ def create_settings_router(
                 verified=spec.verified,
                 anthropic_native_for_claude=spec.anthropic_native_for_claude,
                 reasoning_passback_verified=spec.reasoning_passback_verified,
+                signup_url=spec.signup_url or "",
+                signup_guidance=spec.signup_guidance or "",
             )
             for spec in list_llm_provider_specs()
         ]
+
+    @router.get("/settings/rag/catalog", response_model=RagCatalogResponse)
+    async def get_rag_catalog(
+        user: AuthenticatedUser = Depends(verify_api_key),
+    ):
+        """Return the RAG embedder/reranker catalog the CLI wizard renders.
+
+        Served from ``setup/rag_catalog.py`` (TUI-free by design) so GUI
+        onboarding and the CLI wizard share one source of truth instead of a
+        hand-copied frontend table. Function-local import to keep the setup
+        package off the API's import path until first use.
+        """
+        from ...setup.rag_catalog import (
+            EMBEDDERS,
+            QUICKSTART_EMBEDDER,
+            QUICKSTART_RERANKER,
+            RECOMMENDED_COMBOS,
+            RERANKERS,
+        )
+
+        return RagCatalogResponse(
+            embedders=[
+                RagEmbedderOptionResponse(
+                    id=opt.id,
+                    tier=opt.tier,
+                    label=opt.label,
+                    description=opt.description,
+                    provider=opt.provider,
+                    model=opt.model,
+                    dimensions=opt.dimensions,
+                    requires_key=opt.requires_key,
+                    key_vendor=opt.key_vendor,
+                    base_url=opt.base_url,
+                    input_type=opt.input_type,
+                    pricing=opt.pricing,
+                    key_label=opt.key_label,
+                    eval_tag=opt.eval_tag,
+                )
+                for opt in EMBEDDERS
+            ],
+            rerankers=[
+                RagRerankerOptionResponse(
+                    id=opt.id,
+                    tier=opt.tier,
+                    label=opt.label,
+                    description=opt.description,
+                    provider=opt.provider,
+                    model=opt.model,
+                    requires_key=opt.requires_key,
+                    key_vendor=opt.key_vendor,
+                    pricing=opt.pricing,
+                    key_label=opt.key_label,
+                    eval_tag=opt.eval_tag,
+                )
+                for opt in RERANKERS
+            ],
+            combos=[
+                RagComboResponse(
+                    label=label,
+                    embedder_id=embedder_id,
+                    reranker_id=reranker_id,
+                    description=description,
+                )
+                for label, embedder_id, reranker_id, description in RECOMMENDED_COMBOS
+            ],
+            quickstart_embedder=QUICKSTART_EMBEDDER,
+            quickstart_reranker=QUICKSTART_RERANKER,
+        )
 
     @router.get(
         "/settings/llm/runtime",
