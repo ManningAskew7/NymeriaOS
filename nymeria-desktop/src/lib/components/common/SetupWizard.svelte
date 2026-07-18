@@ -4,6 +4,8 @@
   import { configStore } from '$lib/stores/config.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { probeConnection } from '$lib/services/api.svelte';
+  import { exchangePastedToken } from '$lib/utils/tokenHandoff';
+  import { versionSkewNote } from '$lib/utils/versionSkew';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import Avatar from '$lib/components/account/Avatar.svelte';
@@ -24,6 +26,12 @@
   // Resolved identity from /me — surfaces in Step 3 so the user can confirm
   // they're signing in as the expected account before completing setup.
   let resolvedIdentity = $state<AccountIdentity | null>(null);
+  // Desktop-only: set when the installed app's version differs from the
+  // backend's (versions are tag-identical by construction, so any skew means
+  // one side is due a refresh). Always null in a plain browser.
+  let versionNote = $state<string | null>(null);
+  // True while handleComplete's token exchange + identity refresh run.
+  let completing = $state(false);
 
   onMount(() => {
     const initialApiUrl = apiUrl;
@@ -43,6 +51,7 @@
     testStatus = 'testing';
     testMessage = '';
     resolvedIdentity = null;
+    versionNote = null;
 
     const result = await probeConnection(apiUrl, apiKey);
     if (!result.ok) {
@@ -54,6 +63,7 @@
     resolvedIdentity = result.identity;
     testStatus = 'success';
     testMessage = 'Connection verified.';
+    versionNote = await versionSkewNote(result.backendVersion);
   }
 
   function handleNext() {
@@ -69,8 +79,24 @@
   }
 
   async function handleComplete() {
+    // Re-entry guard: the exchange await opens a window where a second
+    // "Start a Thread" click would mint a duplicate token and re-run
+    // completion.
+    if (completing) return;
+    completing = true;
+    // Paste-path twin of the #token fragment handoff's exchange: the common
+    // first-run paste is the 24h bootstrap admin token, which would otherwise
+    // die silently a day after install. Upgrade it to a long-lived personal
+    // token before storing; any failure (including the exchange's 10s
+    // timeout) keeps the pasted (probe-validated) token, so completion never
+    // blocks on this.
+    const label =
+      typeof window !== 'undefined' && '__TAURI__' in window
+        ? 'desktop-signin'
+        : 'web-signin';
+    const adoptedKey = await exchangePastedToken(apiUrl, apiKey, label);
     configStore.apiUrl = apiUrl;
-    configStore.apiKey = apiKey;
+    configStore.apiKey = adoptedKey;
     configStore.completeSetup();
     // Resolve /me so localStorage namespacing picks up the correct user_id
     // before the rest of the app starts reading threads/folders. Without
@@ -80,7 +106,7 @@
     if (identity) {
       connectionsStore.upsertAccountCredential({
         apiUrl,
-        apiKey,
+        apiKey: adoptedKey,
         identity,
         makeActive: true,
       });
@@ -221,6 +247,10 @@
                 </div>
               </div>
             {/if}
+
+            {#if versionNote}
+              <p class="hint">{versionNote}</p>
+            {/if}
           </div>
         </div>
       {:else if currentStep === 4}
@@ -259,8 +289,8 @@
           {currentStep === 3 ? 'Continue' : 'Next'}
         </Button>
       {:else}
-        <Button variant="primary" onclick={handleComplete}>
-          Start a Thread
+        <Button variant="primary" onclick={handleComplete} disabled={completing}>
+          {completing ? 'Connecting…' : 'Start a Thread'}
         </Button>
       {/if}
     </div>

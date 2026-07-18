@@ -3,6 +3,7 @@ import {
   extractTokenFromHash,
   consumeTokenHandoff,
   issuePersonalToken,
+  exchangePastedToken,
 } from './tokenHandoff';
 
 describe('extractTokenFromHash', () => {
@@ -181,5 +182,78 @@ describe('issuePersonalToken', () => {
     await expect(
       issuePersonalToken('http://localhost:8000', 'nym_boot123')
     ).rejects.toThrow();
+  });
+
+  it('sends a caller-provided label instead of the web-signin default', async () => {
+    const fetchMock = stubFetch({ ok: true, body: { raw_token: 'nym_new789' } });
+    await expect(
+      issuePersonalToken('http://localhost:8000', 'nym_boot123', 'desktop-signin')
+    ).resolves.toBe('nym_new789');
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      'http://localhost:8000/me/tokens',
+      expect.objectContaining({ body: JSON.stringify({ label: 'desktop-signin' }) })
+    );
+  });
+
+  it('bounds the exchange with an abort signal so a hung backend cannot stall sign-in', async () => {
+    const fetchMock = stubFetch({ ok: true, body: { raw_token: 'nym_new789' } });
+    await issuePersonalToken('http://localhost:8000', 'nym_boot123');
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      'http://localhost:8000/me/tokens',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+});
+
+describe('exchangePastedToken', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(response: { ok: boolean; body?: unknown; throwOnFetch?: boolean }) {
+    const fetchMock = vi.fn(async () => {
+      if (response.throwOnFetch) throw new TypeError('network down');
+      return {
+        ok: response.ok,
+        json: async () => response.body,
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('returns the upgraded token and passes the label through', async () => {
+    const fetchMock = stubFetch({ ok: true, body: { raw_token: 'nym_longlived456' } });
+    await expect(
+      exchangePastedToken('http://localhost:8000', 'nym_boot123', 'desktop-signin')
+    ).resolves.toBe('nym_longlived456');
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      'http://localhost:8000/me/tokens',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer nym_boot123' }),
+        body: JSON.stringify({ label: 'desktop-signin' }),
+      })
+    );
+  });
+
+  it('keeps the pasted token on a non-2xx response (e.g. the 409 token limit)', async () => {
+    stubFetch({ ok: false });
+    await expect(
+      exchangePastedToken('http://localhost:8000', 'nym_boot123', 'desktop-signin')
+    ).resolves.toBe('nym_boot123');
+  });
+
+  it('keeps the pasted token when the response body is not a nym_ token', async () => {
+    stubFetch({ ok: true, body: { raw_token: 'sk-ant-oops' } });
+    await expect(
+      exchangePastedToken('http://localhost:8000', 'nym_boot123', 'desktop-signin')
+    ).resolves.toBe('nym_boot123');
+  });
+
+  it('keeps the pasted token when the exchange throws (offline mid-commit)', async () => {
+    stubFetch({ ok: true, throwOnFetch: true });
+    await expect(
+      exchangePastedToken('http://localhost:8000', 'nym_boot123', 'desktop-signin')
+    ).resolves.toBe('nym_boot123');
   });
 });

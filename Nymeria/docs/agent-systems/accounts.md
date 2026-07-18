@@ -102,6 +102,16 @@ hosting, and never over SSH, in a container, or on a display-less host
 `BOOTSTRAP_TOKEN.txt`, `run.py users` minting, the paste-a-token wizard flow)
 is unchanged and remains fully supported.
 
+The paste path performs the same exchange: when the Setup Wizard's
+"complete" step commits a pasted (probe-validated) token, the client
+upgrades it via `POST /me/tokens` before storing (labels `web-signin` /
+`desktop-signin` / `mobile-signin` by surface), so a pasted bootstrap token
+does not die silently at its 24h expiry, on the desktop app included. Any
+exchange failure (offline mid-commit, the token limit, an older backend)
+keeps the pasted token as-is. Later token edits in Settings store what you
+paste without exchanging (deliberate: that surface is also used to paste
+specific personal tokens).
+
 ### Slim-launcher service token (`data/SLIM_SERVICE_TOKEN.txt`)
 
 `python3 run.py slim` provisions a separate `bot-service` admin user and

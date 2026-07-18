@@ -42,7 +42,7 @@ npm run tauri dev
 cd nymeria-desktop && npm run tauri dev
 ```
 
-After the desktop app launches, point its API URL at your remote backend in the in-app settings (or the SetupWizard on first run). For a VPS-hosted instance: `https://your-vps-domain/`.
+After the desktop app launches, point its API URL at your remote backend in the in-app settings (or the SetupWizard on first run). For a VPS-hosted instance: `https://your-vps-domain/`. On first-run completion the wizard exchanges the pasted token for a long-lived personal token (so a pasted 24h bootstrap token survives), and warns when the app and backend versions differ, which with no auto-update means fetching the matching installer.
 
 ## Opting into self-contained (source-checkout) mode
 

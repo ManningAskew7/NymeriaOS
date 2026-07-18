@@ -48,6 +48,10 @@ desktop-shell-only and hide themselves in a browser:
   panel itself works everywhere).
 - OS keychain token storage, the system tray, and native auto-config.
 
+If you prefer the installed desktop app (currently Windows), grab the
+installer from the project's release page; it is the same UI as a thin
+client over the identical backend URL + token flow.
+
 ## Token storage caveat
 
 In a browser, your account token is stored in the browser's localStorage
