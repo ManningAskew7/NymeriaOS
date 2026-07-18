@@ -2,6 +2,7 @@
   import type { AccountIdentity } from '$lib/types';
   import { configStore } from '$lib/stores/config.svelte';
   import { probeConnection } from '$lib/services/api.svelte';
+  import { exchangePastedToken } from '$lib/utils/tokenHandoff';
   import Icon from './Icon.svelte';
   import Button from './Button.svelte';
   import Spinner from './Spinner.svelte';
@@ -87,9 +88,24 @@
     }
   }
 
+  // True while completeSetup's token exchange runs (re-entry guard: the
+  // exchange await opens a window where a second tap would mint a duplicate
+  // token and re-run completion).
+  let completing = $state(false);
+
   async function completeSetup() {
-    configStore.apiUrl = apiUrl.trim().replace(/\/$/, '');
-    configStore.apiKey = apiKey.trim();
+    if (completing) return;
+    completing = true;
+    // Paste-path twin of the #token fragment handoff's exchange: the common
+    // first-run paste is the 24h bootstrap admin token, which would otherwise
+    // die silently a day after install. Upgrade it to a long-lived personal
+    // token before storing; any failure (including the exchange's 10s
+    // timeout) keeps the pasted (probe-validated) token, so completion never
+    // blocks on this.
+    const cleanUrl = apiUrl.trim().replace(/\/$/, '');
+    const adoptedKey = await exchangePastedToken(cleanUrl, apiKey.trim(), 'mobile-signin');
+    configStore.apiUrl = cleanUrl;
+    configStore.apiKey = adoptedKey;
     configStore.completeSetup();
     // Resolve /me so localStorage namespacing picks up the correct user_id
     // before the rest of the app starts reading threads/folders. Without
@@ -241,7 +257,9 @@
         {step === 0 ? 'Get Started' : 'Next'}
       </Button>
     {:else}
-      <Button variant="primary" onclick={completeSetup}>Start a Thread</Button>
+      <Button variant="primary" onclick={completeSetup} disabled={completing}>
+        {completing ? 'Connecting…' : 'Start a Thread'}
+      </Button>
     {/if}
   </div>
 </div>

@@ -5,6 +5,7 @@
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { api, probeConnection } from '$lib/services/api.svelte';
+  import { versionSkewNote } from '$lib/utils/versionSkew';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import { threadsStore } from '$lib/stores/threads.svelte';
   import type {
@@ -864,6 +865,11 @@
     if (result.ok) {
       testStatus = 'success';
       testMessage = 'Connection successful!';
+      // Desktop-only nudge (null in a browser): app and backend versions are
+      // tag-identical by construction, so any skew means a stale installer
+      // (or backend) and, with no auto-update in the beta, a manual refresh.
+      const note = await versionSkewNote(result.backendVersion);
+      if (note) testMessage = `Connection successful! ${note}`;
     } else {
       testStatus = 'error';
       testMessage = result.message;

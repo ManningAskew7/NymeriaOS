@@ -4,7 +4,7 @@ import { errorsStore } from '$lib/stores/errors.svelte';
 import type { AccountIdentity, MessageStep, ToolCall, WorkspaceArtifact } from '$lib/types';
 
 export type ConnectionProbeResult =
-  | { ok: true; identity: AccountIdentity; provider?: string }
+  | { ok: true; identity: AccountIdentity; provider?: string; backendVersion?: string }
   | {
       ok: false;
       reason: 'unreachable' | 'unauthorized' | 'identity_failed' | 'error';
@@ -57,6 +57,15 @@ export async function probeConnection(
       status: health.status,
       message: `Server is reachable but /health returned ${health.status}.`,
     };
+  }
+  // Best-effort: /health carries the backend version (tag-identical to the
+  // desktop app's by construction), which feeds the version-skew nudge.
+  let backendVersion: string | undefined;
+  try {
+    const healthBody = (await health.json()) as { version?: string };
+    if (typeof healthBody.version === 'string') backendVersion = healthBody.version;
+  } catch {
+    // ignore: a body-less /health still proves reachability
   }
 
   let me: Response;
@@ -111,7 +120,7 @@ export async function probeConnection(
     // ignore
   }
 
-  return { ok: true, identity, provider };
+  return { ok: true, identity, provider, backendVersion };
 }
 
 export class ApiBase {

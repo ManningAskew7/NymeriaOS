@@ -84,20 +84,55 @@ export async function consumeTokenHandoff(deps: TokenHandoffDeps): Promise<boole
  * Default `issueToken` implementation: self-issue a long-lived personal
  * token over the raw REST endpoint (module-level fetch, mirroring
  * probeConnection: no configStore reads or writes, safe pre-setup).
+ * `label` names the token in /me/tokens listings (per-surface labels keep
+ * the list legible: web-signin, desktop-signin, mobile-signin).
  */
-export async function issuePersonalToken(url: string, key: string): Promise<string | null> {
+export async function issuePersonalToken(
+  url: string,
+  key: string,
+  label = 'web-signin'
+): Promise<string | null> {
   const base = url.trim().replace(/\/$/, '');
+  // Hard 10s cap: both callers (the fragment handoff and the SetupWizard
+  // commit) await this exchange on their sign-in critical path with a
+  // catch-and-degrade fallback, which only helps if the promise SETTLES. A
+  // backend that accepts the connection but never answers would otherwise
+  // hang first-run completion until the TCP timeout, or forever.
   const response = await fetch(`${base}/me/tokens`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify({ label: 'web-signin' }),
+    body: JSON.stringify({ label }),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) return null;
   const data = (await response.json()) as { raw_token?: string };
   return typeof data.raw_token === 'string' && data.raw_token.startsWith('nym_')
     ? data.raw_token
     : null;
+}
+
+/**
+ * Paste-path twin of the fragment handoff's exchange, used at the
+ * SetupWizard commit point: upgrade a pasted (already probe-validated)
+ * token to a long-lived personal token, or keep the pasted one on any
+ * failure (offline mid-commit, the 409 token limit, an older backend
+ * without /me/tokens, malformed response). Unconditional by design: the
+ * common first-run paste is the 24h bootstrap admin token, which would
+ * otherwise die silently a day after install; a pasted personal token just
+ * gains a sibling entry in /me/tokens (visible, labeled, revocable), which
+ * is cheaper than any unreliable client-side bootstrap detection.
+ */
+export async function exchangePastedToken(
+  url: string,
+  key: string,
+  label: string
+): Promise<string> {
+  try {
+    return (await issuePersonalToken(url, key, label)) ?? key;
+  } catch {
+    return key;
+  }
 }
