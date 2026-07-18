@@ -2,7 +2,8 @@
   import '../app.css';
   import { onMount } from 'svelte';
   import { AppShell, Sidebar, MainPanel, RightPanel } from '$lib/components/layout';
-  import { SetupWizard } from '$lib/components/common';
+  import OnboardingSurface from '$lib/components/onboarding/OnboardingSurface.svelte';
+  import { onboardingStore } from '$lib/stores/onboarding.svelte';
   import ErrorToast from '$lib/components/common/ErrorToast.svelte';
   import StartupOverlay from '$lib/components/common/StartupOverlay.svelte';
   import AuthPromptModal from '$lib/components/credentials/AuthPromptModal.svelte';
@@ -337,8 +338,11 @@
       <Spinner size="lg" />
       <p>Connecting to your Nymeria server...</p>
     </div>
-  {:else if configStore.needsSetup}
-    <SetupWizard />
+  {:else if configStore.needsSetup || onboardingStore.active}
+    <!-- The onboarding surface arms onboardingStore.active as it mounts, so it
+         stays up after the connection step flips needsSetup false; Finish or
+         Skip clears the flag and drops into the app shell. -->
+    <OnboardingSurface />
   {:else}
     <AppShell>
       {#snippet sidebar()}

@@ -8,5 +8,4 @@ export { default as SectionHeader } from './SectionHeader.svelte';
 export { default as ThinkingIndicator } from './ThinkingIndicator.svelte';
 export { default as Modal } from './Modal.svelte';
 export { default as SettingsPanel } from './SettingsPanel.svelte';
-export { default as SetupWizard } from './SetupWizard.svelte';
 export { default as ToggleSwitch } from './ToggleSwitch.svelte';

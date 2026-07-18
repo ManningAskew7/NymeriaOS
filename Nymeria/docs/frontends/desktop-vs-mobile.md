@@ -197,12 +197,19 @@ copy and hover affordances.
 
 Desktop: ~2100 lines plus a desktop-only Provider Setup wizard. Mobile: 1272 lines. Same core settings categories (Connection, Appearance/Theme, LLM, Agent, Tools, MCP). Desktop also owns global Skills management and marketplace install; mobile keeps Skills control inside per-thread settings.
 
-The first-run Setup Wizard is only for client connection. Global backend setup
-belongs here after the user has connected with an admin `nym_...` account token:
-the Provider, Agent, Voice, source-checkout Proxy, and Users settings are
-admin-only UI surfaces. Non-admin users still manage their client connection and
-account state, and any server-side writes remain protected by the backend admin
-dependencies.
+Desktop's first-run surface is the onboarding setup hub
+(`components/onboarding/`, desktop-only): a full-page welcome plus a
+skip-anywhere section rail (Backend, LLM Provider, Models & Tiers, Agent, RAG,
+Integrations, Appearance) that reads and writes the same `GET`/`PATCH
+/settings` config the `nymeria init` CLI wizard manages, so a CLI-configured
+backend shows its real values and the user can just leave. Only the backend
+connection is required; the surface stays mounted through connection adoption
+via `onboardingStore.active`. Mobile keeps its simpler connection-only
+first-run wizard. After onboarding, global backend setup still belongs here in
+Settings: the Provider, Agent, Voice, source-checkout Proxy, and Users settings
+are admin-only UI surfaces. Non-admin users still manage their client
+connection and account state, and any server-side writes remain protected by
+the backend admin dependencies.
 
 Desktop Provider settings include a separate `ProviderSetupWizard.svelte` for
 admin users. It tests direct provider keys or already-running CLIProxy OAuth
@@ -214,9 +221,10 @@ that is already reachable from the backend.
 #### Mobile Provider Setup Scope
 
 Mobile keeps the first-run Setup Wizard as a client-connection flow only:
-backend URL, `nym_...` account token, and identity verification. It does not
-collect provider API keys, bootstrap a backend, start CLIProxy, or expose the
-desktop Provider Setup wizard in this onboarding phase.
+backend URL, `nym_...` account token, and identity verification. Unlike the
+desktop onboarding hub, it does not collect provider API keys, bootstrap a
+backend, start CLIProxy, or expose provider configuration in this onboarding
+phase.
 
 Admin users on mobile may still adjust existing deployment-wide provider
 settings from Settings, such as provider, model, API mode, and base URL. Mobile

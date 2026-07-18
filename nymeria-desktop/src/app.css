@@ -1,4 +1,6 @@
-/* Nymeria Desktop - Dark Theme */
+/* Nymeria Desktop - static token fallback (Midnight values; the live theme,
+   Light by default, is applied over these by themes.ts applyTheme(), and the
+   app.html pre-boot script paints the correct page background before JS). */
 
 :root {
   /* Backgrounds (avoid pure black) */

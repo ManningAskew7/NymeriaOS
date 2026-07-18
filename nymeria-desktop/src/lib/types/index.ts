@@ -1193,6 +1193,10 @@ export interface LLMProviderSpec {
   // thinking; the picker offers a one-click switch to the anthropic_messages
   // route when a Claude model is selected.
   anthropic_native_for_claude?: boolean;
+  // Curated "get a key" affordance; empty for most providers. Old backends
+  // omit both, so callers must default to ''.
+  signup_url?: string;
+  signup_guidance?: string;
 }
 
 // Available model from provider (from GET /models/available)
@@ -1305,7 +1309,11 @@ export interface ServerSettings {
   compact_proactive_min_pct: number;
   sliding_window_cycles: number;
   tool_output_max_chars: number;
+  tool_timeout: number;
   memory_char_limit: number;
+  memory_max_entries: number;
+  memory_value_max_chars: number;
+  user_timezone: string;
   log_level: LogLevel;
   watchdog_enabled: boolean;
   watchdog_interval_minutes: number;
@@ -1332,11 +1340,61 @@ export interface ServerSettings {
   embedding_provider: string;
   embedding_model: string;
   embedding_dimensions: number | null;
+  embedding_base_url: string | null;
+  embedding_input_type: string | null;
   rag_retrieval_mode: string;
   rag_embed_tool_results: boolean;
   rag_rerank_enabled: boolean;
   rag_rerank_provider: string;
   rag_rerank_model: string | null;
+}
+
+// --- RAG catalog (GET /settings/rag/catalog; mirrors setup/rag_catalog.py) ---
+
+export interface RagEmbedderOption {
+  id: string;
+  tier: string;
+  label: string;
+  description: string;
+  provider: string;
+  model: string;
+  dimensions: number;
+  requires_key: boolean;
+  key_vendor: string | null;
+  base_url: string | null;
+  input_type: string | null;
+  pricing: string;
+  key_label: string;
+  eval_tag: string;
+}
+
+export interface RagRerankerOption {
+  id: string;
+  tier: string;
+  label: string;
+  description: string;
+  provider: string;
+  model: string | null;
+  requires_key: boolean;
+  key_vendor: string | null;
+  pricing: string;
+  key_label: string;
+  eval_tag: string;
+}
+
+export interface RagCombo {
+  label: string;
+  embedder_id: string;
+  reranker_id: string;
+  description: string;
+}
+
+export interface RagCatalog {
+  embedders: RagEmbedderOption[];
+  rerankers: RagRerankerOption[];
+  combos: RagCombo[];
+  quickstart_embedder: string;
+  quickstart_reranker: string;
 }
 
 // --- CLIProxy management (admin /cliproxy routes) ---------------------------
@@ -1433,10 +1491,16 @@ export interface ServerSettingsUpdate {
   anthropic_direct_api_key?: string | null;
   openai_api_key?: string | null;
   openrouter_api_key?: string | null;
+  // Generic key slot: the backend routes it to the selected provider's
+  // declared env var (spec.api_key_env_vars[0]), enabling the long-tail
+  // registry providers whose keys have no dedicated field here.
+  llm_api_key?: string | null;
   embedding_api_key?: string | null;
   embedding_provider?: string;
   embedding_model?: string;
   embedding_dimensions?: number | null;
+  embedding_base_url?: string | null;
+  embedding_input_type?: string | null;
   rag_retrieval_mode?: string;
   rag_embed_tool_results?: boolean;
   rag_rerank_enabled?: boolean;
@@ -1445,6 +1509,15 @@ export interface ServerSettingsUpdate {
   rag_rerank_api_key?: string | null;
   gemini_api_key?: string | null;
   perplexity_api_key?: string | null;
+  // Capability-backend keys (web search / fetch / image generation), the same
+  // set the CLI wizard's backend_keys step collects.
+  tavily_api_key?: string | null;
+  exa_api_key?: string | null;
+  firecrawl_api_key?: string | null;
+  brave_api_key?: string | null;
+  replicate_api_key?: string | null;
+  fal_api_key?: string | null;
+  bfl_api_key?: string | null;
   wolfram_alpha_app_id?: string | null;
   searxng_base_url?: string | null;
   nasa_api_key?: string | null;
@@ -1759,6 +1832,10 @@ export interface ServerSettingsUpdate {
   compact_proactive_min_pct?: number;
   sliding_window_cycles?: number;
   tool_output_max_chars?: number;
+  tool_timeout?: number;
+  memory_max_entries?: number;
+  memory_value_max_chars?: number;
+  user_timezone?: string;
   log_level?: LogLevel;
   watchdog_enabled?: boolean;
   watchdog_interval_minutes?: number;

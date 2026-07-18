@@ -4,14 +4,32 @@
     <meta charset="utf-8" />
     <link rel="icon" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Nymeria</title>
+    <title>NymeriaOS</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@300;400;500;600;700&family=Archivo:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&family=Exo+2:wght@300;400;500;600;700&family=Geist:wght@100..900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Rajdhani:wght@300;400;500;600;700&family=Sora:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=Unbounded:wght@300;400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@300;400;500;600;700&family=Archivo:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&family=Exo+2:wght@300;400;500;600;700&family=Geist:wght@100..900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=Instrument+Serif:ital,wght@0,400;1,400&family=Inter:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Rajdhani:wght@300;400;500;600;700&family=Sora:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=Unbounded:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <script>
+      // Pre-boot theme: paint the right page background before the JS bundle
+      // runs, so a Light-theme user never sees the dark static-CSS fallback
+      // flash (and vice versa). Only data-theme + the base background are set
+      // here; the full token set still comes from applyTheme() in themes.ts.
+      // The bgBase values below mirror themes.ts and must move with it.
+      try {
+        var themeName = 'light';
+        var cfg = localStorage.getItem('nymeria-config');
+        if (cfg) {
+          var parsed = JSON.parse(cfg);
+          if (parsed && typeof parsed.theme === 'string') themeName = parsed.theme;
+        }
+        var themeBg = { midnight: '#121417', light: '#f1ead7', platinum: '#0d0e12' };
+        if (!themeBg[themeName]) themeName = 'light';
+        document.documentElement.setAttribute('data-theme', themeName);
+        document.documentElement.style.setProperty('--bg-base', themeBg[themeName]);
+        document.documentElement.style.backgroundColor = themeBg[themeName];
+      } catch (e) {}
       // Apply persisted font choice before app loads (testing-only override)
       try {
         var f = localStorage.getItem('nymeria_font_family');
@@ -21,6 +39,11 @@
       try {
         var lf = localStorage.getItem('nymeria_logo_font');
         if (lf) document.documentElement.style.setProperty('--font-logo', lf);
+      } catch (e) {}
+      // Apply persisted heading-font choice before app loads (testing-only override)
+      try {
+        var hf = localStorage.getItem('nymeria_heading_font');
+        if (hf) document.documentElement.style.setProperty('--font-heading', hf);
       } catch (e) {}
       // Apply persisted logo size / weight / opacity before app loads
       try {
@@ -43,31 +66,107 @@
         var b = localStorage.getItem('nymeria_chat_bubbles');
         if (b === 'on') document.documentElement.setAttribute('data-chat-bubbles', 'on');
       } catch (e) {}
+      // Apply persisted interface-spacing choice before app loads. Only a stored
+      // 4/8/16/24 sets the override; absence leaves each area's built-in spacing.
+      try {
+        var sp = localStorage.getItem('nymeria_ui_spacing');
+        if (sp === '4' || sp === '8' || sp === '16' || sp === '24')
+          document.documentElement.style.setProperty('--ui-density-gap', sp + 'px');
+      } catch (e) {}
     </script>
-    
-		<link rel="modulepreload" href="/_app/immutable/entry/start.BYw2rbpG.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/33xGAJyU.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/DClobYzT.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/Ca7kac_O.js">
-		<link rel="modulepreload" href="/_app/immutable/entry/app.DobkLckC.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/CHamxUMz.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/DhpE1AWS.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/CLIXaHlw.js">
-		<link rel="modulepreload" href="/_app/immutable/chunks/DGqO8ykO.js">
+    <script>
+      // Dev-only crash overlay. During `npm run tauri dev` (and `vite dev`) the
+      // app loads from http://localhost:1420; if a startup error escapes Svelte's
+      // <svelte:boundary> (a store module-init throw, a top-level script error, or
+      // an unhandled promise rejection) the screen would otherwise go blank with no
+      // clue why. This paints the error + stack on top of the blank page so it can
+      // be read or screenshotted directly. Gated to the Vite dev port so it never
+      // appears in a bundled release.
+      if (location.port === '1420') {
+        (function () {
+          var box;
+          function ensureBox() {
+            if (box) return box;
+            box = document.createElement('div');
+            box.id = '__nymeria_crash_overlay';
+            box.style.cssText = [
+              'position:fixed', 'inset:0', 'z-index:2147483647',
+              'background:#1a0d0d', 'color:#ffd7d7',
+              'font:12px/1.5 ui-monospace,Menlo,Consolas,monospace',
+              'padding:16px', 'overflow:auto', 'white-space:pre-wrap',
+              'word-break:break-word', 'user-select:text', '-webkit-user-select:text'
+            ].join(';');
+            var bar = document.createElement('div');
+            bar.style.cssText = 'position:sticky;top:0;display:flex;gap:8px;margin:-16px -16px 12px;padding:10px 16px;background:#2a1414;border-bottom:1px solid #4a2020';
+            var title = document.createElement('strong');
+            title.textContent = 'Startup error (dev overlay)';
+            title.style.cssText = 'flex:1;color:#ff9a9a;font-family:system-ui,sans-serif';
+            var btnCss = 'cursor:pointer;border:1px solid #6a3030;background:#3a1c1c;color:#ffd7d7;border-radius:4px;padding:3px 10px';
+            var copy = document.createElement('button');
+            copy.textContent = 'Copy'; copy.style.cssText = btnCss;
+            copy.onclick = function () { try { navigator.clipboard.writeText(box.dataset.log || ''); copy.textContent = 'Copied'; } catch (e) {} };
+            var hide = document.createElement('button');
+            hide.textContent = 'Hide'; hide.style.cssText = btnCss;
+            hide.onclick = function () { box.style.display = 'none'; };
+            bar.appendChild(title); bar.appendChild(copy); bar.appendChild(hide);
+            box.appendChild(bar);
+            (document.body || document.documentElement).appendChild(box);
+            box.dataset.log = '';
+            return box;
+          }
+          function add(text) {
+            var b = ensureBox();
+            b.style.display = 'block';
+            b.dataset.log += text + '\n\n';
+            var pre = document.createElement('div');
+            pre.textContent = text;
+            pre.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #3a1c1c';
+            b.appendChild(pre);
+            console.error('[crash-overlay]', text);
+          }
+          window.addEventListener('error', function (e) {
+            // Skip resource-load errors (failed <link>/<img>/<script>); keep real
+            // script exceptions, whose target is the window, not an element.
+            if (e.target && e.target.nodeType === 1) return;
+            var loc = e.filename ? (e.filename + ':' + e.lineno + ':' + e.colno) : '';
+            var stack = e.error && e.error.stack ? e.error.stack : (e.message || String(e));
+            add('[error] ' + (e.message || '') + (loc ? '\n  at ' + loc : '') + '\n\n' + stack);
+          });
+          window.addEventListener('unhandledrejection', function (e) {
+            var r = e.reason;
+            var stack = r && r.stack ? r.stack : (typeof r === 'object' ? JSON.stringify(r) : String(r));
+            add('[unhandledrejection] ' + stack);
+          });
+        })();
+      }
+    </script>
+    <link href="/_app/immutable/entry/start.DTlj2YDc.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Bys1Fe-x.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/1ARlgLPQ.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CCJzTc6D.js" rel="modulepreload">
+		<link href="/_app/immutable/entry/app.FsUy-Y-S.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DUemjSJl.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/y5Dtu-8Y.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/D8ClPnmR.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/SEcL-jVD.js" rel="modulepreload">
+		<link href="/_app/immutable/nodes/0.C-3sRtcX.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Kyb00p9T.js" rel="modulepreload">
+		
   </head>
   <body data-sveltekit-preload-data="hover">
+    <a href="#main-content" class="skip-to-content">Skip to main content</a>
     <div style="display: contents">
 			<script>
 				{
-					__sveltekit_1krdbmf = {
+					__sveltekit_nglfit = {
 						base: ""
 					};
 
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("/_app/immutable/entry/start.BYw2rbpG.js"),
-						import("/_app/immutable/entry/app.DobkLckC.js")
+						import("/_app/immutable/entry/start.DTlj2YDc.js"),
+						import("/_app/immutable/entry/app.FsUy-Y-S.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});
