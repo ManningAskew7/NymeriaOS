@@ -395,9 +395,12 @@ def test_openai_chat_completions_off_translates_to_none():
 
 def test_openrouter_off_sends_effort_none_without_summary():
     # OpenRouter's unified effort enum includes "none"; explicit "off" must
-    # actively disable reasoning instead of leaving the model default.
+    # actively disable reasoning instead of leaving the model default. This is
+    # the Responses-mode shape (chat_completions off is covered separately), so
+    # pin the mode explicitly now that OpenRouter defaults to chat_completions.
     llm = create_llm(
         _openrouter_config(
+            openai_api_mode="responses",
             extended_thinking=True,
             reasoning_effort="off",
         )
@@ -412,8 +415,10 @@ def test_openrouter_off_sends_effort_none_without_summary():
 
 
 def test_openrouter_max_maps_to_xhigh():
+    # Responses-mode shape: pin the mode now that the default is chat_completions.
     llm = create_llm(
         _openrouter_config(
+            openai_api_mode="responses",
             extended_thinking=True,
             reasoning_effort="max",
         )

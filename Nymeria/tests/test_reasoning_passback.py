@@ -156,15 +156,32 @@ def test_responses_mode_falls_back_when_provider_lacks_responses() -> None:
     assert info.mechanism == rp.MECH_FLAT_REASONING
 
 
-def test_direct_openai_null_mode_is_dropped_not_responses() -> None:
-    # The direct-OpenAI builder enables Responses only on a LITERAL "responses";
-    # a null mode sends chat completions (no passback), so the classifier must
-    # report `none`/`dropped`, not a false `responses_items`.
+def test_direct_openai_null_mode_resolves_to_responses_default() -> None:
+    # A null openai_api_mode now means "use the provider's registry default".
+    # OpenAI's default is Responses (its reasoning items only round-trip there),
+    # and _create_openai_llm resolves the null the same way, so the classifier
+    # must report responses_items passback, matching what actually goes on the
+    # wire (not the old literal-only "dropped").
     info = rp.classify_reasoning_passback(
         _cfg(provider="openai", model="gpt-5.5", openai_api_mode=None)
     )
-    assert info.mechanism == rp.MECH_NONE
-    assert info.status == rp.STATUS_DROPPED
+    assert info.mechanism == rp.MECH_RESPONSES_ITEMS
+
+
+def test_openrouter_null_mode_keeps_signed_reasoning_details() -> None:
+    # OpenRouter's default flipped to chat_completions, but its compat path still
+    # round-trips SIGNED reasoning via reasoning_details, so a null mode keeps
+    # signed passback (no regression from leaving the beta Responses default).
+    info = rp.classify_reasoning_passback(
+        _cfg(
+            provider="openrouter",
+            model="moonshotai/kimi-k2.5",
+            openai_api_mode=None,
+            reasoning_effort="medium",
+        )
+    )
+    assert info.mechanism == rp.MECH_OPENROUTER_DETAILS
+    assert info.fidelity == rp.FIDELITY_SIGNED
 
 
 def test_dropped_carries_actionable_caveat() -> None:

@@ -168,17 +168,14 @@ def _mechanism_for(config: LLMConfig, provider: str, route: str) -> str:
         return MECH_FLAT_REASONING
 
     # OpenAI-compatible families (including google/ollama forced to openai_compat).
-    # The direct-OpenAI builder (`_create_openai_llm`) enables Responses only on
-    # a LITERAL `openai_api_mode == "responses"` with no spec-default fallback, so
-    # a null mode there means chat completions. The generic compat/openrouter
-    # builders DO fall back to the provider's default_api_mode. Mirror both.
+    # A null openai_api_mode means "use the provider's default_api_mode": all
+    # three OpenAI-shape builders (`_create_openai_llm`, the generic compat
+    # builder, and `_create_openrouter_llm`) resolve it that way now, so mirror
+    # that single rule here uniformly (no per-provider special case).
     requested_mode = getattr(config, "openai_api_mode", None)
-    if provider == "openai":
-        uses_responses = requested_mode == "responses"
-    else:
-        spec = get_llm_provider_spec(provider)
-        default_mode = spec.default_api_mode if spec else "chat_completions"
-        uses_responses = (requested_mode or default_mode) == "responses"
+    spec = get_llm_provider_spec(provider)
+    default_mode = spec.default_api_mode if spec else "chat_completions"
+    uses_responses = (requested_mode or default_mode) == "responses"
     if uses_responses and provider_supports_responses(provider):
         return MECH_RESPONSES_ITEMS
     if _supports_openrouter_style_reasoning_replay(provider, base_url):

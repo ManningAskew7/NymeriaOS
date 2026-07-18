@@ -617,7 +617,12 @@ def supported_reasoning_efforts(
     model_text = _REASONING_SUFFIX_RE.sub("", (model or "").strip().lower())
     bare_model = _without_provider_prefix(model_text)
 
-    if provider_text == "openrouter":
+    if provider_text == "openrouter" and provider_route != "anthropic_messages":
+        # Under the anthropic_messages route OpenRouter dispatches to
+        # _create_anthropic_llm, which maps effort onto Anthropic thinking
+        # budgets / output_config, not OpenRouter's unified ladder. Fall through
+        # so an anthropic/* model resolves the Claude family ladder (mirrors how
+        # litellm+anthropic_messages defers to the family below).
         if _cached_openrouter_reasoning_support(model_text) is False:
             # Catalog says this model takes no reasoning config at all.
             return ("off",)
