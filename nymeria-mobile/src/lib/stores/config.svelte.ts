@@ -68,7 +68,7 @@ function loadConfig(): AppConfig {
     return {
       apiUrl: '',
       apiKey: '',
-      theme: 'midnight',
+      theme: 'light',
       suppressAttachmentWarnings: false,
       showAutonomousPrompts: true,
       describeToolCalls: true,
@@ -80,7 +80,7 @@ function loadConfig(): AppConfig {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const config = JSON.parse(stored) as AppConfig;
-      if (!config.theme) config.theme = 'midnight';
+      if (!config.theme) config.theme = 'light';
       if (config.suppressAttachmentWarnings === undefined) config.suppressAttachmentWarnings = false;
       if (config.showAutonomousPrompts === undefined) config.showAutonomousPrompts = true;
       if (config.describeToolCalls === undefined) config.describeToolCalls = true;
@@ -95,7 +95,7 @@ function loadConfig(): AppConfig {
   return {
     apiUrl: '',
     apiKey: '',
-    theme: 'midnight',
+    theme: 'light',
     suppressAttachmentWarnings: false,
     showAutonomousPrompts: true,
     describeToolCalls: true,
@@ -118,7 +118,7 @@ function createConfigStore() {
   let apiUrl = $state(initial.apiUrl);
   let apiKey = $state(initial.apiKey);
   let setupCompleted = $state(initial.setupCompleted ?? false);
-  let theme = $state<ThemeName>(initial.theme ?? 'midnight');
+  let theme = $state<ThemeName>(initial.theme ?? 'light');
   let suppressAttachmentWarnings = $state(initial.suppressAttachmentWarnings ?? false);
   let showAutonomousPrompts = $state(initial.showAutonomousPrompts ?? true);
   let describeToolCalls = $state(initial.describeToolCalls ?? true);
@@ -150,7 +150,7 @@ function createConfigStore() {
     apiUrl = config.apiUrl;
     apiKey = config.apiKey;
     setupCompleted = config.setupCompleted ?? false;
-    theme = config.theme ?? 'midnight';
+    theme = config.theme ?? 'light';
     suppressAttachmentWarnings = config.suppressAttachmentWarnings ?? false;
     showAutonomousPrompts = config.showAutonomousPrompts ?? true;
     describeToolCalls = config.describeToolCalls ?? true;
@@ -355,13 +355,13 @@ function createConfigStore() {
       apiUrl = '';
       apiKey = '';
       setupCompleted = false;
-      theme = 'midnight';
+      theme = 'light';
       suppressAttachmentWarnings = false;
       showAutonomousPrompts = true;
       describeToolCalls = true;
       identity = null;
       currentIdentityId = null;
-      applyTheme('midnight');
+      applyTheme('light');
       saveCurrentConfig();
     },
   };

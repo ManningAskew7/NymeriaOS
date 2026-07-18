@@ -103,7 +103,7 @@ const themeColorCssVariables = {
 export const themes: Record<ThemeName, ThemeMetadata> = {
   midnight: {
     name: 'Midnight',
-    description: 'Default dark theme with cyan accents',
+    description: 'Dark theme with calm blue accents',
     colors: {
       bgBase: '#121417',
       bgElevated: '#1a1d21',
@@ -160,7 +160,7 @@ export const themes: Record<ThemeName, ThemeMetadata> = {
 
   light: {
     name: 'Light',
-    description: 'Warm-paper editorial theme with calm teal and amber',
+    description: 'Default warm-paper editorial theme with calm teal and amber',
     colors: {
       // Deeper, more saturated warm paper for the main canvas — gives the
       // theme a real "aged page" character instead of near-white wash.
@@ -312,8 +312,8 @@ function applyThemeColorVariables(root: HTMLElement, colors: ThemeColors): void 
 export function applyTheme(themeName: ThemeName): void {
   const theme = themes[themeName];
   if (!theme) {
-    console.warn(`Unknown theme: ${themeName}, falling back to midnight`);
-    applyTheme('midnight');
+    console.warn(`Unknown theme: ${themeName}, falling back to light`);
+    applyTheme('light');
     return;
   }
 

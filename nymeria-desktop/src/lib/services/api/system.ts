@@ -8,6 +8,7 @@ import type {
   LLMProviderTestSuiteRequest,
   LLMProviderTestSuiteResponse,
   ModelMetadata,
+  RagCatalog,
   RagUserSettings,
   RagUserSettingsUpdate,
   ServerSettings,
@@ -233,6 +234,20 @@ export class SystemApi extends MemoryApi {
       return response.json();
     } catch {
       return [];
+    }
+  }
+
+  /** RAG embedder/reranker catalog (the same one the CLI wizard renders). */
+  async getRagCatalog(): Promise<RagCatalog | null> {
+    try {
+      const response = await fetch(`${this.getBaseUrl()}/settings/rag/catalog`, {
+        headers: this.getHeaders()
+      });
+
+      if (!response.ok) return null;
+      return response.json();
+    } catch {
+      return null;
     }
   }
 

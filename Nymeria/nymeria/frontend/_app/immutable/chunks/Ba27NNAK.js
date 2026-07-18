@@ -1,0 +1,1 @@
+import{invoke as r}from"./DhEqZVGG.js";var p;(function(i){i.Nsis="nsis",i.Msi="msi",i.Deb="deb",i.Rpm="rpm",i.AppImage="appimage",i.App="app"})(p||(p={}));async function o(){return r("plugin:app|version")}export{p as BundleType,o as getVersion};

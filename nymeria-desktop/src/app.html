@@ -12,6 +12,24 @@
       rel="stylesheet"
     />
     <script>
+      // Pre-boot theme: paint the right page background before the JS bundle
+      // runs, so a Light-theme user never sees the dark static-CSS fallback
+      // flash (and vice versa). Only data-theme + the base background are set
+      // here; the full token set still comes from applyTheme() in themes.ts.
+      // The bgBase values below mirror themes.ts and must move with it.
+      try {
+        var themeName = 'light';
+        var cfg = localStorage.getItem('nymeria-config');
+        if (cfg) {
+          var parsed = JSON.parse(cfg);
+          if (parsed && typeof parsed.theme === 'string') themeName = parsed.theme;
+        }
+        var themeBg = { midnight: '#121417', light: '#f1ead7', platinum: '#0d0e12' };
+        if (!themeBg[themeName]) themeName = 'light';
+        document.documentElement.setAttribute('data-theme', themeName);
+        document.documentElement.style.setProperty('--bg-base', themeBg[themeName]);
+        document.documentElement.style.backgroundColor = themeBg[themeName];
+      } catch (e) {}
       // Apply persisted font choice before app loads (testing-only override)
       try {
         var f = localStorage.getItem('nymeria_font_family');

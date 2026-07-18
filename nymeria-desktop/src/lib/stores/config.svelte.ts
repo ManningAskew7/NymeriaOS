@@ -136,7 +136,7 @@ function loadConfig(): AppConfig {
     return {
       apiUrl: DEFAULT_API_URL,
       apiKey: DEFAULT_API_KEY,
-      theme: 'midnight',
+      theme: 'light',
       suppressAttachmentWarnings: false,
       showAutonomousPrompts: true,
       describeToolCalls: true,
@@ -150,7 +150,7 @@ function loadConfig(): AppConfig {
     if (stored) {
       const config = JSON.parse(stored) as AppConfig;
       if (!config.theme) {
-        config.theme = 'midnight';
+        config.theme = 'light';
       }
       if (config.suppressAttachmentWarnings === undefined) {
         config.suppressAttachmentWarnings = false;
@@ -176,7 +176,7 @@ function loadConfig(): AppConfig {
   return {
     apiUrl: DEFAULT_API_URL,
     apiKey: DEFAULT_API_KEY,
-    theme: 'midnight',
+    theme: 'light',
     suppressAttachmentWarnings: false,
     showAutonomousPrompts: true,
     describeToolCalls: true,
@@ -200,7 +200,7 @@ function createConfigStore() {
   let apiUrl = $state(initial.apiUrl);
   let apiKey = $state(initial.apiKey);
   let setupCompleted = $state(initial.setupCompleted ?? false);
-  let theme = $state<ThemeName>(initial.theme ?? 'midnight');
+  let theme = $state<ThemeName>(initial.theme ?? 'light');
   let suppressAttachmentWarnings = $state(initial.suppressAttachmentWarnings ?? false);
   let showAutonomousPrompts = $state(initial.showAutonomousPrompts ?? true);
   let describeToolCalls = $state(initial.describeToolCalls ?? true);
@@ -215,7 +215,7 @@ function createConfigStore() {
 
   // Apply theme on initial load (client-side only)
   if (typeof document !== 'undefined') {
-    applyTheme(initial.theme ?? 'midnight');
+    applyTheme(initial.theme ?? 'light');
   }
 
   // Tracks the token last written to secure storage so routine config saves
@@ -493,14 +493,14 @@ function createConfigStore() {
       apiUrl = DEFAULT_API_URL;
       apiKey = DEFAULT_API_KEY;
       setupCompleted = false;
-      theme = 'midnight';
+      theme = 'light';
       suppressAttachmentWarnings = false;
       showAutonomousPrompts = true;
       describeToolCalls = true;
       developerMode = false;
       identity = null;
       currentIdentityId = null;
-      applyTheme('midnight');
+      applyTheme('light');
       saveCurrentConfig();
     }
   };
