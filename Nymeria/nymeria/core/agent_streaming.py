@@ -139,7 +139,14 @@ def has_tool_call_content_delta(content: Any) -> bool:
 
 
 class ReasoningChunkDeduper:
-    """Deduplicate reasoning chunks within a single model call."""
+    """Deduplicate reasoning chunks in the model-end fallback path.
+
+    Used ONLY by _fallback_content_events, which re-emits reasoning from a
+    model's final output when nothing streamed live. It must never run on the
+    live per-delta paths: reasoning token streams legitimately repeat short
+    strings (spaces, newlines, common words), and exact-string dedupe there
+    drops the repeats and fuses adjacent words.
+    """
 
     def __init__(self) -> None:
         self._seen: set[str] = set()
@@ -485,7 +492,12 @@ class GraphStreamProcessor:
 
         extras = getattr(chunk, "additional_kwargs", None) or {}
         reasoning = extras.get("reasoning_content")
-        if self._should_emit_reasoning(reasoning):
+        # Emit reasoning deltas verbatim. These are per-chunk deltas (a single
+        # canonical source is picked upstream in _capture_reasoning_into), and a
+        # reasoning token stream legitimately repeats short strings (a space, a
+        # newline, common words). Exact-string dedupe here silently dropped
+        # every repeat and fused the surrounding words together.
+        if isinstance(reasoning, str) and reasoning:
             self._inline_text_stripper.reset()
             self._streamed_reasoning_in_current_llm_call = True
             events.append({"type": "thinking", "content": reasoning})
@@ -538,6 +550,7 @@ class GraphStreamProcessor:
             reasoning_texts = extract_reasoning_text_from_block(block)
             if reasoning_texts:
                 self._inline_text_stripper.reset()
+                self._streamed_reasoning_in_current_llm_call = True
             else:
                 self._inline_text_stripper.mark_possible_inline_thinking()
                 self._inline_mark_log_count += 1
@@ -550,10 +563,14 @@ class GraphStreamProcessor:
                         event.get("run_id"),
                         self._current_model_stream_events,
                     )
+            # Emit each reasoning delta verbatim (see the reasoning_content note
+            # above). Deduping per delta dropped repeated tokens and fused
+            # words; the flag set above already suppresses the model-end
+            # fallback re-emit.
             return [
                 {"type": "thinking", "content": text}
                 for text in reasoning_texts
-                if self._mark_and_should_emit_reasoning(text)
+                if isinstance(text, str) and text
             ]
         elif block_type in ("text", "output_text"):
             text = block.get("text", "")
@@ -666,12 +683,6 @@ class GraphStreamProcessor:
 
     def _should_emit_reasoning(self, text: Any) -> bool:
         return self._reasoning_deduper.should_emit(text)
-
-    def _mark_and_should_emit_reasoning(self, text: Any) -> bool:
-        should_emit = self._should_emit_reasoning(text)
-        if should_emit:
-            self._streamed_reasoning_in_current_llm_call = True
-        return should_emit
 
     def _process_visible_text(self, text: str, run_id: Any) -> str:
         """Sanitize answer text and log when possible preamble is held."""
