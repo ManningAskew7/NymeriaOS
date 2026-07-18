@@ -23,7 +23,8 @@ def test_project_root_env_override_is_normalized(monkeypatch, tmp_path):
 
 def test_project_root_uses_user_root_for_frozen_build_without_override(monkeypatch, tmp_path):
     home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HOME", str(home))  # POSIX
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows
     monkeypatch.delenv("NYMERIA_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(settings_module.sys, "frozen", True, raising=False)
 
@@ -44,15 +45,41 @@ def test_project_root_discovers_markers_when_settings_file_moves(monkeypatch, tm
 
 def test_project_root_can_fall_back_to_cwd_marker_discovery(monkeypatch, tmp_path):
     root = _create_backend_root(tmp_path)
-    installed_settings = tmp_path / "site-packages" / "nymeria" / "config" / "settings.py"
-    installed_settings.parent.mkdir(parents=True)
-    installed_settings.write_text("", encoding="utf-8")
+    # A detached (non-install) module dir with no markers of its own: marker
+    # discovery from the module fails, so resolution falls back to the cwd.
+    # Must NOT be a site-packages path, or the installed-location guard wins.
+    detached_settings = tmp_path / "detached" / "nymeria" / "config" / "settings.py"
+    detached_settings.parent.mkdir(parents=True)
+    detached_settings.write_text("", encoding="utf-8")
     monkeypatch.delenv("NYMERIA_PROJECT_ROOT", raising=False)
     monkeypatch.delattr(settings_module.sys, "frozen", raising=False)
-    monkeypatch.setattr(settings_module, "__file__", str(installed_settings))
+    monkeypatch.setattr(settings_module, "__file__", str(detached_settings))
     monkeypatch.chdir(root)
 
     assert settings_module._get_project_root() == root.resolve()
+
+
+def test_project_root_uses_user_root_for_installed_wheel(monkeypatch, tmp_path):
+    # A wheel install: settings.py lives under site-packages and run.py ships
+    # beside nymeria/, so the source markers match here. The installed-location
+    # guard must win over both marker discovery and any cwd checkout, so config
+    # and data resolve to ~/.nymeria (survive upgrades) not site-packages.
+    site_packages = tmp_path / "site-packages"
+    installed_settings = site_packages / "nymeria" / "config" / "settings.py"
+    installed_settings.parent.mkdir(parents=True)
+    installed_settings.write_text("", encoding="utf-8")
+    (installed_settings.parent / "soul.md").write_text("", encoding="utf-8")
+    (site_packages / "run.py").write_text("", encoding="utf-8")
+    checkout = _create_backend_root(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))  # POSIX
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows
+    monkeypatch.delenv("NYMERIA_PROJECT_ROOT", raising=False)
+    monkeypatch.delattr(settings_module.sys, "frozen", raising=False)
+    monkeypatch.setattr(settings_module, "__file__", str(installed_settings))
+    monkeypatch.chdir(checkout)
+
+    assert settings_module._get_project_root() == (home / ".nymeria").resolve()
 
 
 def test_project_root_keeps_fixed_depth_fallback(monkeypatch, tmp_path):

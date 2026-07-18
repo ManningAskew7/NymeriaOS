@@ -27,11 +27,20 @@ def test_runtime_bootstrap_uses_user_root_for_installed_package(
     monkeypatch,
     tmp_path: Path,
 ):
-    fake_entry = tmp_path / "site-packages" / "nymeria" / "cli_entry.py"
-    fake_entry.parent.mkdir(parents=True)
+    # Reproduce the real wheel layout: run.py ships as a top-level module
+    # beside nymeria/ inside site-packages, so the source-checkout markers
+    # DO match here. Without the installed-location guard this would strand
+    # config/data in site-packages (lost on upgrade); the guard must win.
+    site_packages = tmp_path / "site-packages"
+    config_dir = site_packages / "nymeria" / "config"
+    config_dir.mkdir(parents=True)
+    (site_packages / "run.py").write_text("", encoding="utf-8")
+    (config_dir / "soul.md").write_text("", encoding="utf-8")
+    fake_entry = site_packages / "nymeria" / "cli_entry.py"
     fake_entry.write_text("", encoding="utf-8")
     home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HOME", str(home))  # POSIX
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows
     monkeypatch.delenv("NYMERIA_PROJECT_ROOT", raising=False)
 
     resolved = _runtime_paths.configure_project_root(fake_entry)
@@ -49,13 +58,27 @@ def test_runtime_bootstrap_uses_user_root_for_frozen_build(
     (tmp_path / "_MEIPASS" / "run.py").write_text("", encoding="utf-8")
     (fake_config_dir / "soul.md").write_text("", encoding="utf-8")
     home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HOME", str(home))  # POSIX
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows
     monkeypatch.delenv("NYMERIA_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(_runtime_paths.sys, "frozen", True, raising=False)
 
     resolved = _runtime_paths.configure_project_root(fake_meipass_entry)
 
     assert resolved == (home / ".nymeria").resolve()
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("/home/u/.local/pipx/venvs/nymeriaos/lib/python3.12/site-packages/nymeria/x.py", True),
+        ("/usr/lib/python3/dist-packages/nymeria/x.py", True),
+        ("/opt/NymeriaOS/Nymeria/nymeria/x.py", False),
+        ("/home/u/dev/checkout/nymeria/x.py", False),
+    ],
+)
+def test_is_installed_location(path: str, expected: bool):
+    assert _runtime_paths.is_installed_location(Path(path)) is expected
 
 
 def test_settings_package_paths_do_not_follow_runtime_project_root(

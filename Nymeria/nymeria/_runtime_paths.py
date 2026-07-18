@@ -32,6 +32,25 @@ def default_user_project_root() -> Path:
     return (Path.home() / ".nymeria").expanduser().resolve()
 
 
+def is_installed_location(path: Path) -> bool:
+    """True when ``path`` lives inside a Python install tree.
+
+    A wheel install (pip/pipx/uv tool/venv) places this package under a
+    ``site-packages`` directory (Debian system packages use ``dist-packages``);
+    a source checkout or an editable (``pip install -e``) install does not.
+
+    We need this because the wheel ships ``run.py`` as a top-level module
+    beside ``nymeria/``, so the source-checkout markers in
+    ``PROJECT_ROOT_MARKERS`` also match INSIDE ``site-packages``. Without this
+    guard an installed backend is misread as a source checkout rooted at
+    ``site-packages`` and strands all config/data there, where an upgrade or
+    reinstall deletes it. Detecting the install tree lets us fall through to
+    ``default_user_project_root()`` (``~/.nymeria``) instead.
+    """
+    parts = {part.lower() for part in path.resolve().parts}
+    return "site-packages" in parts or "dist-packages" in parts
+
+
 def configure_project_root(start: Path | None = None) -> Path:
     """
     Ensure ``NYMERIA_PROJECT_ROOT`` exists before settings are imported.
@@ -49,7 +68,17 @@ def configure_project_root(start: Path | None = None) -> Path:
         os.environ["NYMERIA_PROJECT_ROOT"] = str(runtime_root)
         return runtime_root
 
-    discovered = find_project_root(start or Path(__file__).resolve())
+    base = (start or Path(__file__)).resolve()
+
+    # Installed wheel (pip/pipx/uv tool): the shipped top-level run.py would
+    # make the source-checkout markers match inside site-packages. Use the
+    # writable per-user root so config/data survive upgrades.
+    if is_installed_location(base):
+        runtime_root = default_user_project_root()
+        os.environ["NYMERIA_PROJECT_ROOT"] = str(runtime_root)
+        return runtime_root
+
+    discovered = find_project_root(base)
     if discovered:
         os.environ["NYMERIA_PROJECT_ROOT"] = str(discovered)
         return discovered

@@ -11,7 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
 
 from .._env_overrides import FIELD_ENV_OVERRIDES
-from .._runtime_paths import default_user_project_root
+from .._runtime_paths import default_user_project_root, is_installed_location
 from .llm_providers import (
     get_llm_provider_spec,
     normalize_llm_provider,
@@ -55,6 +55,16 @@ def _get_project_root() -> Path:
         return default_user_project_root()
 
     module_path = Path(__file__).resolve()
+
+    # Installed wheel: the shipped top-level run.py makes the source-checkout
+    # markers match inside site-packages, so skip marker discovery and use the
+    # writable per-user root. Mirrors _runtime_paths.configure_project_root,
+    # which normally sets NYMERIA_PROJECT_ROOT before this runs; this keeps a
+    # direct settings import (bypassing that call) from stranding data in
+    # site-packages.
+    if is_installed_location(module_path):
+        return default_user_project_root()
+
     discovered_root = _find_project_root(module_path.parent)
     if discovered_root:
         return discovered_root
