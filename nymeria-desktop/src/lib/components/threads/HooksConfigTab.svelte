@@ -5,9 +5,9 @@
   import { hooksStore } from '$lib/stores/hooks.svelte';
   import {
     hookCategory,
-    HOOK_ACTION_META,
+    hookActionMeta,
+    hookEventMeta,
     HOOK_CATEGORIES,
-    HOOK_EVENT_META,
   } from '$lib/utils/hooks';
   import type { Thread } from '$lib/types';
 
@@ -112,7 +112,7 @@
                 <div class="hook-meta">
                   <span class="hook-name">{hook.name}</span>
                   <span class="hook-sub">
-                    {HOOK_EVENT_META[hook.event].label} · {HOOK_ACTION_META[hook.action].label}{hook.scope === 'global' ? ' · Global' : ''}
+                    {hookEventMeta(hook.event).label} · {hookActionMeta(hook.action).label}{hook.scope === 'global' ? ' · Global' : ''}
                   </span>
                 </div>
                 <div class="segmented small" role="group" aria-label="Override for {hook.name}">

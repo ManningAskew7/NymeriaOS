@@ -46,8 +46,11 @@ const CATEGORY_OF: Record<HookAction, HookCategory> = {
   run_workflow: 'commands',
 };
 
-export function hookCategory(action: HookAction): HookCategory {
-  return CATEGORY_OF[action] ?? 'reactions';
+export function hookCategory(action: HookAction | string): HookCategory {
+  // The reserved turn-metadata system hook (action outside the authorable
+  // union) injects the built-in [Time:]/[Trigger:] block: a context hook.
+  if (action === 'turn_metadata') return 'context';
+  return CATEGORY_OF[action as HookAction] ?? 'reactions';
 }
 
 export interface HookCategoryMeta {
@@ -140,6 +143,34 @@ export const HOOK_ACTION_META: Record<HookAction, HookActionMeta> = {
   },
 };
 
+/**
+ * System actions the backend can return but users cannot author (excluded from
+ * HOOK_EVENT_ACTIONS deliberately). Today: the reserved `turn-metadata` hook
+ * that GET /hooks synthesizes for every user.
+ */
+const SYSTEM_ACTION_META: Record<string, HookActionMeta> = {
+  turn_metadata: {
+    label: 'Turn metadata',
+    icon: 'clock',
+    hint: 'Built-in [Time:]/[Trigger:] stamp injected at the start of each turn.',
+  },
+};
+
+const UNKNOWN_ACTION_ICON = 'settings';
+
+/**
+ * Meta for ANY action the wire can carry. The typed HOOK_ACTION_META table
+ * only knows the nine authorable actions, so feed rows must resolve through
+ * this accessor: a system or newer-backend action degrades to a labeled row
+ * instead of crashing the dashboard on `undefined.icon`.
+ */
+export function hookActionMeta(action: HookAction | string): HookActionMeta {
+  return (
+    HOOK_ACTION_META[action as HookAction] ??
+    SYSTEM_ACTION_META[action] ?? { label: action, icon: UNKNOWN_ACTION_ICON, hint: '' }
+  );
+}
+
 export interface HookEventMeta {
   label: string;
   hint: string;
@@ -163,6 +194,11 @@ export const HOOK_EVENT_META: Record<HookEvent, HookEventMeta> = {
     hint: "Fires once the agent's reply is complete.",
   },
 };
+
+/** Null-safe twin of hookActionMeta for events a newer backend might add. */
+export function hookEventMeta(event: HookEvent | string): HookEventMeta {
+  return HOOK_EVENT_META[event as HookEvent] ?? { label: event, hint: '' };
+}
 
 export const HOOK_OPERATORS: { value: HookCondition['operator']; label: string }[] = [
   { value: 'contains', label: 'contains' },
