@@ -44,6 +44,64 @@ class LLMProviderSpecResponse(BaseModel):
     verified: bool = False
     anthropic_native_for_claude: bool = False
     reasoning_passback_verified: bool = False
+    # Curated "get a key" affordance (empty for most providers); the CLI
+    # wizard's picker panel reads the same fields off the spec directly.
+    signup_url: str = ""
+    signup_guidance: str = ""
+
+
+class RagEmbedderOptionResponse(BaseModel):
+    """One embedder choice from the CLI wizard's RAG catalog (setup/rag_catalog.py)."""
+
+    id: str
+    tier: str
+    label: str
+    description: str
+    provider: str
+    model: str
+    dimensions: int
+    requires_key: bool
+    key_vendor: Optional[str] = None
+    base_url: Optional[str] = None
+    input_type: Optional[str] = None
+    pricing: str = ""
+    key_label: str = "API key"
+    eval_tag: str = ""
+
+
+class RagRerankerOptionResponse(BaseModel):
+    """One reranker choice from the CLI wizard's RAG catalog."""
+
+    id: str
+    tier: str
+    label: str
+    description: str
+    provider: str
+    model: Optional[str] = None
+    requires_key: bool
+    key_vendor: Optional[str] = None
+    pricing: str = ""
+    key_label: str = "API key"
+    eval_tag: str = ""
+
+
+class RagComboResponse(BaseModel):
+    """A recommended embedder + reranker pairing from the internal eval."""
+
+    label: str
+    embedder_id: str
+    reranker_id: str
+    description: str
+
+
+class RagCatalogResponse(BaseModel):
+    """The RAG catalog the CLI wizard renders, served so GUIs share one source."""
+
+    embedders: list[RagEmbedderOptionResponse]
+    rerankers: list[RagRerankerOptionResponse]
+    combos: list[RagComboResponse]
+    quickstart_embedder: str
+    quickstart_reranker: str
 
 
 class SystemPromptResponse(BaseModel):
@@ -143,11 +201,13 @@ class ServerSettingsResponse(BaseModel):
     compact_proactive_min_pct: int = 85
     sliding_window_cycles: int
     tool_output_max_chars: int
+    tool_timeout: int = 300
     tool_timing_in_results: bool = False
     memory_char_limit: int = 8000
     memory_max_entries: int = 100
     memory_value_max_chars: int = 1000
     agent_max_iterations: int = 500
+    user_timezone: str = "UTC"
     log_level: str
     watchdog_enabled: bool
     watchdog_interval_minutes: int
@@ -172,6 +232,8 @@ class ServerSettingsResponse(BaseModel):
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: Optional[int] = None
+    embedding_base_url: Optional[str] = None
+    embedding_input_type: Optional[str] = None
     rag_retrieval_mode: str = "hybrid"
     rag_embed_tool_results: bool = True
     rag_rerank_enabled: bool = False
@@ -214,10 +276,20 @@ class ServerSettingsUpdate(BaseModel):
     anthropic_direct_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
+    # Generic write-only key slot: routed by the applier to the FIRST declared
+    # api_key_env_var of the provider being set (updates.llm_provider, falling
+    # back to the current settings.llm_provider), mirroring how the CLI wizard
+    # finalize writes `spec.api_key_env_vars[0]`. This is what lets the GUI
+    # configure the long-tail registry providers (groq, xai, deepseek, ...)
+    # whose keys have no dedicated field here. Declared in
+    # VIRTUAL_UPDATE_FIELDS because it has no fixed env mapping of its own.
+    llm_api_key: Optional[str] = None
     embedding_api_key: Optional[str] = None
     embedding_provider: Optional[str] = None
     embedding_model: Optional[str] = None
     embedding_dimensions: Optional[int] = None
+    embedding_base_url: Optional[str] = None
+    embedding_input_type: Optional[str] = None
     rag_retrieval_mode: Optional[str] = None
     rag_embed_tool_results: Optional[bool] = None
     rag_rerank_enabled: Optional[bool] = None
@@ -226,6 +298,16 @@ class ServerSettingsUpdate(BaseModel):
     rag_rerank_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     perplexity_api_key: Optional[str] = None
+    # Capability-backend keys the CLI wizard's backend_keys step writes
+    # (web search / fetch / image generation), exposed here so GUI onboarding
+    # can store them through the same PATCH path. Write-only like every key.
+    tavily_api_key: Optional[str] = None
+    exa_api_key: Optional[str] = None
+    firecrawl_api_key: Optional[str] = None
+    brave_api_key: Optional[str] = None
+    replicate_api_key: Optional[str] = None
+    fal_api_key: Optional[str] = None
+    bfl_api_key: Optional[str] = None
     wolfram_alpha_app_id: Optional[str] = None
     searxng_base_url: Optional[str] = None
     nasa_api_key: Optional[str] = None
@@ -720,11 +802,14 @@ class ServerSettingsUpdate(BaseModel):
     compact_proactive_min_pct: Optional[int] = Field(default=None, ge=10, le=100)
     sliding_window_cycles: Optional[int] = None
     tool_output_max_chars: Optional[int] = None
+    # Bounds mirror the CLI wizard's tuning catalog (setup/tuning_catalog.py).
+    tool_timeout: Optional[int] = Field(default=None, ge=30, le=900)
     tool_timing_in_results: Optional[bool] = None
     memory_char_limit: Optional[int] = Field(default=None, ge=1, le=2_000_000)
     memory_max_entries: Optional[int] = Field(default=None, ge=1, le=10_000)
     memory_value_max_chars: Optional[int] = Field(default=None, ge=50, le=100_000)
     agent_max_iterations: Optional[int] = Field(default=None, ge=10, le=10_000)
+    user_timezone: Optional[str] = None
     log_level: Optional[str] = None
     watchdog_enabled: Optional[bool] = None
     watchdog_interval_minutes: Optional[int] = None
@@ -759,6 +844,23 @@ class ServerSettingsUpdate(BaseModel):
             return normalized or None
         return value
 
+    @field_validator("user_timezone")
+    @classmethod
+    def _validate_user_timezone(cls, value):
+        """Reject unknown IANA names; blank means unset (same check the CLI uses)."""
+        if value is None:
+            return value
+        text = value.strip()
+        if not text:
+            return None
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(text)
+        except Exception as exc:  # noqa: BLE001 (ZoneInfoNotFoundError, ValueError, ...)
+            raise ValueError(f"unknown IANA timezone: {text!r}") from exc
+        return text
+
 
 # The settings-field -> dotenv-var override table (only the S3 credentials diverge from
 # `field.upper()`; see `FIELD_ENV_OVERRIDES`'s docstring for why). Aliased to the shared
@@ -768,13 +870,22 @@ class ServerSettingsUpdate(BaseModel):
 # schema module import-light.
 _ENV_VAR_OVERRIDES = FIELD_ENV_OVERRIDES
 
+# Patchable fields with NO fixed env var of their own: the applier routes each
+# one dynamically instead of writing `field.upper()`. Currently only the generic
+# `llm_api_key` slot, which lands in the selected provider's declared key var
+# (`spec.api_key_env_vars[0]`). Excluded from `server_settings_env_mapping()`
+# and carved out of the drift guards in `tests/test_settings_env_mapping.py`.
+VIRTUAL_UPDATE_FIELDS = frozenset({"llm_api_key"})
+
 
 def server_settings_env_mapping() -> dict[str, str]:
     """Return the settings-field -> dotenv-var map for every patchable setting.
 
     Derived from `ServerSettingsUpdate` (the patchable surface) so it cannot drift:
     a new update field automatically gets a mapping entry. Each field maps to
-    `field.upper()` unless listed in `_ENV_VAR_OVERRIDES`. The `Settings` model
+    `field.upper()` unless listed in `_ENV_VAR_OVERRIDES`. Fields in
+    `VIRTUAL_UPDATE_FIELDS` are skipped: they are routed dynamically by the
+    applier rather than written to one fixed var. The `Settings` model
     carries matching `validation_alias`es for the override fields, so the env var
     written here is the same one the field reads back (see the round-trip guard in
     `tests/test_settings_env_mapping.py`).
@@ -782,6 +893,7 @@ def server_settings_env_mapping() -> dict[str, str]:
     return {
         name: _ENV_VAR_OVERRIDES.get(name, name.upper())
         for name in ServerSettingsUpdate.model_fields
+        if name not in VIRTUAL_UPDATE_FIELDS
     }
 
 

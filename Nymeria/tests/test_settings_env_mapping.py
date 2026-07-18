@@ -16,6 +16,7 @@ from pydantic import AliasChoices
 
 from nymeria._env_overrides import FIELD_ENV_OVERRIDES
 from nymeria.api.schemas.settings import (
+    VIRTUAL_UPDATE_FIELDS,
     ServerSettingsUpdate,
     _ENV_VAR_OVERRIDES,
     server_settings_env_mapping,
@@ -36,14 +37,31 @@ def _model_read_env_name(field_name: str) -> str:
 
 
 def test_mapping_covers_every_update_field():
+    # Virtual fields (llm_api_key) are routed dynamically by the applier, never
+    # written to one fixed var, so they are the one sanctioned mapping gap.
     mapping = server_settings_env_mapping()
-    missing = set(ServerSettingsUpdate.model_fields) - set(mapping)
+    missing = set(ServerSettingsUpdate.model_fields) - set(mapping) - VIRTUAL_UPDATE_FIELDS
     assert not missing, f"update fields with no env mapping: {sorted(missing)}"
 
 
+def test_virtual_fields_are_real_update_fields_and_stay_out_of_the_mapping():
+    # The virtual set must name real patchable fields (else it is dead config)
+    # and the mapping must skip them (else field.upper() would write a bogus
+    # LLM_API_KEY line nothing reads).
+    mapping = server_settings_env_mapping()
+    for name in VIRTUAL_UPDATE_FIELDS:
+        assert name in ServerSettingsUpdate.model_fields, name
+        assert name not in mapping, name
+
+
 def test_every_update_field_exists_on_settings_model():
-    # A patchable field with no Settings field would write a dotenv line nothing reads.
-    missing = set(ServerSettingsUpdate.model_fields) - set(Settings.model_fields)
+    # A patchable field with no Settings field would write a dotenv line nothing
+    # reads. Virtual fields are exempt: they never write their own var at all.
+    missing = (
+        set(ServerSettingsUpdate.model_fields)
+        - set(Settings.model_fields)
+        - VIRTUAL_UPDATE_FIELDS
+    )
     assert not missing, f"patchable fields absent from Settings model: {sorted(missing)}"
 
 

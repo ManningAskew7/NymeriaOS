@@ -69,11 +69,13 @@ class FakeSettings:
     compact_proactive_min_pct: int = 85
     sliding_window_cycles: int = 20
     tool_output_max_chars: int = 100000
+    tool_timeout: int = 300
     tool_timing_in_results: bool = False
     memory_char_limit: int = 8000
     memory_max_entries: int = 100
     memory_value_max_chars: int = 1000
     agent_max_iterations: int = 500
+    user_timezone: str = "UTC"
     log_level: str = "INFO"
     watchdog_enabled: bool = True
     watchdog_interval_minutes: int = 5
@@ -109,6 +111,8 @@ class FakeSettings:
     embedding_provider: str = "openai"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int | None = None
+    embedding_base_url: str | None = None
+    embedding_input_type: str | None = None
     rag_retrieval_mode: str = "hybrid"
     rag_embed_tool_results: bool = True
     rag_rerank_enabled: bool = False
@@ -1223,6 +1227,225 @@ def test_patch_settings_rejects_invalid_compact_token_threshold(
 
     assert response.status_code == 422
     assert not (tmp_path / ".env").exists()
+
+
+def test_patch_settings_updates_user_timezone_without_graph_rebuild(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.delenv("USER_TIMEZONE", raising=False)
+    (tmp_path / ".env").write_text("USER_TIMEZONE=UTC\n", encoding="utf-8")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"user_timezone": "Europe/London"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == ["user_timezone"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "USER_TIMEZONE=Europe/London" in env_text
+    assert os.environ["USER_TIMEZONE"] == "Europe/London"
+    assert provider.cache_clear_count == 1
+    # Timestamps render per turn from settings; no graph rebuild involved.
+    assert agent.graph_rebuilds == []
+
+
+def test_patch_settings_rejects_unknown_timezone(
+    tmp_path: Path,
+    monkeypatch,
+):
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"user_timezone": "Middle/Nowhere"},
+    )
+
+    assert response.status_code == 422
+    assert not (tmp_path / ".env").exists()
+
+
+def test_patch_settings_hot_reloads_tool_timeout_and_rebuilds_graphs(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.delenv("TOOL_TIMEOUT", raising=False)
+    (tmp_path / ".env").write_text("TOOL_TIMEOUT=300\n", encoding="utf-8")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"tool_timeout": 600},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == ["tool_timeout"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "TOOL_TIMEOUT=600" in env_text
+    assert provider.cache_clear_count == 1
+    # tool_timeout is baked into SafeToolNode at graph build (see
+    # _GRAPH_REBUILD_FIELDS), so a hot PATCH must rebuild.
+    assert agent.graph_rebuilds == ["sync", "async"]
+
+
+def test_patch_settings_rejects_out_of_range_tool_timeout(
+    tmp_path: Path,
+    monkeypatch,
+):
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"tool_timeout": 5},
+    )
+
+    assert response.status_code == 422
+    assert not (tmp_path / ".env").exists()
+
+
+def test_patch_settings_routes_generic_llm_api_key_to_provider_slot(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # The generic slot must land in the SELECTED provider's declared key var
+    # (GROQ_API_KEY here), mirroring the CLI finalize, and behave like every
+    # other credential write: rebuild the graphs, never echo the secret.
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("LLM_MODEL=old-model\n", encoding="utf-8")
+    client, agent, token, provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={
+            "llm_provider": "groq",
+            "llm_model": "llama-test",
+            "llm_api_key": "gsk-secret-test",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["updated"]) == {"llm_provider", "llm_model", "llm_api_key"}
+    assert "gsk-secret-test" not in response.text
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "GROQ_API_KEY=gsk-secret-test" in env_text
+    assert "LLM_API_KEY" not in env_text
+    assert os.environ["GROQ_API_KEY"] == "gsk-secret-test"
+    assert provider.cache_clear_count == 1
+    assert agent.graph_rebuilds == ["sync", "async"]
+
+
+def test_patch_settings_generic_llm_api_key_uses_current_provider_for_rotation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # Key-only rotation (no llm_provider in the payload) resolves against the
+    # currently configured provider. FakeSettings defaults to anthropic, whose
+    # first declared slot is the direct key.
+    monkeypatch.delenv("ANTHROPIC_DIRECT_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("LLM_MODEL=claude-test\n", encoding="utf-8")
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_api_key": "sk-ant-rotated"},
+    )
+
+    assert response.status_code == 200
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "ANTHROPIC_DIRECT_API_KEY=sk-ant-rotated" in env_text
+    assert "sk-ant-rotated" not in response.text
+
+
+def test_patch_settings_generic_llm_api_key_rejects_unknown_provider(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # A provider outside the registry has no declared key slot, so storing the
+    # key would write a dotenv line nothing reads. The applier must refuse with
+    # a clear 400 instead of silently dropping the secret.
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.patch(
+        "/settings",
+        headers=_auth(token),
+        json={"llm_provider": "not-a-registered-provider", "llm_api_key": "sk-lost"},
+    )
+
+    assert response.status_code == 400
+    assert "sk-lost" not in response.text
+    env_path = tmp_path / ".env"
+    if env_path.exists():
+        assert "sk-lost" not in env_path.read_text(encoding="utf-8")
+
+
+def test_get_rag_catalog_serves_the_setup_catalog(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # One source of truth: the endpoint must serve the same options the CLI
+    # wizard renders from setup/rag_catalog.py, so a GUI cannot drift.
+    from nymeria.setup.rag_catalog import (
+        EMBEDDERS,
+        QUICKSTART_EMBEDDER,
+        QUICKSTART_RERANKER,
+        RERANKERS,
+    )
+
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get("/settings/rag/catalog", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [e["id"] for e in body["embedders"]] == [opt.id for opt in EMBEDDERS]
+    assert [r["id"] for r in body["rerankers"]] == [opt.id for opt in RERANKERS]
+    cohere = next(e for e in body["embedders"] if e["id"] == "premium-cohere")
+    assert cohere["provider"] == "cohere"
+    assert cohere["model"] == "embed-v4.0"
+    assert cohere["dimensions"] == 1024
+    voyage = next(e for e in body["embedders"] if e["id"] == "premium-voyage-large")
+    assert voyage["base_url"] == "https://api.voyageai.com/v1"
+    assert voyage["input_type"] == "voyage"
+    assert body["quickstart_embedder"] == QUICKSTART_EMBEDDER
+    assert body["quickstart_reranker"] == QUICKSTART_RERANKER
+    assert body["combos"], "recommended combos must be served"
+
+
+def test_get_settings_reports_timezone_tool_timeout_and_embedding_endpoint(
+    tmp_path: Path,
+    monkeypatch,
+):
+    settings = FakeSettings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        user_timezone="Australia/Brisbane",
+        tool_timeout=450,
+        embedding_base_url="https://api.voyageai.com/v1",
+        embedding_input_type="voyage",
+    )
+    client, _agent, token, _provider = _client(
+        monkeypatch,
+        tmp_path,
+        settings=settings,
+    )
+
+    response = client.get("/settings", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_timezone"] == "Australia/Brisbane"
+    assert body["tool_timeout"] == 450
+    assert body["embedding_base_url"] == "https://api.voyageai.com/v1"
+    assert body["embedding_input_type"] == "voyage"
 
 
 def test_patch_settings_accepts_provider_credentials_without_echoing_secrets(
