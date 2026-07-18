@@ -8,9 +8,9 @@
   import {
     hookCategory,
     describeHookLogic,
-    HOOK_ACTION_META,
+    hookActionMeta,
+    hookEventMeta,
     HOOK_CATEGORIES,
-    HOOK_EVENT_META,
   } from '$lib/utils/hooks';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
@@ -35,8 +35,11 @@
   const categoryMeta = $derived(
     HOOK_CATEGORIES.find((c) => c.key === category) ?? HOOK_CATEGORIES[0]
   );
-  const actionMeta = $derived(HOOK_ACTION_META[hook.action]);
-  const eventMeta = $derived(HOOK_EVENT_META[hook.event]);
+  // Accessor form, NOT the raw tables: the backend synthesizes the reserved
+  // turn-metadata system hook (action outside the authorable union) into every
+  // GET /hooks, and a raw table miss here crashed the whole app shell.
+  const actionMeta = $derived(hookActionMeta(hook.action));
+  const eventMeta = $derived(hookEventMeta(hook.event));
   const summary = $derived(describeHookLogic(hook));
   const conditions = $derived<HookCondition[]>(
     Array.isArray(hook.logic?.conditions) ? (hook.logic.conditions as HookCondition[]) : []

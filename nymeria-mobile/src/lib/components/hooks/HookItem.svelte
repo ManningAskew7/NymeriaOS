@@ -6,8 +6,8 @@
   import {
     hookCategory,
     describeHookLogic,
-    HOOK_ACTION_META,
-    HOOK_EVENT_META,
+    hookActionMeta,
+    hookEventMeta,
   } from '$lib/utils/hooks';
 
   interface Props {
@@ -27,8 +27,11 @@
   let actionError = $state<string | null>(null);
 
   const category = $derived(hookCategory(hook.action));
-  const actionMeta = $derived(HOOK_ACTION_META[hook.action]);
-  const eventMeta = $derived(HOOK_EVENT_META[hook.event]);
+  // Accessor form, NOT the raw tables: the backend synthesizes the reserved
+  // turn-metadata system hook (action outside the authorable union) into every
+  // GET /hooks, and a raw table miss here crashed the whole app shell.
+  const actionMeta = $derived(hookActionMeta(hook.action));
+  const eventMeta = $derived(hookEventMeta(hook.event));
   const summary = $derived(describeHookLogic(hook));
 
   async function handleToggle() {

@@ -9,9 +9,9 @@
   import { hooksStore } from '$lib/stores/hooks.svelte';
   import {
     hookCategory,
-    HOOK_ACTION_META,
+    hookActionMeta,
+    hookEventMeta,
     HOOK_CATEGORIES,
-    HOOK_EVENT_META,
   } from '$lib/utils/hooks';
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
@@ -1243,7 +1243,7 @@
                   <div class="hook-ovr-row">
                     <div class="hook-ovr-meta">
                       <span class="hook-ovr-name">{hook.name}</span>
-                      <span class="hook-ovr-sub">{HOOK_EVENT_META[hook.event].label} · {HOOK_ACTION_META[hook.action].label}{hook.scope === 'global' ? ' · Global' : ''}</span>
+                      <span class="hook-ovr-sub">{hookEventMeta(hook.event).label} · {hookActionMeta(hook.action).label}{hook.scope === 'global' ? ' · Global' : ''}</span>
                     </div>
                     <div class="hook-seg small" role="group" aria-label="Override for {hook.name}">
                       <button class="hseg" class:active={hookOverrideValue(hook.id) === 'default'} type="button" onclick={() => setHookOverride(hook.id, 'default')}>Default</button>
