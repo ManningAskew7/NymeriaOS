@@ -73,8 +73,12 @@ _WSL_HINTS = (
     "does not keep the machine reachable on its own.",
 )
 _WINDOWS_HINTS = (
-    "Press Win+R, type shell:startup, and place a shortcut to `nymeria slim` "
-    "there to start Nymeria at login.",
+    "Windows has no automated `nymeria service` backend yet. For logon "
+    "autostart, run install.ps1: it registers a hidden 'NymeriaOS Slim' "
+    "scheduled task that launches `nymeria slim` at login with no console "
+    "window.",
+    "Start it now without logging out: schtasks /run /tn \"NymeriaOS Slim\". "
+    "Remove it: schtasks /delete /tn \"NymeriaOS Slim\" /f.",
     "For crash-restart supervision, see WinSW: https://github.com/winsw/winsw",
 )
 
