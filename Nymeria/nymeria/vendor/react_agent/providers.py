@@ -39,6 +39,7 @@ from nymeria.config.llm_providers import (
     get_llm_provider_spec,
     is_openai_compatible_provider,
     normalize_llm_provider,
+    provider_default_api_mode,
     provider_requires_api_key,
     provider_supports_route,
     provider_supports_responses,
@@ -1429,7 +1430,11 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
             config.provider,
         )
 
-    if config.provider == "openrouter":
+    if config.provider == "openrouter" and config.provider_route != "anthropic_messages":
+        # The anthropic_messages route (opt-in per thread) falls through to the
+        # generic gateway branch below, which targets openrouter.ai/api/v1/messages
+        # via langchain-anthropic for native thinking blocks. Every other
+        # OpenRouter selection uses the dedicated OpenAI-compat factory.
         return _create_openrouter_llm(config)
     elif config.provider == "openai":
         return _create_openai_llm(config)
@@ -1848,7 +1853,11 @@ def _create_openrouter_llm(config: LLMConfig) -> BaseChatModel:
     if not config.api_key:
         raise ValueError("OpenRouter requires OPENROUTER_API_KEY")
 
-    api_mode = config.openai_api_mode or "responses"
+    # None means "use the provider's registry default" (OpenRouter's is
+    # chat_completions: stable, and its OpenAI-compat path already round-trips
+    # signed reasoning via reasoning_details). An explicit per-thread choice of
+    # "responses" opts into the beta Responses endpoint.
+    api_mode = config.openai_api_mode or provider_default_api_mode(config.provider)
     kwargs = {
         "model": config.model,
         "api_key": config.api_key,
@@ -2083,7 +2092,11 @@ def _create_openai_llm(config: LLMConfig) -> BaseChatModel:
     if config.presence_penalty is not None:
         kwargs["presence_penalty"] = config.presence_penalty
 
-    if config.openai_api_mode == "responses":
+    # None resolves to OpenAI's registry default (responses), so a fresh install
+    # with no explicit mode keeps OpenAI on the Responses API (its reasoning
+    # items only round-trip there). Mirrors the compat/openrouter factories.
+    openai_api_mode = config.openai_api_mode or provider_default_api_mode("openai")
+    if openai_api_mode == "responses":
         kwargs["use_responses_api"] = True
         kwargs["output_version"] = "responses/v1"
         kwargs["store"] = False

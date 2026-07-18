@@ -109,7 +109,16 @@ def explain_image_context_support(llm_config: LLMConfig | None) -> tuple[bool, s
         return True, "supported"
 
     if provider in {"openai", "openrouter"}:
-        if (llm_config.openai_api_mode or "responses") == "responses":
+        # Resolve the effective mode the same way the provider factories do: a
+        # null openai_api_mode means the provider's registry default (Responses
+        # for OpenAI, Chat Completions for OpenRouter). Only Responses can carry
+        # tool/history images: the chat/completions schema forbids image content
+        # in tool-role messages, so generated-image replay is genuinely
+        # unavailable there (users can still attach images in a user message).
+        from ..config.llm_providers import provider_default_api_mode
+
+        effective_mode = llm_config.openai_api_mode or provider_default_api_mode(provider)
+        if effective_mode == "responses":
             return True, "supported"
         return False, "chat_completions_route"
 

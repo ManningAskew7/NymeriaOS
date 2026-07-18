@@ -393,7 +393,11 @@ def test_openai_client_retries_disabled_for_central_retry_policy():
     assert llm.root_async_client.max_retries == 0
 
 
-def test_openrouter_default_mode_uses_responses_payload():
+def test_openrouter_default_mode_uses_chat_completions_payload():
+    # OpenRouter defaults to stable chat_completions (off the beta Responses
+    # converter). Reasoning still round-trips as SIGNED reasoning_details on this
+    # path; the request carries the unified OpenRouter reasoning object in
+    # extra_body, and the payload is a chat-completions messages payload.
     llm = create_llm(
         _openrouter_config(
             extended_thinking=True,
@@ -407,9 +411,33 @@ def test_openrouter_default_mode_uses_responses_payload():
         HumanMessage(content="Hi"),
     ])
 
+    assert "messages" in payload
+    assert "input" not in payload
+    assert payload["max_completion_tokens"] == 1234
+    assert payload["extra_body"]["reasoning"] == {
+        "enabled": True,
+        "effort": "high",
+    }
+
+
+def test_openrouter_explicit_responses_mode_still_uses_responses_payload():
+    # Responses stays available as an explicit per-thread opt-in.
+    llm = create_llm(
+        _openrouter_config(
+            openai_api_mode="responses",
+            extended_thinking=True,
+            reasoning_effort="high",
+            max_tokens=1234,
+        )
+    )
+
+    payload = llm._get_request_payload([
+        SystemMessage(content="You are Nymeria."),
+        HumanMessage(content="Hi"),
+    ])
+
     assert "input" in payload
     assert "messages" not in payload
-    assert "previous_response_id" not in payload
     assert payload["store"] is False
     assert payload["max_output_tokens"] == 1234
     assert payload["reasoning"] == {"summary": "auto", "effort": "high"}
@@ -2145,12 +2173,23 @@ def test_anthropic_messages_route_advertised_by_bucket_a_gateways():
         assert spec.anthropic_native_for_claude is True, provider_id
         assert spec.anthropic_messages_base_url == base, provider_id
 
-    # Signature-safe gateways must NOT advertise the route (they round-trip
-    # Claude reasoning via reasoning_details on the compat path already).
-    for provider_id in ("openrouter", "vercel", "aihubmix"):
+    # Vercel/AIHubMix are signature-safe AND do not advertise the route (they
+    # round-trip Claude reasoning via reasoning_details on the compat path).
+    for provider_id in ("vercel", "aihubmix"):
         spec = get_llm_provider_spec(provider_id)
         assert spec is not None, provider_id
         assert "anthropic_messages" not in spec.supported_routes, provider_id
+
+    # OpenRouter is the mixed case: it DOES advertise the route as an opt-in
+    # (native thinking blocks over /v1/messages), but stays signature-safe on the
+    # compat path, so anthropic_native_for_claude is False (no picker nudge) even
+    # though the route is available.
+    openrouter = get_llm_provider_spec("openrouter")
+    assert openrouter is not None
+    assert "anthropic_messages" in openrouter.supported_routes
+    assert openrouter.default_route == "openai_compat"
+    assert openrouter.anthropic_native_for_claude is False
+    assert openrouter.anthropic_messages_base_url == "https://openrouter.ai/api"
 
 
 def test_anthropic_messages_base_url_resolves_per_gateway():
@@ -2224,6 +2263,54 @@ def test_gateway_openai_compat_route_still_uses_openai_adapter():
         )
     )
     assert isinstance(llm, ChatOpenAIWithReasoning)
+
+
+def test_openrouter_anthropic_messages_route_dispatches_to_langchain_anthropic():
+    from langchain_anthropic import ChatAnthropic
+
+    # OpenRouter's opt-in anthropic route targets openrouter.ai/api/v1/messages
+    # via langchain-anthropic (the SDK appends /v1/messages to the base).
+    llm = create_llm(
+        LLMConfig(
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4.5",
+            api_key="sk-or-test",
+            base_url=None,
+            temperature=None,
+            provider_route="anthropic_messages",
+            max_tokens=4000,
+        )
+    )
+    assert isinstance(llm, ChatAnthropic)
+    assert not isinstance(llm, ChatOpenAIWithReasoning)
+    assert "openrouter.ai/api" in str(llm.anthropic_api_url)
+
+    # Default route (no override) stays on the OpenAI-compatible adapter.
+    default = create_llm(
+        LLMConfig(
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4.5",
+            api_key="sk-or-test",
+            max_tokens=4000,
+        )
+    )
+    assert isinstance(default, ChatOpenAIWithReasoning)
+
+
+def test_openrouter_anthropic_route_effort_ladder_uses_claude_family():
+    # Under the anthropic route OpenRouter dispatches to _create_anthropic_llm,
+    # so the clamp must resolve the Claude family ladder (which includes "max"),
+    # not OpenRouter's unified ladder. The openai_compat route is unchanged.
+    from nymeria.config.model_capabilities import supported_reasoning_efforts
+
+    anthropic_route = supported_reasoning_efforts(
+        "openrouter", "anthropic/claude-sonnet-4.5", "anthropic_messages"
+    )
+    compat_route = supported_reasoning_efforts(
+        "openrouter", "anthropic/claude-sonnet-4.5", "openai_compat"
+    )
+    assert "max" in anthropic_route
+    assert "max" not in compat_route
 
 
 # --- Responses stream per-chunk dispatch (slice 25 F3) --------------------

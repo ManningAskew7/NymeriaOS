@@ -630,8 +630,8 @@ class Settings(BaseSettings):
         ),
     )
     openai_api_mode: Optional[Literal["chat_completions", "responses"]] = Field(
-        default="responses",
-        description="Default OpenAI-compatible API mode when no per-thread override is set: 'responses' or 'chat_completions'"
+        default=None,
+        description="Default OpenAI-compatible API mode when no per-thread override is set: 'responses' or 'chat_completions'. None (the default) means 'use each provider's own default' (Responses for OpenAI and Responses-native gateways, Chat Completions for OpenRouter and the rest), resolved from the provider registry's default_api_mode"
     )
     llm_stream_max_retries: int = Field(
         default=2,

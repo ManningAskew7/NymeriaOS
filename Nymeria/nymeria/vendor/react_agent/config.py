@@ -48,8 +48,11 @@ class LLMConfig:
     provider_route: Optional[Literal["native", "openai_compat", "anthropic_messages"]] = None
     # Adapter route for providers with both a native partner package and an
     # OpenAI-compatible shim. None = use the provider registry default.
-    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = "responses"
-    # OpenAI-compatible providers. Use "chat_completions" to opt out for compatibility.
+    openai_api_mode: Optional[Literal["chat_completions", "responses"]] = None
+    # OpenAI-compatible API mode. None = use the provider registry default
+    # (Responses for OpenAI and Responses-native gateways, Chat Completions for
+    # OpenRouter and the rest); the factories resolve it via
+    # provider_default_api_mode. Set explicitly to force a mode per thread.
 
     # HTTP timeout for LLM API calls (seconds). Prevents hanging on stalled connections.
     # Applies as the read timeout — if the server sends no data for this long, the call fails.

@@ -262,8 +262,22 @@ _PROVIDER_SPECS: tuple[LLMProviderSpec, ...] = (
         default_model="anthropic/claude-sonnet-4.5",
         docs_url="https://openrouter.ai/docs/api-reference/chat-completion",
         supports_responses=True,
-        default_api_mode="responses",
+        # Default to stable Chat Completions rather than the beta Responses
+        # endpoint. OpenRouter's compat path already round-trips SIGNED reasoning
+        # via reasoning_details (same fidelity as Responses items), so this keeps
+        # multi-turn reasoning passback while dropping the beta converter from the
+        # default path. Responses stays available as an explicit per-thread mode.
+        default_api_mode="chat_completions",
         tier="gateway",
+        # OpenRouter also exposes an Anthropic Messages endpoint
+        # (openrouter.ai/api/v1/messages) that routes ANY model, not just Claude,
+        # and returns native thinking blocks. Offered as an opt-in per-thread
+        # route. anthropic_native_for_claude stays False by design: the compat
+        # path is already signature-safe via reasoning_details, so there is no
+        # signature to rescue and the picker must NOT nudge Claude users off it
+        # (unlike opencode/zenmux, whose compat path drops the signature).
+        supported_routes=("openai_compat", "anthropic_messages"),
+        anthropic_messages_base_url="https://openrouter.ai/api",
         signup_url="https://openrouter.ai/keys",
         signup_guidance=(
             "Sign in at openrouter.ai and create a key (no card needed). "

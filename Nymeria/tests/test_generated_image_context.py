@@ -66,6 +66,27 @@ def test_hydration_skips_chat_completions_and_disabled_artifacts(tmp_path, monke
     assert isinstance(skipped_for_disabled[0].content, str)
 
 
+def test_image_gate_resolves_effective_mode_from_provider_default(monkeypatch):
+    # The gate must resolve a null openai_api_mode via the provider default, the
+    # same way the LLM factories do. OpenRouter's default is chat_completions
+    # (which cannot carry tool/history images), so a null mode reports
+    # chat_completions_route; OpenAI's default is responses, so it stays
+    # supported. Explicit modes win over the default on both.
+    from nymeria.core.generated_image_context import explain_image_context_support
+
+    monkeypatch.setattr(generated_image_context, "supports_vision", lambda _model: True)
+
+    def gate(provider, mode):
+        return explain_image_context_support(
+            LLMConfig(provider=provider, model="m", openai_api_mode=mode)
+        )
+
+    assert gate("openrouter", None) == (False, "chat_completions_route")
+    assert gate("openrouter", "responses") == (True, "supported")
+    assert gate("openai", None) == (True, "supported")
+    assert gate("openai", "chat_completions") == (False, "chat_completions_route")
+
+
 def test_hydration_rejects_paths_outside_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("NYMERIA_WORKSPACE_DIR", str(tmp_path / "workspace"))
     monkeypatch.setattr(generated_image_context, "supports_vision", lambda _model: True)
