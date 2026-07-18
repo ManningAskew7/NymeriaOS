@@ -98,7 +98,11 @@ def test_file_edit_delete_and_insert_operations(tmp_path):
 def test_file_edit_replace_range_requires_matching_context(tmp_path):
     path = tmp_path / "example.txt"
     original = "line 1\nline 2\nline 3\n"
-    path.write_text(original, encoding="utf-8")
+    # newline="\n" pins LF bytes on Windows too: this test pushes raw line
+    # context through the tool, and the platform-default translation would
+    # write CRLF and break the context match (found by the first Windows
+    # smoke run). The tool itself is byte-honest by design.
+    path.write_text(original, encoding="utf-8", newline="\n")
 
     mismatch = _call(
         path,
@@ -151,7 +155,9 @@ def test_file_edit_dry_run_returns_diff_without_writing(tmp_path):
 
 def test_file_edit_expected_sha256_guards_against_stale_content(tmp_path):
     path = tmp_path / "example.txt"
-    path.write_text("current\n", encoding="utf-8")
+    # newline="\n" pins LF bytes: the sha comparison below hashes the actual
+    # file bytes, which Windows newline translation would otherwise change.
+    path.write_text("current\n", encoding="utf-8", newline="\n")
 
     result = _call(
         path,
