@@ -26,6 +26,19 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 
+# Windows child-process essentials. Without SystemRoot/ComSpec a ``cmd.exe``
+# or DLL-loading child fails to start at all, and PATHEXT/TEMP govern basic
+# executable resolution and temp placement, so these belong in the base for
+# EVERY exec surface, not just the networked ones that used to opt them in.
+# On POSIX none of these are set, so including them here is a no-op there
+# (the scrubber only copies variables that actually exist): no platform
+# branch needed. None are secrets.
+WINDOWS_RUNTIME_PASSTHROUGH: tuple[str, ...] = (
+    "SystemRoot", "windir", "ComSpec", "PATHEXT", "SYSTEMDRIVE",
+    "HOMEDRIVE", "HOMEPATH", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+    "PROGRAMDATA", "TEMP", "TMP",
+)
+
 # The minimal, non-secret base a spawned child may inherit. Deliberately small:
 # enough to find executables and behave with correct locale/temp paths, nothing
 # that identifies or authenticates the deployment.
@@ -35,7 +48,7 @@ BASE_SUBPROCESS_ENV_PASSTHROUGH: tuple[str, ...] = (
     "LANG",
     "LC_ALL",
     "TMPDIR",
-)
+) + WINDOWS_RUNTIME_PASSTHROUGH
 
 # Non-secret runtime/network/TLS variables that package managers (npm, uv,
 # pip), HTTPS clients, and TLS trust stores need but that carry no Nymeria
@@ -55,10 +68,9 @@ NETWORK_RUNTIME_PASSTHROUGH: tuple[str, ...] = (
     "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "PIP_CERT",
     # XDG base dirs (npm/uv/pip cache/config/data locations)
     "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
-    # Windows runtime essentials
-    "SystemRoot", "windir", "PATHEXT", "ComSpec", "SYSTEMDRIVE",
-    "HOMEDRIVE", "HOMEPATH", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-    "PROGRAMDATA", "TEMP", "TMP",
+    # The Windows runtime essentials formerly listed here moved into the
+    # always-on base (WINDOWS_RUNTIME_PASSTHROUGH): every exec surface needs
+    # them on Windows, not just the fetch/build/network ones.
 )
 
 
@@ -78,5 +90,6 @@ def scrubbed_subprocess_env(extra_names: Iterable[str] = ()) -> dict[str, str]:
 __all__ = [
     "BASE_SUBPROCESS_ENV_PASSTHROUGH",
     "NETWORK_RUNTIME_PASSTHROUGH",
+    "WINDOWS_RUNTIME_PASSTHROUGH",
     "scrubbed_subprocess_env",
 ]

@@ -1,0 +1,79 @@
+name: Windows smoke
+
+# First-ever Windows exercise of the slim runtime path (beta-readiness 07,
+# work item 4). Deliberately a smoke test, not a suite run: boot slim, poll
+# /health, then a small hermetic pytest subset (file tools, storage paths,
+# subprocess env allowlist, command guard). Kept out of ci.yml so it can be
+# dispatched alone: GitHub-hosted Windows runners bill paid minutes at 2x,
+# and iterating on Windows-only breakage should not re-run the whole suite.
+on:
+  # Manual only, matching ci.yml (paid minutes).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-smoke:
+    name: Windows slim smoke
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            Nymeria/requirements.txt
+            Nymeria/requirements-sqlite.txt
+            Nymeria/requirements-dev.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r Nymeria/requirements.txt -r Nymeria/requirements-sqlite.txt -r Nymeria/requirements-dev.txt
+
+      - name: Boot slim and poll /health
+        working-directory: Nymeria
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath python -ArgumentList 'run.py','slim' -PassThru -NoNewWindow -RedirectStandardOutput slim-out.log -RedirectStandardError slim-err.log
+          $ok = $false
+          $deadline = (Get-Date).AddSeconds(180)
+          while ((Get-Date) -lt $deadline) {
+            if ($proc.HasExited) { break }
+            try {
+              $resp = Invoke-WebRequest -Uri http://127.0.0.1:8000/health -UseBasicParsing -TimeoutSec 5
+              if ($resp.StatusCode -eq 200) {
+                $ok = $true
+                Write-Host "health: $($resp.Content)"
+                break
+              }
+            } catch {}
+            Start-Sleep -Seconds 2
+          }
+          if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          Write-Host '--- slim stdout tail ---'
+          if (Test-Path slim-out.log) { Get-Content slim-out.log -Tail 60 }
+          Write-Host '--- slim stderr tail ---'
+          if (Test-Path slim-err.log) { Get-Content slim-err.log -Tail 60 }
+          if (-not $ok) { throw 'slim never answered /health' }
+
+      - name: Run hermetic file/storage/env tests
+        env:
+          PYTHONPATH: Nymeria
+        run: python -m pytest Nymeria/tests/test_subprocess_env.py Nymeria/tests/test_storage_paths.py Nymeria/tests/test_file_edit_tool.py Nymeria/tests/test_file_read_extraction.py -q
+
+      - name: Run command-guard tests
+        env:
+          PYTHONPATH: Nymeria
+        run: python -m pytest Nymeria/tests/test_bash_tool.py -k "guard_blocks or guard_allows" -q
