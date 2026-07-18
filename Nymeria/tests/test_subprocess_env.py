@@ -41,8 +41,26 @@ def test_scrubbed_env_passes_named_extras_only_when_set(monkeypatch):
 def test_base_allowlist_has_no_secret_shaped_names():
     for name in BASE_SUBPROCESS_ENV_PASSTHROUGH:
         assert not any(
-            marker in name for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "URI", "URL")
+            marker in name.upper()
+            for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "URI", "URL")
         )
+
+
+def test_windows_runtime_vars_ride_the_base(monkeypatch):
+    """cmd.exe and DLL-loading children need SystemRoot/ComSpec/PATHEXT on
+    EVERY exec surface, so the Windows essentials live in the base, not the
+    network opt-in tuple. On POSIX they are unset, so this is a no-op there
+    (the scrubber only copies variables that exist)."""
+    from nymeria.subprocess_env import WINDOWS_RUNTIME_PASSTHROUGH
+
+    assert set(WINDOWS_RUNTIME_PASSTHROUGH) <= set(BASE_SUBPROCESS_ENV_PASSTHROUGH)
+    monkeypatch.setenv("SystemRoot", "C:\\Windows")
+    monkeypatch.setenv("ComSpec", "C:\\Windows\\System32\\cmd.exe")
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    env = scrubbed_subprocess_env()
+    assert env.get("SystemRoot") == "C:\\Windows"
+    assert env.get("ComSpec") == "C:\\Windows\\System32\\cmd.exe"
+    assert env.get("PATHEXT") == ".COM;.EXE;.BAT;.CMD"
 
 
 def test_python_tool_subprocess_env_is_scrubbed_and_launched_by_path(monkeypatch):

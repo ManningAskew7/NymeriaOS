@@ -127,6 +127,19 @@ BLOCKED_COMMANDS = [
     'bash -c "rm -rf /"',
     "sh -c 'reboot'",
     'sudo bash -c "reboot"',
+    # Windows cmd catastrophes (bash_execute runs through cmd.exe there).
+    "format c:",
+    "format /fs:ntfs C:",
+    "del /s /q C:\\",
+    "del /s C:\\*",
+    "rd /S /Q c:",
+    "rmdir /s /q C:/",
+    "rd /s /q %USERPROFILE%",
+    "del /s %userprofile%\\*",
+    "shutdown /s /t 0",
+    # cmd /c payloads are the Windows twin of bash -c.
+    'cmd /c "format c:"',
+    "cmd.exe /c del /s /q C:\\",
 ]
 
 ALLOWED_COMMANDS = [
@@ -159,6 +172,17 @@ ALLOWED_COMMANDS = [
     # Shell -c payloads are checked recursively, so benign ones pass.
     'bash -c "echo reboot"',
     "bash deploy.sh",
+    # Windows: recursive deletes below a drive root and benign lookalikes.
+    "del /s /q build\\*",
+    "del /s C:\\temp\\build",
+    "rd /s /q node_modules",
+    "rmdir /s /q C:\\Users\\me\\AppData\\Local\\Temp\\build",
+    "rd /s /q %USERPROFILE%\\AppData\\Local\\Temp\\build",
+    "del C:\\temp\\notes.txt",
+    "format --help",
+    "format-patch --help",
+    'echo "del /s /q C:\\*"',
+    "cmd /c echo hello",
 ]
 
 

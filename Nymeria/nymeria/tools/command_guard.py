@@ -31,9 +31,17 @@ Matching model:
   "reboot the box"``, and ``reboot-guard --status`` are safe while ``rm -rf /``
   and ``foo && reboot`` are blocked.
 - ``bash -c "<payload>"`` (and sh/zsh/dash/ksh) recursively re-checks the
-  payload, since that is a common idiom for the model itself to emit.
+  payload, since that is a common idiom for the model itself to emit; on
+  Windows, ``cmd /c <payload>`` gets the same treatment.
 - A few patterns that are dangerous regardless of position (fork bombs, ``dd``
   or a redirect onto a raw block device) match anywhere OUTSIDE quoted text.
+- A minimal Windows set mirrors the POSIX one for the ``cmd.exe`` builtins the
+  tool runs through on that platform: ``format`` of a drive, and recursive
+  ``del``/``rd``/``rmdir`` (``/s``) aimed at a drive root or at
+  ``%USERPROFILE%`` (the ``rm -rf ~`` twin). ``shutdown /s`` is
+  already caught by the POSIX ``shutdown`` verb pattern. PowerShell payloads
+  (``powershell -Command ...``) are deliberately not parsed: they are a
+  different language, and this guard stays small and unambiguous.
 """
 
 from __future__ import annotations
@@ -84,6 +92,21 @@ _HEREDOC_OPEN_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]
 
 # Shells whose ``-c <payload>`` should be recursively checked.
 _SHELL_DASH_C_RE = re.compile(r"^(?:bash|sh|zsh|dash|ksh)\s+(.*)$", re.IGNORECASE)
+
+# ``cmd /c <payload>`` / ``cmd /k <payload>``: the Windows twin of the
+# ``bash -c`` idiom, recursively checked the same way.
+_CMD_SLASH_C_RE = re.compile(r"^cmd(?:\.exe)?\s+(.*)$", re.IGNORECASE)
+
+# A cmd target token that means "a whole drive": ``C:``, ``C:\``, ``C:/``,
+# ``C:\*``, ``C:\*.*``. Anything below the root (``C:\Users\me\build``) does
+# not match.
+_WIN_DRIVE_ROOT_RE = re.compile(r"^[a-z]:[\\/]?(?:\*(?:\.\*)?)?$", re.IGNORECASE)
+
+# The whole user profile, the Windows twin of the POSIX ``rm -rf ~`` targets.
+_WIN_HOME_ROOT_RE = re.compile(r"^%USERPROFILE%[\\/]?(?:\*(?:\.\*)?)?$", re.IGNORECASE)
+
+# cmd builtin delete verbs and their recursive switch.
+_WIN_DELETE_VERBS = {"del", "erase", "rd", "rmdir"}
 
 
 def _seg(pattern: str) -> Pattern[str]:
@@ -327,6 +350,55 @@ def _shell_dash_c_payload(segment: str) -> Optional[str]:
     return _first_shell_word(rest) or None
 
 
+def _check_windows_segment(segment: str) -> Optional[str]:
+    """Block the cmd.exe catastrophes: drive format, recursive delete at a
+    drive root. Windows switches use ``/``, so tokenization is shared with the
+    POSIX checks but the flag detection is separate."""
+    tokens = segment.split()
+    if not tokens:
+        return None
+    head = tokens[0].lower()
+    if head == "format":
+        if any(re.fullmatch(r"[a-z]:", token, re.IGNORECASE) for token in tokens[1:]):
+            return "formats a drive"
+        return None
+    if head in _WIN_DELETE_VERBS:
+        recursive = False
+        targets: list[str] = []
+        for token in tokens[1:]:
+            if token.startswith("/") and len(token) == 2:
+                if token[1].lower() == "s":
+                    recursive = True
+            else:
+                targets.append(token.strip("'\""))
+        if recursive and any(_WIN_DRIVE_ROOT_RE.match(target) for target in targets):
+            return "recursive delete at a drive root"
+        if recursive and any(_WIN_HOME_ROOT_RE.match(target) for target in targets):
+            return "recursive delete of the user profile root"
+    return None
+
+
+def _cmd_slash_c_payload(segment: str) -> Optional[str]:
+    """The payload of a ``cmd /c <payload>``-style segment, else None."""
+    match = _CMD_SLASH_C_RE.match(segment)
+    if not match:
+        return None
+    rest = match.group(1).lstrip()
+    saw_c = False
+    while rest.startswith("/"):
+        word, _, remainder = rest.partition(" ")
+        if word.lower() in ("/c", "/k"):
+            saw_c = True
+        rest = remainder.lstrip()
+    if not saw_c or not rest:
+        return None
+    # cmd takes the remainder of the line as the command; honour a leading
+    # quote, else check the whole remainder.
+    if rest[0] in "'\"":
+        return _first_shell_word(rest) or None
+    return rest
+
+
 def _check_rm_segment(segment: str) -> Optional[str]:
     """Block ``rm`` with recursive+force flags against a root-ish target."""
     tokens = segment.split()
@@ -381,10 +453,13 @@ def check_command_guard(command: str, _depth: int = 0) -> Optional[str]:
         reason = _check_rm_segment(segment)
         if reason:
             return reason
+        reason = _check_windows_segment(segment)
+        if reason:
+            return reason
         for pattern, reason in _SEGMENT_PATTERNS:
             if pattern.search(segment):
                 return reason
-        payload = _shell_dash_c_payload(segment)
+        payload = _shell_dash_c_payload(segment) or _cmd_slash_c_payload(segment)
         if payload:
             reason = check_command_guard(payload, _depth + 1)
             if reason:
