@@ -111,6 +111,36 @@ the marker prevents duplicate execution until it ages out. Keep the default
 24-hour window for always-on servers; use a shorter value only for explicitly
 desktop-managed local backends.
 
+## Windows: native install and logon autostart
+
+On Windows 11 the recommended shape is native Slim, installed with `uv` (which
+fetches its own Python, so the Microsoft Store `python` stub does not matter).
+`install.ps1` at the repo root drives the whole flow: it installs `uv`, runs
+`uv tool install nymeriaos`, puts `nymeria` on PATH, runs `nymeria init` then
+`nymeria doctor`, and offers logon autostart. Config and data live under
+`%USERPROFILE%\.nymeria` (the same `~/.nymeria` root every packaged install
+uses), so they survive a `uv tool upgrade`.
+
+Logon autostart is a per-user scheduled task named `NymeriaOS Slim`. It runs
+`nymeria slim` through a generated `%USERPROFILE%\.nymeria\nymeria-slim-hidden.vbs`
+launcher so no console window appears, and it runs in your interactive session
+(no stored password). Manage it with:
+
+```powershell
+schtasks /run    /tn "NymeriaOS Slim"   # start now without logging out
+schtasks /query  /tn "NymeriaOS Slim"   # check state
+schtasks /delete /tn "NymeriaOS Slim" /f  # remove autostart
+```
+
+Because a desktop PC is an intermittent host (off overnight, asleep, logged
+out), the On/off local operation semantics above apply directly: a TODO that
+came due while you were logged out runs on the next startup catch-up sweep, and
+the active-execution stale window guards a TODO interrupted by logoff or sleep.
+Every Slim store is WAL and writes atomically, so a hard logoff
+(`TerminateProcess`) loses at worst undrained observe hooks, never data. There
+is no `nymeria service` backend on Windows yet; the scheduled task is the
+supervision mechanism (for crash-restart supervision see WinSW).
+
 ## Verifying the launch
 
 ```bash
