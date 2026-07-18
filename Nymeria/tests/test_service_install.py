@@ -533,7 +533,10 @@ def test_service_manager_unsupported_on_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(ServiceUnavailableError) as excinfo:
         service_manager()
-    assert any("shell:startup" in hint for hint in excinfo.value.hints)
+    hints = excinfo.value.hints
+    # Windows autostart now routes through install.ps1's logon scheduled task.
+    assert any("NymeriaOS Slim" in hint for hint in hints)
+    assert any("schtasks" in hint for hint in hints)
 
 
 def test_installed_artifact_path_is_none_off_platform(monkeypatch):
