@@ -382,6 +382,8 @@ If HTML parsing fails (malformed tags in AI output), the bot falls back to plain
 
 The bot maintains a background SSE connection to `GET /autonomous/stream`. When a watchdog or scheduled TODO fires on a Telegram thread, the bot streams the events into the chat the same way it streams a regular conversation:
 
+- Delivery is attach-preferred: on `task_started` the bot opens the per-thread turn stream (`GET /threads/{thread_id}/turn/stream`) and renders the turn from that canonical buffer, ignoring the firehose transcript copies while attached. Turns that are not attachable (for example non-buffered headless workflow runs) fall back to rendering the firehose events exactly as before.
+- Fanout-mirrored events (`fanout: true`, a queued prompt's re-publication of a busy holder turn) are dropped wholesale so one turn is never delivered twice.
 - Per-thread state is kept in memory keyed by the Nymeria thread ID, so concurrent autonomous runs in different chats don't interleave.
 - `response` chunks accumulate in a buffer and flush as a new message bubble at every `tool_call` boundary.
 - `tool_call` / `tool_result` markers are shown only when the chat has `/showtools` enabled.

@@ -194,6 +194,8 @@ Both interactive and autonomous SSE flows use the shared `SSEEventHandler` proto
 
 The bot maintains a background SSE connection to `GET /autonomous/stream`. When a scheduled TODO, watchdog nudge, or trigger runs on a Discord thread, the bot streams the same event types it uses for regular chat into the originating channel:
 
+- Delivery is attach-preferred: on `task_started` the bot opens the per-thread turn stream (`GET /threads/{thread_id}/turn/stream`) and renders the turn from that canonical buffer, ignoring the firehose transcript copies while attached. Non-attachable turns fall back to rendering the firehose events exactly as before.
+- Fanout-mirrored events (`fanout: true`, a queued prompt's re-publication of a busy holder turn) are dropped wholesale so one turn is never delivered twice.
 - `response` chunks are edited into live messages and flushed near Discord's 2000-character limit.
 - `tool_call` / `tool_result` markers follow the channel's `/show-tools` setting.
 - `tool_reload`, compaction, context summary, iteration-limit, and error events are surfaced inline.

@@ -46,6 +46,7 @@ from .telegram_format import (
 from .message_splitter import split_telegram_message as split_message
 from .voice_helpers import is_voice_message_mime, strip_markdown_for_speech
 from .sse_consumer import (
+    AutonomousTurnAttach,
     consume_autonomous_firehose,
     consume_sse_stream,
     dispatch_event,
@@ -3412,6 +3413,15 @@ class NymeriaTelegramBot:
             if chat_id is None:
                 return
 
+        # Fanout-mirror events (stream_bridge fanout marker) replay a holder
+        # turn that this bot already delivers via the holder's own task: a
+        # prompt queued into a busy thread (e.g. a callable handoff landing
+        # mid-briefing) observes and republishes the holder's output under
+        # its own task id. Rendering both interleaves two copies of the same
+        # turn into one chat buffer, so drop the mirror wholesale.
+        if event.get("fanout"):
+            return
+
         # Approval holds are time-critical and user-authored, so they bypass
         # the autonomous delivery-mode gate: dropping one silently would
         # guarantee a deny-on-timeout.
@@ -3471,7 +3481,7 @@ class NymeriaTelegramBot:
             return
 
         # Full delivery: get-or-create the per-thread handler, then route.
-        state = self._autonomous_state.get(thread_id)
+        state: Optional[Dict[str, Any]] = self._autonomous_state.get(thread_id)
         if state is None:
             handler = self._AutonomousSSEHandler(self, chat_id)
             state = {"handler": handler}
@@ -3480,44 +3490,82 @@ class NymeriaTelegramBot:
             handler = state["handler"]
 
         try:
+            attach = state.get("attach")
+
             if event_type == "task_started":
+                # Attach-preferred delivery (#91): render the holder turn
+                # byte-identically from GET /threads/{id}/turn/stream instead
+                # of reconstructing it from converted bus events. Guarded on
+                # client capability so in-process adapters and older fakes
+                # keep the legacy firehose path.
+                new_task_id = event.get("task_id")
+                if (
+                    attach is not None
+                    and new_task_id
+                    and new_task_id != state.get("task_id")
+                ):
+                    # A NEW holder turn started while the previous turn's
+                    # entry is still settling (its task_completed never
+                    # arrived, or the two turns' lifecycle events crossed).
+                    # Orphan the old entry: the old attach keeps its own
+                    # handler and an identity-guarded pop, so it cannot
+                    # clobber the fresh state; a still-pending old attach
+                    # is cancelled so it cannot open onto THIS turn's
+                    # buffer and double-render it.
+                    old_task = state.get("attach_task")
+                    if (
+                        attach.state == "pending"
+                        and old_task is not None
+                        and not old_task.done()
+                    ):
+                        old_task.cancel()
+                    self._autonomous_state.pop(thread_id, None)
+                    handler = self._AutonomousSSEHandler(self, chat_id)
+                    state = {"handler": handler}
+                    self._autonomous_state[thread_id] = state
+                    attach = None
+                if new_task_id:
+                    state["task_id"] = new_task_id
+                if attach is None and callable(
+                    getattr(self.api, "reattach_turn_stream", None)
+                ):
+                    attach = AutonomousTurnAttach(
+                        api=self.api,
+                        thread_id=thread_id,
+                        handler=handler,
+                        task_id=new_task_id,
+                        pop_state=lambda bound=state: (
+                            self._autonomous_state.pop(thread_id, None)
+                            if self._autonomous_state.get(thread_id) is bound
+                            else None
+                        ),
+                        log_delivered=lambda: logger.info(
+                            f"Streamed autonomous result to Telegram chat "
+                            f"{chat_id} (turn attach)"
+                        ),
+                        deliver_fallback_completed=(
+                            lambda evt, h=handler: (
+                                self._deliver_autonomous_completed(
+                                    chat_id, thread_id, h, evt
+                                )
+                            )
+                        ),
+                    )
+                    state["attach"] = attach
+                    state["attach_task"] = asyncio.create_task(attach.run())
                 return
 
             if event_type == "task_completed":
-                if event.get("error"):
-                    err = event.get("content") or "Unknown error"
-                    try:
-                        await self._send_html(
-                            chat_id,
-                            f"<i>Autonomous task error:</i> {escape_html(str(err))}",
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send autonomous error: {e}")
-                elif handler._reply_suppressed:
-                    # The turn's react call hid the reply; drop the aggregate
-                    # content and footer.
-                    pass
-                else:
-                    # If we received no per-event responses (older API or
-                    # non-streaming task), fall back to the aggregated content.
-                    if (
-                        not handler._response_seen
-                        and not handler._text_buffer
-                        and not handler._tool_count
-                    ):
-                        fallback = event.get("content") or ""
-                        if fallback:
-                            handler._text_buffer = fallback
-                    if handler._tool_count:
-                        footer = f"\n\n_Tool calls: {handler._tool_count}_"
-                        handler._text_buffer = (
-                            handler._text_buffer + footer
-                            if handler._text_buffer
-                            else footer
-                        )
-                    await handler.flush_text(final=True)
-                self._autonomous_state.pop(thread_id, None)
-                logger.info(f"Streamed autonomous result to Telegram chat {chat_id}")
+                if attach is not None and attach.note_task_completed(event):
+                    return
+                await self._deliver_autonomous_completed(
+                    chat_id, thread_id, handler, event
+                )
+                return
+
+            if attach is not None and attach.suppresses_firehose:
+                # The attach stream renders this turn; bus transcript events
+                # would double it.
                 return
 
             # Standard SSE event types: delegate to the shared dispatcher.
@@ -3529,6 +3577,51 @@ class NymeriaTelegramBot:
             logger.error(f"Error handling autonomous event {event_type}: {e}", exc_info=True)
             # Drop state so the thread starts fresh on the next task.
             self._autonomous_state.pop(thread_id, None)
+
+    async def _deliver_autonomous_completed(
+        self,
+        chat_id: int,
+        thread_id: str,
+        handler: "NymeriaTelegramBot._AutonomousSSEHandler",
+        event: Dict[str, Any],
+    ) -> None:
+        """Legacy firehose completion delivery: flush or fall back to the
+        aggregated content, then drop the per-thread state. Also reused as
+        the turn-attach fallback when a turn is not attachable."""
+        if event.get("error"):
+            err = event.get("content") or "Unknown error"
+            try:
+                await self._send_html(
+                    chat_id,
+                    f"<i>Autonomous task error:</i> {escape_html(str(err))}",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send autonomous error: {e}")
+        elif handler._reply_suppressed:
+            # The turn's react call hid the reply; drop the aggregate
+            # content and footer.
+            pass
+        else:
+            # If we received no per-event responses (older API or
+            # non-streaming task), fall back to the aggregated content.
+            if (
+                not handler._response_seen
+                and not handler._text_buffer
+                and not handler._tool_count
+            ):
+                fallback = event.get("content") or ""
+                if fallback:
+                    handler._text_buffer = fallback
+            if handler._tool_count:
+                footer = f"\n\n_Tool calls: {handler._tool_count}_"
+                handler._text_buffer = (
+                    handler._text_buffer + footer
+                    if handler._text_buffer
+                    else footer
+                )
+            await handler.flush_text(final=True)
+        self._autonomous_state.pop(thread_id, None)
+        logger.info(f"Streamed autonomous result to Telegram chat {chat_id}")
 
     # =========================================================================
     # Error Handler

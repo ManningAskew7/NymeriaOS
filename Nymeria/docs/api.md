@@ -1516,7 +1516,7 @@ Authorization: Bearer <token>
 
 Connects to a Server-Sent Events stream for receiving real-time updates during autonomous task execution: scheduled TODOs, trigger actions, callable-thread runs, spawned-thread runs, and `/chat` calls with `is_self_invoke=true`.
 
-**Transcript rendering note:** the desktop and mobile GUI clients consume this stream for lifecycle and dashboard signals only (task start/end, thread-list activity, notifications, approvals, sync events). They render autonomous turn transcripts by attaching to the per-thread turn buffer (`GET /threads/{thread_id}/turn/stream`, see "Re-attach to a Turn") on the `task_started` signal. Bots and the CLI still render transcripts directly from this stream, so turn-output chunks keep flowing here (dual-feed).
+**Transcript rendering note:** the desktop and mobile GUI clients consume this stream for lifecycle and dashboard signals only (task start/end, thread-list activity, notifications, approvals, sync events). They render autonomous turn transcripts by attaching to the per-thread turn buffer (`GET /threads/{thread_id}/turn/stream`, see "Re-attach to a Turn") on the `task_started` signal. The Discord and Telegram bots do the same (attach-preferred, falling back to rendering this stream's transcript events when a turn is not attachable); the CLI still renders transcripts directly from this stream, so turn-output chunks keep flowing here (dual-feed).
 
 **Client behavior:** Treat this as a long-lived fetch stream, not a finite request. Heartbeats are SSE comments (`: heartbeat`) and do not carry JSON. Clients should reconnect when the response ends, errors, or stops receiving heartbeat/data bytes. The desktop client also refreshes current thread history/context and the thread list after reconnect so missed autonomous chunks are reconciled from persisted state.
 
@@ -1550,6 +1550,14 @@ and `timestamp` fields plus the event-specific payload. Internal fields such as
 3. `task_completed` closes the run and is emitted on both success and failure.
    Consumers should render live `response` chunks as the primary output and use
    `task_completed.content` only as a fallback when no response chunks arrived.
+
+**Fanout mirrors:** a prompt queued into a busy thread observes the holder
+turn's output and republishes it on this stream under its own `task_id`. Such
+mirrored events (transcript chunks and the queuer's `task_started`/
+`task_completed`) carry `fanout: true`. Consumers that render turn output
+must drop events with `fanout: true` wholesale; the holder's own delivery is
+the single canonical copy. All built-in consumers (bots, CLI, GUI stores) do
+this.
 
 **Event Types:**
 
