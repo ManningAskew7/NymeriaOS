@@ -1070,7 +1070,15 @@ class Ticker:
                     thread_id=thread_id,
                     user_id=entry.user_id,
                     task_id=todo.id,
-                    data={"prompt": prompt, "todo_id": todo.id},
+                    # A marked first chunk means this relay became a queuer
+                    # and is mirroring the holder's turn (stream_bridge
+                    # fanout marker); stamp the lifecycle so consumers can
+                    # skip the mirror task entirely.
+                    data={
+                        "prompt": prompt,
+                        "todo_id": todo.id,
+                        **({"fanout": True} if chunk.get("fanout") else {}),
+                    },
                 )
                 started_published = True
 
@@ -1159,6 +1167,9 @@ class Ticker:
         stream_result.response_parts.extend(continuation_result.response_parts)
         stream_result.thinking_parts.extend(continuation_result.thinking_parts)
         stream_result.chunk_count += continuation_result.chunk_count
+        stream_result.fanout_observed = (
+            stream_result.fanout_observed or continuation_result.fanout_observed
+        )
 
         if not continuation_result.iteration_limit_hit:
             return False
@@ -1247,6 +1258,10 @@ class Ticker:
             user_id=entry.user_id,
             task_id=todo.id,
             data={
+                # Mirror-task marker (see stream_bridge fanout marker): the
+                # content below was fanned in from another task's holder
+                # turn, so consumers must not deliver it a second time.
+                **({"fanout": True} if stream_result.fanout_observed else {}),
                 "notify": should_notify,
                 "content": response_text,
                 "todo_id": todo.id,
@@ -1396,6 +1411,11 @@ class Ticker:
         except Exception:
             logger.debug("Console render failed for error message")
 
+        # A fanned-in holder error is still a mirror (the latch rides the
+        # raised exception because the StreamCollection dies with it);
+        # stamp so consumers drop this bookend instead of delivering a
+        # second error line.
+        error_fanout = bool(getattr(error, "fanout_observed", False))
         publish_autonomous_event(
             event_type="task_completed",
             thread_id=thread_id,
@@ -1406,17 +1426,19 @@ class Ticker:
                 "error_message": str(error)[:200],
                 "content": f"Task failed: {str(error)[:200]}",
                 "todo_id": todo.id,
+                **({"fanout": True} if error_fanout else {}),
             },
         )
 
-        create_autonomous_notification(
-            user_id=entry.user_id,
-            thread_id=thread_id,
-            task_id=todo.id,
-            summary=f"Task failed: {str(error)[:180]}",
-            settings=self.settings,
-            thread_config_manager=self.thread_config_manager,
-        )
+        if not error_fanout:
+            create_autonomous_notification(
+                user_id=entry.user_id,
+                thread_id=thread_id,
+                task_id=todo.id,
+                summary=f"Task failed: {str(error)[:180]}",
+                settings=self.settings,
+                thread_config_manager=self.thread_config_manager,
+            )
 
         retry_count = self._retry_counts.get(todo.id, 0) + 1
         self._retry_counts[todo.id] = retry_count

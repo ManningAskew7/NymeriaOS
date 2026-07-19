@@ -784,7 +784,12 @@ class TriggerManager:
                 f"[TRIGGER] Action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
                 exc_info=True,
             )
-            self._publish_trigger_error(trigger, user_id, str(e))
+            self._publish_trigger_error(
+                trigger,
+                user_id,
+                str(e),
+                fanout=bool(getattr(e, "fanout_observed", False)),
+            )
         finally:
             execution.duration_seconds = round(_time.monotonic() - start, 2)
             self.log_execution(user_id, execution)
@@ -860,7 +865,7 @@ class TriggerManager:
         try:
             task_id = f"trigger-{trigger.id}"
 
-            response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
+            response_parts, _thinking_parts, iteration_limit_hit, fanout_observed = self._stream_live(
                 agent, batch_prompt, thread_id, user_id, task_id,
                 attachments=all_attachments or None,
                 task_started_data={
@@ -884,6 +889,7 @@ class TriggerManager:
                 response=response,
                 event_count=len(events),
                 partial=iteration_limit_hit,
+                fanout=fanout_observed,
             )
 
             _elapsed = _time.monotonic() - _start
@@ -900,7 +906,12 @@ class TriggerManager:
                 f"[TRIGGER] Batched action failed for trigger '{trigger.name}' ({trigger.id}): {e}",
                 exc_info=True,
             )
-            self._publish_trigger_error(trigger, user_id, str(e))
+            self._publish_trigger_error(
+                trigger,
+                user_id,
+                str(e),
+                fanout=bool(getattr(e, "fanout_observed", False)),
+            )
         finally:
             execution.duration_seconds = round(_time.monotonic() - _start, 2)
             self.log_execution(user_id, execution)
@@ -933,7 +944,7 @@ class TriggerManager:
             f"trigger={trigger.name} ({trigger.id}){att_note}, prompt={prompt[:100]}..."
         )
 
-        response_parts, _thinking_parts, iteration_limit_hit = self._stream_live(
+        response_parts, _thinking_parts, iteration_limit_hit, fanout_observed = self._stream_live(
             agent, prompt, thread_id, user_id, task_id,
             attachments=event_attachments,
             task_started_data={
@@ -953,6 +964,7 @@ class TriggerManager:
             response=response,
             event_count=1,
             partial=iteration_limit_hit,
+            fanout=fanout_observed,
         )
 
         _elapsed = _time.monotonic() - _start
@@ -973,7 +985,7 @@ class TriggerManager:
         task_started_data: Optional[Dict[str, Any]] = None,
         source_id: Optional[str] = None,
         source_label: Optional[str] = None,
-    ) -> Tuple[List[str], List[str], bool]:
+    ) -> Tuple[List[str], List[str], bool, bool]:
         """Stream through the agent, publishing each event live.
 
         If *task_started_data* is provided, the ``task_started`` event is
@@ -981,7 +993,10 @@ class TriggerManager:
         is acquired), not before.  This prevents the frontend from entering
         streaming mode while the user's chat is still active.
 
-        Returns (response_parts, thinking_parts, iteration_limit_hit).
+        Returns (response_parts, thinking_parts, iteration_limit_hit,
+        fanout_observed). ``fanout_observed`` means the prompt was absorbed
+        into a busy holder turn and everything streamed here is that turn's
+        mirrored output (see the stream_bridge fanout marker).
         """
         from .event_bus import publish_agent_stream_chunk, publish_autonomous_event
         from .pending_prompt_queue import PENDING_QUEUE_META_EVENT_TYPES
@@ -1007,7 +1022,13 @@ class TriggerManager:
                     thread_id=thread_id,
                     user_id=user_id,
                     task_id=task_id,
-                    data=task_started_data,
+                    # Marked first chunk = this fire became a queuer
+                    # mirroring the holder's turn; stamp the lifecycle so
+                    # consumers can skip the mirror task.
+                    data={
+                        **task_started_data,
+                        **({"fanout": True} if chunk.get("fanout") else {}),
+                    },
                 )
                 started_published = True
 
@@ -1069,7 +1090,12 @@ class TriggerManager:
         if not response_parts and result.thinking_parts:
             response_parts = result.thinking_parts
 
-        return response_parts, result.thinking_parts, result.iteration_limit_hit
+        return (
+            response_parts,
+            result.thinking_parts,
+            result.iteration_limit_hit,
+            result.fanout_observed,
+        )
 
     def _publish_trigger_completion(
         self,
@@ -1079,6 +1105,7 @@ class TriggerManager:
         response: str,
         event_count: int = 1,
         partial: bool = False,
+        fanout: bool = False,
     ) -> None:
         """Publish task_completed and log to activity feed."""
         from .activity_log import ActivityType, log_activity
@@ -1093,6 +1120,11 @@ class TriggerManager:
         }
         if partial:
             completed_data["partial"] = True
+        if fanout:
+            # Mirror-task marker: the content was fanned in from another
+            # task's holder turn (stream_bridge fanout marker); consumers
+            # must not deliver it a second time.
+            completed_data["fanout"] = True
 
         publish_autonomous_event(
             event_type="task_completed",
@@ -1124,6 +1156,8 @@ class TriggerManager:
         trigger: TriggerDefinition,
         user_id: str,
         error_msg: str,
+        *,
+        fanout: bool = False,
     ) -> None:
         """Log trigger failure to activity feed and publish SSE error event."""
         from .activity_log import ActivityType, log_activity
@@ -1161,6 +1195,9 @@ class TriggerManager:
                 "trigger_name": trigger.name,
                 "status": "error",
                 "error": safe_error,
+                # A fanned-in holder error is still a mirror; consumers
+                # drop marked bookends.
+                **({"fanout": True} if fanout else {}),
             },
         )
 

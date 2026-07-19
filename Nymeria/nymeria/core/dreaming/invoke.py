@@ -546,6 +546,10 @@ def _run_dream_cycle(
                         "callable_name": title,
                         "trigger": "dream",
                         "parent_thread_id": parent_thread_id,
+                        # Marked first chunk = this dream became a queuer
+                        # mirroring a busy shadow-thread turn (stream_bridge
+                        # fanout marker); consumers skip the mirror task.
+                        **({"fanout": True} if chunk.get("fanout") else {}),
                     },
                 )
                 started_published = True
@@ -595,6 +599,8 @@ def _run_dream_cycle(
                 "content": response_text,
                 "callable_name": title,
                 "parent_thread_id": parent_thread_id,
+                # Mirror-task marker (stream_bridge fanout marker).
+                **({"fanout": True} if result.fanout_observed else {}),
             },
         )
 
@@ -645,6 +651,13 @@ def _run_dream_cycle(
                     "content": f"Dream failed: {str(e)[:200]}",
                     "callable_name": title,
                     "parent_thread_id": parent_thread_id,
+                    # A fanned-in holder error is still a mirror; the
+                    # latch rides the raised exception.
+                    **(
+                        {"fanout": True}
+                        if getattr(e, "fanout_observed", False)
+                        else {}
+                    ),
                 },
             )
         except Exception:

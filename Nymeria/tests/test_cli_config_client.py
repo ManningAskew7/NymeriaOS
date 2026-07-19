@@ -248,3 +248,18 @@ def test_in_process_client_resolves_coordinator_directly(monkeypatch) -> None:
     assert first == {"received": True, "delivered": True}
     assert resolved["ok"] is True
     assert second == {"received": True, "delivered": False}
+
+
+def test_fanout_mirror_events_rejected_before_rendering() -> None:
+    """Fanout-mirror events (stream_bridge fanout marker) replay a holder
+    turn under a queuer's task id; the CLI must drop them even for the
+    active thread, or the transcript doubles/interleaves."""
+    event = {
+        "type": "response",
+        "thread_id": "active-thread",
+        "task_id": "handoff-1",
+        "content": "mirrored",
+        "fanout": True,
+    }
+    decision = decide_autonomous_event(event, active_thread_id="active-thread")
+    assert decision.accepted is False

@@ -123,6 +123,17 @@ def decide_autonomous_event(
 ) -> AutonomousEventDecision:
     """Normalize and filter one autonomous event for the active CLI thread."""
 
+    # Fanout-mirror events (stream_bridge fanout marker) replay a holder
+    # turn under a queuer's task id; the holder's own events already render,
+    # so drop the mirror before it doubles/interleaves the transcript.
+    fanout = (
+        event.get("fanout")
+        if isinstance(event, dict)
+        else getattr(event, "fanout", None)
+    )
+    if fanout:
+        return AutonomousEventDecision(accepted=False)
+
     normalized = normalize_stream_event(event)
     event_type = getattr(normalized, "type", "")
     if event_type == "cli_config":

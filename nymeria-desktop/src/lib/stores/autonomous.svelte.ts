@@ -507,6 +507,12 @@ function createAutonomousStore() {
   function handleEvent(event: AutonomousEvent) {
     logReceivedEvent(event);
 
+    // Fanout-mirror events (backend stream_bridge fanout marker) replay a
+    // holder turn under a queuer's task id. The holder's own task drives
+    // lifecycle here, so drop mirrors before they double spinners, task
+    // registration, or dashboard bookkeeping.
+    if (event.fanout) return;
+
     const currentThreadId = threadsStore.currentThreadId;
     const isCurrentThread = event.thread_id === currentThreadId;
     const isRegisteredTask =

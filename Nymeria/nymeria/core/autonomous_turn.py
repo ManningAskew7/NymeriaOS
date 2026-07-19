@@ -58,6 +58,11 @@ class AutonomousTurnEmitter:
         self._started_data = dict(started_data)
         self._meta_event_types = frozenset(meta_event_types)
         self._started_published = False
+        # Latched when a forwarded chunk carries the stream_bridge fanout
+        # marker: this turn became a queuer mirroring another task's holder
+        # turn, so both lifecycle events are stamped ``fanout`` and
+        # consumers can skip delivering the mirror.
+        self._fanout_seen = False
 
     def publish_started(self) -> None:
         """Publish ``task_started`` once; subsequent calls are no-ops."""
@@ -65,12 +70,15 @@ class AutonomousTurnEmitter:
             return
         from .event_bus import publish_autonomous_event
 
+        data = dict(self._started_data)
+        if self._fanout_seen:
+            data["fanout"] = True
         publish_autonomous_event(
             event_type="task_started",
             thread_id=self._thread_id,
             user_id=self._user_id,
             task_id=self._task_id,
-            data=dict(self._started_data),
+            data=data,
         )
         self._started_published = True
 
@@ -84,6 +92,8 @@ class AutonomousTurnEmitter:
         """
         from .event_bus import publish_agent_stream_chunk
 
+        if chunk.get("fanout"):
+            self._fanout_seen = True
         if chunk.get("type") not in self._meta_event_types:
             self.publish_started()
         publish_agent_stream_chunk(
@@ -97,12 +107,15 @@ class AutonomousTurnEmitter:
         """Publish ``task_completed`` with the caller's terminal payload."""
         from .event_bus import publish_autonomous_event
 
+        payload = dict(data)
+        if self._fanout_seen:
+            payload["fanout"] = True
         publish_autonomous_event(
             event_type="task_completed",
             thread_id=self._thread_id,
             user_id=self._user_id,
             task_id=self._task_id,
-            data=dict(data),
+            data=payload,
         )
 
 

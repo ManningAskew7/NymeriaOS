@@ -144,3 +144,33 @@ def test_started_data_is_copied_defensively(captured):
     emitter.publish_started()
 
     assert events[0][4] == {"prompt": "hi"}
+
+
+def test_emitter_stamps_fanout_on_lifecycle_after_marked_chunk(captured):
+    """A marked chunk (stream_bridge fanout marker) means this turn became a
+    queuer mirroring another task's holder turn: both lifecycle events carry
+    ``fanout`` so consumers can skip the mirror."""
+    events, chunks = captured
+    emitter = _emitter()
+
+    emitter.handle_chunk({"type": "prompt_queued", "position": 1})
+    emitter.handle_chunk({"type": "response", "content": "mirrored", "fanout": True})
+    emitter.publish_completed({"content": "mirrored"})
+
+    started = [e for e in events if e[0] == "task_started"]
+    completed = [e for e in events if e[0] == "task_completed"]
+    assert len(started) == 1 and started[0][4].get("fanout") is True
+    assert len(completed) == 1 and completed[0][4].get("fanout") is True
+    # The chunk itself is forwarded as-is (already marked upstream).
+    assert chunks[-1][0].get("fanout") is True
+
+
+def test_emitter_lifecycle_unmarked_for_holder_turn(captured):
+    events, _chunks = captured
+    emitter = _emitter()
+
+    emitter.handle_chunk({"type": "response", "content": "own turn"})
+    emitter.publish_completed({"content": "own turn"})
+
+    for _etype, _t, _u, _task, data in events:
+        assert "fanout" not in data
