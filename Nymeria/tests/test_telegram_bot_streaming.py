@@ -862,3 +862,20 @@ def test_telegram_autonomous_drops_fanout_mirror_events():
     sent_text = "".join(msg.text for msg in fake_bot.messages)
     assert sent_text == briefing
     assert bot._autonomous_state == {}
+
+
+def test_telegram_command_registration_caps_at_telegram_limit():
+    """Telegram rejects >100 registered commands (Bot_commands_too_much,
+    fatal to post_init and crash-loops the container); the menu list must
+    cap at the platform limit."""
+    from nymeria.triggers.telegram_bot import (
+        TELEGRAM_MAX_BOT_COMMANDS,
+        _telegram_bot_commands_from_catalog,
+    )
+
+    catalog = [
+        {"name": f"cmd{i:03d}", "description": f"Command {i}", "category": "Global"}
+        for i in range(150)
+    ]
+    commands = _telegram_bot_commands_from_catalog(catalog)
+    assert len(commands) == TELEGRAM_MAX_BOT_COMMANDS

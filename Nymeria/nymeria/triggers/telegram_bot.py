@@ -238,12 +238,29 @@ def _merged_telegram_catalog(
     return sorted(entries.values(), key=lambda item: (item[0].casefold(), item[1]))
 
 
+# Telegram rejects set_my_commands with more than 100 entries
+# (Bot_commands_too_much), and the backend command catalog has grown past
+# that. Registration only powers the client's "/" autocomplete menu; the
+# command passthrough works for every command regardless, so capping is
+# cosmetic-only.
+TELEGRAM_MAX_BOT_COMMANDS = 100
+
+
 def _telegram_bot_commands_from_catalog(
     commands: Sequence[Mapping[str, Any]],
 ) -> list[BotCommand]:
+    merged = _merged_telegram_catalog(commands)
+    if len(merged) > TELEGRAM_MAX_BOT_COMMANDS:
+        logger.warning(
+            "Command catalog has %d entries; registering only the first %d "
+            "with Telegram (menu autocomplete only, all commands still work)",
+            len(merged),
+            TELEGRAM_MAX_BOT_COMMANDS,
+        )
+        merged = merged[:TELEGRAM_MAX_BOT_COMMANDS]
     return [
         BotCommand(name, description[:256] or "Nymeria command")
-        for _category, name, description in _merged_telegram_catalog(commands)
+        for _category, name, description in merged
     ]
 
 
@@ -845,12 +862,18 @@ class NymeriaTelegramBot:
     async def _post_init(self, application) -> None:
         """Register command menu with Telegram and start SSE listener."""
         commands = _telegram_bot_commands_from_catalog(_service_command_catalog())
-        await application.bot.set_my_commands(commands)
-        logger.info(
-            "Registered %d bot commands with Telegram (bot=%s)",
-            len(commands),
-            self.user_telegram_bot_id if not self.is_shared_bot else "shared",
-        )
+        try:
+            await application.bot.set_my_commands(commands)
+            logger.info(
+                "Registered %d bot commands with Telegram (bot=%s)",
+                len(commands),
+                self.user_telegram_bot_id if not self.is_shared_bot else "shared",
+            )
+        except Exception as e:  # noqa: BLE001 - menu sugar must never kill startup
+            # An unhandled post_init exception is fatal to run_polling and
+            # crash-loops the container (seen 2026-07-19 as
+            # Bot_commands_too_much); the menu is autocomplete-only.
+            logger.warning("Telegram command-menu registration failed: %s", e)
 
         # Populate this bot's binding cache before any listener starts.
         await self._refresh_bindings()
