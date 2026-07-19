@@ -809,3 +809,56 @@ def test_telegram_stop_button_rejects_expired_token():
 
     assert api.stop_calls == []
     assert query.answers == [("That stop button expired.", True)]
+
+
+def test_telegram_autonomous_drops_fanout_mirror_events():
+    """A queuer's mirror of the holder turn (stream_bridge fanout marker)
+    must not render: without the gate, the marked stream interleaves into
+    the same per-thread buffer and the marked task_completed re-delivers
+    the content via the fallback (the 2026-07-19 interleaved-briefing bug).
+    """
+    fake_bot = _FakeBot()
+    bot = NymeriaTelegramBot(
+        api=_FakeEventAPI([]),
+        bot_token="test-token",
+    )
+    bot._application = SimpleNamespace(bot=fake_bot)
+
+    briefing = "Morning briefing: all quiet."
+    asyncio.run(_deliver_autonomous(bot, [
+        {"type": "task_started", "thread_id": "telegram_123", "task_id": "todo-1"},
+        # The queuer task's mirror of the same turn, arriving interleaved.
+        {
+            "type": "response",
+            "thread_id": "telegram_123",
+            "task_id": "handoff-1",
+            "content": briefing,
+            "fanout": True,
+        },
+        # The holder's own stream.
+        {
+            "type": "response",
+            "thread_id": "telegram_123",
+            "task_id": "todo-1",
+            "content": briefing,
+        },
+        # Mirror completion first (as observed live): must neither flush nor
+        # pop the per-thread state.
+        {
+            "type": "task_completed",
+            "thread_id": "telegram_123",
+            "task_id": "handoff-1",
+            "content": briefing,
+            "fanout": True,
+        },
+        {
+            "type": "task_completed",
+            "thread_id": "telegram_123",
+            "task_id": "todo-1",
+            "content": briefing,
+        },
+    ]))
+
+    sent_text = "".join(msg.text for msg in fake_bot.messages)
+    assert sent_text == briefing
+    assert bot._autonomous_state == {}

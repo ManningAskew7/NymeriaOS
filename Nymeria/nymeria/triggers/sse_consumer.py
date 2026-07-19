@@ -37,6 +37,8 @@ import httpx
 
 from ..core.agent_compaction import COMPACTING_MESSAGE
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # SSE wire-format line parsing
 # ---------------------------------------------------------------------------
@@ -546,3 +548,242 @@ async def consume_autonomous_firehose(
             reconnect_delay = min(reconnect_delay * 2, max_delay)
 
     logger.info(f"{log_label} SSE listener stopped")
+
+
+# ── Autonomous turn attach (backlog #91, attach-preferred delivery) ─────────
+
+# Meta events the attach stream carries that the bots' per-thread handlers
+# must not render: attach/turn bookkeeping plus queue-state transitions
+# (already invisible on the firehose path via task_started gating).
+ATTACH_SKIP_EVENT_TYPES = frozenset({
+    "turn_attach",
+    "turn_started",
+    "queued",
+    "prompt_queued",
+    "prompt_injected",
+    "prompt_absorbed",
+    "turn_halted",
+    "turn_replay_gap",
+    "fanout_dropped",
+})
+
+# Liveness bound on the attach stream: if the buffer yields nothing for this
+# long the holder is presumed dead without a terminal event (hard process
+# kill) and the attach degrades instead of suppressing the thread forever.
+# Must exceed the longest legitimately quiet span (tool calls are capped at
+# 600s by the dispatch clamp).
+ATTACH_IDLE_TIMEOUT_SECONDS = 900.0
+
+
+class AutonomousTurnAttach:
+    """Attach-preferred autonomous delivery for firehose bot consumers.
+
+    One instance per (thread, holder turn), created by a bot when an
+    unmarked ``task_started`` arrives on the firehose. :meth:`run` consumes
+    ``GET /threads/{id}/turn/stream`` (byte-identical replay from seq 0 plus
+    live tail) and drives the bot's existing per-thread ``SSEEventHandler``
+    through :func:`dispatch_event`, so rendering is identical to the
+    interactive chat stream instead of a reconstruction from converted bus
+    events.
+
+    Protocol with the owning bot:
+
+    - While ``state`` is ``pending``/``live``/``delivered``, the bot
+      suppresses firehose transcript events for the thread and routes
+      ``task_completed`` to :meth:`note_task_completed` (which returns True
+      when the attach owns delivery). ``fallback`` hands everything back to
+      the legacy firehose path.
+    - A turn that is not attachable (404 ``turn_not_found`` / 410
+      ``turn_replay_gap`` before anything rendered) flips to ``fallback``;
+      a ``task_completed`` stashed while pending is re-delivered through the
+      bot-provided ``deliver_fallback_completed`` so the turn is never lost
+      (this also keeps non-buffered turns, e.g. headless workflow TODOs,
+      delivering exactly as before).
+    - Mid-stream failure after rendering retries once from the last seen
+      ``seq``; a second failure flushes what already rendered rather than
+      risking a double delivery via the completion fallback.
+
+    The instance owns finalization (flush + tool-call footer + completion
+    log); the per-thread state entry is popped once BOTH the attach has
+    delivered and the firehose ``task_completed`` has been observed,
+    whichever order they arrive in.
+    """
+
+    def __init__(
+        self,
+        *,
+        api: Any,
+        thread_id: str,
+        handler: Any,
+        pop_state: Callable[[], Any],
+        log_delivered: Callable[[], None],
+        deliver_fallback_completed: Callable[[Dict[str, Any]], Awaitable[None]],
+        act_as: Optional[str] = None,
+        finalize: Optional[Callable[[], Awaitable[None]]] = None,
+        task_id: Optional[str] = None,
+    ) -> None:
+        self._api = api
+        self._thread_id = thread_id
+        self._handler = handler
+        self._pop_state = pop_state
+        self._log_delivered = log_delivered
+        self._deliver_fallback = deliver_fallback_completed
+        self._act_as = act_as
+        self._finalize_override = finalize
+        self._task_id = task_id
+        self._turn_id: Optional[str] = None
+        self.state = "pending"
+        self._completed_seen = False
+        self._completed_event: Optional[Dict[str, Any]] = None
+
+    @property
+    def suppresses_firehose(self) -> bool:
+        """True while the attach (not the legacy path) owns this thread."""
+        return self.state != "fallback"
+
+    def note_task_completed(self, event: Dict[str, Any]) -> bool:
+        """Record a firehose ``task_completed``; True when attach owns it."""
+        if self.state == "fallback":
+            return False
+        event_task = event.get("task_id")
+        if self._task_id and event_task and event_task != self._task_id:
+            # A superseded turn's completion: the two turns' lifecycle
+            # events crossed a turn boundary and that turn's own (orphaned)
+            # attach already owned its rendering. Delivering its aggregate
+            # content here would double it; consume and drop.
+            return True
+        self._completed_seen = True
+        self._completed_event = event
+        if self.state == "delivered":
+            self._pop_state()
+        return True
+
+    async def run(self) -> None:
+        """Consume the attach stream until the turn ends; never raises."""
+        last_seq = 0
+        rendered = False
+        retried = False
+        while True:
+            stream = None
+            try:
+                stream = self._api.reattach_turn_stream(
+                    self._thread_id,
+                    self._act_as,
+                    turn_id=self._turn_id,
+                    from_seq=last_seq,
+                )
+                while True:
+                    try:
+                        # Liveness bound: a holder that dies without a
+                        # terminal event must not wedge this attach (and
+                        # with it the thread's firehose suppression).
+                        event = await asyncio.wait_for(
+                            stream.__anext__(),
+                            timeout=ATTACH_IDLE_TIMEOUT_SECONDS,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    etype = event.get("type", "")
+                    if etype == "turn_attach":
+                        self.state = "live"
+                        attached_turn = event.get("turn_id")
+                        if attached_turn:
+                            # Pin retries to this turn: a retry landing on
+                            # a NEWER turn's buffer must 404 instead of
+                            # silently tailing the wrong turn from a stale
+                            # seq cursor.
+                            self._turn_id = attached_turn
+                        continue
+                    seq = event.get("seq")
+                    if isinstance(seq, int):
+                        last_seq = seq
+                    if etype in ATTACH_SKIP_EVENT_TYPES:
+                        continue
+                    if etype == "done":
+                        break
+                    rendered = True
+                    self._handler._tool_count = await dispatch_event(
+                        event, self._handler, self._handler._tool_count
+                    )
+                await self._finish_delivered()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - delivery must degrade, not die
+                status = getattr(
+                    getattr(exc, "response", None), "status_code", None
+                )
+                if status in (404, 410) and not rendered:
+                    await self._enter_fallback(exc)
+                    return
+                if not retried:
+                    retried = True
+                    await asyncio.sleep(0.5)
+                    continue
+                if rendered:
+                    logger.warning(
+                        "[TURN ATTACH] thread=%s failed mid-stream after "
+                        "rendering (%s); flushing partial delivery",
+                        self._thread_id,
+                        exc,
+                    )
+                    await self._finish_delivered()
+                    return
+                await self._enter_fallback(exc)
+                return
+            finally:
+                if stream is not None:
+                    try:
+                        await stream.aclose()
+                    except Exception:  # noqa: BLE001 - best-effort close
+                        pass
+
+    async def _finish_delivered(self) -> None:
+        handler = self._handler
+        try:
+            if self._finalize_override is not None:
+                # Bot-specific footer/flush shape (e.g. Discord's subtext
+                # footer and message-edit case).
+                await self._finalize_override()
+            elif getattr(handler, "_reply_suppressed", False):
+                handler._text_buffer = ""
+            else:
+                tool_count = getattr(handler, "_tool_count", 0)
+                if tool_count:
+                    footer = f"\n\n_Tool calls: {tool_count}_"
+                    handler._text_buffer = (
+                        handler._text_buffer + footer
+                        if handler._text_buffer
+                        else footer
+                    )
+                await handler.flush_text(final=True)
+            self._log_delivered()
+        except Exception:  # noqa: BLE001 - never leave the state machine wedged
+            logger.warning(
+                "[TURN ATTACH] thread=%s finalize failed", self._thread_id,
+                exc_info=True,
+            )
+        self.state = "delivered"
+        if self._completed_seen:
+            self._pop_state()
+
+    async def _enter_fallback(self, exc: Exception) -> None:
+        logger.info(
+            "[TURN ATTACH] thread=%s not attachable (%s); using firehose "
+            "fallback",
+            self._thread_id,
+            exc,
+        )
+        self.state = "fallback"
+        completed = self._completed_event
+        self._completed_event = None
+        if completed is not None:
+            try:
+                await self._deliver_fallback(completed)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[TURN ATTACH] thread=%s fallback completion delivery "
+                    "failed",
+                    self._thread_id,
+                    exc_info=True,
+                )

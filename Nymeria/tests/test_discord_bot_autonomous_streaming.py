@@ -172,3 +172,23 @@ def test_discord_autonomous_error_completion_clears_state():
         "Autonomous task error: boom",
     ]
     assert bot._autonomous_state == {}
+
+
+def test_discord_autonomous_drops_fanout_mirror_events():
+    """A queuer's mirror of the holder turn (stream_bridge fanout marker)
+    must not render or re-deliver via the completion fallback; only the
+    holder's own task delivers."""
+    channel = _FakeChannel()
+    bot = _bot_for(channel)
+
+    briefing = "Morning briefing: all quiet."
+    asyncio.run(_deliver(bot, [
+        _event("task_started", task_id="todo-1", prompt="Do work"),
+        _event("response", task_id="handoff-1", content=briefing, fanout=True),
+        _event("response", task_id="todo-1", content=briefing),
+        _event("task_completed", task_id="handoff-1", content=briefing, fanout=True),
+        _event("task_completed", task_id="todo-1", content=briefing),
+    ]))
+
+    assert [msg.content for msg in channel.messages] == [briefing]
+    assert bot._autonomous_state == {}

@@ -29,6 +29,7 @@ from .api_client import NymeriaAPIClient
 from .bot_helpers import UserResolver
 from .message_splitter import split_discord_message as split_message
 from .sse_consumer import (
+    AutonomousTurnAttach,
     consume_autonomous_firehose,
     consume_sse_stream,
     dispatch_event,
@@ -1463,6 +1464,14 @@ class NymeriaDiscordBot(_BotBase):
         if not thread_id.startswith("discord_"):
             return
 
+        # Fanout-mirror events (stream_bridge fanout marker) replay a holder
+        # turn this bot already delivers via the holder's own task (a prompt
+        # queued into a busy thread observes and republishes the holder's
+        # output under its own task id). Rendering both interleaves two
+        # copies of the same turn, so drop the mirror wholesale.
+        if event.get("fanout"):
+            return
+
         parsed = parse_thread_id(thread_id)
         channel_id_str = parsed.get("channel_id")
         if not channel_id_str:
@@ -1487,7 +1496,9 @@ class NymeriaDiscordBot(_BotBase):
                 return
 
             # Get or create handler for this thread
-            state = self._autonomous_state.get(thread_id)
+            state: Optional[Dict[str, Any]] = self._autonomous_state.get(
+                thread_id
+            )
             if state is None:
                 handler = self._AutonomousSSEHandler(self, channel, channel_id)
                 state = {"handler": handler, "prompt": event.get("prompt", "")}
@@ -1512,44 +1523,85 @@ class NymeriaDiscordBot(_BotBase):
                     await handler._send_text(str(message))
                 return
 
+            attach = state.get("attach")
+
             if event_type == "task_started":
+                # Attach-preferred delivery (#91): render the holder turn
+                # byte-identically from GET /threads/{id}/turn/stream instead
+                # of reconstructing it from converted bus events. Guarded on
+                # client capability so older fakes and adapters keep the
+                # legacy firehose path.
+                new_task_id = event.get("task_id")
+                if (
+                    attach is not None
+                    and new_task_id
+                    and new_task_id != state.get("task_id")
+                ):
+                    # A NEW holder turn started while the previous turn's
+                    # entry is still settling. Orphan the old entry (its
+                    # attach keeps its own handler and an identity-guarded
+                    # pop); cancel a still-pending old attach so it cannot
+                    # open onto THIS turn's buffer and double-render it.
+                    old_task = state.get("attach_task")
+                    if (
+                        attach.state == "pending"
+                        and old_task is not None
+                        and not old_task.done()
+                    ):
+                        old_task.cancel()
+                    self._autonomous_state.pop(thread_id, None)
+                    handler = self._AutonomousSSEHandler(
+                        self, channel, channel_id
+                    )
+                    state = {"handler": handler}
+                    self._autonomous_state[thread_id] = state
+                    attach = None
+                if new_task_id:
+                    state["task_id"] = new_task_id
+                api = getattr(self, "api", None)
+                if attach is None and callable(
+                    getattr(api, "reattach_turn_stream", None)
+                ):
+                    attach = AutonomousTurnAttach(
+                        api=api,
+                        thread_id=thread_id,
+                        handler=handler,
+                        task_id=new_task_id,
+                        pop_state=lambda bound=state: (
+                            self._autonomous_state.pop(thread_id, None)
+                            if self._autonomous_state.get(thread_id) is bound
+                            else None
+                        ),
+                        log_delivered=lambda: logger.info(
+                            f"Streamed autonomous result to Discord channel "
+                            f"{channel_id} (turn attach)"
+                        ),
+                        deliver_fallback_completed=(
+                            lambda evt, h=handler: (
+                                self._deliver_autonomous_completed(
+                                    channel_id, thread_id, h, evt
+                                )
+                            )
+                        ),
+                        finalize=lambda h=handler: (
+                            self._finalize_autonomous_delivery(h)
+                        ),
+                    )
+                    state["attach"] = attach
+                    state["attach_task"] = asyncio.create_task(attach.run())
                 return
 
             if event_type == "task_completed":
-                try:
-                    if event.get("error"):
-                        await handler.flush_text(final=True)
-                        err = (
-                            event.get("content")
-                            or event.get("error_message")
-                            or "Unknown error"
-                        )
-                        await handler._send_text(f"Autonomous task error: {err}")
-                    elif handler._reply_suppressed:
-                        # The turn's react call hid the reply; drop the
-                        # aggregate content and footer.
-                        await handler.flush_text(final=True)
-                    else:
-                        if not handler._response_seen and not handler._text_buffer:
-                            fallback = event.get("content") or ""
-                            if fallback:
-                                handler._text_buffer = fallback
-                        tc = handler._tool_count
-                        if tc and handler._text_buffer:
-                            handler._text_buffer += f"\n\n-# Tool calls: {tc}"
-                        elif tc and handler._current_msg:
-                            try:
-                                old_content = handler._current_msg.content or ""
-                                await handler._current_msg.edit(
-                                    content=old_content
-                                    + f"\n\n-# Tool calls: {tc}"
-                                )
-                            except Exception:
-                                logger.debug("Failed to edit autonomous message with tool-call footer")
-                        await handler.flush_text(final=True)
-                    logger.info(f"Streamed autonomous result to Discord channel {channel_id}")
-                finally:
-                    self._autonomous_state.pop(thread_id, None)
+                if attach is not None and attach.note_task_completed(event):
+                    return
+                await self._deliver_autonomous_completed(
+                    channel_id, thread_id, handler, event
+                )
+                return
+
+            if attach is not None and attach.suppresses_firehose:
+                # The attach stream renders this turn; bus transcript events
+                # would double it.
                 return
 
             # Standard SSE event types — delegate to shared dispatcher
@@ -1559,4 +1611,62 @@ class NymeriaDiscordBot(_BotBase):
 
         except Exception as e:
             logger.error(f"Error posting SSE event to Discord: {e}", exc_info=True)
+            stale = self._autonomous_state.pop(thread_id, None)
+            # An attach left running after its state is popped would race a
+            # recreated legacy-path state for the same turn (partial double
+            # delivery); one renderer only.
+            stale_task = stale.get("attach_task") if stale else None
+            if stale_task is not None and not stale_task.done():
+                stale_task.cancel()
+
+    async def _finalize_autonomous_delivery(self, handler: Any) -> None:
+        """Discord-shaped flush + tool-call footer for turn-attach delivery."""
+        if handler._reply_suppressed:
+            await handler.flush_text(final=True)
+            return
+        tc = handler._tool_count
+        if tc and handler._text_buffer:
+            handler._text_buffer += f"\n\n-# Tool calls: {tc}"
+        elif tc and handler._current_msg:
+            try:
+                old_content = handler._current_msg.content or ""
+                await handler._current_msg.edit(
+                    content=old_content + f"\n\n-# Tool calls: {tc}"
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to edit autonomous message with tool-call footer"
+                )
+        await handler.flush_text(final=True)
+
+    async def _deliver_autonomous_completed(
+        self,
+        channel_id: int,
+        thread_id: str,
+        handler: Any,
+        event: Dict[str, Any],
+    ) -> None:
+        """Legacy firehose completion delivery; also the turn-attach fallback
+        when a turn is not attachable."""
+        try:
+            if event.get("error"):
+                await handler.flush_text(final=True)
+                err = (
+                    event.get("content")
+                    or event.get("error_message")
+                    or "Unknown error"
+                )
+                await handler._send_text(f"Autonomous task error: {err}")
+            elif handler._reply_suppressed:
+                # The turn's react call hid the reply; drop the
+                # aggregate content and footer.
+                await handler.flush_text(final=True)
+            else:
+                if not handler._response_seen and not handler._text_buffer:
+                    fallback = event.get("content") or ""
+                    if fallback:
+                        handler._text_buffer = fallback
+                await self._finalize_autonomous_delivery(handler)
+            logger.info(f"Streamed autonomous result to Discord channel {channel_id}")
+        finally:
             self._autonomous_state.pop(thread_id, None)
