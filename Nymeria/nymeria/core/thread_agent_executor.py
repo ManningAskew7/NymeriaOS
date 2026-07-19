@@ -138,9 +138,14 @@ def _run_callable_stream(
                     thread_id=thread_id,
                     user_id=caller_user_id,
                     task_id=task_id,
+                    # A marked first chunk means the target thread was busy
+                    # and this call became a queuer mirroring the holder's
+                    # turn (stream_bridge fanout marker); stamp the
+                    # lifecycle so consumers can skip the mirror task.
                     data={
                         "prompt": task,
                         "callable_name": callable_name,
+                        **({"fanout": True} if chunk.get("fanout") else {}),
                         **event_metadata,
                     },
                 )
@@ -284,6 +289,11 @@ def _run_callable_stream(
         }
         if iteration_limit_hit:
             completed_data["partial"] = True
+        if result.fanout_observed:
+            # The content above was fanned in from the holder turn this
+            # call's prompt was absorbed into; consumers must not deliver
+            # it a second time (the holder's own task delivers it).
+            completed_data["fanout"] = True
 
         publish_autonomous_event(
             event_type="task_completed",
@@ -314,6 +324,13 @@ def _run_callable_stream(
                 "content": f"Task failed: {str(e)[:200]}",
                 "callable_name": callable_name,
                 **event_metadata,
+                # A fanned-in holder error is still a mirror; the latch
+                # rides the raised exception (stream_bridge stamps it).
+                **(
+                    {"fanout": True}
+                    if getattr(e, "fanout_observed", False)
+                    else {}
+                ),
             },
         )
 

@@ -649,3 +649,92 @@ def test_stream_and_collect_done_carries_context_stats_and_model():
     assert done["type"] == "done"
     assert done["context_stats"] == {"total_tokens": 42, "thread": "t-done"}
     assert done["model"] == "thread-model"
+
+
+class _QueuerAgent:
+    """Astream shape of a consumer whose prompt queued behind a holder turn:
+    queue-meta events, then the holder's output fanned in via the mailbox,
+    ending at the absorption sentinel."""
+
+    async def astream(self, **kwargs):
+        yield {"type": "queued", "content": "Waiting for current turn to halt..."}
+        yield {"type": "prompt_queued", "position": 1, "source": "callable"}
+        yield {"type": "prompt_injected", "prompts": ["handoff text"]}
+        yield {"type": "thinking", "content": "holder thinking"}
+        yield {"type": "response", "content": "holder response"}
+        yield {"type": "prompt_absorbed", "thread_id": "t-fan"}
+
+
+def test_stream_and_collect_marks_fanout_chunks_after_prompt_queued():
+    """Everything after prompt_queued is the holder's mirrored output: the
+    on_chunk copies carry ``fanout``, the originals stay unmutated, the
+    collection still aggregates content, and ``fanout_observed`` latches."""
+
+    seen: list[dict] = []
+    collection = stream_and_collect(
+        _QueuerAgent(),
+        astream_kwargs={
+            "message": "handoff",
+            "thread_id": "t-fan",
+            "user_id": "owner",
+            "_is_self_invoke": True,
+        },
+        on_chunk=lambda chunk, _c: seen.append(chunk),
+    )
+
+    marked = {c["type"]: bool(c.get("fanout")) for c in seen}
+    assert marked == {
+        "queued": False,
+        "prompt_queued": False,
+        "prompt_injected": True,
+        "thinking": True,
+        "response": True,
+        "prompt_absorbed": True,
+    }
+    assert collection.fanout_observed is True
+    # The queuer's task_completed content is the point of the fanout: the
+    # collection keeps aggregating the mirrored chunks.
+    assert collection.response_text() == "holder response"
+
+
+def test_stream_and_collect_holder_stream_is_never_marked():
+    seen: list[dict] = []
+    collection = stream_and_collect(
+        _FakeAgent(),
+        astream_kwargs={
+            "message": "wake",
+            "thread_id": "t-holder-unmarked",
+            "user_id": "owner",
+            "_is_self_invoke": True,
+        },
+        on_chunk=lambda chunk, _c: seen.append(chunk),
+    )
+
+    assert collection.fanout_observed is False
+    assert all("fanout" not in chunk for chunk in seen)
+
+
+class _QueuerErrorAgent:
+    """Queuer stream whose fanned-in holder turn ends in an error chunk."""
+
+    async def astream(self, **kwargs):
+        yield {"type": "queued", "content": "Waiting..."}
+        yield {"type": "prompt_queued", "position": 1, "source": "callable"}
+        yield {"type": "error", "content": "holder blew up", "code": "boom"}
+
+
+def test_stream_and_collect_error_carries_fanout_latch():
+    """The StreamCollection dies with the raise, so the fanout latch must
+    ride the exception for publishers' error tails to stamp their
+    task_completed bookends."""
+    with pytest.raises(RuntimeError) as excinfo:
+        stream_and_collect(
+            _QueuerErrorAgent(),
+            astream_kwargs={
+                "message": "handoff",
+                "thread_id": "t-fan-err",
+                "user_id": "owner",
+                "_is_self_invoke": True,
+            },
+        )
+    assert getattr(excinfo.value, "fanout_observed", None) is True

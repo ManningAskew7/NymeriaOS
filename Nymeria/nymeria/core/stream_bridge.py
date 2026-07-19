@@ -25,6 +25,11 @@ class StreamCollection:
     tool_call_count: int = 0
     iteration_limit_hit: bool = False
     iteration_limit_event: Optional[Dict[str, Any]] = None
+    # True once the consumed stream yielded ``prompt_queued``: this consumer
+    # became a QUEUER, and everything after is the holder turn's output
+    # fanned in via the pending-prompt mailbox, not a turn this consumer
+    # owns. Finalizers use it to stamp ``fanout`` on their task_completed.
+    fanout_observed: bool = False
 
     def response_text(self, *, fallback_to_thinking: bool = True) -> str:
         """Return response text, optionally falling back to thinking chunks."""
@@ -283,6 +288,22 @@ def stream_and_collect(
             chunk_type = chunk.get("type")
             collection.chunk_count += 1
 
+            if chunk_type == "prompt_queued":
+                # This consumer's prompt was enqueued behind a running
+                # holder turn. Everything the stream yields from here on is
+                # the HOLDER's output fanned in via the pending-prompt
+                # mailbox (``pending_prompt_queue.py``), so chunks handed to
+                # ``on_chunk`` are marked ``fanout`` below: bus publishers
+                # forward the marker, letting consumers (bots, CLI, GUIs)
+                # distinguish this mirror from the holder's own stream and
+                # skip it, instead of rendering the same turn twice.
+                # ``prompt_queued`` itself (and ``queued`` before it) stay
+                # unmarked: they describe THIS consumer, not the holder.
+                # The collection keeps aggregating marked chunks, because
+                # feeding the queuer's task_completed content is the reason
+                # the fanout exists.
+                collection.fanout_observed = True
+
             if chunk_type == "tool_call":
                 collection.tool_call_count += 1
             elif chunk_type == "thinking":
@@ -304,10 +325,17 @@ def stream_and_collect(
                     collection.iteration_limit_event = dict(chunk)
 
             if tee is not None:
+                # Original, unmarked chunk: a queuer never becomes holder,
+                # so its tee has no buffer and record() is a no-op anyway.
                 tee.record(chunk)
 
             if on_chunk is not None:
-                on_chunk(chunk, collection)
+                if collection.fanout_observed and chunk_type != "prompt_queued":
+                    # Marked copy; never mutate the shared chunk dict (the
+                    # tee, the collection, and the caller all read it).
+                    on_chunk({**chunk, "fanout": True}, collection)
+                else:
+                    on_chunk(chunk, collection)
 
             if chunk_type == "error":
                 if error_message_factory is not None:
@@ -318,7 +346,14 @@ def stream_and_collect(
                     message = error_content or f"Agent stream error (code={error_code})"
                 if tee is not None:
                     tee.finish_error()
-                raise RuntimeError(message)
+                error = RuntimeError(message)
+                # The collection dies with this raise; carry the fanout
+                # latch on the exception so publishers' error tails can
+                # stamp their task_completed (a fanned-in holder error is
+                # still a mirror; an unmarked error bookend would deliver
+                # a second error line).
+                error.fanout_observed = collection.fanout_observed  # type: ignore[attr-defined]
+                raise error
 
         if tee is not None:
             tee.finish_done()
@@ -334,6 +369,11 @@ def stream_and_collect(
         # buffer as STATE_ERROR so attached watchers see the failure.
         if tee is not None:
             tee.finish_error_with_event(str(exc))
+        if not hasattr(exc, "fanout_observed"):
+            try:
+                exc.fanout_observed = collection.fanout_observed  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 - slotted exception; best-effort
+                pass
         raise
     finally:
         # Cancel/GeneratorExit must not leave a live buffer behind;

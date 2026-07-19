@@ -1413,6 +1413,14 @@ def create_chat_router(
             autonomous_final_content_parts: list[str] = []
             autonomous_completed = False
             autonomous_started = False
+            # Latched on a prompt_queued chunk: this call queued behind a
+            # busy holder and is observing the holder's output via the
+            # fanout mailbox. Everything mirrored to the autonomous bus
+            # from then on is a second copy of the holder's turn and must
+            # carry the fanout marker so consumers drop it (the direct SSE
+            # yield to the caller stays unmarked; that is the caller's own
+            # receipt).
+            autonomous_fanout = False
 
             # Turn stream buffer: created iff THIS request becomes the
             # lock-holder turn (the astream callback fires after lock
@@ -1595,6 +1603,9 @@ def create_chat_router(
                     # prompt_injected / prompt_absorbed / turn_halted /
                     # fanout_dropped) signal queue transitions, not the
                     # start of work.
+                    if chunk.get("type") == "prompt_queued":
+                        autonomous_fanout = True
+
                     if (
                         autonomous_task_id
                         and not autonomous_started
@@ -1609,6 +1620,7 @@ def create_chat_router(
                                 "prompt": message,
                                 "source": request.trigger_override or "autonomous",
                                 **_trigger_fields(),
+                                **({"fanout": True} if autonomous_fanout else {}),
                             },
                         )
                         autonomous_started = True
@@ -1621,7 +1633,9 @@ def create_chat_router(
                     if autonomous_task_id:
                         ctype = chunk.get("type")
                         publish_agent_stream_chunk_fn(
-                            chunk,
+                            {**chunk, "fanout": True}
+                            if autonomous_fanout and ctype != "prompt_queued"
+                            else chunk,
                             thread_id=thread_id,
                             user_id=user_id,
                             task_id=autonomous_task_id,
@@ -1740,7 +1754,10 @@ def create_chat_router(
                 yield f"data: {error_data}\n\n"
                 if autonomous_task_id and not autonomous_completed:
                     error_text = str(e)
-                    _maybe_create_autonomous_notification(error_text, autonomous_task_id)
+                    if not autonomous_fanout:
+                        _maybe_create_autonomous_notification(
+                            error_text, autonomous_task_id
+                        )
                     publish_autonomous_event_fn(
                         event_type="task_completed",
                         thread_id=thread_id,
@@ -1754,6 +1771,7 @@ def create_chat_router(
                             ),
                             "source": request.trigger_override or "autonomous",
                             **_trigger_fields(),
+                            **({"fanout": True} if autonomous_fanout else {}),
                         },
                     )
                     autonomous_completed = True
@@ -1774,7 +1792,10 @@ def create_chat_router(
                     turn_buffer.finish(STATE_ABORTED)
                 if autonomous_task_id and not autonomous_completed:
                     final_content = "".join(autonomous_final_content_parts)
-                    _maybe_create_autonomous_notification(final_content, autonomous_task_id)
+                    if not autonomous_fanout:
+                        _maybe_create_autonomous_notification(
+                            final_content, autonomous_task_id
+                        )
                     publish_autonomous_event_fn(
                         event_type="task_completed",
                         thread_id=thread_id,
@@ -1787,6 +1808,7 @@ def create_chat_router(
                             ),
                             "source": request.trigger_override or "autonomous",
                             **_trigger_fields(),
+                            **({"fanout": True} if autonomous_fanout else {}),
                         },
                     )
 

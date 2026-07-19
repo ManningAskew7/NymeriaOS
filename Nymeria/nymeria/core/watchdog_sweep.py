@@ -287,11 +287,17 @@ class WatchdogSweep:
         started = False
         had_response = False
         saw_error_chunk = False
+        fanout_seen = False
         response_parts: List[str] = []
 
         def on_chunk(chunk: Dict[str, Any], _collection: Any) -> None:
-            nonlocal started, had_response, saw_error_chunk
+            nonlocal started, had_response, saw_error_chunk, fanout_seen
             ctype = chunk.get("type")
+            if chunk.get("fanout"):
+                # The nudge queued behind a busy holder and is observing the
+                # holder's output via the fanout mailbox; every published
+                # event must carry the mirror marker so consumers drop it.
+                fanout_seen = True
             # Defer task_started until the turn owns the thread lock and a
             # real content event arrives; queue-meta events signal queue
             # transitions, not the start of model work.
@@ -301,7 +307,11 @@ class WatchdogSweep:
                     thread_id=thread_id,
                     user_id=user_id,
                     task_id=task_id,
-                    data={"prompt": message, "source": "watchdog"},
+                    data={
+                        "prompt": message,
+                        "source": "watchdog",
+                        **({"fanout": True} if fanout_seen else {}),
+                    },
                 )
                 started = True
             if ctype == "response":
@@ -351,7 +361,13 @@ class WatchdogSweep:
                 )
                 self._record_nudge_failures(user_id, stale_todos)
                 self._publish_completion(
-                    user_id, thread_id, task_id, str(e), started=started, error=True
+                    user_id,
+                    thread_id,
+                    task_id,
+                    str(e),
+                    started=started,
+                    error=True,
+                    fanout=fanout_seen,
                 )
                 return
             logger.warning(
@@ -397,6 +413,7 @@ class WatchdogSweep:
             response_text,
             started=started,
             error=completion_error,
+            fanout=fanout_seen,
         )
 
         logger.info(
@@ -414,6 +431,7 @@ class WatchdogSweep:
         *,
         started: bool,
         error: bool,
+        fanout: bool = False,
     ) -> None:
         """Mirror the API's task_completed bookend + autonomous notification."""
         if not started:
@@ -428,6 +446,11 @@ class WatchdogSweep:
             }
             if error:
                 data["error"] = True
+            if fanout:
+                # Mirror-task marker (stream_bridge fanout marker): the
+                # content is the holder turn's, delivered by the holder's
+                # own task; consumers drop this copy.
+                data["fanout"] = True
             publish_autonomous_event(
                 event_type="task_completed",
                 thread_id=thread_id,
@@ -435,6 +458,10 @@ class WatchdogSweep:
                 task_id=task_id,
                 data=data,
             )
+            if fanout:
+                # The holder turn's own completion already notifies; a
+                # second notification for the mirrored copy would duplicate.
+                return
             create_autonomous_notification(
                 user_id=user_id,
                 thread_id=thread_id,
