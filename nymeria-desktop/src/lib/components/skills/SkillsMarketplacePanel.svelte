@@ -1,5 +1,7 @@
 <script lang="ts">
   import { trapFocus } from '$lib/actions/focus';
+  import { portal } from '$lib/actions/portal';
+  import { isTopOverlay, pushOverlay, removeOverlay } from '$lib/utils/overlayStack';
   import { Button, Icon } from '$lib/components/common';
   import InlineLoader from '$lib/components/common/InlineLoader.svelte';
   import { skillsStore } from '$lib/stores/skills.svelte';
@@ -48,8 +50,22 @@
     }
   }
 
+  // Mounted-when-open: the parent conditionally renders this panel, so the
+  // overlay layer registers on mount. Escape only acts when this is the
+  // topmost open overlay (see $lib/utils/overlayStack).
+  let layer: symbol | null = null;
+
+  $effect(() => {
+    const id = pushOverlay('skills-marketplace');
+    layer = id;
+    return () => {
+      removeOverlay(id);
+      layer = null;
+    };
+  });
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') onClose();
+    if (e.key === 'Escape' && layer && isTopOverlay(layer)) onClose();
   }
 </script>
 
@@ -57,6 +73,7 @@
 
 <div
   class="marketplace-backdrop"
+  use:portal
 >
   <button
     class="marketplace-backdrop-button"

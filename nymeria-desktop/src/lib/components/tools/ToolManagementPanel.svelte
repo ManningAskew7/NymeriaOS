@@ -5,6 +5,8 @@
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { configStore } from '$lib/stores/config.svelte';
   import { trapFocus } from '$lib/actions/focus';
+  import { portal } from '$lib/actions/portal';
+  import { isTopOverlay, pushOverlay, removeOverlay } from '$lib/utils/overlayStack';
   import type { CustomTool, CustomToolCreateRequest, UnifiedTool, DefaultToolInfo, ToolSearchResult, GroupedToolItem } from '$lib/types';
   import { api } from '$lib/services/api.svelte';
   import Button from '../common/Button.svelte';
@@ -413,8 +415,28 @@
     configInputs = {};
   }
 
+  // One overlay layer while any of the four tool dialogs is open, so Escape
+  // closes the dialog without also dismissing the Global Settings modal that
+  // hosts this panel (see $lib/utils/overlayStack).
+  const dialogOpen = $derived(
+    showCreateForm || !!editingTool || !!testingTool || !!editingBuiltinTool
+  );
+  let dialogLayer: symbol | null = null;
+
+  $effect(() => {
+    if (dialogOpen) {
+      const id = pushOverlay('tool-dialog');
+      dialogLayer = id;
+      return () => {
+        removeOverlay(id);
+        dialogLayer = null;
+      };
+    }
+  });
+
   function handleModalKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
+      if (!dialogLayer || !isTopOverlay(dialogLayer)) return;
       if (showCreateForm) { showCreateForm = false; }
       else if (editingTool) { editingTool = null; }
       else if (testingTool) { testingTool = null; }
@@ -651,7 +673,7 @@
 
   <!-- Create form modal -->
   {#if showCreateForm}
-    <div class="modal-overlay">
+    <div class="modal-overlay" use:portal>
       <button
         class="modal-backdrop-button"
         type="button"
@@ -676,7 +698,7 @@
 
   <!-- Edit form modal -->
   {#if editingTool}
-    <div class="modal-overlay">
+    <div class="modal-overlay" use:portal>
       <button
         class="modal-backdrop-button"
         type="button"
@@ -702,7 +724,7 @@
 
   <!-- Test panel modal -->
   {#if testingTool}
-    <div class="modal-overlay">
+    <div class="modal-overlay" use:portal>
       <button
         class="modal-backdrop-button"
         type="button"
@@ -730,7 +752,7 @@
     {@const tool = editingBuiltinTool}
     {@const configFields = getConfigFields(tool)}
     {@const hasConfigSchema = Object.keys(configFields).length > 0}
-    <div class="modal-overlay">
+    <div class="modal-overlay" use:portal>
       <button
         class="modal-backdrop-button"
         type="button"

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import { slide } from 'svelte/transition';
+  import { portal } from '$lib/actions/portal';
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
 
   interface KebabMenuItem {
@@ -52,18 +53,6 @@
     // when the user dismissed it by clicking elsewhere with the mouse.
     if (menuEl?.contains(document.activeElement)) kebabEl?.focus();
     open = false;
-  }
-
-  // Move the menu node out to <body> so its fixed positioning is always measured
-  // against the viewport, immune to any ancestor that establishes a containing
-  // block for fixed descendants (e.g. a panel's tab-fade transform).
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return {
-      destroy() {
-        node.remove();
-      },
-    };
   }
 
   function toggleMenu(e: MouseEvent) {
