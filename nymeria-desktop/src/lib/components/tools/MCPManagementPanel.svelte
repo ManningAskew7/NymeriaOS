@@ -2,10 +2,25 @@
   import { onMount } from 'svelte';
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { mcpServersStore } from '$lib/stores/mcpServers.svelte';
-  import Button from '../common/Button.svelte';
   import Icon from '../common/Icon.svelte';
   import InlineLoader from '../common/InlineLoader.svelte';
   import MCPServerPanel from './MCPServerPanel.svelte';
+
+  // Commit actions live in the host panel's shared footer (SettingsPanel),
+  // wired through these bindables plus the exported save/discardChanges.
+  interface Props {
+    dirtyCount?: number;
+    busy?: boolean;
+    statusText?: string;
+    statusKind?: 'idle' | 'success' | 'error';
+  }
+
+  let {
+    dirtyCount = $bindable(0),
+    busy = $bindable(false),
+    statusText = $bindable(''),
+    statusKind = $bindable('idle'),
+  }: Props = $props();
 
   let selectedTools = $state<Set<string>>(new Set());
   let initialized = $state(false);
@@ -31,13 +46,24 @@
 
   const totalWithCallable = $derived(selectedTools.size + defaultToolsStore.callableThreadCount);
 
-  const hasChanges = $derived.by(() => {
+  // Symmetric difference vs the saved selection: the MCP tab's dirty count.
+  const changedToolCount = $derived.by(() => {
     const saved = new Set(defaultToolsStore.defaultToolNames);
-    if (selectedTools.size !== saved.size) return true;
+    let changed = 0;
     for (const toolName of selectedTools) {
-      if (!saved.has(toolName)) return true;
+      if (!saved.has(toolName)) changed += 1;
     }
-    return false;
+    for (const toolName of saved) {
+      if (!selectedTools.has(toolName)) changed += 1;
+    }
+    return changed;
+  });
+
+  $effect(() => {
+    dirtyCount = changedToolCount;
+    busy = defaultToolsStore.saving;
+    statusText = saveMessage;
+    statusKind = saveStatus;
   });
 
   function toggleTool(name: string) {
@@ -50,13 +76,15 @@
     selectedTools = next;
   }
 
-  function discardChanges() {
+  // Called by the MCP tab's shared footer Discard (SettingsPanel).
+  export function discardChanges() {
     selectedTools = new Set(defaultToolsStore.defaultToolNames);
     saveStatus = 'idle';
     saveMessage = '';
   }
 
-  async function handleSave() {
+  // Called by the MCP tab's shared footer Save (SettingsPanel).
+  export async function save() {
     const ok = await defaultToolsStore.save([...selectedTools]);
     if (ok) {
       selectedTools = new Set(defaultToolsStore.defaultToolNames);
@@ -102,22 +130,7 @@
     {/if}
   </div>
 
-  {#if defaultToolsStore.loaded}
-    <div class="panel-footer panel-footer-pinned">
-      <Button variant="ghost" onclick={discardChanges} disabled={defaultToolsStore.saving || !hasChanges}>
-        Discard Changes
-      </Button>
-      <Button variant="primary" onclick={handleSave} disabled={defaultToolsStore.saving || !hasChanges}>
-        {defaultToolsStore.saving ? 'Saving…' : 'Save Changes'}
-      </Button>
-    </div>
-
-    {#if saveMessage}
-      <div class="save-message" class:success={saveStatus === 'success'} class:error={saveStatus === 'error'}>
-        {saveMessage}
-      </div>
-    {/if}
-  {/if}
+  <!-- Save/Discard live in the host panel's shared footer (SettingsPanel). -->
 </div>
 
 <style>
@@ -133,7 +146,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 1rem 1.25rem 5.5rem 1.25rem;
+    padding: 1rem 1.25rem;
   }
 
   .loading {
@@ -198,38 +211,4 @@
     line-height: 1.4;
   }
 
-  .panel-footer {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.65rem;
-    padding: 0.75rem 1.25rem;
-    /* No border / background — buttons float against whatever sits behind
-       the panel so the bar doesn't read as a separate dark strip. */
-    background: transparent;
-  }
-
-  .save-message {
-    position: absolute;
-    right: 1.25rem;
-    bottom: 4rem;
-    padding: 0.5rem 0.7rem;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-subtle);
-  }
-
-  .save-message.success {
-    color: var(--success);
-    border-color: color-mix(in srgb, var(--success) 35%, transparent);
-  }
-
-  .save-message.error {
-    color: var(--error);
-    border-color: color-mix(in srgb, var(--error) 35%, transparent);
-  }
 </style>

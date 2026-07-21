@@ -1375,10 +1375,14 @@
     position: relative;
     background: var(--bg-base);
     border-radius: var(--radius-lg);
-    /* Grow with the window so maximising/fullscreen uses the space, but stay
-       capped so forms don't stretch absurdly wide. */
-    width: min(1080px, 94vw);
-    height: min(840px, 90vh);
+    /* Viewport-adaptive between a floor and a ceiling, matching Global
+       Settings: bigger windows get a bigger panel, ultrawides stop at the
+       cap, small laptops clamp down. Size depends only on the window, never
+       on content, so tabs never resize the panel. */
+    width: clamp(720px, 72vw, 1240px);
+    height: clamp(560px, 82vh, 920px);
+    max-width: 94vw;
+    max-height: 90vh;
     display: flex;
     flex-direction: column;
     /* §7 — floating modal panel: shadow alone defines elevation; border

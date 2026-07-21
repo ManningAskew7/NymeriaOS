@@ -28,6 +28,16 @@
 
   const MAX_LEN: Record<FieldKey, number> = { system: 50000, kickoff: 10000 };
 
+  // Prompt saves commit through the Dreaming tab's shared footer Save
+  // (SettingsPanel), wired via this bindable plus the exported saveAll.
+  // Per-field "Reset to default" stays inline: it is contextual to one field
+  // and commits immediately.
+  interface Props {
+    dirtyCount?: number;
+  }
+
+  let { dirtyCount = $bindable(0) }: Props = $props();
+
   function blank(): FieldState {
     return {
       content: '',
@@ -75,23 +85,41 @@
     return key === 'system' ? { system: value } : { kickoff: value };
   }
 
-  async function save(key: FieldKey) {
-    const f = fields[key];
-    f.saving = true;
-    f.status = 'idle';
-    f.message = '';
+  const FIELD_KEYS: FieldKey[] = ['system', 'kickoff'];
+
+  $effect(() => {
+    dirtyCount = FIELD_KEYS.filter((key) => fields[key].content !== fields[key].original).length;
+  });
+
+  // Saves every dirty prompt in one request. Called by the Dreaming tab's
+  // footer Save; throws on failure so the caller can keep the panel open.
+  export async function saveAll() {
+    const dirtyKeys = FIELD_KEYS.filter((key) => fields[key].content !== fields[key].original);
+    if (dirtyKeys.length === 0) return;
+    const payload: { system?: string; kickoff?: string } = {};
+    for (const key of dirtyKeys) {
+      Object.assign(payload, payloadFor(key, fields[key].content));
+      fields[key].saving = true;
+      fields[key].status = 'idle';
+      fields[key].message = '';
+    }
     try {
-      const info = await api.updateDreamPrompts(payloadFor(key, f.content));
-      applyInfo(key, info[key]);
-      f.status = 'success';
-      f.message = info[key].isOverride
-        ? 'Saved. New dreams use this now.'
-        : 'Override cleared. Using the shipped default.';
+      const info = await api.updateDreamPrompts(payload);
+      for (const key of dirtyKeys) {
+        applyInfo(key, info[key]);
+        fields[key].status = 'success';
+        fields[key].message = info[key].isOverride
+          ? 'Saved. New dreams use this now.'
+          : 'Override cleared. Using the shipped default.';
+      }
     } catch (e) {
-      f.status = 'error';
-      f.message = humanizeErrorText(e, { action: 'save', resource: 'the dream prompt' });
+      for (const key of dirtyKeys) {
+        fields[key].status = 'error';
+        fields[key].message = humanizeErrorText(e, { action: 'save', resource: 'the dream prompt' });
+      }
+      throw e;
     } finally {
-      f.saving = false;
+      for (const key of dirtyKeys) fields[key].saving = false;
     }
   }
 
@@ -172,15 +200,8 @@
     </div>
     <div class="actions">
       <Button
-        variant="primary"
-        onclick={() => save(key)}
-        disabled={f.saving || f.content === f.original}
-        loading={f.saving}
-      >
-        Save
-      </Button>
-      <Button
         variant="secondary"
+        size="sm"
         onclick={() => resetToDefault(key)}
         disabled={f.saving || (!f.isOverride && f.content === f.defaultContent)}
       >
