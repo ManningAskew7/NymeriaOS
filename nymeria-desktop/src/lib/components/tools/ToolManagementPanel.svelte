@@ -20,6 +20,22 @@
   import { getCategoryInfo } from '$lib/utils/toolCategories';
   import { filterToolSearch } from '$lib/utils/toolSearch';
 
+  // Commit actions live in the host panel's shared footer (SettingsPanel),
+  // wired through this bindable plus the exported save/resetDefaults.
+  interface Props {
+    dirtyCount?: number;
+    busy?: boolean;
+    statusText?: string;
+    statusKind?: 'idle' | 'success' | 'error';
+  }
+
+  let {
+    dirtyCount = $bindable(0),
+    busy = $bindable(false),
+    statusText = $bindable(''),
+    statusKind = $bindable('idle'),
+  }: Props = $props();
+
   // --- Default tools state (absorbed from DefaultToolsPanel) ---
   let selectedTools = $state<Set<string>>(new Set());
   let initialized = $state(false);
@@ -226,13 +242,24 @@
   const defaultMatchCount = $derived(defaultItems.length);
   const availableMatchCount = $derived(availItems.length);
 
-  const hasChanges = $derived.by(() => {
+  // Symmetric difference vs the saved selection: the Tools tab's dirty count.
+  const changedToolCount = $derived.by(() => {
     const saved = new Set(defaultToolsStore.defaultToolNames);
-    if (selectedTools.size !== saved.size) return true;
+    let changed = 0;
     for (const t of selectedTools) {
-      if (!saved.has(t)) return true;
+      if (!saved.has(t)) changed += 1;
     }
-    return false;
+    for (const t of saved) {
+      if (!selectedTools.has(t)) changed += 1;
+    }
+    return changed;
+  });
+
+  $effect(() => {
+    dirtyCount = changedToolCount;
+    busy = defaultToolsStore.saving;
+    statusText = saveMessage;
+    statusKind = saveStatus;
   });
 
   function toggleTool(name: string) {
@@ -249,7 +276,8 @@
     return isSearching ? `${matches} matches of ${total}` : `${total}`;
   }
 
-  function handleSave() {
+  // Called by the Tools tab's shared footer Save (SettingsPanel).
+  export function save() {
     if (totalWithCallable > 25) {
       showWarning = true;
     } else {
@@ -273,7 +301,8 @@
     setTimeout(() => { saveMessage = ''; saveStatus = 'idle'; }, 3000);
   }
 
-  async function handleReset() {
+  // Called by the Tools tab's shared footer Reset (SettingsPanel).
+  export async function resetDefaults() {
     const mcpToolsToPreserve = defaultToolsStore.defaultToolNames.filter((name) => name.startsWith('mcp__'));
     const ok = await defaultToolsStore.reset();
     if (ok) {
@@ -653,23 +682,7 @@
   </div>
   </div>
 
-  <!-- Pinned footer: Save/Reset for the default-tools selection -->
-  {#if defaultToolsStore.loaded}
-    <div class="panel-footer panel-footer-pinned">
-      <Button variant="ghost" onclick={handleReset} disabled={defaultToolsStore.saving}>
-        Reset to NymeriaOS Defaults
-      </Button>
-      <Button variant="primary" onclick={handleSave} disabled={defaultToolsStore.saving || !hasChanges}>
-        {defaultToolsStore.saving ? 'Saving…' : 'Save Changes'}
-      </Button>
-    </div>
-
-    {#if saveMessage}
-      <div class="save-message" class:success={saveStatus === 'success'} class:error={saveStatus === 'error'}>
-        {saveMessage}
-      </div>
-    {/if}
-  {/if}
+  <!-- Save/Reset live in the host panel's shared footer (SettingsPanel). -->
 
   <!-- Create form modal -->
   {#if showCreateForm}
@@ -1255,40 +1268,6 @@
     color: var(--text-primary);
     border-color: var(--border-subtle);
     background: var(--bg-elevated);
-  }
-
-  /* Footer */
-  .panel-footer {
-    display: flex;
-    justify-content: space-between;
-    padding-top: var(--spacing-sm);
-    border-top: 1px solid var(--border-subtle);
-  }
-
-  /* Pinned variant: stays at the bottom of the Tools tab regardless
-     of scroll position. Right padding matches .panel-scroll so the
-     Save button aligns with the scrollable content above. */
-  .panel-footer-pinned {
-    flex-shrink: 0;
-    padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-sm) 0;
-    margin-top: 0;
-  }
-
-  .save-message {
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-sm);
-    text-align: center;
-  }
-
-  .save-message.success {
-    background: color-mix(in srgb, var(--success) 15%, transparent);
-    color: var(--success);
-  }
-
-  .save-message.error {
-    background: color-mix(in srgb, var(--error) 15%, transparent);
-    color: var(--error);
   }
 
   /* Custom tools divider */

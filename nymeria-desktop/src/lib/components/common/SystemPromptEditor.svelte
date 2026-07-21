@@ -2,11 +2,24 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api.svelte';
   import type { SystemPromptInfo } from '$lib/types';
-  import Button from './Button.svelte';
   import InlineLoader from './InlineLoader.svelte';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
 
   const MAX_LEN = 100000;
+
+  // Commit actions live in the host panel's shared footer (SettingsPanel),
+  // wired through these bindables plus the exported save/resetToDefault.
+  interface Props {
+    dirtyCount?: number;
+    resettable?: boolean;
+    busy?: boolean;
+  }
+
+  let {
+    dirtyCount = $bindable(0),
+    resettable = $bindable(false),
+    busy = $bindable(false),
+  }: Props = $props();
 
   let content = $state('');
   let defaultContent = $state('');
@@ -19,6 +32,12 @@
 
   let dirty = $derived(content !== original);
   let canReset = $derived(isOverride || content !== defaultContent);
+
+  $effect(() => {
+    dirtyCount = dirty ? 1 : 0;
+    resettable = canReset;
+    busy = saving || loading;
+  });
 
   onMount(load);
 
@@ -43,7 +62,7 @@
     }
   }
 
-  async function save() {
+  export async function save() {
     saving = true;
     status = 'idle';
     message = '';
@@ -62,7 +81,7 @@
     }
   }
 
-  async function resetToDefault() {
+  export async function resetToDefault() {
     saving = true;
     status = 'idle';
     message = '';
@@ -113,14 +132,6 @@
           {message}
         </span>
       {/if}
-    </div>
-    <div class="actions">
-      <Button variant="primary" onclick={save} disabled={saving || !dirty} loading={saving}>
-        Save
-      </Button>
-      <Button variant="secondary" onclick={resetToDefault} disabled={saving || !canReset}>
-        Reset to default
-      </Button>
     </div>
   {/if}
 </div>
@@ -225,11 +236,6 @@
 
   .status.error {
     color: var(--error);
-  }
-
-  .actions {
-    display: flex;
-    gap: var(--spacing-sm);
   }
 
   .loading {

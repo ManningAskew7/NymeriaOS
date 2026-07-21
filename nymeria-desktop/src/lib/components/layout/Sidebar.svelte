@@ -30,12 +30,27 @@
     chatStore.clearMessages();
   }
 
+  // Settings close guard: the panel reports unsaved edits via its exported
+  // hasUnsavedChanges, and closing with edits pending asks before discarding.
+  let settingsPanel = $state<{ hasUnsavedChanges: () => boolean } | undefined>(undefined);
+  let showDiscardConfirm = $state(false);
+
   function openSettings(tab?: string) {
     settingsInitialTab = tab;
     showSettings = true;
   }
 
   function closeSettings() {
+    if (settingsPanel?.hasUnsavedChanges()) {
+      showDiscardConfirm = true;
+      return;
+    }
+    showSettings = false;
+    settingsInitialTab = undefined;
+  }
+
+  function discardAndCloseSettings() {
+    showDiscardConfirm = false;
     showSettings = false;
     settingsInitialTab = undefined;
   }
@@ -187,10 +202,44 @@
 </div>
 
 <Modal title="Global Settings" isOpen={showSettings} onClose={closeSettings}>
-  <SettingsPanel initialTab={settingsInitialTab} />
+  <SettingsPanel bind:this={settingsPanel} initialTab={settingsInitialTab} />
+</Modal>
+
+<!-- Stacked above Global Settings when a close is attempted with unsaved
+     edits. Escape / backdrop dismisses just this layer (keep editing). -->
+<Modal title="Unsaved Changes" isOpen={showDiscardConfirm} onClose={() => (showDiscardConfirm = false)}>
+  <div class="discard-confirm">
+    <p class="discard-copy">
+      You have unsaved changes in Settings. Close anyway and discard them?
+    </p>
+    <div class="discard-actions">
+      <Button variant="secondary" onclick={() => (showDiscardConfirm = false)}>Keep Editing</Button>
+      <Button variant="danger" onclick={discardAndCloseSettings}>Discard and Close</Button>
+    </div>
+  </div>
 </Modal>
 
 <style>
+  .discard-confirm {
+    width: min(420px, 80vw);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+  }
+
+  .discard-copy {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+  }
+
+  .discard-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--spacing-sm);
+  }
+
   .sidebar-content {
     display: flex;
     flex-direction: column;

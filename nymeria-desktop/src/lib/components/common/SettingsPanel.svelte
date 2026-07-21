@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { fly } from 'svelte/transition';
   import { TAB_FADE } from '$lib/utils/transitions';
+  import { countChangedFields } from '$lib/utils/settingsDirty';
   import { configStore } from '$lib/stores/config.svelte';
+  import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { connectionsStore } from '$lib/stores/connections.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { api, probeConnection } from '$lib/services/api.svelte';
@@ -10,6 +13,7 @@
   import { threadsStore } from '$lib/stores/threads.svelte';
   import type {
     ServerSettings,
+    ServerSettingsUpdate,
     LLMProvider,
     OpenAIApiMode,
     LogLevel,
@@ -156,6 +160,7 @@
   let ragUserLoading = $state(false);
   let ragUserSaving = $state(false);
   let ragUserMessage = $state('');
+  let ragUserStatus = $state<'idle' | 'success' | 'error'>('idle');
   let ragUserLoaded = $state(false);
 
   // Dreaming defaults (global fallbacks a per-thread Dreaming tab overrides)
@@ -584,8 +589,8 @@
   });
 
   // UI state
-  type SettingsTab = 'connection' | 'appearance' | 'memory' | 'llm' | 'agent' | 'rag' | 'persona' | 'dream' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
-  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'persona', 'dream', 'voice', 'proxy', 'users'];
+  type SettingsTab = 'connection' | 'appearance' | 'memory' | 'llm' | 'agent' | 'rag' | 'ragengine' | 'persona' | 'dream' | 'tools' | 'mcp' | 'credentials' | 'skills' | 'notifications' | 'voice' | 'proxy' | 'account' | 'users';
+  const adminServerTabs: SettingsTab[] = ['llm', 'agent', 'ragengine', 'persona', 'dream', 'voice', 'proxy', 'users'];
 
   function getInitialTab(): SettingsTab {
     return (initialTab as SettingsTab) || 'connection';
@@ -597,17 +602,6 @@
 
   let activeTab = $state<SettingsTab>(getInitialTab());
   let isAdmin = $derived(configStore.identity?.role === 'admin');
-  // Tabs whose Save action rides the sticky footer (#25). Mirrors each tab
-  // block's own admin gate so the footer never offers a save the body hides.
-  // The rag tab is always saveable (its per-user save is not admin-gated; the
-  // engine save is added in the footer only when isAdmin).
-  let footerVisible = $derived(
-    (activeTab === 'llm' && isAdmin) ||
-    (activeTab === 'agent' && isAdmin) ||
-    activeTab === 'rag' ||
-    (activeTab === 'dream' && isAdmin) ||
-    (activeTab === 'voice' && isAdmin)
-  );
   let connectionAdvancedTouched = $state(false);
   let showConnectionAdvanced = $state(true);
   let testStatus = $state<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -620,6 +614,22 @@
   let savingSettings = $state(false);
   let showProviderSetupWizard = $state(false);
 
+  // Tabs whose commit actions ride the sticky footer (#25). Mirrors each tab
+  // block's own admin/server gate so the footer never offers an action the
+  // body hides.
+  let footerVisible = $derived(
+    (activeTab === 'connection' && showConnectionAdvanced) ||
+    (activeTab === 'llm' && isAdmin) ||
+    (activeTab === 'agent' && isAdmin) ||
+    activeTab === 'rag' ||
+    (activeTab === 'ragengine' && isAdmin) ||
+    (activeTab === 'persona' && isAdmin) ||
+    (activeTab === 'dream' && isAdmin) ||
+    (activeTab === 'voice' && isAdmin) ||
+    (activeTab === 'tools' && defaultToolsStore.loaded) ||
+    (activeTab === 'mcp' && defaultToolsStore.loaded)
+  );
+
   $effect(() => {
     if (!connectionAdvancedTouched) {
       showConnectionAdvanced = !backendProcessStore.isManagedBackend;
@@ -627,6 +637,252 @@
     if (!isAdmin && isAdminServerTab(activeTab)) {
       activeTab = 'connection';
     }
+  });
+
+  // --- Unsaved-change tracking (nav badges + footer save gating) ---
+
+  // Commit surfaces owned by child tab components: instance refs drive their
+  // exported save/reset actions from the shared footer; bindable dirty/busy/
+  // status flow back up. Refs are typed structurally by the contract used.
+  let systemPromptEditor = $state<{ save: () => Promise<void>; resetToDefault: () => Promise<void> } | undefined>();
+  let personaDirtyCount = $state(0);
+  let personaResettable = $state(false);
+  let personaBusy = $state(false);
+  let dreamPromptEditor = $state<{ saveAll: () => Promise<void> } | undefined>();
+  let dreamPromptDirtyCount = $state(0);
+  let toolsPanel = $state<{ save: () => void; resetDefaults: () => Promise<void> } | undefined>();
+  let toolsDirtyCount = $state(0);
+  let toolsBusy = $state(false);
+  let toolsStatusText = $state('');
+  let toolsStatusKind = $state<'idle' | 'success' | 'error'>('idle');
+  let mcpPanel = $state<{ save: () => Promise<void>; discardChanges: () => void } | undefined>();
+  let mcpDirtyCount = $state(0);
+  let mcpBusy = $state(false);
+  let mcpStatusText = $state('');
+  let mcpStatusKind = $state<'idle' | 'success' | 'error'>('idle');
+
+  // Per-tab form snapshots. Baselines capture the same records right after
+  // load and after each successful save, so a field is dirty iff it differs
+  // from the last loaded/saved state.
+  function llmTabValues(): Record<string, unknown> {
+    return {
+      displayProvider,
+      // Snapshot the same coercion the route $effect applies, so the
+      // post-load coercion never reads as a phantom unsaved change.
+      llmProviderRoute: hasRouteChoice(llmProvider, providerCatalog)
+        ? coerceProviderRoute(llmProvider, providerCatalog, llmProviderRoute)
+        : null,
+      llmModel,
+      llmFastModel,
+      llmSmartModel,
+      llmBackgroundModel,
+      llmBackgroundBaseUrl,
+      llmFallbackModels,
+      llmFallbackHoldSeconds,
+      llmTemperature,
+      llmMaxTokens,
+      llmTopP,
+      llmTopK,
+      llmFrequencyPenalty,
+      llmPresencePenalty,
+      llmReasoningEffort,
+      llmExtendedThinking,
+      dynamicToolBinding,
+      sequentialToolExecution,
+      llmUseModelDefaults,
+      llmBaseUrl,
+      llmContextLength,
+      llmOllamaNumCtx,
+      openaiApiMode,
+    };
+  }
+
+  function agentTabValues(): Record<string, unknown> {
+    return {
+      contextManagement,
+      compactThreshold,
+      compactThresholdMode,
+      compactThresholdTokens,
+      compactProactiveEnabled,
+      compactProactiveIdleSeconds,
+      compactProactiveMinPct,
+      slidingWindowCycles,
+      memoryCharLimit,
+      logLevel,
+      watchdogEnabled,
+      watchdogIntervalMinutes,
+      todoStalenessMinutes,
+    };
+  }
+
+  function dreamTabValues(): Record<string, unknown> {
+    return {
+      dreamDefaultMinIntervalHours,
+      dreamDefaultMinIdleMinutes,
+      dreamDefaultMinTurnsSinceLast,
+      dreamDefaultModel,
+    };
+  }
+
+  function voiceTabValues(): Record<string, unknown> {
+    return {
+      ttsProvider,
+      ttsBaseUrl,
+      ttsModel,
+      ttsVoice,
+      ttsOutputFormat,
+      ttsSpeed,
+      sttProvider,
+      sttBaseUrl,
+      sttModel,
+      sttLanguage,
+      voiceDefaultThreadId,
+    };
+  }
+
+  function ragEngineTabValues(): Record<string, unknown> {
+    return {
+      embeddingProvider,
+      embeddingModel,
+      embeddingDimensions,
+      ragEmbedToolResults,
+      ragRerankProvider,
+      ragRerankModel,
+    };
+  }
+
+  function ragUserTabValues(): Record<string, unknown> {
+    return {
+      ragEnabled,
+      ragRetrievalMode,
+      ragRerankEnabled,
+      ragIncludeConversations,
+      ragIncludeMemories,
+      ragIncludeTodos,
+      ragIncludeTools,
+      ragMaxChunks,
+      ragAutoFlush,
+    };
+  }
+
+  function valuesForTab(tab: SettingsTab): Record<string, unknown> | null {
+    switch (tab) {
+      case 'llm': return llmTabValues();
+      case 'agent': return agentTabValues();
+      case 'dream': return dreamTabValues();
+      case 'voice': return voiceTabValues();
+      case 'ragengine': return ragEngineTabValues();
+      case 'rag': return ragUserTabValues();
+      default: return null;
+    }
+  }
+
+  let baselines = $state<Partial<Record<SettingsTab, Record<string, unknown>>>>({});
+
+  function snapshotServerBaselines() {
+    baselines = {
+      ...baselines,
+      llm: llmTabValues(),
+      agent: agentTabValues(),
+      dream: dreamTabValues(),
+      voice: voiceTabValues(),
+      ragengine: ragEngineTabValues(),
+    };
+  }
+
+  const dirtyByTab = $derived.by(() => {
+    const counts: Partial<Record<SettingsTab, number>> = {
+      connection: countChangedFields(
+        { apiUrl, apiKey },
+        { apiUrl: configStore.apiUrl, apiKey: configStore.apiKey }
+      ),
+      llm: countChangedFields(llmTabValues(), baselines.llm),
+      agent: countChangedFields(agentTabValues(), baselines.agent),
+      rag: countChangedFields(ragUserTabValues(), baselines.rag),
+      ragengine: countChangedFields(ragEngineTabValues(), baselines.ragengine),
+      dream: countChangedFields(dreamTabValues(), baselines.dream) + dreamPromptDirtyCount,
+      voice: countChangedFields(voiceTabValues(), baselines.voice),
+      persona: personaDirtyCount,
+      tools: toolsDirtyCount,
+      mcp: mcpDirtyCount,
+    };
+    return counts;
+  });
+
+  // Close guard for the host (Sidebar): any unsaved edits anywhere?
+  export function hasUnsavedChanges(): boolean {
+    return Object.values(dirtyByTab).some((count) => (count ?? 0) > 0);
+  }
+
+  function selectTab(tab: SettingsTab) {
+    if (tab === activeTab) return;
+    activeTab = tab;
+    // Save/test status is contextual to the tab it happened on.
+    testStatus = 'idle';
+    testMessage = '';
+    ragUserStatus = 'idle';
+    ragUserMessage = '';
+  }
+
+  // Data-driven sidebar nav: one place for label/icon/gating, so the dirty
+  // badges and admin/server gates cannot drift between buttons.
+  interface NavEntry {
+    tab: SettingsTab;
+    label: string;
+    icon: string;
+    needsServer?: boolean;
+  }
+  const navGroups: { label: string; adminOnly?: boolean; entries: NavEntry[] }[] = [
+    {
+      label: 'Account',
+      entries: [
+        { tab: 'account', label: 'Account', icon: 'user' },
+        { tab: 'connection', label: 'Backend', icon: 'server' },
+      ],
+    },
+    {
+      label: 'Preferences',
+      entries: [
+        { tab: 'appearance', label: 'Appearance', icon: 'settings' },
+        { tab: 'notifications', label: 'Notifications', icon: 'bell', needsServer: true },
+        { tab: 'memory', label: 'Global Memory', icon: 'pin' },
+      ],
+    },
+    {
+      label: 'Capabilities',
+      entries: [
+        { tab: 'tools', label: 'Tools', icon: 'tool', needsServer: true },
+        { tab: 'rag', label: 'My RAG', icon: 'bolt' },
+        { tab: 'mcp', label: 'MCP Servers', icon: 'folder', needsServer: true },
+        { tab: 'skills', label: 'Skills', icon: 'bolt', needsServer: true },
+        { tab: 'credentials', label: 'Integrations', icon: 'cog', needsServer: true },
+      ],
+    },
+    {
+      label: 'Server',
+      adminOnly: true,
+      entries: [
+        { tab: 'llm', label: 'Model', icon: 'terminal', needsServer: true },
+        { tab: 'agent', label: 'Agent', icon: 'cog', needsServer: true },
+        { tab: 'persona', label: 'System Prompt', icon: 'fileText', needsServer: true },
+        { tab: 'dream', label: 'Dreaming', icon: 'clock', needsServer: true },
+        { tab: 'voice', label: 'Voice', icon: 'chat', needsServer: true },
+        { tab: 'ragengine', label: 'RAG Engine', icon: 'bolt', needsServer: true },
+        { tab: 'proxy', label: 'CLI Proxy', icon: 'server' },
+        { tab: 'users', label: 'Users', icon: 'users' },
+      ],
+    },
+  ];
+
+  // One status line in the footer's left slot, scoped to the active tab.
+  const footerStatus = $derived.by((): { text: string; kind: 'idle' | 'success' | 'error' } => {
+    if (activeTab === 'rag') return { text: ragUserMessage, kind: ragUserStatus };
+    if (activeTab === 'tools') return { text: toolsStatusText, kind: toolsStatusKind };
+    if (activeTab === 'mcp') return { text: mcpStatusText, kind: mcpStatusKind };
+    return {
+      text: testMessage,
+      kind: testStatus === 'success' ? 'success' : testStatus === 'error' ? 'error' : 'idle',
+    };
   });
 
   // Load server settings when connected
@@ -707,6 +963,11 @@
       ragEmbedToolResults = serverSettings.rag_embed_tool_results ?? true;
       ragRerankProvider = serverSettings.rag_rerank_provider ?? 'llm';
       ragRerankModel = serverSettings.rag_rerank_model ?? '';
+      // Snapshot dirty-tracking baselines after the reactive effects (route
+      // coercion, managed base-URL fill) have settled, so a load never leaves
+      // phantom unsaved-change badges.
+      await tick();
+      snapshotServerBaselines();
     } catch (e) {
       console.error('Failed to load server settings:', e);
     } finally {
@@ -738,6 +999,7 @@
       ragRetrievalMode = s.retrieval_mode;
       ragRerankEnabled = s.rerank_enabled;
       ragUserLoaded = true;
+      baselines = { ...baselines, rag: ragUserTabValues() };
     } catch (e) {
       console.error('Failed to load RAG settings:', e);
     } finally {
@@ -877,97 +1139,140 @@
     }
   }
 
-  async function handleSaveServerSettings() {
+  const optionalNumberUpdate = (
+    value: number | null | undefined,
+    original: number | null | undefined
+  ): number | null | undefined => value == null ? (original != null ? null : undefined) : value;
+
+  // Scoped per-tab server-settings payloads: each footer Save PATCHes only
+  // its own tab's fields, so tabs cannot clobber each other's unsaved edits.
+  function serverUpdateFor(tab: SettingsTab): ServerSettingsUpdate | null {
+    switch (tab) {
+      case 'llm': {
+        const { provider: actualProvider, clearBaseUrl } = fromDisplayProvider(displayProvider);
+        const effectiveBaseUrl = clearBaseUrl
+          ? ''
+          : displayProvider === 'openai_custom'
+            ? (llmBaseUrl || DEFAULT_OPENAI_CLIPROXY_BASE_URL)
+            : llmBaseUrl;
+        return {
+          llm_provider: actualProvider,
+          llm_model: llmModel,
+          llm_fast_model: llmFastModel.trim(),
+          llm_smart_model: llmSmartModel.trim(),
+          llm_background_model: llmBackgroundModel.trim(),
+          llm_background_base_url: llmBackgroundBaseUrl.trim(),
+          llm_fallback_models: llmFallbackModels.trim(),
+          llm_fallback_hold_seconds: llmFallbackHoldSeconds,
+          llm_temperature: llmTemperature,
+          llm_max_tokens: llmMaxTokens,
+          llm_top_p: llmTopP,
+          llm_top_k: llmTopK,
+          llm_frequency_penalty: llmFrequencyPenalty,
+          llm_presence_penalty: llmPresencePenalty,
+          llm_reasoning_effort: llmReasoningEffort,
+          llm_extended_thinking: llmExtendedThinking,
+          dynamic_tool_binding: dynamicToolBinding,
+          sequential_tool_execution: sequentialToolExecution,
+          llm_use_model_defaults: llmUseModelDefaults,
+          llm_base_url: effectiveBaseUrl,
+          llm_context_length: optionalNumberUpdate(llmContextLength, serverSettings?.llm_context_length),
+          llm_ollama_num_ctx: optionalNumberUpdate(llmOllamaNumCtx, serverSettings?.llm_ollama_num_ctx),
+          llm_provider_route: showProviderRouteSelect(actualProvider) ? llmProviderRoute : null,
+          openai_api_mode: openaiApiMode,
+        };
+      }
+      case 'agent':
+        return {
+          context_management: contextManagement,
+          compact_threshold: compactThreshold,
+          compact_threshold_mode: compactThresholdMode,
+          compact_threshold_tokens: compactThresholdTokens,
+          compact_proactive_enabled: compactProactiveEnabled,
+          compact_proactive_idle_seconds: compactProactiveIdleSeconds,
+          compact_proactive_min_pct: compactProactiveMinPct,
+          sliding_window_cycles: slidingWindowCycles,
+          memory_char_limit: memoryCharLimit,
+          log_level: logLevel,
+          watchdog_enabled: watchdogEnabled,
+          watchdog_interval_minutes: watchdogIntervalMinutes,
+          todo_staleness_minutes: todoStalenessMinutes,
+        };
+      case 'dream':
+        // Empty model string clears the override
+        return {
+          dream_default_min_interval_hours: dreamDefaultMinIntervalHours,
+          dream_default_min_idle_minutes: dreamDefaultMinIdleMinutes,
+          dream_default_min_turns_since_last: dreamDefaultMinTurnsSinceLast,
+          dream_default_model: dreamDefaultModel.trim(),
+        };
+      case 'voice':
+        return {
+          tts_provider: ttsProvider,
+          tts_base_url: ttsBaseUrl || null,
+          // Blank model/voice = per-provider default on the backend
+          tts_model: ttsModel.trim() || null,
+          tts_voice: ttsVoice.trim() || null,
+          tts_output_format: ttsOutputFormat,
+          tts_speed: ttsSpeed,
+          stt_provider: sttProvider,
+          stt_base_url: sttBaseUrl || null,
+          stt_model: sttModel.trim() || null,
+          stt_language: sttLanguage || null,
+          voice_default_thread_id: voiceDefaultThreadId || null,
+        };
+      case 'ragengine':
+        // Server-wide RAG engine; per-user toggles live in the per-user API
+        return {
+          embedding_provider: embeddingProvider,
+          embedding_model: embeddingModel,
+          embedding_dimensions: optionalNumberUpdate(embeddingDimensions, serverSettings?.embedding_dimensions),
+          rag_embed_tool_results: ragEmbedToolResults,
+          rag_rerank_provider: ragRerankProvider,
+          rag_rerank_model: ragRerankModel.trim() || null,
+        };
+      default:
+        return null;
+    }
+  }
+
+  async function saveServerTab(tab: SettingsTab): Promise<boolean> {
+    const update = serverUpdateFor(tab);
+    if (!update) return false;
     savingSettings = true;
     testMessage = '';
-
     try {
-      const optionalNumberUpdate = (
-        value: number | null | undefined,
-        original: number | null | undefined
-      ): number | null | undefined => value == null ? (original != null ? null : undefined) : value;
-      const { provider: actualProvider, clearBaseUrl } = fromDisplayProvider(displayProvider);
-      const effectiveBaseUrl = clearBaseUrl
-        ? ''
-        : displayProvider === 'openai_custom'
-          ? (llmBaseUrl || DEFAULT_OPENAI_CLIPROXY_BASE_URL)
-          : llmBaseUrl;
-
-      const result = await api.updateServerSettings({
-        llm_provider: actualProvider,
-        llm_model: llmModel,
-        llm_fast_model: llmFastModel.trim(),
-        llm_smart_model: llmSmartModel.trim(),
-        llm_background_model: llmBackgroundModel.trim(),
-        llm_background_base_url: llmBackgroundBaseUrl.trim(),
-        llm_fallback_models: llmFallbackModels.trim(),
-        llm_fallback_hold_seconds: llmFallbackHoldSeconds,
-        llm_temperature: llmTemperature,
-        llm_max_tokens: llmMaxTokens,
-        llm_top_p: llmTopP,
-        llm_top_k: llmTopK,
-        llm_frequency_penalty: llmFrequencyPenalty,
-        llm_presence_penalty: llmPresencePenalty,
-        llm_reasoning_effort: llmReasoningEffort,
-        llm_extended_thinking: llmExtendedThinking,
-        dynamic_tool_binding: dynamicToolBinding,
-        sequential_tool_execution: sequentialToolExecution,
-        llm_use_model_defaults: llmUseModelDefaults,
-        llm_base_url: effectiveBaseUrl,
-        llm_context_length: optionalNumberUpdate(llmContextLength, serverSettings?.llm_context_length),
-        llm_ollama_num_ctx: optionalNumberUpdate(llmOllamaNumCtx, serverSettings?.llm_ollama_num_ctx),
-        llm_provider_route: showProviderRouteSelect(actualProvider) ? llmProviderRoute : null,
-        openai_api_mode: openaiApiMode,
-        context_management: contextManagement,
-        compact_threshold: compactThreshold,
-        compact_threshold_mode: compactThresholdMode,
-        compact_threshold_tokens: compactThresholdTokens,
-        compact_proactive_enabled: compactProactiveEnabled,
-        compact_proactive_idle_seconds: compactProactiveIdleSeconds,
-        compact_proactive_min_pct: compactProactiveMinPct,
-        sliding_window_cycles: slidingWindowCycles,
-        memory_char_limit: memoryCharLimit,
-        log_level: logLevel,
-        watchdog_enabled: watchdogEnabled,
-        watchdog_interval_minutes: watchdogIntervalMinutes,
-        todo_staleness_minutes: todoStalenessMinutes,
-        // Dreaming defaults (empty model string clears the override)
-        dream_default_min_interval_hours: dreamDefaultMinIntervalHours,
-        dream_default_min_idle_minutes: dreamDefaultMinIdleMinutes,
-        dream_default_min_turns_since_last: dreamDefaultMinTurnsSinceLast,
-        dream_default_model: dreamDefaultModel.trim(),
-        // Voice
-        tts_provider: ttsProvider,
-        tts_base_url: ttsBaseUrl || null,
-        // Blank model/voice = per-provider default on the backend
-        tts_model: ttsModel.trim() || null,
-        tts_voice: ttsVoice.trim() || null,
-        tts_output_format: ttsOutputFormat,
-        tts_speed: ttsSpeed,
-        stt_provider: sttProvider,
-        stt_base_url: sttBaseUrl || null,
-        stt_model: sttModel.trim() || null,
-        stt_language: sttLanguage || null,
-        voice_default_thread_id: voiceDefaultThreadId || null,
-        // RAG engine (server-wide; per-user toggles live in the per-user API)
-        embedding_provider: embeddingProvider,
-        embedding_model: embeddingModel,
-        embedding_dimensions: optionalNumberUpdate(embeddingDimensions, serverSettings?.embedding_dimensions),
-        rag_embed_tool_results: ragEmbedToolResults,
-        rag_rerank_provider: ragRerankProvider,
-        rag_rerank_model: ragRerankModel.trim() || null,
-      });
-
+      const result = await api.updateServerSettings(update);
       testStatus = 'success';
       testMessage = result.restart_required
         ? 'Settings saved! Restart the server for changes to take effect.'
         : 'Settings saved and applied!';
+      const snapshot = valuesForTab(tab);
+      if (snapshot) baselines = { ...baselines, [tab]: snapshot };
       serverSettingsStore.refresh();
+      return true;
     } catch (e) {
       testStatus = 'error';
       testMessage = humanizeErrorText(e, { action: 'save', resource: 'settings' });
+      return false;
     } finally {
       savingSettings = false;
+    }
+  }
+
+  // The Dreaming tab's one Save commits both the numeric defaults (a settings
+  // PATCH) and any edited dream prompts (the editor's own API) in one action.
+  async function handleSaveDreamTab() {
+    if (countChangedFields(dreamTabValues(), baselines.dream) > 0) {
+      const ok = await saveServerTab('dream');
+      if (!ok) return;
+    }
+    if (dreamPromptDirtyCount > 0) {
+      try {
+        await dreamPromptEditor?.saveAll();
+      } catch {
+        // The editor renders the failure inline next to the affected prompt.
+      }
     }
   }
 
@@ -988,8 +1293,11 @@
         retrieval_mode: ragRetrievalMode,
         rerank_enabled: ragRerankEnabled,
       });
+      ragUserStatus = 'success';
       ragUserMessage = 'RAG settings saved!';
+      baselines = { ...baselines, rag: ragUserTabValues() };
     } catch (e) {
+      ragUserStatus = 'error';
       ragUserMessage = humanizeErrorText(e, { action: 'save', resource: 'the RAG settings' });
     } finally {
       ragUserSaving = false;
@@ -1014,203 +1322,34 @@
     <!-- Left-side navigation, Claude/Perplexity style: grouped sections with a
          label per group and a single column of nav items underneath. -->
     <aside class="settings-sidebar">
-      <div class="nav-group">
-        <span class="nav-group-label section-label">Account</span>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'account'}
-          onclick={() => (activeTab = 'account')}
-          aria-current={activeTab === 'account' ? 'page' : undefined}
-          type="button"
-        >
-          <Icon name="user" size={14} />
-          <span>Account</span>
-        </button>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'connection'}
-          onclick={() => (activeTab = 'connection')}
-          aria-current={activeTab === 'connection' ? 'page' : undefined}
-          type="button"
-        >
-          <Icon name="server" size={14} />
-          <span>Backend</span>
-        </button>
-      </div>
-
-      <div class="nav-group">
-        <span class="nav-group-label section-label">Preferences</span>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'appearance'}
-          onclick={() => (activeTab = 'appearance')}
-          aria-current={activeTab === 'appearance' ? 'page' : undefined}
-          type="button"
-        >
-          <Icon name="settings" size={14} />
-          <span>Appearance</span>
-        </button>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'notifications'}
-          onclick={() => (activeTab = 'notifications')}
-          aria-current={activeTab === 'notifications' ? 'page' : undefined}
-          disabled={!serverSettings}
-          type="button"
-        >
-          <Icon name="bell" size={14} />
-          <span>Notifications</span>
-        </button>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'memory'}
-          onclick={() => (activeTab = 'memory')}
-          aria-current={activeTab === 'memory' ? 'page' : undefined}
-          type="button"
-        >
-          <Icon name="pin" size={14} />
-          <span>Global Memory</span>
-        </button>
-      </div>
-
-      <div class="nav-group">
-        <span class="nav-group-label section-label">Capabilities</span>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'tools'}
-          onclick={() => (activeTab = 'tools')}
-          aria-current={activeTab === 'tools' ? 'page' : undefined}
-          disabled={!serverSettings}
-          type="button"
-        >
-          <Icon name="tool" size={14} />
-          <span>Tools</span>
-        </button>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'rag'}
-          onclick={() => (activeTab = 'rag')}
-          aria-current={activeTab === 'rag' ? 'page' : undefined}
-          type="button"
-        >
-          <Icon name="bolt" size={14} />
-          <span>RAG</span>
-        </button>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'mcp'}
-          onclick={() => (activeTab = 'mcp')}
-          aria-current={activeTab === 'mcp' ? 'page' : undefined}
-          disabled={!serverSettings}
-          type="button"
-        >
-          <Icon name="folder" size={14} />
-          <span>MCP Servers</span>
-        </button>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'skills'}
-          onclick={() => (activeTab = 'skills')}
-          aria-current={activeTab === 'skills' ? 'page' : undefined}
-          disabled={!serverSettings}
-          type="button"
-        >
-          <Icon name="bolt" size={14} />
-          <span>Skills</span>
-        </button>
-        <button
-          class="nav-item"
-          class:active={activeTab === 'credentials'}
-          onclick={() => (activeTab = 'credentials')}
-          aria-current={activeTab === 'credentials' ? 'page' : undefined}
-          disabled={!serverSettings}
-          type="button"
-        >
-          <Icon name="cog" size={14} />
-          <span>Integrations</span>
-        </button>
-      </div>
-
-      {#if isAdmin}
-        <div class="nav-group">
-          <span class="nav-group-label section-label">Server</span>
-          <button
-            class="nav-item"
-            class:active={activeTab === 'llm'}
-            onclick={() => (activeTab = 'llm')}
-            aria-current={activeTab === 'llm' ? 'page' : undefined}
-            disabled={!serverSettings}
-            type="button"
-          >
-            <Icon name="terminal" size={14} />
-            <span>Model</span>
-          </button>
-          <button
-            class="nav-item"
-            class:active={activeTab === 'agent'}
-            onclick={() => (activeTab = 'agent')}
-            aria-current={activeTab === 'agent' ? 'page' : undefined}
-            disabled={!serverSettings}
-            type="button"
-          >
-            <Icon name="cog" size={14} />
-            <span>Agent</span>
-          </button>
-          <button
-            class="nav-item"
-            class:active={activeTab === 'persona'}
-            onclick={() => (activeTab = 'persona')}
-            aria-current={activeTab === 'persona' ? 'page' : undefined}
-            disabled={!serverSettings}
-            type="button"
-          >
-            <Icon name="fileText" size={14} />
-            <span>System Prompt</span>
-          </button>
-          <button
-            class="nav-item"
-            class:active={activeTab === 'dream'}
-            onclick={() => (activeTab = 'dream')}
-            aria-current={activeTab === 'dream' ? 'page' : undefined}
-            disabled={!serverSettings}
-            type="button"
-          >
-            <Icon name="clock" size={14} />
-            <span>Dreaming</span>
-          </button>
-          <button
-            class="nav-item"
-            class:active={activeTab === 'voice'}
-            onclick={() => (activeTab = 'voice')}
-            aria-current={activeTab === 'voice' ? 'page' : undefined}
-            disabled={!serverSettings}
-            type="button"
-          >
-            <Icon name="chat" size={14} />
-            <span>Voice</span>
-          </button>
-          <button
-            class="nav-item"
-            class:active={activeTab === 'proxy'}
-            onclick={() => (activeTab = 'proxy')}
-            aria-current={activeTab === 'proxy' ? 'page' : undefined}
-            type="button"
-          >
-            <Icon name="server" size={14} />
-            <span>CLI Proxy</span>
-          </button>
-          <button
-            class="nav-item"
-            class:active={activeTab === 'users'}
-            onclick={() => (activeTab = 'users')}
-            aria-current={activeTab === 'users' ? 'page' : undefined}
-            type="button"
-          >
-            <Icon name="users" size={14} />
-            <span>Users</span>
-          </button>
-        </div>
-      {/if}
+      {#each navGroups as group (group.label)}
+        {#if !group.adminOnly || isAdmin}
+          <div class="nav-group">
+            <span class="nav-group-label section-label">{group.label}</span>
+            {#each group.entries as entry (entry.tab)}
+              {@const dirty = dirtyByTab[entry.tab] ?? 0}
+              <button
+                class="nav-item"
+                class:active={activeTab === entry.tab}
+                onclick={() => selectTab(entry.tab)}
+                aria-current={activeTab === entry.tab ? 'page' : undefined}
+                disabled={entry.needsServer && !serverSettings}
+                type="button"
+              >
+                <Icon name={entry.icon} size={14} />
+                <span class="nav-label">{entry.label}</span>
+                {#if dirty > 0}
+                  <span
+                    class="nav-badge"
+                    title="{dirty} unsaved {dirty === 1 ? 'change' : 'changes'}"
+                    aria-label="{dirty} unsaved {dirty === 1 ? 'change' : 'changes'}"
+                  >{dirty}</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {/each}
     </aside>
 
     <main class="settings-content">
@@ -1349,23 +1488,7 @@
           <p class="hint">Per-user account token (<code>nym_...</code>) minted via <code>python run.py users add</code>, or the bootstrap admin token from <code>BOOTSTRAP_TOKEN.txt</code></p>
         </div>
 
-        <div class="actions">
-          <Button variant="secondary" onclick={handleTestConnection} disabled={testStatus === 'testing'}>
-            {testStatus === 'testing' ? 'Testing…' : 'Test Connection'}
-          </Button>
-          {#if editingConnectionId}
-            <Button variant="primary" onclick={handleUpdateConnection} disabled={connectionSaving}>
-              {connectionSaving ? 'Updating…' : 'Update Connection'}
-            </Button>
-            <Button variant="secondary" onclick={handleCancelEdit} disabled={connectionSaving}>
-              Cancel Edit
-            </Button>
-          {:else}
-            <Button variant="primary" onclick={handleSaveConnection} disabled={connectionSaving}>
-              {connectionSaving ? 'Saving…' : 'Save connection'}
-            </Button>
-          {/if}
-        </div>
+        <!-- Test / Save / Update actions live in the shared footer. -->
       {/if}
     </div>
   {/if}
@@ -2339,7 +2462,7 @@
     </div>
   {/if}
 
-  <!-- RAG Tab (per-user for everyone; an admin-only engine section below) -->
+  <!-- My RAG Tab (per-user; the server-wide engine has its own admin tab) -->
   {#if activeTab === 'rag'}
     <div class="tab-content">
       <div class="section-heading">My RAG (this account)</div>
@@ -2401,52 +2524,58 @@
         </div>
 
       {/if}
+    </div>
+  {/if}
 
-      {#if isAdmin}
-        <div class="section-heading">RAG engine (server-wide)</div>
-        {#if loadingSettings}
-          <p class="loading"><InlineLoader text="Loading RAG settings…" /></p>
-        {:else}
-          <div class="field checkbox-field">
-            <input id="rag-embed-tools" type="checkbox" bind:checked={ragEmbedToolResults} />
-            <label for="rag-embed-tools">Embed tool results</label>
-            <p class="hint">Index tool output as retrievable chunks (deduped at ingest)</p>
-          </div>
+  <!-- RAG Engine Tab (server-wide, admin) -->
+  {#if activeTab === 'ragengine' && isAdmin}
+    <div class="tab-content">
+      {#if loadingSettings}
+        <p class="loading"><InlineLoader text="Loading RAG engine settings…" /></p>
+      {:else}
+        <p class="hint" style="margin-bottom: var(--spacing-md);">
+          Server-wide retrieval engine shared by every account. Each user's own
+          toggles (including "Use reranker") live in My RAG.
+        </p>
+        <div class="field checkbox-field">
+          <input id="rag-embed-tools" type="checkbox" bind:checked={ragEmbedToolResults} />
+          <label for="rag-embed-tools">Embed tool results</label>
+          <p class="hint">Index tool output as retrievable chunks (deduped at ingest)</p>
+        </div>
+        <div class="field">
+          <label for="rag-embed-provider">Embedding provider</label>
+          <select id="rag-embed-provider" bind:value={embeddingProvider}>
+            <option value="openai">OpenAI-compatible (incl. Voyage)</option>
+            <option value="cohere">Cohere (native)</option>
+            <option value="gemini">Gemini (native)</option>
+            <option value="local">Local (on-device)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="rag-embed-model">Embedding model</label>
+          <input id="rag-embed-model" type="text" bind:value={embeddingModel} />
+        </div>
+        <div class="field">
+          <label for="rag-embed-dims">Embedding dimensions</label>
+          <input id="rag-embed-dims" type="number" step="1" bind:value={embeddingDimensions} />
+          <p class="hint">Vector width. Blank keeps the legacy 1536 slot. Changing the embedder needs a server restart, and a dimension change needs `nymeria reembed`.</p>
+        </div>
+        <div class="field">
+          <label for="rag-rerank-provider">Reranker provider</label>
+          <select id="rag-rerank-provider" bind:value={ragRerankProvider}>
+            <option value="llm">LLM (thread model)</option>
+            <option value="voyage">Voyage</option>
+            <option value="cohere">Cohere</option>
+            <option value="zeroentropy">ZeroEntropy</option>
+            <option value="local">Local cross-encoder</option>
+          </select>
+          <p class="hint">The engine each user's "Use reranker" toggle drives. Managed providers need a reranker API key; 'local' needs the local-rag extra.</p>
+        </div>
+        {#if ragRerankProvider !== 'llm'}
           <div class="field">
-            <label for="rag-embed-provider">Embedding provider</label>
-            <select id="rag-embed-provider" bind:value={embeddingProvider}>
-              <option value="openai">OpenAI-compatible (incl. Voyage)</option>
-              <option value="cohere">Cohere (native)</option>
-              <option value="gemini">Gemini (native)</option>
-              <option value="local">Local (on-device)</option>
-            </select>
+            <label for="rag-rerank-model">Reranker model</label>
+            <input id="rag-rerank-model" type="text" bind:value={ragRerankModel} placeholder="e.g. rerank-2.5-lite" />
           </div>
-          <div class="field">
-            <label for="rag-embed-model">Embedding model</label>
-            <input id="rag-embed-model" type="text" bind:value={embeddingModel} />
-          </div>
-          <div class="field">
-            <label for="rag-embed-dims">Embedding dimensions</label>
-            <input id="rag-embed-dims" type="number" step="1" bind:value={embeddingDimensions} />
-            <p class="hint">Vector width. Blank keeps the legacy 1536 slot. Changing the embedder needs a server restart, and a dimension change needs `nymeria reembed`.</p>
-          </div>
-          <div class="field">
-            <label for="rag-rerank-provider">Reranker provider</label>
-            <select id="rag-rerank-provider" bind:value={ragRerankProvider}>
-              <option value="llm">LLM (thread model)</option>
-              <option value="voyage">Voyage</option>
-              <option value="cohere">Cohere</option>
-              <option value="zeroentropy">ZeroEntropy</option>
-              <option value="local">Local cross-encoder</option>
-            </select>
-            <p class="hint">The engine each user's "Use reranker" toggle drives. Managed providers need a reranker API key; 'local' needs the local-rag extra.</p>
-          </div>
-          {#if ragRerankProvider !== 'llm'}
-            <div class="field">
-              <label for="rag-rerank-model">Reranker model</label>
-              <input id="rag-rerank-model" type="text" bind:value={ragRerankModel} placeholder="e.g. rerank-2.5-lite" />
-            </div>
-          {/if}
         {/if}
       {/if}
     </div>
@@ -2455,7 +2584,12 @@
   <!-- System Prompt Tab -->
   {#if activeTab === 'persona' && isAdmin}
     <div class="tab-content tab-tools-flex">
-      <SystemPromptEditor />
+      <SystemPromptEditor
+        bind:this={systemPromptEditor}
+        bind:dirtyCount={personaDirtyCount}
+        bind:resettable={personaResettable}
+        bind:busy={personaBusy}
+      />
     </div>
   {/if}
 
@@ -2523,7 +2657,7 @@
           <p class="hint">Model dream turns run on. Leave blank to use the global default model.</p>
         </div>
 
-        <DreamPromptEditor />
+        <DreamPromptEditor bind:this={dreamPromptEditor} bind:dirtyCount={dreamPromptDirtyCount} />
       {/if}
     </div>
   {/if}
@@ -2538,14 +2672,26 @@
   <!-- Tools Tab -->
   {#if activeTab === 'tools'}
     <div class="tab-content tab-tools-flex">
-      <ToolManagementPanel />
+      <ToolManagementPanel
+        bind:this={toolsPanel}
+        bind:dirtyCount={toolsDirtyCount}
+        bind:busy={toolsBusy}
+        bind:statusText={toolsStatusText}
+        bind:statusKind={toolsStatusKind}
+      />
     </div>
   {/if}
 
   <!-- MCP Tab -->
   {#if activeTab === 'mcp'}
     <div class="tab-content tab-tools-flex">
-      <MCPManagementPanel />
+      <MCPManagementPanel
+        bind:this={mcpPanel}
+        bind:dirtyCount={mcpDirtyCount}
+        bind:busy={mcpBusy}
+        bind:statusText={mcpStatusText}
+        bind:statusKind={mcpStatusKind}
+      />
     </div>
   {/if}
 
@@ -2749,55 +2895,94 @@
     </main>
   </div>
 
-  <!-- Save / Test status (server saves + connection test). Sibling of the
-       layout so it stays pinned at the panel bottom (visible alongside the
-       footer) instead of scrolling out of view inside the tab body (#25). -->
-  {#if testMessage}
-    <div class="message" class:success={testStatus === 'success'} class:error={testStatus === 'error'}>
-      {#if testStatus === 'success'}
-        <Icon name="success" size={16} />
-      {:else if testStatus === 'error'}
-        <Icon name="error" size={16} />
-      {/if}
-      {testMessage}
-    </div>
-  {/if}
-
-  <!-- Tab-aware sticky save footer (#25): the per-tab Save action is relocated
-       here so it stays visible instead of being buried at the end of the
-       scrolling tab body. Hidden on tabs with no panel-level save. -->
+  <!-- Tab-aware sticky commit footer (#25): one status slot on the left, the
+       active tab's secondary + primary actions on the right, always visible
+       instead of buried at the end of the scrolling tab body. Hidden on tabs
+       with no panel-level commit. -->
   {#if footerVisible}
     <footer class="settings-footer">
       <div class="footer-status">
-        {#if activeTab === 'rag' && ragUserMessage}
-          <span class="hint">{ragUserMessage}</span>
+        {#if footerStatus.text}
+          <span
+            class="footer-status-text"
+            class:success={footerStatus.kind === 'success'}
+            class:error={footerStatus.kind === 'error'}
+            role="status"
+          >
+            {#if footerStatus.kind === 'success'}
+              <Icon name="success" size={14} />
+            {:else if footerStatus.kind === 'error'}
+              <Icon name="error" size={14} />
+            {/if}
+            {footerStatus.text}
+          </span>
+        {:else if (dirtyByTab[activeTab] ?? 0) > 0}
+          <span class="footer-status-text">
+            {dirtyByTab[activeTab]} unsaved {(dirtyByTab[activeTab] ?? 0) === 1 ? 'change' : 'changes'}
+          </span>
         {/if}
       </div>
       <div class="footer-actions">
-        {#if activeTab === 'llm' && isAdmin}
-          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
-            {savingSettings ? 'Saving…' : 'Save LLM Settings'}
+        {#if activeTab === 'connection'}
+          <Button variant="secondary" onclick={handleTestConnection} disabled={testStatus === 'testing'}>
+            {testStatus === 'testing' ? 'Testing…' : 'Test Connection'}
+          </Button>
+          {#if editingConnectionId}
+            <Button variant="secondary" onclick={handleCancelEdit} disabled={connectionSaving}>
+              Cancel Edit
+            </Button>
+            <Button variant="primary" onclick={handleUpdateConnection} disabled={connectionSaving}>
+              {connectionSaving ? 'Updating…' : 'Update Connection'}
+            </Button>
+          {:else}
+            <Button variant="primary" onclick={handleSaveConnection} disabled={connectionSaving}>
+              {connectionSaving ? 'Saving…' : 'Save Connection'}
+            </Button>
+          {/if}
+        {:else if activeTab === 'llm' && isAdmin}
+          <Button variant="primary" onclick={() => saveServerTab('llm')} disabled={savingSettings || loadingSettings || !(dirtyByTab.llm ?? 0)}>
+            {savingSettings ? 'Saving…' : 'Save Model Settings'}
           </Button>
         {:else if activeTab === 'agent' && isAdmin}
-          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+          <Button variant="primary" onclick={() => saveServerTab('agent')} disabled={savingSettings || loadingSettings || !(dirtyByTab.agent ?? 0)}>
             {savingSettings ? 'Saving…' : 'Save Agent Settings'}
           </Button>
         {:else if activeTab === 'rag'}
-          <Button variant="primary" onclick={handleSaveRagUserSettings} disabled={ragUserSaving || ragUserLoading}>
-            {ragUserSaving ? 'Saving…' : 'Save My RAG Settings'}
+          <Button variant="primary" onclick={handleSaveRagUserSettings} disabled={ragUserSaving || ragUserLoading || !(dirtyByTab.rag ?? 0)}>
+            {ragUserSaving ? 'Saving…' : 'Save RAG Settings'}
           </Button>
-          {#if isAdmin}
-            <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
-              {savingSettings ? 'Saving…' : 'Save RAG Engine'}
-            </Button>
-          {/if}
+        {:else if activeTab === 'ragengine' && isAdmin}
+          <Button variant="primary" onclick={() => saveServerTab('ragengine')} disabled={savingSettings || loadingSettings || !(dirtyByTab.ragengine ?? 0)}>
+            {savingSettings ? 'Saving…' : 'Save RAG Engine'}
+          </Button>
+        {:else if activeTab === 'persona' && isAdmin}
+          <Button variant="secondary" onclick={() => systemPromptEditor?.resetToDefault()} disabled={personaBusy || !personaResettable}>
+            Reset to Default
+          </Button>
+          <Button variant="primary" onclick={() => systemPromptEditor?.save()} disabled={personaBusy || !personaDirtyCount}>
+            Save System Prompt
+          </Button>
         {:else if activeTab === 'dream' && isAdmin}
-          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+          <Button variant="primary" onclick={handleSaveDreamTab} disabled={savingSettings || loadingSettings || !(dirtyByTab.dream ?? 0)}>
             {savingSettings ? 'Saving…' : 'Save Dreaming Settings'}
           </Button>
         {:else if activeTab === 'voice' && isAdmin}
-          <Button variant="primary" onclick={handleSaveServerSettings} disabled={savingSettings || loadingSettings}>
+          <Button variant="primary" onclick={() => saveServerTab('voice')} disabled={savingSettings || loadingSettings || !(dirtyByTab.voice ?? 0)}>
             {savingSettings ? 'Saving…' : 'Save Voice Settings'}
+          </Button>
+        {:else if activeTab === 'tools'}
+          <Button variant="secondary" onclick={() => toolsPanel?.resetDefaults()} disabled={toolsBusy}>
+            Reset to NymeriaOS Defaults
+          </Button>
+          <Button variant="primary" onclick={() => toolsPanel?.save()} disabled={toolsBusy || !toolsDirtyCount}>
+            {toolsBusy ? 'Saving…' : 'Save Changes'}
+          </Button>
+        {:else if activeTab === 'mcp'}
+          <Button variant="ghost" onclick={() => mcpPanel?.discardChanges()} disabled={mcpBusy || !mcpDirtyCount}>
+            Discard Changes
+          </Button>
+          <Button variant="primary" onclick={() => mcpPanel?.save()} disabled={mcpBusy || !mcpDirtyCount}>
+            {mcpBusy ? 'Saving…' : 'Save Changes'}
           </Button>
         {/if}
       </div>
@@ -2816,13 +3001,15 @@
   .settings-panel {
     display: flex;
     flex-direction: column;
-    /* Fixed dimensions so tabs never resize the modal. 1080×720 gives the
-       content column more breathing room while staying inside Modal's
-       90vw/90vh ceiling on typical desktop windows. */
-    width: 1080px;
-    height: 720px;
+    /* Viewport-adaptive between a floor and a ceiling: bigger windows get a
+       bigger panel (less scrolling in the long tabs), ultrawides stop at the
+       cap, small laptops clamp down. Size depends only on the window, never
+       on content, so tabs still never resize the modal. The height term also
+       stays under Modal's 90vh ceiling (minus its header strip) so the
+       panel's own pinned footer is never pushed into Modal's scroll area. */
+    width: clamp(720px, 72vw, 1240px);
+    height: min(clamp(560px, 82vh, 920px), calc(90vh - 64px));
     max-width: 90vw;
-    max-height: 90vh;
     /* Pull flush against the parent Modal's content padding so the sidebar
        can run edge-to-edge with the modal frame. */
     margin: calc(-1 * var(--spacing-lg));
@@ -2855,10 +3042,26 @@
     font-size: var(--font-size-sm);
   }
 
+  .footer-status-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .footer-status-text.success {
+    color: var(--success);
+  }
+
+  .footer-status-text.error {
+    color: var(--error);
+  }
+
   .footer-actions {
     display: flex;
     gap: var(--spacing-sm);
     margin-left: auto;
+    flex-shrink: 0;
   }
 
   /* --- Left sidebar --- */
@@ -2926,6 +3129,37 @@
   .nav-item:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .nav-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Grey unsaved-changes count on a tab's nav entry. Deliberately muted:
+     informational, not an alarm. */
+  .nav-badge {
+    flex-shrink: 0;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--text-muted);
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--border-default);
+  }
+
+  .nav-item.active .nav-badge {
+    background: var(--bg-elevated);
   }
 
   /* --- Right content area --- */
@@ -3273,36 +3507,6 @@
   .loading {
     color: var(--text-secondary);
     font-style: italic;
-  }
-
-  .message {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-    /* Sits below the scrolling layout now (#25), so it carries its own inset
-       instead of inheriting .settings-content's padding. */
-    margin: var(--spacing-sm) var(--spacing-lg);
-    padding: var(--spacing-sm) var(--spacing-md);
-    border-radius: var(--radius-md);
-    font-size: var(--font-size-sm);
-  }
-
-  .message.success {
-    background: rgba(var(--success-rgb), 0.15);
-    color: var(--success);
-  }
-
-  .message.error {
-    background: rgba(var(--error-rgb), 0.15);
-    color: var(--error);
-  }
-
-  .actions {
-    display: flex;
-    gap: var(--spacing-sm);
-    justify-content: flex-end;
-    padding-top: var(--spacing-md);
-    border-top: 1px solid var(--border-subtle);
   }
 
   /* Chat bubble toggle */
