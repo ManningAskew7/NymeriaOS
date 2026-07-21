@@ -83,7 +83,11 @@ if gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null); then
     last=$(stat -c %Y "$stamp" 2>/dev/null || stat -f %m "$stamp" 2>/dev/null || echo 0)
     if [ "$(( $(date +%s) - last ))" -ge 180 ]; then
       : > "$stamp"
-      ( GIT_TERMINAL_PROMPT=0 git fetch --quiet >/dev/null 2>&1 & )
+      # All three fds must detach at the subshell level: on Windows the native
+      # git child otherwise inherits the statusline stdout pipe handle, the
+      # reader never sees EOF, and the whole line goes blank. The credential
+      # override keeps a promptless context from hanging on a GUI cred dialog.
+      ( GIT_TERMINAL_PROMPT=0 git -c credential.interactive=false fetch --quiet & ) >/dev/null 2>&1 0</dev/null
     fi
     behind=$(git rev-list --count "HEAD..@{u}" 2>/dev/null)
     if [ -n "$behind" ] && [ "$behind" -gt 0 ]; then
