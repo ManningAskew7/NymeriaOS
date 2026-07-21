@@ -100,8 +100,10 @@
   // Only show thread selector if scheduled
   let showThreadSelector = $derived(!!scheduledFor);
 
-  async function handleSubmit(e: SubmitEvent) {
-    e.preventDefault();
+  // Also invoked without an event from the modal footer's Create/Save button,
+  // which lives outside the <form> element.
+  async function handleSubmit(e?: SubmitEvent) {
+    e?.preventDefault();
     formError = '';
 
     if (!task.trim()) {
@@ -291,6 +293,12 @@
       </div>
     {/if}
 
+    <!-- The visible submit lives in the modal footer, outside this form;
+         this keeps Enter-to-submit working from the fields. -->
+    <button type="submit" hidden aria-hidden="true" tabindex="-1"></button>
+  </form>
+
+  {#snippet footer()}
     <div class="form-actions">
       {#if isEditMode}
         {#if showDeleteConfirm}
@@ -315,12 +323,12 @@
         <Button variant="secondary" onclick={handleClose} disabled={saving || deleting}>
           Cancel
         </Button>
-        <Button variant="primary" type="submit" loading={saving} disabled={deleting}>
+        <Button variant="primary" onclick={() => handleSubmit()} loading={saving} disabled={deleting}>
           {isEditMode ? 'Save Changes' : 'Create Task'}
         </Button>
       </div>
     </div>
-  </form>
+  {/snippet}
 </Modal>
 
 <style>
@@ -412,14 +420,12 @@
     width: 5rem;
   }
 
+  /* Lives in the Modal footer snippet; the Modal owns the divider. */
   .form-actions {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--spacing-md);
-    margin-top: var(--spacing-sm);
-    padding-top: var(--spacing-md);
-    border-top: 1px solid var(--border-subtle);
   }
 
   .primary-actions {

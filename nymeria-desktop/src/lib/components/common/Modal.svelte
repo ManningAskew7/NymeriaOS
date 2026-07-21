@@ -17,9 +17,12 @@
     isOpen: boolean;
     onClose: () => void;
     children: Snippet;
+    /** Optional pinned footer, rendered outside the scrolling content so
+     *  commit actions stay visible however long the body grows. */
+    footer?: Snippet;
   }
 
-  let { title, isOpen, onClose, children }: Props = $props();
+  let { title, isOpen, onClose, children, footer }: Props = $props();
   const titleId = `modal-title-${Math.random().toString(36).slice(2)}`;
 
   // Escape closes only the topmost open overlay, so a modal stacked on
@@ -76,6 +79,11 @@
       <div class="modal-content">
         {@render children()}
       </div>
+      {#if footer}
+        <div class="modal-footer">
+          {@render footer()}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -152,6 +160,15 @@
     overflow-y: auto;
     flex: 1;
     min-height: 0;
+  }
+
+  /* Pinned commit strip below the scroll area. A hairline only, no fill,
+     so the glass surface stays continuous. Consumers lay out their own
+     row inside. */
+  .modal-footer {
+    flex-shrink: 0;
+    padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-md);
+    border-top: 1px solid var(--border-subtle);
   }
 
 </style>

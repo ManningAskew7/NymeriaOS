@@ -3212,6 +3212,20 @@
     gap: var(--spacing-xs);
   }
 
+  /* §5 readable measure: under the adaptive clamp the content column can
+     reach ~1000px, far past a comfortable form width. Cap the bare form
+     controls and reading text; grids and rich pickers (theme cards,
+     provider select) keep the full column. */
+  .field > input,
+  .field > select,
+  .field > textarea {
+    max-width: 720px;
+  }
+
+  .field .hint {
+    max-width: 70ch;
+  }
+
   .llm-subview-toggle {
     margin-bottom: var(--spacing-md);
   }
