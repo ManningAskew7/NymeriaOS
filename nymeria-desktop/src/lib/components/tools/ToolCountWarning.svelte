@@ -2,6 +2,8 @@
   import { fade, fly } from 'svelte/transition';
   import { Button } from '$lib/components/common';
   import { trapFocus } from '$lib/actions/focus';
+  import { portal } from '$lib/actions/portal';
+  import { isTopOverlay, pushOverlay, removeOverlay } from '$lib/utils/overlayStack';
   import {
     OVERLAY_FADE_IN,
     OVERLAY_FADE_OUT,
@@ -20,14 +22,27 @@
 
   const total = $derived(toolCount + callableCount);
 
+  // Mounted-when-open; Escape only acts when this warning is the topmost
+  // overlay (see $lib/utils/overlayStack).
+  let layer: symbol | null = null;
+
+  $effect(() => {
+    const id = pushOverlay('tool-count-warning');
+    layer = id;
+    return () => {
+      removeOverlay(id);
+      layer = null;
+    };
+  });
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') onGoBack();
+    if (e.key === 'Escape' && layer && isTopOverlay(layer)) onGoBack();
   }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="warning-backdrop" in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
+<div class="warning-backdrop" use:portal in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
   <button
     class="warning-backdrop-button"
     type="button"

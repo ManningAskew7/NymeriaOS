@@ -5,6 +5,7 @@
   import { cubicOut } from 'svelte/easing';
   import { DROPDOWN_TRANSITION } from '$lib/utils/transitions';
   import { Icon } from '$lib/components/common';
+  import { portal } from '$lib/actions/portal';
   import { tooltipWhenClipped } from '$lib/actions/tooltip';
   import CheckpointViewer from '$lib/components/common/CheckpointViewer.svelte';
   import { configStore } from '$lib/stores/config.svelte';
@@ -469,17 +470,6 @@
   });
 
   // --- Summary-chip popover (summary mode only) ---
-
-  // Move the popover out to <body> so its fixed positioning is measured against
-  // the viewport, immune to any ancestor that establishes a containing block.
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return {
-      destroy() {
-        node.remove();
-      },
-    };
-  }
 
   function openSummary() {
     if (!chipEl) return;

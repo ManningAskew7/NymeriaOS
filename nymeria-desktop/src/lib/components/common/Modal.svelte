@@ -2,6 +2,8 @@
   import type { Snippet } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
+  import { portal } from '$lib/actions/portal';
+  import { isTopOverlay, pushOverlay, removeOverlay } from '$lib/utils/overlayStack';
   import {
     OVERLAY_FADE_IN,
     OVERLAY_FADE_OUT,
@@ -20,8 +22,24 @@
   let { title, isOpen, onClose, children }: Props = $props();
   const titleId = `modal-title-${Math.random().toString(36).slice(2)}`;
 
+  // Escape closes only the topmost open overlay, so a modal stacked on
+  // another (Provider Setup inside Global Settings) closes one layer at
+  // a time instead of dismissing the whole stack.
+  let layer: symbol | null = null;
+
+  $effect(() => {
+    if (isOpen) {
+      const id = pushOverlay(title);
+      layer = id;
+      return () => {
+        removeOverlay(id);
+        layer = null;
+      };
+    }
+  });
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
+    if (e.key === 'Escape' && layer && isTopOverlay(layer)) {
       onClose();
     }
   }
@@ -36,7 +54,11 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if isOpen}
-  <div class="modal-backdrop" in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
+  <!-- Portaled to <body>: the glass .modal surface's backdrop-filter makes it
+       a containing block for fixed descendants, so a Modal rendered inside
+       another Modal's children would otherwise be clipped to the parent
+       dialog instead of covering the viewport. -->
+  <div class="modal-backdrop" use:portal in:fade={OVERLAY_FADE_IN} out:fade={OVERLAY_FADE_OUT}>
     <button
       class="modal-backdrop-button"
       type="button"
