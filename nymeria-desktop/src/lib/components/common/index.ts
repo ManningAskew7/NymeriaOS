@@ -5,6 +5,7 @@ export { default as Icon } from './Icon.svelte';
 export { default as KebabMenu } from './KebabMenu.svelte';
 export { default as Collapsible } from './Collapsible.svelte';
 export { default as SectionHeader } from './SectionHeader.svelte';
+export { default as SegmentedTabs } from './SegmentedTabs.svelte';
 export { default as ThinkingIndicator } from './ThinkingIndicator.svelte';
 export { default as Modal } from './Modal.svelte';
 export { default as SettingsPanel } from './SettingsPanel.svelte';

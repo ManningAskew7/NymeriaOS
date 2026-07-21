@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
   import { TAB_FADE } from '$lib/utils/transitions';
-  import { SectionHeader } from '$lib/components/common';
+  import { SectionHeader, SegmentedTabs } from '$lib/components/common';
   import TodoFeed from '$lib/components/todos/TodoFeed.svelte';
   import TodoForm from '$lib/components/todos/TodoForm.svelte';
   import TriggerFeed from '$lib/components/triggers/TriggerFeed.svelte';
@@ -54,26 +54,6 @@
     }
   });
 
-  // Arrow keys switch dashboard panes, but only when a tab button itself is
-  // focused (the standard ARIA tablist pattern). Tab is deliberately left
-  // untouched so it moves focus through the page normally; an earlier
-  // window-level Tab hijack here froze keyboard navigation whenever the
-  // panel was open.
-  function handleTablistKeydown(e: KeyboardEvent) {
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    // "This Thread" is only meaningful when a thread is selected; without one
-    // the panel is pinned to Global (see the auto-switch effect above), so the
-    // arrow is a no-op rather than bouncing selection back and forth.
-    if (!currentThreadId) return;
-    e.preventDefault();
-    const next = e.key === 'ArrowRight' ? 'global' : 'thread';
-    activeTab = next;
-    // Move focus to follow the new selection (automatic activation).
-    requestAnimationFrame(() => {
-      document.getElementById(`dashboard-tab-${next}`)?.focus();
-    });
-  }
-
   // Build thread title lookup for global view
   let threadTitleMap = $derived(
     Object.fromEntries(threadsStore.threads.map(t => [t.id, t.title]))
@@ -90,34 +70,19 @@
 <div class="right-panel-content" class:collapsed={isCollapsed} aria-hidden={isCollapsed}>
   <header class="panel-header">
     <h2 class="panel-title">Dashboard</h2>
-    <div class="segmented" role="tablist" aria-label="Dashboard view">
-      <button
-        id="dashboard-tab-thread"
-        class="segment"
-        class:active={activeTab === 'thread'}
-        onclick={() => (activeTab = 'thread')}
-        onkeydown={handleTablistKeydown}
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'thread'}
-        aria-controls="dashboard-tabpanel"
-      >
-        This Thread
-      </button>
-      <button
-        id="dashboard-tab-global"
-        class="segment"
-        class:active={activeTab === 'global'}
-        onclick={() => (activeTab = 'global')}
-        onkeydown={handleTablistKeydown}
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'global'}
-        aria-controls="dashboard-tabpanel"
-      >
-        Global
-      </button>
-    </div>
+    <!-- "This Thread" is only meaningful when a thread is selected; without
+         one the panel is pinned to Global (see the auto-switch effect above),
+         so the tab is disabled rather than bouncing selection back. -->
+    <SegmentedTabs
+      ariaLabel="Dashboard view"
+      controls="dashboard-tabpanel"
+      tabs={[
+        { id: 'thread', label: 'This Thread', domId: 'dashboard-tab-thread', disabled: !currentThreadId },
+        { id: 'global', label: 'Global', domId: 'dashboard-tab-global' },
+      ]}
+      active={activeTab}
+      onSelect={(id) => (activeTab = id as 'thread' | 'global')}
+    />
   </header>
 
   <div class="panel-body" class:suppress-scrollbar={suppressScrollbar}>
@@ -257,48 +222,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
-  }
-
-  /* Segmented control: one bordered container holding both views as segments,
-     instead of two free-standing buttons. The container owns the border + the
-     rounded clip; segments are borderless and divided by a single hairline. */
-  .segmented {
-    display: inline-flex;
-    align-items: stretch;
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-    /* Keep the labels at full size; the header's flex-wrap is the fallback
-       when there isn't room for the title and the control on one row. */
-    flex-shrink: 0;
-  }
-
-  .segment {
-    padding: var(--spacing-xs) var(--spacing-sm);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    color: var(--text-muted);
-    background: transparent;
-    border: none;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: all var(--transition-fast);
-  }
-
-  .segment + .segment {
-    border-left: 1px solid var(--glass-border);
-  }
-
-  .segment:hover {
-    color: var(--text-primary);
-  }
-
-  /* Active segment reuses the previous active-tab fill + text color verbatim
-     (accent tint background, accent-primary text); the container border
-     replaces the per-button border the old active tab carried. */
-  .segment.active {
-    color: var(--accent-primary);
-    background: var(--accent-tint-bg);
   }
 
   .panel-body {
