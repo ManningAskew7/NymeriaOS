@@ -1525,6 +1525,17 @@
     overflow-y: auto;
   }
 
+  /* ToolForm / ToolTestPanel render as direct flex children of .modal; give
+     them the same scrolling-body behavior as .modal-body so a tall form's
+     action row can never clip out of reach below the dialog's
+     overflow:hidden edge. */
+  .modal > :global(.tool-form),
+  .modal > :global(.test-panel) {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
   .modal-body p {
     margin: var(--spacing-md) 0;
     color: var(--text-secondary);

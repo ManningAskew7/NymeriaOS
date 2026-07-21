@@ -140,8 +140,8 @@ KNOWN_DRIFT: set[str] = {
     "lib/components/tools/ToolCountWarning.svelte",
     "lib/components/tools/ToolManagementPanel.svelte",
     "lib/components/tools/index.ts",
-    # Triggers
-    "lib/components/triggers/TriggerConfigTab.svelte",
+    # Triggers (the desktop TriggerConfigTab was deleted as orphaned; the
+    # mobile copy lives on inside its ThreadSettingsPanel and is mobile-only)
     "lib/components/triggers/TriggerFeed.svelte",
     "lib/components/triggers/TriggerItem.svelte",
     "lib/components/triggers/TriggerSetupWizard.svelte",

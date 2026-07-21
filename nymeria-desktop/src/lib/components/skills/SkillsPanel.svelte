@@ -361,7 +361,7 @@
   /* Capability chips (scripts / references / assets) carry a small leading
      Lucide icon so the three otherwise-identical pills read as distinct
      categories at a glance — matches §3 differentiation guidance and the
-     colored-dot pattern already used by TriggerConfigTab.meta-tag. */
+     colored-dot meta-tag pattern used by the trigger components. */
   .chip-cap {
     display: inline-flex;
     align-items: center;
