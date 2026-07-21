@@ -21,6 +21,7 @@ mid=$(j '.model.id // ""')
 effort=$(j '.effort.level // empty')
 tpath=$(j '.transcript_path // ""')
 dir=$(j '.workspace.current_dir // .cwd // ""')
+dir=${dir//\\//}  # Windows paths: normalize backslashes so the basename split works
 used=$(j '.context_window.total_input_tokens // 0')
 size=$(j '.context_window.context_window_size // 0')
 added=$(j '.cost.total_lines_added // 0')
