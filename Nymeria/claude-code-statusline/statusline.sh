@@ -70,7 +70,10 @@ out="${accent}✦ ${model_c}${name}${reset}"
 if gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null); then
   branch=$(git branch --show-current 2>/dev/null)
   dirty=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')
-  gseg="${lavender}\U1F33F ${branch}${reset}"
+  # literal emoji, not \U1F33F: printf %b's \U decode fails to a literal
+  # "\U0001F33F" on Git Bash for Windows whatever the locale; raw UTF-8
+  # bytes pass through untouched everywhere
+  gseg="${lavender}🌿 ${branch}${reset}"
   [ "$dirty" -gt 0 ] && gseg="${gseg} ${grey}*${dirty}${reset}"
 
   # commits behind upstream (origin/main when on main). Git only learns of new
