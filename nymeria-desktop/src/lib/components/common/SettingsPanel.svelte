@@ -42,6 +42,7 @@
   import GlobalMemoryEditor from './GlobalMemoryEditor.svelte';
   import ProviderSetupWizard from './ProviderSetupWizard.svelte';
   import ProviderSelect from './ProviderSelect.svelte';
+  import SegmentedTabs from './SegmentedTabs.svelte';
   import { AccountTab, UsersTab } from '../account';
   import { backendProcessStore } from '$lib/stores/backendProcess.svelte';
   import { clearAvailableModels, loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
@@ -1647,9 +1648,17 @@
       {#if loadingSettings}
         <p class="loading"><InlineLoader text="Loading model settings…" /></p>
       {:else}
-        <div class="llm-subview-toggle" role="tablist" aria-label="Provider configuration view">
-          <button class="llm-subview-btn" class:active={llmSubView === 'main'} onclick={() => (llmSubView = 'main')} type="button" role="tab" aria-selected={llmSubView === 'main'}>Main</button>
-          <button class="llm-subview-btn" class:active={llmSubView === 'fallback'} onclick={() => (llmSubView = 'fallback')} type="button" role="tab" aria-selected={llmSubView === 'fallback'}>Tiers</button>
+        <div class="llm-subview-toggle">
+          <SegmentedTabs
+            ariaLabel="Provider configuration view"
+            tabs={[
+              { id: 'main', label: 'Main' },
+              { id: 'fallback', label: 'Tiers' },
+            ]}
+            active={llmSubView}
+            onSelect={(id) => (llmSubView = id as 'main' | 'fallback')}
+            fill
+          />
         </div>
 
         {#if llmSubView === 'main'}
@@ -2970,34 +2979,7 @@
   }
 
   .llm-subview-toggle {
-    display: flex;
-    /* §3 chip-row gap: ≥8px so adjacent tabs don't crowd edge-to-edge. */
-    gap: var(--spacing-sm);
     margin-bottom: var(--spacing-md);
-  }
-
-  .llm-subview-btn {
-    flex: 1;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-
-  .llm-subview-btn:hover {
-    color: var(--text-primary);
-    border-color: var(--text-muted);
-  }
-
-  .llm-subview-btn.active {
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-    background: var(--accent-tint-bg);
   }
 
   .section-heading {
@@ -3393,11 +3375,6 @@
   .font-desc {
     font-size: var(--font-size-2xs);
     color: var(--text-muted);
-  }
-
-  /* Logo font card — wider so the wordmark fits comfortably */
-  .logo-font-card {
-    /* Inherits everything else from .font-card */
   }
 
   .logo-sample {

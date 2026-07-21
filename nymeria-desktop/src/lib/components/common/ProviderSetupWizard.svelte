@@ -18,6 +18,7 @@
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
+  import SegmentedTabs from './SegmentedTabs.svelte';
 
   interface Props {
     isOpen: boolean;
@@ -412,19 +413,18 @@
 
 <Modal title="Provider Setup" {isOpen} {onClose}>
   <div class="provider-wizard">
-    <div class="steps" aria-label="Provider setup progress">
-      <button type="button" class="step" class:active={step === 1} class:complete={step > 1} aria-current={step === 1 ? 'step' : undefined} onclick={() => (step = 1)}>
-        <span>1</span>
-        Auth
-      </button>
-      <button type="button" class="step" class:active={step === 2} class:complete={step > 2} aria-current={step === 2 ? 'step' : undefined} onclick={() => (step = 2)}>
-        <span>2</span>
-        Credentials
-      </button>
-      <button type="button" class="step" class:active={step === 3} aria-current={step === 3 ? 'step' : undefined} onclick={() => (step = 3)} disabled={!testCanRun}>
-        <span>3</span>
-        Test
-      </button>
+    <div class="steps">
+      <SegmentedTabs
+        ariaLabel="Provider setup progress"
+        tabs={[
+          { id: '1', label: 'Auth', badge: '1', complete: step > 1 },
+          { id: '2', label: 'Credentials', badge: '2', complete: step > 2 },
+          { id: '3', label: 'Test', badge: '3', disabled: !testCanRun },
+        ]}
+        active={String(step)}
+        onSelect={(id) => (step = Number(id) as WizardStep)}
+        fill
+      />
     </div>
 
     {#if step === 1}
@@ -645,52 +645,8 @@
   }
 
   .steps {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    /* §3 chip-row gap — wizard step pills sit at 8px, not 4px. */
-    gap: var(--spacing-sm);
     border-bottom: 1px solid var(--border-subtle);
     padding-bottom: var(--spacing-md);
-  }
-
-  .step {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--spacing-xs);
-    padding: var(--spacing-sm);
-    border-radius: var(--radius-md);
-    color: var(--text-secondary);
-    font-size: var(--font-size-sm);
-    border: 1px solid transparent;
-  }
-
-  .step span {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: var(--radius-full);
-    background: var(--bg-elevated-2);
-    color: var(--text-muted);
-    font-size: var(--font-size-xs);
-  }
-
-  .step.active {
-    color: var(--accent-primary);
-    border-color: rgba(var(--accent-primary-rgb), 0.35);
-    background: rgba(var(--accent-primary-rgb), 0.08);
-  }
-
-  .step.complete span {
-    background: var(--success);
-    color: var(--bg-base);
-  }
-
-  .step:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
   }
 
   .wizard-body {
