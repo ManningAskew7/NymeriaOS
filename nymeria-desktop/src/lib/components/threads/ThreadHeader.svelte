@@ -23,7 +23,9 @@
   interface Props {
     thread: Thread;
     threadConfig?: ThreadConfig | null;
-    onOpenSettings: () => void;
+    /* Opens the per-thread settings panel; `tab` deep-links a specific tab
+       (any id ThreadSettingsPanel.normalizeTab accepts). Omitted = default. */
+    onOpenSettings: (tab?: string) => void;
   }
 
   let { thread, threadConfig, onOpenSettings }: Props = $props();
@@ -292,6 +294,10 @@
     compactIcon?: 'fileText' | 'users';
     tooltip?: string;
     variant?: 'default' | 'reduced' | 'accent';
+    /* Per-thread settings tab this stat deep-links to (ThreadSettingsPanel
+       normalizeTab id). Set = the chip renders as a button; unset (e.g.
+       triggers, which have no per-thread tab) = a plain informational chip. */
+    settingsTab?: string;
   };
 
   const metaParts = $derived.by<MetaPart[]>(() => {
@@ -303,6 +309,7 @@
         label: effectiveModel.name,
         tooltip: `${effectiveModel.full}${effectiveModel.isOverride ? ' (thread override)' : ''}`,
         variant: effectiveModel.isOverride ? 'accent' : 'default',
+        settingsTab: 'model',
       });
     }
     if (activeToolCount !== null) {
@@ -312,6 +319,7 @@
         label: 'tools',
         tooltip: toolsTooltip,
         variant: disabledNonMcpCount > 0 ? 'reduced' : 'default',
+        settingsTab: 'tools',
       });
     }
     if (activeMcpToolCount !== null) {
@@ -321,6 +329,7 @@
         label: 'MCP',
         tooltip: mcpTooltip,
         variant: disabledMcpCount > 0 ? 'reduced' : 'default',
+        settingsTab: 'mcp',
       });
     }
     if (callableCount !== null && callableCount > 0) {
@@ -330,6 +339,7 @@
         label: 'callable',
         tooltip: callableTooltip,
         variant: 'default',
+        settingsTab: 'agent',
       });
     }
     if (activeSkillCount !== null && activeSkillCount > 0) {
@@ -339,6 +349,7 @@
         label: `skill${activeSkillCount !== 1 ? 's' : ''}`,
         tooltip: activeSkillTooltip,
         variant: 'default',
+        settingsTab: 'skills',
       });
     }
     if (activeKitCount !== null && activeKitCount > 0) {
@@ -348,9 +359,12 @@
         label: `kit${activeKitCount !== 1 ? 's' : ''}`,
         tooltip: activeKitTooltip,
         variant: 'default',
+        settingsTab: 'skills',
       });
     }
     if (triggerCount > 0) {
+      // No settingsTab: per-thread triggers are managed from the Dashboard,
+      // not a thread-settings tab, so this chip stays informational.
       parts.push({
         id: 'triggers',
         count: triggerCount,
@@ -366,6 +380,7 @@
         compactIcon: 'fileText',
         tooltip: instructionsTooltip,
         variant: 'default',
+        settingsTab: 'behavior',
       });
     }
     if (isCallable) {
@@ -375,6 +390,7 @@
         compactIcon: 'users',
         tooltip: 'This thread can be called by other threads',
         variant: 'accent',
+        settingsTab: 'agent',
       });
     }
     return parts;
@@ -390,30 +406,32 @@
     count: number | string;
     tooltip?: string;
     variant?: 'reduced' | 'accent' | 'default';
+    /* Same deep-link semantics as MetaPart.settingsTab. */
+    settingsTab?: string;
   };
 
   const breakdownRows = $derived.by<BreakdownRow[]>(() => {
     const rows: BreakdownRow[] = [];
     if (activeMcpToolCount !== null) {
-      rows.push({ id: 'mcp', label: 'MCP', count: activeMcpToolCount, tooltip: mcpTooltip, variant: disabledMcpCount > 0 ? 'reduced' : 'default' });
+      rows.push({ id: 'mcp', label: 'MCP', count: activeMcpToolCount, tooltip: mcpTooltip, variant: disabledMcpCount > 0 ? 'reduced' : 'default', settingsTab: 'mcp' });
     }
     if (callableCount !== null && callableCount > 0) {
-      rows.push({ id: 'callables', label: 'Callable', count: callableCount, tooltip: callableTooltip });
+      rows.push({ id: 'callables', label: 'Callable', count: callableCount, tooltip: callableTooltip, settingsTab: 'agent' });
     }
     if (activeSkillCount !== null && activeSkillCount > 0) {
-      rows.push({ id: 'skills', label: 'Skills', count: activeSkillCount, tooltip: activeSkillTooltip });
+      rows.push({ id: 'skills', label: 'Skills', count: activeSkillCount, tooltip: activeSkillTooltip, settingsTab: 'skills' });
     }
     if (activeKitCount !== null && activeKitCount > 0) {
-      rows.push({ id: 'kits', label: 'Kits', count: activeKitCount, tooltip: activeKitTooltip });
+      rows.push({ id: 'kits', label: 'Kits', count: activeKitCount, tooltip: activeKitTooltip, settingsTab: 'skills' });
     }
     if (triggerCount > 0) {
       rows.push({ id: 'triggers', label: 'Triggers', count: triggerCount, tooltip: `${triggerCount} active trigger${triggerCount !== 1 ? 's' : ''}` });
     }
     if (hasInstructions) {
-      rows.push({ id: 'instructions', label: 'Instructions', count: '✓', tooltip: instructionsTooltip });
+      rows.push({ id: 'instructions', label: 'Instructions', count: '✓', tooltip: instructionsTooltip, settingsTab: 'behavior' });
     }
     if (isCallable) {
-      rows.push({ id: 'callable', label: 'Callable thread', count: '✓', tooltip: 'This thread can be called by other threads', variant: 'accent' });
+      rows.push({ id: 'callable', label: 'Callable thread', count: '✓', tooltip: 'This thread can be called by other threads', variant: 'accent', settingsTab: 'agent' });
     }
     return rows;
   });
@@ -568,16 +586,32 @@
   });
 </script>
 
+{#snippet chipContent(part: MetaPart, showFull: boolean)}
+  {#if showFull}
+    {#if part.count !== undefined}<span class="count">{part.count}</span>{/if}
+    <span class="label">{part.label}</span>
+  {:else if part.count !== undefined}
+    <span class="count">{part.count}</span>
+  {:else if part.compactIcon}
+    <Icon name={part.compactIcon} size={11} />
+  {:else}
+    <span class="label">{part.label}</span>
+  {/if}
+{/snippet}
+
 <header class="thread-header" bind:this={headerEl}>
   <h2 class="title" use:tooltipWhenClipped={thread.title} bind:this={titleEl}>{thread.title}</h2>
 
   {#if summaryMode}
     {#if effectiveModel}
-      <span
+      <button
         class="header-model"
         class:accent={effectiveModel.isOverride}
+        type="button"
         data-tooltip={`${effectiveModel.full}${effectiveModel.isOverride ? ' (thread override)' : ''}`}
-      >{effectiveModel.name}</span>
+        aria-label="Configure thread model"
+        onclick={() => onOpenSettings('model')}
+      >{effectiveModel.name}</button>
     {/if}
   {:else if metaParts.length > 0}
     <button
@@ -596,18 +630,23 @@
       <div class="meta" bind:this={metaEl} transition:slide={{ axis: 'x', duration: 240, easing: cubicOut }}>
         {#each metaParts as part, i (part.id)}
           {@const showFull = measuring === 'full' || (measuring !== 'compact' && i < fullCount)}
-          <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} data-tooltip={part.tooltip}>
-            {#if showFull}
-              {#if part.count !== undefined}<span class="count">{part.count}</span>{/if}
-              <span class="label">{part.label}</span>
-            {:else if part.count !== undefined}
-              <span class="count">{part.count}</span>
-            {:else if part.compactIcon}
-              <Icon name={part.compactIcon} size={11} />
-            {:else}
-              <span class="label">{part.label}</span>
-            {/if}
-          </span>
+          {#if part.settingsTab}
+            <button
+              class="meta-part meta-part--{part.id}"
+              class:reduced={part.variant === 'reduced'}
+              class:accent={part.variant === 'accent'}
+              type="button"
+              data-tooltip={part.tooltip}
+              aria-label={`Configure ${part.label}`}
+              onclick={() => onOpenSettings(part.settingsTab)}
+            >
+              {@render chipContent(part, showFull)}
+            </button>
+          {:else}
+            <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} data-tooltip={part.tooltip}>
+              {@render chipContent(part, showFull)}
+            </span>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -663,7 +702,7 @@
     <button
       class="icon-btn cog"
       class:active={threadConfig?.hasCustomizations ?? false}
-      onclick={onOpenSettings}
+      onclick={() => onOpenSettings()}
       data-tooltip={threadConfig?.hasCustomizations ? 'Thread settings (customized)' : 'Thread settings'}
       type="button"
       aria-label={threadConfig?.hasCustomizations ? 'Thread settings, customized' : 'Thread settings'}
@@ -683,10 +722,26 @@
     transition:slide={DROPDOWN_TRANSITION}
   >
     {#each breakdownRows as row (row.id)}
-      <div class="summary-row {row.variant ?? ''}" data-tooltip={row.tooltip}>
-        <span class="summary-row-label">{row.label}</span>
-        <span class="count" class:zero={row.count === 0}>{row.count}</span>
-      </div>
+      {#if row.settingsTab}
+        <button
+          class="summary-row {row.variant ?? ''}"
+          type="button"
+          data-tooltip={row.tooltip}
+          aria-label={`Configure ${row.label}`}
+          onclick={() => {
+            closeSummary();
+            onOpenSettings(row.settingsTab);
+          }}
+        >
+          <span class="summary-row-label">{row.label}</span>
+          <span class="count" class:zero={row.count === 0}>{row.count}</span>
+        </button>
+      {:else}
+        <div class="summary-row {row.variant ?? ''}" data-tooltip={row.tooltip}>
+          <span class="summary-row-label">{row.label}</span>
+          <span class="count" class:zero={row.count === 0}>{row.count}</span>
+        </div>
+      {/if}
     {/each}
   </div>
 {/if}
@@ -822,6 +877,11 @@
     padding: 0 8px;
     flex-shrink: 0;
     cursor: default;
+    /* `font: inherit` first (the shorthand resets line-height), so buttons
+       pick up the meta row's xs sizing instead of the UA button font; the
+       explicit line-height below then applies to spans and buttons alike. */
+    font: inherit;
+    letter-spacing: inherit;
     line-height: 1;
     font-variant-numeric: tabular-nums;
     background: var(--accent-tint-bg);
@@ -832,6 +892,32 @@
 
   .meta-part:hover {
     border-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
+  }
+
+  /* Clickable stat chips (deep-link into the thread settings tab): the
+     stronger hover treatment matches the summary chip, marking these as real
+     buttons rather than recolored labels. */
+  button.meta-part {
+    cursor: pointer;
+  }
+
+  button.meta-part:hover {
+    border-color: color-mix(in srgb, var(--accent-primary) 55%, transparent);
+    background: var(--accent-tint-border);
+  }
+
+  button.meta-part.reduced:hover {
+    border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+    background: color-mix(in srgb, var(--warning) 16%, transparent);
+  }
+
+  button.meta-part:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+  }
+
+  button.meta-part:active {
+    transform: scale(var(--press-scale-icon));
   }
 
   .meta-part .count {
@@ -943,8 +1029,13 @@
   }
 
   /* Summary mode: the model name sits inline beside the title (replacing its
-     spot in the meta row), muted like the secondary metadata it summarises. */
+     spot in the meta row), muted like the secondary metadata it summarises.
+     A quiet button: clicking deep-links to the thread's Model settings tab. */
   .header-model {
+    padding: 0;
+    background: transparent;
+    border: 0;
+    font-family: inherit;
     font-size: var(--font-size-xs);
     color: var(--text-muted);
     white-space: nowrap;
@@ -952,14 +1043,32 @@
     text-overflow: ellipsis;
     flex: 0 1 auto;
     min-width: 0;
-    cursor: default;
+    cursor: pointer;
+    transition: color var(--transition-fast);
     /* Same 1px optical-centering nudge as the title, so the two sit level. */
     transform: translateY(1px);
+  }
+
+  .header-model:hover {
+    color: var(--text-secondary);
+  }
+
+  .header-model:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
   }
 
   .header-model.accent {
     color: var(--accent-primary);
     font-weight: 500;
+  }
+
+  /* Same-specificity .accent would otherwise win over :hover by source order,
+     leaving override-model buttons with no hover cue: brighten toward text
+     instead of dropping the accent identity. */
+  .header-model.accent:hover {
+    color: color-mix(in srgb, var(--accent-primary) 70%, var(--text-primary));
   }
 
   /* The single chip that stands in for the whole meta row in summary mode. A
@@ -1038,6 +1147,29 @@
     color: var(--text-secondary);
     border-radius: var(--radius-sm);
     cursor: default;
+  }
+
+  /* Clickable breakdown rows (deep-link like the inline chips): menu-item
+     hover, full-width button reset. Rows without a settings target (triggers)
+     stay plain divs. */
+  button.summary-row {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+
+  button.summary-row:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  button.summary-row:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
   }
 
   .summary-row .count {
