@@ -227,13 +227,15 @@ export const FIRE_GATE_OPERATORS: { value: HookCondition['operator']; label: str
 ];
 
 /**
- * One-line human summary of a hook's logic for the feed row. Reads the flat
- * `logic` dict the backend returns (discriminated on `action`).
+ * Short human summary of a hook's logic for the feed row. Reads the flat
+ * `logic` dict the backend returns (discriminated on `action`). Switches on
+ * the widened action so the wire's system action (`turn_metadata`, outside
+ * the authorable `HookAction` union) resolves to its case, not the fallback.
  */
 export function describeHookLogic(hook: Hook): string {
   const logic = hook.logic || {};
   const matcher = hook.matcher ? ` on ${hook.matcher}` : '';
-  switch (hook.action) {
+  switch (hook.action as HookAction | string) {
     case 'inject_context':
     case 'notify':
     case 'create_todo': {
@@ -275,6 +277,14 @@ export function describeHookLogic(hook: Hook): string {
     case 'run_workflow': {
       const workflowId = String(logic.workflow_id ?? '').trim();
       return workflowId ? `Run workflow ${workflowId}${matcher}` : '(no workflow)';
+    }
+    case 'turn_metadata': {
+      // The system turn-metadata hook: show the template it injects. Newlines
+      // are kept (the two-line [Time:]/[Trigger:] frame IS the content;
+      // desktop renders the summary pre-wrap, mobile's compact row collapses
+      // it to one ellipsized line by design).
+      const template = String(logic.text ?? '').trim();
+      return template || '(built-in template)';
     }
     default:
       return hook.action;

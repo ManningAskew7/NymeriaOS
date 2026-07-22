@@ -40,10 +40,15 @@ EXACT_MATCH: set[str] = {
     "lib/components/common/ThinkingIndicator.svelte",
     "lib/components/credentials/CredentialManagerPanel.svelte",
     "lib/components/credentials/index.ts",
+    # Hooks feed/form/api/store: ported verbatim between apps (only HookItem
+    # keeps a per-platform idiom; it stays in KNOWN_DRIFT).
+    "lib/components/hooks/HookFeed.svelte",
+    "lib/components/hooks/HookForm.svelte",
     "lib/components/triggers/TriggerHistoryPanel.svelte",
     "lib/stores/chatAppBindings.svelte.ts",
     "lib/stores/credentials.svelte.ts",
     "lib/stores/health.svelte.ts",
+    "lib/stores/hooks.svelte.ts",
     "lib/stores/models.svelte.ts",
     "lib/stores/serverSettings.svelte.ts",
     "lib/stores/threadConfig.svelte.ts",
@@ -52,6 +57,7 @@ EXACT_MATCH: set[str] = {
     "lib/services/api/cliproxy.ts",
     "lib/services/api/commands.ts",
     "lib/services/api/credentials.ts",
+    "lib/services/api/hooks.ts",
     "lib/services/api/humanizeError.ts",
     "lib/services/api/index.ts",
     "lib/services/api/ui-prompts.ts",
@@ -146,11 +152,10 @@ KNOWN_DRIFT: set[str] = {
     "lib/components/triggers/TriggerFeed.svelte",
     "lib/components/triggers/TriggerItem.svelte",
     "lib/components/triggers/TriggerSetupWizard.svelte",
-    # Hooks (feed/form ported from desktop; item diverges per platform idiom).
+    # Hooks: only the item diverges per platform idiom (compact touch row on
+    # mobile, expandable card on desktop); feed/form/api/store are EXACT_MATCH.
     # The desktop-only HooksConfigTab has no mobile twin, so it is not listed.
-    "lib/components/hooks/HookFeed.svelte",
     "lib/components/hooks/HookItem.svelte",
-    "lib/components/hooks/HookForm.svelte",
     # Workflows (feed ported from desktop; items diverge per platform idiom:
     # touch targets + :active on mobile, hover + entrance stagger on desktop)
     "lib/components/workflows/WorkflowFeed.svelte",
@@ -173,7 +178,6 @@ KNOWN_DRIFT: set[str] = {
     "lib/services/api/todos.ts",
     "lib/services/api/tools.ts",
     "lib/services/api/triggers.ts",
-    "lib/services/api/hooks.ts",
     # Types: desktop is superset
     "lib/types/index.ts",
     # Stores with platform-specific behavior
@@ -191,7 +195,6 @@ KNOWN_DRIFT: set[str] = {
     "lib/stores/todos.svelte.ts",
     "lib/stores/tools.svelte.ts",
     "lib/stores/triggers.svelte.ts",
-    "lib/stores/hooks.svelte.ts",
     "lib/stores/unifiedTools.svelte.ts",
     # Utils with platform tweaks
     "lib/utils/markdown.ts",
