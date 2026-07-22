@@ -1464,18 +1464,20 @@
      floating up where the bar used to live. The whole bar element moves as
      one unit, so the bar's own overflow:hidden clipping moves with it — no
      content gets cut off, and the text+dot stay in their normal relative
-     positions inside the (now relocated) bar. */
+     positions inside the (now relocated) bar. 12px (not the full 16px the
+     drop originally used) leaves a ~5px air gap between the bar text and
+     the prompt pill's top border; 16px landed the text within 1px of it. */
   .input-section :global(.context-status-bar) {
     transition: transform var(--sidebar-collapse-duration) var(--sidebar-collapse-easing);
     /* Promote above the input-area (both default to z-index:1 from the
        global `.input-section > *` rule, and source order would put
        input-area on top — swallowing dot clicks once the sidebar-closed
-       translateY(16px) below pushes the bar's footprint over the prompt
+       translateY(12px) below pushes the bar's footprint over the prompt
        input). Bumping to 2 keeps the dot reachable in every state. */
     z-index: 2;
   }
   .input-section:not(.both-open) :global(.context-status-bar) {
-    transform: translateY(16px);
+    transform: translateY(12px);
   }
 
   /* Sidebar collapse: only the ::before / ::after sheets slide. The bar

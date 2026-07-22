@@ -760,7 +760,13 @@
   .message-input {
     flex: 1;
     min-width: 0;
-    min-height: 22px;
+    /* One full line needs 29px under border-box: 21px line box (14px font
+       x 1.5 line-height) + 4px top and bottom padding. The old 22px floor
+       let the empty textarea render 7px short, shaving the placeholder's
+       descenders (the "y" in "Type a message…") flat at the clip edge; the
+       auto-resize JS hid the bug the moment a first character set an
+       explicit ~29px height. */
+    min-height: 29px;
     max-height: 160px;
     padding: 4px 6px;
     background: transparent;
