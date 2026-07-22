@@ -44,6 +44,9 @@ __pycache__/
 *.egg
 .venv/
 venv/
+# uv lockfile from ad-hoc local `uv` runs; dependency truth is
+# pyproject.toml + requirements*.txt, no project flow consumes a repo lock.
+uv.lock
 dist/
 build/
 *.whl
