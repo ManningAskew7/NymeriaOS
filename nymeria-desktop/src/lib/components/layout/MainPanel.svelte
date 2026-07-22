@@ -44,6 +44,9 @@
   } from '$lib/types';
 
   let showThreadSettings = $state(false);
+  // Which tab the settings panel opens on: the header's stat chips deep-link
+  // to their metric's tab; the cog (no arg) opens the default.
+  let threadSettingsTab = $state('behavior');
   let showAttachmentWarningModal = $state(false);
   let pendingInsertText = $state('');
   let attachmentValidationResult = $state<AttachmentValidationResult | null>(null);
@@ -1172,7 +1175,10 @@
     <ThreadHeader
       thread={threadsStore.currentThread}
       threadConfig={currentThreadConfig}
-      onOpenSettings={() => (showThreadSettings = true)}
+      onOpenSettings={(tab) => {
+        threadSettingsTab = tab ?? 'behavior';
+        showThreadSettings = true;
+      }}
     />
   {/if}
 
@@ -1214,6 +1220,7 @@
   <ThreadSettingsPanel
     thread={threadsStore.currentThread}
     threadConfig={currentThreadConfig}
+    initialTab={threadSettingsTab}
     onClose={() => (showThreadSettings = false)}
     onSaved={handleConfigSaved}
   />
