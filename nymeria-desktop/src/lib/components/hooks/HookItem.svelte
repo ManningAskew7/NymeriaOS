@@ -199,9 +199,17 @@
         size="sm"
         variant="outlined"
       />
-      <span class="expand-indicator" class:rotated={expanded} aria-hidden="true">
+      <button
+        class="expand-btn"
+        class:rotated={expanded}
+        type="button"
+        tabindex="-1"
+        aria-label={expanded ? 'Collapse hook details' : 'Expand hook details'}
+        aria-expanded={expanded}
+        onclick={toggleExpand}
+      >
         <Icon name="chevronRight" size={12} />
-      </span>
+      </button>
     </div>
   </div>
 
@@ -390,11 +398,12 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  /* Hover tint only while the pointer is over the actual disclosure control:
-     the full card lighting up used to promise whole-card clickability, which
-     the a11y restructure removed. (:has is fine in WebView2; without it the
-     tint is simply absent, cosmetic only.) */
-  .hook-card:has(.header-main:hover) {
+  /* Hover tint only while the pointer is over a disclosure control (title
+     button or chevron): the full card lighting up used to promise whole-card
+     clickability, which the a11y restructure removed. (:has is fine in
+     WebView2; without it the tint is simply absent, cosmetic only.) */
+  .hook-card:has(.header-main:hover),
+  .hook-card:has(.expand-btn:hover) {
     background: var(--bg-hover);
   }
 
@@ -528,18 +537,31 @@
     gap: var(--spacing-sm);
   }
 
-  /* Decorative disclosure state mirror (the header button is the control). */
-  .expand-indicator {
+  /* Secondary pointer target for expand/collapse. The header title button is
+     the primary, keyboard-reachable control; this one sits at tabindex="-1"
+     so keyboard users get one stop per card, while pointer users keep the
+     conventional chevron affordance. */
+  .expand-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 24px;
     height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
     color: var(--text-muted);
     transition: transform 120ms var(--ease-out);
+    cursor: pointer;
   }
 
-  .expand-indicator.rotated {
+  .expand-btn:hover {
+    background: var(--bg-elevated-2);
+    color: var(--text-primary);
+  }
+
+  .expand-btn.rotated {
     transform: rotate(90deg);
   }
 
