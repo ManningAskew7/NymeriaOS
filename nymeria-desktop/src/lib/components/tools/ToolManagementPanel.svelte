@@ -952,21 +952,17 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
-    flex: 1 1 auto;
-    min-height: 0;
   }
 
-  /* Scrollable region inside the Tools tab. Right padding keeps content
-     clear of the scrollbar, which itself sits flush with the Settings
-     modal's right border (parent reset via .tab-tools-flex margin). */
+  /* Settings scroll standard: the tab body flows in the host shell's single
+     scroll surface (SettingsPanel's .settings-content owns the scrollbar,
+     flush at the panel edge). This wrapper is a plain flow column — it must
+     not scroll, fill, or pad on its own. (Its old inner scroll served a
+     panel-local save bar that the unified settings footer replaced.) */
   .panel-scroll {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
-    padding-right: var(--spacing-lg);
   }
 
   .loading {

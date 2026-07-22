@@ -351,13 +351,13 @@ h4 {
   font-size: var(--font-size-sm);
 }
 
-/* Scrollbar styling — auto-hide. The track always reserves a constant 8px
-   gutter (so content never shifts), but the thumb is transparent at rest and
-   only fades in while the pointer is over a scrollable area (i.e. when you go
-   to scroll it), then deepens when you grab the thumb itself. Keeps the reading
-   surface clean without the layout jump of a grow-on-hover bar. (A scroll area
-   reached only by keyboard stays clean too; ask if you want it to flash on
-   active scroll, which needs a small script.) */
+/* Scrollbar styling — visible when scrollable (app-wide standard). The track
+   always reserves a constant 8px gutter (so content never shifts) and the
+   thumb rests at a subtle border tone wherever content actually overflows: a
+   scrollable region should look scrollable at a glance, everywhere, rather
+   than only revealing itself on hover. The thumb deepens when the pointer is
+   over it or dragging. Containers that fit their content render no thumb at
+   all (WebKit omits it), so short views stay clean automatically. */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -368,16 +368,13 @@ h4 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: transparent;
+  background: var(--border-default);
   border-radius: var(--radius-full);
   transition: background var(--transition-normal);
 }
 
-:hover::-webkit-scrollbar-thumb {
-  background: var(--border-default);
-}
-
-::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
   background: var(--text-muted);
 }
 

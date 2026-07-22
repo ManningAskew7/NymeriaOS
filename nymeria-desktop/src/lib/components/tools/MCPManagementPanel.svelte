@@ -135,19 +135,16 @@
 
 <style>
   .mcp-management {
-    height: 100%;
-    min-height: 0;
     display: flex;
     flex-direction: column;
-    position: relative;
   }
 
-  .panel-scroll {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 1rem 1.25rem;
-  }
+  /* Settings scroll standard: the tab body flows in SettingsPanel's
+     .settings-content, the single scroll surface (scrollbar flush at the
+     panel edge). .panel-scroll is deliberately unstyled — no own scroll,
+     fill, or padding: the shell's content padding applies, keeping MCP
+     content aligned with every other tab, and children keep spacing
+     themselves with their own margins as before. */
 
   .loading {
     padding: 2rem;
