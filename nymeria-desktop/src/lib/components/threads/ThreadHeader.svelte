@@ -108,6 +108,11 @@
   let callableCount = $state<number | null>(null);
   let callableTooltip = $state('');
   let callableRequestId = 0;
+  // Non-reactive markers for which thread the current counts belong to, so
+  // the offline guards below can keep last-known counts through a connection
+  // blip without ever showing another thread's numbers.
+  let skillCountsThreadId: string | null = null;
+  let callableCountsThreadId: string | null = null;
 
   $effect(() => {
     if (!skillsStore.enabledGlobalLoaded && !skillsStore.enabledGlobalLoading) {
@@ -117,10 +122,34 @@
 
   $effect(() => {
     const threadId = thread.id;
+    // Tracked so a backend reconnect refires a fetch that failed while the
+    // link was down (the count would otherwise stay null until the thread
+    // config next changed). Health polling runs from the always-mounted
+    // right panel, so `connected` reliably flips true once the backend is
+    // reachable.
+    const connected = healthStore.connected;
     const enabledSkillsKey = (threadConfig?.enabledSkills ?? []).join('\x1f');
     const disabledSkillsKey = (threadConfig?.disabledSkills ?? []).join('\x1f');
     const globalSkillsKey = skillsStore.enabledGlobal.join('\x1f');
     const requestId = ++activeSkillRequestId;
+
+    if (!connected) {
+      // Offline (or health not yet confirmed at startup): skip the doomed
+      // request and keep the last-known counts on screen — a health-poll
+      // blip must not blank the header. Clear only if the open thread
+      // changed, where stale foreign counts would be worse than none. The
+      // bumped requestId already drops any in-flight response.
+      if (skillCountsThreadId !== threadId) {
+        skillCountsThreadId = threadId;
+        activeSkillCount = null;
+        activeSkillTooltip = '';
+        activeKitCount = null;
+        activeKitTooltip = '';
+      }
+      return;
+    }
+
+    skillCountsThreadId = threadId;
     activeSkillCount = null;
     activeSkillTooltip = '';
     activeKitCount = null;
@@ -156,6 +185,8 @@
 
   $effect(() => {
     const threadId = thread.id;
+    // Tracked for the same reconnect-refire reason as the skills effect above.
+    const connected = healthStore.connected;
     const disabledToolsKey = (threadConfig?.disabledTools ?? []).join('\x1f');
     const callableTeamKey = `${threadConfig?.callableTeamId ?? ''}\x1f${threadConfig?.callableTeamName ?? ''}`;
     const callableStateKey = `${threadConfig?.callable ?? false}\x1f${threadConfig?.callableName ?? ''}`;
@@ -166,6 +197,19 @@
       .map((team) => `${team.id}:${team.name}:${team.threadIds.join(',')}`)
       .join('\x1f');
     const requestId = ++callableRequestId;
+
+    if (!connected) {
+      // Same offline posture as the skills effect: keep last-known counts
+      // through a blip, clear only on a thread change, never fetch.
+      if (callableCountsThreadId !== threadId) {
+        callableCountsThreadId = threadId;
+        callableCount = null;
+        callableTooltip = '';
+      }
+      return;
+    }
+
+    callableCountsThreadId = threadId;
     callableCount = null;
     callableTooltip = '';
 
@@ -238,12 +282,14 @@
 
   type MetaPart = {
     id: string;
-    text: string;
-    /* Shown instead of `text` when the row is too crowded for full labels. The
-       dot color already encodes the category, so we keep only the count and
-       drop the unit word. Word-only metrics use '' so just their dot remains.
-       Omit to keep the full text in compact mode (used for the model name). */
-    compactText?: string;
+    /* Numeric chips render `count` (semibold, primary) beside `label` (muted).
+       Word-only chips (instructions, callable) omit `count`. When the row is
+       too crowded for full labels the chip collapses to the count alone, or —
+       for word-only chips — to `compactIcon`. The model chip omits both, so
+       it keeps its full label in compact mode. */
+    count?: number;
+    label: string;
+    compactIcon?: 'fileText' | 'users';
     tooltip?: string;
     variant?: 'default' | 'reduced' | 'accent';
   };
@@ -254,7 +300,7 @@
     if (effectiveModel) {
       parts.push({
         id: 'model',
-        text: effectiveModel.name,
+        label: effectiveModel.name,
         tooltip: `${effectiveModel.full}${effectiveModel.isOverride ? ' (thread override)' : ''}`,
         variant: effectiveModel.isOverride ? 'accent' : 'default',
       });
@@ -262,8 +308,8 @@
     if (activeToolCount !== null) {
       parts.push({
         id: 'tools',
-        text: `${activeToolCount} tools`,
-        compactText: `${activeToolCount}`,
+        count: activeToolCount,
+        label: 'tools',
         tooltip: toolsTooltip,
         variant: disabledNonMcpCount > 0 ? 'reduced' : 'default',
       });
@@ -271,8 +317,8 @@
     if (activeMcpToolCount !== null) {
       parts.push({
         id: 'mcp',
-        text: `${activeMcpToolCount} MCP`,
-        compactText: `${activeMcpToolCount}`,
+        count: activeMcpToolCount,
+        label: 'MCP',
         tooltip: mcpTooltip,
         variant: disabledMcpCount > 0 ? 'reduced' : 'default',
       });
@@ -280,8 +326,8 @@
     if (callableCount !== null && callableCount > 0) {
       parts.push({
         id: 'callables',
-        text: `${callableCount} callable`,
-        compactText: `${callableCount}`,
+        count: callableCount,
+        label: 'callable',
         tooltip: callableTooltip,
         variant: 'default',
       });
@@ -289,8 +335,8 @@
     if (activeSkillCount !== null && activeSkillCount > 0) {
       parts.push({
         id: 'skills',
-        text: `${activeSkillCount} skill${activeSkillCount !== 1 ? 's' : ''}`,
-        compactText: `${activeSkillCount}`,
+        count: activeSkillCount,
+        label: `skill${activeSkillCount !== 1 ? 's' : ''}`,
         tooltip: activeSkillTooltip,
         variant: 'default',
       });
@@ -298,8 +344,8 @@
     if (activeKitCount !== null && activeKitCount > 0) {
       parts.push({
         id: 'kits',
-        text: `${activeKitCount} kit${activeKitCount !== 1 ? 's' : ''}`,
-        compactText: `${activeKitCount}`,
+        count: activeKitCount,
+        label: `kit${activeKitCount !== 1 ? 's' : ''}`,
         tooltip: activeKitTooltip,
         variant: 'default',
       });
@@ -307,8 +353,8 @@
     if (triggerCount > 0) {
       parts.push({
         id: 'triggers',
-        text: `${triggerCount} trigger${triggerCount !== 1 ? 's' : ''}`,
-        compactText: `${triggerCount}`,
+        count: triggerCount,
+        label: `trigger${triggerCount !== 1 ? 's' : ''}`,
         tooltip: `${triggerCount} active trigger${triggerCount !== 1 ? 's' : ''}`,
         variant: 'default',
       });
@@ -316,8 +362,8 @@
     if (hasInstructions) {
       parts.push({
         id: 'instructions',
-        text: 'instructions',
-        compactText: '',
+        label: 'instructions',
+        compactIcon: 'fileText',
         tooltip: instructionsTooltip,
         variant: 'default',
       });
@@ -325,8 +371,8 @@
     if (isCallable) {
       parts.push({
         id: 'callable',
-        text: 'callable',
-        compactText: '',
+        label: 'callable',
+        compactIcon: 'users',
         tooltip: 'This thread can be called by other threads',
         variant: 'accent',
       });
@@ -377,9 +423,10 @@
   const summaryLabel = $derived(activeToolCount !== null ? `${activeToolCount} tools` : 'Details');
   const showSummaryChip = $derived(activeToolCount !== null || breakdownRows.length > 0);
 
-  // The metrics row keeps as many full labels as the width allows and collapses
-  // the rest, right to left, to counts/dots (see MetaPart.compactText) so it
-  // always shows the most information that fits. The title yields space first
+  // The metrics row keeps as many full-label chips as the width allows and
+  // collapses the rest, right to left, to their compact forms (count-only or
+  // icon-only chips, see MetaPart) so it always shows the most information
+  // that fits. The title yields space first
   // (it shrinks before the meta), so the meta keeps expanding until even a
   // fully-truncated title can't free more room. This needs real widths, so we
   // measure each item in both forms.
@@ -396,11 +443,7 @@
   // them instead of re-rendering (which would flicker during a drag).
   let fullWidths: number[] = [];
   let compactWidths: number[] = [];
-  let metaGap = 14;
-
-  function compactOf(part: MetaPart): string {
-    return part.compactText ?? part.text;
-  }
+  let metaGap = 8;
 
   // The horizontal space the meta can occupy if the title shrinks all the way to
   // its min-width. `metaLeft - titleWidth` is constant no matter how truncated
@@ -438,7 +481,7 @@
   // to expand. The two passes force every item to one form so we can read both
   // its widths; this only runs when the metrics themselves change.
   $effect(() => {
-    const contentKey = metaParts.map((p) => `${p.id}:${p.text}`).join('|');
+    const contentKey = metaParts.map((p) => `${p.id}:${p.count ?? ''}:${p.label}`).join('|');
     void contentKey;
     if (!metaEl) return;
     let cancelled = false;
@@ -553,7 +596,18 @@
       <div class="meta" bind:this={metaEl} transition:slide={{ axis: 'x', duration: 240, easing: cubicOut }}>
         {#each metaParts as part, i (part.id)}
           {@const showFull = measuring === 'full' || (measuring !== 'compact' && i < fullCount)}
-          <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} data-tooltip={part.tooltip}>{showFull ? part.text : compactOf(part)}</span>
+          <span class="meta-part meta-part--{part.id}" class:reduced={part.variant === 'reduced'} class:accent={part.variant === 'accent'} data-tooltip={part.tooltip}>
+            {#if showFull}
+              {#if part.count !== undefined}<span class="count">{part.count}</span>{/if}
+              <span class="label">{part.label}</span>
+            {:else if part.count !== undefined}
+              <span class="count">{part.count}</span>
+            {:else if part.compactIcon}
+              <Icon name={part.compactIcon} size={11} />
+            {:else}
+              <span class="label">{part.label}</span>
+            {/if}
+          </span>
         {/each}
       </div>
     {/if}
@@ -676,8 +730,8 @@
     min-width: 4rem;
     /* Optical centering nudge — flex align-items:center centers the line box,
        but the bold font's ink sits slightly above the line-box center, so the
-       text reads as too high. 1px down matches the offset already applied to
-       the .meta row beside it. */
+       text reads as too high without a 1px drop. (The chips beside it are
+       self-centered boxes and need no counterpart nudge.) */
     transform: translateY(1px);
   }
 
@@ -740,73 +794,94 @@
   .meta {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 8px;
     font-size: var(--font-size-xs);
-    color: var(--text-secondary);
-    line-height: 1.25;
     letter-spacing: 0.005em;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
-    /* Content-sized: the row is exactly as wide as its labels and yields to the
+    /* Content-sized: the row is exactly as wide as its chips and yields to the
        title only after the title has shrunk to its minimum (see flex-shrink
        values). measure() decides when the labels no longer fit and collapses
-       them to counts; the cog stays pinned right via .actions margin-left. */
+       them to counts; the cog stays pinned right via .actions margin-left.
+       The chips are self-contained boxes centered by the flex row, so the old
+       dot-row's optical-centering translate and dot-ring padding are gone. */
     flex: 0 1 auto;
-    /* 2px left padding gives the first meta-part's dot room to render its 1px
-       outer ring without being clipped by overflow:hidden. */
-    padding-left: 2px;
-    /* 2px downward nudge for the text labels' optical centering against the
-       title beside them. The dots ride with this row, and now land at Y=2
-       alongside the text — the ::before rule below uses a plain -50% with
-       no extra counter-shift. */
-    transform: translate(1px, 2px);
   }
 
+  /* Accent-tinted stat chips (DESIGN.md §3): subtle tinted fill + border from
+     the theme's accent-tint tokens so every theme (light/dark/glass) inherits,
+     count semibold in primary text, unit label muted. Colour still encodes
+     state on top of the shared tint: .reduced flips a chip to the warning
+     tint (tools turned off), .accent marks an override/callable. */
   .meta-part {
-    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 8px;
     flex-shrink: 0;
     cursor: default;
+    line-height: 1;
     font-variant-numeric: tabular-nums;
-    padding-left: 11px;
-    --dot-color: var(--text-muted);
+    background: var(--accent-tint-bg);
+    border: 1px solid var(--accent-tint-border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast), background var(--transition-fast);
   }
 
-  .meta-part::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 50%;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--dot-color);
-    /* -50% centers the dot on the meta-part. Against the .meta row's
-       translateY(2px) the dots land at Y=2, level with the text. */
-    transform: translateY(-50%);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--dot-color) 35%, transparent);
-    transition: box-shadow var(--transition-fast);
+  .meta-part:hover {
+    border-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
   }
 
-  .meta-part:hover::before {
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot-color) 18%, transparent);
+  .meta-part .count {
+    font-weight: 600;
+    color: var(--text-primary);
   }
 
-  /* Every metric dot keeps the neutral muted gray set on .meta-part above.
-     These dots mark categories (model, tools, MCP, skills, …), not health, so a
-     per-category rainbow just read as noise: the category is already named by
-     the label and its tooltip. Colour here is reserved for genuine state — the
-     .reduced warning below (tools turned off) and the .meta-toggle health cue —
-     plus the single accent on a .accent override. */
+  .meta-part .label {
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  /* The model chip's label is the thread's identity line, not a unit word, so
+     it reads a step stronger than the other labels. */
+  .meta-part--model .label {
+    color: var(--text-secondary);
+  }
+
+  /* Compact word-only chips collapse to a small icon (see MetaPart.compactIcon). */
+  .meta-part :global(svg) {
+    display: block;
+    color: var(--text-muted);
+  }
 
   .meta-part.reduced {
-    color: var(--warning);
-    --dot-color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 9%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 32%, transparent);
   }
 
+  .meta-part.reduced:hover {
+    border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+  }
+
+  .meta-part.reduced .count,
+  .meta-part.reduced .label {
+    color: var(--warning);
+  }
+
+  /* Visibly stronger ring than the default tint border (which sits at 30%
+     alpha), so override/callable chips read as marked, not just recolored. */
   .meta-part.accent {
+    border-color: color-mix(in srgb, var(--accent-primary) 50%, transparent);
+  }
+
+  .meta-part.accent .label {
     color: var(--accent-primary);
-    font-weight: 500;
+  }
+
+  .meta-part.accent :global(svg) {
+    color: var(--accent-primary);
   }
 
   .actions {
@@ -878,8 +953,7 @@
     flex: 0 1 auto;
     min-width: 0;
     cursor: default;
-    /* Same optical-centering nudge the .meta row uses, so it sits level with
-       the title beside it. */
+    /* Same 1px optical-centering nudge as the title, so the two sit level. */
     transform: translateY(1px);
   }
 
@@ -898,13 +972,12 @@
     padding: 0 8px;
     font-size: var(--font-size-xs);
     color: var(--text-secondary);
-    /* Blends into the header at rest (no fill, no visible border); the hover /
-       open background is the only interactivity cue, matching the other quiet
-       header controls. The 1px transparent border keeps the box size steady so
-       a hover/open fill never nudges the chevron. */
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
+    /* Same accent-tinted treatment as the inline stat chips, so summary mode
+       shares the meta row's visual vocabulary; hover/open strengthen the
+       border and text as the interactivity cue. */
+    background: var(--accent-tint-bg);
+    border: 1px solid var(--accent-tint-border);
+    border-radius: var(--radius-md);
     cursor: pointer;
     white-space: nowrap;
     flex-shrink: 0;
@@ -914,7 +987,10 @@
 
   .summary-chip:hover {
     color: var(--text-primary);
-    background: var(--bg-hover);
+    /* Must be clearly stronger than the resting 30%-alpha tint border: this
+       is a real button, so the hover cue has to be perceptible. */
+    border-color: color-mix(in srgb, var(--accent-primary) 55%, transparent);
+    background: var(--accent-tint-border);
   }
 
   .summary-chip:focus-visible {
@@ -935,8 +1011,9 @@
      the app's disclosure arrows don't do a 180° flip, and the popover's
      presence is the real open cue. */
   .summary-chip.open {
-    background: var(--bg-hover);
     color: var(--text-primary);
+    border-color: color-mix(in srgb, var(--accent-primary) 55%, transparent);
+    background: var(--accent-tint-border);
   }
 
   /* Breakdown popover (fixed-positioned + portaled). Chrome mirrors the other
