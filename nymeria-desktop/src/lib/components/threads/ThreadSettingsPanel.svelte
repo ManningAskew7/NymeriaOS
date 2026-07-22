@@ -1578,7 +1578,10 @@
     flex-shrink: 0;
   }
 
-  /* No scrollbar-width here: that switches WebView2/Chromium to the standard
+  /* The settings scroll standard (shared with SettingsPanel): this column is
+     the ONE scroll surface for every tab, scrollbar flush at the panel edge;
+     tab bodies flow and never create their own vertical scroll region.
+     No scrollbar-width here: that switches WebView2/Chromium to the standard
      (white) scrollbar and ignores the app's global ::-webkit-scrollbar theme.
      Letting it inherit keeps the themed thin scrollbar. The tab bodies supply
      their own padding, so the content column adds none. */

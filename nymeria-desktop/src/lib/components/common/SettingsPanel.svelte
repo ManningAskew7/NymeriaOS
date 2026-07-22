@@ -2583,7 +2583,7 @@
 
   <!-- System Prompt Tab -->
   {#if activeTab === 'persona' && isAdmin}
-    <div class="tab-content tab-tools-flex">
+    <div class="tab-content">
       <SystemPromptEditor
         bind:this={systemPromptEditor}
         bind:dirtyCount={personaDirtyCount}
@@ -2664,14 +2664,14 @@
 
   <!-- Global Memory Tab -->
   {#if activeTab === 'memory'}
-    <div class="tab-content tab-tools-flex">
+    <div class="tab-content">
       <GlobalMemoryEditor />
     </div>
   {/if}
 
   <!-- Tools Tab -->
   {#if activeTab === 'tools'}
-    <div class="tab-content tab-tools-flex">
+    <div class="tab-content">
       <ToolManagementPanel
         bind:this={toolsPanel}
         bind:dirtyCount={toolsDirtyCount}
@@ -2684,7 +2684,7 @@
 
   <!-- MCP Tab -->
   {#if activeTab === 'mcp'}
-    <div class="tab-content tab-tools-flex">
+    <div class="tab-content">
       <MCPManagementPanel
         bind:this={mcpPanel}
         bind:dirtyCount={mcpDirtyCount}
@@ -2697,7 +2697,7 @@
 
   <!-- Connections Tab -->
   {#if activeTab === 'credentials'}
-    <div class="tab-content tab-tools-flex">
+    <div class="tab-content">
       <CredentialManagerPanel />
     </div>
   {/if}
@@ -3163,6 +3163,11 @@
   }
 
   /* --- Right content area --- */
+  /* The settings scroll standard (shared with ThreadSettingsPanel): this
+     column is the ONE scroll surface for every tab, so the scrollbar always
+     sits flush at the panel edge. Tab bodies flow and never create their own
+     vertical scroll region (native textarea scroll and bounded nested card
+     bodies are fine); pinned chrome (nav rail, footer) lives outside. */
   .settings-content {
     flex: 1;
     min-width: 0;
@@ -3194,16 +3199,13 @@
     min-height: 0;
   }
 
-  /* Previously these two modifiers imposed their own heights / min-widths
-     which made the modal grow on certain tabs. Now they just fill the
-     fixed content frame so layout stays identical across every tab. */
+  /* Previously this modifier imposed its own heights / min-widths which made
+     the modal grow on certain tabs. Now it just fills the fixed content
+     frame so layout stays identical across every tab. (Its sibling
+     .tab-tools-flex fill died with the Tools/MCP inner scroll: those tabs
+     flow in the outer .settings-content scroll like every other tab.) */
   .tab-content-full {
     min-height: 0;
-  }
-
-  .tab-tools-flex {
-    min-height: 0;
-    flex: 1;
   }
 
   .field {
