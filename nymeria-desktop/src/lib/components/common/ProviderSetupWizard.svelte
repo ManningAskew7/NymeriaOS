@@ -3,10 +3,10 @@
   import type {
     CLIProxyProviderInfo,
     LLMProvider,
+    LLMProviderSpec,
     LLMProviderTestResponse,
     OpenAIApiMode,
     ServerSettings,
-    ServerSettingsUpdate,
   } from '$lib/types';
   import { modelOptions } from '$lib/utils/modelOptions';
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
@@ -15,9 +15,16 @@
     DEFAULT_OPENAI_CLIPROXY_BASE_URL,
     normalizeBaseUrl,
   } from '$lib/utils/providerMapping';
+  import {
+    buildProviderSaveUpdate,
+    detectCliproxyEntry,
+    providerSupportsApiMode,
+    registryProviderGroups,
+  } from '$lib/utils/onboardingSetup';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
+  import ProviderSelect from './ProviderSelect.svelte';
   import SegmentedTabs from './SegmentedTabs.svelte';
 
   interface Props {
@@ -78,49 +85,22 @@
     }
   ];
 
-  // Settings -> wizard reverse mapping. Codex only when the saved route is
-  // actually in Responses mode; the chat_completions shape is shared by the
-  // other CLIs, so resolve by the saved model's catalog default and fall back
-  // to the first chat-mode entry. This keeps the save path (which writes the
-  // selected spec's api_mode) from silently flipping a Gemini/Kimi/Grok route
-  // to Responses mode.
-  function detectCliproxySelection(settings: ServerSettings): string {
-    if (settings.llm_provider === 'anthropic') return 'claude';
-    if ((settings.openai_api_mode ?? 'responses') === 'responses') return 'codex';
-    const model = (settings.llm_model || '').trim();
-    const byModel = cliproxyCatalog.find(
-      (entry) => entry.api_mode === 'chat_completions' && entry.default_model === model
-    );
-    if (byModel) return byModel.id;
-    const chatEntry = cliproxyCatalog.find((entry) => entry.api_mode === 'chat_completions');
-    return chatEntry?.id ?? 'codex';
-  }
   type WizardStep = 1 | 2 | 3;
   type TestStatus = 'idle' | 'testing' | 'success' | 'error';
   type SaveStatus = 'idle' | 'saving' | 'success' | 'error';
 
   let { isOpen, currentSettings, onClose, onSaved = () => {} }: Props = $props();
 
-  const directProviders: { value: LLMProvider; label: string }[] = [
-    { value: 'anthropic', label: 'Anthropic' },
-    { value: 'openai', label: 'OpenAI' },
-    { value: 'openrouter', label: 'OpenRouter' },
-  ];
-
-
-
-  const providerLabels: Record<string, string> = {
-    anthropic: 'Anthropic',
-    openai: 'OpenAI',
-    openrouter: 'OpenRouter',
-  };
-
   let step = $state<WizardStep>(1);
   let authMethod = $state<AuthMethod>('api_key');
   let cliproxyCatalog = $state<CLIProxyProviderInfo[]>(FALLBACK_CLIPROXY_CATALOG);
+  // Full registry catalog from GET /settings/llm/providers (130+ providers).
+  // Empty until the backend answers; registryProviderGroups has an offline
+  // fallback of the ids every backend knows.
+  let providerCatalog = $state<LLMProviderSpec[]>([]);
   let cliproxySelection = $state('claude');
   let directProvider = $state<LLMProvider>('anthropic');
-  let model = $state('claude-sonnet-4-20250514');
+  let model = $state('claude-sonnet-4-6');
   let apiKey = $state('');
   let baseUrl = $state('');
   let openaiApiMode = $state<OpenAIApiMode>('responses');
@@ -146,6 +126,42 @@
     authMethod === 'cliproxy' ? `cliproxy:${cliproxySelection}` : 'api_key'
   );
 
+  function specFor(provider: string): LLMProviderSpec | null {
+    const target = (provider || '').trim().toLowerCase();
+    return (
+      providerCatalog.find((s) => s.id === target || (s.aliases ?? []).includes(target)) ?? null
+    );
+  }
+
+  // Registry spec for the selected direct provider (null offline or on the
+  // cliproxy path, where the CLIProxy catalog entry is authoritative).
+  const spec = $derived<LLMProviderSpec | null>(
+    authMethod === 'api_key' ? specFor(directProvider) : null
+  );
+  const providerGroups = $derived(registryProviderGroups(providerCatalog));
+  const needsKey = $derived(
+    authMethod === 'cliproxy' || (spec?.requires_api_key ?? true)
+  );
+
+  // Whether the API-mode picker applies. Registry spec drives the direct
+  // path; the no-spec fallback keeps the picker for openai/openrouter when
+  // the catalog is unreachable (the pre-registry behavior).
+  const supportsApiModePick = $derived(
+    authMethod === 'cliproxy'
+      ? effectiveProvider === 'openai'
+      : providerSupportsApiMode(spec)
+        || (!spec && (directProvider === 'openai' || directProvider === 'openrouter'))
+  );
+
+  // The api-mode value the test and save payloads carry, or null when the
+  // provider has a single API surface. CLIProxy entries pin their own mode.
+  const effectiveApiMode = $derived.by<OpenAIApiMode | null>(() => {
+    if (authMethod === 'cliproxy') {
+      return (cliproxySpec?.api_mode as OpenAIApiMode) || openaiApiMode;
+    }
+    return supportsApiModePick ? openaiApiMode : null;
+  });
+
   function methodLabel(): string {
     if (authMethod === 'api_key') return 'Direct API key';
     return `Subscription OAuth: ${cliproxySpec?.label ?? cliproxySelection}`;
@@ -154,7 +170,7 @@
   const normalizedProviderBaseUrl = $derived(getNormalizedBaseUrl());
   const testCanRun = $derived(
     model.trim().length > 0
-      && apiKey.trim().length > 0
+      && (!needsKey || apiKey.trim().length > 0)
       && (authMethod === 'api_key' || normalizedProviderBaseUrl.length > 0)
   );
   const currentTestSignature = $derived(getTestSignature());
@@ -175,15 +191,24 @@
   });
 
   async function loadCatalog() {
-    const catalog = await api.getCLIProxyCatalog();
-    if (catalog.length > 0) {
-      cliproxyCatalog = catalog;
+    const [cliproxy, providers] = await Promise.all([
+      api.getCLIProxyCatalog(),
+      api.getLLMProviderCatalog(),
+    ]);
+    if (cliproxy.length > 0) {
+      cliproxyCatalog = cliproxy;
     }
+    providerCatalog = providers;
   }
 
   $effect(() => {
     if (effectiveProvider !== lastProvider) {
       model = defaultModelFor(effectiveProvider);
+      // A base-URL override belongs to the provider it was typed for; the
+      // cliproxy path re-derives its own URL in the authKey effect below.
+      if (authMethod === 'api_key') {
+        baseUrl = '';
+      }
       lastProvider = effectiveProvider;
       resetVerification();
     }
@@ -225,18 +250,18 @@
     if (currentSettings) {
       model = currentSettings.llm_model || defaultModelFor(currentSettings.llm_provider);
       openaiApiMode = currentSettings.openai_api_mode ?? 'responses';
-      if (currentSettings.llm_provider === 'anthropic' && currentSettings.llm_base_url) {
+      const isCliproxyShape =
+        (currentSettings.llm_provider === 'anthropic' || currentSettings.llm_provider === 'openai')
+        && !!currentSettings.llm_base_url;
+      if (isCliproxyShape) {
         authMethod = 'cliproxy';
-        cliproxySelection = 'claude';
-        baseUrl = currentSettings.llm_base_url;
-      } else if (currentSettings.llm_provider === 'openai' && currentSettings.llm_base_url) {
-        authMethod = 'cliproxy';
-        cliproxySelection = detectCliproxySelection(currentSettings);
-        baseUrl = currentSettings.llm_base_url;
+        cliproxySelection = detectCliproxyEntry(cliproxyCatalog, currentSettings);
+        baseUrl = currentSettings.llm_base_url ?? '';
       } else {
         authMethod = 'api_key';
         directProvider = currentSettings.llm_provider;
-        baseUrl = '';
+        // Keep a saved base-URL override visible so re-saving does not wipe it.
+        baseUrl = currentSettings.llm_base_url ?? '';
       }
     } else {
       authMethod = 'api_key';
@@ -251,16 +276,25 @@
   }
 
   function defaultModelFor(provider: LLMProvider): string {
-    if (provider === 'anthropic') return 'claude-sonnet-4-20250514';
-    return modelOptions[provider]?.[0]?.value ?? '';
+    return (
+      specFor(provider)?.default_model
+      ?? modelOptions[provider]?.[0]?.value
+      ?? (provider === 'anthropic' ? 'claude-sonnet-4-6' : '')
+    );
   }
 
   function providerLabel(provider: LLMProvider): string {
-    return providerLabels[provider] ?? provider;
+    return specFor(provider)?.label ?? provider;
   }
 
   function getNormalizedBaseUrl(): string {
-    if (authMethod === 'api_key') return '';
+    // Direct providers: optional override; empty means the registry default.
+    // anthropic/openai never carry one (their base_url slot is the CLIProxy
+    // detection signal; the field is hidden for them in step 2).
+    if (authMethod === 'api_key') {
+      if (directProvider === 'anthropic' || directProvider === 'openai') return '';
+      return normalizeBaseUrl(baseUrl);
+    }
 
     const shape = cliproxySpec?.url_shape ?? 'root';
     const fallback = shape === 'root'
@@ -282,11 +316,9 @@
       authMethod,
       provider: effectiveProvider,
       model: model.trim(),
-      apiKey: apiKey.trim(),
+      apiKey: needsKey ? apiKey.trim() : '',
       baseUrl: normalizedProviderBaseUrl,
-      openaiApiMode: effectiveProvider === 'openai' || effectiveProvider === 'openrouter'
-        ? openaiApiMode
-        : null,
+      openaiApiMode: effectiveApiMode,
     });
   }
 
@@ -301,10 +333,6 @@
 
   function handleAuthMethodSelect(method: AuthMethod) {
     authMethod = method;
-  }
-
-  function handleDirectProviderChange(provider: LLMProvider) {
-    directProvider = provider;
   }
 
   function goNext() {
@@ -323,45 +351,10 @@
     return {
       llm_provider: effectiveProvider,
       llm_model: model.trim(),
-      api_key: apiKey.trim(),
+      api_key: needsKey ? apiKey.trim() || null : null,
       llm_base_url: normalizedProviderBaseUrl || null,
-      openai_api_mode: effectiveProvider === 'openai' || effectiveProvider === 'openrouter'
-        ? openaiApiMode
-        : null,
+      openai_api_mode: effectiveApiMode,
     };
-  }
-
-  function buildSettingsUpdate(): ServerSettingsUpdate {
-    const updates: ServerSettingsUpdate = {
-      llm_provider: effectiveProvider,
-      llm_model: model.trim(),
-      llm_base_url: authMethod === 'api_key' ? '' : normalizedProviderBaseUrl,
-    };
-
-    if (effectiveProvider === 'openai' || effectiveProvider === 'openrouter') {
-      updates.openai_api_mode = openaiApiMode;
-    }
-
-    if (authMethod === 'cliproxy') {
-      // The catalog's key slot: the cpx- gatekeeper goes to ANTHROPIC_API_KEY
-      // or OPENAI_API_KEY, never the *_DIRECT_* slots.
-      if (cliproxySpec?.key_env_var === 'OPENAI_API_KEY') {
-        updates.openai_api_key = apiKey.trim();
-      } else {
-        updates.anthropic_api_key = apiKey.trim();
-      }
-      if (cliproxySpec?.api_mode) {
-        updates.openai_api_mode = cliproxySpec.api_mode as OpenAIApiMode;
-      }
-    } else if (directProvider === 'anthropic') {
-      updates.anthropic_direct_api_key = apiKey.trim();
-    } else if (directProvider === 'openai') {
-      updates.openai_api_key = apiKey.trim();
-    } else if (directProvider === 'openrouter') {
-      updates.openrouter_api_key = apiKey.trim();
-    }
-
-    return updates;
   }
 
   async function handleTestProvider() {
@@ -398,7 +391,23 @@
     saveMessage = '';
 
     try {
-      const result = await api.updateServerSettings(buildSettingsUpdate());
+      // Shared save-payload builder (same one GUI onboarding uses): direct
+      // keys ride the generic llm_api_key slot the backend routes to the
+      // provider's declared env var; the cliproxy path keeps the dedicated
+      // gateway slots for the cpx- gatekeeper.
+      const result = await api.updateServerSettings(
+        buildProviderSaveUpdate({
+          authPath: authMethod,
+          provider: effectiveProvider,
+          model,
+          // A key typed for an earlier pick must not ride into a keyless
+          // provider's slot once the key field is hidden.
+          apiKey: needsKey ? apiKey : '',
+          baseUrl: normalizedProviderBaseUrl,
+          apiMode: effectiveApiMode,
+          cliproxySpec: authMethod === 'cliproxy' ? cliproxySpec : null,
+        })
+      );
       saveStatus = 'success';
       saveMessage = result.restart_required
         ? 'Provider settings saved. Restart the backend for all changes to take effect.'
@@ -440,7 +449,7 @@
               <Icon name="bolt" size={18} />
               <span>
                 <strong>Direct API key</strong>
-                <small>Anthropic, OpenAI, or OpenRouter billing</small>
+                <small>Pay-per-token key from any of {providerCatalog.length || 'the'} registry providers</small>
               </span>
             </button>
             {#each cliproxyCatalog as entry (entry.id)}
@@ -465,15 +474,30 @@
         {#if authMethod === 'api_key'}
           <div class="field">
             <label for="provider-setup-provider">Provider</label>
-            <select
+            <ProviderSelect
               id="provider-setup-provider"
-              value={directProvider}
-              onchange={(e) => handleDirectProviderChange(e.currentTarget.value as LLMProvider)}
-            >
-              {#each directProviders as provider}
-                <option value={provider.value}>{provider.label}</option>
-              {/each}
-            </select>
+              bind:value={directProvider}
+              groups={providerGroups}
+              ariaLabel="LLM provider"
+            />
+            {#if spec?.signup_url}
+              <p class="hint signup">
+                <a href={spec.signup_url} target="_blank" rel="noreferrer">
+                  Get a {spec.label} key
+                  <Icon name="externalLink" size={11} />
+                </a>
+                {#if spec.signup_guidance}
+                  <span>{spec.signup_guidance}</span>
+                {/if}
+              </p>
+            {:else if spec?.docs_url}
+              <p class="hint signup">
+                <a href={spec.docs_url} target="_blank" rel="noreferrer">
+                  {spec.label} API docs
+                  <Icon name="externalLink" size={11} />
+                </a>
+              </p>
+            {/if}
           </div>
         {:else}
           <div class="notice">
@@ -484,45 +508,74 @@
 
         <div class="field">
           <label for="provider-setup-model">Model</label>
-          <select id="provider-setup-model" bind:value={model}>
-            {#each modelOptions[effectiveProvider] ?? [] as option}
-              <option value={option.value}>{option.label}</option>
-            {/each}
-          </select>
+          {#if (modelOptions[effectiveProvider] ?? []).length > 0}
+            <select
+              id="provider-setup-model-preset"
+              bind:value={model}
+              aria-label="Suggested models"
+            >
+              {#each modelOptions[effectiveProvider] ?? [] as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+          {/if}
           <input
-            id="provider-setup-model-custom"
+            id="provider-setup-model"
             class="model-input"
             type="text"
             bind:value={model}
-            placeholder="Custom model ID"
+            placeholder={authMethod === 'api_key'
+              ? (spec?.default_model ?? 'Model ID')
+              : (cliproxySpec?.default_model ?? 'Model ID')}
           />
         </div>
       </div>
     {:else if step === 2}
       <div class="wizard-body">
-        <div class="field">
-          <label for="provider-setup-api-key">
-            {authMethod === 'api_key' ? `${providerLabel(effectiveProvider)} API Key` : 'CLIProxy Gatekeeper Key'}
-          </label>
-          <input
-            id="provider-setup-api-key"
-            type="password"
-            bind:value={apiKey}
-            placeholder={authMethod === 'api_key' ? 'Provider API key' : 'cpx-...'}
-            oninput={resetVerification}
-          />
-          <p class="hint">
-            {#if authMethod === 'cliproxy'}
-              Use the proxy's own <code>cpx-...</code> gatekeeper key (from its api-keys list),
-              never an upstream provider key. Log in to the subscription itself from the
-              CLIProxy tab in Settings.
-            {:else}
-              This value is sent once to the backend and remains write-only in settings responses.
-            {/if}
-          </p>
-        </div>
+        {#if !needsKey}
+          <p class="hint">This provider does not need an API key.</p>
+        {:else}
+          <div class="field">
+            <label for="provider-setup-api-key">
+              {authMethod === 'api_key' ? `${providerLabel(effectiveProvider)} API Key` : 'CLIProxy Gatekeeper Key'}
+            </label>
+            <input
+              id="provider-setup-api-key"
+              type="password"
+              bind:value={apiKey}
+              placeholder={authMethod === 'api_key' ? 'Provider API key' : 'cpx-...'}
+              oninput={resetVerification}
+            />
+            <p class="hint">
+              {#if authMethod === 'cliproxy'}
+                Use the proxy's own <code>cpx-...</code> gatekeeper key (from its api-keys list),
+                never an upstream provider key. Log in to the subscription itself from the
+                CLIProxy tab in Settings.
+              {:else}
+                This value is sent once to the backend and remains write-only in settings responses.
+              {/if}
+            </p>
+          </div>
+        {/if}
 
-        {#if authMethod !== 'api_key'}
+        {#if authMethod === 'api_key'}
+          <!-- No base-URL override for anthropic/openai: a saved
+               anthropic/openai + base_url pair is detected as the CLIProxy
+               shape on reopen, so a direct override would not round-trip. -->
+          {#if directProvider !== 'anthropic' && directProvider !== 'openai'}
+            <div class="field">
+              <label for="provider-setup-direct-base-url">Base URL (optional)</label>
+              <input
+                id="provider-setup-direct-base-url"
+                type="text"
+                bind:value={baseUrl}
+                placeholder={spec?.default_base_url ?? 'Provider default'}
+                oninput={resetVerification}
+              />
+              <p class="hint">Leave empty to use the provider's default endpoint.</p>
+            </div>
+          {/if}
+        {:else}
           <div class="field">
             <label for="provider-setup-base-url">Proxy Base URL</label>
             <input
@@ -545,7 +598,7 @@
           </div>
         {/if}
 
-        {#if effectiveProvider === 'openai' || effectiveProvider === 'openrouter'}
+        {#if supportsApiModePick}
           <div class="field">
             <label for="provider-setup-api-mode">API Mode</label>
             <select id="provider-setup-api-mode" bind:value={openaiApiMode} disabled={authMethod === 'cliproxy' && !!cliproxySpec?.api_mode}>
@@ -790,6 +843,25 @@
 
   .adjusted {
     color: var(--accent-primary);
+  }
+
+  .signup {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-2xs);
+  }
+
+  .signup a {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    color: var(--accent-primary);
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  .signup a:hover {
+    text-decoration: underline;
   }
 
   .summary {
