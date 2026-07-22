@@ -1,6 +1,12 @@
 /**
- * Model options for each LLM provider.
- * Shared between SettingsPanel and AgentForm.
+ * Static OFFLINE fallback model suggestions for a few common providers.
+ *
+ * This is NOT the provider list. Nymeria supports the full backend registry
+ * (130+ providers, `Nymeria/nymeria/config/llm_providers.py`, served by
+ * `GET /settings/llm/providers`), and the authoritative model list for any
+ * provider is the live model endpoint (`getAvailableModels`). These presets
+ * only seed dropdowns when the live list is unavailable; providers absent
+ * here fall back to the registry spec's `default_model` plus free-text entry.
  */
 
 export interface ModelOption {
@@ -10,9 +16,9 @@ export interface ModelOption {
 
 export const modelOptions: Record<string, ModelOption[]> = {
   anthropic: [
-    { value: 'claude-opus-4-20250514', label: 'claude-opus-4 (best)' },
-    { value: 'claude-sonnet-4-20250514', label: 'claude-sonnet-4 (reliable)' },
-    { value: 'claude-3-5-haiku-20241022', label: 'claude-3.5-haiku (fast-cheap)' }
+    { value: 'claude-opus-4-8', label: 'claude-opus-4-8 (best)' },
+    { value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6 (reliable)' },
+    { value: 'claude-haiku-4-5', label: 'claude-haiku-4-5 (fast-cheap)' }
   ],
   openai: [
     { value: 'gpt-5.2', label: 'gpt-5.2 (untested)' },

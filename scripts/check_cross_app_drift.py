@@ -61,6 +61,7 @@ EXACT_MATCH: set[str] = {
     "lib/utils/fileProcessing.ts",
     "lib/utils/hooks.ts",
     "lib/utils/ids.ts",
+    "lib/utils/modelOptions.ts",
     "lib/utils/models.ts",
     "lib/utils/providerRoutes.ts",
     "lib/utils/reasoningEffort.ts",
@@ -194,7 +195,6 @@ KNOWN_DRIFT: set[str] = {
     "lib/stores/unifiedTools.svelte.ts",
     # Utils with platform tweaks
     "lib/utils/markdown.ts",
-    "lib/utils/modelOptions.ts",
     # Rewind/edit affordances (backlog #12): mobile drops the desktop-only
     # sync-poll baseline and uses touch idioms, so helper + tests diverge
     "lib/utils/rewind.ts",

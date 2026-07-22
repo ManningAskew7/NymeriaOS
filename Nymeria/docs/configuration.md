@@ -23,7 +23,9 @@ clear/rebuild the current default graph caches:
 - LLM provider/model/fallback fields, sampling fields, reasoning fields,
   `LLM_BASE_URL`, `OPENAI_API_MODE`, stream retry fields, and fallback hold
   duration
-- LLM provider credentials: Anthropic, Anthropic direct, OpenAI, and OpenRouter
+- LLM provider credentials: the dedicated Anthropic, Anthropic direct, OpenAI,
+  and OpenRouter slots, plus the generic `llm_api_key` slot (routed to the
+  selected registry provider's declared key env var)
 - `TOOL_OUTPUT_MAX_CHARS`
 
 Other hot-updated settings are visible to code paths that read

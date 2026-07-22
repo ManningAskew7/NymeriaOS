@@ -32,7 +32,8 @@ pub fn ensure_env_file(runtime_root: &Path) -> Result<String, String> {
         let content = "# Nymeria Configuration (auto-generated)\n\
                        # See .env.example for all available options\n\
                        \n\
-                       # LLM Provider (anthropic, openai, openrouter)\n\
+                       # LLM Provider: any registry id (anthropic, openai, openrouter, google,\n\
+                       # groq, deepseek, ...); see Nymeria/nymeria/config/llm_providers.py\n\
                        LLM_PROVIDER=anthropic\n\
                        \n\
                        # Add your API key here, or use CLIProxy for subscription-based access\n\

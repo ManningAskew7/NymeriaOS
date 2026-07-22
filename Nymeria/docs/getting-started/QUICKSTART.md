@@ -227,7 +227,7 @@ from the file without putting the token itself in shell history (and, on the
 interactive local happy path, opens the browser already signed in so no paste
 is needed at all). Paste that
 `nym_<token>` account token into the desktop/mobile Setup Wizard, not an
-Anthropic/OpenAI/OpenRouter provider API key, then delete the file. See
+LLM provider API key, then delete the file. See
 `docs/accounts.md` for the full account model and the `python3 run.py users`
 CLI for provisioning additional users.
 

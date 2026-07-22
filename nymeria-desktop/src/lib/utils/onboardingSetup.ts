@@ -165,10 +165,10 @@ export function registryProviderGroups(catalog: LLMProviderSpec[]): ProviderSele
 
 /**
  * Recover which CLIProxy catalog entry a saved settings pair points at, so the
- * section prefills correctly for a CLI-configured backend. Mirrors
- * ProviderSetupWizard.detectCliproxySelection: anthropic = claude; a
- * Responses-mode openai route = codex; otherwise resolve the chat-mode CLI by
- * its catalog default model, falling back to the first chat-mode entry.
+ * section prefills correctly for a CLI-configured backend. Shared with
+ * ProviderSetupWizard: anthropic = claude; a Responses-mode openai route =
+ * codex; otherwise resolve the chat-mode CLI by its catalog default model,
+ * falling back to the first chat-mode entry.
  */
 export function detectCliproxyEntry(
   catalog: CLIProxyProviderInfo[],
