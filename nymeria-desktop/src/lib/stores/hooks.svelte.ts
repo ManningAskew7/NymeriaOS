@@ -1,9 +1,10 @@
 /**
  * Hooks Store
  *
- * Reactive state for lifecycle-hook management (CRUD, enable/disable, test).
- * Unlike triggers, hooks have no runtime/execution state, so there is no
- * source catalog, no execution history, and no polling.
+ * Reactive state for lifecycle-hook management (CRUD, enable/disable, test),
+ * plus thin passthroughs for the per-hook execution log and the bundled
+ * template catalog (fetched on demand, never cached here). Unlike triggers
+ * there is no source catalog and no polling.
  */
 
 import { api } from '$lib/services/api.svelte';
@@ -12,6 +13,10 @@ import { registerIdentityReloadHook } from './config.svelte';
 import type {
   Hook,
   HookCreateRequest,
+  HookExecution,
+  HookScope,
+  HookTemplate,
+  HookTemplateInstallResult,
   HookUpdateRequest,
   HookTestResult,
 } from '$lib/types';
@@ -70,12 +75,48 @@ function createHooksStore() {
   }
 
   async function deleteHook(id: string): Promise<void> {
+    const target = hooks.find(h => h.id === id);
     await api.deleteHook(id);
+    // Same system detection as the components (action fallback covers hook
+    // objects cached before `system` rode the wire).
+    if (target && (target.system || (target.action as string) === 'turn_metadata')) {
+      // System hooks are never removed: DELETE resets them to the built-in
+      // defaults, so re-fetch to show the pristine definition instead of
+      // dropping the card until the next full reload.
+      await loadHooks();
+      return;
+    }
     hooks = hooks.filter(h => h.id !== id);
   }
 
   async function testHook(id: string): Promise<HookTestResult> {
     return await api.testHook(id);
+  }
+
+  /** Recent runs, newest first; `hookId` narrows to one hook's log. */
+  async function getExecutions(hookId?: string, limit = 20): Promise<HookExecution[]> {
+    return await api.getHookExecutions(hookId, limit);
+  }
+
+  /** The bundled hook-template catalog. */
+  async function getTemplates(): Promise<HookTemplate[]> {
+    return await api.getHookTemplates();
+  }
+
+  /**
+   * Install a bundled template (idempotent per binding) and fold the
+   * resulting hook into the local list.
+   */
+  async function installTemplate(
+    templateId: string,
+    options?: { scope?: HookScope; threadId?: string }
+  ): Promise<HookTemplateInstallResult> {
+    const result = await api.installHookTemplate(templateId, options);
+    const exists = hooks.some(h => h.id === result.hook.id);
+    hooks = exists
+      ? hooks.map(h => (h.id === result.hook.id ? result.hook : h))
+      : [...hooks, result.hook];
+    return result;
   }
 
   function clearError(): void {
@@ -108,6 +149,9 @@ function createHooksStore() {
     updateHook,
     deleteHook,
     testHook,
+    getExecutions,
+    getTemplates,
+    installTemplate,
     clearError,
   };
 }

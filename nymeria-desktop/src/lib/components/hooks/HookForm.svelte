@@ -6,8 +6,10 @@
     HookCreateRequest,
     HookEvent,
     HookScope,
+    HookTemplate,
     HookUpdateRequest,
   } from '$lib/types';
+  import { onMount } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { trapFocus } from '$lib/actions/focus';
   import {
@@ -22,6 +24,7 @@
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import {
     hookCategory,
+    hookActionMeta,
     HOOK_ACTION_META,
     HOOK_EVENT_ACTIONS,
     HOOK_EVENT_META,
@@ -40,6 +43,22 @@
   let { threadId, editHook, onClose, onCreated }: Props = $props();
 
   const isEditing = $derived(!!editHook);
+
+  // The reserved built-in hook (turn metadata): identity is locked
+  // server-side (event/action/scope/single_use all reject on PATCH), so the
+  // form drops to a restricted mode editing only what the backend accepts:
+  // name, template text, fire gate, once, enabled. The action fallback covers
+  // hook objects cached before `system` rode the wire.
+  const isSystem = $derived(
+    !!(editHook && (editHook.system || (editHook.action as string) === 'turn_metadata'))
+  );
+
+  // Mirrors the backend authoring frame (core/prompts.py
+  // TURN_METADATA_TEMPLATE_PATTERN): exactly two lines, '[Time: <interior>]'
+  // then '[Trigger: <interior>]', non-empty interiors with no ']' and no
+  // newline. Instant feedback only; the backend re-validates on save.
+  const TURN_METADATA_FRAME = /^\[Time:[^\]\n]+\]\n\[Trigger:[^\]\n]+\]$/;
+
   const resolvedThreadId = $derived(threadId || threadsStore.currentThreadId || '');
 
   type UpdateRow = { key: string; value: string };
@@ -132,11 +151,52 @@
   let saving = $state(false);
   let saveError = $state<string | null>(null);
 
+  // Bundled-template strip (create mode only). The catalog is a bonus: a
+  // fetch failure just hides the strip, it never blocks authoring.
+  let templates = $state<HookTemplate[]>([]);
+  let installingId = $state<string | null>(null);
+  let installNote = $state<string | null>(null);
+
+  onMount(() => {
+    if (isEditing) return;
+    hooksStore
+      .getTemplates()
+      .then((list) => (templates = list))
+      .catch(() => (templates = []));
+  });
+
+  /**
+   * Install a bundled template with its own default binding. A fresh install
+   * closes the form (the hook appears in the feed); an idempotent re-install
+   * keeps the form open with a note.
+   */
+  async function handleInstallTemplate(template: HookTemplate) {
+    installingId = template.id;
+    installNote = null;
+    saveError = null;
+    try {
+      const result = await hooksStore.installTemplate(template.id);
+      if (result.created) {
+        onCreated?.(result.hook);
+        onClose();
+      } else {
+        installNote = `"${template.title}" is already installed.`;
+      }
+    } catch (e) {
+      saveError = humanizeErrorText(e, { action: 'install', resource: 'the template' });
+    } finally {
+      installingId = null;
+    }
+  }
+
   // ---- derived legality --------------------------------------------------
   const legalActions = $derived(HOOK_EVENT_ACTIONS[event] ?? []);
   const category = $derived(hookCategory(action));
   const eventMeta = $derived(HOOK_EVENT_META[event]);
-  const actionMeta = $derived(HOOK_ACTION_META[action]);
+  // Accessor form, NOT the raw table: the system turn-metadata action sits
+  // outside the authorable union, and a raw table miss here crashed the app
+  // shell on `undefined.hint` when editing the built-in hook.
+  const actionMeta = $derived(hookActionMeta(action));
   const showMatcher = $derived(HOOK_TOOL_EVENTS.includes(event));
   const isTextAction = $derived(
     action === 'inject_context' || action === 'notify' || action === 'create_todo'
@@ -191,6 +251,12 @@
 
   function validate(): string | null {
     if (!name.trim()) return 'Give the hook a name before saving.';
+    if (isSystem) {
+      if (!TURN_METADATA_FRAME.test(text.trim())) {
+        return 'The template must be exactly two lines, [Time: ...] then [Trigger: ...], with no ] or line breaks inside the brackets.';
+      }
+      return null;
+    }
     if (!isEditing && scope === 'thread' && !resolvedThreadId) {
       return 'A thread-scoped hook needs an open thread. Switch to a thread, or set the scope to Global.';
     }
@@ -266,7 +332,20 @@
     const trimmedMatcher = matcher.trim();
 
     try {
-      if (isEditing && editHook) {
+      if (isSystem && editHook) {
+        // System hooks accept ONLY these fields; event/action/scope/
+        // single_use are locked server-side and any of them would 400 the
+        // whole PATCH. Template is trimmed so a trailing newline cannot fail
+        // the backend's exact-frame validator.
+        const req: HookUpdateRequest = {
+          name: name.trim(),
+          enabled,
+          text: text.trim(),
+          fire_conditions: fireConditionsClean,
+          once,
+        };
+        await hooksStore.updateHook(editHook.id, req);
+      } else if (isEditing && editHook) {
         const req: HookUpdateRequest = {
           name: name.trim(),
           event,
@@ -394,13 +473,40 @@
     out:fly={DIALOG_RISE_OUT}
   >
     <div class="form-header">
-      <h2 id="hook-form-title">{isEditing ? 'Edit Hook' : 'New Hook'}</h2>
+      <h2 id="hook-form-title">{isEditing ? (isSystem ? 'Edit Built-in Hook' : 'Edit Hook') : 'New Hook'}</h2>
       <button class="close-btn" onclick={onClose} type="button" aria-label="Close">
         <Icon name="x" size={16} />
       </button>
     </div>
 
     <div class="form-body">
+      {#if !isEditing && templates.length > 0}
+        <!-- Bundled templates: one-click ready-made hooks (idempotent). -->
+        <div class="template-strip">
+          <span class="template-heading">Start from a template</span>
+          {#each templates as template (template.id)}
+            <div class="template-row">
+              <div class="template-info">
+                <span class="template-title">{template.title}</span>
+                <span class="template-desc">{template.description}</span>
+              </div>
+              <button
+                class="template-install"
+                type="button"
+                disabled={installingId !== null || saving}
+                onclick={() => handleInstallTemplate(template)}
+              >
+                {installingId === template.id ? 'Installing…' : 'Install'}
+              </button>
+            </div>
+          {/each}
+          {#if installNote}
+            <span class="template-note">{installNote}</span>
+          {/if}
+          <span class="template-divider">or build your own</span>
+        </div>
+      {/if}
+
       <!-- Name -->
       <div class="field-row">
         <label class="field-label" for="hook-name">Name <span class="required">*</span></label>
@@ -414,41 +520,73 @@
         />
       </div>
 
-      <!-- When (event) -->
-      <div class="field-row">
-        <label class="field-label" for="hook-event">When</label>
-        <select
-          id="hook-event"
-          class="field-select"
-          value={event}
-          onchange={(e) => onEventChange((e.target as HTMLSelectElement).value as HookEvent)}
-        >
-          {#each EVENTS as ev}
-            <option value={ev}>{HOOK_EVENT_META[ev].label}</option>
-          {/each}
-        </select>
-        <span class="field-hint">{eventMeta.hint}</span>
-      </div>
-
-      <!-- Do (action) -->
-      <div class="field-row">
-        <span class="field-label">Do</span>
-        <div class="action-picker">
-          {#each legalActions as act}
-            {@const meta = HOOK_ACTION_META[act]}
-            <button
-              class="action-opt cat-{hookCategory(act)}"
-              class:selected={action === act}
-              type="button"
-              onclick={() => (action = act)}
-            >
-              <Icon name={meta.icon} size={15} />
-              <span class="opt-name">{meta.label}</span>
-            </button>
-          {/each}
+      {#if isSystem}
+        <!-- Locked identity: the backend rejects event/action/scope changes
+             on system hooks, so no pickers, just what this hook is. -->
+        <div class="system-note">
+          <Icon name="clock" size={13} />
+          <p>
+            Built-in hook. It stamps the time and trigger at the top of every
+            turn, on every thread. When it runs is fixed; the template, fire
+            gate, and name are yours to change. Deleting it resets these
+            defaults.
+          </p>
         </div>
-        <span class="field-hint">{actionMeta.hint}</span>
-      </div>
+        <div class="field-row">
+          <label class="field-label" for="hook-template">
+            Metadata template <span class="required">*</span>
+          </label>
+          <textarea
+            id="hook-template"
+            class="field-textarea"
+            bind:value={text}
+            rows={2}
+            maxlength={300}
+          ></textarea>
+          <span class="field-hint">
+            Exactly two lines, <code>[Time: ...]</code> then
+            <code>[Trigger: ...]</code>. Customize the text inside the
+            brackets; <code>{'{time}'}</code> and <code>{'{trigger}'}</code>
+            are filled in each turn. No <code>]</code> or line breaks inside.
+          </span>
+        </div>
+      {:else}
+        <!-- When (event) -->
+        <div class="field-row">
+          <label class="field-label" for="hook-event">When</label>
+          <select
+            id="hook-event"
+            class="field-select"
+            value={event}
+            onchange={(e) => onEventChange((e.target as HTMLSelectElement).value as HookEvent)}
+          >
+            {#each EVENTS as ev}
+              <option value={ev}>{HOOK_EVENT_META[ev].label}</option>
+            {/each}
+          </select>
+          <span class="field-hint">{eventMeta.hint}</span>
+        </div>
+
+        <!-- Do (action) -->
+        <div class="field-row">
+          <span class="field-label">Do</span>
+          <div class="action-picker">
+            {#each legalActions as act}
+              {@const meta = HOOK_ACTION_META[act]}
+              <button
+                class="action-opt cat-{hookCategory(act)}"
+                class:selected={action === act}
+                type="button"
+                onclick={() => (action = act)}
+              >
+                <Icon name={meta.icon} size={15} />
+                <span class="opt-name">{meta.label}</span>
+              </button>
+            {/each}
+          </div>
+          <span class="field-hint">{actionMeta.hint}</span>
+        </div>
+      {/if}
 
       <!-- Scope (create only; re-scoping is a delete + create) -->
       {#if !isEditing}
@@ -787,10 +925,12 @@
         <span>Enabled</span>
       </label>
 
-      <label class="checkbox-label">
-        <input type="checkbox" bind:checked={singleUse} />
-        <span>Delete after its first successful run (single-use)</span>
-      </label>
+      {#if !isSystem}
+        <label class="checkbox-label">
+          <input type="checkbox" bind:checked={singleUse} />
+          <span>Delete after its first successful run (single-use)</span>
+        </label>
+      {/if}
 
       {#if saveError}
         <div class="save-error">{saveError}</div>
@@ -799,7 +939,12 @@
 
     <div class="form-footer">
       <button class="nav-btn secondary" onclick={onClose} type="button" disabled={saving}>Cancel</button>
-      <button class="nav-btn primary" onclick={handleSave} type="button" disabled={saving}>
+      <button
+        class="nav-btn primary"
+        onclick={handleSave}
+        type="button"
+        disabled={saving || installingId !== null}
+      >
         {saving ? 'Saving…' : isEditing ? 'Save Changes' : 'Create Hook'}
       </button>
     </div>
@@ -841,6 +986,7 @@
   .form-modal.cat-guardrails { --cat-color: var(--warning); }
   .form-modal.cat-context { --cat-color: var(--accent-primary); }
   .form-modal.cat-reactions { --cat-color: var(--info, var(--accent-secondary, var(--text-secondary))); }
+  .form-modal.cat-commands { --cat-color: var(--accent-secondary, var(--text-secondary)); }
 
   .form-header {
     display: flex;
@@ -959,7 +1105,119 @@
     border-color: var(--accent-primary);
   }
 
-  /* Action picker — category-accented option chips */
+  /* Bundled-template strip (create mode): flat rows under one heading, set
+     apart from the authoring fields by a dashed divider line. */
+  .template-strip {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .template-heading {
+    font-size: var(--font-size-3xs);
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .template-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    min-width: 0;
+  }
+
+  .template-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .template-title {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .template-desc {
+    font-size: var(--font-size-2xs);
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .template-install {
+    flex-shrink: 0;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-2xs);
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .template-install:hover:not(:disabled) {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+  }
+
+  .template-install:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .template-note {
+    font-size: var(--font-size-2xs);
+    color: var(--text-secondary);
+  }
+
+  .template-divider {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    font-size: var(--font-size-3xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .template-divider::before,
+  .template-divider::after {
+    content: '';
+    flex: 1;
+    border-top: 1px dashed var(--border-subtle, var(--border-default));
+  }
+
+  /* Locked-identity note for the built-in system hook: left-accent info
+     strip, deliberately lighter than a full card (design guide: vary
+     container treatments). */
+  .system-note {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-sm-plus);
+    border-left: 2px solid var(--cat-color);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--cat-color) 6%, transparent);
+    color: var(--text-secondary);
+    font-size: var(--font-size-2xs);
+    line-height: 1.45;
+  }
+
+  .system-note :global(svg) {
+    flex-shrink: 0;
+    margin-top: 1px;
+    color: var(--cat-color);
+  }
+
+  .system-note p { margin: 0; }
+
+  /* Action picker: category-accented option chips */
   .action-picker {
     display: flex;
     flex-wrap: wrap;
@@ -984,6 +1242,7 @@
   .action-opt.cat-guardrails { --cat-color: var(--warning); }
   .action-opt.cat-context { --cat-color: var(--accent-primary); }
   .action-opt.cat-reactions { --cat-color: var(--info, var(--accent-secondary, var(--text-secondary))); }
+  .action-opt.cat-commands { --cat-color: var(--accent-secondary, var(--text-secondary)); }
 
   .action-opt :global(svg) { color: var(--cat-color); }
 

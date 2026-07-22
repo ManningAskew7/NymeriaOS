@@ -237,7 +237,13 @@ writer): a dashboard **Hooks** section (`components/hooks/`: category-grouped fe
 a single adaptive **HookForm** modal whose fields reflow by event and action) authors,
 edits, tests, and toggles hooks; a per-thread **Hooks** tab drives the enable model
 below. The action families are category-coded (Guardrails / Context / Reactions) so the
-feed and form read as three families rather than one flat list.
+feed and form read as three families rather than one flat list. The GUI also surfaces
+the execution log (a per-hook **Log** button reads `GET /hooks/executions?hook_id=`)
+and the bundled-template catalog (a "Start from a template" strip in the create form
+over `GET /hooks/templates` + install). The reserved system hook renders with a
+**Built-in** badge, its summary shows the actual template, editing opens a restricted
+form (name, template, fire gate, once, enabled; identity locked), and its delete
+affordance is a **Reset** matching the backend's reset-to-defaults semantics.
 
 ### Bundled hook templates
 

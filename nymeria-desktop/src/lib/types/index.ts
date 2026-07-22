@@ -2701,6 +2701,13 @@ export interface Hook {
   created_by: HookCreatedBy;
   created_at: string;
   updated_at: string;
+  /**
+   * True for a built-in system definition (the reserved turn-metadata hook):
+   * identity fields are locked (event/action/scope/single_use), only
+   * name/enabled/template/fire gate/once are editable, and delete = reset to
+   * the built-in defaults rather than removal.
+   */
+  system: boolean;
 }
 
 export interface HookCreateRequest {
@@ -2773,6 +2780,52 @@ export interface HookApproval {
   is_autonomous: boolean;
   created_at: string;
   expires_at: string;
+}
+
+/**
+ * Per-run execution statuses (`GET /hooks/executions`): `ok` ran and produced
+ * an effect, `no_op` ran and produced nothing, `saturated` = dispatch pool
+ * starved (fails closed on pre_tool_use), `illegal` = rejected before running.
+ */
+export type HookExecutionStatus =
+  | 'ok'
+  | 'no_op'
+  | 'error'
+  | 'timeout'
+  | 'saturated'
+  | 'illegal';
+
+/** One recorded hook run from the per-user diagnostic log (cap 200). */
+export interface HookExecution {
+  id: string;
+  hook_id: string;
+  hook_name: string;
+  event: string;
+  plane: 'mutate' | 'observe' | '';
+  status: HookExecutionStatus;
+  /** Outcome/error summary, capped server-side. */
+  detail: string;
+  duration_seconds: number;
+  thread_id: string;
+  tool_name: string;
+  timestamp: string;
+}
+
+/** One bundled hook template (`GET /hooks/templates`). */
+export interface HookTemplate {
+  id: string;
+  title: string;
+  description: string;
+  notes: string;
+  /** The full hook definition the install would create. */
+  hook: Record<string, unknown>;
+}
+
+/** `POST /hooks/templates/{id}/install` result (idempotent per binding). */
+export interface HookTemplateInstallResult {
+  /** False when the template was already installed with this binding. */
+  created: boolean;
+  hook: Hook;
 }
 
 // ---------------------------------------------------------------------------
