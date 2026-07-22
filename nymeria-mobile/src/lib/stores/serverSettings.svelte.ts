@@ -1,6 +1,7 @@
 import { api } from '$lib/services/api.svelte';
 import { humanizeErrorText } from '$lib/services/api/humanizeError';
 import { errorsStore } from './errors.svelte';
+import { registerIdentityReloadHook } from './config.svelte';
 
 function createServerSettingsStore() {
   let provider = $state<string | null>(null);
@@ -11,6 +12,15 @@ function createServerSettingsStore() {
   let memoryCharLimit = $state<number | null>(null);
   let loading = $state(false);
   let loaded = $state(false);
+
+  // Reset on account/connection switch so consumers re-fetch under the new
+  // identity: these are global server settings, so a same-backend account
+  // switch reloads identical values, but a saved-connection switch to a
+  // different backend must not keep showing the previous server's model.
+  registerIdentityReloadHook(() => {
+    loaded = false;
+    loading = false;
+  });
 
   return {
     get provider() { return provider; },

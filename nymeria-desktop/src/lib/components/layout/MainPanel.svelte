@@ -16,6 +16,7 @@
   import { defaultToolsStore } from '$lib/stores/defaultTools.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { triggersStore } from '$lib/stores/triggers.svelte';
+  import { healthStore } from '$lib/stores/health.svelte';
   import { uiStore } from '$lib/stores/ui.svelte';
   import { api } from '$lib/services/api.svelte';
   import { humanizeErrorText, isConnectivityError } from '$lib/services/api/humanizeError';
@@ -51,15 +52,39 @@
 
   let bothSidebarsOpen = $derived(!uiStore.sidebarCollapsed && !uiStore.rightPanelCollapsed);
 
-  // Load global stores for thread header badges
+  // Ensure the global stores behind the thread-header badges are loaded.
+  // Tracked deps: the current thread (stats hydrate on thread open, not on
+  // first settings-panel visit) and the loaded flags that reset on an
+  // identity switch (defaultTools/triggers latch `loaded = true` even on a
+  // failed fetch, so their flips are bounded; serverSettings does NOT latch
+  // on error, but its `loading` flip is untracked here, so a failed load
+  // simply leaves `loaded` false until another tracked dep re-runs this
+  // effect — a bounded retry, not a loop). The load calls run untracked so
+  // a load's own `loading` flip can never re-trigger this effect.
   $effect(() => {
-    if (configStore.isConfigured) {
-      untrack(() => {
-        if (!defaultToolsStore.loaded && !defaultToolsStore.loading) defaultToolsStore.load();
-        if (!serverSettingsStore.loaded && !serverSettingsStore.loading) serverSettingsStore.load();
-        if (!triggersStore.loaded && !triggersStore.loading) triggersStore.loadTriggers();
-      });
-    }
+    if (!configStore.isConfigured) return;
+    void threadsStore.currentThreadId;
+    void defaultToolsStore.loaded;
+    void triggersStore.loaded;
+    void serverSettingsStore.loaded;
+    untrack(() => {
+      if (!defaultToolsStore.loaded && !defaultToolsStore.loading) void defaultToolsStore.load();
+      if (!serverSettingsStore.loaded && !serverSettingsStore.loading) void serverSettingsStore.load();
+      if (!triggersStore.loaded && !triggersStore.loading) void triggersStore.loadTriggers();
+    });
+  });
+
+  // When the backend link comes back, retry header-stat loads that latched a
+  // failure (their catch blocks mark `loaded` to stop effect loops, so they
+  // never self-retry). Tracked dep is the connection flag alone: one retry
+  // per reconnect, no loops on a persistently failing endpoint.
+  $effect(() => {
+    if (!healthStore.connected) return;
+    untrack(() => {
+      if (defaultToolsStore.error && !defaultToolsStore.loading) void defaultToolsStore.reload();
+      if (triggersStore.error && !triggersStore.loading) void triggersStore.loadTriggers();
+      if (!serverSettingsStore.loaded && !serverSettingsStore.loading) void serverSettingsStore.load();
+    });
   });
 
   // Load thread config when thread changes
