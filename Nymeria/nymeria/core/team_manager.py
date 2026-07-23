@@ -114,6 +114,37 @@ class Team(BaseModel):
     def _datetimes_as_utc(cls, value: datetime) -> datetime:
         return ensure_aware_utc(value)
 
+    # -- key-value memory (phase 3; mirrors UserProfile's memory methods) --
+
+    def get_memory(self, key: str) -> Optional[TeamMemory]:
+        for mem in self.memories:
+            if mem.key == key:
+                return mem
+        return None
+
+    def upsert_memory(
+        self, key: str, value: str, *, max_value_chars: Optional[int] = None
+    ) -> TeamMemory:
+        """Create or replace one key's value (cap checks are the caller's job)."""
+        stored = value if max_value_chars is None else value[:max_value_chars]
+        mem = self.get_memory(key)
+        if mem is None:
+            mem = TeamMemory(key=key, value=stored)
+            self.memories.append(mem)
+        else:
+            mem.value = stored
+            mem.updated_at = utc_now()
+        self.updated_at = utc_now()
+        return mem
+
+    def remove_memory(self, key: str) -> bool:
+        before = len(self.memories)
+        self.memories = [mem for mem in self.memories if mem.key != key]
+        if len(self.memories) == before:
+            return False
+        self.updated_at = utc_now()
+        return True
+
 
 class TeamStore(BaseModel):
     """All of one user's team entities (one JSON file per user)."""

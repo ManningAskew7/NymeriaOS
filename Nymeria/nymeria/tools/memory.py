@@ -1,4 +1,4 @@
-"""Memory tools for Nymeria — unified CRUD over global profile + per-thread notepad.
+"""Memory tools for Nymeria — unified CRUD over global profile, thread notepad, and team memory.
 
 The agent sees three primitives that dispatch on ``scope``:
 
@@ -8,7 +8,12 @@ The agent sees three primitives that dispatch on ``scope``:
 
 ``scope="global"`` operates on key/value entries in the user profile (auto-injected
 into every future conversation). ``scope="thread"`` operates on the active thread's
-notepad (markdown file that survives context compaction).
+notepad (markdown file that survives context compaction). ``scope="team"``
+(backlog #100 phase 3) operates on the acting thread's callable-team key-value
+registry, shared by every thread in the team and stored on the team entity in
+``core/team_manager.py``; the full read also renders the team's identity header
+(name, description, teammate roster), which is how a thread learns its team,
+by tool result and never by prompt content (the caching invariant).
 
 ``memory_add`` is purely additive: it appends to the thread notepad and
 creates/sets a single global key, but never deletes. Removing and clearing
@@ -27,7 +32,7 @@ surface is unchanged.
 
 import logging
 import threading
-from typing import Annotated, Dict, Optional
+from typing import Annotated, Any, Dict, Optional, Tuple
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
@@ -40,9 +45,10 @@ from ..core.memory_limits import (
     get_memory_value_max_chars,
     memory_entries_full_error,
     validate_profile_memory_write,
+    validate_team_memory_write,
 )
 from . import thread_notes
-from .utils import get_effective_thread_id, get_user_id
+from .utils import current_agent, get_effective_thread_id, get_user_id
 
 # The RAG-search subsystem (semantic search + rerank diagnostics) lives in
 # rag_search_tool.py; it is a different mental model from profile/notepad memory
@@ -64,7 +70,10 @@ from .rag_search_tool import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-VALID_SCOPES = ("global", "thread")
+VALID_SCOPES = ("global", "thread", "team")
+
+# Team memory keys ride the TeamMemory model's key cap (pydantic max_length).
+_TEAM_MEMORY_KEY_MAX_CHARS = 200
 
 # Global profile manager instance (initialized lazily)
 _profile_manager: Optional[UserProfileManager] = None
@@ -168,6 +177,108 @@ def _rag_remove_global(user_id: str, key: str) -> None:
         logger.warning(f"Failed to remove memory from RAG index: {e}")
 
 
+# -- team scope (backlog #100 phase 3) ---------------------------------------
+#
+# Team memory lives on the Team entity in core/team_manager.py; these helpers
+# are the shared primitives for BOTH the tool branches below and the REST
+# routes in api/routers/thread_config.py, so the surfaces cannot drift. RAG
+# chunks are keyed "<team_id>:<key>" (keys are unique per team, not per user)
+# under chunk_type="team_memory", indexed into the OWNER's memory.db and
+# excluded from rag_search by default exactly like profile memories.
+
+
+def acting_team_id(config: RunnableConfig) -> Optional[str]:
+    """The acting thread's callable team id, or None when unteamed.
+
+    Resolves through ``get_effective_thread_id`` so dream shadow threads
+    retarget to their parent consistently with every other thread-scoped
+    action. Returns None (never raises) when no agent or config is available.
+    """
+    try:
+        agent = current_agent()
+        manager = getattr(agent, "thread_config_manager", None) if agent else None
+        thread_id = get_effective_thread_id(config)
+        if manager is None or not thread_id:
+            return None
+        tc = manager.get_config(thread_id)
+        return (getattr(tc, "callable_team_id", None) or None) if tc else None
+    except Exception:  # noqa: BLE001 - membership probe must never break a turn
+        logger.debug("acting_team_id resolution failed", exc_info=True)
+        return None
+
+
+def _team_chunk_key(team_id: str, key: str) -> str:
+    return f"{team_id}:{key}"
+
+
+def rag_index_team_memory(user_id: str, team_id: str, key: str, value: str) -> None:
+    """Replace one team key's chunk in the RAG index. Swallows failures."""
+    memory_index = _get_memory_index(user_id)
+    if not memory_index:
+        return
+    try:
+        memory_index.delete_memory_key(
+            user_id, _team_chunk_key(team_id, key), chunk_type="team_memory"
+        )
+        memory_index.add_chunk(
+            content=f"{key}: {value}",
+            metadata={
+                "key": _team_chunk_key(team_id, key),
+                "team_id": team_id,
+                "team_key": key,
+            },
+            chunk_type="team_memory",
+            user_id=user_id,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to index team memory in RAG: {e}")
+
+
+def rag_remove_team_memory(user_id: str, team_id: str, key: str) -> None:
+    """Remove one team key from the RAG index. Swallows failures."""
+    memory_index = _get_memory_index(user_id)
+    if not memory_index:
+        return
+    try:
+        memory_index.delete_memory_key(
+            user_id, _team_chunk_key(team_id, key), chunk_type="team_memory"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to remove team memory from RAG index: {e}")
+
+
+def rag_remove_team_memories(user_id: str, team_id: str) -> None:
+    """Remove ALL of one team's chunks (team deletion). Swallows failures."""
+    memory_index = _get_memory_index(user_id)
+    if not memory_index:
+        return
+    try:
+        memory_index.delete_team_memory_chunks(user_id, team_id)
+    except Exception as e:
+        logger.warning(f"Failed to clear team memory from RAG index: {e}")
+
+
+def _resolve_team_scope(config: RunnableConfig) -> Tuple[Any, str, Optional[str]]:
+    """(agent, team_id, error) for a team-scoped memory call.
+
+    The error string carries the fix: unteamed threads are told to join or
+    create a team, and a missing runtime surfaces honestly instead of a
+    silent no-op. On error, agent is None and team_id is "".
+    """
+    agent = current_agent()
+    if agent is None or getattr(agent, "team_manager", None) is None:
+        return None, "", "[Error]: Team memory is unavailable on this runtime."
+    team_id = acting_team_id(config)
+    if not team_id:
+        return (
+            None,
+            "",
+            "[Error]: This thread is not in a callable team, so it has no team "
+            "memory. Join or create one with team_manage, then retry.",
+        )
+    return agent, team_id, None
+
+
 @tool
 def memory_add(
     scope: str,
@@ -195,18 +306,28 @@ def memory_add(
         Example:
           memory_add(scope="thread", content="Working on auth refactor; deadline Friday.")
 
+    scope="team": shared fact for this thread's callable team. Requires `key`.
+        Visible to every thread in the team via memory_read(scope="team");
+        teammates see updates on their next explicit read or compaction
+        reseed, not mid-turn. Errors if this thread is not in a team.
+        Example:
+          memory_add(scope="team", key="api_endpoint", content="Staging is https://stage.example.com")
+
     Empty `content` is a no-op (nothing is deleted); use memory_edit to remove
-    a global key or clear the thread notepad.
+    a global or team key or clear the thread notepad.
 
     Args:
-        scope: "global" (user profile) or "thread" (per-thread notepad).
+        scope: "global" (user profile), "thread" (per-thread notepad), or
+            "team" (shared callable-team registry).
         content: The memory text. Empty string is a no-op.
-        key: Required when scope="global". Ignored when scope="thread".
+        key: Required when scope="global" or scope="team". Ignored when
+            scope="thread".
 
     Returns:
         Global: "[Saved]: I'll remember '<key>'...". Thread: "[Saved]: Notepad
-        updated (N chars)...". Empty content: "[Info]: ..." pointing at
-        memory_edit. Errors: "[Error]: <reason>".
+        updated (N chars)...". Team: "[Saved]: Team memory '<key>'...". Empty
+        content: "[Info]: ..." pointing at memory_edit. Errors: "[Error]:
+        <reason>".
     """
     err = _validate_scope(scope)
     if err:
@@ -249,6 +370,62 @@ def memory_add(
             _rag_index_global(user_id, key, stored_content)
             return f"[Saved]: I'll remember '{key}'. This will be available in all future conversations."
 
+    if scope == "team":
+        if not key:
+            return "[Error]: scope='team' requires a key (e.g., 'api_endpoint')."
+        agent, team_id, err = _resolve_team_scope(config)
+        if err:
+            return err
+        if content == "":
+            return (
+                f"[Info]: No content provided; team memory '{key}' is unchanged. "
+                f"To delete it, use memory_edit(scope='team', key='{key}', "
+                "find='', replace='')."
+            )
+        if len(key) > _TEAM_MEMORY_KEY_MAX_CHARS:
+            return (
+                f"[Error]: Team memory keys must be "
+                f"{_TEAM_MEMORY_KEY_MAX_CHARS} characters or fewer."
+            )
+
+        from ..core.team_manager import resolve_team_ref
+
+        user_id = get_user_id(config)
+        # Mutation path: adopt a dangling membership id so the store stays
+        # coherent (banks any surviving legacy name, phase-2 semantics).
+        target = resolve_team_ref(agent, user_id, team_id)
+        if target is None:
+            return f"[Error]: Could not resolve this thread's team '{team_id}'."
+        value_cap = get_memory_value_max_chars()
+        stored_content = content[:value_cap]
+        try:
+            with agent.team_manager.atomic_update(user_id) as store:
+                team = next((t for t in store.teams if t.id == target.id), None)
+                if team is None:
+                    return f"[Error]: Team '{target.name}' no longer exists."
+                limit_error = validate_team_memory_write(
+                    team,
+                    key=key,
+                    value=stored_content,
+                    limit=get_global_memory_char_limit(),
+                    max_entries=get_memory_max_entries(),
+                    max_value_chars=value_cap,
+                )
+                if limit_error:
+                    return limit_error
+                team.upsert_memory(key, content, max_value_chars=value_cap)
+                team_name = team.name
+        except RuntimeError as e:
+            return f"[Error]: {e}"
+        logger.info(
+            "Team memory saved for user %s team %s: %s", user_id, target.id, key
+        )
+        rag_index_team_memory(user_id, target.id, key, stored_content)
+        return (
+            f"[Saved]: Team memory '{key}' saved for team '{team_name}'. "
+            "Every thread in the team can read it."
+        )
+
     # scope == "thread" — additive only; never clobbers existing notes.
     thread_id = get_effective_thread_id(config)
     if not content:
@@ -290,18 +467,23 @@ def memory_edit(
           memory_edit(scope="thread", find="", replace="<consolidated notepad>")  # full rewrite
           memory_edit(scope="thread", find="", replace="")                        # clear notepad
 
+    scope="team": find/replace within one shared team memory's value. Requires
+        `key`; same semantics as scope="global" (empty `find` = whole value,
+        empty result deletes the key). Errors if this thread is not in a team.
+
     Args:
-        scope: "global" or "thread".
+        scope: "global", "thread", or "team".
         find: Exact substring to locate (first occurrence). Empty = whole target.
         replace: Replacement text. Empty string deletes the matched substring
             (or the whole target when `find` is empty).
-        key: Required when scope="global". Ignored when scope="thread".
+        key: Required when scope="global" or scope="team". Ignored when
+            scope="thread".
 
     Returns:
-        Global: "[Saved]: Updated '<key>'" or "[Deleted]: Removed '<key>'".
-        Thread: "[Saved]: Text replaced...", "[Saved]: Notepad rewritten (N
-        chars).", or "[Saved]: Notepad cleared...". Errors: "[Error]: <reason>"
-        (key not found, substring not matched).
+        Global/team: "[Saved]: Updated ... '<key>'" or "[Deleted]: Removed ...
+        '<key>'". Thread: "[Saved]: Text replaced...", "[Saved]: Notepad
+        rewritten (N chars).", or "[Saved]: Notepad cleared...". Errors:
+        "[Error]: <reason>" (key not found, substring not matched).
     """
     err = _validate_scope(scope)
     if err:
@@ -350,6 +532,70 @@ def memory_edit(
             _rag_index_global(user_id, key, stored_value)
             return f"[Saved]: Updated '{key}'."
 
+    if scope == "team":
+        if not key:
+            return "[Error]: scope='team' requires a key."
+        agent, team_id, team_err = _resolve_team_scope(config)
+        if team_err:
+            return team_err
+
+        from ..core.team_manager import resolve_team_ref
+
+        user_id = get_user_id(config)
+        target = resolve_team_ref(agent, user_id, team_id)
+        if target is None:
+            return f"[Error]: Could not resolve this thread's team '{team_id}'."
+        deleted = False
+        stored_value = ""
+        try:
+            with agent.team_manager.atomic_update(user_id) as store:
+                team = next((t for t in store.teams if t.id == target.id), None)
+                if team is None:
+                    return f"[Error]: Team '{target.name}' no longer exists."
+                mem = team.get_memory(key)
+                if not mem:
+                    return f"[Error]: No team memory with key '{key}'."
+
+                if not find:
+                    updated_value = replace
+                else:
+                    if find not in mem.value:
+                        return (
+                            f"[Error]: Could not find '{find}' in team memory "
+                            f"'{key}'."
+                        )
+                    updated_value = mem.value.replace(find, replace, 1)
+
+                if updated_value == "":
+                    team.remove_memory(key)
+                    deleted = True
+                else:
+                    value_cap = get_memory_value_max_chars()
+                    stored_value = updated_value[:value_cap]
+                    limit_error = validate_team_memory_write(
+                        team,
+                        key=key,
+                        value=stored_value,
+                        limit=get_global_memory_char_limit(),
+                        max_value_chars=value_cap,
+                    )
+                    if limit_error:
+                        return limit_error
+                    team.upsert_memory(key, updated_value, max_value_chars=value_cap)
+        except RuntimeError as e:
+            return f"[Error]: {e}"
+        if deleted:
+            logger.info(
+                "Team memory '%s' removed for user %s team %s", key, user_id, target.id
+            )
+            rag_remove_team_memory(user_id, target.id, key)
+            return f"[Deleted]: Removed team memory '{key}'."
+        logger.info(
+            "Team memory '%s' edited for user %s team %s", key, user_id, target.id
+        )
+        rag_index_team_memory(user_id, target.id, key, stored_value)
+        return f"[Saved]: Updated team memory '{key}'."
+
     # scope == "thread"
     thread_id = get_effective_thread_id(config)
     return thread_notes.edit_notepad(thread_id, find, replace)
@@ -376,16 +622,26 @@ def memory_read(
         - No `query`: return full notepad contents (or "[empty]").
         - `query` provided: return only the notepad lines containing the query.
 
+    scope="team": this thread's callable-team shared memory.
+        - No `key`, no `query`: the team's identity header (name, description,
+          teammate roster) plus all shared entries. This is the authoritative
+          way to learn your team; the roster and entries are fresh at read
+          time (team changes made mid-turn by others appear on your next read
+          or compaction reseed).
+        - `key` / `query`: one entry, or substring-filtered entries.
+        Errors if this thread is not in a team.
+
     Args:
-        scope: "global" or "thread".
-        key: (global only) fetch a single memory by key.
-        query: substring filter (both scopes).
+        scope: "global", "thread", or "team".
+        key: (global and team) fetch a single memory by key.
+        query: substring filter (all scopes).
 
     Returns:
         Global: "key: value" for single key; "Stored memories (N shown):"
         + "- key: value" lines for list mode; personality prefs appended
-        when no query filter. Thread: raw notepad markdown or matching
-        lines. Empty: "[Info]: ..." or "[empty]".
+        when no query filter. Team: identity header + "- key: value" lines.
+        Thread: raw notepad markdown or matching lines. Empty: "[Info]: ..."
+        or "[empty]".
     """
     err = _validate_scope(scope)
     if err:
@@ -422,6 +678,71 @@ def memory_read(
             return f"[Info]: No memories match '{query}'."
         return "\n".join(lines)
 
+    if scope == "team":
+        agent, team_id, team_err = _resolve_team_scope(config)
+        if team_err:
+            return team_err
+
+        from ..core.team_manager import resolve_team_ref
+
+        user_id = get_user_id(config)
+        # Read path: never write the store (a dangling membership id renders
+        # as an unsaved synthetic entity, phase-2 semantics).
+        team = resolve_team_ref(agent, user_id, team_id, adopt=False)
+        if team is None:
+            return f"[Error]: Could not resolve this thread's team '{team_id}'."
+
+        if key:
+            mem = team.get_memory(key)
+            if not mem:
+                return f"[Info]: No team memory with key '{key}'."
+            return f"{mem.key}: {mem.value}"
+
+        if query:
+            q_lower = query.lower()
+            matched = [
+                mem
+                for mem in team.memories
+                if q_lower in mem.key.lower() or q_lower in mem.value.lower()
+            ]
+            if not matched:
+                return f"[Info]: No team memories match '{query}'."
+            lines = [f"Team memories ({len(matched)} shown):"]
+            for mem in sorted(matched, key=lambda m: m.key):
+                lines.append(f"- {mem.key}: {mem.value}")
+            return "\n".join(lines)
+
+        # Full read: identity header first (this is how a thread learns its
+        # team; identity rides tool results, never prompt content).
+        lines = [f"[Team]: {team.name}"]
+        if team.description:
+            lines.append(f"Description: {team.description}")
+        acting_thread = get_effective_thread_id(config)
+        labels = []
+        tcm = getattr(agent, "thread_config_manager", None)
+        for member_id in agent.team_manager.members(user_id, team.id):
+            member_tc = tcm.get_config(member_id) if tcm else None
+            label = (
+                getattr(member_tc, "callable_name", None) or member_id
+                if member_tc
+                else member_id
+            )
+            if member_id == acting_thread:
+                label = f"{label} (this thread)"
+            labels.append(label)
+        if labels:
+            lines.append("Teammates: " + ", ".join(sorted(labels, key=str.casefold)))
+        if team.memories:
+            lines.append(f"Team memory ({len(team.memories)} entries):")
+            for mem in sorted(team.memories, key=lambda m: m.key):
+                lines.append(f"- {mem.key}: {mem.value}")
+        else:
+            lines.append(
+                "Team memory: (none yet. Use memory_add(scope='team', key=..., "
+                "content=...) to share facts with the team.)"
+            )
+        return "\n".join(lines)
+
     # scope == "thread"
     thread_id = get_effective_thread_id(config)
     content = thread_notes.read_notepad(thread_id)
@@ -448,7 +769,8 @@ def memory_clear_all(
 
     Use this when the user explicitly asks you to forget everything about them.
     This is irreversible — all memories and personality preferences will be deleted.
-    Does NOT touch per-thread notepads.
+    Does NOT touch per-thread notepads or shared team memory (manage those
+    with memory_edit in their own scopes).
 
     Returns:
         Confirmation message

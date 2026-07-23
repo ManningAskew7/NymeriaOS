@@ -245,3 +245,52 @@ def test_serialize_thread_teams_degraded_without_manager(tmp_path: Path):
     assert result["teams"] == [
         {"id": "ops", "name": "Ops", "description": None, "thread_ids": ["thread-a"]}
     ]
+
+
+def test_team_memory_model_methods(tmp_path: Path):
+    """Team.upsert_memory/get_memory/remove_memory (backlog #100 phase 3)."""
+    manager, _, _ = _build(tmp_path)
+    team = manager.create_team("u1", name="Ops")
+
+    with manager.atomic_update("u1") as store:
+        target = next(t for t in store.teams if t.id == team.id)
+        mem = target.upsert_memory("k1", "abcdefghij", max_value_chars=5)
+        assert mem.value == "abcde"  # per-value cap truncates
+        first_updated = mem.updated_at
+        target.upsert_memory("k1", "replaced")
+        assert target.get_memory("k1").value == "replaced"
+        assert target.get_memory("k1").updated_at >= first_updated
+        target.upsert_memory("k2", "other")
+        assert target.remove_memory("k1") is True
+        assert target.remove_memory("k1") is False
+        assert [m.key for m in target.memories] == ["k2"]
+
+    # Persisted through the atomic update.
+    reloaded = manager.get_team("u1", team.id)
+    assert [m.key for m in reloaded.memories] == ["k2"]
+
+
+def test_validate_team_memory_write_caps(tmp_path: Path):
+    from nymeria.core.memory_limits import validate_team_memory_write
+
+    manager, _, _ = _build(tmp_path)
+    team = manager.create_team("u1", name="Ops")
+    with manager.atomic_update("u1") as store:
+        target = next(t for t in store.teams if t.id == team.id)
+        target.upsert_memory("k1", "v" * 20)
+
+        # Entry cap bites new keys only; existing-key upserts pass.
+        err = validate_team_memory_write(
+            target, key="k2", value="v", limit=8000, max_entries=1
+        )
+        assert err is not None and "Memory limit reached (1 memories)" in err
+        assert (
+            validate_team_memory_write(
+                target, key="k1", value="v", limit=8000, max_entries=1
+            )
+            is None
+        )
+
+        # Aggregate budget carries the team label.
+        err = validate_team_memory_write(target, key="k2", value="v" * 50, limit=30)
+        assert err is not None and err.startswith("[Error]: Team memory is full")

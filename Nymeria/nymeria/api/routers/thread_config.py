@@ -10,6 +10,7 @@ from ...core.accounts import AuthenticatedUser
 from ...core.team_manager import (
     after_team_change,
     apply_team_membership_to_config,
+    resolve_team_ref,
     serialize_thread_teams,
     set_thread_team,
 )
@@ -18,6 +19,7 @@ from ..schemas.thread_config import (
     NotepadUpdateRequest,
     ThreadConfigUpdateRequest,
     ThreadTeamCreateRequest,
+    ThreadTeamMemorySaveRequest,
     ThreadTeamUpdateRequest,
 )
 from ..thread_config_helpers import (
@@ -632,6 +634,12 @@ def create_thread_config_router(
             raise HTTPException(status_code=404, detail="Thread team not found")
         for thread_id in members:
             _save_thread_team_membership(agent, user_id, thread_id, team_id=None)
+        # Team memory dies with the entity; drop its RAG chunks. Keyed on the
+        # id, not the `deleted` flag, so an entity removed out-of-band (raw
+        # store edit) still gets its orphaned chunks cleared here.
+        from ...tools.memory import rag_remove_team_memories
+
+        rag_remove_team_memories(user_id, team_id)
         after_team_change(
             agent,
             user_id,
@@ -640,5 +648,111 @@ def create_thread_config_router(
             reason="deleted",
         )
         return {"status": "ok", "team_id": team_id}
+
+    @router.get("/thread-teams/{team_id}/memories")
+    async def list_thread_team_memories(
+        team_id: str,
+        user_id: str = Depends(authed_user_id),
+    ):
+        """List one team's shared key-value memory (backlog #100 phase 3).
+
+        Read-only: a dangling membership-referenced team id renders without
+        adopting it into the store.
+        """
+        agent = get_agent_fn()
+        team = resolve_team_ref(agent, user_id, team_id, adopt=False)
+        if team is None:
+            raise HTTPException(status_code=404, detail="Thread team not found")
+        return {
+            "team_id": team.id,
+            "name": team.name,
+            "memories": [
+                {
+                    "key": mem.key,
+                    "value": mem.value,
+                    "created_at": mem.created_at.isoformat(),
+                    "updated_at": mem.updated_at.isoformat(),
+                }
+                for mem in sorted(team.memories, key=lambda m: m.key)
+            ],
+            "count": len(team.memories),
+        }
+
+    @router.post("/thread-teams/{team_id}/memories")
+    async def save_thread_team_memory(
+        team_id: str,
+        request: ThreadTeamMemorySaveRequest,
+        user_id: str = Depends(authed_user_id),
+    ):
+        """Upsert one shared team memory key (global memory caps, per team)."""
+        agent = get_agent_fn()
+        team = resolve_team_ref(agent, user_id, team_id)
+        if team is None:
+            raise HTTPException(status_code=404, detail="Thread team not found")
+
+        from ...core.memory_limits import (
+            get_global_memory_char_limit,
+            get_memory_max_entries,
+            get_memory_value_max_chars,
+            validate_team_memory_write,
+        )
+        from ...tools.memory import rag_index_team_memory
+
+        value_cap = get_memory_value_max_chars()
+        stored_value = request.value[:value_cap]
+        try:
+            with agent.team_manager.atomic_update(user_id) as store:
+                target = next((t for t in store.teams if t.id == team.id), None)
+                if target is None:
+                    raise HTTPException(
+                        status_code=404, detail="Thread team not found"
+                    )
+                limit_error = validate_team_memory_write(
+                    target,
+                    key=request.key,
+                    value=stored_value,
+                    limit=get_global_memory_char_limit(),
+                    max_entries=get_memory_max_entries(),
+                    max_value_chars=value_cap,
+                )
+                if limit_error:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=limit_error.removeprefix("[Error]: "),
+                    )
+                target.upsert_memory(request.key, request.value, max_value_chars=value_cap)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        rag_index_team_memory(user_id, team.id, request.key, stored_value)
+        return {"status": "ok", "team_id": team.id, "key": request.key}
+
+    @router.delete("/thread-teams/{team_id}/memories/{key}")
+    async def delete_thread_team_memory(
+        team_id: str,
+        key: str,
+        user_id: str = Depends(authed_user_id),
+    ):
+        """Delete one shared team memory key."""
+        agent = get_agent_fn()
+        team = resolve_team_ref(agent, user_id, team_id, adopt=False)
+        if team is None:
+            raise HTTPException(status_code=404, detail="Thread team not found")
+
+        from ...tools.memory import rag_remove_team_memory
+
+        removed = False
+        try:
+            with agent.team_manager.atomic_update(user_id) as store:
+                target = next((t for t in store.teams if t.id == team.id), None)
+                if target is not None:
+                    removed = target.remove_memory(key)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if not removed:
+            raise HTTPException(
+                status_code=404, detail=f"No team memory with key '{key}'"
+            )
+        rag_remove_team_memory(user_id, team.id, key)
+        return {"status": "ok", "team_id": team.id, "key": key}
 
     return router

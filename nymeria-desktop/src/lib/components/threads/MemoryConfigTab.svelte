@@ -1,10 +1,13 @@
 <script lang="ts">
   import ThreadSettingsSection from './ThreadSettingsSection.svelte';
+  import TeamMemorySection from './TeamMemorySection.svelte';
   import InlineLoader from '../common/InlineLoader.svelte';
 
   /**
    * Memory tab: the thread's persistent notepad and its size cap (moved here
-   * from the old Agent tab, next to the notepad it actually limits).
+   * from the old Agent tab, next to the notepad it actually limits). Teamed
+   * threads additionally show a read-only view of their shared team memory,
+   * so the operator sees what the agent sees (backlog #100 phase 3).
    */
   interface Props {
     notepad: string;
@@ -12,6 +15,8 @@
     notepadCharLimit: number;
     memoryCharLimit: string | number;
     globalMemoryLimit?: number | null;
+    teamId?: string | null;
+    teamName?: string | null;
   }
 
   let {
@@ -20,6 +25,8 @@
     notepadCharLimit,
     memoryCharLimit = $bindable(),
     globalMemoryLimit = null,
+    teamId = null,
+    teamName = null,
   }: Props = $props();
 </script>
 
@@ -60,6 +67,10 @@
       </span>
     </div>
   </ThreadSettingsSection>
+
+  {#if teamId}
+    <TeamMemorySection {teamId} {teamName} />
+  {/if}
 </div>
 
 <style>

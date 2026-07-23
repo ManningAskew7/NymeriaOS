@@ -825,6 +825,11 @@ async def test_memory_verbs_wrap_tools_with_explicit_config(monkeypatch):
     assert result == "- note"
     assert calls[1][0] == {"scope": "thread"}
 
+    # The team scope (backlog #100 phase 3) passes through verbatim too: the
+    # verbs enumerate no scopes, the tool's validator is the single authority.
+    await verbs_effects._memory_read_verb(_ctx(), "memory.read", {"scope": "team"})
+    assert calls[2][0] == {"scope": "team"}
+
     with pytest.raises(VerbError):
         await verbs_effects._memory_add_verb(_ctx(), "memory.add", {"content": ""})
 

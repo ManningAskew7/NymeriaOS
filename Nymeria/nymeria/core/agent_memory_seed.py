@@ -1,8 +1,9 @@
 """Build the memory-load exchange seeded into a thread's conversation history.
 
-Memory (the global profile + the per-thread notepad) is surfaced to the agent as
-an authentic ``memory_read`` tool exchange living in the conversation tail rather
-than in the system prompt. The tail is append-only and cache-stable, whereas the
+Memory (the global profile + the per-thread notepad, plus the shared team
+registry for teamed threads) is surfaced to the agent as an authentic
+``memory_read`` tool exchange living in the conversation tail rather than in
+the system prompt. The tail is append-only and cache-stable, whereas the
 front-positioned system prompt busts the provider prompt cache whenever memory
 changes. Both the fresh-thread init seed (``agent.py``) and the redesigned
 compaction turn (``agent_compaction.py``) reuse the builder here so the
@@ -85,47 +86,89 @@ def read_thread_memory(user_id: str, thread_id: str) -> str:
     return _read_memory("thread", user_id, thread_id)
 
 
+def read_team_memory(user_id: str, thread_id: str) -> Optional[str]:
+    """Team memory listing iff the thread is teamed at seed time, else None.
+
+    The team read (identity header plus shared entries) joins the seed only
+    for teamed threads; unteamed threads carry no third read at all, so the
+    exchange shape stays byte-stable for them (backlog #100 phase 3). The
+    teamed probe rides ``tools.memory.acting_team_id`` (the same resolution
+    the tool uses, including the dream-shadow parent retarget) and degrades
+    to None on any failure, never aborting a seed or compaction.
+    """
+    try:
+        from ..tools.memory import acting_team_id
+
+        if not acting_team_id(
+            {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+        ):
+            return None
+    except Exception:  # never let the probe abort the turn
+        logger.debug(
+            "memory seed: team probe failed (thread=%s user=%s)",
+            thread_id,
+            user_id,
+            exc_info=True,
+        )
+        return None
+    return _read_memory("team", user_id, thread_id)
+
+
 def build_memory_exchange(
     *,
     opener_internal_type: str,
     opener_text: str,
     global_text: str,
     thread_text: str,
+    team_text: Optional[str] = None,
     trailing_text: Optional[str] = None,
 ) -> List[BaseMessage]:
     """Build a canonical, provider-neutral ``memory_read`` exchange.
 
     Shape: internal ``HumanMessage`` opener -> ``AIMessage`` with two
-    ``memory_read`` tool calls (global + thread) -> two matching ``ToolMessage``s
-    carrying the real content -> optional trailing ``AIMessage``. Every message
-    gets a fresh uuid id, ``AIMessage.content`` is a plain empty string (no
-    thinking blocks, safe past the Anthropic sanitizer), and tool-call ids are
-    paired with their ``ToolMessage``s so the sequence is never dangling.
+    ``memory_read`` tool calls (global + thread; a third with scope="team"
+    when ``team_text`` is given, i.e. the thread is teamed at seed time) ->
+    matching ``ToolMessage``s carrying the real content -> optional trailing
+    ``AIMessage``. Every message gets a fresh uuid id, ``AIMessage.content``
+    is a plain empty string (no thinking blocks, safe past the Anthropic
+    sanitizer), and tool-call ids are paired with their ``ToolMessage``s so
+    the sequence is never dangling.
     """
     global_call_id = f"mem_read_global_{_uuid.uuid4().hex[:12]}"
     thread_call_id = f"mem_read_thread_{_uuid.uuid4().hex[:12]}"
+    team_call_id = f"mem_read_team_{_uuid.uuid4().hex[:12]}"
 
     opener = HumanMessage(
         content=opener_text,
         additional_kwargs={"internal": True, "internal_type": opener_internal_type},
         id=str(_uuid.uuid4()),
     )
+    tool_calls = [
+        {
+            "id": global_call_id,
+            "name": "memory_read",
+            "args": {"scope": "global"},
+            "type": "tool_call",
+        },
+        {
+            "id": thread_call_id,
+            "name": "memory_read",
+            "args": {"scope": "thread"},
+            "type": "tool_call",
+        },
+    ]
+    if team_text is not None:
+        tool_calls.append(
+            {
+                "id": team_call_id,
+                "name": "memory_read",
+                "args": {"scope": "team"},
+                "type": "tool_call",
+            }
+        )
     ai_calls = AIMessage(
         content="",
-        tool_calls=[
-            {
-                "id": global_call_id,
-                "name": "memory_read",
-                "args": {"scope": "global"},
-                "type": "tool_call",
-            },
-            {
-                "id": thread_call_id,
-                "name": "memory_read",
-                "args": {"scope": "thread"},
-                "type": "tool_call",
-            },
-        ],
+        tool_calls=tool_calls,
         id=str(_uuid.uuid4()),
     )
     tool_global = ToolMessage(
@@ -142,18 +185,34 @@ def build_memory_exchange(
     )
 
     messages: List[BaseMessage] = [opener, ai_calls, tool_global, tool_thread]
+    if team_text is not None:
+        messages.append(
+            ToolMessage(
+                content=team_text,
+                tool_call_id=team_call_id,
+                name="memory_read",
+                id=str(_uuid.uuid4()),
+            )
+        )
     if trailing_text is not None:
         messages.append(AIMessage(content=trailing_text, id=str(_uuid.uuid4())))
     return messages
 
 
 def build_init_seed_exchange(user_id: str, thread_id: str) -> List[BaseMessage]:
-    """Build the fresh-thread init seed exchange with authentic memory content."""
+    """Build the fresh-thread init seed exchange with authentic memory content.
+
+    Teamed threads (the common case after spawn inheritance) get the team
+    identity + shared-memory read from turn one; threads that join a team
+    mid-thread are NOT reseeded (that would bust the warm prompt cache) and
+    see team memory on their next compaction or explicit read.
+    """
     return build_memory_exchange(
         opener_internal_type=MEMORY_INIT_TYPE,
         opener_text=MEMORY_INIT_OPENER,
         global_text=read_global_memory(user_id, thread_id),
         thread_text=read_thread_memory(user_id, thread_id),
+        team_text=read_team_memory(user_id, thread_id),
         trailing_text=MEMORY_INIT_TRAILING,
     )
 
@@ -177,5 +236,6 @@ def build_resume_compaction_tail(
         opener_text=MEMORY_RESUME_OPENER_TEMPLATE.format(summary=summary),
         global_text=read_global_memory(user_id, thread_id),
         thread_text=read_thread_memory(user_id, thread_id),
+        team_text=read_team_memory(user_id, thread_id),
         trailing_text=None,
     )

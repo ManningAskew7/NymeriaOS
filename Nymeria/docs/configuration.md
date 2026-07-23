@@ -645,9 +645,9 @@ or tool explicitly requires them.
 | `MAUTIC_PASSWORD` | - | Mautic basic-auth password fallback |
 | `MAUTIC_USERNAME` | - | Mautic basic-auth username fallback |
 | `MCP_REGISTRY_URL` | `https://registry.modelcontextprotocol.io` | Official MCP registry base URL used by `search_mcp` and `install_mcp_server` |
-| `MEMORY_CHAR_LIMIT` | `8000` | Default aggregate character budget for global profile memories and per-thread notepads. Threads can override their notepad limit in thread settings |
-| `MEMORY_MAX_ENTRIES` | `100` | Max number of global key-value memories per user (1-10,000). Upserts of existing keys always pass; only new keys are blocked at the cap |
-| `MEMORY_VALUE_MAX_CHARS` | `1000` | Max characters stored per global memory value (50-100,000); longer values are truncated |
+| `MEMORY_CHAR_LIMIT` | `8000` | Default aggregate character budget for global profile memories and per-thread notepads; also the per-team budget for shared team memory. Threads can override their notepad limit in thread settings |
+| `MEMORY_MAX_ENTRIES` | `100` | Max number of global key-value memories per user (1-10,000), and of shared team memories per team. Upserts of existing keys always pass; only new keys are blocked at the cap |
+| `MEMORY_VALUE_MAX_CHARS` | `1000` | Max characters stored per global or team memory value (50-100,000); longer values are truncated |
 | `MICROSOFT_GRAPH_ACCESS_TOKEN` | - | Microsoft Graph OAuth access token fallback for native productivity tools |
 | `MICROSOFT_GRAPH_BASE_URL` | `https://graph.microsoft.com/v1.0` | Microsoft Graph API base URL |
 | `OKTA_ACCESS_TOKEN` | - | Okta SSWS API token fallback |

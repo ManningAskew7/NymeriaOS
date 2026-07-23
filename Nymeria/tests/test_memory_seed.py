@@ -155,3 +155,69 @@ def test_build_resume_compaction_tail_shape(monkeypatch):
     # matched tool-call ids (no dangling)
     call_ids = {tc["id"] for tc in tail[1].tool_calls}
     assert call_ids == {tail[2].tool_call_id, tail[3].tool_call_id}
+
+
+def test_build_memory_exchange_with_team_text_adds_third_pair():
+    """Teamed threads carry a third scope="team" read (backlog #100 phase 3)."""
+    msgs = build_memory_exchange(
+        opener_internal_type=MEMORY_INIT_TYPE,
+        opener_text="opener",
+        global_text="G",
+        thread_text="T",
+        team_text="TEAM",
+        trailing_text="done",
+    )
+    assert len(msgs) == 6
+    ai_calls = msgs[1]
+    scopes = {tc["args"]["scope"] for tc in ai_calls.tool_calls}
+    assert scopes == {"global", "thread", "team"}
+    call_ids = {tc["id"] for tc in ai_calls.tool_calls}
+    tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
+    assert call_ids == {m.tool_call_id for m in tool_msgs}
+    by_id = {tc["id"]: tc["args"]["scope"] for tc in ai_calls.tool_calls}
+    contents = {by_id[m.tool_call_id]: m.content for m in tool_msgs}
+    assert contents == {"global": "G", "thread": "T", "team": "TEAM"}
+
+
+def test_read_team_memory_only_when_teamed(monkeypatch):
+    fake = _FakeTool(result="TEAM listing")
+    monkeypatch.setattr("nymeria.tools.memory.memory_read", fake)
+
+    monkeypatch.setattr("nymeria.tools.memory.acting_team_id", lambda config: None)
+    assert agent_memory_seed.read_team_memory("u1", "t1") is None
+    assert fake.calls == []  # unteamed: the read never fires
+
+    monkeypatch.setattr(
+        "nymeria.tools.memory.acting_team_id", lambda config: "team-1"
+    )
+    assert agent_memory_seed.read_team_memory("u1", "t1") == "TEAM listing"
+    assert fake.calls[0][0] == {"scope": "team"}
+
+
+def test_read_team_memory_probe_failure_degrades_to_none(monkeypatch):
+    def boom(config):
+        raise RuntimeError("probe down")
+
+    monkeypatch.setattr("nymeria.tools.memory.acting_team_id", boom)
+    assert agent_memory_seed.read_team_memory("u1", "t1") is None
+
+
+def test_seed_and_resume_tail_include_team_read_iff_teamed(monkeypatch):
+    monkeypatch.setattr(agent_memory_seed, "read_global_memory", lambda u, t: "G")
+    monkeypatch.setattr(agent_memory_seed, "read_thread_memory", lambda u, t: "T")
+
+    monkeypatch.setattr(
+        agent_memory_seed, "read_team_memory", lambda u, t: "TEAM-real"
+    )
+    seed = build_init_seed_exchange("u1", "t1")
+    assert len(seed) == 6
+    assert seed[4].content == "TEAM-real"
+    assert seed[-1].content == MEMORY_INIT_TRAILING
+    tail = build_resume_compaction_tail(user_id="u1", thread_id="t1", summary="s")
+    assert len(tail) == 5
+    assert isinstance(tail[-1], ToolMessage)
+    assert tail[-1].content == "TEAM-real"
+
+    monkeypatch.setattr(agent_memory_seed, "read_team_memory", lambda u, t: None)
+    assert len(build_init_seed_exchange("u1", "t1")) == 5
+    assert len(build_resume_compaction_tail(user_id="u1", thread_id="t1", summary="s")) == 4

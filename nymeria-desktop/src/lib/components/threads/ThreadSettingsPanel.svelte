@@ -1216,6 +1216,8 @@
                 {notepadCharLimit}
                 bind:memoryCharLimit
                 globalMemoryLimit={serverSettingsStore.memoryCharLimit}
+                teamId={threadConfig?.callableTeamId ?? null}
+                teamName={threadConfig?.callableTeamName ?? null}
               />
             {:else if activeTab === 'model-provider' || activeTab === 'model-generation' || activeTab === 'model-context'}
               <ModelConfigTab

@@ -547,3 +547,94 @@ def test_legacy_config_names_migrate_into_team_store(tmp_path: Path, api_client_
     assert (
         agent.thread_config_manager.get_config("thread-a").callable_team_name == "Ops"
     )
+
+
+def test_team_memory_routes_crud(tmp_path: Path, api_client_builder, monkeypatch):
+    """GET/POST/DELETE /thread-teams/{id}/memories (backlog #100 phase 3)."""
+    # RAG sync is exercised elsewhere; keep the routes storage-only here.
+    monkeypatch.setattr("nymeria.tools.memory._get_memory_index", lambda user_id: None)
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = client.post("/thread-teams", headers=headers, json={"name": "Ops"})
+    assert created.status_code == 200
+    team_id = created.json()["id"]
+
+    saved = client.post(
+        f"/thread-teams/{team_id}/memories",
+        headers=headers,
+        json={"key": "endpoint", "value": "https://stage.example.com"},
+    )
+    assert saved.status_code == 200
+    assert saved.json() == {"status": "ok", "team_id": team_id, "key": "endpoint"}
+
+    listed = client.get(f"/thread-teams/{team_id}/memories", headers=headers)
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body["name"] == "Ops" and body["count"] == 1
+    assert body["memories"][0]["key"] == "endpoint"
+    assert body["memories"][0]["value"] == "https://stage.example.com"
+
+    # Upsert replaces in place.
+    client.post(
+        f"/thread-teams/{team_id}/memories",
+        headers=headers,
+        json={"key": "endpoint", "value": "https://prod.example.com"},
+    )
+    entity = agent.team_manager.get_team("owner", team_id)
+    assert [m.value for m in entity.memories] == ["https://prod.example.com"]
+
+    deleted = client.delete(
+        f"/thread-teams/{team_id}/memories/endpoint", headers=headers
+    )
+    assert deleted.status_code == 200
+    assert agent.team_manager.get_team("owner", team_id).memories == []
+
+    assert (
+        client.delete(
+            f"/thread-teams/{team_id}/memories/endpoint", headers=headers
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get("/thread-teams/team-nope/memories", headers=headers).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            "/thread-teams/team-nope/memories",
+            headers=headers,
+            json={"key": "k", "value": "v"},
+        ).status_code
+        == 404
+    )
+
+
+def test_team_memory_save_route_enforces_aggregate_cap(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """The per-team aggregate budget surfaces as HTTP 400, [Error] prefix stripped."""
+    monkeypatch.setattr("nymeria.tools.memory._get_memory_index", lambda user_id: None)
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = {"Authorization": f"Bearer {token}"}
+    team_id = client.post(
+        "/thread-teams", headers=headers, json={"name": "Ops"}
+    ).json()["id"]
+
+    # Default caps: value cap 1000 chars, aggregate 8000. Seven full-size
+    # values fit; the eighth pushes the aggregate over and must 400.
+    for n in range(7):
+        ok = client.post(
+            f"/thread-teams/{team_id}/memories",
+            headers=headers,
+            json={"key": f"k{n}", "value": "x" * 1000},
+        )
+        assert ok.status_code == 200
+    over = client.post(
+        f"/thread-teams/{team_id}/memories",
+        headers=headers,
+        json={"key": "k7", "value": "x" * 1000},
+    )
+    assert over.status_code == 400
+    assert over.json()["detail"].startswith("Team memory is full")
+    assert len(agent.team_manager.get_team("owner", team_id).memories) == 7

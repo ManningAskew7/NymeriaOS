@@ -319,6 +319,10 @@ def team_manage(
             f"[Error]: {e}. All {len(unteamed_ok)} member thread(s) were "
             f"unteamed but the team entity remains. Retry the delete."
         )
+    # Team memory dies with the entity; drop its RAG chunks (best-effort).
+    from .memory import rag_remove_team_memories
+
+    rag_remove_team_memories(user_id, target.id)
     after_team_change(
         agent,
         user_id,

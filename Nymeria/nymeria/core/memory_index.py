@@ -1968,13 +1968,18 @@ class MemoryIndex:
 
         return self.delete_chunks(chunk_ids)
 
-    def delete_memory_key(self, user_id: str, key: str) -> int:
+    def delete_memory_key(
+        self, user_id: str, key: str, chunk_type: str = "memory"
+    ) -> int:
         """
-        Delete memory chunks for a specific profile memory key.
+        Delete memory chunks for a specific memory key.
 
         Args:
             user_id: User ID
-            key: Profile memory key
+            key: The chunk metadata key ("memory" chunks use the profile
+                memory key; "team_memory" chunks use the "<team_id>:<key>"
+                composite so keys stay unique per team)
+            chunk_type: Keyed memory chunk type ('memory' or 'team_memory')
 
         Returns:
             Number of chunks deleted
@@ -1990,10 +1995,34 @@ class MemoryIndex:
             # has no "key" yields NULL and is excluded.
             cursor.execute(
                 "SELECT id FROM chunks "
-                "WHERE user_id = ? AND chunk_type = 'memory' "
+                "WHERE user_id = ? AND chunk_type = ? "
                 "AND json_valid(metadata) "
                 "AND json_extract(metadata, '$.key') = ?",
-                (user_id, key),
+                (user_id, chunk_type, key),
+            )
+            chunk_ids = [row['id'] for row in cursor.fetchall()]
+
+        return self.delete_chunks(chunk_ids)
+
+    def delete_team_memory_chunks(self, user_id: str, team_id: str) -> int:
+        """
+        Delete every team_memory chunk belonging to one team (team deletion).
+
+        Args:
+            user_id: Owner user ID (teams are per-user entities)
+            team_id: The callable team id stamped in chunk metadata
+
+        Returns:
+            Number of chunks deleted
+        """
+        with self._lock:
+            cursor = self._get_connection().cursor()
+            cursor.execute(
+                "SELECT id FROM chunks "
+                "WHERE user_id = ? AND chunk_type = 'team_memory' "
+                "AND json_valid(metadata) "
+                "AND json_extract(metadata, '$.team_id') = ?",
+                (user_id, team_id),
             )
             chunk_ids = [row['id'] for row in cursor.fetchall()]
 

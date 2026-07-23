@@ -220,6 +220,7 @@ function createThreadsStore() {
       .map((team) => ({
         id: team.id,
         name: team.name,
+        description: team.description ?? null,
         threadIds: team.thread_ids ?? [],
         collapsed: ui[team.id]?.collapsed ?? false,
       }))
@@ -693,6 +694,12 @@ function createThreadsStore() {
 
     async renameThreadTeam(id: string, name: string) {
       await api.updateThreadTeam(id, { name });
+      applyThreadTeams(await api.listThreadTeams());
+    },
+
+    async describeThreadTeam(id: string, description: string) {
+      // Empty string clears the description (REST semantics).
+      await api.updateThreadTeam(id, { description });
       applyThreadTeams(await api.listThreadTeams());
     },
 

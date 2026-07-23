@@ -138,6 +138,18 @@ class ThreadTeamCreateRequest(BaseModel):
     thread_ids: list[str] = Field(default_factory=list)
 
 
+class ThreadTeamMemorySaveRequest(BaseModel):
+    """Upsert one shared team memory entry (backlog #100 phase 3).
+
+    The schema bound is permissive; the runtime truncates the value to the
+    configured per-value cap and enforces the per-team aggregate budget
+    (the global memory caps, applied per team).
+    """
+
+    key: str = Field(..., min_length=1, max_length=200)
+    value: str = Field(..., max_length=2_000_000)
+
+
 class ThreadTeamUpdateRequest(BaseModel):
     """Rename/describe a callable visibility team or replace membership.
 
