@@ -83,6 +83,15 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "files-as-truth",
     ),
     _StoreRow(
+        "teams/<user>.json",
+        "Callable-team entities: name, description, team memory "
+        "(schema/team_store.schema.json); membership lives on thread configs "
+        "as callable_team_id",
+        "per user",
+        "yes",
+        "files-as-truth",
+    ),
+    _StoreRow(
         "dream_prompt.md, dream_kickoff.md",
         "Dream prompt overrides; file absent = built-in default",
         "global",
@@ -220,6 +229,7 @@ def _render_schemas() -> Iterable[tuple[str, str]]:
     """
     try:
         from .hook_manager import HookStore
+        from .team_manager import TeamStore
         from .trigger_manager import TriggerStore
         from .thread_config import ThreadConfig
         from ..tools.definitions.custom_tool_schema import CustomToolDefinition
@@ -230,6 +240,7 @@ def _render_schemas() -> Iterable[tuple[str, str]]:
 
     models = (
         ("hook_store", HookStore),
+        ("team_store", TeamStore),
         ("trigger_store", TriggerStore),
         ("thread_config", ThreadConfig),
         ("custom_tool", CustomToolDefinition),

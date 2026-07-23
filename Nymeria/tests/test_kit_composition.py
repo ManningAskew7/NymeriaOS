@@ -1256,7 +1256,9 @@ def test_template_materialization_inherits_caller_team(tmp_path: Path, monkeypat
     child = agent.thread_config_manager.get_config(spawned_ids[0])
     assert child is not None
     assert child.callable_team_id == "team-a"
-    assert child.callable_team_name == "Ops"
+    # Deprecated (backlog #100): only the membership id is inherited; names
+    # resolve from the team entity store.
+    assert child.callable_team_name is None
 
 
 def test_template_concurrent_first_calls_spawn_once(tmp_path: Path, monkeypatch):

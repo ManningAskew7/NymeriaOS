@@ -1035,9 +1035,32 @@ class TestTeamInheritance:
         tc = stub_agent.thread_config_manager.get_config(child_id)
         assert tc is not None
         assert tc.callable_team_id == "team-a"
-        assert tc.callable_team_name == "Ops"
+        # Deprecated (backlog #100): only the membership id is written; the
+        # receipt's display name resolved from the surviving legacy config
+        # name (the stub agent has no team store).
+        assert tc.callable_team_name is None
         assert "Team: Ops (inherited from the spawning thread)." in result
         assert "Same-team threads can invoke this." in result
+
+    def test_fresh_spawn_receipt_prefers_team_store_name(self, stub_agent):
+        from types import SimpleNamespace
+
+        from nymeria.core.thread_config import ThreadConfig
+
+        stub_agent.thread_config_manager.save_config(
+            ThreadConfig(
+                thread_id="parent-1",
+                callable_team_id="team-a",
+                callable_team_name="Stale Legacy",
+            )
+        )
+        stub_agent.team_manager = SimpleNamespace(
+            resolve_team_name=lambda user_id, team_id: "Ops (store)"
+        )
+        result = spawn_thread.invoke(
+            {"title": "teamed child"}, config=_runnable_config()
+        )
+        assert "Team: Ops (store) (inherited from the spawning thread)." in result
 
     def test_fresh_spawn_from_unteamed_parent_stays_unteamed(self, stub_agent):
         result = spawn_thread.invoke(

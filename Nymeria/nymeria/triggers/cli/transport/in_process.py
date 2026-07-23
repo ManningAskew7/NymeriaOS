@@ -271,27 +271,24 @@ class InProcessAgentClient:
         self,
         user_id: str = "default",
     ) -> Sequence[Mapping[str, Any]]:
-        """Return callable team groupings visible to ``user_id``."""
+        """Return callable team groupings visible to ``user_id``.
+
+        Delegates to the one shared serializer (core/team_manager.py) with
+        this transport's own thread universe (the local metadata listing, not
+        the accounts repo).
+        """
+
+        from ....core.team_manager import serialize_thread_teams
 
         user_id = user_id or self.default_user_id
-        teams: dict[str, dict[str, Any]] = {}
-        for thread in await self.list_threads(user_id):
-            thread_id = str(thread.get("thread_id") or thread.get("id") or "")
-            if not thread_id:
-                continue
-            manager = getattr(self.agent, "thread_config_manager", None)
-            config = manager.get_config(thread_id) if manager is not None else None
-            team_id = str(getattr(config, "callable_team_id", "") or "")
-            if not team_id:
-                continue
-            team_name = str(getattr(config, "callable_team_name", "") or team_id)
-            team = teams.setdefault(
-                team_id,
-                {"id": team_id, "name": team_name, "thread_ids": []},
-            )
-            team["name"] = team_name
-            team["thread_ids"].append(thread_id)
-        return sorted(teams.values(), key=lambda item: str(item["name"]).casefold())
+        thread_ids = [
+            thread_id
+            for thread in await self.list_threads(user_id)
+            if (thread_id := str(thread.get("thread_id") or thread.get("id") or ""))
+        ]
+        return serialize_thread_teams(self.agent, user_id, thread_ids=thread_ids)[
+            "teams"
+        ]
 
     async def list_todos(
         self,

@@ -979,15 +979,35 @@ def spawn_thread(
 
     # Backlog #97: children join the spawning thread's callable-team bubble
     # so a teamed parent can invoke what it spawns under full team isolation.
-    # Branched mode inherits via the full config clone in thread_branch;
-    # fresh mode copies the two fields explicitly below.
+    # Branched mode inherits via the full config clone in thread_branch; fresh
+    # mode copies the id explicitly below. Only the id is written (the name is
+    # deprecated on configs, backlog #100); the receipt's display name resolves
+    # from the team store, then a surviving legacy config name, then the id.
     parent_team_id: Optional[str] = None
-    parent_team_name: Optional[str] = None
+    parent_team_display: Optional[str] = None
     if parent_thread_id:
         parent_tc = agent.thread_config_manager.get_config(parent_thread_id)
         if parent_tc is not None:
-            parent_team_id = getattr(parent_tc, "callable_team_id", None)
-            parent_team_name = getattr(parent_tc, "callable_team_name", None)
+            parent_team_id = getattr(parent_tc, "callable_team_id", None) or None
+            if parent_team_id:
+                team_manager = getattr(agent, "team_manager", None)
+                store_name = None
+                if team_manager is not None:
+                    try:
+                        store_name = team_manager.resolve_team_name(
+                            user_id, parent_team_id
+                        )
+                    except Exception:  # noqa: BLE001 - display-only, never
+                        # fail the spawn over a team-name lookup
+                        logger.debug(
+                            "spawn_thread team-name resolution failed",
+                            exc_info=True,
+                        )
+                parent_team_display = (
+                    store_name
+                    or getattr(parent_tc, "callable_team_name", None)
+                    or parent_team_id
+                )
 
     if mode_norm == "branched":
         from ..core.thread_branch import ThreadBranchError, branch_thread
@@ -1053,7 +1073,6 @@ def spawn_thread(
                 callable_name=callable_name,
                 callable_description=callable_description,
                 callable_team_id=parent_team_id,
-                callable_team_name=parent_team_name,
             )
         except Exception as e:
             return f"[Error]: Invalid configuration: {str(e)}"
@@ -1181,7 +1200,7 @@ def spawn_thread(
         warnings=warnings,
         kit_line=kit_line,
         team_line=(
-            f"Team: {parent_team_name or parent_team_id} "
+            f"Team: {parent_team_display or parent_team_id} "
             "(inherited from the spawning thread)."
             if parent_team_id
             else None

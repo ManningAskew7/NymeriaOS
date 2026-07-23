@@ -259,6 +259,11 @@ def create_tools_router(
                 if name.startswith("mcp__") and agent.tool_registry.get_tool(name)
             )
 
+        team_manager = getattr(agent, "team_manager", None)
+        team_names: dict[str, str] = (
+            team_manager.team_names(user_id) if team_manager is not None else {}
+        )
+
         visible = []
         seen_names: set[str] = set(existing_names)
         for tc in agent._get_team_scoped_callable_threads(
@@ -272,12 +277,18 @@ def create_tools_router(
             if tc.callable_name in disabled or tc.callable_name in seen_names:
                 continue
             seen_names.add(tc.callable_name)
+            team_id = tc.callable_team_id or None
             visible.append({
                 "thread_id": tc.thread_id,
                 "name": tc.callable_name,
                 "description": tc.callable_description,
                 "team_id": tc.callable_team_id,
-                "team_name": tc.callable_team_name,
+                # Derived from the team store; legacy config name as fallback.
+                "team_name": (
+                    (team_names.get(team_id) or tc.callable_team_name or team_id)
+                    if team_id
+                    else tc.callable_team_name
+                ),
             })
 
         return {

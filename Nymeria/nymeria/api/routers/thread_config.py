@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ...core.accounts import AuthenticatedUser
+from ...core.team_manager import serialize_thread_teams
 from ...core.thread_config import DreamingConfig, ThreadConfig, ThreadLLMConfig
 from ..schemas.thread_config import (
     NotepadUpdateRequest,
@@ -15,7 +16,6 @@ from ..schemas.thread_config import (
     ThreadTeamUpdateRequest,
 )
 from ..thread_config_helpers import (
-    make_thread_team_id,
     normalize_thread_team_name,
     validate_callable_name,
 )
@@ -47,9 +47,27 @@ def _merge_optional_submodel(
     return existing
 
 
-def _config_response(config: ThreadConfig) -> dict[str, Any]:
+def _config_response(
+    config: ThreadConfig,
+    *,
+    agent: Any = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     result = config.model_dump(mode="json")
     result["has_customizations"] = config.has_customizations()
+    # callable_team_name is deprecated on the config (backlog #100): clients
+    # keep receiving it, DERIVED from the team entity store, falling back to
+    # a surviving legacy config value and then the raw id.
+    if config.callable_team_id and agent is not None and user_id:
+        manager = getattr(agent, "team_manager", None)
+        derived = (
+            manager.resolve_team_name(user_id, config.callable_team_id)
+            if manager is not None
+            else None
+        )
+        result["callable_team_name"] = (
+            derived or config.callable_team_name or config.callable_team_id
+        )
     return result
 
 
@@ -71,35 +89,20 @@ def _default_thread_config_response(thread_id: str) -> dict[str, Any]:
 
 
 def _serialize_thread_teams(agent: Any, user_id: str) -> dict[str, Any]:
-    owned = list(agent.accounts_repo.list_threads_for_user(user_id))
-    teams: dict[str, dict[str, Any]] = {}
-    for thread_id in owned:
-        tc = agent.thread_config_manager.get_config(thread_id)
-        if not (tc and tc.callable_team_id):
-            continue
-        team_id = tc.callable_team_id
-        team = teams.setdefault(
-            team_id,
-            {
-                "id": team_id,
-                "name": tc.callable_team_name or team_id,
-                "thread_ids": [],
-            },
-        )
-        team["thread_ids"].append(thread_id)
-        if tc.callable_team_name:
-            team["name"] = tc.callable_team_name
+    """Team list via the shared serializer (core/team_manager.py).
 
-    result = sorted(teams.values(), key=lambda t: str(t["name"]).lower())
-    return {"teams": result, "total": len(result)}
+    Store entities carry name/description; membership comes from the one
+    shared config scan. Kept as a local name so router callers read naturally.
+    """
+    return serialize_thread_teams(agent, user_id)
 
 
 def _find_team(teams: list[dict[str, Any]], team_id: str) -> dict[str, Any] | None:
     """Return the team with ``team_id`` from an already-serialized team list.
 
-    Pure over the pre-computed list so a handler can scan the config store once
-    (``_serialize_thread_teams`` is an O(N) uncached read over every owned
-    thread's config) and reuse the result for several lookups.
+    Pure over the pre-computed list so a handler can run the serializer once
+    (its membership scan is an O(N) read over every owned thread's config)
+    and reuse the result for several lookups.
     """
     for team in teams:
         if team["id"] == team_id:
@@ -107,31 +110,16 @@ def _find_team(teams: list[dict[str, Any]], team_id: str) -> dict[str, Any] | No
     return None
 
 
-def _team_name_taken(
-    teams: list[dict[str, Any]],
-    name: str,
-    *,
-    excluding_team_id: str | None = None,
-) -> bool:
-    """Report whether ``name`` collides with a team in the serialized list.
-
-    Case-insensitive over the trimmed name; ``excluding_team_id`` lets a rename
-    ignore the team being edited. Pure over the pre-computed team list.
-    """
-    needle = name.strip().lower()
-    for team in teams:
-        if excluding_team_id and team["id"] == excluding_team_id:
-            continue
-        if str(team["name"]).strip().lower() == needle:
-            return True
-    return False
-
-
 def _require_team_thread_ids(
     user: AuthenticatedUser,
     thread_ids: list[str],
     require_thread_access_fn: Callable[..., None],
 ) -> list[str]:
+    """Validate and dedupe requested member threads; empty is legal.
+
+    Empty teams are a supported state (backlog #100): a team entity may exist
+    with no member threads, so no minimum count is enforced here.
+    """
     seen: set[str] = set()
     clean: list[str] = []
     for raw_id in thread_ids:
@@ -141,8 +129,6 @@ def _require_team_thread_ids(
         require_thread_access_fn(user, thread_id)
         clean.append(thread_id)
         seen.add(thread_id)
-    if not clean:
-        raise HTTPException(status_code=400, detail="At least one thread is required")
     return clean
 
 
@@ -151,18 +137,39 @@ def _save_thread_team_membership(
     thread_id: str,
     *,
     team_id: str | None,
-    team_name: str | None,
 ) -> None:
     tc = agent.thread_config_manager.get_config(thread_id)
     if tc is None:
         tc = ThreadConfig(thread_id=thread_id)
     tc.callable_team_id = team_id
-    tc.callable_team_name = team_name
+    # Deprecated: names live in the team entity store; team writes clear the
+    # legacy config field.
+    tc.callable_team_name = None
     if not agent.thread_config_manager.save_config(tc):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to save team membership for thread {thread_id}",
         )
+
+
+def _get_or_adopt_team(agent: Any, user_id: str, team_id: str) -> Any:
+    """Resolve a team entity, adopting a dangling membership-referenced id.
+
+    Raw config edits can reference team ids the store has never seen; PATCH
+    and DELETE keep working on those by adopting the id (display name from a
+    surviving legacy config name, else the id). Returns None when the id is
+    neither in the store nor referenced by any membership.
+    """
+    manager = agent.team_manager
+    team = manager.get_team(user_id, team_id)
+    if team is not None:
+        return team
+    memberships, legacy_names = manager._membership_scan(user_id)
+    if team_id in memberships:
+        return manager.ensure_team_exists(
+            user_id, team_id, fallback_name=legacy_names.get(team_id)
+        )
+    return None
 
 
 def _invalidate_user_team_graphs(agent: Any, user_id: str) -> None:
@@ -184,6 +191,7 @@ def create_thread_config_router(
     @router.get("/threads/{thread_id}/config")
     async def get_thread_config(
         thread_id: str,
+        user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
         """Get per-thread configuration (returns defaults if none saved)."""
@@ -191,7 +199,7 @@ def create_thread_config_router(
         agent = get_agent_fn()
         tc = agent.thread_config_manager.get_config(thread_id)
         if tc:
-            return _config_response(tc)
+            return _config_response(tc, agent=agent, user_id=user_id)
         return _default_thread_config_response(thread_id)
 
     @router.patch("/threads/{thread_id}/config")
@@ -310,9 +318,32 @@ def create_thread_config_router(
         if request.callable_max_iterations is not None:
             tc.callable_max_iterations = request.callable_max_iterations
         if request.callable_team_id is not None:
-            tc.callable_team_id = request.callable_team_id
-        if request.callable_team_name is not None:
-            tc.callable_team_name = request.callable_team_name
+            # "" is the unteam sentinel; store None so read sites need no
+            # normalization for configs written from here on.
+            old_team_id = tc.callable_team_id or None
+            old_team_name = tc.callable_team_name
+            tc.callable_team_id = request.callable_team_id or None
+            tc.callable_team_name = None
+            manager = getattr(agent, "team_manager", None)
+            if manager is not None:
+                # Bank a surviving legacy name for the PREVIOUS team before
+                # it leaves this config (unteam or move): the store must hold
+                # the name before this save clears it.
+                if old_team_id and old_team_name:
+                    manager.ensure_team_exists(
+                        user_id, old_team_id, fallback_name=old_team_name
+                    )
+                if tc.callable_team_id:
+                    # Keep the entity store coherent with membership writes
+                    # that reference an id it has never seen (an incoming
+                    # deprecated callable_team_name serves only as the adopted
+                    # entity's display-name fallback; renames go through the
+                    # teams API).
+                    manager.ensure_team_exists(
+                        user_id,
+                        tc.callable_team_id,
+                        fallback_name=request.callable_team_name,
+                    )
         if request.inject_todos_in_prompt is not None:
             tc.inject_todos_in_prompt = request.inject_todos_in_prompt
         if request.show_autonomous_prompts is not None:
@@ -362,11 +393,26 @@ def create_thread_config_router(
                 tc.dreaming, request.dreaming, DreamingConfig
             )
 
+        # Deprecated-name hygiene (backlog #100): a surviving legacy
+        # callable_team_name is folded into the entity store (migration ran on
+        # store access; adoption covers dangling ids), then cleared so the
+        # config never re-persists it.
+        if tc.callable_team_name is not None:
+            manager = getattr(agent, "team_manager", None)
+            if manager is not None:
+                if tc.callable_team_id:
+                    manager.ensure_team_exists(
+                        user_id,
+                        tc.callable_team_id,
+                        fallback_name=tc.callable_team_name,
+                    )
+                tc.callable_team_name = None
+
         if not agent.thread_config_manager.save_config(tc):
             raise HTTPException(status_code=500, detail="Failed to save thread config")
 
         agent.invalidate_thread_config_cache(thread_id)
-        if request.callable_team_id is not None or request.callable_team_name is not None:
+        if request.callable_team_id is not None:
             for owned_thread_id in agent.accounts_repo.list_threads_for_user(user_id):
                 agent.invalidate_thread_config_cache(owned_thread_id)
             agent.invalidate_thread_config_cache("")
@@ -378,7 +424,7 @@ def create_thread_config_router(
             or request.callable_max_iterations is not None
         ):
             agent.sync_agent_tools()
-        elif request.callable_team_id is not None or request.callable_team_name is not None:
+        elif request.callable_team_id is not None:
             from ...core.tool_search_index import mark_tool_search_dirty
 
             mark_tool_search_dirty()
@@ -392,7 +438,7 @@ def create_thread_config_router(
                 platform="callable",
             )
 
-        return _config_response(tc)
+        return _config_response(tc, agent=agent, user_id=user_id)
 
     @router.delete("/threads/{thread_id}/config")
     async def delete_thread_config(
@@ -476,35 +522,40 @@ def create_thread_config_router(
         user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Create a callable team and move the requested threads into it."""
+        """Create a callable team, optionally moving threads into it.
+
+        ``thread_ids`` may be empty: a team entity can exist with no members.
+        """
         agent = get_agent_fn()
         name = normalize_thread_team_name(request.name)
-        teams = _serialize_thread_teams(agent, user_id)["teams"]
-        if _team_name_taken(teams, name):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Thread team '{name}' already exists",
-            )
         thread_ids = _require_team_thread_ids(
             user,
             request.thread_ids,
             require_thread_access_fn,
         )
-        team_id = make_thread_team_id(name)
-        for thread_id in thread_ids:
-            _save_thread_team_membership(
-                agent,
-                thread_id,
-                team_id=team_id,
-                team_name=name,
+        try:
+            team = agent.team_manager.create_team(
+                user_id,
+                name=name,
+                description=request.description,
             )
-        _invalidate_user_team_graphs(agent, user_id)
-        from ...core.tool_search_index import mark_tool_search_dirty
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        for thread_id in thread_ids:
+            _save_thread_team_membership(agent, thread_id, team_id=team.id)
+        if thread_ids:
+            _invalidate_user_team_graphs(agent, user_id)
+            from ...core.tool_search_index import mark_tool_search_dirty
 
-        mark_tool_search_dirty()
+            mark_tool_search_dirty()
         saved_teams = _serialize_thread_teams(agent, user_id)["teams"]
-        team = _find_team(saved_teams, team_id)
-        return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
+        found = _find_team(saved_teams, team.id)
+        return found or {
+            "id": team.id,
+            "name": team.name,
+            "description": team.description,
+            "thread_ids": thread_ids,
+        }
 
     @router.patch("/thread-teams/{team_id}")
     async def update_thread_team(
@@ -513,78 +564,76 @@ def create_thread_config_router(
         user_id: str = Depends(authed_user_id),
         user: AuthenticatedUser = Depends(verify_api_key),
     ):
-        """Rename a callable team and/or replace its thread membership."""
+        """Rename/describe a callable team and/or replace its membership.
+
+        A rename or description edit alone is an O(1) store write: no member
+        thread config is touched and no graph is invalidated. Replacing
+        membership with ``[]`` unteams every member but keeps the team.
+        """
         agent = get_agent_fn()
-        teams = _serialize_thread_teams(agent, user_id)["teams"]
-        existing = _find_team(teams, team_id)
+        manager = agent.team_manager
+        existing = _get_or_adopt_team(agent, user_id, team_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Thread team not found")
 
-        name = str(existing["name"])
         if request.name is not None:
-            name = normalize_thread_team_name(request.name)
-            if _team_name_taken(teams, name, excluding_team_id=team_id):
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Thread team '{name}' already exists",
+            try:
+                manager.rename_team(
+                    user_id, team_id, normalize_thread_team_name(request.name)
                 )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if request.description is not None:
+            manager.describe_team(user_id, team_id, request.description)
 
-        if request.thread_ids is None:
-            thread_ids = list(existing["thread_ids"])
-        else:
+        membership_changed = False
+        if request.thread_ids is not None:
             thread_ids = _require_team_thread_ids(
                 user,
                 request.thread_ids,
                 require_thread_access_fn,
             )
+            old_ids = set(manager.members(user_id, team_id))
+            new_ids = set(thread_ids)
+            for thread_id in sorted(old_ids - new_ids):
+                _save_thread_team_membership(agent, thread_id, team_id=None)
+            for thread_id in sorted(new_ids - old_ids):
+                _save_thread_team_membership(agent, thread_id, team_id=team_id)
+            membership_changed = old_ids != new_ids
 
-        old_ids = set(existing["thread_ids"])
-        new_ids = set(thread_ids)
-        for thread_id in sorted(old_ids - new_ids):
-            _save_thread_team_membership(
-                agent,
-                thread_id,
-                team_id=None,
-                team_name=None,
-            )
-        for thread_id in thread_ids:
-            _save_thread_team_membership(
-                agent,
-                thread_id,
-                team_id=team_id,
-                team_name=name,
-            )
+        if membership_changed:
+            _invalidate_user_team_graphs(agent, user_id)
+        if membership_changed or request.name is not None:
+            # The search index tags callables with the team name, so a rename
+            # re-tags even though no graph rebuild is needed.
+            from ...core.tool_search_index import mark_tool_search_dirty
 
-        _invalidate_user_team_graphs(agent, user_id)
-        from ...core.tool_search_index import mark_tool_search_dirty
-
-        mark_tool_search_dirty()
+            mark_tool_search_dirty()
         saved_teams = _serialize_thread_teams(agent, user_id)["teams"]
         team = _find_team(saved_teams, team_id)
-        return team or {"id": team_id, "name": name, "thread_ids": thread_ids}
+        if team is None:
+            raise HTTPException(status_code=404, detail="Thread team not found")
+        return team
 
     @router.delete("/thread-teams/{team_id}")
     async def delete_thread_team(
         team_id: str,
         user_id: str = Depends(authed_user_id),
     ):
-        """Delete a callable team by clearing membership from its threads."""
+        """Delete a callable team: clear its membership and remove the entity."""
         agent = get_agent_fn()
-        teams = _serialize_thread_teams(agent, user_id)["teams"]
-        existing = _find_team(teams, team_id)
-        if existing is None:
+        manager = agent.team_manager
+        members = manager.members(user_id, team_id)
+        deleted = manager.delete_team(user_id, team_id)
+        if not deleted and not members:
             raise HTTPException(status_code=404, detail="Thread team not found")
-        for thread_id in existing["thread_ids"]:
-            _save_thread_team_membership(
-                agent,
-                thread_id,
-                team_id=None,
-                team_name=None,
-            )
-        _invalidate_user_team_graphs(agent, user_id)
-        from ...core.tool_search_index import mark_tool_search_dirty
+        for thread_id in members:
+            _save_thread_team_membership(agent, thread_id, team_id=None)
+        if members:
+            _invalidate_user_team_graphs(agent, user_id)
+            from ...core.tool_search_index import mark_tool_search_dirty
 
-        mark_tool_search_dirty()
+            mark_tool_search_dirty()
         return {"status": "ok", "team_id": team_id}
 
     return router

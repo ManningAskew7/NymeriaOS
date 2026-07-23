@@ -1124,27 +1124,21 @@ class CommandBackendClient:
         ]
 
     async def list_thread_teams(self, user_id: Optional[str] = None) -> list[dict]:
-        # Callable visibility teams grouped from thread configs, mirroring
-        # GET /thread-teams (thread_config._serialize_thread_teams).
+        # Callable visibility teams via the one shared serializer
+        # (core/team_manager.py), mirroring GET /thread-teams. The thread
+        # universe is this surface's own listing so semantics match the
+        # threads the caller can see.
+        from .team_manager import serialize_thread_teams
+
         target_user_id = self._checked_user_id(user_id or self.user.id)
-        manager = getattr(self.agent, "thread_config_manager", None)
-        teams: dict[str, dict[str, Any]] = {}
-        for thread in await self.list_threads(target_user_id):
-            thread_id = str(thread.get("thread_id") or thread.get("id") or "")
-            if not thread_id:
-                continue
-            config = manager.get_config(thread_id) if manager is not None else None
-            team_id = str(getattr(config, "callable_team_id", "") or "")
-            if not team_id:
-                continue
-            team_name = str(getattr(config, "callable_team_name", "") or team_id)
-            team = teams.setdefault(
-                team_id,
-                {"id": team_id, "name": team_name, "thread_ids": []},
-            )
-            team["name"] = team_name
-            team["thread_ids"].append(thread_id)
-        return sorted(teams.values(), key=lambda item: str(item["name"]).casefold())
+        thread_ids = [
+            thread_id
+            for thread in await self.list_threads(target_user_id)
+            if (thread_id := str(thread.get("thread_id") or thread.get("id") or ""))
+        ]
+        return serialize_thread_teams(
+            self.agent, target_user_id, thread_ids=thread_ids
+        )["teams"]
 
     async def create_thread(
         self,

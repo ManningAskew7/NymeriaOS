@@ -207,7 +207,7 @@ def get_memory_hash(
         thread_config_str = (
             f"sp:{hash(tc.system_prompt or '')}"
             f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
-            f"|ct:{tc.callable_team_id or ''}:{tc.callable_team_name or ''}"
+            f"|ct:{tc.callable_team_id or ''}"
             f"|dt:{sorted(tc.disabled_tools)}"
             f"|et:{sorted(tc.enabled_tools)}"
             f"|tt:{live_temp_tools}"
@@ -247,7 +247,7 @@ def get_memory_hash(
             f"|tc:{tc.instructions or ''}"
             f"|sp:{hash(tc.system_prompt or '')}"
             f"|cb:{tc.callable}|cn:{tc.callable_name or ''}"
-            f"|ct:{tc.callable_team_id or ''}:{tc.callable_team_name or ''}"
+            f"|ct:{tc.callable_team_id or ''}"
             f"|dt:{sorted(tc.disabled_tools)}"
             f"|et:{sorted(tc.enabled_tools)}"
             f"|tt:{live_temp_tools}"

@@ -229,8 +229,14 @@ class ThreadConfig(BaseModel):
         description="Max ReAct tool calls for this callable thread (1-1000). None = use CALLABLE_DEFAULT_MAX_ITERATIONS."
     )
     # Callable team membership. When a thread belongs to a team, its callable
-    # tool list is scoped to callable threads in the same team.
+    # tool list is scoped to callable threads in the same team. The id is the
+    # single source of truth for membership; team identity (name, description)
+    # lives in the per-user team entity store (core/team_manager.py).
     callable_team_id: Optional[str] = Field(default=None, max_length=120)
+    # DEPRECATED (backlog #100): still parsed from old config files (the lazy
+    # team-store migration consumes it, and display fallbacks may read it for
+    # ids missing from the store), but never written by any code path. Names
+    # resolve via TeamManager; renames are O(1) store writes.
     callable_team_name: Optional[str] = Field(default=None, max_length=120)
     # Inject user profile (saved facts, personality) into the system prompt
     inject_profile_in_prompt: bool = False
@@ -339,7 +345,9 @@ class ThreadConfig(BaseModel):
             return True
         if self.callable_max_iterations is not None:
             return True
-        if self.callable_team_id or self.callable_team_name:
+        # Deprecated callable_team_name is deliberately excluded: a config whose
+        # only content is a stale legacy team name has no live customization.
+        if self.callable_team_id:
             return True
         if self.inject_todos_in_prompt:
             return True

@@ -437,7 +437,14 @@ def test_local_transport_lists_teams_todos_and_triggers() -> None:
 
     teams, todos, triggers = run(query())
 
-    assert teams == [{"id": "ops", "name": "Ops", "thread_ids": ["team-thread"]}]
+    assert teams == [
+        {
+            "id": "ops",
+            "name": "Ops",
+            "description": None,
+            "thread_ids": ["team-thread"],
+        }
+    ]
     assert [todo["id"] for todo in todos] == ["todo-1"]
     assert [trigger["id"] for trigger in triggers] == ["trigger-1"]
 
