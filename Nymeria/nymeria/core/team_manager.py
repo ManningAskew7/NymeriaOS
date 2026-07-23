@@ -183,19 +183,20 @@ class TeamManager:
 
     @contextmanager
     def atomic_update(self, user_id: str = "default"):
-        """Atomic store update: persist only when the block changed the store."""
+        """Atomic store update: persist only when the block changed the store.
+
+        A block that raises persists NOTHING, even if it mutated the store
+        first: partial mutations from a failed block must not reach disk
+        (current CRUD helpers all raise before mutating; this guard keeps
+        that safe under future edits).
+        """
         self.ensure_migrated(user_id)
         lock = self._get_lock(user_id)
         with lock:
             store = self._load(user_id)
             before = self._snapshot(store)
-            try:
-                yield store
-            finally:
-                saved_ok = True
-                if self._snapshot(store) != before:
-                    saved_ok = self._save(store)
-            if not saved_ok:
+            yield store
+            if self._snapshot(store) != before and not self._save(store):
                 raise RuntimeError(f"Failed to persist teams for user {user_id}")
 
     # -- persistence -------------------------------------------------------
@@ -590,6 +591,178 @@ class TeamManager:
             changed = not first and snapshot != self._poll_snapshot
             self._poll_snapshot = snapshot
             return changed
+
+
+# ---------------------------------------------------------------------------
+# Shared mutation services (backlog #100 phase 2)
+#
+# Every team mutation surface (REST routes, the team_manage tool, the
+# nym.threads.configure verb, spawn_thread) goes through these so the
+# surfaces cannot drift: one membership applier with legacy-name banking,
+# one fan-out invalidation, one post-mutation chokepoint that re-tags the
+# search index and nudges GUIs via the thread_teams_changed sync event.
+# ---------------------------------------------------------------------------
+
+def resolve_team_ref(
+    agent: Any, user_id: str, ref: str, *, adopt: bool = True
+) -> Optional[Team]:
+    """Resolve a team reference (id or display name) to a store entity.
+
+    Exact id match wins, then a case-insensitive display-name match over the
+    store, then a dangling membership-referenced id. Returns None when
+    nothing matches. Dangling ids are adopted into the store by default so
+    mutation surfaces leave the store coherent; read-only callers pass
+    ``adopt=False`` to get an UNSAVED synthetic entity instead (no store
+    write on a read path).
+    """
+    manager = getattr(agent, "team_manager", None)
+    wanted = (ref or "").strip()
+    if manager is None or not wanted:
+        return None
+    team = manager.get_team(user_id, wanted)
+    if team is not None:
+        return team
+    folded = wanted.casefold()
+    for candidate in manager.get_store_cached(user_id).teams:
+        if candidate.name.strip().casefold() == folded:
+            return candidate
+    memberships, legacy_names = manager._membership_scan(user_id)
+    if wanted in memberships:
+        if adopt:
+            return manager.ensure_team_exists(
+                user_id, wanted, fallback_name=legacy_names.get(wanted)
+            )
+        name = (legacy_names.get(wanted) or "").strip() or wanted
+        return Team(id=wanted, name=name[:MAX_TEAM_NAME_LENGTH])
+    return None
+
+
+def apply_team_membership_to_config(
+    agent: Any,
+    user_id: str,
+    tc: Any,
+    team_id: Optional[str],
+    *,
+    offered_name: Optional[str] = None,
+) -> bool:
+    """Apply a membership change to an in-memory config (no save).
+
+    Banks a surviving legacy name for the PREVIOUS team into the store before
+    the deprecated config field is cleared, and adopts a new id the store has
+    never seen (display name from ``offered_name``, else the id). Returns
+    True when ``callable_team_id`` actually changed; the caller saves the
+    config and, on a change, runs :func:`after_team_change`.
+    """
+    new_team_id = (team_id or "").strip() or None
+    old_team_id = getattr(tc, "callable_team_id", None) or None
+    old_team_name = getattr(tc, "callable_team_name", None)
+    tc.callable_team_id = new_team_id
+    tc.callable_team_name = None
+    manager = getattr(agent, "team_manager", None)
+    if manager is not None:
+        if old_team_id and old_team_name:
+            manager.ensure_team_exists(
+                user_id, old_team_id, fallback_name=old_team_name
+            )
+        if new_team_id:
+            manager.ensure_team_exists(
+                user_id, new_team_id, fallback_name=offered_name
+            )
+    return new_team_id != old_team_id
+
+
+def set_thread_team(
+    agent: Any,
+    user_id: str,
+    thread_id: str,
+    team_id: Optional[str],
+    *,
+    offered_name: Optional[str] = None,
+) -> bool:
+    """Load, apply, and save one thread's team membership.
+
+    Returns True when the membership changed. Raises RuntimeError when the
+    config save fails (transport layers map that to their own error shape).
+    """
+    from .thread_config import ThreadConfig
+
+    manager = agent.thread_config_manager
+    tc = manager.get_config(thread_id)
+    if tc is None:
+        tc = ThreadConfig(thread_id=thread_id)
+    changed = apply_team_membership_to_config(
+        agent, user_id, tc, team_id, offered_name=offered_name
+    )
+    if not manager.save_config(tc):
+        raise RuntimeError(f"Failed to save team membership for thread {thread_id}")
+    return changed
+
+
+def invalidate_team_graphs(agent: Any, user_id: str) -> None:
+    """Drop every owned thread's cached graph plus the per-user "" sentinel.
+
+    Team visibility is cross-thread (a callable's visibility depends on its
+    peers' team ids), so a membership change invalidates the whole owned set,
+    not just the edited thread.
+    """
+    for owned_thread_id in agent.accounts_repo.list_threads_for_user(user_id):
+        agent.invalidate_thread_config_cache(owned_thread_id)
+    agent.invalidate_thread_config_cache("")
+
+
+def publish_teams_changed(
+    user_id: str, *, team_id: str = "", reason: str = ""
+) -> None:
+    """Best-effort ``thread_teams_changed`` sync event (GUI sidebar freshness).
+
+    Consumers refetch the /thread-teams list; the payload is a hint, not
+    state. Never raises: freshness is advisory.
+    """
+    try:
+        from .event_bus import publish_sync_event
+
+        data: Dict[str, Any] = {}
+        if reason:
+            data["reason"] = reason
+        if team_id:
+            data["team_id"] = team_id
+        publish_sync_event(
+            event_type="thread_teams_changed",
+            thread_id="",
+            user_id=user_id,
+            data=data,
+        )
+    except Exception:  # noqa: BLE001 - freshness must never break a mutation
+        logger.debug("thread_teams_changed publish failed", exc_info=True)
+
+
+def after_team_change(
+    agent: Any,
+    user_id: str,
+    *,
+    membership_changed: bool,
+    renamed: bool = False,
+    team_id: str = "",
+    reason: str = "",
+) -> None:
+    """The one post-mutation chokepoint shared by every team surface.
+
+    Membership changes rebuild every owned graph (fan-out); a rename only
+    re-tags the search index (callable tags carry the team name, no graph
+    content does); every mutation nudges GUIs via the sync event.
+    """
+    if membership_changed:
+        invalidate_team_graphs(agent, user_id)
+    if membership_changed or renamed:
+        try:
+            from .tool_search_index import mark_tool_search_dirty
+
+            mark_tool_search_dirty()
+        except Exception:  # noqa: BLE001 - re-tag is advisory, next sweep catches up
+            logger.debug(
+                "tool-search dirty mark failed after team change", exc_info=True
+            )
+    publish_teams_changed(user_id, team_id=team_id, reason=reason)
 
 
 # ---------------------------------------------------------------------------

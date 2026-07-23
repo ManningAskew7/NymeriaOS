@@ -197,6 +197,7 @@ _GENERAL_MODERATE_TOOL_NAMES = frozenset(
         "http_request",
         "api_discover",
         "tool_manage",
+        "team_manage",
         "manage_mcp",
         "skill_manage",
         "skill_write",

@@ -490,6 +490,70 @@ class ThreadCommandsMixin:
             return "[Info]: No thread config found."
         return "[Info]: " + _format_thread_config(config)
 
+    # ── /team read commands (backlog #100 phase 2) ────────────────────────
+
+    async def _cmd_team(self, args: list[str], rest: str) -> str:
+        # Registry dispatch routes "/team list" and "/team show ..." to the
+        # dedicated handlers; anything else lands here. Bare "/team" lists,
+        # "/team <ref>" is show shorthand.
+        if not args:
+            return await self._cmd_team_list([], "")
+        return await self._cmd_team_show(args, " ".join(args))
+
+    async def _cmd_team_list(self, args: list[str], rest: str) -> str:
+        teams = await self._thread_teams()
+        if not teams:
+            return (
+                "[Info]: No callable-thread teams yet. Create one from the "
+                "desktop sidebar or ask the agent to use team_manage."
+            )
+        lines = [f"Teams ({len(teams)}):"]
+        for team in teams:
+            member_count = len(team.get("thread_ids") or [])
+            description = str(team.get("description") or "").strip()
+            suffix = f" {description}" if description else ""
+            lines.append(
+                f"- {team.get('name')} ({team.get('id')}): "
+                f"{member_count} member(s).{suffix}"
+            )
+        return "[Info]: " + "\n".join(lines)
+
+    async def _cmd_team_show(self, args: list[str], rest: str) -> str:
+        ref = (rest or " ".join(args)).strip()
+        if not ref:
+            return "[Error]: Usage: /team show <team-id-or-name>"
+        teams = await self._thread_teams()
+        match: Mapping[str, Any] | None = None
+        for team in teams:
+            if str(team.get("id") or "") == ref:
+                match = team
+                break
+        if match is None:
+            folded = ref.casefold()
+            for team in teams:
+                if str(team.get("name") or "").strip().casefold() == folded:
+                    match = team
+                    break
+        if match is None:
+            names = ", ".join(str(t.get("name")) for t in teams) or "(none)"
+            return f"[Error]: No team matching '{ref}'. Teams: {names}"
+        titles = {
+            _normalize_thread_id(thread): _thread_title(thread)
+            for thread in await self._list_threads()
+        }
+        lines = [f"Team: {match.get('name')}", f"Id: {match.get('id')}"]
+        description = str(match.get("description") or "").strip()
+        if description:
+            lines.append(f"Description: {description}")
+        member_ids = [str(t) for t in (match.get("thread_ids") or [])]
+        lines.append(f"Members ({len(member_ids)}):")
+        for member_id in sorted(member_ids):
+            title = titles.get(member_id) or ""
+            lines.append(f"- {member_id} {title}".rstrip())
+        if not member_ids:
+            lines.append("- (none)")
+        return "[Info]: " + "\n".join(lines)
+
     # ── Navigation / creation (ride switch_thread state hints) ────────────
 
     async def _cmd_thread_switch(self, args: list[str], rest: str) -> str | CommandOutput:

@@ -154,6 +154,30 @@ def register_default_commands(service: "CommandService") -> None:
         danger_level="normal",
         agent_allowed=False,
     )
+    # /team read commands (backlog #100 phase 2). Read-only sugar over the
+    # shared team serializer; mutations go through the team_manage tool, the
+    # teams REST API, or the desktop UI.
+    service.register(
+        "team",
+        description="List your callable-thread teams",
+        category="Thread",
+        usage="/team [list|show <team>]",
+        aliases=("teams",),
+    )
+    service.register(
+        "team list",
+        description="List your callable-thread teams",
+        category="Thread",
+        usage="/team list",
+        aliases=("team_list",),
+    )
+    service.register(
+        "team show",
+        description="Show one team's members and description",
+        category="Thread",
+        usage="/team show <team-id-or-name>",
+        aliases=("team_show",),
+    )
     service.register(
         "context",
         description="Detailed context and tool breakdown",

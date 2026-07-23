@@ -1002,11 +1002,39 @@ class TestBuildSpawnPreamble:
             disabled_tools=[],
             warnings=[],
             team_line="Team: Ops (inherited from the spawning thread).",
+            child_teamed=True,
         )
         lines = out.split("\n")
         assert lines[1] == "Team: Ops (inherited from the spawning thread)."
         assert lines[2] == (
             'Callable as: spawned_t(task="..."). Same-team threads can invoke this.'
+        )
+
+    def test_opted_out_team_line_keeps_unteamed_callable_wording(self):
+        # team="none" from a teamed parent renders a team line but the child
+        # is unteamed: the invoke-scope hint must key on membership, not on
+        # the line's presence.
+        out = _build_spawn_preamble(
+            new_thread_id="spawned-t",
+            mode_norm="fresh",
+            parent_thread_id=None,
+            ttl_hours_resolved=None,
+            make_callable=True,
+            callable_name="spawned_t",
+            tool_resolution_records=[],
+            include_core_tools=True,
+            enabled_tools=[],
+            disabled_tools=[],
+            warnings=[],
+            team_line="Team: none (opted out of the spawning thread's team 'Ops').",
+            child_teamed=False,
+        )
+        lines = out.split("\n")
+        assert lines[1] == (
+            "Team: none (opted out of the spawning thread's team 'Ops')."
+        )
+        assert lines[2] == (
+            'Callable as: spawned_t(task="..."). Any unteamed thread can invoke this.'
         )
 
 
@@ -1073,3 +1101,89 @@ class TestTeamInheritance:
         assert tc.callable_team_name is None
         assert "Team:" not in result
         assert "Any unteamed thread can invoke this." in result
+
+
+class TestTeamOverride:
+    """The team= parameter (backlog #100 phase 2): inherit / none / explicit."""
+
+    def _attach_team_store(self, stub_agent, tmp_path):
+        from nymeria.core.team_manager import TeamManager
+
+        stub_agent.team_manager = TeamManager(tmp_path)
+        return stub_agent.team_manager.create_team("u1", name="Ops")
+
+    def test_explicit_team_ref_by_name(self, stub_agent, tmp_path):
+        team = self._attach_team_store(stub_agent, tmp_path)
+        result = spawn_thread.invoke(
+            {"title": "ops child", "team": "ops"}, config=_runnable_config()
+        )
+        child_id = _extract_thread_id(result)
+        tc = stub_agent.thread_config_manager.get_config(child_id)
+        assert tc.callable_team_id == team.id
+        assert tc.callable_team_name is None
+        assert "Team: Ops (set via team=)." in result
+        assert "Same-team threads can invoke this." in result
+
+    def test_team_none_opts_out_of_parent_team(self, stub_agent):
+        from nymeria.core.thread_config import ThreadConfig
+
+        stub_agent.thread_config_manager.save_config(
+            ThreadConfig(
+                thread_id="parent-1",
+                callable_team_id="team-a",
+                callable_team_name="Ops",
+            )
+        )
+        result = spawn_thread.invoke(
+            {"title": "solo child", "team": "none"}, config=_runnable_config()
+        )
+        child_id = _extract_thread_id(result)
+        tc = stub_agent.thread_config_manager.get_config(child_id)
+        assert tc.callable_team_id is None
+        assert "Team: none (opted out of the spawning thread's team 'Ops')." in result
+        assert "Any unteamed thread can invoke this." in result
+
+    def test_unknown_team_ref_creates_nothing(self, stub_agent, tmp_path):
+        self._attach_team_store(stub_agent, tmp_path)
+        result = spawn_thread.invoke(
+            {"title": "orphan", "team": "Nope"}, config=_runnable_config()
+        )
+        assert result.startswith("[Error]: Unknown team 'Nope'")
+        assert stub_agent.accounts_repo.claimed == []
+
+    def test_branched_spawn_team_override(self, stub_agent, tmp_path, monkeypatch):
+        from nymeria.core.thread_config import ThreadConfig
+
+        team = self._attach_team_store(stub_agent, tmp_path)
+        stub_agent.thread_config_manager.save_config(
+            ThreadConfig(thread_id="parent-1", callable_team_id="team-old")
+        )
+
+        def fake_branch(
+            *,
+            agent,
+            settings,
+            user_id,
+            source_thread_id,
+            title=None,
+            from_message_index=None,
+            new_thread_id=None,
+        ):
+            # Keyword-only, mirroring the real branch_thread signature so a
+            # call-shape drift fails loudly. A real branch clones the
+            # parent's config (team id included, deprecated name already
+            # None per backlog #100 phase 1).
+            agent.thread_config_manager.save_config(
+                ThreadConfig(thread_id=new_thread_id, callable_team_id="team-old")
+            )
+
+        monkeypatch.setattr("nymeria.core.thread_branch.branch_thread", fake_branch)
+        result = spawn_thread.invoke(
+            {"title": "branch child", "mode": "branched", "team": "Ops"},
+            config=_runnable_config(),
+        )
+        child_id = _extract_thread_id(result)
+        tc = stub_agent.thread_config_manager.get_config(child_id)
+        assert tc.callable_team_id == team.id
+        assert tc.callable_team_name is None
+        assert "Team: Ops (set via team=)." in result

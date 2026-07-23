@@ -399,14 +399,21 @@ def _activate_kit(
     )
 
 
-def _resolve_owned_thread(agent: Any, user_id: str, id_or_title: str) -> Any:
+def resolve_owned_thread(
+    agent: Any,
+    user_id: str,
+    id_or_title: str,
+    *,
+    caller: str = "nym.threads.configure",
+) -> Any:
     """Resolve ``id_or_title`` to a ThreadConfig for a thread the caller OWNS.
 
     Exact thread id first (an owned-but-unconfigured thread gets a fresh
     default config), then the caller's callable threads by name (only
     callable threads have names). Unlike ``resolve_target_thread`` the target
     need NOT be callable: that flag is consent to programmatic INVOCATION,
-    not to configuration by its own owner.
+    not to configuration by its own owner. Shared with the ``team_manage``
+    tool (backlog #100 phase 2); ``caller`` labels denial messages.
     """
     from ..thread_config import ThreadConfig
 
@@ -431,7 +438,7 @@ def _resolve_owned_thread(agent: Any, user_id: str, id_or_title: str) -> Any:
             f"no thread matches {wanted!r} (pass a thread id you own or the "
             "callable name of one of your callable threads)"
         )
-    denial = _check_ownership(agent, user_id, tc.thread_id, name="nym.threads.configure")
+    denial = _check_ownership(agent, user_id, tc.thread_id, name=caller)
     if denial:
         raise VerbError(denial)
     return tc
@@ -472,6 +479,27 @@ def _gate_restricted_tools(agent: Any, user_id: str, names: List[str]) -> None:
         )
 
 
+def _apply_team_field(agent: Any, user_id: str, tc: Any, ref: str) -> bool:
+    """Resolve ``team=`` (id, name, or "none"/"" to unteam) onto the config.
+
+    Uses the shared membership applier (legacy-name banking + dangling-id
+    adoption); an unknown ref raises before anything is written. Returns
+    whether the membership actually changed.
+    """
+    from ..team_manager import apply_team_membership_to_config, resolve_team_ref
+
+    wanted = str(ref or "").strip()
+    if wanted.lower() in ("", "none"):
+        return apply_team_membership_to_config(agent, user_id, tc, None)
+    team = resolve_team_ref(agent, user_id, wanted)
+    if team is None:
+        raise VerbError(
+            f"unknown team {wanted!r}; pass a team id or name (see "
+            'team_manage/workflow list surfaces) or "none" to unteam'
+        )
+    return apply_team_membership_to_config(agent, user_id, tc, team.id)
+
+
 def _apply_thread_configuration(
     agent: Any, user_id: str, tc: Any, args: dict
 ) -> List[str]:
@@ -483,6 +511,8 @@ def _apply_thread_configuration(
     clearing the active LLM fallback when the model changes. Enabling a tool
     also removes it from disabled_tools (and vice versa): disabled_tools is
     authoritative subtraction at graph build, so a bare add would be a no-op.
+    A team change runs the shared cross-thread fan-out (not the single-thread
+    invalidation the other fields use).
     """
     from ...config.model_tiers import (
         is_thread_tier_alias,
@@ -544,11 +574,31 @@ def _apply_thread_configuration(
         ]
         updated.append("tools_disable")
 
+    team_ref = args.get("team")
+    team_changed = False
+    if team_ref is not None:
+        team_changed = _apply_team_field(agent, user_id, tc, str(team_ref))
+        if team_changed:
+            updated.append("team")
+
     if updated:
         if not agent.thread_config_manager.save_config(tc):
             raise VerbError(f"failed to save config for thread {tc.thread_id!r}")
         with contextlib.suppress(Exception):
             agent.invalidate_thread_config_cache(tc.thread_id)
+    if team_changed:
+        # Team visibility is cross-thread: fan-out invalidation + search
+        # re-tag + GUI nudge via the shared chokepoint (the single-thread
+        # invalidation above is subsumed by the fan-out).
+        from ..team_manager import after_team_change
+
+        after_team_change(
+            agent,
+            user_id,
+            membership_changed=True,
+            team_id=tc.callable_team_id or "",
+            reason="membership",
+        )
     return updated
 
 
@@ -600,8 +650,9 @@ async def _threads_create_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
     positional=("id_or_title",),
     description=(
         "Reconfigure one of your threads (instructions=, model=, "
-        "tools_enable=, tools_disable=, kit=); changes apply from the "
-        "thread's next turn."
+        "tools_enable=, tools_disable=, kit=, team=; team takes a team id or "
+        'name, or "none" to unteam); changes apply from the thread\'s next '
+        "turn."
     ),
 )
 async def _threads_configure_verb(ctx: VerbContext, verb: str, args: dict) -> Any:
@@ -612,17 +663,17 @@ async def _threads_configure_verb(ctx: VerbContext, verb: str, args: dict) -> An
     kit = args.get("kit")
     has_field = kit is not None or any(
         args.get(field) is not None
-        for field in ("instructions", "model", "tools_enable", "tools_disable")
+        for field in ("instructions", "model", "tools_enable", "tools_disable", "team")
     )
     if not has_field:
         raise VerbError(
             "nothing to configure; pass at least one of instructions=, "
-            "model=, tools_enable=, tools_disable=, kit="
+            "model=, tools_enable=, tools_disable=, kit=, team="
         )
 
     # Resolution + application read/write thread and account stores; off-loop.
     tc = await asyncio.to_thread(
-        _resolve_owned_thread, agent, ctx.user_id, str(args.get("id_or_title") or "")
+        resolve_owned_thread, agent, ctx.user_id, str(args.get("id_or_title") or "")
     )
     updated = await asyncio.to_thread(
         _apply_thread_configuration, agent, ctx.user_id, tc, args

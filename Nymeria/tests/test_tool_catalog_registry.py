@@ -7,7 +7,8 @@ hand-maintained comprehension and must keep passing after each family migrates
 to ``register_tool_group``.
 
 The baseline name sets below were snapshotted from ``main`` BEFORE the registry
-refactor (catalog 1258 tools, static seed+catalog 1273 tools). Assembly moved
+refactor (catalog 1258 tools, static seed+catalog 1273 tools; the baseline
+lists and counts below are kept current as new tools ship). Assembly moved
 from a hand-listed union to a registry-derived one; resolution
 (``select_tools_for_graph`` / ``compute_tool_superset`` /
 ``static_tool_catalog``) is untouched, so if the mapping matches the snapshot,
@@ -38,7 +39,7 @@ def test_catalog_name_set_matches_baseline():
 
 
 def test_catalog_count_matches_baseline():
-    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1258
+    assert len(T.CATALOG_TOOLS) == len(BASELINE_CATALOG_NAMES) == 1259
 
 
 def test_catalog_key_equals_tool_name():
@@ -52,7 +53,7 @@ def test_static_tool_catalog_name_set_matches_baseline():
 
 
 def test_static_tool_catalog_count_matches_baseline():
-    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1273
+    assert len(T.static_tool_catalog()) == len(BASELINE_STATIC_NAMES) == 1274
 
 
 def test_static_tool_catalog_is_seed_union_catalog():
@@ -1435,6 +1436,7 @@ BASELINE_CATALOG_NAMES = [
     "tapfiliate_list_program_affiliates",
     "tapfiliate_remove_affiliate_metadata",
     "tapfiliate_update_affiliate_metadata",
+    "team_manage",
     "telegram_delete_message",
     "telegram_get_chat",
     "telegram_get_me",
@@ -2710,6 +2712,7 @@ BASELINE_STATIC_NAMES = [
     "tapfiliate_list_program_affiliates",
     "tapfiliate_remove_affiliate_metadata",
     "tapfiliate_update_affiliate_metadata",
+    "team_manage",
     "telegram_delete_message",
     "telegram_get_chat",
     "telegram_get_me",

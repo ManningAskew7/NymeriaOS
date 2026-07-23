@@ -386,6 +386,100 @@ def test_empty_team_and_membership_via_config_patch(tmp_path: Path, api_client_b
     assert agent.thread_config_manager.get_config("thread-a").callable_team_id is None
 
 
+def test_team_routes_publish_thread_teams_changed(
+    tmp_path: Path, api_client_builder, monkeypatch
+):
+    """Every team mutation publishes the thread_teams_changed sync event.
+
+    Backlog #100 phase 2 GUI freshness: create/update/delete on the teams
+    API and a membership move via the config PATCH all nudge clients through
+    the shared after_team_change chokepoint.
+    """
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = {"Authorization": f"Bearer {token}"}
+    agent.accounts_repo.claim_thread("thread-a", "owner")
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "nymeria.core.team_manager.publish_teams_changed",
+        lambda user_id, *, team_id="", reason="": events.append(
+            {"user_id": user_id, "team_id": team_id, "reason": reason}
+        ),
+    )
+
+    team = client.post(
+        "/thread-teams", headers=headers, json={"name": "Ops", "thread_ids": []}
+    ).json()
+    assert events[-1] == {"user_id": "owner", "team_id": team["id"], "reason": "created"}
+
+    client.patch(
+        f"/thread-teams/{team['id']}", headers=headers, json={"name": "Ops Team"}
+    )
+    assert events[-1]["reason"] == "updated"
+
+    client.patch(
+        "/threads/thread-a/config",
+        headers=headers,
+        json={"callable_team_id": team["id"]},
+    )
+    assert events[-1] == {
+        "user_id": "owner",
+        "team_id": team["id"],
+        "reason": "membership",
+    }
+
+    # A no-op re-set of the same team publishes (and rebuilds) nothing.
+    events.clear()
+    agent.invalidated.clear()
+    client.patch(
+        "/threads/thread-a/config",
+        headers=headers,
+        json={"callable_team_id": team["id"]},
+    )
+    assert events == []
+    assert "" not in agent.invalidated
+
+    client.delete(f"/thread-teams/{team['id']}", headers=headers)
+    assert events[-1]["reason"] == "deleted"
+
+
+def test_membership_move_banks_previous_team_legacy_name(
+    tmp_path: Path, api_client_builder
+):
+    """Moving a thread between teams via the teams API banks the old name.
+
+    The shared set_thread_team applier folds the PREVIOUS team's surviving
+    legacy config name into the store before clearing it, so a
+    dangling-legacy team's display name survives its sole member moving to
+    another team (previously only the config PATCH path banked it).
+    """
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = {"Authorization": f"Bearer {token}"}
+    agent.accounts_repo.claim_thread("thread-a", "owner")
+
+    # Migrate the store while empty, then a raw-edit legacy teamed config.
+    assert agent.team_manager.get_store_cached("owner").teams == []
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id="thread-a",
+            callable_team_id="team-old",
+            callable_team_name="Old Ops",
+        )
+    )
+
+    created = client.post(
+        "/thread-teams",
+        headers=headers,
+        json={"name": "New Team", "thread_ids": ["thread-a"]},
+    )
+    assert created.status_code == 200
+    cfg = agent.thread_config_manager.get_config("thread-a")
+    assert cfg.callable_team_id == created.json()["id"]
+    assert cfg.callable_team_name is None
+    # The old team's name was banked before the config clear.
+    assert agent.team_manager.resolve_team_name("owner", "team-old") == "Old Ops"
+
+
 def test_unteam_patch_banks_legacy_name_before_clearing(tmp_path: Path, api_client_builder):
     """PATCH config unteaming a legacy thread banks its name into the store.
 
