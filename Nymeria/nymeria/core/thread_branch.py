@@ -516,6 +516,10 @@ def _clone_thread_config(
     data["thread_id"] = target_thread_id
     data["created_at"] = utc_now()
     data["updated_at"] = utc_now()
+    # The clone keeps callable_team_id (the branch joins the parent's team,
+    # backlog #97) but never re-persists the deprecated callable_team_name
+    # (names live in the team entity store, backlog #100).
+    data["callable_team_name"] = None
 
     callable_name = None
     if source_config.callable:

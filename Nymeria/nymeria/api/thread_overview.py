@@ -604,7 +604,30 @@ def _thinking_label(
     return effort_text or "medium"
 
 
-def _callable_defaults(tc: ThreadConfig) -> dict[str, Any]:
+def _team_name_resolver(agent: Any, user_id: str) -> dict[str, str]:
+    """team_id -> display name from the team entity store (empty on fakes)."""
+    manager = getattr(agent, "team_manager", None)
+    if manager is None:
+        return {}
+    try:
+        return manager.team_names(user_id)
+    except Exception:  # noqa: BLE001 - overview sections degrade, never raise
+        return {}
+
+
+def _resolve_team_name(
+    team_names: dict[str, str], tc: ThreadConfig
+) -> str | None:
+    """Store name, then surviving legacy config name, then the raw id."""
+    team_id = tc.callable_team_id or None
+    if not team_id:
+        return tc.callable_team_name
+    return team_names.get(team_id) or tc.callable_team_name or team_id
+
+
+def _callable_defaults(
+    tc: ThreadConfig, *, team_name: str | None = None
+) -> dict[str, Any]:
     return {
         "enabled": bool(tc.callable),
         "name": tc.callable_name,
@@ -613,7 +636,7 @@ def _callable_defaults(tc: ThreadConfig) -> dict[str, Any]:
         "max_iterations": tc.callable_max_iterations,
         "effective_max_iterations": None,
         "team_id": tc.callable_team_id,
-        "team_name": tc.callable_team_name,
+        "team_name": team_name if team_name is not None else tc.callable_team_name,
         "visible_thread_count": 0,
         "visible_threads": [],
     }
@@ -638,7 +661,8 @@ def _callable_section(
         if tc.callable
         else main_default
     )
-    data = _callable_defaults(tc)
+    team_names = _team_name_resolver(agent, user_id)
+    data = _callable_defaults(tc, team_name=_resolve_team_name(team_names, tc))
     data.update(
         {
             "effective_max_iterations": effective,
@@ -660,6 +684,7 @@ def _visible_callable_threads(
         return []
     disabled = set(tc.disabled_tools or [])
     own_name = tc.callable_name if tc.callable else None
+    team_names = _team_name_resolver(agent, user_id)
     visible: list[dict[str, Any]] = []
     seen: set[str] = set()
     scoped_results: Any = get_scoped(user_id=user_id, caller_thread_id=thread_id)
@@ -679,7 +704,7 @@ def _visible_callable_threads(
                 "description_present": bool(callable_tc.callable_description),
                 "description_char_count": len(callable_tc.callable_description or ""),
                 "team_id": callable_tc.callable_team_id,
-                "team_name": callable_tc.callable_team_name,
+                "team_name": _resolve_team_name(team_names, callable_tc),
             }
         )
     return visible

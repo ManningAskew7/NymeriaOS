@@ -420,6 +420,23 @@ def sync_external_resource_edits(agent: "NymeriaAgent") -> None:
             rebuild_needed = True
             logger.info("External MCP server edits synced into the registry")
 
+        # Team entity store (backlog #100): the graph depends only on
+        # membership (config-side), never on team name or memory, so an
+        # external store edit needs no graph rebuild; the tool search index
+        # tags callables with the team name, so re-tag it. Name reads go
+        # through the manager's fingerprint cache and are fresh already.
+        team_manager = getattr(agent, "team_manager", None)
+        if team_manager is not None and team_manager.poll_external_changes():
+            try:
+                from .tool_search_index import mark_tool_search_dirty
+
+                mark_tool_search_dirty()
+                logger.info(
+                    "External team-store edits detected; tool search re-tag scheduled"
+                )
+            except Exception:
+                logger.debug("Failed to mark tool search index dirty", exc_info=True)
+
         if rebuild_needed:
             agent._rebuild_default_graphs()
             try:

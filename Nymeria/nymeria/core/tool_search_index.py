@@ -492,6 +492,14 @@ class ToolSearchIndex:
             )
             return out
 
+        team_manager = getattr(agent, "team_manager", None)
+        team_names: dict = {}
+        if team_manager is not None:
+            try:
+                team_names = team_manager.team_names(user_id)
+            except Exception:  # noqa: BLE001 - tags degrade, search stays up
+                team_names = {}
+
         for tc in callable_threads:
             name = getattr(tc, "callable_name", None)
             if not name:
@@ -503,7 +511,11 @@ class ToolSearchIndex:
             if name in existing_names:
                 continue
             tags = ["callable_thread"]
-            team_name = getattr(tc, "callable_team_name", None)
+            # Team tag: store name first, surviving legacy config name second.
+            team_id = getattr(tc, "callable_team_id", None) or None
+            team_name = (
+                team_names.get(team_id) if team_id else None
+            ) or getattr(tc, "callable_team_name", None)
             if team_name:
                 tags.append(str(team_name))
             out[name] = ToolSearchDocument(

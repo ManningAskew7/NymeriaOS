@@ -1,14 +1,10 @@
 """Shared helpers for thread configuration API routes."""
 
-import re
-import uuid
 from typing import Any, NamedTuple
 
 from fastapi import HTTPException
 
 from ..core.callable_names import CALLABLE_NAME_RE
-
-_THREAD_TEAM_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
 
 
 class EffectiveLLM(NamedTuple):
@@ -68,9 +64,3 @@ def normalize_thread_team_name(name: str) -> str:
     return normalized
 
 
-def make_thread_team_id(name: str) -> str:
-    """Build a stable-enough team id with a readable slug plus random suffix."""
-    slug = _THREAD_TEAM_SLUG_RE.sub("-", name.strip().lower()).strip("-_")
-    if not slug:
-        slug = "team"
-    return f"team-{slug[:48]}-{uuid.uuid4().hex[:8]}"

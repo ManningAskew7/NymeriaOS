@@ -44,6 +44,12 @@ three stores that cached in memory now detect external edits with debounced
   `list_installed`/`list_for_thread` run a debounced scan for adds/removals;
   a detected change schedules a background embedding-index rebuild, never an
   inline embed on the turn path.
+- **Callable teams** (`core/team_manager.py`, `teams/<user>.json`): name and
+  description reads go through a fingerprint-keyed cache, so raw edits are
+  fresh on next read; the chokepoint's `poll_external_changes` additionally
+  re-tags the tool search index (its callable tags carry the team name). No
+  graph rebuild is needed: the graph depends only on membership, which lives
+  on thread configs as `callable_team_id`, never in this store.
 
 The agent-side chokepoint (`core/agent_tools.py::sync_external_resource_edits`,
 called at the top of every graph lookup) drains the pending state and re-runs
@@ -57,7 +63,8 @@ identical byte size can be missed (touch the file again).
 - **Uniform quarantine** (`core/storage_paths.py::quarantine_corrupt_file`):
   a store file that no longer parses is moved to a `quarantine/` sibling
   directory (timestamped, bytes preserved) and the store loads without it.
-  Applied by hooks, triggers, thread configs, custom tools, and MCP servers.
+  Applied by hooks, triggers, thread configs, callable teams, custom tools,
+  and MCP servers.
   Corrupt `SKILL.md` files are deliberately not quarantined: markdown skills
   fail soft (skipped at scan; the cached copy keeps serving on a bad edit)
   and no manager ever rewrites them.
@@ -82,9 +89,9 @@ identical byte size can be missed (touch the file again).
   not.
 - Raw (non-manager) edits are recorded user-attributed in the activity log
   (`ActivityType.EXTERNAL_EDIT`, `core/activity_log.py::log_external_edit`):
-  refresh detections for custom tools / MCP / skills, hook and trigger store
-  edits, and every quarantine event. Hooks and triggers detect against a
-  shared `<store>.json.sig` fingerprint sidecar
+  refresh detections for custom tools / MCP / skills, hook, trigger, and
+  team store edits, and every quarantine event. Hooks, triggers, and teams
+  detect against a shared `<store>.json.sig` fingerprint sidecar
   (`core/storage_paths.py::record_store_fingerprint`), written on every
   manager save and re-recorded when a loader acknowledges an edit, so the
   audit is correct across manager instances and processes (hook authoring

@@ -3031,39 +3031,44 @@ Creates a callable thread directly from the API.
 
 ### Callable Teams
 
+Teams are entities in a per-user store (`data/teams/<user>.json`, managed by
+`core/team_manager.py`) holding identity (name, description); membership stays
+on each thread's config as `callable_team_id`. Names resolve from the store,
+so a rename is an O(1) store write that touches no member thread config.
+
 ```http
 GET /thread-teams
 Authorization: Bearer <token>
 ```
 
-Returns `{"teams": [{"id": "...", "name": "...", "thread_ids": [...]}], "total": N}` for the authenticated user's thread teams.
+Returns `{"teams": [{"id": "...", "name": "...", "description": ... | null, "thread_ids": [...]}], "total": N}` for the authenticated user's thread teams. Teams with no members are included (empty teams are legal).
 
 ```http
 POST /thread-teams
 Authorization: Bearer <token>
 Content-Type: application/json
 
-{"name": "Ops", "thread_ids": ["thread-a", "thread-b"]}
+{"name": "Ops", "description": "Ops helpers", "thread_ids": ["thread-a", "thread-b"]}
 ```
 
-Creates a team and moves the listed owned threads into it.
+Creates a team, optionally moving the listed owned threads into it. `description` is optional; `thread_ids` may be empty (create the entity now, add members later). 409 on a name collision (case-insensitive).
 
 ```http
 PATCH /thread-teams/{team_id}
 Authorization: Bearer <token>
 Content-Type: application/json
 
-{"name": "Ops Team", "thread_ids": ["thread-b", "thread-c"]}
+{"name": "Ops Team", "description": "...", "thread_ids": ["thread-b", "thread-c"]}
 ```
 
-Renames a team and/or replaces its membership. Moving a thread into a team removes it from any previous callable team.
+Renames/describes a team and/or replaces its membership; all fields optional. Moving a thread into a team removes it from any previous callable team. `thread_ids: []` unteams every member but keeps the team entity; `description: ""` clears the description. A rename or description edit alone writes only the team store: no member config writes, no graph invalidation.
 
 ```http
 DELETE /thread-teams/{team_id}
 Authorization: Bearer <token>
 ```
 
-Deletes a team by clearing membership from its threads. Team changes invalidate cached graphs for the user's threads so subsequent turns rebuild callable-tool visibility.
+Deletes a team: clears membership from its threads and removes the entity. Membership changes invalidate cached graphs for the user's threads so subsequent turns rebuild callable-tool visibility.
 
 ---
 
@@ -3097,8 +3102,8 @@ Updates thread config. Key fields for callable threads:
 | `callable` | bool | Whether this thread is callable as a tool |
 | `callable_name` | string | Tool name visible to the LLM (must be unique) |
 | `callable_description` | string | Tool description shown to the LLM |
-| `callable_team_id` | string | Optional callable visibility team id |
-| `callable_team_name` | string | Optional callable visibility team display name |
+| `callable_team_id` | string | Optional callable visibility team id (`""` unteams). Membership source of truth; the store adopts unknown ids as new entities |
+| `callable_team_name` | string | DEPRECATED write field: ignored on PATCH (renames go through the teams API). Config responses still SERVE it, derived from the team store |
 | `custom_instructions` | string | System prompt for this thread |
 | `disabled_tools` | array | Tool names to exclude |
 | `enabled_tools` | array | Optional tool names to include |

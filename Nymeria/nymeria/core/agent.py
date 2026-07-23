@@ -321,6 +321,15 @@ class NymeriaAgent:
         # Initialize per-thread config manager
         self.thread_config_manager = ThreadConfigManager(self.settings.data_dir)
 
+        # Callable-team entity store (backlog #100). Holds team identity and
+        # meta; membership stays on ThreadConfig.callable_team_id.
+        from .team_manager import TeamManager
+        self.team_manager = TeamManager(
+            self.settings.data_dir,
+            thread_config_manager=self.thread_config_manager,
+            accounts_repo=self.accounts_repo,
+        )
+
         # Lifecycle-hook store (per-user JSON). Read once per turn to build the
         # per-turn hook registry threaded to the fire points.
         self.hook_manager = HookManager(self.settings.data_dir)

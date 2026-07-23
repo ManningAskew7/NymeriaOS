@@ -131,14 +131,20 @@ class NotepadUpdateRequest(BaseModel):
 
 
 class ThreadTeamCreateRequest(BaseModel):
-    """Create a callable visibility team."""
+    """Create a callable visibility team (empty membership is legal)."""
 
     name: str = Field(..., min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
     thread_ids: list[str] = Field(default_factory=list)
 
 
 class ThreadTeamUpdateRequest(BaseModel):
-    """Rename a callable visibility team or replace membership."""
+    """Rename/describe a callable visibility team or replace membership.
+
+    ``thread_ids: []`` unteams every member but keeps the team entity;
+    ``description: ""`` clears the description.
+    """
 
     name: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
     thread_ids: list[str] | None = None

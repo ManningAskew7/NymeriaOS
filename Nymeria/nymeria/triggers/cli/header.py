@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import os
 import time
 from collections.abc import Mapping, Sequence
@@ -12,6 +13,8 @@ from typing import Any, Literal
 
 from ...vendor.react_agent.cliproxy import looks_like_cliproxy_url
 from .transport.disconnected import is_disconnected_client
+
+logger = logging.getLogger(__name__)
 
 HeaderHealthStatus = Literal["ok", "error", "local", "disconnected", "unknown"]
 
@@ -502,6 +505,22 @@ def _local_header_data(state: Any, *, thread_id: str, user_id: str) -> dict[str,
         data["thread_config"] = _model_dump(config) if config is not None else {}
     except Exception:
         data["thread_config"] = {}
+
+    # callable_team_name is deprecated on configs (backlog #100): derive the
+    # display name from the team store like the REST config response does.
+    # Best-effort: a resolution failure keeps the dumped config untouched.
+    try:
+        team_id = data["thread_config"].get("callable_team_id")
+        manager = getattr(agent, "team_manager", None)
+        if team_id and manager is not None:
+            derived = manager.resolve_team_name(user_id, team_id)
+            data["thread_config"]["callable_team_name"] = (
+                derived
+                or data["thread_config"].get("callable_team_name")
+                or team_id
+            )
+    except Exception:  # noqa: BLE001 - display-only enrichment
+        logger.debug("Header team-name resolution failed", exc_info=True)
 
     try:
         data["context_stats"] = agent.get_context_stats(thread_id)

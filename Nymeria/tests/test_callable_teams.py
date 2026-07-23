@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage
 
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core.agent import NymeriaAgent
+from nymeria.core.team_manager import TeamManager
 from nymeria.core.thread_config import ThreadConfig, ThreadConfigManager
 from nymeria.vendor.react_agent.nodes import SafeToolNode
 
@@ -15,6 +16,11 @@ class FakeAgent:
     def __init__(self, data_dir: Path):
         self.accounts_repo = AccountsRepo(data_dir / "accounts.db")
         self.thread_config_manager = ThreadConfigManager(data_dir)
+        self.team_manager = TeamManager(
+            data_dir,
+            thread_config_manager=self.thread_config_manager,
+            accounts_repo=self.accounts_repo,
+        )
         self.invalidated: list[str] = []
 
     def invalidate_thread_config_cache(self, thread_id: str):
@@ -117,7 +123,9 @@ def test_branch_clone_carries_callable_team(tmp_path: Path):
     branch_tc = manager.get_config("branch-1")
     assert branch_tc is not None
     assert branch_tc.callable_team_id == "team-a"
-    assert branch_tc.callable_team_name == "Ops"
+    # The deprecated name is never re-persisted (backlog #100): the clone
+    # carries the membership id only; display names resolve from the store.
+    assert branch_tc.callable_team_name is None
 
 
 def test_callable_timeout_abort_uses_current_user_scope(tmp_path: Path):
@@ -244,12 +252,16 @@ def test_thread_team_api_moves_membership_and_clears_on_delete(tmp_path: Path, a
     assert created.status_code == 200
     team = created.json()
     assert team["name"] == "Ops"
+    assert team["description"] is None
     assert set(team["thread_ids"]) == {"thread-a", "thread-b"}
 
     cfg_a = agent.thread_config_manager.get_config("thread-a")
     assert cfg_a is not None
     assert cfg_a.callable_team_id == team["id"]
-    assert cfg_a.callable_team_name == "Ops"
+    # Deprecated (backlog #100): the name lives in the team entity store, the
+    # config carries only the membership id.
+    assert cfg_a.callable_team_name is None
+    assert agent.team_manager.resolve_team_name("owner", team["id"]) == "Ops"
 
     renamed = client.patch(
         f"/thread-teams/{team['id']}",
@@ -261,8 +273,11 @@ def test_thread_team_api_moves_membership_and_clears_on_delete(tmp_path: Path, a
     assert set(renamed.json()["thread_ids"]) == {"thread-b", "thread-c"}
 
     assert agent.thread_config_manager.get_config("thread-a").callable_team_id is None
-    assert agent.thread_config_manager.get_config("thread-b").callable_team_name == "Ops Team"
     assert agent.thread_config_manager.get_config("thread-c").callable_team_id == team["id"]
+    # The REST config response keeps serving callable_team_name, derived.
+    cfg_b_response = client.get("/threads/thread-b/config", headers=headers)
+    assert cfg_b_response.status_code == 200
+    assert cfg_b_response.json()["callable_team_name"] == "Ops Team"
 
     listed = client.get("/thread-teams", headers=headers)
     assert listed.status_code == 200
@@ -273,56 +288,168 @@ def test_thread_team_api_moves_membership_and_clears_on_delete(tmp_path: Path, a
     assert agent.thread_config_manager.get_config("thread-b").callable_team_id is None
     assert agent.thread_config_manager.get_config("thread-c").callable_team_id is None
     assert "" in agent.invalidated
+    assert agent.team_manager.get_team("owner", team["id"]) is None
 
 
-def test_team_handlers_avoid_redundant_config_scans(
-    tmp_path: Path, api_client_builder, monkeypatch
-):
-    """Each team mutation scans the (uncached) config store the minimum times.
+def test_team_rename_is_store_only(tmp_path: Path, api_client_builder, monkeypatch):
+    """A rename or description edit is an O(1) store write (backlog #100).
 
-    ``_serialize_thread_teams`` is an O(N) read over every owned thread's config
-    (``get_config`` is uncached). Before slice 09 F9, ``update`` scanned three
-    times (existing lookup + name-collision check + post-save fetch). The fix
-    collapses the two same-state pre-save reads onto one shared list, leaving a
-    single fresh post-save scan: create 2, update 2, delete 1.
+    No member thread config is written and no graph is invalidated; member
+    configs keep serving the new name because the REST response derives it
+    from the store.
     """
-    from nymeria.api.routers import thread_config as tc_module
-
     client, agent, token = _client(tmp_path, api_client_builder)
     headers = {"Authorization": f"Bearer {token}"}
-    for thread_id in ("thread-a", "thread-b", "thread-c"):
+    for thread_id in ("thread-a", "thread-b"):
         agent.accounts_repo.claim_thread(thread_id, "owner")
 
-    real_serialize = tc_module._serialize_thread_teams
-    scans = {"count": 0}
-
-    def counting_serialize(agent_arg, user_id):
-        scans["count"] += 1
-        return real_serialize(agent_arg, user_id)
-
-    monkeypatch.setattr(tc_module, "_serialize_thread_teams", counting_serialize)
-
-    scans["count"] = 0
     created = client.post(
         "/thread-teams",
         headers=headers,
         json={"name": "Ops", "thread_ids": ["thread-a", "thread-b"]},
     )
     assert created.status_code == 200
-    assert scans["count"] == 2  # pre-save name check + post-save fetch
     team_id = created.json()["id"]
 
-    scans["count"] = 0
+    config_writes = {"count": 0}
+    real_save = agent.thread_config_manager.save_config
+
+    def counting_save(config):
+        config_writes["count"] += 1
+        return real_save(config)
+
+    monkeypatch.setattr(agent.thread_config_manager, "save_config", counting_save)
+    agent.invalidated.clear()
+
     renamed = client.patch(
         f"/thread-teams/{team_id}",
         headers=headers,
-        json={"name": "Ops Team", "thread_ids": ["thread-b", "thread-c"]},
+        json={"name": "Ops Team", "description": "Shared ops helpers"},
     )
     assert renamed.status_code == 200
-    assert set(renamed.json()["thread_ids"]) == {"thread-b", "thread-c"}
-    assert scans["count"] == 2  # one shared pre-save scan + one post-save fetch
+    assert renamed.json()["name"] == "Ops Team"
+    assert renamed.json()["description"] == "Shared ops helpers"
+    assert config_writes["count"] == 0
+    assert agent.invalidated == []
 
-    scans["count"] = 0
-    deleted = client.delete(f"/thread-teams/{team_id}", headers=headers)
-    assert deleted.status_code == 200
-    assert scans["count"] == 1  # single existing lookup, no return-value scan
+    cfg_response = client.get("/threads/thread-a/config", headers=headers)
+    assert cfg_response.json()["callable_team_name"] == "Ops Team"
+
+
+def test_empty_team_and_membership_via_config_patch(tmp_path: Path, api_client_builder):
+    """Empty teams are legal; PATCH /threads/{id}/config moves membership.
+
+    A config PATCH with a callable_team_id keeps the entity store coherent
+    (adoption), clears the deprecated callable_team_name instead of storing
+    it, and the response derives the display name from the store.
+    """
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = {"Authorization": f"Bearer {token}"}
+    agent.accounts_repo.claim_thread("thread-a", "owner")
+
+    created = client.post(
+        "/thread-teams",
+        headers=headers,
+        json={"name": "Ops", "description": "Ops helpers", "thread_ids": []},
+    )
+    assert created.status_code == 200
+    team = created.json()
+    assert team["thread_ids"] == []
+    assert team["description"] == "Ops helpers"
+
+    listed = client.get("/thread-teams", headers=headers)
+    assert listed.json()["total"] == 1
+    assert listed.json()["teams"][0]["thread_ids"] == []
+
+    patched = client.patch(
+        "/threads/thread-a/config",
+        headers=headers,
+        json={"callable_team_id": team["id"], "callable_team_name": "Ignored"},
+    )
+    assert patched.status_code == 200
+    # Derived from the store, not from the (ignored) request field.
+    assert patched.json()["callable_team_name"] == "Ops"
+    cfg = agent.thread_config_manager.get_config("thread-a")
+    assert cfg.callable_team_id == team["id"]
+    assert cfg.callable_team_name is None
+    assert agent.team_manager.members("owner", team["id"]) == ["thread-a"]
+
+    # Unteaming everyone via thread_ids=[] keeps the team entity.
+    cleared = client.patch(
+        f"/thread-teams/{team['id']}",
+        headers=headers,
+        json={"thread_ids": []},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["thread_ids"] == []
+    assert agent.team_manager.get_team("owner", team["id"]) is not None
+    assert agent.thread_config_manager.get_config("thread-a").callable_team_id is None
+
+
+def test_unteam_patch_banks_legacy_name_before_clearing(tmp_path: Path, api_client_builder):
+    """PATCH config unteaming a legacy thread banks its name into the store.
+
+    The previous team's surviving legacy name must reach the entity store
+    BEFORE the save clears it from the config, even when the store was
+    migrated while this team did not exist yet (a raw-edit dangling id).
+    """
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = {"Authorization": f"Bearer {token}"}
+    agent.accounts_repo.claim_thread("thread-a", "owner")
+
+    # Migrate the store while the user has no teams (empty marker file).
+    assert agent.team_manager.get_store_cached("owner").teams == []
+    # Then a legacy teamed config appears (simulating a raw on-disk edit).
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id="thread-a",
+            callable_team_id="team-x",
+            callable_team_name="Ops",
+        )
+    )
+
+    patched = client.patch(
+        "/threads/thread-a/config",
+        headers=headers,
+        json={"callable_team_id": ""},
+    )
+    assert patched.status_code == 200
+    cfg = agent.thread_config_manager.get_config("thread-a")
+    assert cfg.callable_team_id is None
+    assert cfg.callable_team_name is None
+    # The name was banked into the entity store before the clear.
+    assert agent.team_manager.resolve_team_name("owner", "team-x") == "Ops"
+
+
+def test_legacy_config_names_migrate_into_team_store(tmp_path: Path, api_client_builder):
+    """Lazy migration synthesizes entities from legacy config name pairs.
+
+    First-seen name wins on drift (threads scanned sorted), and the REST list
+    serves the migrated names without any config write.
+    """
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = {"Authorization": f"Bearer {token}"}
+    for thread_id in ("thread-a", "thread-b", "thread-c"):
+        agent.accounts_repo.claim_thread(thread_id, "owner")
+    # Legacy on-disk state: names still stored on configs, with drift.
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-a", callable_team_id="team-legacy", callable_team_name="Ops")
+    )
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-b", callable_team_id="team-legacy", callable_team_name="Operations")
+    )
+    agent.thread_config_manager.save_config(
+        ThreadConfig(thread_id="thread-c", callable_team_id="team-other", callable_team_name="Sales")
+    )
+
+    listed = client.get("/thread-teams", headers=headers)
+    assert listed.status_code == 200
+    by_id = {team["id"]: team for team in listed.json()["teams"]}
+    assert by_id["team-legacy"]["name"] == "Ops"  # thread-a seen first (sorted)
+    assert set(by_id["team-legacy"]["thread_ids"]) == {"thread-a", "thread-b"}
+    assert by_id["team-other"]["name"] == "Sales"
+    # Migration wrote entities into the store without touching configs.
+    assert agent.team_manager.resolve_team_name("owner", "team-legacy") == "Ops"
+    assert (
+        agent.thread_config_manager.get_config("thread-a").callable_team_name == "Ops"
+    )
