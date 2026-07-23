@@ -1072,6 +1072,89 @@ async def test_threads_configure_unknown_target(monkeypatch):
     assert "no thread matches" in str(excinfo.value)
 
 
+def _team_configure_agent(tmp_path, tc, *, owned=("t-9", "t-other")):
+    """_configure_agent plus a REAL TeamManager and invalidation recording."""
+    from nymeria.core.team_manager import TeamManager
+
+    agent = _configure_agent(tc, owned=list(owned))
+    agent.team_manager = TeamManager(tmp_path)
+    invalidated: list[str] = []
+    agent.invalidate_thread_config_cache = invalidated.append
+    agent._invalidated = invalidated
+    return agent
+
+
+async def test_threads_configure_team_by_name_fans_out(tmp_path, monkeypatch):
+    tc = _configure_tc(callable_team_id=None, callable_team_name=None)
+    agent = _team_configure_agent(tmp_path, tc)
+    team = agent.team_manager.create_team("tester", name="Ops")
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(), "threads.configure", {"id_or_title": "t-9", "team": "ops"}
+    )
+    assert result == {"thread_id": "t-9", "updated": ["team"]}
+    assert tc.callable_team_id == team.id
+    assert tc.callable_team_name is None
+    assert agent._saved  # persisted
+    # Team changes take the cross-thread fan-out, not the single-thread path:
+    # every owned thread plus the "" sentinel.
+    assert set(agent._invalidated) == {"t-9", "t-other", ""}
+
+
+async def test_threads_configure_team_none_unteams(tmp_path, monkeypatch):
+    tc = _configure_tc(callable_team_id="team-x", callable_team_name="Legacy")
+    agent = _team_configure_agent(tmp_path, tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(), "threads.configure", {"id_or_title": "t-9", "team": "none"}
+    )
+    assert result["updated"] == ["team"]
+    assert tc.callable_team_id is None
+    # The surviving legacy name was banked into the store before the clear.
+    assert agent.team_manager.resolve_team_name("tester", "team-x") == "Legacy"
+
+
+async def test_threads_configure_team_unknown_ref(tmp_path, monkeypatch):
+    tc = _configure_tc()
+    agent = _team_configure_agent(tmp_path, tc)
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    with pytest.raises(VerbError) as excinfo:
+        await verbs_thread._threads_configure_verb(
+            _ctx(), "threads.configure", {"id_or_title": "t-9", "team": "Nope"}
+        )
+    assert "unknown team" in str(excinfo.value)
+    assert not agent._saved  # nothing written
+
+
+async def test_threads_configure_team_noop_skips_fanout(tmp_path, monkeypatch):
+    agent = _team_configure_agent(tmp_path, None)
+    team = agent.team_manager.create_team("tester", name="Ops")
+    tc = _configure_tc(callable_team_id=team.id, callable_team_name=None)
+    agent.thread_config_manager.get_config = lambda tid: (
+        tc if tid == tc.thread_id else None
+    )
+    monkeypatch.setattr(verbs_thread, "_current_agent", lambda: agent)
+    monkeypatch.setattr(
+        verbs_thread, "_check_ownership", lambda a, u, t, name="x": None
+    )
+    result = await verbs_thread._threads_configure_verb(
+        _ctx(), "threads.configure", {"id_or_title": "t-9", "team": "Ops"}
+    )
+    # Already a member: nothing updated, nothing saved, nothing rebuilt.
+    assert result == {"thread_id": "t-9", "updated": []}
+    assert not agent._saved
+    assert agent._invalidated == []
+
+
 async def test_threads_configure_blocks_admin_only_tools(monkeypatch):
     tc = _configure_tc()
     agent = _configure_agent(tc, role="user")

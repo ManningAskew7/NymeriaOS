@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ...core.accounts import AuthenticatedUser
-from ...core.team_manager import serialize_thread_teams
+from ...core.team_manager import (
+    after_team_change,
+    apply_team_membership_to_config,
+    serialize_thread_teams,
+    set_thread_team,
+)
 from ...core.thread_config import DreamingConfig, ThreadConfig, ThreadLLMConfig
 from ..schemas.thread_config import (
     NotepadUpdateRequest,
@@ -134,22 +139,21 @@ def _require_team_thread_ids(
 
 def _save_thread_team_membership(
     agent: Any,
+    user_id: str,
     thread_id: str,
     *,
     team_id: str | None,
-) -> None:
-    tc = agent.thread_config_manager.get_config(thread_id)
-    if tc is None:
-        tc = ThreadConfig(thread_id=thread_id)
-    tc.callable_team_id = team_id
-    # Deprecated: names live in the team entity store; team writes clear the
-    # legacy config field.
-    tc.callable_team_name = None
-    if not agent.thread_config_manager.save_config(tc):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to save team membership for thread {thread_id}",
-        )
+) -> bool:
+    """One thread's membership via the shared service; HTTP-shaped errors.
+
+    Delegates to ``core.team_manager.set_thread_team`` (legacy-name banking
+    and dangling-id adoption included) and returns whether the membership
+    actually changed.
+    """
+    try:
+        return set_thread_team(agent, user_id, thread_id, team_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def _get_or_adopt_team(agent: Any, user_id: str, team_id: str) -> Any:
@@ -170,13 +174,6 @@ def _get_or_adopt_team(agent: Any, user_id: str, team_id: str) -> Any:
             user_id, team_id, fallback_name=legacy_names.get(team_id)
         )
     return None
-
-
-def _invalidate_user_team_graphs(agent: Any, user_id: str) -> None:
-    for owned_thread_id in agent.accounts_repo.list_threads_for_user(user_id):
-        agent.invalidate_thread_config_cache(owned_thread_id)
-    # Also clear per-user no-custom sentinel graphs, whose key uses "".
-    agent.invalidate_thread_config_cache("")
 
 
 def create_thread_config_router(
@@ -317,33 +314,21 @@ def create_thread_config_router(
             tc.callable_description = request.callable_description
         if request.callable_max_iterations is not None:
             tc.callable_max_iterations = request.callable_max_iterations
+        team_membership_changed = False
         if request.callable_team_id is not None:
-            # "" is the unteam sentinel; store None so read sites need no
-            # normalization for configs written from here on.
-            old_team_id = tc.callable_team_id or None
-            old_team_name = tc.callable_team_name
-            tc.callable_team_id = request.callable_team_id or None
-            tc.callable_team_name = None
-            manager = getattr(agent, "team_manager", None)
-            if manager is not None:
-                # Bank a surviving legacy name for the PREVIOUS team before
-                # it leaves this config (unteam or move): the store must hold
-                # the name before this save clears it.
-                if old_team_id and old_team_name:
-                    manager.ensure_team_exists(
-                        user_id, old_team_id, fallback_name=old_team_name
-                    )
-                if tc.callable_team_id:
-                    # Keep the entity store coherent with membership writes
-                    # that reference an id it has never seen (an incoming
-                    # deprecated callable_team_name serves only as the adopted
-                    # entity's display-name fallback; renames go through the
-                    # teams API).
-                    manager.ensure_team_exists(
-                        user_id,
-                        tc.callable_team_id,
-                        fallback_name=request.callable_team_name,
-                    )
+            # "" is the unteam sentinel; the shared applier stores None so
+            # read sites need no normalization, banks a surviving legacy name
+            # for the previous team before this save clears it, and adopts a
+            # store-unknown id (an incoming deprecated callable_team_name
+            # serves only as the adopted entity's display-name fallback;
+            # renames go through the teams API).
+            team_membership_changed = apply_team_membership_to_config(
+                agent,
+                user_id,
+                tc,
+                request.callable_team_id,
+                offered_name=request.callable_team_name,
+            )
         if request.inject_todos_in_prompt is not None:
             tc.inject_todos_in_prompt = request.inject_todos_in_prompt
         if request.show_autonomous_prompts is not None:
@@ -412,10 +397,6 @@ def create_thread_config_router(
             raise HTTPException(status_code=500, detail="Failed to save thread config")
 
         agent.invalidate_thread_config_cache(thread_id)
-        if request.callable_team_id is not None:
-            for owned_thread_id in agent.accounts_repo.list_threads_for_user(user_id):
-                agent.invalidate_thread_config_cache(owned_thread_id)
-            agent.invalidate_thread_config_cache("")
 
         if (
             request.callable is not None
@@ -424,10 +405,18 @@ def create_thread_config_router(
             or request.callable_max_iterations is not None
         ):
             agent.sync_agent_tools()
-        elif request.callable_team_id is not None:
-            from ...core.tool_search_index import mark_tool_search_dirty
-
-            mark_tool_search_dirty()
+        if team_membership_changed:
+            # Fan-out invalidation + search re-tag + GUI nudge via the shared
+            # chokepoint. A no-op re-set of the same team id skips all of it
+            # (nothing rebuilt, nothing published); when sync_agent_tools ran
+            # above the re-tag is an idempotent re-mark.
+            after_team_change(
+                agent,
+                user_id,
+                membership_changed=True,
+                team_id=tc.callable_team_id or "",
+                reason="membership",
+            )
 
         if tc.callable and tc.callable_name:
             agent.thread_metadata_manager.upsert_thread(
@@ -541,13 +530,17 @@ def create_thread_config_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        for thread_id in thread_ids:
-            _save_thread_team_membership(agent, thread_id, team_id=team.id)
-        if thread_ids:
-            _invalidate_user_team_graphs(agent, user_id)
-            from ...core.tool_search_index import mark_tool_search_dirty
-
-            mark_tool_search_dirty()
+        changed = [
+            _save_thread_team_membership(agent, user_id, thread_id, team_id=team.id)
+            for thread_id in thread_ids
+        ]
+        after_team_change(
+            agent,
+            user_id,
+            membership_changed=any(changed),
+            team_id=team.id,
+            reason="created",
+        )
         saved_teams = _serialize_thread_teams(agent, user_id)["teams"]
         found = _find_team(saved_teams, team.id)
         return found or {
@@ -596,19 +589,29 @@ def create_thread_config_router(
             old_ids = set(manager.members(user_id, team_id))
             new_ids = set(thread_ids)
             for thread_id in sorted(old_ids - new_ids):
-                _save_thread_team_membership(agent, thread_id, team_id=None)
+                _save_thread_team_membership(agent, user_id, thread_id, team_id=None)
             for thread_id in sorted(new_ids - old_ids):
-                _save_thread_team_membership(agent, thread_id, team_id=team_id)
+                _save_thread_team_membership(
+                    agent, user_id, thread_id, team_id=team_id
+                )
             membership_changed = old_ids != new_ids
 
-        if membership_changed:
-            _invalidate_user_team_graphs(agent, user_id)
-        if membership_changed or request.name is not None:
-            # The search index tags callables with the team name, so a rename
-            # re-tags even though no graph rebuild is needed.
-            from ...core.tool_search_index import mark_tool_search_dirty
-
-            mark_tool_search_dirty()
+        if (
+            membership_changed
+            or request.name is not None
+            or request.description is not None
+        ):
+            # Shared chokepoint: fan-out only on membership change, search
+            # re-tag also on rename (callable tags carry the team name), GUI
+            # nudge on any of the three.
+            after_team_change(
+                agent,
+                user_id,
+                membership_changed=membership_changed,
+                renamed=request.name is not None,
+                team_id=team_id,
+                reason="updated",
+            )
         saved_teams = _serialize_thread_teams(agent, user_id)["teams"]
         team = _find_team(saved_teams, team_id)
         if team is None:
@@ -628,12 +631,14 @@ def create_thread_config_router(
         if not deleted and not members:
             raise HTTPException(status_code=404, detail="Thread team not found")
         for thread_id in members:
-            _save_thread_team_membership(agent, thread_id, team_id=None)
-        if members:
-            _invalidate_user_team_graphs(agent, user_id)
-            from ...core.tool_search_index import mark_tool_search_dirty
-
-            mark_tool_search_dirty()
+            _save_thread_team_membership(agent, user_id, thread_id, team_id=None)
+        after_team_change(
+            agent,
+            user_id,
+            membership_changed=bool(members),
+            team_id=team_id,
+            reason="deleted",
+        )
         return {"status": "ok", "team_id": team_id}
 
     return router

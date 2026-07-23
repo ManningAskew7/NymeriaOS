@@ -3,7 +3,7 @@
 Auto-generated from `@tool`-decorated functions in `Nymeria/nymeria/tools/`.
 Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 
-**1237 tools found.**
+**1238 tools found.**
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -699,7 +699,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `medium_list_publications` | `nymeria/tools/community_publishing_service_integrations.py` | List Medium publications associated with a user. |
 | `memory_add` | `nymeria/tools/memory.py` | Add to memory: append to the thread notepad, or create/set one global key. |
 | `memory_clear_all` | `nymeria/tools/memory.py` | Clear ALL global memories for this user. |
-| `memory_edit` | `nymeria/tools/memory.py` | Edit existing memory: find/replace a substring; owns clearing and removing. |
+| `memory_edit` | `nymeria/tools/memory.py` | Edit existing memory: find/replace a substring (first exact match only); |
 | `memory_read` | `nymeria/tools/memory.py` | Read memory. Get a specific entry, list everything, or substring-filter. |
 | `messagebird_get_balance` | `nymeria/tools/messaging_delivery_service_integrations.py` | Get MessageBird account balance. |
 | `messagebird_send_sms` | `nymeria/tools/messaging_delivery_service_integrations.py` | Send an SMS with MessageBird. |
@@ -1079,6 +1079,7 @@ Regenerate with: `python3 scripts/generate_tools_index.py > docs/tools-index.md`
 | `tapfiliate_list_program_affiliates` | `nymeria/tools/commerce_billing_service_integrations.py` | List affiliates in a Tapfiliate program. |
 | `tapfiliate_remove_affiliate_metadata` | `nymeria/tools/commerce_billing_service_integrations.py` | Remove a metadata field from a Tapfiliate affiliate. |
 | `tapfiliate_update_affiliate_metadata` | `nymeria/tools/commerce_billing_service_integrations.py` | Update a metadata field on a Tapfiliate affiliate. |
+| `team_manage` | `nymeria/tools/teams.py` | Manage your callable-thread teams (isolated invocation bubbles). |
 | `telegram_delete_message` | `nymeria/tools/chat_platform_service_integrations.py` | Delete a Telegram message. |
 | `telegram_get_chat` | `nymeria/tools/chat_platform_service_integrations.py` | Get Telegram chat metadata. |
 | `telegram_get_me` | `nymeria/tools/chat_platform_service_integrations.py` | Get the Telegram bot profile. |

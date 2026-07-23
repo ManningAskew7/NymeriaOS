@@ -1595,6 +1595,7 @@ The same stream also carries cross-client sync events used by open frontends:
 | `thread_deleted` | A thread was deleted | none |
 | `thread_rewound` | Trailing exchanges were removed via the rewind endpoint | `steps`, `removed`, optional `to_message_id` |
 | `queue_restored` | A user-initiated stop returned queued user prompts unprocessed; other open clients should restore their local queued copies to the composer. Suppressed for the originating client via `X-Nymeria-Client-Id`. | `count`, `prompts` (list of raw prompt texts) |
+| `thread_teams_changed` | Callable-team entities or membership changed (teams REST, config PATCH, `team_manage`, `nym.threads.configure` team=, a teamed spawn). The payload is a hint; clients refetch `GET /thread-teams`. | optional `team_id`, `reason` (`created`/`renamed`/`described`/`membership`/`updated`/`deleted`) |
 
 **Example Stream:**
 ```
@@ -3035,6 +3036,15 @@ Teams are entities in a per-user store (`data/teams/<user>.json`, managed by
 `core/team_manager.py`) holding identity (name, description); membership stays
 on each thread's config as `callable_team_id`. Names resolve from the store,
 so a rename is an O(1) store write that touches no member thread config.
+
+Beyond this REST surface, teams are agent-manageable (backlog #100 phase 2):
+the `team_manage` catalog tool (full CRUD on the acting user's own teams,
+team refs by id or name, thread refs by id or callable name), `team=` on the
+`spawn_thread` tool ("none" opts a child out of the inherited team) and on
+the `nym.threads.configure` workflow verb, and the read-only `/team list` and
+`/team show` slash commands. Every mutation surface shares the same service
+functions in `core/team_manager.py` and publishes the `thread_teams_changed`
+sync event (see the sync-events table) so open clients refetch the team list.
 
 ```http
 GET /thread-teams

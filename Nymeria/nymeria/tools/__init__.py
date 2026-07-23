@@ -86,6 +86,10 @@ from .hooks import (
     hook_info,
     HOOK_TOOLS,
 )
+from .teams import (
+    team_manage,
+    TEAM_TOOLS,
+)
 from .hello_test import hello_test
 from .regression_echo import regression_echo
 from .google_docs import GOOGLE_DOCS_TOOLS
@@ -1702,6 +1706,7 @@ __all__ = [
     "SLASH_COMMAND_TOOLS",
     "SPAWN_THREAD_TOOLS",
     "SUPPORT_SERVICE_TOOLS",
+    "TEAM_TOOLS",
     "TIME_HR_SERVICE_TOOLS",
     "TODO_TOOLS",
     "TOOL_CREATE_TOOLS",
@@ -2726,6 +2731,7 @@ __all__ = [
     "tapfiliate_list_program_affiliates",
     "tapfiliate_remove_affiliate_metadata",
     "tapfiliate_update_affiliate_metadata",
+    "team_manage",
     "telegram_delete_message",
     "telegram_get_chat",
     "telegram_get_me",

@@ -625,6 +625,29 @@ def _resolve_spawn_tools(
     return enabled_set, disabled_list, tool_resolution_records, warnings, None
 
 
+def _spawn_team_line(
+    *,
+    child_team_id: Optional[str],
+    child_team_display: Optional[str],
+    team_source: Optional[str],
+    parent_team_display: Optional[str],
+) -> Optional[str]:
+    """The receipt's team line: inherited, explicit, opted out, or absent."""
+    if child_team_id:
+        origin = (
+            "(inherited from the spawning thread)."
+            if team_source == "inherited"
+            else "(set via team=)."
+        )
+        return f"Team: {child_team_display or child_team_id} {origin}"
+    if team_source == "opted_out":
+        return (
+            "Team: none (opted out of the spawning thread's team "
+            f"'{parent_team_display}')."
+        )
+    return None
+
+
 def _build_spawn_preamble(
     *,
     new_thread_id: str,
@@ -640,6 +663,7 @@ def _build_spawn_preamble(
     warnings: List[str],
     kit_line: Optional[str] = None,
     team_line: Optional[str] = None,
+    child_teamed: bool = False,
 ) -> str:
     """Render the ``[Spawned]`` preamble (everything before the optional child
     response)."""
@@ -656,9 +680,11 @@ def _build_spawn_preamble(
             f"{ttl_hours_resolved}h of inactivity)."
         )
     if make_callable and callable_name:
+        # Keyed on the child's actual team membership, not the team_line
+        # (an opted-out spawn renders a team line but is unteamed).
         invoke_scope = (
             "Same-team threads can invoke this."
-            if team_line
+            if child_teamed
             else "Any unteamed thread can invoke this."
         )
         preamble_lines.append(
@@ -714,6 +740,7 @@ def spawn_thread(
     llm_extended_thinking: Optional[bool] = None,
     llm_reasoning_effort: Optional[str] = None,
     kit: Optional[str] = None,
+    team: Optional[str] = None,
     prompt: Optional[str] = None,
     action: str = "create",
     delete_thread_id: Optional[str] = None,
@@ -735,7 +762,7 @@ def spawn_thread(
           auto-generated tool name. Set make_callable=False to opt out.
           If the spawning thread belongs to a callable team, the child
           inherits that team (teams are isolated bubbles in both
-          directions).
+          directions) unless team= overrides.
 
       action="delete": Remove a previously-spawned thread. Only the thread
           that originally spawned it can delete it. Cleans up metadata,
@@ -794,6 +821,12 @@ def spawn_thread(
             required_tools are also bound with the kit's declared TTL.
             An unknown kit name or a failed tool binding aborts the
             spawn (no half-configured thread is left behind).
+        team: Callable-team override for the new thread. Omit to inherit
+            the spawning thread's team (the default). Pass "none" (or "")
+            to spawn an unteamed child from a teamed parent, or a team id
+            or name (see team_manage(action="list")) to spawn into that
+            team. An unknown ref errors without creating a thread. Works
+            in both modes; in branched mode it overrides the cloned team.
         prompt: If provided, dispatches this message to the new
             thread and BLOCKS until the child returns its response. The
             child's response becomes part of this tool's output.
@@ -881,6 +914,64 @@ def spawn_thread(
                 f"[Error]: Kit '{kit.strip()}' not found. Use "
                 "skill_search to discover available skills and kits."
             )
+
+    # Backlog #97 + #100 phase 2: children join the spawning thread's
+    # callable-team bubble by default so a teamed parent can invoke what it
+    # spawns under full team isolation; team= overrides ("none"/"" opts out,
+    # anything else is a team id or name resolved against the user's store).
+    # Resolved HERE, before the rate limit, so an unknown ref fails fast
+    # without burning a spawn slot (mirroring the kit resolution above).
+    # Only the id is written (the name is deprecated on configs, backlog
+    # #100); display names resolve from the team store, then a surviving
+    # legacy config name, then the id.
+    parent_team_id: Optional[str] = None
+    parent_team_display: Optional[str] = None
+    if parent_thread_id:
+        parent_tc = agent.thread_config_manager.get_config(parent_thread_id)
+        if parent_tc is not None:
+            parent_team_id = getattr(parent_tc, "callable_team_id", None) or None
+            if parent_team_id:
+                team_manager = getattr(agent, "team_manager", None)
+                store_name = None
+                if team_manager is not None:
+                    try:
+                        store_name = team_manager.resolve_team_name(
+                            user_id, parent_team_id
+                        )
+                    except Exception:  # noqa: BLE001 - display-only, never
+                        # fail the spawn over a team-name lookup
+                        logger.debug(
+                            "spawn_thread team-name resolution failed",
+                            exc_info=True,
+                        )
+                parent_team_display = (
+                    store_name
+                    or getattr(parent_tc, "callable_team_name", None)
+                    or parent_team_id
+                )
+
+    child_team_id: Optional[str] = parent_team_id
+    child_team_display: Optional[str] = parent_team_display
+    team_source: Optional[str] = "inherited" if parent_team_id else None
+    if team is not None:
+        wanted_team = team.strip()
+        if wanted_team.lower() in ("", "none"):
+            child_team_id = None
+            child_team_display = None
+            team_source = "opted_out" if parent_team_id else None
+        else:
+            from ..core.team_manager import resolve_team_ref
+
+            resolved_team = resolve_team_ref(agent, user_id, wanted_team)
+            if resolved_team is None:
+                return (
+                    f"[Error]: Unknown team '{wanted_team}'. Pass a team id or "
+                    'name (see team_manage(action="list")), or "none" to '
+                    "spawn unteamed."
+                )
+            child_team_id = resolved_team.id
+            child_team_display = resolved_team.name
+            team_source = "explicit"
 
     mode_norm = (mode or "fresh").strip().lower()
     if mode_norm not in VALID_MODES:
@@ -977,38 +1068,6 @@ def spawn_thread(
         else:
             callable_description = f"Invoke the '{title}' spawned thread"
 
-    # Backlog #97: children join the spawning thread's callable-team bubble
-    # so a teamed parent can invoke what it spawns under full team isolation.
-    # Branched mode inherits via the full config clone in thread_branch; fresh
-    # mode copies the id explicitly below. Only the id is written (the name is
-    # deprecated on configs, backlog #100); the receipt's display name resolves
-    # from the team store, then a surviving legacy config name, then the id.
-    parent_team_id: Optional[str] = None
-    parent_team_display: Optional[str] = None
-    if parent_thread_id:
-        parent_tc = agent.thread_config_manager.get_config(parent_thread_id)
-        if parent_tc is not None:
-            parent_team_id = getattr(parent_tc, "callable_team_id", None) or None
-            if parent_team_id:
-                team_manager = getattr(agent, "team_manager", None)
-                store_name = None
-                if team_manager is not None:
-                    try:
-                        store_name = team_manager.resolve_team_name(
-                            user_id, parent_team_id
-                        )
-                    except Exception:  # noqa: BLE001 - display-only, never
-                        # fail the spawn over a team-name lookup
-                        logger.debug(
-                            "spawn_thread team-name resolution failed",
-                            exc_info=True,
-                        )
-                parent_team_display = (
-                    store_name
-                    or getattr(parent_tc, "callable_team_name", None)
-                    or parent_team_id
-                )
-
     if mode_norm == "branched":
         from ..core.thread_branch import ThreadBranchError, branch_thread
         from ..config.settings import get_settings
@@ -1054,6 +1113,11 @@ def spawn_thread(
                     "callable_description": (
                         callable_description if make_callable else None
                     ),
+                    # team= overrides the cloned membership; without it this
+                    # re-writes the inherited id (a no-op). The deprecated
+                    # name is already None on clones (backlog #100).
+                    "callable_team_id": child_team_id,
+                    "callable_team_name": None,
                 }
             )
         except Exception as e:
@@ -1072,7 +1136,7 @@ def spawn_thread(
                 callable=bool(make_callable),
                 callable_name=callable_name,
                 callable_description=callable_description,
-                callable_team_id=parent_team_id,
+                callable_team_id=child_team_id,
             )
         except Exception as e:
             return f"[Error]: Invalid configuration: {str(e)}"
@@ -1186,6 +1250,13 @@ def spawn_thread(
     except Exception as e:
         logger.warning(f"spawn_thread: thread_created publish failed: {e}")
 
+    if child_team_id:
+        # Sidebar team groupings come from /thread-teams; nudge GUIs so a
+        # teamed spawn appears in its team live (best-effort, never raises).
+        from ..core.team_manager import publish_teams_changed
+
+        publish_teams_changed(user_id, team_id=child_team_id, reason="membership")
+
     preamble = _build_spawn_preamble(
         new_thread_id=new_thread_id,
         mode_norm=mode_norm,
@@ -1199,12 +1270,13 @@ def spawn_thread(
         disabled_tools=tc.disabled_tools,
         warnings=warnings,
         kit_line=kit_line,
-        team_line=(
-            f"Team: {parent_team_display or parent_team_id} "
-            "(inherited from the spawning thread)."
-            if parent_team_id
-            else None
+        team_line=_spawn_team_line(
+            child_team_id=child_team_id,
+            child_team_display=child_team_display,
+            team_source=team_source,
+            parent_team_display=parent_team_display,
         ),
+        child_teamed=bool(child_team_id),
     )
 
     if not prompt or not prompt.strip():

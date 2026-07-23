@@ -1910,8 +1910,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 130
-    assert sum(cmd.executable for cmd in service._commands.values()) == 113
+    assert len(service._commands) == 133
+    assert sum(cmd.executable for cmd in service._commands.values()) == 116
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -2207,6 +2207,46 @@ def test_thread_list_renders_threads_and_reports_empty() -> None:
     none_result = run(service.execute(_cli_ctx(), "/thread list", api=empty))
     assert none_result.success is True
     assert "No threads found" in none_result.markdown
+
+
+def test_team_list_and_show_render_teams() -> None:
+    service = CommandService()
+    api = FakeCommandApi()
+    api.thread_teams = [
+        {
+            "id": "team-ops-1",
+            "name": "Ops",
+            "description": "Ops crew",
+            "thread_ids": ["thread-1", "thread-2"],
+        },
+        {"id": "team-qa-2", "name": "QA", "description": None, "thread_ids": []},
+    ]
+
+    listed = run(service.execute(_cli_ctx(), "/team list", api=api))
+    assert listed.success is True
+    assert "Ops (team-ops-1): 2 member(s). Ops crew" in listed.markdown
+    assert "QA (team-qa-2): 0 member(s)." in listed.markdown
+
+    # Bare /team lists; /team <ref> is show shorthand (id or name, any case).
+    bare = run(service.execute(_cli_ctx(), "/team", api=api))
+    assert "Teams (2):" in bare.markdown
+
+    shown = run(service.execute(_cli_ctx(), "/team show ops", api=api))
+    assert shown.success is True
+    assert "Team: Ops" in shown.markdown
+    assert "thread-1 Current" in shown.markdown
+    assert "thread-2 Next" in shown.markdown
+
+    shorthand = run(service.execute(_cli_ctx(), "/team team-qa-2", api=api))
+    assert "Team: QA" in shorthand.markdown
+    assert "- (none)" in shorthand.markdown
+
+    missing = run(service.execute(_cli_ctx(), "/team show nope", api=api))
+    assert "No team matching 'nope'" in missing.markdown
+
+    empty = FakeCommandApi()
+    none_result = run(service.execute(_cli_ctx(), "/team list", api=empty))
+    assert "No callable-thread teams yet" in none_result.markdown
 
 
 def test_thread_switch_resolves_ref_and_returns_switch_state_hint() -> None:

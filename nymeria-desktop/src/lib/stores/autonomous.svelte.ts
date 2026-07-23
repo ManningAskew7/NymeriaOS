@@ -858,6 +858,13 @@ function createAutonomousStore() {
         threadsStore.deleteThreadLocal(event.thread_id);
         break;
 
+      case 'thread_teams_changed':
+        // Team entities or membership changed backend-side (agent team_manage,
+        // the nym.threads.configure verb, a teamed spawn, or another client's
+        // team edit): refetch the sidebar's team groupings.
+        void threadsStore.loadThreadTeams();
+        break;
+
       case 'thread_rewound': {
         // Another client rewound this thread (edit/rewind affordance or CLI
         // /undo). Our own rewinds apply optimistically before the echo
