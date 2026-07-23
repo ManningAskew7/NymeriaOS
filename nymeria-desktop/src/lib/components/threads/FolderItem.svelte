@@ -28,6 +28,8 @@
     onToggleCollapse: () => void;
     onRenameFolder: (name: string) => void;
     onDeleteFolder: () => void;
+    /** Extra context-menu entry (teams: the settings + memory modal). */
+    onOpenSettings?: () => void;
     onTogglePin?: () => void;
     onTogglePinThread?: (id: string) => void;
     onToggleSelectThread?: (id: string) => void;
@@ -54,6 +56,7 @@
     onToggleCollapse,
     onRenameFolder,
     onDeleteFolder,
+    onOpenSettings,
     onTogglePin,
     onTogglePinThread,
     onToggleSelectThread,
@@ -88,6 +91,11 @@
     contextMenu = null;
     editName = folder.name;
     isEditingName = true;
+  }
+
+  function handleContextSettings() {
+    contextMenu = null;
+    onOpenSettings?.();
   }
 
   function handleContextDelete() {
@@ -212,6 +220,12 @@
       <button class="context-item" onclick={handleContextPin} type="button">
         <Icon name="pin" size={14} />
         <span>{isPinned ? 'Unpin' : 'Pin'}</span>
+      </button>
+    {/if}
+    {#if onOpenSettings}
+      <button class="context-item" onclick={handleContextSettings} type="button">
+        <Icon name="settings" size={14} />
+        <span>Team settings</span>
       </button>
     {/if}
     <button class="context-item" onclick={handleContextRename} type="button">

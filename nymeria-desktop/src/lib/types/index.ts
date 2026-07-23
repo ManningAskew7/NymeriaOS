@@ -253,6 +253,7 @@ export type OrganizationMode = 'folders' | 'teams';
 export interface ThreadTeam {
   id: string;
   name: string;
+  description: string | null;
   threadIds: string[];
   collapsed: boolean;
 }
@@ -260,7 +261,16 @@ export interface ThreadTeam {
 export interface ThreadTeamApi {
   id: string;
   name: string;
+  description?: string | null;
   thread_ids: string[];
+}
+
+// One shared team memory entry (backlog #100 phase 3)
+export interface TeamMemoryEntryApi {
+  key: string;
+  value: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // Per-thread configuration types

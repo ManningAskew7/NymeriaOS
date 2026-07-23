@@ -54,7 +54,10 @@ Compaction is a **retained-turn rebuild** (`_run_compact_turn_and_prune` / `_run
                                       [1] AIMessage tool_calls=[memory_read global, thread]
                                       [2] ToolMessage  (authentic global memory)
                                       [3] ToolMessage  (authentic thread notepad)
-                                    No trailing assistant message.
+                                    Teamed threads add a third memory_read
+                                    (scope="team") call + ToolMessage: the
+                                    shared team registry with its identity
+                                    header. No trailing assistant message.
 5.   aupdate_state(RemoveMessage(all) + tail)  -  the whole pre-rebuild state is
                                     removed and replaced by the 4-message tail.
 6.   prune_checkpoints_before()    -  raw SQL DELETEs all pre-compact rows.

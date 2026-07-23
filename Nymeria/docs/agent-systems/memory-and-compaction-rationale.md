@@ -110,6 +110,14 @@ ToolMessage  <real global profile contents>
 ToolMessage  <real thread notepad contents>
 ```
 
+Threads in a callable team carry a third `memory_read(scope="team")` call and
+ToolMessage in the same exchange (backlog #100 phase 3): the shared team
+key-value registry plus the team's identity header (name, description,
+teammate roster). Unteamed threads keep the two-read shape; a thread that
+joins a team mid-thread is deliberately NOT reseeded (that would bust the
+warm cache) and picks the team block up at its next compaction or explicit
+read.
+
 This is the same shape the agent would produce if it read its own memory, and in
 practice the model treats it exactly that way (its own reasoning refers to "the
 memory I just loaded"). Three properties matter:

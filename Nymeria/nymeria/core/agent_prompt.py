@@ -387,6 +387,7 @@ def get_rag_context(
             chunk_types.append("conversation")
         if rag_prefs.get("include_memories", False):
             chunk_types.append("memory")
+            chunk_types.append("team_memory")
         if rag_prefs.get("include_todos", True):
             chunk_types.append("todo")
         if rag_prefs.get("include_tools", True):

@@ -10,6 +10,7 @@
   import { humanizeErrorText } from '$lib/services/api/humanizeError';
   import ThreadItem from './ThreadItem.svelte';
   import FolderItem from './FolderItem.svelte';
+  import TeamSettingsModal from './TeamSettingsModal.svelte';
   import ThreadSettingsPanel from './ThreadSettingsPanel.svelte';
   import { Icon, Modal, Button } from '$lib/components/common';
   import type { Thread, ThreadConfig, ThreadFolder, ThreadTeam, SortMode } from '$lib/types';
@@ -659,6 +660,12 @@
     }
   }
 
+  // Team settings modal (rename/describe + shared team memory, #100 phase 3).
+  let settingsTeamId = $state<string | null>(null);
+  let settingsTeam = $derived(
+    threadsStore.threadTeams.find((team) => team.id === settingsTeamId) ?? null
+  );
+
   function clearSelection() {
     selectedIds = new Set();
     lastClickedId = null;
@@ -838,6 +845,7 @@
           onToggleCollapse={() => threadsStore.toggleTeamCollapse(team.id)}
           onRenameFolder={(name) => void handleRenameTeam(team.id, name)}
           onDeleteFolder={() => void handleDeleteTeam(team.id)}
+          onOpenSettings={() => { settingsTeamId = team.id; }}
           onTogglePinThread={(id) => threadsStore.togglePinThread(id)}
           onToggleSelectThread={(id) => toggleSelectThread(id)}
           onExportThread={handleExportThread}
@@ -1121,6 +1129,12 @@
     onSaved={handleConfigSaved}
   />
 {/if}
+
+<TeamSettingsModal
+  team={settingsTeam}
+  isOpen={settingsTeam !== null}
+  onClose={() => (settingsTeamId = null)}
+/>
 
 <Modal
   title="Delete Thread"

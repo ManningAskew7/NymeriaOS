@@ -242,7 +242,7 @@ export class ThreadConfigApi extends MCPApi {
 
   async updateThreadTeam(
     teamId: string,
-    updates: { name?: string; thread_ids?: string[] }
+    updates: { name?: string; description?: string; thread_ids?: string[] }
   ): Promise<import('$lib/types').ThreadTeamApi> {
     const response = await fetch(`${this.getBaseUrl()}/thread-teams/${encodeURIComponent(teamId)}`, {
       method: 'PATCH',
@@ -265,6 +265,46 @@ export class ThreadConfigApi extends MCPApi {
     }
   }
 
+  async listTeamMemories(
+    teamId: string
+  ): Promise<import('$lib/types').TeamMemoryEntryApi[]> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/thread-teams/${encodeURIComponent(teamId)}/memories`,
+      { headers: this.getHeaders() }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to load team memory'));
+    }
+    const data = await response.json();
+    return data.memories ?? [];
+  }
+
+  async saveTeamMemory(teamId: string, key: string, value: string): Promise<void> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/thread-teams/${encodeURIComponent(teamId)}/memories`,
+      {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({ key, value }),
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to save team memory'));
+    }
+  }
+
+  async deleteTeamMemory(teamId: string, key: string): Promise<void> {
+    const response = await fetch(
+      `${this.getBaseUrl()}/thread-teams/${encodeURIComponent(teamId)}/memories/${encodeURIComponent(key)}`,
+      {
+        method: 'DELETE',
+        headers: this.getHeaders(),
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await this._toastAndExtractError(response, 'Failed to delete team memory'));
+    }
+  }
 
   async deleteThreadConfig(threadId: string): Promise<void> {
     const response = await fetch(`${this.getBaseUrl()}/threads/${threadId}/config`, {

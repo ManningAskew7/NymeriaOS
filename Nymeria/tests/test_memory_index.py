@@ -216,3 +216,52 @@ def test_tools_memory_caches_index_per_user(monkeypatch):
         mem._reset_memory_index_cache()
         assert mem._get_memory_index("u1") is not a   # rebuilt after reset
         mem._reset_memory_index_cache()
+
+
+def test_team_memory_chunks_delete_by_composite_key_and_team():
+    """team_memory chunks (backlog #100 phase 3): per-key replace + team wipe.
+
+    Exercises the real SQL paths: delete_memory_key with chunk_type filters on
+    the composite "<team_id>:<key>" metadata key without touching profile
+    "memory" chunks or other teams, and delete_team_memory_chunks clears one
+    team wholesale via the metadata team_id.
+    """
+    with TemporaryDirectory() as tmpdir:
+        index = MemoryIndex(Path(tmpdir) / "memory.db", embedding_provider="none")
+        # Profile chunk with a colliding bare key name.
+        index.add_chunk("endpoint: profile value", {"key": "endpoint"}, "memory", "user-1")
+        # Two teams sharing a key name, plus a second key on team A.
+        index.add_chunk(
+            "endpoint: team A value",
+            {"key": "team-a:endpoint", "team_id": "team-a", "team_key": "endpoint"},
+            "team_memory",
+            "user-1",
+        )
+        index.add_chunk(
+            "endpoint: team B value",
+            {"key": "team-b:endpoint", "team_id": "team-b", "team_key": "endpoint"},
+            "team_memory",
+            "user-1",
+        )
+        index.add_chunk(
+            "runbook: team A runbook",
+            {"key": "team-a:runbook", "team_id": "team-a", "team_key": "runbook"},
+            "team_memory",
+            "user-1",
+        )
+
+        # Keyed delete hits exactly the one composite key.
+        assert index.delete_memory_key("user-1", "team-a:endpoint", chunk_type="team_memory") == 1
+        stats = index.get_stats("user-1")
+        assert stats["by_type"] == {"memory": 1, "team_memory": 2}
+
+        # The default chunk_type still means profile memory only.
+        assert index.delete_memory_key("user-1", "endpoint") == 1
+        assert index.get_stats("user-1")["by_type"] == {"team_memory": 2}
+
+        # Team wipe removes only that team's chunks.
+        assert index.delete_team_memory_chunks("user-1", "team-a") == 1
+        remaining = index.search("endpoint", "user-1", chunk_types=["team_memory"])
+        assert [result.content for result in remaining] == ["endpoint: team B value"]
+        # Other users are never touched by construction (user_id predicate).
+        assert index.delete_team_memory_chunks("user-2", "team-b") == 0

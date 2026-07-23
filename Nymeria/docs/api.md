@@ -3046,6 +3046,17 @@ the `nym.threads.configure` workflow verb, and the read-only `/team list` and
 functions in `core/team_manager.py` and publishes the `thread_teams_changed`
 sync event (see the sync-events table) so open clients refetch the team list.
 
+Teams also carry a shared key-value memory (backlog #100 phase 3), stored on
+the team entity and read/written by the team's threads through the standard
+memory tools with `scope="team"` (`memory_add`/`memory_edit`/`memory_read`;
+the full read renders the team's identity header: name, description, and the
+teammate roster). Teamed threads get a third `memory_read(scope="team")` in
+their session-start memory seed and in every post-compaction reseed; caps
+ride the global key-value memory limits, applied per team. Entries index into
+the owner's RAG store as `team_memory` chunks, excluded from `rag_search` by
+default alongside profile memories (the `include_memories` preference opts
+both back in). Team memory dies with the team on delete.
+
 ```http
 GET /thread-teams
 Authorization: Bearer <token>
@@ -3079,6 +3090,30 @@ Authorization: Bearer <token>
 ```
 
 Deletes a team: clears membership from its threads and removes the entity. Membership changes invalidate cached graphs for the user's threads so subsequent turns rebuild callable-tool visibility.
+
+```http
+GET /thread-teams/{team_id}/memories
+Authorization: Bearer <token>
+```
+
+Returns `{"team_id": "...", "name": "...", "memories": [{"key": "...", "value": "...", "created_at": "...", "updated_at": "..."}], "count": N}`, sorted by key. Read-only: a dangling membership-referenced id renders without being adopted into the store.
+
+```http
+POST /thread-teams/{team_id}/memories
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"key": "api_endpoint", "value": "https://stage.example.com"}
+```
+
+Upserts one shared entry. The value is truncated to the per-value cap and the per-team aggregate budget is enforced (the global memory caps, applied per team); a cap violation is HTTP 400. 404 for an unknown team.
+
+```http
+DELETE /thread-teams/{team_id}/memories/{key}
+Authorization: Bearer <token>
+```
+
+Deletes one shared entry (404 if the team or key does not exist).
 
 ---
 

@@ -64,6 +64,13 @@ NymeriaOS threads don't just respond  -  they learn. Three interconnected system
 - **Limit**: `MEMORY_CHAR_LIMIT` (default 8000 chars), per-thread overridable
 - **Used by autonomous tasks**: Ticker reads notepad for context continuity
 
+### Team Memory (Shared Across a Callable Team)
+- **Scope**: Team  -  key-value facts shared by every thread in a callable team
+- **Purpose**: Shared operating facts (endpoints, conventions, division of labor) plus the team's identity: the full read renders the team name, description, and teammate roster
+- **Loaded at session start**: Teamed threads get a third `memory_read(scope="team")` in their memory seed and after every compaction
+- **Tools**: the same unified verbs with `scope="team"`; editable by the operator from the desktop team settings modal or the `/thread-teams/{id}/memories` REST routes
+- **Limits**: the global key-value caps, applied per team
+
 ### RAG (Nothing Gets Forgotten)
 - **Every conversation turn is indexed**  -  User message + AI response pairs embedded into per-user vector store after each turn
 - **Pre-compaction flush**  -  Before context is trimmed, all messages are defensively written to RAG
@@ -175,7 +182,7 @@ NymeriaOS adapts its capabilities at runtime without code changes. The agent dis
 | **Shell** | `bash_execute` (backend shell execution, bounded by deployment and tool policy) |
 | **Web** | `web_search_perplexity` (Perplexity, 3 depth levels; opt-in) |
 | **Multi-Model** | `consult` (Gemini second opinion) |
-| **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile or `scope="thread"` for notepad), `personality_set`, `rag_search` |
+| **Memory** | `memory_add`, `memory_edit`, `memory_read` (each takes `scope="global"` for profile, `scope="thread"` for notepad, or `scope="team"` for the shared callable-team registry), `personality_set`, `rag_search` |
 | **TODOs** | `nym_todo` (create/update with scheduling + recurrence), `nym_todo_delete`, `nym_todo_list` |
 | **Notifications** | `notify` (Telegram/Discord/Slack/Teams, auto mode) |
 | **Credentials** | `auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_credential` |

@@ -202,6 +202,36 @@ def validate_profile_memory_write(
     return None
 
 
+def validate_team_memory_write(
+    team: Any,
+    *,
+    key: str,
+    value: str,
+    limit: int,
+    max_entries: int | None = None,
+    max_value_chars: int | None = None,
+) -> str | None:
+    """Return an error if a team memory upsert would exceed any cap.
+
+    Team memory rides the global key-value caps, applied PER TEAM (backlog
+    #100 phase 3, spec default): entry-count cap for new keys, per-value char
+    cap, and the aggregate char budget over the team's entries. ``team`` is a
+    ``core.team_manager.Team`` (duck-typed: ``get_memory`` + ``memories``,
+    the same surface ``UserProfile`` exposes, so the counting helpers above
+    are shared).
+    """
+    if max_entries is not None and team.get_memory(key) is None:
+        if len(getattr(team, "memories", [])) >= max_entries:
+            return memory_entries_full_error(max_entries)
+    current_chars = profile_memory_char_count(team)
+    proposed_chars = proposed_profile_memory_char_count(
+        team, key, value, max_value_chars=max_value_chars
+    )
+    if proposed_chars > limit and proposed_chars > current_chars:
+        return memory_full_error("Team memory", limit, proposed_chars)
+    return None
+
+
 def validate_text_memory_write(
     *,
     label: str,
