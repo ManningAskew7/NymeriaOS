@@ -37,7 +37,8 @@ def _client(tmp_path: Path, api_client_builder) -> tuple[object, FakeAgent, str]
     return client, agent, token
 
 
-def test_team_scoped_callable_filter_keeps_unteamed_legacy_visibility(tmp_path: Path):
+def _isolation_agent(tmp_path: Path) -> NymeriaAgent:
+    """Agent with a teamed caller, two teamed callables, and one unteamed."""
     manager = ThreadConfigManager(tmp_path)
     manager.save_config(ThreadConfig(thread_id="caller", callable_team_id="team-a", callable_team_name="Ops"))
     manager.save_config(ThreadConfig(thread_id="agent-a", callable=True, callable_name="AgentA", callable_team_id="team-a", callable_team_name="Ops"))
@@ -49,15 +50,74 @@ def test_team_scoped_callable_filter_keeps_unteamed_legacy_visibility(tmp_path: 
     agent.accounts_repo = SimpleNamespace(
         list_threads_for_user=lambda _user_id: ["caller", "free-caller", "agent-a", "agent-b", "agent-free"]
     )
+    return agent
+
+
+def test_team_scoped_callable_filter_isolates_both_directions(tmp_path: Path):
+    """Backlog #97: teams are bubbles; unteamed threads see only unteamed."""
+    agent = _isolation_agent(tmp_path)
 
     scoped = agent._get_team_scoped_callable_threads(user_id="owner", caller_thread_id="caller")
     assert [tc.callable_name for tc in scoped] == ["AgentA"]
+
+    # An unteamed caller (no saved config) sees only unteamed callables.
+    unscoped = agent._get_team_scoped_callable_threads(user_id="owner", caller_thread_id="free-caller")
+    assert {tc.callable_name for tc in unscoped} == {"AgentFree"}
+
+
+def test_runtime_visibility_guard_isolates_both_directions(tmp_path: Path):
+    agent = _isolation_agent(tmp_path)
+
+    # Teamed caller: same team only.
     assert agent.is_callable_visible_to_thread("caller", "agent-a") is True
     assert agent.is_callable_visible_to_thread("caller", "agent-b") is False
+    assert agent.is_callable_visible_to_thread("caller", "agent-free") is False
 
-    unscoped = agent._get_team_scoped_callable_threads(user_id="owner", caller_thread_id="free-caller")
-    assert {tc.callable_name for tc in unscoped} == {"AgentA", "AgentB", "AgentFree"}
-    assert agent.is_callable_visible_to_thread("free-caller", "agent-b") is True
+    # Unteamed caller: unteamed targets only.
+    assert agent.is_callable_visible_to_thread("free-caller", "agent-free") is True
+    assert agent.is_callable_visible_to_thread("free-caller", "agent-a") is False
+    assert agent.is_callable_visible_to_thread("free-caller", "agent-b") is False
+
+    # No caller thread context: team scoping does not apply.
+    assert agent.is_callable_visible_to_thread("", "agent-a") is True
+
+
+def test_branch_clone_carries_callable_team(tmp_path: Path):
+    """Branched spawns inherit the parent's team via the full config clone."""
+    from nymeria.core.thread_branch import _clone_thread_config
+
+    manager = ThreadConfigManager(tmp_path)
+    manager.save_config(
+        ThreadConfig(
+            thread_id="source",
+            callable=True,
+            callable_name="Source",
+            callable_team_id="team-a",
+            callable_team_name="Ops",
+        )
+    )
+    agent = SimpleNamespace(
+        thread_config_manager=manager,
+        accounts_repo=SimpleNamespace(
+            list_threads_for_user=lambda _user_id: ["source"]
+        ),
+        invalidate_thread_config_cache=lambda thread_id: None,
+        sync_agent_tools=lambda: None,
+    )
+
+    cloned, callable_name = _clone_thread_config(
+        agent,
+        user_id="owner",
+        source_thread_id="source",
+        target_thread_id="branch-1",
+        title="Branch",
+    )
+    assert cloned is True
+    assert callable_name
+    branch_tc = manager.get_config("branch-1")
+    assert branch_tc is not None
+    assert branch_tc.callable_team_id == "team-a"
+    assert branch_tc.callable_team_name == "Ops"
 
 
 def test_callable_timeout_abort_uses_current_user_scope(tmp_path: Path):

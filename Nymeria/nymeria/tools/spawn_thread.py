@@ -639,22 +639,30 @@ def _build_spawn_preamble(
     disabled_tools: List[str],
     warnings: List[str],
     kit_line: Optional[str] = None,
+    team_line: Optional[str] = None,
 ) -> str:
     """Render the ``[Spawned]`` preamble (everything before the optional child
-    response). Byte-for-byte identical to the former inline block."""
+    response)."""
     preamble_lines = [f"[Spawned]: thread_id={new_thread_id}"]
     if mode_norm == "branched":
         preamble_lines.append(
             f"Mode: branched from {parent_thread_id} (inherits checkpoint history)."
         )
+    if team_line:
+        preamble_lines.append(team_line)
     if ttl_hours_resolved is not None:
         preamble_lines.append(
             f"Lifetime: temporary (auto-deletes after "
             f"{ttl_hours_resolved}h of inactivity)."
         )
     if make_callable and callable_name:
+        invoke_scope = (
+            "Same-team threads can invoke this."
+            if team_line
+            else "Any unteamed thread can invoke this."
+        )
         preamble_lines.append(
-            f'Callable as: {callable_name}(task="..."). Any thread can invoke this.'
+            f'Callable as: {callable_name}(task="..."). {invoke_scope}'
         )
     if kit_line:
         preamble_lines.append(kit_line)
@@ -725,6 +733,9 @@ def spawn_thread(
           the thread is CALLABLE; it's registered as a global tool so any
           thread (including its parent) can invoke it by calling the
           auto-generated tool name. Set make_callable=False to opt out.
+          If the spawning thread belongs to a callable team, the child
+          inherits that team (teams are isolated bubbles in both
+          directions).
 
       action="delete": Remove a previously-spawned thread. Only the thread
           that originally spawned it can delete it. Cleans up metadata,
@@ -966,6 +977,18 @@ def spawn_thread(
         else:
             callable_description = f"Invoke the '{title}' spawned thread"
 
+    # Backlog #97: children join the spawning thread's callable-team bubble
+    # so a teamed parent can invoke what it spawns under full team isolation.
+    # Branched mode inherits via the full config clone in thread_branch;
+    # fresh mode copies the two fields explicitly below.
+    parent_team_id: Optional[str] = None
+    parent_team_name: Optional[str] = None
+    if parent_thread_id:
+        parent_tc = agent.thread_config_manager.get_config(parent_thread_id)
+        if parent_tc is not None:
+            parent_team_id = getattr(parent_tc, "callable_team_id", None)
+            parent_team_name = getattr(parent_tc, "callable_team_name", None)
+
     if mode_norm == "branched":
         from ..core.thread_branch import ThreadBranchError, branch_thread
         from ..config.settings import get_settings
@@ -1029,6 +1052,8 @@ def spawn_thread(
                 callable=bool(make_callable),
                 callable_name=callable_name,
                 callable_description=callable_description,
+                callable_team_id=parent_team_id,
+                callable_team_name=parent_team_name,
             )
         except Exception as e:
             return f"[Error]: Invalid configuration: {str(e)}"
@@ -1155,6 +1180,12 @@ def spawn_thread(
         disabled_tools=tc.disabled_tools,
         warnings=warnings,
         kit_line=kit_line,
+        team_line=(
+            f"Team: {parent_team_name or parent_team_id} "
+            "(inherited from the spawning thread)."
+            if parent_team_id
+            else None
+        ),
     )
 
     if not prompt or not prompt.strip():

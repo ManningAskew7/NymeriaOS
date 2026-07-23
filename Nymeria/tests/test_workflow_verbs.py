@@ -884,7 +884,7 @@ def _configure_agent(tc=None, *, callables=(), owned=(), role="user", save_ok=Tr
 
 SPAWN_RECEIPT = (
     "[Spawned]: thread_id=spawned-research-a1b2c3d4\n"
-    'Callable as: spawned_research_a1b2c3d4(task="..."). Any thread can invoke this.\n'
+    'Callable as: spawned_research_a1b2c3d4(task="..."). Any unteamed thread can invoke this.\n'
     "To delete later: ..."
 )
 

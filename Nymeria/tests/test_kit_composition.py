@@ -1216,6 +1216,49 @@ def test_template_materialization_drives_real_spawn_thread_func(
     assert invoked == [(spawned_ids[0], "research_helper", "dig in", "ask")]
 
 
+def test_template_materialization_inherits_caller_team(tmp_path: Path, monkeypatch):
+    """Backlog #97 (supersedes kit decision #15's accepted edge): a template
+    thread materialized from a TEAMED caller inherits the caller's callable
+    team through the real spawn machinery, so the teamed caller can invoke
+    what it just materialized under full team isolation."""
+    _, agent, tool = _template_fixture(tmp_path)
+    agent.accounts_repo.claim_thread = lambda tid, uid: agent.owned_threads.append(tid)
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id="thread-a",
+            callable_team_id="team-a",
+            callable_team_name="Ops",
+        )
+    )
+
+    monkeypatch.setattr(
+        tool_factory, "_invoke_materialized", lambda *a, **k: "child answer"
+    )
+
+    import importlib
+
+    spawn_mod = importlib.import_module("nymeria.tools.spawn_thread")
+    with spawn_mod._spawn_rate_lock:
+        spawn_mod._spawn_counts.clear()
+    monkeypatch.setattr(
+        "nymeria.core.event_bus.publish_sync_event", lambda *a, **k: None
+    )
+
+    set_current_agent(agent)
+    try:
+        result = tool.func(task="dig in", config=_CONFIG)
+    finally:
+        set_current_agent(None)
+
+    assert result.startswith("[Materialized]: thread_id=spawned-")
+    spawned_ids = [t for t in agent.owned_threads if t.startswith("spawned-")]
+    assert len(spawned_ids) == 1
+    child = agent.thread_config_manager.get_config(spawned_ids[0])
+    assert child is not None
+    assert child.callable_team_id == "team-a"
+    assert child.callable_team_name == "Ops"
+
+
 def test_template_concurrent_first_calls_spawn_once(tmp_path: Path, monkeypatch):
     _, agent, tool = _template_fixture(tmp_path)
     spawn_calls: list[str] = []

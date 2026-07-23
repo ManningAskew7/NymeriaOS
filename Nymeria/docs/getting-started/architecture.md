@@ -535,7 +535,7 @@ Credential tools (`auth_inspect`, `auth_cleanup`, `auth_bindings`, `request_cred
 
 **Per-thread tool filtering pipeline:**
 1. Start with the user's `default_thread_tools` if set, otherwise `SEED_TOOLS`.
-2. Add callable-thread tools owned by the same user and visible to the caller's callable team.
+2. Add callable-thread tools owned by the same user and in the caller's callable-team bubble (teams are isolated both directions; unteamed threads see only unteamed callables).
 3. Remove any names in `ThreadConfig.disabled_tools`.
 4. Add live `ThreadConfig.enabled_tools` and non-expired `temporary_tools`, including optional tools, MCP registry tools, and allowed callables.
 5. Strip admin-only and developer-only tools when the calling user role is not allowed.
