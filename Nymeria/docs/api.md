@@ -2984,7 +2984,7 @@ thread (the agent-facing `tool_create(action="install_template")` does both).
 
 Callable threads replace the old sub-agent system. Any thread marked `callable=True` becomes a directly invocable tool  -  but only within threads owned by the **same user** that owns the callable. The tool registry is global, but `_build_graph_with_prompt` filters callables by ownership when building each user's graph, and the runtime gate in `agents/tool_factory.py` rejects cross-user invocations even on cache stale paths. Admins can route through another user's callables via `X-Nymeria-Act-As`.
 
-Callable teams optionally narrow that owner-wide list. If the caller thread has `callable_team_id`, it only receives callable tools whose thread configs have the same `callable_team_id`. Threads without a team keep the legacy owner-wide callable list.
+Callable teams partition that owner-wide list into isolated bubbles (both directions since 2026-07-23, backlog #97). A caller thread receives only callable tools whose thread configs carry the SAME `callable_team_id`, where "no team" is itself a bubble: a teamed thread sees only same-team callables, and an unteamed thread sees only unteamed callables. A blocked invocation returns a clear error naming the fix (put both threads in the same team, or both outside teams). Threads spawned via `spawn_thread` (fresh and branched modes, including kit template-thread materialization) inherit the spawning thread's team, so a teamed thread can always invoke what it spawns. One deliberate exemption: the `nym.thread` workflow verb keeps owner-wide reach (workflows are admin-approved per revision and serve as the sanctioned cross-team orchestration surface).
 
 ### List Agent Templates
 

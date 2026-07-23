@@ -8,6 +8,11 @@ Two shapes behind one verb:
   The target must be the calling user's own thread AND marked callable (the
   same consent flag the callable-tool path enforces); the callable-lifecycle
   circular guard plus a self-thread guard reject the two deadlock shapes.
+  Callable-TEAM visibility is deliberately NOT enforced here (dev decision
+  2026-07-23, backlog #97): workflows are admin-approved per revision, so
+  ``nym.thread`` keeps owner-wide reach as the sanctioned cross-team
+  orchestration escape hatch while ordinary callable tools are team-isolated
+  in both directions.
 - ``id_or_title`` unset: a FRESH configured thread via the ``spawn_thread``
   tool, invoked with an explicit configurable (no live turn needed). Fresh
   spawns are always blocking (``mode="ask"``); the spawned thread is real and

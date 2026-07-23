@@ -71,11 +71,12 @@ def get_team_scoped_callable_threads(
     user_id: str,
     caller_thread_id: str,
 ) -> List:
-    """Return the caller's owned callable threads, scoped by team if set.
+    """Return the caller's owned callable threads, scoped by team.
 
-    Team membership is caller-scoped for backward compatibility: unteamed
-    threads keep the existing owner-wide callable list, while a thread with
-    ``callable_team_id`` sees only callable threads in the same team.
+    Teams are fully isolated in both directions (backlog #97, 2026-07-23): a
+    thread with ``callable_team_id`` sees only callable threads in the same
+    team, and an unteamed thread sees only unteamed callables. The former
+    legacy behavior (unteamed threads keep the owner-wide list) is gone.
     """
     owned = set(agent.accounts_repo.list_threads_for_user(user_id))
     owned_callables = agent.thread_config_manager.list_callable_threads(
@@ -88,12 +89,10 @@ def get_team_scoped_callable_threads(
         else None
     )
     team_id = getattr(caller_tc, "callable_team_id", None) if caller_tc else None
-    if not team_id:
-        return owned_callables
     return [
         callable_tc
         for callable_tc in owned_callables
-        if getattr(callable_tc, "callable_team_id", None) == team_id
+        if (getattr(callable_tc, "callable_team_id", None) or None) == (team_id or None)
     ]
 
 
@@ -103,17 +102,22 @@ def is_callable_visible_to_thread(
     """Runtime defense for team-scoped callable tool visibility.
 
     A stale graph may still contain a callable tool after team membership
-    changes. If the caller belongs to a team, only same-team callables are
-    invocable. Unteamed callers preserve legacy owner-wide visibility.
+    changes. Teams are isolated in both directions (backlog #97): the caller
+    and target must be in the SAME team, where "no team" is itself a bubble
+    (an unteamed caller can invoke only unteamed callables). A call with no
+    caller thread context is not team-scoped and stays allowed.
     """
     if not caller_thread_id:
         return True
     caller_tc = agent.thread_config_manager.get_config(caller_thread_id)
-    caller_team_id = getattr(caller_tc, "callable_team_id", None) if caller_tc else None
-    if not caller_team_id:
-        return True
+    caller_team_id = (
+        getattr(caller_tc, "callable_team_id", None) if caller_tc else None
+    ) or None
     target_tc = agent.thread_config_manager.get_config(target_thread_id)
-    return bool(target_tc and target_tc.callable_team_id == caller_team_id)
+    target_team_id = (
+        getattr(target_tc, "callable_team_id", None) if target_tc else None
+    ) or None
+    return caller_team_id == target_team_id
 
 
 def get_callable_thread_tools(agent: "NymeriaAgent", tc) -> List[BaseTool]:

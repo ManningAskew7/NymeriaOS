@@ -130,13 +130,14 @@ class FakeAgent:
         callables = self.thread_config_manager.list_callable_threads(
             owned_thread_ids=owned,
         )
+        # Mirrors the real bubble semantics (backlog #97): caller and target
+        # teams must match, with "no team" itself a bubble.
         caller = self.thread_config_manager.get_config(caller_thread_id)
-        if not caller or not caller.callable_team_id:
-            return callables
+        caller_team = (caller.callable_team_id if caller else None) or None
         return [
             tc
             for tc in callables
-            if tc.callable_team_id == caller.callable_team_id
+            if (tc.callable_team_id or None) == caller_team
         ]
 
 

@@ -77,15 +77,21 @@ def _check_callable_ownership(agent, user_id, *, name, thread_id) -> Optional[st
 
 
 def _check_team_visibility(agent, parent_thread_id, *, name, thread_id) -> Optional[str]:
-    """Reject a callable that is not in the parent thread's callable team.
+    """Reject a callable outside the parent thread's team bubble.
 
-    Returns an error string, or None when allowed or not applicable.
+    Teams are isolated in both directions: a teamed thread invokes only
+    same-team callables, and an unteamed thread invokes only unteamed
+    callables. Returns an error string, or None when allowed or not
+    applicable.
     """
     if agent and parent_thread_id and hasattr(agent, "is_callable_visible_to_thread"):
         if not agent.is_callable_visible_to_thread(parent_thread_id, thread_id):
             return (
-                f"[Error]: {name} is not in this thread's callable team. "
-                "Use a callable thread from the same team or update the team's membership."
+                f"[Error]: {name} is not visible from this thread. Callable "
+                "teams are isolated: a teamed thread sees only same-team "
+                "callables, and an unteamed thread sees only unteamed "
+                "callables. Put both threads in the same team (or both "
+                "outside teams) to allow this call."
             )
     return None
 

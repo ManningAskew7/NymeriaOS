@@ -172,7 +172,8 @@ def test_team_not_visible_blocked():
     agent = SimpleNamespace(is_callable_visible_to_thread=lambda p, t: False)
     result = _check_team_visibility(agent, "parent", name="Helper", thread_id="t")
     assert result is not None
-    assert "not in this thread's callable team" in result
+    assert "not visible from this thread" in result
+    assert "Callable teams are isolated" in result
 
 
 def test_team_no_agent_skips():

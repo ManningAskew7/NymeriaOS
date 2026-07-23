@@ -158,7 +158,7 @@ Create a callable thread: open thread settings → Agent → check "Make Callabl
 
 Callable tools default to blocking `mode="ask"`, which returns the target thread's final answer. Use `mode="handoff"` to transfer work to the target thread without waiting; the caller receives only a dispatch receipt while the target thread streams through its normal autonomous output channels.
 
-Callable teams can scope which callable threads a thread sees. When a thread has `callable_team_id`, graph building includes only the owner's callable threads with the same team id. Unteamed threads keep the existing owner-wide callable visibility for backward compatibility. The desktop sidebar has a folder/team organization toggle and a bulk Team action for creating teams from selected threads.
+Callable teams scope which callable threads a thread sees, in both directions: graph building includes only the owner's callable threads in the SAME team bubble, where "no team" is itself a bubble (a teamed thread sees only same-team callables, an unteamed thread sees only unteamed callables). Threads created by `spawn_thread` and kit template materialization inherit the spawning thread's team; the `nym.thread` workflow verb is deliberately exempt (admin-approved workflows keep owner-wide reach for cross-team orchestration). The desktop sidebar has a folder/team organization toggle and a bulk Team action for creating teams from selected threads.
 
 The frontend header count uses `GET /threads/{thread_id}/callable-tools`, which mirrors runtime visibility for that caller thread: ownership, team scoping, self-exclusion, disabled tools, and name conflicts.
 

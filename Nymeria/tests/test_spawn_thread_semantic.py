@@ -930,7 +930,7 @@ class TestBuildSpawnPreamble:
         assert lines[0] == "[Spawned]: thread_id=spawned-y"
         assert lines[1] == "Mode: branched from parent-1 (inherits checkpoint history)."
         assert lines[2] == "Lifetime: temporary (auto-deletes after 6h of inactivity)."
-        assert lines[3] == 'Callable as: spawned_y(task="..."). Any thread can invoke this.'
+        assert lines[3] == 'Callable as: spawned_y(task="..."). Any unteamed thread can invoke this.'
         assert lines[4] == '[Resolved tools]: browser_navigate (0.88 <- "research")'
         assert lines[5] == "Enabled optional tools: browser_navigate"
         assert lines[6] == "Disabled core tools: bash_execute"
@@ -987,3 +987,66 @@ class TestBuildSpawnPreamble:
         assert "tool_5" in resolved_line
         assert "tool_6" not in resolved_line
         assert "+2 more" in resolved_line
+
+    def test_team_line_renders_and_scopes_callable_wording(self):
+        out = _build_spawn_preamble(
+            new_thread_id="spawned-t",
+            mode_norm="fresh",
+            parent_thread_id=None,
+            ttl_hours_resolved=None,
+            make_callable=True,
+            callable_name="spawned_t",
+            tool_resolution_records=[],
+            include_core_tools=True,
+            enabled_tools=[],
+            disabled_tools=[],
+            warnings=[],
+            team_line="Team: Ops (inherited from the spawning thread).",
+        )
+        lines = out.split("\n")
+        assert lines[1] == "Team: Ops (inherited from the spawning thread)."
+        assert lines[2] == (
+            'Callable as: spawned_t(task="..."). Same-team threads can invoke this.'
+        )
+
+
+# ---------------------------------------------------------------------------
+# callable-team inheritance (backlog #97)
+# ---------------------------------------------------------------------------
+
+
+class TestTeamInheritance:
+    """Fresh spawns join the spawning thread's callable-team bubble."""
+
+    def test_fresh_spawn_inherits_parent_team(self, stub_agent):
+        from nymeria.core.thread_config import ThreadConfig
+
+        stub_agent.thread_config_manager.save_config(
+            ThreadConfig(
+                thread_id="parent-1",
+                callable_team_id="team-a",
+                callable_team_name="Ops",
+            )
+        )
+        result = spawn_thread.invoke(
+            {"title": "teamed child"}, config=_runnable_config()
+        )
+        child_id = _extract_thread_id(result)
+        tc = stub_agent.thread_config_manager.get_config(child_id)
+        assert tc is not None
+        assert tc.callable_team_id == "team-a"
+        assert tc.callable_team_name == "Ops"
+        assert "Team: Ops (inherited from the spawning thread)." in result
+        assert "Same-team threads can invoke this." in result
+
+    def test_fresh_spawn_from_unteamed_parent_stays_unteamed(self, stub_agent):
+        result = spawn_thread.invoke(
+            {"title": "plain child"}, config=_runnable_config()
+        )
+        child_id = _extract_thread_id(result)
+        tc = stub_agent.thread_config_manager.get_config(child_id)
+        assert tc is not None
+        assert tc.callable_team_id is None
+        assert tc.callable_team_name is None
+        assert "Team:" not in result
+        assert "Any unteamed thread can invoke this." in result
