@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from cli_fixtures import run
-from nymeria.triggers.cli.events import DoneEvent, ResponseEvent
+from nymeria.triggers.cli.events import DoneEvent, ErrorEvent, ResponseEvent
 from nymeria.triggers.cli.transport.in_process import InProcessAgentClient
 
 
@@ -263,6 +263,50 @@ def test_stream_chat_normalizes_local_astream_events() -> None:
             "_trigger_override": "manual-test",
         }
     ]
+
+
+def test_stream_chat_synthesizes_done_when_astream_ends_without_terminal() -> None:
+    """The real agent.astream() emits no ``done`` (the chat route appends it).
+
+    The FakeAgent default script includes one, which masked this: without a
+    synthetic terminal the reducer's last assistant message stays
+    status="streaming" and the spinner sticks after every local-transport turn.
+    """
+    agent = FakeAgent(events=[{"type": "response", "content": "Hello"}])
+    client = InProcessAgentClient(agent)
+
+    async def collect():
+        return [
+            event async for event in client.stream_chat("hello", "thread-a", "alice")
+        ]
+
+    events = run(collect())
+
+    assert events == [
+        ResponseEvent(thread_id="thread-a", content="Hello"),
+        DoneEvent(thread_id="thread-a", status="complete"),
+    ]
+
+
+def test_stream_chat_no_synthetic_done_after_error() -> None:
+    """An errored local stream ends on its ErrorEvent, not a fake ``done``."""
+
+    class ExplodingAgent(FakeAgent):
+        async def astream(self, **kwargs: Any):
+            yield {"type": "response", "content": "partial"}
+            raise RuntimeError("boom")
+
+    client = InProcessAgentClient(ExplodingAgent())
+
+    async def collect():
+        return [
+            event async for event in client.stream_chat("hello", "thread-a", "alice")
+        ]
+
+    events = run(collect())
+
+    assert [type(e) for e in events] == [ResponseEvent, ErrorEvent]
+    assert events[-1].code == "local_transport_error"
 
 
 def test_stop_is_idempotent_until_next_stream() -> None:

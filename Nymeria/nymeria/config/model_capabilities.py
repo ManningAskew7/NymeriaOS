@@ -109,12 +109,23 @@ DEFAULT_CONTEXT_LIMITS = {
     "anthropic/claude-opus-4-7": 1000000,
     "anthropic/claude-opus-4-8": 1000000,
     "anthropic/claude-sonnet-4-6": 1000000,
+    "anthropic/claude-sonnet-5": 1000000,
+    "anthropic/claude-fable-5": 1000000,
+    "anthropic/claude-mythos-5": 1000000,
     "claude-sonnet-4": 200000,
     "claude-opus-4": 200000,
     "claude-opus-4-6": 1000000,
     "claude-opus-4-7": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-sonnet-4-6": 1000000,
+    # 5-generation Claude models (fable/mythos/sonnet-5) postdate the bundled
+    # LiteLLM catalog snapshot, so without curated entries they fell through
+    # every tier to the 128k "_default" (which then clamped compaction
+    # thresholds and looked exactly like a max-output leak; slim-dogfood
+    # backlog #101 entry 18). All three are 1M-context models.
+    "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000,
+    "claude-mythos-5": 1000000,
     "openai/gpt-5.5": 1050000,
     "openai/gpt-5.5-pro": 1050000,
     "gpt-5.5": 1050000,

@@ -1650,9 +1650,21 @@ def create_chat_router(
                 # turn end, and auto-title no longer depends on the caller's
                 # connection (disconnected turns previously never titled
                 # their thread or published the title sync event).
-                still_connected = (
-                    not client_disconnected and not await http_request.is_disconnected()
+                late_disconnect = (
+                    not client_disconnected and await http_request.is_disconnected()
                 )
+                if late_disconnect:
+                    # Without this line a turn-end disconnect probe that trips
+                    # here withholds the wire `done` with NO trace anywhere
+                    # (the mid-turn latch above logs; this check did not), and
+                    # the client's spinner sticking on "Streaming" is
+                    # undiagnosable from the server log.
+                    logger.info(
+                        "Client disconnect detected at turn end for thread %s; "
+                        "done frame buffered for re-attach, not sent on the wire",
+                        thread_id,
+                    )
+                still_connected = not client_disconnected and not late_disconnect
                 if still_connected or turn_buffer is not None:
                     # For /quick, append a display-only footer telling the user
                     # how to continue the fresh thread. Emitted as a trailing
