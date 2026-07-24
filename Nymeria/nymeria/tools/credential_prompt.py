@@ -177,7 +177,10 @@ async def request_credential(
     ``status="dispatched"``. When the user finishes (or cancels), no fresh
     agent turn fires automatically. The agent should write a short
     user-facing acknowledgement after dispatching and ask the user to
-    reply when they want the original task retried.
+    reply when they want the original task retried. If the user pastes an
+    error from the panel back into chat, help them debug it rather than
+    silently retrying; if they ignore the prompt and ask for something
+    else, do that (the panel stays open until they dismiss it).
 
     Args:
         provider: Service identifier. For OAuth, must be in the registry

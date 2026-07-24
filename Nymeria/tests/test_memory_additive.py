@@ -187,3 +187,18 @@ def test_memory_edit_global_requires_key_no_bulk_wipe(monkeypatch, tmp_path):
     assert result.startswith("[Error]:")
     profile = UserProfileManager(tmp_path).get_profile("user")
     assert profile.get_memory("city").value == "Sydney"
+
+
+# ── Thread notepad: empty read carries the starting-from-zero nudge ─────────
+
+def test_memory_read_thread_empty_carries_zero_context_note(monkeypatch, tmp_path):
+    """The fresh-thread seed exchange surfaces this exact read, so the empty
+    notepad must keep its "[empty]" sentinel prefix and deliver the
+    you-know-nothing-yet nudge contextually (it lives here, not in soul.md)."""
+    _patch_memory_settings(monkeypatch, tmp_path)
+
+    result = memory_tools.memory_read.func(scope="thread", config=_config())
+
+    assert result.startswith("[empty]")
+    assert "zero" in result
+    assert "memory_add" in result
