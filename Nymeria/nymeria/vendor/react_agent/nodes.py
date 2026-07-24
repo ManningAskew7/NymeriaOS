@@ -694,32 +694,43 @@ _TRUNCATION_NOTICE = (
     "will fix it. Ask again and I'll retry."
 )
 
+_REFUSAL_NOTICE = (
+    "The model declined to continue this response (a provider-side refusal), "
+    "so this turn produced no result. This is usually triggered by phrasing "
+    "that resembles a harmful or adversarial request, and it can be "
+    "intermittent. Rephrasing the request and asking again usually resolves "
+    "it."
+)
 
-def _with_truncation_notice(response: AIMessage) -> AIMessage:
-    """Attach a user-visible note to an otherwise empty truncated response.
+
+def _with_empty_turn_notice(
+    response: AIMessage, notice_text: str = _TRUNCATION_NOTICE
+) -> AIMessage:
+    """Attach a user-visible note to an otherwise empty response.
 
     Returns a copy rather than mutating in place, but be clear about what that
     does and does not buy: the caller rebinds ``response`` to this copy and
     returns it, so the PATCHED message is what reaches the checkpoint. The copy
     protects the caller's local reference, not the persisted history.
 
-    Deliberate: a turn that produced only a truncated thinking block is
-    indistinguishable from success to `should_continue`, so the message itself
-    has to carry the explanation. Appending keeps thinking blocks first and
-    their signatures untouched, which is what Anthropic validates on replay.
+    Deliberate: a turn that produced only a thinking block (truncated cap or a
+    provider refusal) is indistinguishable from success to `should_continue`,
+    so the message itself has to carry the explanation. Appending keeps
+    thinking blocks first and their signatures untouched, which is what
+    Anthropic validates on replay.
     """
     try:
-        notice = {"type": "text", "text": _TRUNCATION_NOTICE}
+        notice = {"type": "text", "text": notice_text}
         if isinstance(response.content, list):
             new_content: Any = [*response.content, notice]
         elif isinstance(response.content, str) and not response.content:
-            new_content = _TRUNCATION_NOTICE
+            new_content = notice_text
         else:
             return response
         patched = response.model_copy(update={"content": new_content})
         return patched
     except Exception as exc:  # noqa: BLE001
-        logger.debug(f"[LLM] Could not attach truncation notice: {exc}")
+        logger.debug(f"[LLM] Could not attach empty-turn notice: {exc}")
         return response
 
 
@@ -1761,7 +1772,7 @@ def create_agent_node(
                 # healthy no-op to every downstream consumer (the bots drop an
                 # empty text buffer, the graph ends cleanly); a visible note is
                 # the difference between a bug report and a mystery.
-                response = _with_truncation_notice(response)
+                response = _with_empty_turn_notice(response)
             else:
                 logger.warning(
                     f"[LLM] TRUNCATED: response hit the max_tokens cap "
@@ -1773,6 +1784,59 @@ def create_agent_node(
                     "output_truncated",
                     {
                         "reason": "max_tokens",
+                        "produced_output": True,
+                        "output_tokens": output_tokens,
+                        "model": getattr(llm_config, "model", "") or "",
+                    },
+                    config,
+                )
+
+        # Refusal detection: the provider ended the message because the model
+        # declined to continue. Anthropic spells it stop_reason="refusal";
+        # OpenAI-shaped gateways spell it finish_reason="content_filter".
+        # Measured 2026-07-24 on claude-fable-5 via CLIProxy: a benign-looking
+        # "try to break what the bash tool claims" prompt returned a lone
+        # 644-char thinking block, no text, no tool calls, stop_reason
+        # "refusal", and the turn delivered pure silence that was reported as
+        # a client bug. Same fatal shape as the dead turn above, different
+        # cause, so it gets the same treatment: never let it pass quietly.
+        refused = (
+            metadata.get("stop_reason") == "refusal"           # Anthropic-shaped
+            or metadata.get("finish_reason") == "content_filter"  # OpenAI-shaped
+        )
+        if refused:
+            output_tokens = (getattr(response, "usage_metadata", None) or {}).get(
+                "output_tokens"
+            )
+            if not visible_text and not has_tools:
+                logger.warning(
+                    f"[LLM] REFUSED TURN: the provider ended the response with a "
+                    f"refusal (output_tokens={output_tokens}) before any text or "
+                    f"tool call, so this turn produced nothing to deliver. A "
+                    f"visible note was attached; rephrasing the prompt usually "
+                    f"resolves it."
+                )
+                _dispatch_provider_event(
+                    "response_refused",
+                    {
+                        "produced_output": False,
+                        "output_tokens": output_tokens,
+                        "model": getattr(llm_config, "model", "") or "",
+                    },
+                    config,
+                )
+                response = _with_empty_turn_notice(response, _REFUSAL_NOTICE)
+            else:
+                # Partial output then a refusal: the user already saw content,
+                # so log and signal without rewriting the message.
+                logger.warning(
+                    f"[LLM] Response ended with a provider refusal after "
+                    f"producing output (visible_chars={len(visible_text)}, "
+                    f"tool_calls={tool_names})."
+                )
+                _dispatch_provider_event(
+                    "response_refused",
+                    {
                         "produced_output": True,
                         "output_tokens": output_tokens,
                         "model": getattr(llm_config, "model", "") or "",
