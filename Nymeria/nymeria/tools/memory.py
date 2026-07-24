@@ -619,7 +619,8 @@ def memory_read(
           (substring, case-insensitive). For semantic search use `rag_search`.
 
     scope="thread": per-thread notepad.
-        - No `query`: return full notepad contents (or "[empty]").
+        - No `query`: return full notepad contents (or an "[empty]"-prefixed
+          starting-from-zero note).
         - `query` provided: return only the notepad lines containing the query.
 
     scope="team": this thread's callable-team shared memory.
@@ -641,7 +642,7 @@ def memory_read(
         + "- key: value" lines for list mode; personality prefs appended
         when no query filter. Team: identity header + "- key: value" lines.
         Thread: raw notepad markdown or matching lines. Empty: "[Info]: ..."
-        or "[empty]".
+        or an "[empty]"-prefixed note.
     """
     err = _validate_scope(scope)
     if err:
@@ -747,7 +748,11 @@ def memory_read(
     thread_id = get_effective_thread_id(config)
     content = thread_notes.read_notepad(thread_id)
     if not content:
-        return "[empty]"
+        return (
+            "[empty] No notes for this thread yet; you are starting from zero "
+            "context here. Add notes with memory_add(scope='thread', ...) as "
+            "you learn what matters."
+        )
 
     if query:
         q_lower = query.lower()
