@@ -37,6 +37,7 @@ SystemMessageKind: TypeAlias = Literal[
     "context_attached",
     "dispatch_notice",
     "iteration_limit",
+    "turn_rewound",
     "error",
     "tool_reload",
     "autonomous",

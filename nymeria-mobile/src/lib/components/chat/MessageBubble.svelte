@@ -346,6 +346,16 @@
     {/if}
   </div>
 </div>
+{:else if message.kind === 'turn_rewound'}
+<div class="compaction-notice turn-rewound-notice">
+  <div class="compaction-icon">
+    <Icon name="info" size={18} />
+  </div>
+  <div class="compaction-body">
+    <div class="compaction-title">Turn rewound</div>
+    <div class="compaction-meta">{message.content}</div>
+  </div>
+</div>
 {:else if !isHiddenMessage}
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div

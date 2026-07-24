@@ -125,6 +125,117 @@ describe('chatStore: edit-previous-prompt state (backlog #12)', () => {
     expect(store.isEditing).toBe(false);
     expect(store.editingDraft).toBe('');
   });
+
+  it('handleTurnRewound drops the refused exchange, notices, and restores the prompt', () => {
+    seedTranscript();
+    store.handleTurnRewound({
+      toMessageId: 'u2',
+      prompt: 'second prompt',
+      content: "Fable 5's classifier declined this turn.",
+    });
+    const ids = store.messages.map((m) => m.id);
+    expect(ids.slice(0, 2)).toEqual(['u1', 'a1']);
+    const notice = store.messages[store.messages.length - 1];
+    expect(notice.role).toBe('system');
+    expect(notice.kind).toBe('turn_rewound');
+    expect(notice.content).toContain('declined');
+    expect(store.consumeComposerRestore()).toBe('second prompt');
+    expect(store.isStreaming).toBe(false);
+  });
+
+  it('handleTurnRewound on the first turn leaves only the notice', () => {
+    store.setMessages([makeUser('poke it', 'u1')]);
+    store.handleTurnRewound({ toMessageId: 'u1', prompt: 'poke it', content: 'Declined.' });
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0].kind).toBe('turn_rewound');
+  });
+
+  it('handleTurnRewound ignores autonomous refusals (no surgery, no restore)', () => {
+    seedTranscript();
+    store.handleTurnRewound({
+      toMessageId: 'u2',
+      prompt: 'second prompt',
+      content: 'Declined.',
+      autonomous: true,
+    });
+    expect(store.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+    expect(store.consumeComposerRestore()).toBe('');
+  });
+
+  it('handleTurnRewound no-ops when the anchor is gone and the tail is a settled turn', () => {
+    store.setMessages([
+      { ...makeUser('earlier', 'u1'), graphMessageId: 'g1' },
+      makeCompletedAssistant('reply', 'a1'),
+    ]);
+    store.handleTurnRewound({
+      toMessageId: 'gone-anchor',
+      prompt: 'refused',
+      content: 'Declined.',
+    });
+    expect(store.messages.map((m) => m.id)).toEqual(['u1', 'a1']);
+    expect(store.consumeComposerRestore()).toBe('');
+  });
+
+  it('handleTurnRewound cuts precisely at the backend anchor (graphMessageId match)', () => {
+    store.setMessages([
+      { ...makeUser('first prompt', 'u1'), graphMessageId: 'g1' },
+      makeCompletedAssistant('first reply', 'a1'),
+      { ...makeUser('refused prompt', 'u2'), graphMessageId: 'g2' },
+      makeCompletedAssistant('refused shell', 'a2'),
+    ]);
+    store.handleTurnRewound({
+      toMessageId: 'g2',
+      prompt: 'refused prompt',
+      content: 'Declined.',
+    });
+    expect(store.messages.map((m) => m.id).slice(0, 2)).toEqual(['u1', 'a1']);
+    expect(store.messages[store.messages.length - 1].kind).toBe('turn_rewound');
+    expect(store.consumeComposerRestore()).toBe('refused prompt');
+  });
+
+  it('handleTurnRewound structural fallback cuts only the fresh optimistic send', () => {
+    store.setMessages([
+      { ...makeUser('earlier', 'u1'), graphMessageId: 'g1' },
+      makeCompletedAssistant('reply', 'a1'),
+      makeUser('refused live send', 'u2'),
+    ]);
+    store.handleTurnRewound({
+      toMessageId: 'g-unknown-locally',
+      prompt: 'refused live send',
+      content: 'Declined.',
+    });
+    expect(store.messages.map((m) => m.id).slice(0, 2)).toEqual(['u1', 'a1']);
+    expect(store.messages[store.messages.length - 1].kind).toBe('turn_rewound');
+    expect(store.consumeComposerRestore()).toBe('refused live send');
+  });
+
+  it('handleTurnRewound structural fallback cuts a whole optimistic batch run', () => {
+    store.setMessages([
+      { ...makeUser('earlier', 'u1'), graphMessageId: 'g1' },
+      makeCompletedAssistant('reply', 'a1'),
+      makeUser('first queued', 'u2'),
+      makeUser('second queued', 'u3'),
+    ]);
+    store.handleTurnRewound({
+      toMessageId: 'g-unknown-locally',
+      prompt: 'first queued\n\nsecond queued',
+      content: 'Declined.',
+    });
+    expect(store.messages.map((m) => m.id).slice(0, 2)).toEqual(['u1', 'a1']);
+    expect(store.messages).toHaveLength(3);
+    expect(store.messages[2].kind).toBe('turn_rewound');
+  });
+
+  it('handleTurnRewound clears local pending prompts like other terminal handlers', () => {
+    seedTranscript();
+    store.addPendingPrompt('typed during the refused turn');
+    store.handleTurnRewound({
+      toMessageId: 'u2',
+      prompt: 'second prompt',
+      content: 'Declined.',
+    });
+    expect(store.pendingPrompts).toEqual([]);
+  });
 });
 
 describe('chatStore: stop lifecycle (backlog #11 + #16)', () => {

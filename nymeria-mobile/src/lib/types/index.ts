@@ -158,7 +158,7 @@ export interface CommandExecuteResponse {
 export interface Message {
   id: string;
   role: MessageRole;
-  kind?: 'compaction_notice' | 'command_result';
+  kind?: 'compaction_notice' | 'command_result' | 'turn_rewound';
   content: string;
   steps?: MessageStep[];          // Ordered list of thinking/tool_call/response steps
   intermediateContent?: string;   // Legacy history fallback for messages without steps
@@ -671,6 +671,7 @@ export type SSEEventType =
   | 'context_attached'
   | 'iteration_limit'
   | 'turn_resumed'
+  | 'turn_rewound'
   | 'tool_reload'
   | 'turn_started'
   | 'turn_attach';

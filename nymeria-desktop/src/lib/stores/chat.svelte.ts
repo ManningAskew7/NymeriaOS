@@ -1566,6 +1566,105 @@ export function createChatStore() {
       ];
     },
 
+    /**
+     * A pre-output provider refusal was rewound server-side (backlog #105):
+     * the backend removed the refused user+assistant exchange from the
+     * checkpoint. Mirror that locally so the transcript matches the server,
+     * append the explanation notice, and hand the refused prompt back to the
+     * composer (no auto-resend).
+     *
+     * Two truncation modes, in order:
+     * 1. The backend anchor (`toMessageId` == the refused user message's
+     *    graphMessageId): precise, and inherently safe against buffer replay
+     *    (backlog #87 re-attach) because it no-ops once the refused exchange
+     *    is gone from history.
+     * 2. Structural fallback (drop from the last user message onward) ONLY
+     *    when that user message is the fresh optimistic send (no
+     *    graphMessageId yet). This is the live send-and-refuse path, where
+     *    the anchor has not been stamped locally. A settled prior turn always
+     *    carries a graphMessageId, so a stale `turn_rewound` replayed against
+     *    already-rewound history is a no-op here (no wrong-turn truncation,
+     *    no spurious composer restore); the re-attach reconcile settles the
+     *    transcript from history instead.
+     */
+    handleTurnRewound(info: {
+      toMessageId?: string;
+      prompt?: string;
+      content: string;
+      autonomous?: boolean;
+    }) {
+      // Autonomous refusals (TODO/trigger/dream) are rewound server-side; the
+      // GUI must not truncate its interactive transcript or push the
+      // autonomous prompt into the composer. The live-attach reconcile settles
+      // the view from history; bots deliver the explanation.
+      if (info.autonomous) return;
+
+      this._forceFlush();
+
+      let cutIndex = -1;
+      if (info.toMessageId) {
+        cutIndex = messages.findIndex((m) => m.graphMessageId === info.toMessageId);
+      }
+      if (cutIndex < 0) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i];
+          if (msg.role === 'user') {
+            if (!msg.graphMessageId) {
+              cutIndex = i;
+              // A queued-prompt batch renders as CONSECUTIVE optimistic user
+              // bubbles and the server rewinds the whole run, so cut from
+              // the first of the run. A settled bubble (graphMessageId set)
+              // stops the walk: the anchor path owns settled history.
+              while (
+                cutIndex > 0 &&
+                messages[cutIndex - 1].role === 'user' &&
+                !messages[cutIndex - 1].graphMessageId
+              ) {
+                cutIndex--;
+              }
+            }
+            break;
+          }
+        }
+      }
+      if (cutIndex < 0) {
+        // Nothing local to rewind (e.g. a buffered event replayed after the
+        // rewind already settled into history). Leave the transcript and
+        // composer untouched.
+        return;
+      }
+
+      messages = messages.slice(0, cutIndex);
+      if (editingMessageId && !messages.some((msg) => msg.id === editingMessageId)) {
+        this.cancelEdit();
+      }
+
+      messages = [
+        ...messages,
+        {
+          id: generateId(),
+          role: 'system' as const,
+          kind: 'turn_rewound' as const,
+          content: info.content || 'The turn was rewound after a provider refusal.',
+          timestamp: new Date(),
+          status: 'complete' as const,
+        }
+      ];
+
+      isStreaming = false;
+      isQueued = false;
+      activeToolCalls = new Map();
+      // Like the other terminal handlers (compaction, thread switch): a
+      // local-only pending prompt has no live turn left to drain it; a
+      // server-acked one re-renders via prompt_injected when its own turn
+      // fires.
+      this.clearPendingPrompts();
+
+      if (info.prompt) {
+        this.restoreToComposer([info.prompt]);
+      }
+    },
+
     // Flip the most recent un-resumed pause card when the turn_resumed event
     // arrives (from this client's /resume or another client's).
     markTurnPausedResumed() {

@@ -445,6 +445,208 @@ def rewind_thread_exchanges(
         return 0
 
 
+def _prompt_text_of(message: HumanMessage) -> str:
+    """Extract the user-visible prompt text from a ``HumanMessage``.
+
+    Multimodal prompts store content as a block list; only the text blocks
+    matter for a composer restore. The injected time/trigger prefix and any
+    hook-injected context are checkpoint-only noise and are stripped, matching
+    what history views show the user.
+    """
+    content = message.content
+    if isinstance(content, list):
+        parts = [
+            str(block.get("text") or "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        text = "\n".join(part for part in parts if part)
+    else:
+        text = str(content or "")
+    return strip_prompt_context(text).strip()
+
+
+def _ai_visible_text(message: AIMessage) -> str:
+    """User-visible text of an AIMessage (text blocks only, no thinking)."""
+    content = message.content
+    if isinstance(content, list):
+        parts = [
+            str(block.get("text") or "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "".join(parts).strip()
+    return str(content or "").strip()
+
+
+def refused_turn_tail(messages: list) -> Optional[Dict[str, Any]]:
+    """Classify the thread tail when it is an empty provider-refused turn.
+
+    The ``empty_turn_refusal`` marker is stamped by the graph's
+    ``_finish_response`` (vendor/react_agent/nodes.py) when a provider refusal
+    (Anthropic ``stop_reason="refusal"`` / OpenAI ``finish_reason=
+    "content_filter"``) ended the response before any text or tool call.
+    Partial-output refusals never carry the marker: the user already saw real
+    content, so those turns are not rewound.
+
+    Returns ``None`` when the tail is not a marked refusal, else::
+
+        {
+          "rewindable": bool,   # exchange produced NOTHING but the refusal
+          "steps": int,         # trailing HumanMessage run length to rewind
+          "to_message_id": ...  # FIRST HumanMessage of that run (the anchor
+                                # clients truncate from; the per-turn
+                                # turn_user_message_id for interactive turns)
+          "prompt": str,        # all run prompts joined, composer-restorable
+          "model": str,
+          "notice": str,        # the in-message notice the graph attached
+        }
+
+    Rewindable means the refused AIMessage is immediately preceded by one or
+    more consecutive ``HumanMessage``s (a plain prompt, or a queued-prompt
+    batch) and nothing else: no tool calls, no ToolMessages, no earlier AI
+    output. Anything else in the exchange means the user already saw content
+    or side effects already ran (mid-turn tool refusals, DONE-continue
+    re-drives, /resume re-drives on a tool tail), so the turn stays in place
+    and the notice is the recovery surface (2026-07-24 review decision).
+    """
+    if not messages:
+        return None
+    last = messages[-1]
+    if not isinstance(last, AIMessage):
+        return None
+    if not (getattr(last, "additional_kwargs", None) or {}).get(
+        "empty_turn_refusal"
+    ):
+        return None
+    model = (getattr(last, "response_metadata", None) or {}).get(
+        "model_name"
+    ) or ""
+    notice = _ai_visible_text(last)
+    run: list = []
+    for msg in reversed(messages[:-1]):
+        if isinstance(msg, HumanMessage):
+            run.append(msg)
+        else:
+            break
+    if not run:
+        return {
+            "rewindable": False,
+            "steps": 0,
+            "to_message_id": None,
+            "prompt": "",
+            "model": model,
+            "notice": notice,
+        }
+    run.reverse()
+    prompts = [p for p in (_prompt_text_of(m) for m in run) if p]
+    return {
+        "rewindable": True,
+        "steps": len(run),
+        "to_message_id": getattr(run[0], "id", None),
+        "prompt": "\n\n".join(prompts),
+        "model": model,
+        "notice": notice,
+    }
+
+
+def refusal_rewind_content(model: str) -> str:
+    """Human-readable explanation delivered with a refusal rewind.
+
+    Written to work everywhere it is shown: bots deliver it as the turn's
+    reply text, controlled clients (CLI, desktop, mobile) print it alongside
+    their composer restore. It therefore never mentions an input box.
+    """
+    label = model or "The model"
+    return (
+        f"{label}'s safety classifier declined this turn, so the refused "
+        "exchange was rewound: the conversation is back at the end of the "
+        "previous turn. Try again with different phrasing, rewind further, "
+        "or switch to a different model."
+    )
+
+
+def refusal_gated_content(model: str) -> str:
+    """Fallback explanation when a refusal is detected but not rewound and
+    the in-message notice could not be extracted. Mirrors the two-route
+    recovery guide in ``_REFUSAL_NOTICE`` (vendor/react_agent/nodes.py)."""
+    label = model or "The model"
+    return (
+        f"{label} declined this turn (a provider-side refusal) and produced "
+        "no reply. Refusals tend to repeat while the triggering content "
+        "stays in context: rewind this thread and rephrase, or switch to a "
+        "different model and continue from here."
+    )
+
+
+def maybe_rewind_refused_turn(
+    agent: "NymeriaAgent",
+    thread_id: str,
+    messages: list,
+) -> Optional[Dict[str, Any]]:
+    """Rewind the trailing exchange when it ended in an empty provider refusal.
+
+    Backlog #105: a pre-output refusal (Fable 5's safety classifiers) leaves a
+    poisoned tail; Anthropic's guidance is that the refused turn must be reset
+    or refusals tend to repeat. The backend does the reset authoritatively
+    here, for every surface (interactive, bots, autonomous), but ONLY when the
+    refused exchange produced nothing besides the refusal (``rewindable``
+    above): rewinding an exchange that ran tools or delivered earlier content
+    would erase things the user saw and side effects that already happened.
+
+    Returns ``None`` when the tail is not a refusal. Otherwise a payload with
+    ``"rewound"``:
+
+    - ``True``: the exchange was removed; the caller emits ``turn_rewound``
+      (fields: reason/removed/to_message_id/prompt/model/content).
+    - ``False`` (gated, rewind error, or nothing removed): the refused
+      message stays in place carrying the in-message notice; ``content`` is
+      that notice text, which the astream caller delivers as a trailing
+      ``response`` chunk because the checkpoint-patched notice never streams
+      on its own (bots would otherwise render the turn as silence).
+    """
+    info = refused_turn_tail(messages)
+    if info is None:
+        return None
+    not_rewound: Dict[str, Any] = {
+        "rewound": False,
+        "reason": "refusal",
+        "model": info["model"],
+        "content": info["notice"] or refusal_gated_content(info["model"]),
+    }
+    if not info["rewindable"]:
+        logger.info(
+            f"Thread {thread_id}: provider refusal NOT rewound (the refused "
+            "exchange carries tool activity or earlier output); the "
+            "in-message notice is the recovery surface."
+        )
+        return not_rewound
+    try:
+        result = agent.rewind_thread(thread_id, steps=info["steps"])
+    except Exception as e:
+        logger.warning(
+            f"Thread {thread_id}: refusal rewind failed ({e}); leaving the "
+            "refused turn in place with its in-message notice."
+        )
+        return not_rewound
+    if result.removed <= 0:
+        return not_rewound
+    logger.info(
+        f"Thread {thread_id}: provider refusal rewound the trailing exchange "
+        f"({result.removed} message(s) removed, "
+        f"prompts={info['steps']}, model={info['model'] or '?'})"
+    )
+    return {
+        "rewound": True,
+        "reason": "refusal",
+        "removed": result.removed,
+        "to_message_id": info["to_message_id"],
+        "prompt": info["prompt"],
+        "model": info["model"],
+        "content": refusal_rewind_content(info["model"]),
+    }
+
+
 def flush_memories_before_trim(
     agent: "NymeriaAgent",
     user_id: str,

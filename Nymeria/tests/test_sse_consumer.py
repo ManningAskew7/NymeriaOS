@@ -89,6 +89,9 @@ class RecordingHandler:
     async def on_iteration_limit(self, content: str) -> None:
         self.calls.append(("on_iteration_limit", {"content": content}))
 
+    async def on_turn_rewound(self, content: str) -> None:
+        self.calls.append(("on_turn_rewound", {"content": content}))
+
     async def on_done(self, tool_call_count: int) -> None:
         self.calls.append(("on_done", {"tool_call_count": tool_call_count}))
 
@@ -515,6 +518,54 @@ def test_dispatch_iteration_limit_empty_content_ignored():
         {"type": "iteration_limit", "content": ""}, h, 0,
     ))
     assert h.calls == []
+
+
+def test_dispatch_turn_rewound_flushes_then_delivers_content():
+    """A refusal rewind (backlog #105) delivers its explanation to the bot."""
+    h = RecordingHandler()
+    asyncio.run(dispatch_event(
+        {
+            "type": "turn_rewound",
+            "reason": "refusal",
+            "content": "The classifier declined this turn.",
+            "prompt": "the refused prompt",
+        },
+        h,
+        0,
+    ))
+    assert h.calls == [
+        ("flush_text", {"final": True}),
+        ("on_turn_rewound", {"content": "The classifier declined this turn."}),
+    ]
+
+
+def test_dispatch_turn_rewound_empty_content_ignored():
+    h = RecordingHandler()
+    asyncio.run(dispatch_event({"type": "turn_rewound", "content": ""}, h, 0))
+    assert h.calls == [("flush_text", {"final": True})]
+
+
+def test_dispatch_turn_rewound_falls_back_without_handler_method():
+    """An out-of-tree handler predating on_turn_rewound still delivers it."""
+
+    class LegacyHandler:
+        def __init__(self) -> None:
+            self.calls: List[tuple] = []
+
+        async def flush_text(self, final: bool = False) -> None:
+            self.calls.append(("flush_text", {"final": final}))
+
+        async def on_iteration_limit(self, content: str) -> None:
+            self.calls.append(("on_iteration_limit", {"content": content}))
+
+    h = LegacyHandler()
+    asyncio.run(dispatch_event(
+        {"type": "turn_rewound", "content": "rewound"}, h, 0,
+    ))
+    assert h.calls == [
+        ("flush_text", {"final": True}),
+        ("on_iteration_limit", {"content": "rewound"}),
+    ]
 
 
 def test_dispatch_done():

@@ -548,6 +548,15 @@ class NymeriaDiscordBot(_BotBase):
             except Exception:
                 logger.warning("Failed to send iteration-limit warning to Discord", exc_info=True)
 
+        async def on_turn_rewound(self, content: str) -> None:
+            # A provider refusal was rewound server-side (backlog #105);
+            # deliver the explanation (this chat surface has no composer to
+            # restore the prompt to).
+            try:
+                await self._channel.send(content)
+            except Exception:
+                logger.warning("Failed to send turn-rewound notice to Discord", exc_info=True)
+
         async def on_done(self, tool_call_count: int) -> None:
             if self._reply_suppressed:
                 await self.flush_text(final=True)
@@ -1228,6 +1237,9 @@ class NymeriaDiscordBot(_BotBase):
 
         async def on_iteration_limit(self, content: str) -> None:
             await self._channel.send(f"⚠️ {content}")
+
+        async def on_turn_rewound(self, content: str) -> None:
+            await self._channel.send(content)
 
         async def on_done(self, tool_call_count: int) -> None:
             pass  # autonomous uses task_completed, not done

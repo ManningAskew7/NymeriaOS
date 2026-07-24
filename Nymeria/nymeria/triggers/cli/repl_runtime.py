@@ -24,7 +24,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -33,6 +33,7 @@ from rich.cells import cell_len
 
 from .autonomous import AutonomousStreamMonitor
 from .capabilities import TerminalCapabilities
+from .events import TurnRewoundEvent
 from .command_routing import (
     is_chat_stream_command as _is_chat_stream_command,
     queued_notice as _queued_notice,
@@ -69,6 +70,28 @@ from .transport.disconnected import DISCONNECTED_MESSAGE, is_disconnected_client
 
 if TYPE_CHECKING:
     from .app import CLIApp, _ReplRenderer
+
+
+def _turn_rewound_prompt(event: Any) -> str:
+    """Return the refused prompt to restore, for an INTERACTIVE turn_rewound.
+
+    Accepts a normalized ``TurnRewoundEvent``: both transports normalize
+    before yielding, and the autonomous monitor normalizes via
+    ``decide_autonomous_event``, so that is the only production shape. The
+    raw wire ``Mapping`` branch is defensive (an un-normalized dict slipping
+    through a future path must still never restore an autonomous prompt).
+    Returns "" for any other event, and for AUTONOMOUS refusals: the prompt
+    of a TODO/trigger/dream turn must never be pushed into the user's
+    composer as if they typed it. Callers gate cheaply on the empty string.
+    """
+    if isinstance(event, TurnRewoundEvent):
+        return "" if event.autonomous else event.prompt.strip()
+    if isinstance(event, Mapping) and event.get("type") == "turn_rewound":
+        if event.get("autonomous"):
+            return ""
+        prompt = event.get("prompt")
+        return prompt.strip() if isinstance(prompt, str) else ""
+    return ""
 
 
 _RICH_REPL_COMPOSER_MAX_HEIGHT = 6
@@ -291,6 +314,14 @@ class _RichReplRuntime:
 
     async def render_event_above_prompt(self, event: Any) -> None:
         await self.footer.render_event_above_prompt(event)
+        # A refusal rewind (backlog #105) removed the refused exchange
+        # server-side; the reducer trims the local transcript and the refused
+        # prompt is handed back to the composer so the user can edit and
+        # resend it. Nothing is auto-resent (the user asked for no auto
+        # anything). Best-effort: no composer yet means nothing to restore.
+        prompt = _turn_rewound_prompt(event)
+        if prompt:
+            self.restore_texts_to_composer([prompt])
 
     async def render_from_screen_top(self, callback: Callable[[], Any]) -> Any:
         return await self.footer.render_from_screen_top(callback)

@@ -23,6 +23,7 @@ from nymeria.triggers.cli.events import (
     ToolCallEvent,
     ToolReloadEvent,
     ToolResultEvent,
+    TurnRewoundEvent,
     WorkspaceArtifactEvent,
     normalize_async_stream_events,
     normalize_stream_event,
@@ -239,6 +240,26 @@ def test_normalizes_all_known_stream_event_types() -> None:
         ),
         (
             {
+                "type": "turn_rewound",
+                "reason": "refusal",
+                "removed": 2,
+                "to_message_id": "user-anchor",
+                "prompt": "poke the sandbox",
+                "model": "claude-fable-5",
+                "content": "The classifier declined this turn.",
+            },
+            TurnRewoundEvent(
+                thread_id="thread-a",
+                reason="refusal",
+                removed=2,
+                to_message_id="user-anchor",
+                prompt="poke the sandbox",
+                model="claude-fable-5",
+                content="The classifier declined this turn.",
+            ),
+        ),
+        (
+            {
                 "type": "task_started",
                 "task_id": "todo-1",
                 "prompt": "Work on TODO todo-1: Check status",
@@ -308,6 +329,33 @@ def test_normalizes_all_known_stream_event_types() -> None:
 
     for raw, expected in cases:
         assert normalize_stream_event(raw, default_thread_id="thread-a") == expected
+
+
+def test_turn_rewound_normalizes_the_autonomous_flag() -> None:
+    ev = normalize_stream_event(
+        {"type": "turn_rewound", "prompt": "p", "content": "c", "autonomous": True},
+        default_thread_id="t",
+    )
+    assert isinstance(ev, TurnRewoundEvent)
+    assert ev.autonomous is True
+
+
+def test_turn_rewound_prompt_helper_extracts_only_from_interactive_events() -> None:
+    from nymeria.triggers.cli.repl_runtime import _turn_rewound_prompt
+
+    assert _turn_rewound_prompt(TurnRewoundEvent(prompt="  poke it  ")) == "poke it"
+    assert _turn_rewound_prompt({"type": "turn_rewound", "prompt": "raw"}) == "raw"
+    # No prompt, wrong event type, or wrong shape yields nothing to restore.
+    assert _turn_rewound_prompt(TurnRewoundEvent(prompt="")) == ""
+    assert _turn_rewound_prompt({"type": "response", "content": "x"}) == ""
+    assert _turn_rewound_prompt(ResponseEvent(content="hi")) == ""
+    # Autonomous refusals must NEVER push their prompt into the user composer.
+    assert _turn_rewound_prompt(
+        TurnRewoundEvent(prompt="todo text", autonomous=True)
+    ) == ""
+    assert _turn_rewound_prompt(
+        {"type": "turn_rewound", "prompt": "todo text", "autonomous": True}
+    ) == ""
 
 
 def test_equivalent_api_and_local_events_compare_equal_after_normalization() -> None:

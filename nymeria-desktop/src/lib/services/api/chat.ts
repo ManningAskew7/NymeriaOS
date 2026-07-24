@@ -792,6 +792,28 @@ export class ChatApi extends CredentialsApi {
             threadId
           };
 
+        case 'turn_rewound':
+          // A pre-output provider refusal (Fable 5 safety classifier) was
+          // rewound server-side (backlog #105): the refused exchange is gone
+          // from the checkpoint. Truncate the local transcript, restore the
+          // prompt to the composer, and show the explanation. Nothing is
+          // auto-resent.
+          return {
+            type: 'turn_rewound',
+            data: {
+              content: (data.content as string) || '',
+              prompt: (data.prompt as string) || '',
+              toMessageId: (data.to_message_id as string) || '',
+              reason: (data.reason as string) || 'refusal',
+              model: (data.model as string) || '',
+              // Autonomous refusals are rewound server-side only; the GUI does
+              // no transcript surgery or composer restore for them.
+              autonomous: (data.autonomous as boolean) || false,
+            },
+            timestamp: new Date(),
+            threadId
+          };
+
         case 'tool_reload':
           return {
             type: 'tool_reload',

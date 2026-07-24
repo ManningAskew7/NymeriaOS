@@ -1497,6 +1497,15 @@ class NymeriaTelegramBot:
             except Exception:
                 logger.warning("Failed to send iteration-limit warning to Telegram", exc_info=True)
 
+        async def on_turn_rewound(self, content: str) -> None:
+            # A provider refusal was rewound server-side (backlog #105).
+            try:
+                await self._context.bot.send_message(
+                    chat_id=self._chat_id, text=content
+                )
+            except Exception:
+                logger.warning("Failed to send turn-rewound notice to Telegram", exc_info=True)
+
         async def on_done(self, tool_call_count: int) -> None:
             if self._reply_suppressed:
                 await self.flush_text(final=True)
@@ -3192,6 +3201,14 @@ class NymeriaTelegramBot:
                 )
             except Exception as e:
                 logger.warning(f"Failed to send autonomous iteration notice: {e}")
+
+        async def on_turn_rewound(self, content: str) -> None:
+            try:
+                await self._bot._send_html(
+                    self._chat_id, f"<i>{escape_html(str(content))}</i>"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send autonomous turn-rewound notice: {e}")
 
         async def on_done(self, tool_call_count: int) -> None:
             pass  # autonomous uses task_completed, not done

@@ -306,6 +306,15 @@ class SSEEventHandler(Protocol):
 
     async def on_iteration_limit(self, content: str) -> None: ...
 
+    async def on_turn_rewound(self, content: str) -> None:
+        """A refused turn was rewound server-side; deliver the explanation.
+
+        The backend already removed the refused exchange from the checkpoint
+        (backlog #105), so bot handlers only need to send *content* as the
+        turn's reply text.
+        """
+        ...
+
     async def on_done(self, tool_call_count: int) -> None: ...
 
     async def on_stream_end(self, tool_call_count: int) -> None: ...
@@ -443,6 +452,19 @@ async def dispatch_event(
         content = event.get("content", "")
         if content:
             await handler.on_iteration_limit(content)
+
+    elif etype == "turn_rewound":
+        await handler.flush_text(final=True)
+        content = event.get("content", "")
+        if content:
+            # getattr-guarded so an out-of-tree handler predating this event
+            # still delivers the explanation (as a plain notice) instead of
+            # crashing the consumer loop with an AttributeError.
+            callback = getattr(handler, "on_turn_rewound", None)
+            if callback is not None:
+                await callback(content)
+            else:
+                await handler.on_iteration_limit(content)
 
     elif etype == "done":
         await handler.on_done(tool_call_count)

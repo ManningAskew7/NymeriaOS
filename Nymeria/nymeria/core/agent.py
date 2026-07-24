@@ -2528,15 +2528,40 @@ class NymeriaAgent:
                         response, _ = _extract_content_parts(msg.content)
                         break
 
+                # Provider-refusal rewind (backlog #105, mirrors astream):
+                # rewind an empty provider-refused tail and deliver the
+                # explanation as this turn's reply text (sync chat callers,
+                # i.e. bots, have no composer to restore). Gated refusals
+                # (tool activity or earlier output in the exchange) are NOT
+                # rewound; their extracted response already carries the
+                # in-message notice, so the reply is never silent either way.
+                refusal_rewind: Optional[Dict[str, Any]] = None
+                try:
+                    refusal_rewind = self._maybe_rewind_refused_turn(
+                        thread_id, messages
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Thread {thread_id}: refusal rewind check failed: {e}"
+                    )
+                refusal_rewound = False
+                if refusal_rewind is not None and refusal_rewind.get("rewound"):
+                    refusal_rewound = True
+                    response = refusal_rewind["content"]
+
                 # Index conversation turn in RAG (if enabled), including this
                 # turn's tool activity extracted from the messages list.
-                self._index_conversation_turn(
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    user_message=message,
-                    ai_response=response,
-                    messages=messages,
-                )
+                # Skipped when a refusal rewind removed the exchange: the turn
+                # no longer exists, so indexing it would resurrect it in RAG.
+                # Gated (not-rewound) refusals still index: the turn persists.
+                if not refusal_rewound:
+                    self._index_conversation_turn(
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        user_message=message,
+                        ai_response=response,
+                        messages=messages,
+                    )
 
                 # Track token usage + USD cost.
                 self._record_turn_usage(
@@ -3667,6 +3692,59 @@ class NymeriaAgent:
                 except Exception as e:
                     logger.warning(f"Failed to extract token usage: {e}")
 
+                # Provider-refusal rewind (backlog #105): an empty
+                # provider-refused tail (Fable 5's safety classifiers, marker
+                # stamped by _finish_response) poisons the thread; refusals
+                # tend to repeat until the refused turn is reset. Rewind the
+                # refused exchange authoritatively and tell clients to restore
+                # the prompt, but ONLY when the exchange produced nothing
+                # besides the refusal; exchanges with tool activity or earlier
+                # output are gated (never rewound) and deliver the in-message
+                # notice live instead. Runs off-loop: the rewind reads/writes
+                # checkpointer state synchronously. On failure the in-message
+                # notice attached by the graph stays in place (never worse
+                # than before). Runs on the graph-idle post-astream tail, the
+                # same window the /rewind route uses when no turn is running.
+                refusal_rewind: Optional[Dict[str, Any]] = None
+                try:
+                    refusal_rewind = await asyncio.to_thread(
+                        self._maybe_rewind_refused_turn,
+                        thread_id,
+                        result_messages,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Thread {thread_id}: refusal rewind check failed: {e}"
+                    )
+                refusal_rewound = False
+                if refusal_rewind is not None and refusal_rewind.get("rewound"):
+                    refusal_rewound = True
+                    # `autonomous` gates client transcript-surgery: only the
+                    # interactive holder turn has a user prompt to restore and
+                    # a transcript exchange to remove. Autonomous refusals
+                    # (TODO/trigger/dream) are rewound server-side above and
+                    # need no client surgery; bots still deliver `content`.
+                    payload = {
+                        k: v for k, v in refusal_rewind.items() if k != "rewound"
+                    }
+                    yield {
+                        "type": "turn_rewound",
+                        "autonomous": is_autonomous_source,
+                        **payload,
+                    }
+                elif refusal_rewind is not None and refusal_rewind.get("content"):
+                    # Gated or failed rewind: the notice lives inside the
+                    # checkpointed message, which was patched AFTER the stream
+                    # ended, so streaming surfaces would render this turn as
+                    # silence (bots deliver nothing, GUIs show an empty
+                    # bubble) and only history reload would reveal it. Emit
+                    # the same text as a trailing response chunk so the live
+                    # view matches history.
+                    yield {
+                        "type": "response",
+                        "content": refusal_rewind["content"],
+                    }
+
                 # Context management: auto-compact or sliding window
                 if self.settings.context_management == "auto_compact":
                     compact_result = None
@@ -3704,14 +3782,18 @@ class NymeriaAgent:
                 # auto-compact so streamed resume output is included too. Called
                 # unconditionally so a tool-only turn with no final text still has
                 # its tool results indexed; index_conversation_turn self-skips the
-                # conversation chunk when there is no response prose.
-                self._index_conversation_turn(
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    user_message=message,
-                    ai_response="".join(final_response_parts),
-                    messages=result_messages,
-                )
+                # conversation chunk when there is no response prose. Skipped
+                # when a refusal rewind removed the exchange: the turn no
+                # longer exists, so indexing it would resurrect it in RAG.
+                # Gated (not-rewound) refusals still index: the turn persists.
+                if not refusal_rewound:
+                    self._index_conversation_turn(
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        user_message=message,
+                        ai_response="".join(final_response_parts),
+                        messages=result_messages,
+                    )
 
                 _elapsed = time.monotonic() - _stream_start
                 logger.info(f"[ASTREAM] === END === thread={thread_id}, elapsed={_elapsed:.1f}s")
@@ -3944,6 +4026,14 @@ class NymeriaAgent:
         return rewind_thread(
             self, thread_id, steps=steps, to_message_id=to_message_id
         )
+
+    def _maybe_rewind_refused_turn(
+        self,
+        thread_id: str,
+        messages: list,
+    ) -> Optional[Dict[str, Any]]:
+        from .agent_context import maybe_rewind_refused_turn
+        return maybe_rewind_refused_turn(self, thread_id, messages)
 
     def _flush_memories_before_trim(
         self,
