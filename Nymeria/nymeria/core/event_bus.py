@@ -352,6 +352,11 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     # fatal silent shape as output_truncated when it fires before any text
     # or tool call, so it is mirrored for the same reason.
     "response_refused",
+    # A refusal that produced nothing was rewound server-side (backlog #105):
+    # the refused exchange was removed from the checkpoint and clients should
+    # truncate their transcript and (controlled clients) restore the prompt.
+    # Mirrored so bots and autonomous watchers deliver the explanation.
+    "turn_rewound",
     "auth_prompt",
     "auth_prompt_resolved",
     "auth_prompt_cancelled",

@@ -473,6 +473,16 @@
     {/if}
   </div>
 </div>
+{:else if message.kind === 'turn_rewound'}
+<div class="compaction-notice turn-rewound-notice">
+  <div class="compaction-icon">
+    <Icon name="info" size={18} />
+  </div>
+  <div class="compaction-body">
+    <div class="compaction-title">Turn rewound</div>
+    <div class="compaction-meta">{message.content}</div>
+  </div>
+</div>
 {:else if !isHiddenMessage}
 <div class="message-bubble" class:user={isUser} class:assistant={!isUser} class:autonomous-prompt={!!message.autonomousSource}>
   <!--

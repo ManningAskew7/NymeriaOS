@@ -974,6 +974,27 @@
         chatStore.markTurnPausedResumed();
         break;
 
+      case 'turn_rewound': {
+        // A pre-output provider refusal (Fable 5 safety classifier) was
+        // rewound server-side (backlog #105): drop the refused exchange
+        // locally, restore the prompt to the composer, and show the notice.
+        const data = event.data as {
+          content: string;
+          prompt?: string;
+          toMessageId?: string;
+          reason?: string;
+          model?: string;
+          autonomous?: boolean;
+        };
+        chatStore.handleTurnRewound({
+          toMessageId: data.toMessageId,
+          prompt: data.prompt,
+          content: data.content,
+          autonomous: data.autonomous,
+        });
+        break;
+      }
+
       case 'tool_reload': {
         const data = event.data as {
           tools: string[];

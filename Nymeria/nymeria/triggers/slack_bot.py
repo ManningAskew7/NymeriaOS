@@ -853,6 +853,10 @@ class _SlackStreamHandler:
     async def on_iteration_limit(self, content: str) -> None:
         await self._bot._send_text(self._target, content)
 
+    async def on_turn_rewound(self, content: str) -> None:
+        # A provider refusal was rewound server-side (backlog #105).
+        await self._bot._send_text(self._target, content)
+
     async def on_done(self, tool_call_count: int) -> None:
         if tool_call_count and self._buffer:
             self._buffer += f"\n\n_Tool calls: {tool_call_count}_"

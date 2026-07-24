@@ -309,6 +309,46 @@ class TestRefusedTurnDetection:
         assert "REFUSED TURN" in caplog.text
         assert _visible_text_of(out.content) != ""
 
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"stop_reason": "refusal", "model_name": "claude-fable-5"},
+            {"finish_reason": "content_filter", "model_name": "gpt-5.5"},
+        ],
+    )
+    def test_empty_refusal_stamps_the_rewind_marker(self, metadata):
+        """The marker is what the post-turn rewind keys on (backlog #105)."""
+        out = _run(_refused_thinking_only_response(metadata))
+        assert out.additional_kwargs.get("empty_turn_refusal") is True
+
+    def test_partial_refusal_does_not_stamp_the_rewind_marker(self):
+        """The user already saw content; a partial refusal must never rewind."""
+        out = _run(
+            AIMessage(
+                content=[{"type": "text", "text": "a partial answer"}],
+                response_metadata={"stop_reason": "refusal"},
+                usage_metadata={
+                    "input_tokens": 10, "output_tokens": 50, "total_tokens": 60,
+                },
+            )
+        )
+        assert "empty_turn_refusal" not in out.additional_kwargs
+
+    def test_truncated_dead_turn_does_not_stamp_the_rewind_marker(self):
+        """max_tokens dead turns keep their notice-only treatment."""
+        out = _run(
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "budget gone", "signature": "s"}
+                ],
+                response_metadata={"stop_reason": "max_tokens"},
+                usage_metadata={
+                    "input_tokens": 10, "output_tokens": 4096, "total_tokens": 4106,
+                },
+            )
+        )
+        assert "empty_turn_refusal" not in out.additional_kwargs
+
     @pytest.mark.asyncio
     async def test_refused_turn_detected_on_the_streaming_path(self, caplog):
         with caplog.at_level("WARNING", logger="nymeria"):

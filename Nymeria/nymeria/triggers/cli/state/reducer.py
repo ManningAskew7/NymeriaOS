@@ -28,6 +28,7 @@ from ..events import (
     ToolCallEvent,
     ToolReloadEvent,
     ToolResultEvent,
+    TurnRewoundEvent,
     WorkspaceArtifactEvent,
     normalize_stream_event,
 )
@@ -176,6 +177,8 @@ def reduce_stream_event(
         return _reduce_context_attached(state, normalized, timestamp)
     if isinstance(normalized, IterationLimitEvent):
         return _reduce_iteration_limit(state, normalized, timestamp)
+    if isinstance(normalized, TurnRewoundEvent):
+        return _reduce_turn_rewound(state, normalized, timestamp)
     if isinstance(normalized, TaskStartedEvent):
         return _reduce_task_started(state, normalized, timestamp)
     if isinstance(normalized, TaskCompletedEvent):
@@ -454,6 +457,86 @@ def _reduce_iteration_limit(
     return replace(
         state,
         messages=state.messages + (notice,),
+        updated_at=timestamp,
+    )
+
+
+def _reduce_turn_rewound(
+    state: CLIUIState,
+    event: TurnRewoundEvent,
+    timestamp: float,
+) -> CLIUIState:
+    """Append the refusal-rewind notice, truncating only an interactive turn.
+
+    The backend already removed the refused exchange from the checkpoint
+    (backlog #105). For an INTERACTIVE turn we mirror that locally: cut from
+    the last UserMessage onward (the whole refused exchange) then add the
+    notice. For an AUTONOMOUS turn (TODO/trigger/dream, which the CLI reduces
+    off the mirrored bus) there is no interactive UserMessage at the tail, so
+    walking back for one would delete a PRIOR interactive exchange: we append
+    the notice only and never truncate. The `autonomous` boundary check is
+    belt-and-suspenders for the interactive path too. The refused prompt is
+    restored to the composer by the runtime (interactive only), not here.
+    """
+    notice = SystemMessage(
+        id=_new_id("system"),
+        kind="turn_rewound",
+        content=event.content or "The turn was rewound after a provider refusal.",
+        timestamp=timestamp,
+        details={
+            "reason": event.reason,
+            "removed": event.removed,
+            "to_message_id": event.to_message_id,
+            "model": event.model,
+            "autonomous": event.autonomous,
+        },
+    )
+    if event.autonomous:
+        return replace(
+            state,
+            messages=state.messages + (notice,),
+            updated_at=timestamp,
+        )
+
+    messages = list(state.messages)
+    cut_index = len(messages)
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, UserMessage):
+            cut_index = i
+            # A queued-prompt batch paints consecutive UserMessages and the
+            # server rewinds the whole run, so cut from the first of it.
+            while cut_index > 0 and isinstance(
+                messages[cut_index - 1], UserMessage
+            ):
+                cut_index -= 1
+            break
+        if isinstance(msg, SystemMessage) and msg.kind in (
+            "autonomous",
+            "turn_rewound",
+        ):
+            # An autonomous turn boundary, or a PRIOR rewind notice, before
+            # any UserMessage: this tail is not the refused interactive
+            # exchange. In particular a duplicated/replayed turn_rewound
+            # must never walk past its own notice and delete the healthy
+            # prior exchange (seq bookkeeping makes replay suffix-only
+            # today; this keeps a future transport change non-destructive).
+            break
+        if not isinstance(msg, (AssistantMessage, SystemMessage)):
+            # An unexpected message type between the tail and the user prompt:
+            # stop rather than cut across it.
+            break
+    trimmed = messages[:cut_index]
+    removed_assistant = any(
+        isinstance(msg, AssistantMessage) for msg in messages[cut_index:]
+    )
+    new_current = state.current_assistant_id
+    if removed_assistant:
+        new_current = None
+    return replace(
+        state,
+        messages=tuple(trimmed) + (notice,),
+        current_assistant_id=new_current,
         updated_at=timestamp,
     )
 

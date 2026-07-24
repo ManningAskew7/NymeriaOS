@@ -22,6 +22,7 @@ KnownEventType: TypeAlias = Literal[
     "compacted",
     "context_attached",
     "iteration_limit",
+    "turn_rewound",
     "task_started",
     "task_completed",
     "hook_approval",
@@ -173,6 +174,28 @@ class IterationLimitEvent(CLIStreamEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TurnRewoundEvent(CLIStreamEvent):
+    """A pre-output provider refusal was rewound server-side (backlog #105).
+
+    The backend already removed the refused exchange from the checkpoint;
+    the CLI truncates the matching local transcript tail, restores ``prompt``
+    to the composer, and prints ``content`` as a notice. Nothing is
+    auto-resent.
+    """
+
+    type: Literal["turn_rewound"] = "turn_rewound"
+    content: str = ""
+    prompt: str = ""
+    to_message_id: str = ""
+    reason: str = ""
+    removed: int | None = None
+    model: str = ""
+    # True for autonomous turns (TODO/trigger/dream): the CLI shows the notice
+    # but never truncates the interactive transcript or restores the prompt.
+    autonomous: bool = False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TaskStartedEvent(CLIStreamEvent):
     type: Literal["task_started"] = "task_started"
     task_id: str = ""
@@ -277,6 +300,7 @@ NormalizedEvent: TypeAlias = (
     | CompactedEvent
     | ContextAttachedEvent
     | IterationLimitEvent
+    | TurnRewoundEvent
     | TaskStartedEvent
     | TaskCompletedEvent
     | HookApprovalEvent
@@ -484,6 +508,21 @@ def normalize_stream_event(
             repeated_count=_optional_int(
                 _first(payload, "repeated_count", "repeatedCount"),
             ),
+            raw=raw,
+        )
+
+    if event_type == "turn_rewound":
+        return TurnRewoundEvent(
+            thread_id=thread_id,
+            content=_text(_first(payload, "content", "message"), default=""),
+            prompt=_text(_first(payload, "prompt"), default=""),
+            to_message_id=_text(
+                _first(payload, "to_message_id", "toMessageId"), default=""
+            ),
+            reason=_text(_first(payload, "reason"), default=""),
+            removed=_optional_int(_first(payload, "removed")),
+            model=_text(_first(payload, "model", "model_name", "modelName"), default=""),
+            autonomous=_bool(_first(payload, "autonomous"), default=False),
             raw=raw,
         )
 
@@ -762,6 +801,7 @@ __all__ = [
     "CompactedEvent",
     "ContextAttachedEvent",
     "IterationLimitEvent",
+    "TurnRewoundEvent",
     "TaskStartedEvent",
     "TaskCompletedEvent",
     "HookApprovalEvent",

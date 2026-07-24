@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from cli_fixtures import event_sequence
 
 from nymeria.triggers.cli.events import normalize_stream_event
@@ -9,6 +11,7 @@ from nymeria.triggers.cli.state import (
     SystemMessage,
     ThinkingStep,
     ToolCallStep,
+    UserMessage,
     create_initial_state,
     reduce_stream_event,
     select_activity_phase,
@@ -192,6 +195,211 @@ def test_compacted_event_replaces_transcript_with_notice() -> None:
     assert state.messages[0].kind == "compaction_notice"
     assert isinstance(state.messages[1], AssistantMessage)
     assert state.messages[1].status == "streaming"
+
+
+def test_turn_rewound_removes_refused_exchange_and_appends_notice() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    # A first, healthy exchange stays put.
+    state = start_turn(
+        state, "hi there", now=0.1,
+        user_message_id="user-0", assistant_message_id="assistant-0",
+    )
+    state = reduce_stream_event(
+        state, {"type": "response", "content": "hello!"}, now=0.2
+    )
+    state = reduce_stream_event(
+        state,
+        {"type": "done", "thread_id": "thread-1", "tool_call_count": 0},
+        now=0.3,
+    )
+    # The refused turn: user prompt + empty streaming assistant.
+    state = start_turn(
+        state, "poke the sandbox", now=1.0,
+        user_message_id="user-1", assistant_message_id="assistant-1",
+    )
+    before = len(state.messages)
+
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "turn_rewound",
+            "thread_id": "thread-1",
+            "reason": "refusal",
+            "removed": 2,
+            "to_message_id": "user-1",
+            "prompt": "poke the sandbox",
+            "model": "claude-fable-5",
+            "content": "The classifier declined this turn.",
+        },
+        now=1.5,
+    )
+
+    # The refused user+assistant pair is gone; the healthy exchange survives.
+    assert before == 4  # user-0, assistant-0, user-1, assistant-1
+    kinds = [type(m).__name__ for m in state.messages]
+    assert kinds == ["UserMessage", "AssistantMessage", "SystemMessage"]
+    assert state.messages[0].id == "user-0"
+    notice = state.messages[-1]
+    assert isinstance(notice, SystemMessage)
+    assert notice.kind == "turn_rewound"
+    assert notice.content == "The classifier declined this turn."
+    assert notice.details["model"] == "claude-fable-5"
+    # The removed assistant was the current one; the pointer is cleared.
+    assert state.current_assistant_id is None
+
+
+def test_turn_rewound_autonomous_preserves_prior_interactive_exchange() -> None:
+    # An autonomous turn (TODO/trigger) paints no UserMessage, so a
+    # last-UserMessage truncation would wrongly delete the prior interactive
+    # exchange. The autonomous branch appends the notice only.
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(
+        state, "what is 2+2", now=0.1,
+        user_message_id="user-0", assistant_message_id="assistant-0",
+    )
+    state = reduce_stream_event(
+        state, {"type": "response", "content": "4"}, now=0.2
+    )
+    state = reduce_stream_event(
+        state, {"type": "done", "thread_id": "thread-1", "tool_call_count": 0}, now=0.3
+    )
+    # An autonomous turn wakes on the same viewed thread.
+    state = reduce_stream_event(
+        state,
+        {"type": "task_started", "task_id": "todo-1", "prompt": "check logs",
+         "source": "scheduler"},
+        now=1.0,
+    )
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "turn_rewound",
+            "thread_id": "thread-1",
+            "reason": "refusal",
+            "autonomous": True,
+            "prompt": "check logs",
+            "content": "Declined.",
+        },
+        now=1.5,
+    )
+    kinds = [type(m).__name__ for m in state.messages]
+    # The completed interactive exchange (user-0 + assistant-0) survives; only
+    # a notice is appended (plus the autonomous turn's own system+assistant).
+    assert state.messages[0].id == "user-0"
+    assert kinds.count("UserMessage") == 1
+    assert kinds[-1] == "SystemMessage"
+    assert state.messages[-1].kind == "turn_rewound"
+
+
+def test_turn_rewound_on_first_turn_leaves_only_the_notice() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(
+        state, "poke the sandbox", now=0.1,
+        user_message_id="user-1", assistant_message_id="assistant-1",
+    )
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "turn_rewound",
+            "thread_id": "thread-1",
+            "reason": "refusal",
+            "prompt": "poke the sandbox",
+            "content": "Declined.",
+        },
+        now=1.0,
+    )
+    assert len(state.messages) == 1
+    assert isinstance(state.messages[0], SystemMessage)
+    assert state.messages[0].kind == "turn_rewound"
+
+
+def test_turn_rewound_cuts_a_whole_consecutive_user_run() -> None:
+    # A queued-prompt batch paints consecutive UserMessages; the server
+    # rewinds the whole run, so the local cut must start at its first prompt.
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(
+        state, "hi there", now=0.1,
+        user_message_id="user-0", assistant_message_id="assistant-0",
+    )
+    state = reduce_stream_event(
+        state, {"type": "response", "content": "hello!"}, now=0.2
+    )
+    state = reduce_stream_event(
+        state, {"type": "done", "thread_id": "thread-1", "tool_call_count": 0},
+        now=0.3,
+    )
+    state = start_turn(
+        state, "first queued", now=1.0,
+        user_message_id="user-1", assistant_message_id="assistant-1",
+    )
+    # A second queued prompt injected into the same turn paints another
+    # UserMessage directly after the first.
+    state = replace(
+        state,
+        messages=state.messages[:-1]
+        + (
+            UserMessage(id="user-2", content="second queued", timestamp=1.1),
+            state.messages[-1],
+        ),
+    )
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "turn_rewound",
+            "thread_id": "thread-1",
+            "reason": "refusal",
+            "removed": 3,
+            "to_message_id": "user-1",
+            "prompt": "first queued\n\nsecond queued",
+            "content": "Declined.",
+        },
+        now=1.5,
+    )
+    kinds = [type(m).__name__ for m in state.messages]
+    assert kinds == ["UserMessage", "AssistantMessage", "SystemMessage"]
+    assert state.messages[0].id == "user-0"
+    assert state.messages[-1].kind == "turn_rewound"
+
+
+def test_turn_rewound_reduced_twice_never_cuts_the_prior_exchange() -> None:
+    # Replay defense: seq bookkeeping makes re-attach replay suffix-only
+    # today, but a duplicated turn_rewound frame must still be harmless. The
+    # second reduce stops at the first notice instead of walking past it and
+    # deleting the healthy prior exchange.
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(
+        state, "hi there", now=0.1,
+        user_message_id="user-0", assistant_message_id="assistant-0",
+    )
+    state = reduce_stream_event(
+        state, {"type": "response", "content": "hello!"}, now=0.2
+    )
+    state = reduce_stream_event(
+        state, {"type": "done", "thread_id": "thread-1", "tool_call_count": 0},
+        now=0.3,
+    )
+    state = start_turn(
+        state, "poke the sandbox", now=1.0,
+        user_message_id="user-1", assistant_message_id="assistant-1",
+    )
+    event = {
+        "type": "turn_rewound",
+        "thread_id": "thread-1",
+        "reason": "refusal",
+        "removed": 2,
+        "to_message_id": "user-1",
+        "prompt": "poke the sandbox",
+        "content": "Declined.",
+    }
+    state = reduce_stream_event(state, event, now=1.5)
+    state = reduce_stream_event(state, event, now=1.6)
+    kinds = [type(m).__name__ for m in state.messages]
+    # The healthy exchange survives both reduces; the duplicate only appends
+    # a second notice.
+    assert kinds == [
+        "UserMessage", "AssistantMessage", "SystemMessage", "SystemMessage",
+    ]
+    assert state.messages[0].id == "user-0"
 
 
 def test_dispatched_event_inserts_notice_before_streaming_assistant() -> None:

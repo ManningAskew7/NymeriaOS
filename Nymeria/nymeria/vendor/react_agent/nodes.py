@@ -694,12 +694,20 @@ _TRUNCATION_NOTICE = (
     "will fix it. Ask again and I'll retry."
 )
 
+# Survives only when the refused turn is NOT rewound (tool activity or prior
+# content in the exchange gates the automatic rewind, or the rewind failed),
+# so it doubles as the recovery guide for exactly those cases: the refused
+# content is still in context, and retrying on the same model tends to
+# re-refuse until it is removed or the model changes. Delivered live as a
+# trailing response chunk by the astream post-turn block (backlog #105); a
+# successful rewind removes the whole message, notice included.
 _REFUSAL_NOTICE = (
     "The model declined to continue this response (a provider-side refusal), "
-    "so this turn produced no result. This is usually triggered by phrasing "
-    "that resembles a harmful or adversarial request, and it can be "
-    "intermittent. Rephrasing the request and asking again usually resolves "
-    "it."
+    "so this turn produced no result. Refusals are often phrasing-sensitive "
+    "and tend to repeat while the content that triggered them stays in "
+    "context. To recover, either rewind this thread (the /rewind command, or "
+    "edit an earlier message) and rephrase the request, or switch this "
+    "thread to a different model and continue from here."
 )
 
 
@@ -1826,6 +1834,14 @@ def create_agent_node(
                     config,
                 )
                 response = _with_empty_turn_notice(response, _REFUSAL_NOTICE)
+                # Marker for the post-turn refusal rewind (backlog #105,
+                # core/agent_context.maybe_rewind_refused_turn): stamped only
+                # on the EMPTY shape so partial-output refusals (user already
+                # saw content) are never rewound. additional_kwargs persists
+                # through the checkpoint (tool_timing rides it the same way).
+                # When the rewind succeeds the whole exchange, notice and all,
+                # is removed; when it fails the notice above is the fallback.
+                response.additional_kwargs["empty_turn_refusal"] = True
             else:
                 # Partial output then a refusal: the user already saw content,
                 # so log and signal without rewriting the message.
