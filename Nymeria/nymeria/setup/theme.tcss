@@ -61,9 +61,12 @@ Screen {
 }
 
 /* Welcome panel: the detected-environment report, framed like a Rich panel
-   with the heading embedded in the border. */
+   with the heading embedded in the border. width:auto hugs the content, but
+   max-width caps it at the terminal so long detection notes wrap instead of
+   running the border off the right edge (backlog #101 log entry 1). */
 #env-report {
     width: auto;
+    max-width: 100%;
     height: auto;
     border: solid #3a4251;
     border-title-color: #bbddfb;

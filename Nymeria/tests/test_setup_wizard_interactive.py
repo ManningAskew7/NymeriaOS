@@ -1070,3 +1070,73 @@ def test_finalize_writes_config_without_provider_when_skipped(tmp_path):
     assert "LLM_PROVIDER" not in config
     assert "DATABASE_BACKEND=sqlite" in config
     assert (root / "data" / "accounts.db").exists()
+
+
+def test_welcome_env_report_fits_narrow_terminal():
+    """The welcome panel wraps long detection notes instead of overflowing.
+
+    Regression for backlog #101 log entry 1: with `#env-report { width: auto }`
+    and no max-width cap, a long environment note (e.g. the "Nymeria containers
+    are already running here (...)" warning) drove the panel wider than the
+    terminal, truncating the note and running the border off the right edge.
+    """
+    from _setup_wizard_helpers import _env_report  # type: ignore[import-not-found]
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+
+    long_note = (
+        "Nymeria containers are already running here (nymeria-pypi, "
+        "nymeria-caddy, nymeria-api, nymeria-worker): this wizard configures a "
+        "separate instance and will not touch them."
+    )
+    state = WizardState()
+    state.env_report = _env_report(notes=[long_note])
+
+    async def drive() -> None:
+        app = SetupWizardApp(state)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            report = app.screen.query_one("#env-report")
+            # The panel (border included) must fit the 80-column terminal.
+            assert report.region.right <= 80
+            assert report.outer_size.width <= 80
+
+    asyncio.run(drive())
+
+
+def test_scroll_hint_clears_at_bottom_of_scrolled_step():
+    """The 'more below' cue must clear once the body is scrolled to the end.
+
+    Regression for backlog #101 log entry 9: the cue was recomputed only on
+    Resize and error-row toggles, never on scrolling itself, so the review
+    step kept saying 'more below' with the scrollbar pinned at the bottom.
+    """
+    from textual.widgets import Static
+
+    from _setup_wizard_helpers import _env_report  # type: ignore[import-not-found]
+
+    from nymeria.setup.app import SetupWizardApp
+    from nymeria.setup.state import WizardState
+    from textual.containers import VerticalScroll
+
+    state = WizardState()
+    # Enough notes to force the welcome body to scroll at a short height.
+    state.env_report = _env_report(
+        notes=[f"Detection note number {i} with enough words to fill a row." for i in range(12)]
+    )
+
+    async def drive() -> None:
+        app = SetupWizardApp(state)
+        async with app.run_test(size=(80, 16)) as pilot:
+            await pilot.pause()
+            body = app.screen.query_one("#wizard-body", VerticalScroll)
+            hint = app.screen.query_one("#wizard-scroll-hint", Static)
+            assert body.max_scroll_y > 0, "test needs an overflowing body"
+            assert hint.display and "more below" in str(hint.content)
+
+            body.scroll_end(animate=False)
+            await pilot.pause()
+            assert "more below" not in str(hint.content)
+            assert "more above" in str(hint.content)
+    asyncio.run(drive())
