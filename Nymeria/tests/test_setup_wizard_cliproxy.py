@@ -923,3 +923,37 @@ def test_generate_cliproxy_deployment_writes_pinned_files(tmp_path):
     assert '"8318:8317"' in bridge
     assert '"127.0.0.1:8318:8317"' not in bridge
     assert "DOCKER-USER" in bridge
+
+
+def test_provider_trio_drops_on_cliproxy_branch_despite_residual_provider():
+    """The CLIProxy branch replaces the provider/connection/model trio.
+
+    Regression for backlog #101 log entry 5: `state.provider` left behind by
+    an abandoned API-key pick (or a hydrated reconfigure) resurfaced the
+    generic model step mid-CLIProxy-branch, asking for the model a second
+    time with a listing that cannot succeed. The trio's `applies` predicates
+    must all treat the CLIProxy branch as out of scope; only finalize's
+    `_apply_cliproxy_route` may stamp the shared LLM fields.
+    """
+    from nymeria.onboarding import ProviderAuthMethod
+    from nymeria.setup.state import WizardState
+    from nymeria.setup.steps.model import make_model_step
+    from nymeria.setup.steps.provider import make_connection_step, make_provider_step
+
+    residual = WizardState(
+        auth_method=ProviderAuthMethod.CLIPROXY_OAUTH, provider="anthropic"
+    )
+    assert not make_provider_step().applies(residual)
+    assert not make_connection_step().applies(residual)
+    assert not make_model_step().applies(residual)
+
+    # Legacy per-provider auth values are the same branch.
+    legacy = WizardState(
+        auth_method=ProviderAuthMethod.CLIPROXY_CLAUDE_OAUTH, provider="anthropic"
+    )
+    assert not make_model_step().applies(legacy)
+
+    # The API-key branch keeps its trio (connection stays spec-gated).
+    direct = WizardState(auth_method=ProviderAuthMethod.API_KEY, provider="anthropic")
+    assert make_provider_step().applies(direct)
+    assert make_model_step().applies(direct)

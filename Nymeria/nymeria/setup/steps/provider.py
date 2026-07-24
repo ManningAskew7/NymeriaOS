@@ -296,6 +296,12 @@ def make_connection_step() -> Step:
         )
 
     def applies(state: WizardState) -> bool:
+        # Same guard as the model step: the CLIProxy branch replaces the
+        # provider/connection/model trio, so residual provider state from an
+        # abandoned API-key pick must not resurface this step (backlog #101
+        # log entry 5).
+        if state.auth_method_is_cliproxy():
+            return False
         spec = get_llm_provider_spec(state.provider)
         if not state.provider or spec is None:
             return False

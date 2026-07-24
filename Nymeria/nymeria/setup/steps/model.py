@@ -23,6 +23,7 @@ from .base import WizardStep
 
 if TYPE_CHECKING:
     from ..app import SetupWizardApp
+    from ..state import WizardState
 
 
 def _context_label(context_length: int | None) -> str:
@@ -137,7 +138,15 @@ def make_model_step() -> Step:
             hint="type filter   down to list   enter next   ctrl+s skip   esc back",
         )
 
-    return Step(id="model", applies=lambda state: bool(state.provider), build=build)
+    def applies(state: WizardState) -> bool:
+        # The CLIProxy subscription branch owns its own model step; a provider
+        # left behind by an abandoned API-key pick or a hydrated reconfigure
+        # must not resurface this one mid-branch (backlog #101 log entry 5).
+        if state.auth_method_is_cliproxy():
+            return False
+        return bool(state.provider)
+
+    return Step(id="model", applies=applies, build=build)
 
 
 __all__ = ["make_model_step", "ModelStep"]

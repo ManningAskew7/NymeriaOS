@@ -149,6 +149,23 @@ class CircleRadioButton(RadioButton):
         return Content.assemble((glyph, self.get_visual_style("toggle--button")))
 
 
+class _ScrollHintBody(VerticalScroll):
+    """The step body: recomputes the screen's scroll cue on every scroll.
+
+    The 'more above / more below' hint used to refresh only on Resize and
+    error-row toggles, so plain scrolling (wheel, scrollbar drag, keys) left
+    it stale: the review step showed 'more below' at the very bottom (backlog
+    #101 log entry 9). Watching scroll_y keeps the cue honest.
+    """
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        screen = self.screen if self.is_mounted else None
+        update = getattr(screen, "_update_scroll_hint", None)
+        if callable(update):
+            update()
+
+
 class WizardStep(Screen):
     """Shared chrome and navigation for every wizard step."""
 
@@ -194,7 +211,7 @@ class WizardStep(Screen):
         # can_focus=False keeps the scroll container out of the arrow-key focus
         # chain (so focus moves option->option, not onto the body); focusing a
         # child still auto-scrolls it into view.
-        with VerticalScroll(id="wizard-body", can_focus=False):
+        with _ScrollHintBody(id="wizard-body", can_focus=False):
             yield from self.compose_body()
         # Both start hidden: an empty Static still reserves a row, and on a
         # small terminal that row is the difference between fitting and
