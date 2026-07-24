@@ -29,7 +29,7 @@ from nymeria.vendor.react_agent import nodes as nodes_module
 from nymeria.vendor.react_agent.config import LLMConfig, LLMFallbackConfig
 from nymeria.vendor.react_agent.nodes import (
     _visible_text_of,
-    _with_truncation_notice,
+    _with_empty_turn_notice,
     create_agent_node,
 )
 
@@ -80,7 +80,7 @@ class TestVisibleTextOf:
 class TestTruncationNotice:
     def test_appends_text_block_to_block_content(self):
         msg = AIMessage(content=[{"type": "thinking", "thinking": "...", "signature": "s"}])
-        patched = _with_truncation_notice(msg)
+        patched = _with_empty_turn_notice(msg)
         assert _visible_text_of(patched.content) != ""
         # A copy, so the caller's own reference is untouched.
         assert _visible_text_of(msg.content) == ""
@@ -90,7 +90,7 @@ class TestTruncationNotice:
         # MODIFIED blocks. Appending keeps them first and byte-identical;
         # prepending the notice would reorder the block list.
         msg = AIMessage(content=[{"type": "thinking", "thinking": "t", "signature": "s"}])
-        patched = _with_truncation_notice(msg)
+        patched = _with_empty_turn_notice(msg)
         assert patched.content[0]["type"] == "thinking"
         assert patched.content[0]["signature"] == "s"
         assert patched.content[-1]["type"] == "text"
@@ -101,18 +101,18 @@ class TestTruncationNotice:
             response_metadata={"stop_reason": "max_tokens"},
             usage_metadata={"input_tokens": 1, "output_tokens": 4096, "total_tokens": 4097},
         )
-        patched = _with_truncation_notice(msg)
+        patched = _with_empty_turn_notice(msg)
         assert patched.response_metadata == msg.response_metadata
         assert patched.usage_metadata == msg.usage_metadata
 
     def test_fills_empty_string_content(self):
-        patched = _with_truncation_notice(AIMessage(content=""))
+        patched = _with_empty_turn_notice(AIMessage(content=""))
         assert isinstance(patched.content, str)
         assert patched.content != ""
 
     def test_leaves_non_empty_string_content_alone(self):
         msg = AIMessage(content="a real answer")
-        assert _with_truncation_notice(msg).content == "a real answer"
+        assert _with_empty_turn_notice(msg).content == "a real answer"
 
 
 def _thinking_only_response(metadata: dict) -> AIMessage:
@@ -270,6 +270,84 @@ class TestOutputTruncatedEvent:
         from nymeria.core.event_bus import AGENT_STREAM_AUTONOMOUS_EVENT_TYPES
 
         assert "output_truncated" in AGENT_STREAM_AUTONOMOUS_EVENT_TYPES
+
+
+def _refused_thinking_only_response(metadata: dict) -> AIMessage:
+    return AIMessage(
+        content=[
+            {
+                "type": "thinking",
+                "thinking": "I'm going to test the bash tool by examining",
+                "signature": "x" * 4000,
+            }
+        ],
+        response_metadata=metadata,
+        usage_metadata={"input_tokens": 65291, "output_tokens": 311, "total_tokens": 65602},
+    )
+
+
+class TestRefusedTurnDetection:
+    """Pins the provider-refusal backstop (slim dogfood, 2026-07-24).
+
+    Measured shape on claude-fable-5 via CLIProxy: a benign-sounding "try to
+    break what the bash tool claims" prompt returned a lone thinking block,
+    no text, no tool calls, stop_reason="refusal". `should_continue` read it
+    as a clean finish and the turn delivered silence that was reported as a
+    client bug.
+    """
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"stop_reason": "refusal", "model_name": "claude-fable-5"},        # Anthropic
+            {"finish_reason": "content_filter", "model_name": "gpt-5.5"},      # OpenAI
+        ],
+    )
+    def test_refused_turn_gets_a_visible_body(self, metadata, caplog):
+        with caplog.at_level("WARNING", logger="nymeria"):
+            out = _run(_refused_thinking_only_response(metadata))
+        assert "REFUSED TURN" in caplog.text
+        assert _visible_text_of(out.content) != ""
+
+    @pytest.mark.asyncio
+    async def test_refused_turn_detected_on_the_streaming_path(self, caplog):
+        with caplog.at_level("WARNING", logger="nymeria"):
+            out = await _arun(
+                _refused_thinking_only_response({"stop_reason": "refusal"})
+            )
+        assert "REFUSED TURN" in caplog.text
+        assert _visible_text_of(out.content) != ""
+
+    def test_refused_turn_emits_the_event(self, events):
+        _run(_refused_thinking_only_response({"stop_reason": "refusal"}))
+        emitted = [(n, p) for n, p in events if n == "response_refused"]
+        assert len(emitted) == 1
+        payload = emitted[0][1]
+        assert payload["produced_output"] is False
+        assert payload["output_tokens"] == 311
+
+    def test_partial_refusal_marks_produced_output_and_keeps_text(self, events):
+        out = _run(
+            AIMessage(
+                content=[{"type": "text", "text": "a partial answer"}],
+                response_metadata={"stop_reason": "refusal"},
+                usage_metadata={"input_tokens": 10, "output_tokens": 50, "total_tokens": 60},
+            )
+        )
+        emitted = [(n, p) for n, p in events if n == "response_refused"]
+        assert len(emitted) == 1
+        assert emitted[0][1]["produced_output"] is True
+        # The user already saw the text; no notice is appended to it.
+        assert _visible_text_of(out.content) == "a partial answer"
+
+    def test_healthy_turn_emits_nothing(self, events):
+        _run(AIMessage(content="fine", response_metadata={"stop_reason": "end_turn"}))
+        assert [n for n, _ in events if n == "response_refused"] == []
+
+    def test_event_is_mirrored_to_autonomous_consumers(self):
+        from nymeria.core.event_bus import AGENT_STREAM_AUTONOMOUS_EVENT_TYPES
+
+        assert "response_refused" in AGENT_STREAM_AUTONOMOUS_EVENT_TYPES
 
 
 class TestStreamingOptUpWiring:

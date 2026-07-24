@@ -347,6 +347,11 @@ AGENT_STREAM_AUTONOMOUS_EVENT_TYPES = frozenset({
     # thinking block delivers silence, and dropping this event here is what
     # made that silence a mystery rather than a report.
     "output_truncated",
+    # The provider ended a response with a refusal (Anthropic
+    # stop_reason="refusal" / OpenAI finish_reason="content_filter"). Same
+    # fatal silent shape as output_truncated when it fires before any text
+    # or tool call, so it is mirrored for the same reason.
+    "response_refused",
     "auth_prompt",
     "auth_prompt_resolved",
     "auth_prompt_cancelled",
