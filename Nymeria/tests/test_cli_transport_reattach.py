@@ -14,7 +14,12 @@ import httpx
 import pytest
 
 from cli_fixtures import run
-from nymeria.triggers.cli.events import DoneEvent, ErrorEvent, ResponseEvent
+from nymeria.triggers.cli.events import (
+    DoneEvent,
+    ErrorEvent,
+    QueuedEvent,
+    ResponseEvent,
+)
 from nymeria.triggers.cli.transport import api as transport_api
 from nymeria.triggers.cli.transport.api import APIAgentClient
 
@@ -220,6 +225,146 @@ def test_turn_started_marker_is_not_rendered() -> None:
     events = _collect(client)
 
     assert [type(e) for e in events] == [ResponseEvent, DoneEvent]
+
+
+def test_clean_end_without_terminal_drains_buffered_done() -> None:
+    """A stream that ends cleanly with no done/error re-attaches for the tail.
+
+    The server's turn-end disconnect probe can misfire and withhold the wire
+    ``done`` while still buffering it; without this recovery the reducer never
+    finalizes and the status-bar spinner sticks on "Streaming...".
+    """
+    fake = RecoveryFakeAPI()
+    fake.chat_script = [
+        {"type": "turn_started", "turn_id": "turn-1", "seq": 1, "thread_id": "t-1"},
+        {"type": "response", "content": "Hello", "seq": 2, "thread_id": "t-1"},
+    ]
+    fake.status_script = [_live_status()]
+    fake.reattach_scripts = [
+        [
+            {"type": "turn_attach", "turn_id": "turn-1", "state": "live", "last_seq": 3},
+            {"type": "done", "seq": 3, "thread_id": "t-1"},
+        ]
+    ]
+    client = APIAgentClient(fake)  # type: ignore[arg-type]
+
+    events = _collect(client)
+
+    assert [type(e) for e in events] == [ResponseEvent, DoneEvent]
+    assert fake.reattach_calls == [{"turn_id": "turn-1", "from_seq": 2}]
+
+
+def test_clean_end_after_prompt_queued_does_not_recover() -> None:
+    """A genuinely queued prompt's stream ends after its queued ack.
+
+    The holder turn delivers the output on its own stream, so recovering here
+    would wrongly re-attach to the holder turn and duplicate its output into
+    the queueing composer. Real loser streams never carry a turn_started (the
+    holder's is route-synthesized on the holder stream only); prompt_queued is
+    the marker that proves the queued outcome.
+    """
+    fake = RecoveryFakeAPI()
+    fake.chat_script = [
+        {"type": "prompt_queued", "thread_id": "t-1", "content": "later"},
+    ]
+    client = APIAgentClient(fake)  # type: ignore[arg-type]
+
+    events = _collect(client)
+
+    assert len(events) == 1
+    assert fake.status_calls == 0
+    assert fake.reattach_calls == []
+
+
+def test_legacy_queued_then_holder_turn_still_recovers() -> None:
+    """A bare ``queued`` also fires on paths that still become the holder.
+
+    Lock handoff / queue-closing races emit ``queued`` and THEN run a full
+    holder turn (turn_started + output) on the same stream, so the legacy
+    marker must not suppress recovery when the holder's terminal is withheld;
+    treating it as a queue proof re-created the stuck spinner for exactly the
+    follow-up-during-lock-release case (review finding, 2026-07-24).
+    """
+    fake = RecoveryFakeAPI()
+    fake.chat_script = [
+        {"type": "queued", "thread_id": "t-1", "content": "Waiting for turn..."},
+        {"type": "turn_started", "turn_id": "turn-1", "seq": 1, "thread_id": "t-1"},
+        {"type": "response", "content": "Hello", "seq": 2, "thread_id": "t-1"},
+    ]
+    fake.status_script = [_live_status()]
+    fake.reattach_scripts = [
+        [
+            {"type": "turn_attach", "turn_id": "turn-1", "state": "live", "last_seq": 3},
+            {"type": "done", "seq": 3, "thread_id": "t-1"},
+        ]
+    ]
+    client = APIAgentClient(fake)  # type: ignore[arg-type]
+
+    events = _collect(client)
+
+    assert [type(e) for e in events] == [QueuedEvent, ResponseEvent, DoneEvent]
+    assert fake.reattach_calls == [{"turn_id": "turn-1", "from_seq": 2}]
+
+
+def test_dispatched_clean_end_finalizes_locally_without_recovery() -> None:
+    """A dispatched turn (/quick, mention) buffers under the TARGET thread.
+
+    Re-attach recovery here would poll the origin thread, find nothing, and
+    emit a spurious turn_lost after output already rendered. A withheld
+    terminal instead finalizes locally with a dispatched done (which the
+    reducer ignores for context/usage accounting).
+    """
+    fake = RecoveryFakeAPI()
+    fake.chat_script = [
+        {"type": "turn_started", "turn_id": "turn-1", "seq": 1, "thread_id": "t-1"},
+        {
+            "type": "dispatched",
+            "thread_id": "t-1",
+            "dispatched_to": {"thread_id": "t-target", "title": "Quick"},
+        },
+        {"type": "response", "content": "Hello", "seq": 2, "thread_id": "t-1"},
+    ]
+    client = APIAgentClient(fake)  # type: ignore[arg-type]
+
+    events = _collect(client)
+
+    assert isinstance(events[-1], DoneEvent)
+    assert events[-1].dispatched_to == {"thread_id": "t-target", "title": "Quick"}
+    assert fake.status_calls == 0
+    assert fake.reattach_calls == []
+
+
+def test_clean_end_without_turn_identity_does_not_recover() -> None:
+    """Ack-shaped streams with no turn_started (route intercepts) end quietly."""
+    fake = RecoveryFakeAPI()
+    fake.chat_script = [
+        {"type": "response", "content": "ack", "thread_id": "t-1"},
+    ]
+    client = APIAgentClient(fake)  # type: ignore[arg-type]
+
+    events = _collect(client)
+
+    assert [type(e) for e in events] == [ResponseEvent]
+    assert fake.status_calls == 0
+    assert fake.reattach_calls == []
+
+
+def test_connection_drop_after_terminal_does_not_recover() -> None:
+    """A drop during the server's stream close has nothing left to recover."""
+    fake = RecoveryFakeAPI()
+    fake.chat_script = [
+        {"type": "turn_started", "turn_id": "turn-1", "seq": 1, "thread_id": "t-1"},
+        {"type": "response", "content": "hi", "seq": 2, "thread_id": "t-1"},
+        {"type": "done", "seq": 3, "thread_id": "t-1"},
+        httpx.ReadError("dropped during close"),
+    ]
+    client = APIAgentClient(fake)  # type: ignore[arg-type]
+
+    events = _collect(client)
+
+    assert [type(e) for e in events] == [ResponseEvent, DoneEvent]
+    assert fake.status_calls == 0
+    assert fake.reattach_calls == []
 
 
 def test_http_status_errors_keep_plain_error_path() -> None:

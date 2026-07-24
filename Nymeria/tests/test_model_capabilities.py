@@ -1387,6 +1387,22 @@ def test_context_limit_real_bundle_resolves_uncurated_model_offline(monkeypatch)
     )
 
 
+def test_context_limit_curated_covers_claude_5_generation(monkeypatch):
+    # claude-fable-5 / claude-mythos-5 / claude-sonnet-5 postdate the bundled
+    # catalog snapshot, so the curated table is the only offline tier that can
+    # resolve them. Before these entries existed they degraded to the 128k
+    # "_default", which clamped a 400k compaction threshold down to 128k in
+    # compact_trigger_tokens (slim-dogfood backlog #101 entry 18).
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+
+    for model in ("claude-fable-5", "claude-mythos-5", "claude-sonnet-5"):
+        assert capabilities.get_context_limit(model) == 1000000
+        assert capabilities.get_context_limit(f"anthropic/{model}") == 1000000
+        # Reasoning-suffix form resolves through the same candidates.
+        assert capabilities.get_context_limit(f"{model}(xhigh)") == 1000000
+
+
 def test_supports_vision_from_catalog_for_uncurated_model(monkeypatch):
     _offline(monkeypatch)
     _set_catalog(

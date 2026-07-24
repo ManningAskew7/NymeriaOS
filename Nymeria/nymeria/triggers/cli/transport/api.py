@@ -16,7 +16,7 @@ import httpx
 
 from ....triggers.api_client import NymeriaAPIClient
 from ..credentials import CLIConnectionProfile, load_cli_config
-from ..events import ErrorEvent, NormalizedEvent, normalize_stream_event
+from ..events import DoneEvent, ErrorEvent, NormalizedEvent, normalize_stream_event
 from .base import AgentClient, Attachment
 from .disconnected import DisconnectedAgentClient
 
@@ -184,6 +184,9 @@ class APIAgentClient:
         selected_user_id = self._selected_user_id(user_id)
         turn_id: str | None = None
         last_seq = 0
+        terminal_seen = False
+        prompt_queued_seen = False
+        dispatched_to: dict[str, Any] | None = None
         try:
             async for raw_event in self.api.chat_stream(
                 message=message,
@@ -197,11 +200,31 @@ class APIAgentClient:
                 ),
             ):
                 turn_id, last_seq = _track_turn_cursor(raw_event, turn_id, last_seq)
-                if raw_event.get("type") == "turn_started":
+                event_type = raw_event.get("type")
+                if event_type == "turn_started":
                     continue  # identity marker, not a renderable event
+                if event_type in ("done", "error"):
+                    terminal_seen = True
+                elif event_type == "prompt_queued":
+                    # ONLY prompt_queued proves the queued outcome. The legacy
+                    # bare "queued" event also fires on paths that still become
+                    # the holder (lock handoff / queue-closing races: queued,
+                    # then turn_started, then a full holder turn), so treating
+                    # it as a queue marker would re-suppress recovery for
+                    # exactly the stuck-spinner case this path exists to fix.
+                    prompt_queued_seen = True
+                elif event_type == "dispatched":
+                    raw_dispatch = raw_event.get("dispatched_to")
+                    dispatched_to = (
+                        dict(raw_dispatch) if isinstance(raw_dispatch, Mapping) else {}
+                    )
                 yield normalize_stream_event(raw_event, default_thread_id=thread_id)
-            return
         except CONNECTION_ERRORS as exc:
+            if terminal_seen:
+                # The turn already finished on the wire; a drop during the
+                # server's stream close has nothing left to recover, and the
+                # recovery loop would degrade it to a spurious turn_lost.
+                return
             recovery_cause = exc
         except Exception as exc:  # noqa: BLE001 - stream path must report errors.
             yield _error_event_from_exception(
@@ -211,8 +234,43 @@ class APIAgentClient:
                 default_code="api_transport_error",
             )
             return
+        else:
+            if terminal_seen or prompt_queued_seen or turn_id is None:
+                # Nothing to recover: the turn ended properly, or this stream
+                # was a queued/ack shape that never held a turn. A genuinely
+                # queued composer also never sees a turn_started (the holder's
+                # is route-synthesized on the holder stream only), so the
+                # turn_id guard covers it; prompt_queued is defense in depth.
+                return
+            if dispatched_to is not None:
+                # Dispatched turn (/quick, thread mention): the server buffers
+                # it under the TARGET thread while this stream is tagged with
+                # the origin thread, so re-attach recovery here would poll the
+                # wrong thread and end in a spurious turn_lost AFTER output
+                # already rendered. Finalize locally instead: a dispatched
+                # done is ignored for context/usage accounting by the reducer,
+                # so this only clears the streaming state.
+                yield DoneEvent(
+                    thread_id=thread_id,
+                    status="complete",
+                    dispatched_to=dispatched_to,
+                )
+                return
+            # Clean stream end WITHOUT a terminal event on a holder turn we
+            # were attached to (turn_started seen). The server buffers every
+            # holder turn's tail including its done frame, and it withholds
+            # the wire copy whenever a turn-end disconnect probe latched (a
+            # probe that can misfire while the socket is actually fine), so
+            # a silent end here does not mean the turn is over for the UI:
+            # without a reduced terminal the spinner sticks on "Streaming".
+            # Drain the buffered tail via the same re-attach recovery used
+            # for dropped connections.
+            recovery_cause = RuntimeError(
+                "chat stream ended without a terminal event"
+            )
 
-        # Recovery: the POST /chat connection dropped mid-turn.
+        # Recovery: the POST /chat connection dropped mid-turn, or ended
+        # cleanly while withholding the turn's terminal event.
         async for event in self._recover_interrupted_turn(
             thread_id=thread_id,
             user_id=selected_user_id,

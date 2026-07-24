@@ -20,7 +20,7 @@ from ....core.event_bus import (
 )
 from ....core.stream_bridge import iter_agent_astream
 from ....core.thread_classification import classify_platform
-from ..events import ErrorEvent, NormalizedEvent, normalize_stream_event
+from ..events import DoneEvent, ErrorEvent, NormalizedEvent, normalize_stream_event
 from .base import Attachment
 
 logger = logging.getLogger(__name__)
@@ -104,12 +104,22 @@ class InProcessAgentClient:
         )
         thread.start()
 
+        terminal_seen = False
         try:
             while True:
                 item = await queue.get()
                 if item is _STREAM_DONE:
                     break
+                if getattr(item, "type", "") in ("done", "error"):
+                    terminal_seen = True
                 yield cast(NormalizedEvent, item)
+            if not terminal_seen:
+                # agent.astream() never emits a ``done`` event itself (the
+                # chat route appends one on the API path), so without a
+                # synthetic terminal here the reducer's last assistant
+                # message stays status="streaming" and the status-bar
+                # spinner sticks on "Streaming..." after every local turn.
+                yield DoneEvent(thread_id=thread_id, status="complete")
         finally:
             cancel_event.set()
 
