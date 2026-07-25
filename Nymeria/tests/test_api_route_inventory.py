@@ -112,6 +112,8 @@ EXPECTED_ROUTES = [
     ('/integrations/teams/webhook', ('POST',)),
     ('/integrations/whatsapp/webhook', ('GET',)),
     ('/integrations/whatsapp/webhook', ('POST',)),
+    ('/llm/fallback-approvals', ('GET',)),
+    ('/llm/fallback-approvals/{record_id}/resolve', ('POST',)),
     ('/mcp-servers', ('GET',)),
     ('/mcp-servers', ('POST',)),
     ('/mcp-servers/install', ('POST',)),

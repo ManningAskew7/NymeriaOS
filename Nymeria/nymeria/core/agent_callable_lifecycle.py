@@ -178,6 +178,17 @@ def abort_with_cascade(
         logger.warning(
             f"Failed to abort held hook approvals on abort for {thread_id}: {e}"
         )
+    try:
+        from .fallback_approvals import get_fallback_approval_coordinator
+        parked = get_fallback_approval_coordinator().abort_thread(thread_id)
+        if parked:
+            logger.info(
+                f"Abort on thread {thread_id} aborted {parked} parked fallback prompt(s)"
+            )
+    except Exception as e:
+        logger.warning(
+            f"Failed to abort parked fallback prompts on abort for {thread_id}: {e}"
+        )
     with agent._invocations_lock:
         children = set(agent._active_callable_invocations.get(thread_id, ()))
     for child_id in children:

@@ -43,6 +43,7 @@ from ..api.routers.notifications_config import create_notifications_config_route
 from ..api.routers.agent_threads import create_agent_threads_router
 from ..api.routers.devices import create_devices_router
 from ..api.routers.hooks import create_hook_router
+from ..api.routers.llm_fallback import create_llm_fallback_router
 from ..api.routers.memory import create_memory_router
 from ..api.routers.mcp_servers import create_mcp_servers_router
 from ..api.routers.rag import create_rag_router
@@ -874,6 +875,7 @@ def create_api_app(
             require_thread_access_fn=_require_thread_access,
         )
     )
+    app.include_router(create_llm_fallback_router(verify_api_key))
     app.include_router(
         create_accounts_router(
             verify_api_key,
@@ -1043,6 +1045,7 @@ def create_api_app(
     # shapes, so the expiry (which runs the declined continuation) must too.
     _register_workflow_approval_sweep_lifecycle(app)
     _register_hook_approval_sweep_lifecycle(app)
+    _register_fallback_approval_sweep_lifecycle(app)
 
     # Proactive idle compaction (opt-in via compact_proactive_enabled).
     # Unconditional for the same reason: turns run in the API process in
@@ -1408,6 +1411,36 @@ def _register_hook_approval_sweep_lifecycle(app: FastAPI) -> None:
         startup_delay_seconds=180,
         start_log="Hook approval sweep task started",
         error_label="Hook approval sweep",
+    )
+
+
+def _register_fallback_approval_sweep_lifecycle(app: FastAPI) -> None:
+    """Purge crash-orphaned fallback-consent records (hygiene only).
+
+    The parked decision gate enforces its own timeout in-band and deletes its
+    record on every exit shape; this sweep only removes records whose waiter
+    died without cleanup (process crash mid-park).
+    """
+
+    async def _run_pass() -> None:
+        import asyncio as _asyncio
+
+        from ..core.fallback_approvals import sweep_stale_records
+
+        removed = await _asyncio.to_thread(sweep_stale_records)
+        if removed:
+            logger.info("Fallback approval sweep removed %d stale record(s)", removed)
+
+    from ..core.workflows.approvals import APPROVAL_SWEEP_INTERVAL_SECONDS
+
+    _register_periodic_task(
+        app,
+        state_prefix="fallback_approval_sweep",
+        run_pass=_run_pass,
+        interval_seconds=APPROVAL_SWEEP_INTERVAL_SECONDS,
+        startup_delay_seconds=180,
+        start_log="Fallback approval sweep task started",
+        error_label="Fallback approval sweep",
     )
 
 

@@ -58,6 +58,9 @@ class FakeSettings:
     llm_stream_retry_initial_delay: float = 1.0
     llm_stream_retry_max_delay: float = 8.0
     llm_fallback_hold_seconds: int = 7200
+    llm_fallback_switch_mode: str = "auto"
+    llm_fallback_prompt_timeout_seconds: int = 180
+    llm_refusal_swap_mode: str = "off"
     context_management: str = "none"
     compact_threshold: float = 0.8
     compact_threshold_mode: str = "percentage"
@@ -1952,6 +1955,9 @@ def test_command_backend_get_settings_matches_route_payload(
         llm_background_base_url="http://bg.example",
         dynamic_tool_binding=True,
         llm_fallback_hold_seconds=99,
+        llm_fallback_switch_mode="ask",
+        llm_fallback_prompt_timeout_seconds=120,
+        llm_refusal_swap_mode="auto",
         dream_default_min_interval_hours=3,
         dream_default_model="anthropic:claude-dream",
         embedding_provider="cohere",

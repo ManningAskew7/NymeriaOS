@@ -610,6 +610,32 @@ def get_llm_config_for_thread(
             )
         )
 
+    # Consent policy for model switches (transport fallback + refusal swap):
+    # effective mode = thread override else global, None-inherit via resolve().
+    # The policy crosses the vendored boundary ONLY inside the decision
+    # callback's closure; LLMConfig carries no mode fields.
+    fallback_switch_mode = resolve(
+        "fallback_switch_mode", getattr(host.settings, "llm_fallback_switch_mode", "auto")
+    )
+    refusal_swap_mode = resolve(
+        "refusal_swap_mode", getattr(host.settings, "llm_refusal_swap_mode", "off")
+    )
+    fallback_prompt_timeout = getattr(
+        host.settings, "llm_fallback_prompt_timeout_seconds", 180
+    )
+    decision_callback = None
+    if thread_id:
+        from .fallback_approvals import make_fallback_decision_callback
+
+        decision_callback = make_fallback_decision_callback(
+            thread_id=thread_id,
+            user_id=str(owner_user_id or acting_user_id or ""),
+            switch_mode=fallback_switch_mode,
+            refusal_mode=refusal_swap_mode,
+            prompt_timeout_seconds=fallback_prompt_timeout,
+            default_hold_seconds=getattr(host.settings, "llm_fallback_hold_seconds", 7200),
+        )
+
     return LLMConfig(
         provider=provider,
         model=model,
@@ -637,4 +663,5 @@ def get_llm_config_for_thread(
             if thread_id
             else None
         ),
+        fallback_decision_callback=decision_callback,
     )

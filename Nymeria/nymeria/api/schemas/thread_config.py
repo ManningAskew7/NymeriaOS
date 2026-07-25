@@ -30,6 +30,10 @@ class ThreadLLMConfigRequest(BaseModel):
     compact_proactive_enabled: bool | None = None
     compact_proactive_idle_seconds: int | None = Field(default=None, ge=30, le=3600)
     compact_proactive_min_pct: int | None = Field(default=None, ge=10, le=100)
+    # Consent policy overrides for model switches (None inherits the global
+    # llm_fallback_switch_mode / llm_refusal_swap_mode).
+    fallback_switch_mode: Literal["auto", "ask"] | None = None
+    refusal_swap_mode: Literal["off", "ask", "auto"] | None = None
 
     @field_validator("reasoning_effort")
     @classmethod
