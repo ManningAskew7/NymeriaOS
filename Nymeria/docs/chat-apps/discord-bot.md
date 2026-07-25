@@ -264,6 +264,33 @@ When enabled (default), the bot fetches the last ~10 non-bot messages from the c
 
 This helps Nymeria understand the ongoing conversation even when invoked via `/ask` rather than a direct @mention.
 
+## Model-Swap Consent (LLM Fallback)
+
+Discord is a park-capable platform for the LLM fallback-consent layer:
+because the bot streams turns over SSE, a Discord-origin turn in `ask` mode
+parks exactly like a GUI turn instead of auto-swapping.
+
+- A `fallback_prompt` event posts a consent prompt with a button view:
+  **Swap** labeled with the prompt's default hold (e.g. **Swap (2h)**; a 0
+  default renders plain **Swap** and applies to this turn only), **Swap
+  until reverted** (when permanent holds are allowed), and **Don't swap**.
+  The message body is the
+  shared text prompt, so `/fallback approve <id> [minutes|permanent]` and
+  `/fallback deny <id>` always work even if the buttons fail. No answer by
+  the deadline auto-swaps (a fallback is a resilience action).
+- The backend authorizes the clicker (owner-or-admin) on every press: a 404
+  means "not yours to resolve", a 409 means "no longer pending". Click
+  acknowledgements are ephemeral.
+- `fallback_prompt_resolved` is the single edit path for the prompt message
+  from every resolve surface (buttons, commands, REST, desktop, timeout,
+  abort). When the thread ends up ON the fallback (approved or timeout),
+  the edited message keeps a **Revert** button that clears the hold via the
+  standard thread-config PATCH as the clicker.
+- Applied swaps (`provider_fallback`, any consent mode) post a short notice
+  with the same Revert button.
+- The `/fallback` slash-command group (status, revert, approvals, approve,
+  deny) forwards to the backend command service (`FallbackCog`).
+
 ## Emoji Reactions
 
 Two-way emoji reactions, opt-in via `DISCORD_REACTION_TRIGGER_ENABLED=true`

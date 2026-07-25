@@ -7,5 +7,15 @@ from .tools import ToolsCog
 from .memory import MemoryCog
 from .info import InfoCog
 from .hooks import HooksCog
+from .fallback import FallbackCog
 
-ALL_COGS = [ChatCog, TodosCog, ConfigCog, ToolsCog, MemoryCog, InfoCog, HooksCog]
+ALL_COGS = [
+    ChatCog,
+    TodosCog,
+    ConfigCog,
+    ToolsCog,
+    MemoryCog,
+    InfoCog,
+    HooksCog,
+    FallbackCog,
+]

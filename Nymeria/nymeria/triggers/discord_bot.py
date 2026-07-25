@@ -33,7 +33,10 @@ from .sse_consumer import (
     consume_autonomous_firehose,
     consume_sse_stream,
     dispatch_event,
+    fallback_hold_phrase,
+    format_fallback_prompt_message,
     format_hook_approval_message,
+    format_provider_fallback_message,
     parse_attach_paths,
 )
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
@@ -73,6 +76,12 @@ CONTEXT_MESSAGE_COUNT = 10
 # pending" answer; on view timeout the buttons are dropped as a fallback if
 # the resolved event never reached this process.
 HOOK_APPROVAL_VIEW_TIMEOUT_SECONDS = 30 * 60
+# Fallback-consent Swap/Don't-swap views share the same short window; the
+# Revert view left on resolved prompts and swap notices stays clickable for
+# the whole hold (hours, or permanent), so it lives a day. A click after the
+# hold lapsed is an idempotent no-op PATCH.
+FALLBACK_PROMPT_VIEW_TIMEOUT_SECONDS = 30 * 60
+FALLBACK_REVERT_VIEW_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
 async def fetch_channel_context(
@@ -176,6 +185,8 @@ class NymeriaDiscordBot(_BotBase):
         # record_id -> (message, view, monotonic deadline) for pending
         # hook-approval prompts, so the resolved event can edit the message.
         self._hook_approval_messages: Dict[str, tuple[Any, Any, float]] = {}
+        # Same shape for pending fallback-consent prompts.
+        self._fallback_prompt_messages: Dict[str, tuple[Any, Any, float]] = {}
         self._user_resolver = UserResolver(self.api, "discord", logger=logger)
         self._health_task: Optional[asyncio.Task] = None
 
@@ -363,10 +374,12 @@ class NymeriaDiscordBot(_BotBase):
             bot: "NymeriaDiscordBot",
             channel: Any,
             first_send,
+            thread_id: str = "",
         ) -> None:
             self._bot = bot
             self._channel = channel
             self._first_send = first_send
+            self._thread_id = thread_id
 
             self._text_buffer = ""
             self._current_msg: Optional[discord.Message] = None
@@ -557,6 +570,12 @@ class NymeriaDiscordBot(_BotBase):
             except Exception:
                 logger.warning("Failed to send turn-rewound notice to Discord", exc_info=True)
 
+        async def on_provider_fallback(self, event: Dict[str, Any]) -> None:
+            # Applied model swap mid-turn: notice + Revert button.
+            await self._bot._send_fallback_swap_notice(
+                self._channel, self._thread_id, event
+            )
+
         async def on_done(self, tool_call_count: int) -> None:
             if self._reply_suppressed:
                 await self.flush_text(final=True)
@@ -608,7 +627,7 @@ class NymeriaDiscordBot(_BotBase):
         through this same path with ``publish_autonomous_events=False`` so the
         interactive stream rendered here is the turn's only delivery.
         """
-        handler = self._InteractiveChatHandler(self, channel, first_send)
+        handler = self._InteractiveChatHandler(self, channel, first_send, thread_id)
         try:
             await consume_sse_stream(
                 self.api.chat_stream(
@@ -1060,10 +1079,12 @@ class NymeriaDiscordBot(_BotBase):
             bot: "NymeriaDiscordBot",
             channel: Any,
             channel_id: int,
+            thread_id: str = "",
         ) -> None:
             self._bot = bot
             self._channel = channel
             self._channel_id = channel_id
+            self._thread_id = thread_id
 
             self._text_buffer = ""
             self._current_msg: Optional[discord.Message] = None
@@ -1240,6 +1261,15 @@ class NymeriaDiscordBot(_BotBase):
 
         async def on_turn_rewound(self, content: str) -> None:
             await self._channel.send(content)
+
+        async def on_provider_fallback(self, event: Dict[str, Any]) -> None:
+            # Applied model swap on an autonomous/attached turn: notice +
+            # Revert button. Bus copies carry thread_id; fall back to the
+            # handler's bound thread when a payload lacks it.
+            thread_id = str(event.get("thread_id") or self._thread_id or "")
+            await self._bot._send_fallback_swap_notice(
+                self._channel, thread_id, event
+            )
 
         async def on_done(self, tool_call_count: int) -> None:
             pass  # autonomous uses task_completed, not done
@@ -1420,6 +1450,352 @@ class NymeriaDiscordBot(_BotBase):
         except Exception as e:  # noqa: BLE001
             logger.debug("Failed to edit hook approval message: %s", e)
 
+    def _make_fallback_prompt_view(
+        self,
+        record_id: str,
+        *,
+        default_hold_seconds: int,
+        allow_permanent: bool,
+    ) -> Any:
+        """Build a Swap/Don't-swap button view for a fallback-consent prompt.
+
+        Mirrors the hook-approval view: defined lazily so the module imports
+        without discord.py, the backend is the authorization authority (the
+        click resolves via the REST approval endpoint under the clicker's
+        identity, 404 = not yours, 409 = no longer pending), and the public
+        message edit happens via the ``fallback_prompt_resolved`` firehose
+        event. A plain Swap press applies the prompt's advertised default
+        hold; "until reverted" resolves with ``hold_permanent``.
+        """
+        bot = self
+
+        if default_hold_seconds >= 3600 and default_hold_seconds % 3600 == 0:
+            swap_label = f"Swap ({default_hold_seconds // 3600}h)"
+        elif default_hold_seconds >= 60:
+            swap_label = f"Swap ({default_hold_seconds // 60}m)"
+        else:
+            swap_label = "Swap"
+
+        class _FallbackPromptView(discord.ui.View):
+            def __init__(self) -> None:
+                super().__init__(timeout=FALLBACK_PROMPT_VIEW_TIMEOUT_SECONDS)
+                self.resolved = False
+                self._message: Any = None
+                self.swap.label = swap_label
+                if not allow_permanent:
+                    self.remove_item(self.swap_permanent)
+
+            async def on_timeout(self) -> None:
+                # Fallback only: the resolved event normally retracts the
+                # buttons long before the view times out.
+                message = self._message
+                if message is None:
+                    return
+                try:
+                    await message.edit(view=None)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            async def _resolve(
+                self,
+                interaction: "discord.Interaction",
+                approved: bool,
+                *,
+                hold_seconds: Optional[int] = None,
+                hold_permanent: bool = False,
+            ) -> None:
+                if self.resolved:
+                    await interaction.response.send_message(
+                        "Already resolved.", ephemeral=True
+                    )
+                    return
+                user_id = await bot.resolve_user_id(interaction.user.id)
+                if user_id is None:
+                    await interaction.response.send_message(
+                        "This Discord account isn't linked to a Nymeria user "
+                        "yet, so it can't resolve consent prompts.",
+                        ephemeral=True,
+                    )
+                    return
+                try:
+                    await bot.api.resolve_fallback_approval(
+                        record_id,
+                        approved,
+                        hold_seconds=hold_seconds,
+                        hold_permanent=hold_permanent,
+                        user_id=user_id,
+                    )
+                except httpx.HTTPStatusError as e:
+                    status = e.response.status_code
+                    if status == 404:
+                        await interaction.response.send_message(
+                            "Only the requester or an admin can resolve this.",
+                            ephemeral=True,
+                        )
+                    elif status == 409:
+                        self.resolved = True
+                        await interaction.response.send_message(
+                            "No longer pending.", ephemeral=True
+                        )
+                        try:
+                            if interaction.message is not None:
+                                await interaction.message.edit(view=None)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    else:
+                        logger.warning("Fallback consent resolve failed: %s", e)
+                        await interaction.response.send_message(
+                            "Couldn't resolve the prompt.", ephemeral=True
+                        )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Fallback consent resolve failed: %s", e)
+                    await interaction.response.send_message(
+                        "Couldn't resolve the prompt.", ephemeral=True
+                    )
+                    return
+                self.resolved = True
+                await interaction.response.send_message(
+                    "Swapping." if approved else "Staying on the primary model.",
+                    ephemeral=True,
+                )
+
+            @discord.ui.button(label="Swap", style=discord.ButtonStyle.green)
+            async def swap(
+                self, interaction: "discord.Interaction", button: "discord.ui.Button"
+            ) -> None:
+                await self._resolve(
+                    interaction, True, hold_seconds=default_hold_seconds
+                )
+
+            @discord.ui.button(
+                label="Swap until reverted", style=discord.ButtonStyle.grey
+            )
+            async def swap_permanent(
+                self, interaction: "discord.Interaction", button: "discord.ui.Button"
+            ) -> None:
+                await self._resolve(interaction, True, hold_permanent=True)
+
+            @discord.ui.button(label="Don't swap", style=discord.ButtonStyle.red)
+            async def deny(
+                self, interaction: "discord.Interaction", button: "discord.ui.Button"
+            ) -> None:
+                await self._resolve(interaction, False)
+
+        return _FallbackPromptView()
+
+    def _make_fallback_revert_view(self, thread_id: str) -> Any:
+        """Build a one-button Revert view for a thread now ON its fallback.
+
+        The click clears the thread's active fallback through the standard
+        thread-config PATCH as the clicker, so ownership is enforced
+        server-side exactly like ``/fallback revert``. Reverting an
+        already-lapsed hold is an idempotent no-op.
+        """
+        bot = self
+
+        class _FallbackRevertView(discord.ui.View):
+            def __init__(self) -> None:
+                super().__init__(timeout=FALLBACK_REVERT_VIEW_TIMEOUT_SECONDS)
+                self._message: Any = None
+
+            async def on_timeout(self) -> None:
+                message = self._message
+                if message is None:
+                    return
+                try:
+                    await message.edit(view=None)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            @discord.ui.button(label="Revert", style=discord.ButtonStyle.grey)
+            async def revert(
+                self, interaction: "discord.Interaction", button: "discord.ui.Button"
+            ) -> None:
+                user_id = await bot.resolve_user_id(interaction.user.id)
+                if user_id is None:
+                    await interaction.response.send_message(
+                        "This Discord account isn't linked to a Nymeria user "
+                        "yet, so it can't revert the swap.",
+                        ephemeral=True,
+                    )
+                    return
+                try:
+                    await bot.api.update_thread_config(
+                        thread_id, clear_active_fallback=True, user_id=user_id
+                    )
+                except httpx.HTTPStatusError as e:
+                    status = e.response.status_code
+                    if status in (403, 404):
+                        await interaction.response.send_message(
+                            "Only the thread owner or an admin can revert.",
+                            ephemeral=True,
+                        )
+                    else:
+                        logger.warning("Fallback revert failed: %s", e)
+                        await interaction.response.send_message(
+                            "Couldn't revert. Use /fallback revert.",
+                            ephemeral=True,
+                        )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Fallback revert failed: %s", e)
+                    await interaction.response.send_message(
+                        "Couldn't revert. Use /fallback revert.", ephemeral=True
+                    )
+                    return
+                await interaction.response.send_message(
+                    "Reverted to the primary model.", ephemeral=True
+                )
+                try:
+                    if interaction.message is not None:
+                        await interaction.message.edit(view=None)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return _FallbackRevertView()
+
+    def _prune_fallback_prompt_messages(self) -> None:
+        now = time.monotonic()
+        expired = [
+            record_id
+            for record_id, (_, _, deadline) in self._fallback_prompt_messages.items()
+            if deadline <= now
+        ]
+        for record_id in expired:
+            self._fallback_prompt_messages.pop(record_id, None)
+
+    async def _on_fallback_prompt_event(
+        self, channel: Any, event: Dict[str, Any]
+    ) -> None:
+        """Post a model-swap consent prompt with Swap/Don't-swap buttons.
+
+        The body is the shared text fallback (it carries the ``/fallback
+        approve <id>`` commands, so the prompt stays resolvable even if
+        buttons fail).
+        """
+        record_id = str(event.get("record_id") or "")
+        if not record_id:
+            return
+        self._prune_fallback_prompt_messages()
+        # None-vs-0 matters: 0 is a legitimate operator choice ("swap for
+        # this turn only, no cross-turn hold") and must pass through, so
+        # only an ABSENT value falls back to the 2h preset.
+        raw_hold = event.get("default_hold_seconds")
+        try:
+            default_hold = 7200 if raw_hold is None else max(0, int(raw_hold))
+        except (TypeError, ValueError):
+            default_hold = 7200
+        view = self._make_fallback_prompt_view(
+            record_id,
+            default_hold_seconds=default_hold,
+            allow_permanent=bool(event.get("allow_permanent", True)),
+        )
+        text = format_fallback_prompt_message(event)
+        try:
+            message = await channel.send(text[:2000], view=view)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to send fallback consent prompt: %s", e)
+            return
+        view._message = message
+        self._fallback_prompt_messages[record_id] = (
+            message,
+            view,
+            time.monotonic() + FALLBACK_PROMPT_VIEW_TIMEOUT_SECONDS,
+        )
+
+    async def _on_fallback_prompt_resolved_event(
+        self, event: Dict[str, Any]
+    ) -> None:
+        """Edit the original consent prompt on resolution, any surface.
+
+        When the thread ends up ON the fallback (approved or the timeout
+        auto-swap), the edited message keeps a Revert button so undoing the
+        swap stays one tap; decline/abort just retract the buttons.
+        """
+        record_id = str(event.get("record_id") or "")
+        entry = self._fallback_prompt_messages.pop(record_id, None)
+        if entry is None:
+            return
+        message, view, _ = entry
+        outcome = str(event.get("outcome") or "")
+        resolved_by = str(event.get("resolved_by") or "").strip()
+        if outcome == "approved":
+            # hold_seconds is the resolver's REQUEST, forwarded verbatim;
+            # None means "apply the configured default", so no phrase is
+            # rendered for it (the provider_fallback notice that follows
+            # carries the hold actually applied). Mirrors the desktop card.
+            if event.get("hold_permanent") or event.get("hold_seconds") is not None:
+                hold = " " + fallback_hold_phrase(
+                    event.get("hold_seconds"), event.get("hold_permanent")
+                )
+            else:
+                hold = ""
+            line = "✅ Swapped to the fallback" + hold + (
+                f" (by {resolved_by})" if resolved_by else ""
+            ) + "."
+        elif outcome == "declined":
+            by = f" (by {resolved_by})" if resolved_by else ""
+            if str(event.get("kind") or "") == "refusal":
+                line = f"\U0001f6ab Not swapped{by}; the refusal stands."
+            else:
+                line = (
+                    f"\U0001f6ab Not swapped{by}; the turn fails with the "
+                    "original provider error."
+                )
+        elif outcome == "timeout":
+            line = "⏰ No answer in time; auto-swapped to the fallback."
+        elif outcome == "aborted":
+            line = "Turn cancelled; the model-swap prompt was dropped."
+        else:
+            line = "No longer pending."
+        try:
+            view.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        next_view = None
+        if outcome in ("approved", "timeout"):
+            thread_id = str(event.get("thread_id") or "")
+            if thread_id:
+                next_view = self._make_fallback_revert_view(thread_id)
+        try:
+            edited = await message.edit(
+                content=f"Model swap prompt.\n\n{line}"[:2000],
+                view=next_view,
+            )
+            if next_view is not None:
+                next_view._message = edited if edited is not None else message
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Failed to edit fallback prompt message: %s", e)
+
+    async def _send_fallback_swap_notice(
+        self, channel: Any, thread_id: str, event: Dict[str, Any]
+    ) -> None:
+        """Send an applied model-swap notice with a Revert button.
+
+        Shared by the interactive and autonomous handlers'
+        ``on_provider_fallback`` callbacks; the text body keeps ``/fallback
+        revert`` as the buttonless management path.
+        """
+        # On a dispatched turn (@mention routing, /quick) the wire chunks are
+        # stamped with the ORIGINATING thread id while the hold is activated
+        # on the dispatch TARGET, which rides along as dispatched_to; Revert
+        # must PATCH the thread that actually holds the fallback.
+        dispatched = event.get("dispatched_to")
+        hold_thread = (
+            str((dispatched or {}).get("thread_id") or "")
+            if isinstance(dispatched, dict)
+            else ""
+        ) or thread_id
+        view = self._make_fallback_revert_view(hold_thread) if hold_thread else None
+        text = format_provider_fallback_message(event)
+        try:
+            message = await channel.send(text[:2000], view=view)
+            if view is not None:
+                view._message = message
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to send fallback swap notice: %s", e)
+
     async def _on_reaction_request_event(self, event: Dict[str, Any]) -> None:
         """Execute an outbound ``react`` tool send: add the emoji reaction.
 
@@ -1507,12 +1883,23 @@ class NymeriaDiscordBot(_BotBase):
                 await self._on_hook_approval_resolved_event(event)
                 return
 
+            # Fallback-consent prompts route the same way for the inverse
+            # stake: an unanswered prompt AUTO-SWAPS the thread's model. The
+            # pair is bus-only (never on the turn stream), so this also sits
+            # ahead of the attach firehose suppression by construction.
+            if event_type == "fallback_prompt":
+                await self._on_fallback_prompt_event(channel, event)
+                return
+            if event_type == "fallback_prompt_resolved":
+                await self._on_fallback_prompt_resolved_event(event)
+                return
+
             # Get or create handler for this thread
             state: Optional[Dict[str, Any]] = self._autonomous_state.get(
                 thread_id
             )
             if state is None:
-                handler = self._AutonomousSSEHandler(self, channel, channel_id)
+                handler = self._AutonomousSSEHandler(self, channel, channel_id, thread_id)
                 state = {"handler": handler, "prompt": event.get("prompt", "")}
                 self._autonomous_state[thread_id] = state
             else:
@@ -1563,7 +1950,7 @@ class NymeriaDiscordBot(_BotBase):
                         old_task.cancel()
                     self._autonomous_state.pop(thread_id, None)
                     handler = self._AutonomousSSEHandler(
-                        self, channel, channel_id
+                        self, channel, channel_id, thread_id
                     )
                     state = {"handler": handler}
                     self._autonomous_state[thread_id] = state

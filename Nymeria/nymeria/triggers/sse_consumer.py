@@ -256,10 +256,11 @@ def format_fallback_prompt_message(event: Dict[str, Any]) -> str:
     """Render a default fallback-consent prompt for text chat surfaces.
 
     Used for the ``fallback_prompt`` autonomous event (a parked turn asking
-    whether to swap to the fallback model). Bot-origin turns never park
-    (they auto-swap), so this text mostly reaches users watching a GUI/CLI
-    thread from a secondary text surface; the resolve commands still work
-    from anywhere.
+    whether to swap to the fallback model). Turns originating on Telegram or
+    Discord park like GUI turns (those bots render inline buttons over this
+    text body); other bot platforms auto-swap without parking, so on those
+    surfaces this text reaches users watching a GUI/CLI thread from a
+    secondary chat binding. The resolve commands work from anywhere.
     """
     record_id = str(event.get("record_id") or "")
     from_model = str(event.get("from_model") or "the primary model")
@@ -281,6 +282,63 @@ def format_fallback_prompt_message(event: Dict[str, Any]) -> str:
         f"{first}\n\nReply /fallback approve {record_id} [minutes|permanent] "
         f"or /fallback deny {record_id}{deadline}. No answer swaps "
         f"automatically."
+    )
+
+
+def fallback_hold_phrase(hold_seconds: Any, permanent: Any) -> str:
+    """Human phrase for how long a fallback hold lasts.
+
+    The single hold-copy authority for text surfaces: the bots and the CLI
+    (reducer + repl form notes) all import it, so durations can never render
+    differently across surfaces."""
+    if permanent:
+        return "until reverted"
+    try:
+        seconds = int(hold_seconds or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds <= 0:
+        return "for this turn"
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"for {hours} hour" + ("s" if hours != 1 else "")
+    if seconds >= 60:
+        return f"for {seconds // 60} min"
+    return f"for {seconds}s"
+
+
+def format_provider_fallback_message(event: Dict[str, Any]) -> str:
+    """Render an applied model-swap notice for text chat surfaces.
+
+    Used for the ``provider_fallback`` event (any consent mode), by the bots
+    and by the CLI reducer's transcript line. Refusal swaps get distinct
+    copy: a refusal is a clean HTTP 200 whose safety classifier flagged the
+    request (often a false positive), not a provider error. The ``/fallback
+    revert`` line keeps the swap manageable from surfaces without a Revert
+    button. ``rewound`` marks the mid-stream recovery shape, where text
+    already delivered was superseded by the re-driven turn.
+    """
+    target = str(event.get("to_model") or "the fallback model")
+    hold = fallback_hold_phrase(event.get("hold_seconds"), event.get("permanent"))
+    superseded = (
+        " Partial output already shown was superseded."
+        if event.get("rewound")
+        else ""
+    )
+    if str(event.get("reason") or "") == "refusal":
+        source = str(event.get("from_model") or "The model")
+        return (
+            f"{source} refused this turn (safety classifier, not an error); "
+            f"switched to {target} {hold}. Revert with /fallback revert."
+            f"{superseded}"
+        )
+    detail = str(event.get("reason") or "provider error")
+    http_status = event.get("http_status")
+    if http_status:
+        detail = f"{detail}, HTTP {http_status}"
+    return (
+        f"Switched to fallback {target} {hold} ({detail}). "
+        f"Revert with /fallback revert.{superseded}"
     )
 
 
@@ -433,6 +491,20 @@ async def dispatch_event(
             result = callback(event)
             if inspect.isawaitable(result):
                 await result
+
+    elif etype == "provider_fallback":
+        # An applied model swap (any consent mode). Bots with inline buttons
+        # override the callback to attach a Revert button; the default is the
+        # plain notice with /fallback revert as the management path.
+        await handler.flush_text(final=True)
+        callback = getattr(handler, "on_provider_fallback", None)
+        if callable(callback):
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
+        else:
+            await handler.on_response_chunk(format_provider_fallback_message(event))
+            await handler.flush_text(final=True)
 
     elif etype == "reply_suppressed":
         # The react tool asked to hide the turn's reply text (backlog #45).

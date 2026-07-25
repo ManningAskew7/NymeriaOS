@@ -1036,6 +1036,49 @@ class NymeriaAPIClient:
             act_as=user_id,
         )
 
+    # ── LLM fallback consent ──────────────────────────────────────────────
+
+    async def get_fallback_approvals(self, user_id: Optional[str] = None) -> List[dict]:
+        """List parked model-swap consent prompts visible to the caller."""
+        data = await self._get("/llm/fallback-approvals", act_as=user_id)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            approvals = data.get("approvals", [])
+            return approvals if isinstance(approvals, list) else []
+        return []
+
+    async def resolve_fallback_approval(
+        self,
+        record_id: str,
+        approved: bool,
+        *,
+        hold_seconds: Optional[int] = None,
+        hold_permanent: bool = False,
+        note: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        """Approve or decline a parked model swap (fallback consent).
+
+        On approve, ``hold_seconds`` picks the hold duration and
+        ``hold_permanent`` pins it until manually reverted (wins over
+        ``hold_seconds``); both omitted = the record's default hold.
+        404 = unknown or not visible to the caller; 409 = no longer pending
+        (already resolved, timed out, or the parked turn died).
+        """
+        payload: Dict[str, Any] = {"approved": approved}
+        if hold_seconds is not None:
+            payload["hold_seconds"] = int(hold_seconds)
+        if hold_permanent:
+            payload["hold_permanent"] = True
+        if note:
+            payload["note"] = note
+        return await self._post(
+            f"/llm/fallback-approvals/{_path_param(record_id)}/resolve",
+            json=payload,
+            act_as=user_id,
+        )
+
     # ── CLI config commands ───────────────────────────────────────────────
 
     async def post_cli_config_result(

@@ -27,6 +27,10 @@ KnownEventType: TypeAlias = Literal[
     "task_completed",
     "hook_approval",
     "hook_approval_resolved",
+    "fallback_prompt",
+    "fallback_prompt_resolved",
+    "provider_fallback",
+    "provider_retry",
     "cli_config",
     "error",
     "done",
@@ -240,6 +244,75 @@ class HookApprovalResolvedEvent(CLIStreamEvent):
     outcome: str = ""
     resolved_by: str = ""
     note: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FallbackPromptEvent(CLIStreamEvent):
+    """A turn parked on a model-swap consent prompt (fallback consent)."""
+
+    type: Literal["fallback_prompt"] = "fallback_prompt"
+    record_id: str = ""
+    kind: str = ""
+    from_provider: str = ""
+    from_model: str = ""
+    to_provider: str = ""
+    to_model: str = ""
+    reason: str = ""
+    http_status: int | None = None
+    timeout_seconds: int | None = None
+    hold_options: tuple[int, ...] = ()
+    allow_permanent: bool = True
+    default_hold_seconds: int | None = None
+    created_at: str = ""
+    expires_at: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FallbackPromptResolvedEvent(CLIStreamEvent):
+    """A parked model swap was resolved (any surface, any outcome)."""
+
+    type: Literal["fallback_prompt_resolved"] = "fallback_prompt_resolved"
+    record_id: str = ""
+    kind: str = ""
+    outcome: str = ""
+    resolved_by: str = ""
+    hold_seconds: int | None = None
+    hold_permanent: bool = False
+    note: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderFallbackEvent(CLIStreamEvent):
+    """An applied model switch to a fallback candidate (any consent mode)."""
+
+    type: Literal["provider_fallback"] = "provider_fallback"
+    from_provider: str = ""
+    from_model: str = ""
+    to_provider: str = ""
+    to_model: str = ""
+    hold_seconds: int | None = None
+    permanent: bool = False
+    expires_at: str = ""
+    reason: str = ""
+    http_status: int | None = None
+    # True when the post-stream recovery site rolled the turn back and
+    # re-drove it: partial text already rendered was superseded, not
+    # continued (the GUIs trim their transcript on this flag).
+    rewound: bool = False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderRetryEvent(CLIStreamEvent):
+    """A transient provider failure being retried on the same model."""
+
+    type: Literal["provider_retry"] = "provider_retry"
+    provider: str = ""
+    model: str = ""
+    attempt: int | None = None
+    max_retries: int | None = None
+    delay_seconds: float | None = None
+    reason: str = ""
+    http_status: int | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -588,6 +661,94 @@ def normalize_stream_event(
             raw=raw,
         )
 
+    if event_type == "fallback_prompt":
+        return FallbackPromptEvent(
+            thread_id=thread_id,
+            record_id=_text(_first(payload, "record_id", "recordId"), default=""),
+            kind=_text(_first(payload, "kind"), default="transport"),
+            from_provider=_text(
+                _first(payload, "from_provider", "fromProvider"), default=""
+            ),
+            from_model=_text(_first(payload, "from_model", "fromModel"), default=""),
+            to_provider=_text(
+                _first(payload, "to_provider", "toProvider"), default=""
+            ),
+            to_model=_text(_first(payload, "to_model", "toModel"), default=""),
+            reason=_text(_first(payload, "reason"), default=""),
+            http_status=_optional_int(_first(payload, "http_status", "httpStatus")),
+            timeout_seconds=_optional_int(
+                _first(payload, "timeout_seconds", "timeoutSeconds"),
+            ),
+            hold_options=_int_tuple(_first(payload, "hold_options", "holdOptions")),
+            allow_permanent=_bool(
+                _first(payload, "allow_permanent", "allowPermanent"), default=True
+            ),
+            default_hold_seconds=_optional_int(
+                _first(payload, "default_hold_seconds", "defaultHoldSeconds"),
+            ),
+            created_at=_text(_first(payload, "created_at", "createdAt"), default=""),
+            expires_at=_text(_first(payload, "expires_at", "expiresAt"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "fallback_prompt_resolved":
+        return FallbackPromptResolvedEvent(
+            thread_id=thread_id,
+            record_id=_text(_first(payload, "record_id", "recordId"), default=""),
+            kind=_text(_first(payload, "kind"), default="transport"),
+            outcome=_text(_first(payload, "outcome"), default=""),
+            resolved_by=_text(
+                _first(payload, "resolved_by", "resolvedBy"), default=""
+            ),
+            hold_seconds=_optional_int(
+                _first(payload, "hold_seconds", "holdSeconds"),
+            ),
+            hold_permanent=_bool(
+                _first(payload, "hold_permanent", "holdPermanent"), default=False
+            ),
+            note=_text(_first(payload, "note"), default=""),
+            raw=raw,
+        )
+
+    if event_type == "provider_fallback":
+        return ProviderFallbackEvent(
+            thread_id=thread_id,
+            from_provider=_text(
+                _first(payload, "from_provider", "fromProvider"), default=""
+            ),
+            from_model=_text(_first(payload, "from_model", "fromModel"), default=""),
+            to_provider=_text(
+                _first(payload, "to_provider", "toProvider"), default=""
+            ),
+            to_model=_text(_first(payload, "to_model", "toModel"), default=""),
+            hold_seconds=_optional_int(
+                _first(payload, "hold_seconds", "holdSeconds"),
+            ),
+            permanent=_bool(_first(payload, "permanent"), default=False),
+            expires_at=_text(_first(payload, "expires_at", "expiresAt"), default=""),
+            reason=_text(_first(payload, "reason"), default=""),
+            http_status=_optional_int(_first(payload, "http_status", "httpStatus")),
+            rewound=_bool(_first(payload, "rewound"), default=False),
+            raw=raw,
+        )
+
+    if event_type == "provider_retry":
+        return ProviderRetryEvent(
+            thread_id=thread_id,
+            provider=_text(_first(payload, "provider"), default=""),
+            model=_text(_first(payload, "model"), default=""),
+            attempt=_optional_int(_first(payload, "attempt")),
+            max_retries=_optional_int(
+                _first(payload, "max_retries", "maxRetries"),
+            ),
+            delay_seconds=_optional_float(
+                _first(payload, "delay_seconds", "delaySeconds"),
+            ),
+            reason=_text(_first(payload, "reason"), default=""),
+            http_status=_optional_int(_first(payload, "http_status", "httpStatus")),
+            raw=raw,
+        )
+
     if event_type == "cli_config":
         return CLIConfigEvent(
             thread_id=thread_id,
@@ -738,6 +899,18 @@ def _optional_int(value: Any) -> int | None:
     return None
 
 
+def _int_tuple(value: Any) -> tuple[int, ...]:
+    """Coerce a payload list into an int tuple, dropping junk entries."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    out: list[int] = []
+    for item in value:
+        parsed = _optional_int(item)
+        if parsed is not None:
+            out.append(parsed)
+    return tuple(out)
+
+
 def _optional_float(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -806,6 +979,10 @@ __all__ = [
     "TaskCompletedEvent",
     "HookApprovalEvent",
     "HookApprovalResolvedEvent",
+    "FallbackPromptEvent",
+    "FallbackPromptResolvedEvent",
+    "ProviderFallbackEvent",
+    "ProviderRetryEvent",
     "CLIConfigEvent",
     "ErrorEvent",
     "DoneEvent",

@@ -247,6 +247,55 @@ def register_default_commands(service: "CommandService") -> None:
         mutates_state=True,
         danger_level="normal",
     )
+    # Consent-family children (hook-family idiom). Registration makes the
+    # registry's longest-prefix match dispatch "/fallback <sub>" straight to
+    # the _cmd_fallback_<sub> executor handlers; the parent handler keeps
+    # only the chain grammar. agent_allowed=False is load-bearing and
+    # enforced pre-dispatch by CommandService.execute: the agent must not
+    # resolve or revert its own model-swap consent.
+    _fallback_sub_surfaces = ("desktop", "mobile", "cli", "api", "agent")
+    service.register(
+        "fallback status",
+        description="Show the consent modes and this thread's active fallback hold",
+        category="LLM",
+        usage="/fallback status",
+        surfaces=_fallback_sub_surfaces,
+    )
+    service.register(
+        "fallback revert",
+        description="End the active thread's fallback hold and return to the primary model",
+        category="LLM",
+        usage="/fallback revert",
+        surfaces=_fallback_sub_surfaces,
+        mutates_state=True,
+        agent_allowed=False,
+    )
+    service.register(
+        "fallback approvals",
+        description="List turns parked on a model-swap consent prompt",
+        category="LLM",
+        usage="/fallback approvals",
+        surfaces=_fallback_sub_surfaces,
+        agent_allowed=False,
+    )
+    service.register(
+        "fallback approve",
+        description="Approve a parked model swap (optional hold in minutes or 'permanent')",
+        category="LLM",
+        usage="/fallback approve <id> [minutes|permanent] [note]",
+        surfaces=_fallback_sub_surfaces,
+        mutates_state=True,
+        agent_allowed=False,
+    )
+    service.register(
+        "fallback deny",
+        description="Decline a parked model swap (the turn proceeds on the original model's outcome)",
+        category="LLM",
+        usage="/fallback deny <id> [note]",
+        surfaces=_fallback_sub_surfaces,
+        mutates_state=True,
+        agent_allowed=False,
+    )
     service.register(
         "think",
         description="Show or change thinking mode (thread-scoped when a thread is active)",

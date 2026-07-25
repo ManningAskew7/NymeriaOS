@@ -11,6 +11,8 @@ from nymeria.triggers.cli.events import (
     DispatchedEvent,
     DoneEvent,
     ErrorEvent,
+    FallbackPromptEvent,
+    FallbackPromptResolvedEvent,
     HookApprovalEvent,
     HookApprovalResolvedEvent,
     IterationLimitEvent,
@@ -21,6 +23,8 @@ from nymeria.triggers.cli.events import (
     ThinkingEvent,
     ToolCallDeltaEvent,
     ToolCallEvent,
+    ProviderFallbackEvent,
+    ProviderRetryEvent,
     ToolReloadEvent,
     ToolResultEvent,
     TurnRewoundEvent,
@@ -74,6 +78,121 @@ def test_normalizes_hook_approval_events() -> None:
         tool_call_id="call-1",
         tool_name="bash_execute",
         outcome="timeout",
+    )
+
+
+def test_normalizes_fallback_consent_and_provider_events() -> None:
+    """The Phase 3 quartet: before these branches existed, every one fell
+    through to DiagnosticEvent (dropped on the autonomous stream, printed as
+    a raw unknown-event line on the interactive stream)."""
+    prompt = normalize_stream_event(
+        {
+            "type": "fallback_prompt",
+            "thread_id": "thread-a",
+            "record_id": "fb-1",
+            "kind": "refusal",
+            "from_provider": "anthropic",
+            "from_model": "claude-fable-5",
+            "to_provider": "anthropic",
+            "to_model": "claude-opus-4-8",
+            "reason": "refusal",
+            "http_status": None,
+            "timeout_seconds": 180,
+            "hold_options": [600, 3600, 7200, 28800],
+            "allow_permanent": True,
+            "default_hold_seconds": 7200,
+            "created_at": "2026-07-25T10:00:00+00:00",
+            "expires_at": "2026-07-25T10:03:00+00:00",
+        }
+    )
+    assert prompt == FallbackPromptEvent(
+        thread_id="thread-a",
+        record_id="fb-1",
+        kind="refusal",
+        from_provider="anthropic",
+        from_model="claude-fable-5",
+        to_provider="anthropic",
+        to_model="claude-opus-4-8",
+        reason="refusal",
+        timeout_seconds=180,
+        hold_options=(600, 3600, 7200, 28800),
+        allow_permanent=True,
+        default_hold_seconds=7200,
+        created_at="2026-07-25T10:00:00+00:00",
+        expires_at="2026-07-25T10:03:00+00:00",
+    )
+
+    resolved = normalize_stream_event(
+        {
+            "type": "fallback_prompt_resolved",
+            "thread_id": "thread-a",
+            "record_id": "fb-1",
+            "kind": "refusal",
+            "outcome": "approved",
+            "resolved_by": "manning",
+            "hold_seconds": 7200,
+            "hold_permanent": False,
+            "note": "",
+        }
+    )
+    assert resolved == FallbackPromptResolvedEvent(
+        thread_id="thread-a",
+        record_id="fb-1",
+        kind="refusal",
+        outcome="approved",
+        resolved_by="manning",
+        hold_seconds=7200,
+    )
+
+    switched = normalize_stream_event(
+        {
+            "type": "provider_fallback",
+            "from_provider": "anthropic",
+            "from_model": "claude-fable-5",
+            "to_provider": "anthropic",
+            "to_model": "claude-haiku-4-5-20251001",
+            "hold_seconds": 7200,
+            "permanent": False,
+            "expires_at": "2026-07-25T12:00:00+00:00",
+            "reason": "provider_server_error",
+            "http_status": 529,
+            "rewound": True,
+        },
+        default_thread_id="thread-a",
+    )
+    assert switched == ProviderFallbackEvent(
+        thread_id="thread-a",
+        from_provider="anthropic",
+        from_model="claude-fable-5",
+        to_provider="anthropic",
+        to_model="claude-haiku-4-5-20251001",
+        hold_seconds=7200,
+        expires_at="2026-07-25T12:00:00+00:00",
+        reason="provider_server_error",
+        http_status=529,
+        rewound=True,
+    )
+
+    retry = normalize_stream_event(
+        {
+            "type": "provider_retry",
+            "provider": "anthropic",
+            "model": "claude-fable-5",
+            "attempt": 1,
+            "max_retries": 2,
+            "delay_seconds": 1.0,
+            "reason": "timeout",
+        },
+        default_thread_id="thread-a",
+    )
+    assert retry == ProviderRetryEvent(
+        thread_id="thread-a",
+        provider="anthropic",
+        model="claude-fable-5",
+        attempt=1,
+        max_retries=2,
+        delay_seconds=1.0,
+        reason="timeout",
     )
 
 

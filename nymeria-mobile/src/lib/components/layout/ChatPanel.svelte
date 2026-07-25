@@ -814,6 +814,12 @@
           rewound: data.rewound,
           streamChunks: data.streamChunks,
         });
+        // The swap pinned active_llm_fallback onto the thread config; refresh
+        // it so the settings panel's Revert row appears live. The stale-event
+        // guard above already pinned this handler to its stream's thread, so
+        // the handler param is the right key. (A dispatched turn's hold lands
+        // on the dispatch target instead; that panel self-corrects on open.)
+        void threadConfigStore.loadConfig(threadId).catch(() => {});
         break;
       }
 

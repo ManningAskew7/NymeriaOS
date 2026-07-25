@@ -22,6 +22,18 @@ from nymeria.api.routers._bot_inprocess import InProcessBotAPI
 from nymeria.core.chat_bindings import BindCodeInvalid, BindingAlreadyExists
 
 
+@pytest.fixture(autouse=True)
+def _clean_turn_origins():
+    """chat_stream stamps the process-global turn-origin registry; scrub the
+    thread ids these tests use so no origin leaks into other suites on the
+    same xdist worker (the fallback park-gate tests read the registry)."""
+    from nymeria.core.bot_reactions import clear_turn_origin
+
+    yield
+    for thread_id in ("t1", "t-origin"):
+        clear_turn_origin(thread_id)
+
+
 class _SentinelError(Exception):
     """Stand-in for a platform's own ``BotAPIError`` (same constructor shape)."""
 
@@ -318,6 +330,25 @@ def test_chat_stream_stamps_origin_client_id_and_yields_done():
     assert done["type"] == "done"
     assert done["model"] == "thread-model"
     assert done["title"] == "A Title"
+
+
+def test_chat_stream_stamps_turn_origin_platform():
+    """The adapter mirrors the HTTP route's platform_origin stamping.
+
+    The fallback-consent park gate must see whatsapp/teams turns as
+    bot-origin on a button-less platform (instant auto-swap); without the
+    stamp they would park with no visible prompt.
+    """
+    from nymeria.core.bot_reactions import clear_turn_origin, get_turn_origin
+
+    api, agent = _make_adapter(origin="whatsapp")
+    try:
+        _run(_collect(api.chat_stream("hi", "t-origin", "u1")))
+        origin = get_turn_origin("t-origin")
+        assert origin is not None
+        assert origin["platform"] == "whatsapp"
+    finally:
+        clear_turn_origin("t-origin")
 
 
 def test_chat_stream_done_metadata_failure_logs_display_name(caplog):

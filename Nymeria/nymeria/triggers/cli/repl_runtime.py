@@ -146,6 +146,7 @@ class _RichReplRuntime:
         self._form_state: form_panel.FormState | None = None
         # record_id of the require_approval hold whose decision form is open.
         self._pending_hook_approval_record: str | None = None
+        self._pending_fallback_prompt_record: str | None = None
         self._autonomous_monitor = AutonomousStreamMonitor(
             client_getter=lambda: self.app._client,
             user_id_getter=lambda: self.app.state.user_id,
@@ -708,11 +709,17 @@ class _RichReplRuntime:
             return False
         title = self._active_form.title
         self.close_form()
+        # A dismissed approval/consent form is no longer "pending" for the
+        # resolved-event close path: without clearing these, a later resolved
+        # event for the dismissed record would close whatever UNRELATED form
+        # is open at that moment.
+        self._pending_hook_approval_record = None
+        self._pending_fallback_prompt_record = None
         self._reset_composer_buffer()
         self.invalidate()
         app = self.application
         if app is not None:
-            app.create_background_task(self._render_form_note(f"{title} — dismissed"))
+            app.create_background_task(self._render_form_note(f"{title} - dismissed"))
         return True
 
     def _maybe_form_change(self) -> None:
@@ -882,6 +889,12 @@ class _RichReplRuntime:
             return True
         if event_type == "hook_approval_resolved":
             await self._on_hook_approval_resolved_event(normalized)
+            return True
+        if event_type == "fallback_prompt":
+            await self._on_fallback_prompt_event(normalized)
+            return True
+        if event_type == "fallback_prompt_resolved":
+            await self._on_fallback_prompt_resolved_event(normalized)
             return True
         if event_type == "cli_config":
             await self._on_cli_config_event(normalized)
@@ -1110,6 +1123,179 @@ class _RichReplRuntime:
             line = f"Turn cancelled; {tool_name} was denied."
         else:
             line = f"Approval for {tool_name} is no longer pending."
+        await self._render_form_note(line)
+
+    # -- fallback consent prompts (llm-fallback-consent Phase 3) -------------
+    #
+    # Same shape as the hook-approval flow above: the autonomous stream is
+    # the only delivery, the decision surface is the under-composer form
+    # panel (never transcript buttons), resolution re-dispatches the
+    # /fallback slash commands, and the resolved event closes a stale form
+    # from any surface. One deliberate inversion: no answer = AUTO-SWAP (a
+    # fallback is a resilience action), so the footer says so.
+
+    async def _on_fallback_prompt_event(self, event: Any) -> None:
+        record_id = str(getattr(event, "record_id", "") or "")
+        if not record_id:
+            return
+        kind = str(getattr(event, "kind", "") or "transport")
+        from_model = str(getattr(event, "from_model", "") or "the model")
+        if kind == "refusal":
+            note = (
+                f"Model swap consent: {from_model} refused this turn "
+                "(safety classifier, often a false positive)"
+            )
+        else:
+            note = f"Model swap consent: {from_model} is failing"
+        await self._render_form_note(note)
+        self._pending_fallback_prompt_record = record_id
+        self.open_form(self._fallback_prompt_form_spec(event))
+
+    def _fallback_prompt_form_spec(self, event: Any) -> form_panel.FormSpec:
+        from ...core.fallback_approvals import HOLD_PRESET_SECONDS
+        from ..sse_consumer import fallback_hold_phrase
+
+        record_id = str(getattr(event, "record_id", "") or "")
+        kind = str(getattr(event, "kind", "") or "transport")
+        from_model = str(getattr(event, "from_model", "") or "the model")
+        to_model = str(getattr(event, "to_model", "") or "the fallback model")
+        reason = str(getattr(event, "reason", "") or "")
+        http_status = getattr(event, "http_status", None)
+        holds = tuple(getattr(event, "hold_options", ()) or ()) or HOLD_PRESET_SECONDS
+        # None-vs-0 matters (0 = "this turn only" is a legitimate operator
+        # default); when the default is not one of the offered rows, the
+        # preselection falls back to the 2h row (desktop-card parity) rather
+        # than silently landing on the first row.
+        raw_hold = getattr(event, "default_hold_seconds", None)
+        try:
+            default_hold = 7200 if raw_hold is None else max(0, int(raw_hold))
+        except (TypeError, ValueError):
+            default_hold = 7200
+        if default_hold not in holds:
+            default_hold = 7200 if 7200 in holds else holds[0]
+        allow_permanent = bool(getattr(event, "allow_permanent", True))
+
+        if kind == "refusal":
+            title = f"{from_model} refused this turn. Swap to {to_model}?"
+            deny_description = (
+                "Rewind and rephrase; if it still refuses, rewind further, "
+                "compact the thread, or switch models."
+            )
+        else:
+            detail = reason or "provider error"
+            if http_status:
+                detail = f"{detail}, HTTP {http_status}"
+            title = f"{from_model} is failing ({detail}). Swap to {to_model}?"
+            deny_description = "The turn fails with the original provider error."
+
+        # The 2-D resolve (approve/deny x hold) flattens to ONE radio list
+        # (a FormTab surfaces a single option list): each swap row carries
+        # its hold, ids are the /fallback approve hold argument (minutes or
+        # "permanent"). Row copy rides the shared hold-phrase authority.
+        options: list[form_panel.FormOption] = [
+            form_panel.FormOption(
+                id=str(max(1, seconds // 60)),
+                label=f"Swap {fallback_hold_phrase(seconds, False)}",
+                current=seconds == default_hold,
+            )
+            for seconds in holds
+        ]
+        if allow_permanent:
+            options.append(
+                form_panel.FormOption(
+                    id="permanent",
+                    label="Swap until reverted",
+                    description="Hold the fallback until /fallback revert.",
+                )
+            )
+        options.append(
+            form_panel.FormOption(
+                id="deny",
+                label="Don't swap",
+                description=deny_description,
+            )
+        )
+
+        async def _confirm(result: form_panel.FormResult) -> Any:
+            from .commands import CommandResult
+
+            choice = (result.radio_value or "").strip()
+            if not choice:
+                return CommandResult.completed()
+            self._pending_fallback_prompt_record = None
+            if choice == "deny":
+                command = f"/fallback deny {record_id}"
+            else:
+                command = f"/fallback approve {record_id} {choice}"
+            await self.app._dispatch_command_async(  # noqa: SLF001 - runtime helper
+                command,
+                self.capabilities,
+                self.renderer,
+                runtime=self,
+            )
+            return CommandResult.completed()
+
+        return form_panel.FormSpec(
+            title=title,
+            tabs=(
+                form_panel.FormTab(
+                    label="Model swap",
+                    fields=(
+                        form_panel.FormField(
+                            kind="radio",
+                            key="decision",
+                            options=tuple(options),
+                        ),
+                    ),
+                ),
+            ),
+            on_confirm=_confirm,
+            footer_hint=(
+                "Enter decide - Esc later (/fallback approvals) - "
+                "no answer = auto-swap"
+            ),
+        )
+
+    async def _on_fallback_prompt_resolved_event(self, event: Any) -> None:
+        record_id = str(getattr(event, "record_id", "") or "")
+        if record_id and self._pending_fallback_prompt_record == record_id:
+            self._pending_fallback_prompt_record = None
+            if self._active_form is not None:
+                self.close_form()
+                self._reset_composer_buffer()
+                self.invalidate()
+        outcome = str(getattr(event, "outcome", "") or "")
+        resolved_by = str(getattr(event, "resolved_by", "") or "").strip()
+        hold_permanent = bool(getattr(event, "hold_permanent", False))
+        hold_seconds = getattr(event, "hold_seconds", None)
+        if outcome == "approved":
+            from ..sse_consumer import fallback_hold_phrase
+
+            # hold_seconds None = "apply the configured default": no phrase
+            # (the provider_fallback transcript line carries the applied
+            # hold). Shared phrase authority for explicit holds.
+            if hold_permanent or hold_seconds is not None:
+                hold = " " + fallback_hold_phrase(hold_seconds, hold_permanent)
+            else:
+                hold = ""
+            line = "Model swap approved" + (
+                f" by {resolved_by}" if resolved_by else ""
+            ) + f"; on the fallback{hold}."
+        elif outcome == "declined":
+            by = f" by {resolved_by}" if resolved_by else ""
+            if str(getattr(event, "kind", "") or "") == "refusal":
+                line = f"Model swap declined{by}; the refusal stands."
+            else:
+                line = (
+                    f"Model swap declined{by}; the turn fails with the "
+                    "original provider error."
+                )
+        elif outcome == "timeout":
+            line = "No answer in time; auto-swapped to the fallback."
+        elif outcome == "aborted":
+            line = "Turn cancelled; the model-swap prompt was dropped."
+        else:
+            line = "The model-swap prompt is no longer pending."
         await self._render_form_note(line)
 
 

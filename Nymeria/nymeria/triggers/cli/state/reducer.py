@@ -14,6 +14,8 @@ from ..events import (
     CompactedEvent,
     ContextAttachedEvent,
     DiagnosticEvent,
+    ProviderFallbackEvent,
+    ProviderRetryEvent,
     DispatchedEvent,
     DoneEvent,
     ErrorEvent,
@@ -187,6 +189,10 @@ def reduce_stream_event(
         return _reduce_tool_reload(state, normalized, timestamp)
     if isinstance(normalized, DispatchedEvent):
         return _reduce_dispatched(state, normalized, timestamp)
+    if isinstance(normalized, ProviderFallbackEvent):
+        return _reduce_provider_fallback(state, normalized, timestamp)
+    if isinstance(normalized, ProviderRetryEvent):
+        return _reduce_provider_retry(state, normalized, timestamp)
     if isinstance(normalized, ErrorEvent):
         return _reduce_error(state, normalized, timestamp)
     if isinstance(normalized, DoneEvent):
@@ -653,6 +659,55 @@ def _reduce_tool_reload(
             "skill_name": event.skill_name,
             "reason": event.reason,
         },
+    )
+    return replace(state, messages=state.messages + (notice,), updated_at=timestamp)
+
+
+def _reduce_provider_fallback(
+    state: CLIUIState,
+    event: ProviderFallbackEvent,
+    timestamp: float,
+) -> CLIUIState:
+    """One transcript line per applied model switch (any consent mode).
+
+    The copy is the shared bot/CLI formatter (``sse_consumer``), fed from the
+    NORMALIZED fields (``raw`` may still carry the API envelope with a nested
+    ``data``), so every text surface renders an applied swap identically
+    (refusal vs transport, hold phrase, the superseded-output clause on a
+    mid-stream rewind)."""
+    from ...sse_consumer import format_provider_fallback_message
+
+    content = format_provider_fallback_message({
+        "from_model": event.from_model,
+        "to_model": event.to_model,
+        "hold_seconds": event.hold_seconds,
+        "permanent": event.permanent,
+        "reason": event.reason,
+        "http_status": event.http_status,
+        "rewound": event.rewound,
+    })
+    notice = SystemMessage(
+        id=_new_id("system"),
+        kind="provider_status",
+        content=content,
+        timestamp=timestamp,
+    )
+    return replace(state, messages=state.messages + (notice,), updated_at=timestamp)
+
+
+def _reduce_provider_retry(
+    state: CLIUIState,
+    event: ProviderRetryEvent,
+    timestamp: float,
+) -> CLIUIState:
+    model = event.model or "the model"
+    attempt = f" ({event.attempt}/{event.max_retries})" if event.attempt else ""
+    detail = event.reason or "transient provider error"
+    notice = SystemMessage(
+        id=_new_id("system"),
+        kind="provider_status",
+        content=f"Retrying {model}{attempt}: {detail}.",
+        timestamp=timestamp,
     )
     return replace(state, messages=state.messages + (notice,), updated_at=timestamp)
 
