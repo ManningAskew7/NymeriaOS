@@ -1298,10 +1298,10 @@ Returns the callable thread tools actually available from that caller thread aft
 | `reply_suppressed` | The `react` tool ran with `suppress_reply=true`; delivery surfaces for the turn's origin platform should drop buffered/subsequent reply text. Emitted right after the tool's `tool_result` (also when react runs via `tool_invoke`), and only when the backend registry confirms the real react call set the flag: marker text echoed by any other tool's output is inert | `tool_call_id` |
 | `tool_reload` | Tool registry was reloaded mid-turn; resume metadata for next iteration | `tools`, `ttl`, `ttl_seconds`, `source`, `skill_name`, `reason` |
 | `provider_retry` | Retryable provider/model failure; backend is sleeping before retry. If the provider failed after partial stream output, the backend rewound to the latest stable checkpoint first. | `provider`, `model`, `attempt`, `max_retries`, `delay_seconds`, `reason`, optional `http_status`, optional `rewound`, optional `stream_chunks` |
-| `provider_fallback` | Primary retries were exhausted; backend switched to a configured fallback provider/model. May also follow a post-stream rewind. | `from_provider`, `from_model`, `to_provider`, `to_model`, `hold_seconds`, `expires_at`, `reason`, optional `http_status`, optional `rewound`, optional `stream_chunks` |
+| `provider_fallback` | The backend switched to a configured fallback provider/model: primary retries were exhausted (may follow a post-stream rewind), or an empty provider refusal was swapped-and-re-run (`reason: refusal`, no retry loop). A consented switch may carry the user-chosen hold (`permanent: true` for an until-reverted hold). | `from_provider`, `from_model`, `to_provider`, `to_model`, `hold_seconds`, `expires_at`, optional `permanent`, `reason`, optional `http_status`, optional `rewound`, optional `stream_chunks` |
 | `image_input_unsupported` | The model rejected image/PDF input (it cannot see attachments); the backend stripped the attachment (leaving a placeholder note in-context) and retried the turn once. The model is also recorded as image/file-incapable so later turns strip proactively. | `reason`, `model` |
 | `output_truncated` | The turn hit its output-token cap. `produced_output` distinguishes the two shapes: `true` means the answer was cut off mid-generation, `false` means the cap was exhausted before any text or tool call was emitted (reasoning consumed the whole budget), in which case the backend attaches a visible note to the otherwise empty message so the turn cannot deliver silence. | `reason`, `produced_output`, `output_tokens`, `model` |
-| `response_refused` | The provider ended the response with a refusal (Anthropic `stop_reason: refusal` / OpenAI `finish_reason: content_filter`). `produced_output: false` means it fired before any text or tool call (the model emitted at most a thinking block), in which case the backend attaches a visible note to the otherwise empty message; refusals are often phrasing-sensitive and intermittent, so rephrasing and retrying usually resolves them. | `produced_output`, `output_tokens`, `model` |
+| `response_refused` | The provider ended the response with a refusal (Anthropic `stop_reason: refusal` / OpenAI `finish_reason: content_filter`). `produced_output: false` means it fired before any text or tool call (the model emitted at most a thinking block). `swapped: true` means the refusal-swap discarded the refused response and is re-running on the next fallback model (a `provider_fallback` with `reason: refusal` follows); `swapped: false` means the notice/rewind path handles it: the backend attaches a visible note to the otherwise empty message. Refusals are often phrasing-sensitive and intermittent, so rephrasing and retrying usually resolves them. | `produced_output`, `output_tokens`, `model`, `swapped` |
 | `turn_rewound` | A pre-output refusal was rewound server-side: the backend removed the refused exchange from the checkpoint (refusals tend to repeat until the refused turn is reset), so the thread is back at the end of the previous turn. Fires ONLY when the refused exchange produced nothing besides the refusal: its user prompt(s) (a queued-prompt batch rewinds as one run, `prompt` joins the batch texts) followed directly by the refused message. An exchange that ran tools or delivered earlier output is never rewound (side effects already happened); it keeps the visible in-message note, which the stream also delivers as a trailing `response` chunk so live surfaces are not silent. Controlled clients should truncate their local transcript from `to_message_id` (the removed run's FIRST user-message anchor) and restore `prompt` to the composer, without auto-resending; clients without a composer (chat bots) deliver `content` as the turn's reply text. Follows `response_refused` (which stays pure telemetry). On a rewind failure this event is not emitted and the note-plus-response-chunk fallback applies. | `reason` (`refusal`), `removed`, `to_message_id`, `prompt`, `model`, `content` |
 | `hook_activity` | A meaningful mutate-plane lifecycle-hook run (a deny/modify/inject or a fault); ephemeral live line only, nothing persisted. Only emitted while hooks are enabled and a mutate hook did something; the durable record is `GET /hooks/executions`. | `name`, `event`, `status`, `detail`, optional `tool_name` |
 | `auth_prompt` | Credential setup prompt from `request_credential`; desktop opens the modal and chat bots render the secure setup link | `prompt_id`, `credential_id`, `provider`, `display_name`, `mode`, `fields`, `timeout_seconds`, optional `expires_at`, optional `connect_url`, `connect_url_required`, `connect_url_error`, optional OAuth fields such as `flow`, `auth_url`, `user_code`, `verification_uri`, `scopes` |
@@ -1311,6 +1311,8 @@ Returns the callable thread tools actually available from that caller thread aft
 | `ui_prompt_result` | A `ui_prompt` was resolved: a client answered or dismissed it, or the backend closed it (tool timeout, thread abort or turn cancellation, orphan sweep); every client retracts its copy of the modal. Deliberately never carries the submitted values | `prompt_id`, `status` (`submitted`/`cancelled` from a client resolve; `timeout`/`aborted`/`turn_cancelled`/`swept` from backend closures) |
 | `hook_approval` | A `require_approval` hook is holding a tool call for the user's decision (resolve via `POST /hooks/approvals/{record_id}/resolve`, the tool-call card buttons, `/hook approve\|deny`, or the Telegram/Discord buttons); no answer by `expires_at` denies the call | `record_id`, `tool_call_id`, `tool_name`, `tool_args_preview`, `prompt`, `hook_id`, `hook_name`, `is_autonomous`, `created_at`, `expires_at` |
 | `hook_approval_resolved` | A held tool call was resolved from any surface (or timed out, or its turn was aborted); every client retracts its approval prompt | `record_id`, `tool_call_id`, `tool_name`, `outcome` (`approved`/`denied`/`timeout`/`aborted`/`stale`), `resolved_by`, `note` |
+| `fallback_prompt` | An `ask`-mode model switch parked the turn for the user's decision: swap to the fallback model or not (resolve via `POST /llm/fallback-approvals/{record_id}/resolve` or `/fallback approve\|deny`). `kind: transport` means the primary exhausted its retries on a provider error (decline fails the turn); `kind: refusal` means an empty provider refusal can re-run on the fallback (decline falls back to the rewind-and-restore path). No answer by `expires_at` AUTO-SWAPS (a fallback is a resilience action; the inverse of hook-approval timeout). Only a turn a human is watching parks (interactive source, holder kind `user`, an async streaming surface): autonomous turns, callable/handoff child turns, `/chat/sync` callers, and bot-origin channels swap immediately | `record_id`, `kind`, `thread_id`, `from_provider`, `from_model`, `to_provider`, `to_model`, `reason`, optional `http_status`, `timeout_seconds`, `hold_options`, `allow_permanent`, `default_hold_seconds`, `is_autonomous`, `created_at`, `expires_at` |
+| `fallback_prompt_resolved` | A parked model switch was resolved from any surface (or timed out, or its turn was aborted); every client retracts its consent prompt. `approved` carries the chosen hold when one was picked | `record_id`, `kind`, `outcome` (`approved`/`declined`/`timeout`/`aborted`/`stale`), `resolved_by`, optional `hold_seconds`, `hold_permanent`, `note` |
 | `workflow_approval` | A workflow run suspended on `nym.approve`, awaiting the owner's decision (resolve via `POST /workflows/approvals/{record_id}/resolve`) | `record_id`, `workflow_id`, `prompt`, `expires_at` |
 | `workflow_approval_resolved` | A suspended workflow run was approved, declined, or expired; the continuation ran (or was refused) | `record_id`, `workflow_id`, `approved`, `note`, `run_id` |
 | `workflow_step` | One completed `nym.*` verb dispatch in a running workflow (live progress; best-effort and unordered, sort by `step`). Lean by design: args/result summaries live in the persisted run record, not on the wire | `workflow_id`, `run_id`, `step`, `verb`, `status`, `duration_ms`, optional `error_kind` |
@@ -1574,10 +1576,10 @@ this.
 | `reply_suppressed` | The `react` tool requested reply suppression for this turn (registry-verified); the origin bot drops reply text | `tool_call_id` |
 | `tool_reload` | Tool registry was reloaded mid-turn; resume metadata for next iteration | `tools`, `ttl`, `ttl_seconds`, `source`, `skill_name`, `reason` |
 | `provider_retry` | Retryable provider/model failure; backend is sleeping before retry. If the provider failed after partial stream output, the backend rewound to the latest stable checkpoint first. | `provider`, `model`, `attempt`, `max_retries`, `delay_seconds`, `reason`, optional `http_status`, optional `rewound`, optional `stream_chunks` |
-| `provider_fallback` | Primary retries were exhausted; backend switched to a configured fallback provider/model. May also follow a post-stream rewind. | `from_provider`, `from_model`, `to_provider`, `to_model`, `hold_seconds`, `expires_at`, `reason`, optional `http_status`, optional `rewound`, optional `stream_chunks` |
+| `provider_fallback` | The backend switched to a configured fallback provider/model: primary retries were exhausted (may follow a post-stream rewind), or an empty provider refusal was swapped-and-re-run (`reason: refusal`, no retry loop). A consented switch may carry the user-chosen hold (`permanent: true` for an until-reverted hold). | `from_provider`, `from_model`, `to_provider`, `to_model`, `hold_seconds`, `expires_at`, optional `permanent`, `reason`, optional `http_status`, optional `rewound`, optional `stream_chunks` |
 | `image_input_unsupported` | The model rejected image/PDF input; the backend stripped the attachment (leaving a placeholder note) and retried the turn once, and recorded the model as image/file-incapable for later turns | `reason`, `model` |
 | `output_truncated` | The turn hit its output-token cap; `produced_output: false` means reasoning consumed the whole budget and the turn emitted no text or tool call | `reason`, `produced_output`, `output_tokens`, `model` |
-| `response_refused` | The provider ended the response with a refusal; `produced_output: false` means it fired before any text or tool call and a visible note was attached to the message | `produced_output`, `output_tokens`, `model` |
+| `response_refused` | The provider ended the response with a refusal; `produced_output: false` means it fired before any text or tool call. `swapped: true` = the refusal-swap is re-running on the next fallback model; `swapped: false` = a visible note was attached to the message (or the rewind removed the exchange) | `produced_output`, `output_tokens`, `model`, `swapped` |
 | `turn_rewound` | A pre-output refusal was rewound server-side (only prompt-plus-refusal exchanges; tool activity gates the rewind and the notice arrives as a trailing `response` chunk instead); truncate locally from `to_message_id`, restore `prompt` to the composer (controlled clients), or deliver `content` as reply text (bots) | `reason`, `removed`, `to_message_id`, `prompt`, `model`, `content` |
 | `response` | Response text chunks | `content` |
 | `context_attached` | Previous context summary attached to this autonomous prompt | `summary` |
@@ -4351,6 +4353,55 @@ the hook's own flag all allow it:
 - **Per-hook default**: the `enabled` flag on the hook record.
 
 ---
+
+## LLM Fallback Consent Prompts
+
+When `LLM_FALLBACK_SWITCH_MODE=ask` (or `LLM_REFUSAL_SWAP_MODE=ask`), a
+consent-capable interactive turn parks before a model switch and publishes a
+`fallback_prompt` event. These endpoints are the list/resolve surface (the
+`/fallback approvals|approve|deny` slash commands front them; both are
+human-only, the agent cannot resolve its own parked switch).
+
+### Pending Fallback Prompts
+
+```http
+GET /llm/fallback-approvals
+Authorization: Bearer <token>
+```
+
+Pending parked switches. Admins see every user's; everyone else sees their
+own. Returns `{"approvals": [...]}`, each entry
+`{record_id, kind, user_id, thread_id, from_provider, from_model, to_provider,
+to_model, reason, http_status, timeout_seconds, hold_options, allow_permanent,
+default_hold_seconds, is_autonomous, created_at, expires_at}`. A prompt not
+resolved by `expires_at` AUTO-SWAPS with the default hold (a fallback is a
+resilience action; contrast hook approvals, which deny on timeout).
+
+### Resolve Fallback Prompt
+
+```http
+POST /llm/fallback-approvals/{record_id}/resolve
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+```json
+{"approved": true, "hold_seconds": 3600, "hold_permanent": false, "note": ""}
+```
+
+Approve (swap, optionally choosing the hold: `hold_seconds` from
+`hold_options`, or `hold_permanent: true` for an until-manually-reverted hold;
+omitted = the default hold) or decline the switch (owner or admin). On a
+`transport` prompt a decline fails the turn with the original provider error;
+on a `refusal` prompt a decline falls through to the rewind-and-restore path.
+`404` covers a missing record, another user's record, and the common
+already-ended cases (timed out and auto-swapped, resolved elsewhere, or its
+turn died: the parked waiter removes its record on every exit). `409` is the
+rarer stale shape: the record still exists but no waiter is parked on it
+(typically a crash orphan surviving a restart); stale records are cleaned up
+on the spot. Every resolution publishes `fallback_prompt_resolved`. An active hold is inspectable and
+revertible via `/fallback status` and `/fallback revert` (permanent holds
+require the revert).
 
 ## CLIProxy Management API
 

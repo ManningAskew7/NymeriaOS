@@ -146,6 +146,7 @@ def test_create_agent_thread_claims_metadata_syncs_tools_and_publishes_event(
         "compact_proactive_idle_seconds": None,
         "compact_proactive_min_pct": None,
         "fallback_switch_mode": None,
+        "refusal_swap_mode": None,
     }
     assert body["has_customizations"] is True
 

@@ -241,9 +241,9 @@ def register_default_commands(service: "CommandService") -> None:
     )
     service.register(
         "fallback",
-        description="Manage the model fallback chain",
+        description="Manage the model fallback chain, active holds, and consent prompts",
         category="LLM",
-        usage="/fallback [list|add|remove|clear|set]",
+        usage="/fallback [list|add|remove|clear|set|status|revert|approvals|approve|deny]",
         mutates_state=True,
         danger_level="normal",
     )

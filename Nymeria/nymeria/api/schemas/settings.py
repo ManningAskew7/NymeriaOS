@@ -190,6 +190,9 @@ class ServerSettingsResponse(BaseModel):
     llm_stream_retry_initial_delay: float
     llm_stream_retry_max_delay: float
     llm_fallback_hold_seconds: int
+    llm_fallback_switch_mode: str = "auto"
+    llm_fallback_prompt_timeout_seconds: int = 180
+    llm_refusal_swap_mode: str = "off"
     context_management: str
     compact_threshold: float
     compact_threshold_mode: str = "tokens"
@@ -785,6 +788,11 @@ class ServerSettingsUpdate(BaseModel):
     llm_stream_retry_initial_delay: Optional[float] = None
     llm_stream_retry_max_delay: Optional[float] = None
     llm_fallback_hold_seconds: Optional[int] = Field(default=None, ge=0, le=604800)
+    llm_fallback_switch_mode: Optional[Literal["auto", "ask"]] = None
+    llm_fallback_prompt_timeout_seconds: Optional[int] = Field(
+        default=None, ge=10, le=600
+    )
+    llm_refusal_swap_mode: Optional[Literal["off", "ask", "auto"]] = None
     context_management: Optional[str] = None
     compact_threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
     compact_threshold_mode: Optional[Literal["percentage", "tokens"]] = None

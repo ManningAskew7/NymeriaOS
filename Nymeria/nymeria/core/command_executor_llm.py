@@ -81,16 +81,57 @@ class LLMCommandsMixin:
     api: Any
     thread_id: str
     user_id: str
+    actor: str
 
     if TYPE_CHECKING:
         def _require_thread(self) -> str | None: ...
         def _agent(self) -> Any: ...
+        async def _list_threads(self) -> list[Any]: ...
 
-    # ── Fallback chain ────────────────────────────────────────────────────
+    # ── Fallback chain + consent prompts ──────────────────────────────────
+
+    async def _fallback_thread_allowed(self) -> bool:
+        """Owner guard for the thread-scoped fallback surfaces.
+
+        The executor context receives a caller-supplied ``thread_id`` with no
+        pre-validated ownership (unlike the REST config path, which runs
+        ``_require_thread_access``), so status/revert verify the thread is in
+        this user's visible list before reading or clearing its config.
+        Admins pass unconditionally, mirroring the REST rule.
+        """
+        from ..tools.utils import is_admin
+
+        if not self.thread_id:
+            return False
+        if is_admin(self.user_id, agent=self._agent()):
+            return True
+        threads = await self._list_threads()
+        return any(
+            str(t.get("thread_id") or t.get("id") or "") == self.thread_id
+            for t in threads
+        )
 
     async def _cmd_fallback(self, args: list[str], rest: str) -> str:
-        """Manage the global fallback chain: list / add / remove / clear / set."""
+        """Manage the fallback chain, active holds, and consent prompts."""
         sub = args[0].lower() if args else "list"
+
+        # Human-only subcommands: the agent must never resolve its own parked
+        # switch prompts or revert a hold out from under the user (same
+        # re-check the /hook family does for its approvals path).
+        if self.actor == "agent" and sub in {"approvals", "approve", "deny", "revert"}:
+            return f"[Error]: Command `/fallback {sub}` is not available to the agent."
+
+        if sub == "status":
+            return await self._cmd_fallback_status()
+        if sub == "revert":
+            return await self._cmd_fallback_revert()
+        if sub == "approvals":
+            return self._cmd_fallback_approvals()
+        if sub == "approve":
+            return self._resolve_fallback_approval(args[1:], approved=True)
+        if sub == "deny":
+            return self._resolve_fallback_approval(args[1:], approved=False)
+
         settings = await self.api.get_settings()
         chain = self._fallback_chain(settings)
 
@@ -134,7 +175,197 @@ class LLMCommandsMixin:
             label = " -> ".join(next_chain)
             return await self._save_fallback_chain(next_chain, f"Fallback chain set: {label}")
 
-        return "[Error]: Usage: /fallback [list|add|remove|clear|set]"
+        return (
+            "[Error]: Usage: /fallback "
+            "[list|add|remove|clear|set|status|revert|approvals|approve|deny]"
+        )
+
+    async def _cmd_fallback_status(self) -> str:
+        """The consent modes plus the active thread's fallback hold, if any."""
+        settings = await self.api.get_settings()
+        lines = [
+            f"Switch mode: {settings.get('llm_fallback_switch_mode') or 'auto'} "
+            f"(transport errors), refusal swap: "
+            f"{settings.get('llm_refusal_swap_mode') or 'off'}",
+            f"Default hold: {int(settings.get('llm_fallback_hold_seconds') or 0)}s, "
+            f"prompt timeout: "
+            f"{int(settings.get('llm_fallback_prompt_timeout_seconds') or 0)}s",
+        ]
+        if self.thread_id and await self._fallback_thread_allowed():
+            tc = self._thread_config_manager_or_none()
+            config = tc.get_config(self.thread_id) if tc else None
+            active = getattr(config, "active_llm_fallback", None)
+            llm = getattr(config, "llm_config", None) if config else None
+            overrides = []
+            if getattr(llm, "fallback_switch_mode", None):
+                overrides.append(f"switch mode={llm.fallback_switch_mode}")
+            if getattr(llm, "refusal_swap_mode", None):
+                overrides.append(f"refusal swap={llm.refusal_swap_mode}")
+            if overrides:
+                lines.append("Thread overrides: " + ", ".join(overrides))
+            if active is None:
+                lines.append("This thread: no fallback hold active.")
+            else:
+                if active.expires_at is None:
+                    until = "PERMANENT (until /fallback revert)"
+                else:
+                    until = f"until {active.expires_at.isoformat()}"
+                lines.append(
+                    f"This thread: on {active.provider}/{active.model} "
+                    f"(from {active.source_model or '?'}; "
+                    f"reason: {active.reason or '?'}) {until}."
+                )
+        return "[Info]: Fallback status\n" + "\n".join(lines)
+
+    async def _cmd_fallback_revert(self) -> str:
+        """Clear the active thread's fallback hold (permanent or timed)."""
+        missing = self._require_thread()
+        if missing:
+            return missing
+        if not await self._fallback_thread_allowed():
+            # Same non-leaking shape as the REST 404: existence is not
+            # disclosed to a non-owner.
+            return "[Error]: No thread matching this id."
+        tc = self._thread_config_manager_or_none()
+        if tc is None:
+            return "[Error]: Thread configuration is unavailable."
+        config = tc.get_config(self.thread_id)
+        active = getattr(config, "active_llm_fallback", None) if config else None
+        if config is None or active is None:
+            return "[Info]: This thread has no active fallback hold."
+        label = f"{active.provider}/{active.model}"
+        config.active_llm_fallback = None
+        saved = (
+            tc.save_config(config)
+            if config.has_customizations()
+            else tc.delete_config(self.thread_id)
+        )
+        if not saved:
+            return "[Error]: Failed to clear the fallback hold."
+        agent = self._agent()
+        if agent is not None:
+            try:
+                agent.invalidate_thread_config_cache(self.thread_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("fallback revert cache invalidation failed", exc_info=True)
+        return (
+            f"[Success]: Fallback hold cleared; this thread returns to its "
+            f"configured model (was on {label})."
+        )
+
+    def _thread_config_manager_or_none(self) -> Any | None:
+        agent = self._agent()
+        return getattr(agent, "thread_config_manager", None) if agent else None
+
+    def _visible_fallback_approvals(self) -> list[dict]:
+        from ..tools.utils import is_admin
+        from .fallback_approvals import list_pending
+
+        if is_admin(self.user_id, agent=self._agent()):
+            return list_pending()
+        return list_pending(self.user_id)
+
+    def _cmd_fallback_approvals(self) -> str:
+        records = self._visible_fallback_approvals()
+        if not records:
+            return "[Info]: No pending fallback prompts."
+        lines = [
+            f"Pending fallback prompts: {len(records)}",
+            "",
+            "| ID | Kind | From | To | Expires | Thread |",
+            "|---|---|---|---|---|---|",
+        ]
+        for r in records:
+            lines.append(
+                f"| `{r.get('record_id')}` | {r.get('kind') or 'transport'} "
+                f"| {r.get('from_model') or '?'} | {r.get('to_model') or '?'} "
+                f"| {r.get('expires_at') or '?'} | {r.get('thread_id') or '?'} |"
+            )
+        lines.append("")
+        lines.append(
+            "Resolve with /fallback approve <id> [minutes|permanent] [note] "
+            "or /fallback deny <id> [note]. Unanswered prompts auto-swap."
+        )
+        return "[Info]: " + "\n".join(lines)
+
+    def _resolve_fallback_approval(self, args: list[str], *, approved: bool) -> str:
+        """Shared approve/deny path: prefix-resolve, authorize, wake the park.
+
+        Mirrors the REST endpoint's semantics (owner-or-admin; a resolve with
+        no live waiter cleans the stale record). On approve, an optional
+        second token picks the hold: integer minutes or ``permanent``.
+        """
+        verb = "approve" if approved else "deny"
+        usage = (
+            f"[Error]: Usage: /fallback {verb} <prompt-id>"
+            + (" [minutes|permanent] [note]" if approved else " [note]")
+        )
+        if not args:
+            return usage
+        from .fallback_approvals import (
+            delete_record,
+            get_fallback_approval_coordinator,
+            publish_resolved_event,
+        )
+
+        prefix = args[0]
+        hold_seconds: int | None = None
+        hold_permanent = False
+        note_args = args[1:]
+        if approved and note_args:
+            token = note_args[0].lower()
+            if token in {"permanent", "perm", "forever"}:
+                hold_permanent = True
+                note_args = note_args[1:]
+            else:
+                try:
+                    hold_seconds = max(0, int(token)) * 60
+                    note_args = note_args[1:]
+                except ValueError:
+                    # Not a minutes count: the token is part of the free-text
+                    # note, so leave note_args untouched.
+                    pass
+        note = " ".join(note_args).strip()
+        visible = self._visible_fallback_approvals()
+        matches = [
+            r for r in visible if str(r.get("record_id") or "").startswith(prefix)
+        ]
+        if not matches:
+            return f"[Error]: No pending fallback prompt matching '{prefix}'."
+        if len(matches) > 1:
+            ids = ", ".join(sorted(str(r.get("record_id")) for r in matches))
+            return (
+                f"[Error]: '{prefix}' matches multiple prompts: {ids}. "
+                "Use a longer id."
+            )
+        record = matches[0]
+        record_id = str(record.get("record_id") or "")
+        woke = get_fallback_approval_coordinator().resolve(
+            record_id,
+            approved=approved,
+            resolved_by=self.user_id,
+            hold_seconds=hold_seconds,
+            hold_permanent=hold_permanent,
+            note=note,
+        )
+        if not woke:
+            delete_record(record_id)
+            publish_resolved_event(record, outcome="stale", resolved_by=self.user_id)
+            return (
+                f"[Error]: Prompt `{record_id}` is no longer pending (it timed "
+                "out and auto-swapped, was resolved elsewhere, or its turn ended)."
+            )
+        if approved:
+            hold_label = (
+                " permanently"
+                if hold_permanent
+                else (f" for {hold_seconds // 60} minutes" if hold_seconds else "")
+            )
+            return (
+                f"[Success]: Swapping to {record.get('to_model') or 'the fallback'}"
+                f"{hold_label} ({record_id})."
+            )
+        return f"[Success]: Declined the model swap ({record_id})."
 
     async def _save_fallback_chain(self, chain: list[str], message: str) -> str:
         result = await self.api.update_settings(

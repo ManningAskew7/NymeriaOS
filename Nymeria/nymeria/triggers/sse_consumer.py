@@ -252,6 +252,38 @@ def _approval_window_seconds(event: Dict[str, Any]) -> int:
         return 0
 
 
+def format_fallback_prompt_message(event: Dict[str, Any]) -> str:
+    """Render a default fallback-consent prompt for text chat surfaces.
+
+    Used for the ``fallback_prompt`` autonomous event (a parked turn asking
+    whether to swap to the fallback model). Bot-origin turns never park
+    (they auto-swap), so this text mostly reaches users watching a GUI/CLI
+    thread from a secondary text surface; the resolve commands still work
+    from anywhere.
+    """
+    record_id = str(event.get("record_id") or "")
+    from_model = str(event.get("from_model") or "the primary model")
+    to_model = str(event.get("to_model") or "the fallback model")
+    if str(event.get("kind") or "") == "refusal":
+        first = (
+            f"{from_model} refused this turn (safety classifier). "
+            f"Swap to {to_model} and continue?"
+        )
+    else:
+        first = (
+            f"{from_model} keeps failing "
+            f"({event.get('reason') or 'provider error'}). "
+            f"Swap this thread to {to_model}?"
+        )
+    window = _approval_window_seconds(event)
+    deadline = f" within {window} seconds" if window else ""
+    return (
+        f"{first}\n\nReply /fallback approve {record_id} [minutes|permanent] "
+        f"or /fallback deny {record_id}{deadline}. No answer swaps "
+        f"automatically."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Handler protocol
 # ---------------------------------------------------------------------------
@@ -377,6 +409,26 @@ async def dispatch_event(
         # Surfaces with a live approval UI (buttons, form) drop it here; text
         # surfaces have nothing to retract, so the default is silence.
         callback = getattr(handler, "on_hook_approval_resolved", None)
+        if callable(callback):
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
+
+    elif etype == "fallback_prompt":
+        await handler.flush_text(final=True)
+        callback = getattr(handler, "on_fallback_prompt", None)
+        if callable(callback):
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
+        else:
+            await handler.on_response_chunk(format_fallback_prompt_message(event))
+            await handler.flush_text(final=True)
+
+    elif etype == "fallback_prompt_resolved":
+        # Surfaces with a live consent UI drop their card here; text surfaces
+        # have nothing to retract, so the default is silence.
+        callback = getattr(handler, "on_fallback_prompt_resolved", None)
         if callable(callback):
             result = callback(event)
             if inspect.isawaitable(result):

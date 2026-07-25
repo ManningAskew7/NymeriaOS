@@ -11,6 +11,7 @@ from nymeria.triggers.sse_consumer import (
     consume_sse_stream,
     dispatch_event,
     format_auth_prompt_message,
+    format_fallback_prompt_message,
     format_hook_approval_message,
     parse_attach_paths,
     parse_sse_data_line,
@@ -357,6 +358,73 @@ def test_dispatch_hook_approval_resolved_calls_handler_callback():
         )
     )
     assert seen["outcome"] == "timeout"
+
+
+def _fallback_prompt_event(**overrides) -> Dict[str, Any]:
+    event = {
+        "type": "fallback_prompt",
+        "record_id": "fb-abc123",
+        "kind": "transport",
+        "thread_id": "t1",
+        "from_model": "claude-fable-5",
+        "to_model": "claude-opus-4-8",
+        "reason": "server_error",
+        "created_at": "2026-07-25T10:00:00+00:00",
+        "expires_at": "2026-07-25T10:03:00+00:00",
+    }
+    event.update(overrides)
+    return event
+
+
+def test_format_fallback_prompt_message_transport():
+    message = format_fallback_prompt_message(_fallback_prompt_event())
+    assert "claude-fable-5" in message
+    assert "claude-opus-4-8" in message
+    assert "/fallback approve fb-abc123" in message
+    assert "/fallback deny fb-abc123" in message
+    assert "within 180 seconds" in message
+    # The auto-swap timeout policy is stated up front (inverse of hook denials).
+    assert "swaps automatically" in message
+
+
+def test_format_fallback_prompt_message_refusal_wording():
+    message = format_fallback_prompt_message(_fallback_prompt_event(kind="refusal"))
+    assert "refused" in message
+    assert "claude-opus-4-8" in message
+
+
+def test_dispatch_fallback_prompt_renders_default_message_and_flushes():
+    h = RecordingHandler()
+    asyncio.run(dispatch_event(_fallback_prompt_event(), h, 0))
+    assert h.calls[0] == ("flush_text", {"final": True})
+    assert h.calls[1][0] == "on_response_chunk"
+    assert "claude-opus-4-8" in h.calls[1][1]["content"]
+    assert h.calls[2] == ("flush_text", {"final": True})
+
+
+def test_dispatch_fallback_prompt_prefers_handler_callback():
+    h = RecordingHandler()
+    seen = {}
+
+    async def on_fallback_prompt(event):
+        seen["event"] = event
+
+    h.on_fallback_prompt = on_fallback_prompt
+    asyncio.run(dispatch_event(_fallback_prompt_event(), h, 0))
+    assert seen["event"]["record_id"] == "fb-abc123"
+    assert all(name != "on_response_chunk" for name, _ in h.calls)
+
+
+def test_dispatch_fallback_prompt_resolved_is_silent_by_default():
+    h = RecordingHandler()
+    asyncio.run(
+        dispatch_event(
+            {"type": "fallback_prompt_resolved", "record_id": "r", "outcome": "approved"},
+            h,
+            0,
+        )
+    )
+    assert h.calls == []
 
 
 def test_dispatch_dispatched_emits_response_reference_line():

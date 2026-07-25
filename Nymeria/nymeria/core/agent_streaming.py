@@ -20,6 +20,8 @@ from typing import (
 from ..vendor.react_agent.nodes import (
     is_retryable_llm_error,
     llm_activate_next_fallback,
+    llm_consult_transport_fallback,
+    llm_fallback_hold_overrides,
     llm_max_retries,
     llm_retry_delay,
     llm_retry_payload_for_active_candidate,
@@ -262,7 +264,29 @@ class GraphStreamProcessor:
                     if delay > 0:
                         await asyncio.sleep(delay)
                 else:
-                    payload = llm_activate_next_fallback(self.llm_config, exc=exc)
+                    # Consent gate (user-consented fallback switching): ask
+                    # before switching the thread's model. "fail" re-raises
+                    # the original error (the primary already exhausted its
+                    # retries); "swap" carries the user-chosen hold into the
+                    # activation payload; "auto" keeps today's silent switch.
+                    consent = await llm_consult_transport_fallback(
+                        self.llm_config,
+                        exc=exc,
+                        is_autonomous=self._turn_is_autonomous(),
+                        holder_kind=self._turn_holder_kind(),
+                    )
+                    if consent.get("action") == "fail":
+                        self.logger.warning(
+                            "[LLM RECOVERY] thread=%s fallback declined by the "
+                            "user; failing the turn with the original error",
+                            self.thread_id,
+                        )
+                        raise
+                    payload = llm_activate_next_fallback(
+                        self.llm_config,
+                        exc=exc,
+                        hold_overrides=llm_fallback_hold_overrides(consent),
+                    )
                     if payload is None:
                         raise
                     self._rollback_current_model_output()
@@ -284,6 +308,29 @@ class GraphStreamProcessor:
                 # appending the original HumanMessage again.
                 attempt_input_state = {"messages": []}
                 self._reset_graph_state()
+
+    def _turn_is_autonomous(self) -> Optional[bool]:
+        """Turn-source signal for the fallback consent gate.
+
+        Self-invoke turns are autonomous by definition; otherwise defer to the
+        ``hook_is_autonomous`` stamp on the run config (None = source unknown,
+        which the gate treats as not consent-capable).
+        """
+        if self.is_self_invoke:
+            return True
+        try:
+            value = (self.config.get("configurable") or {}).get("hook_is_autonomous")
+        except AttributeError:
+            return None
+        return None if value is None else bool(value)
+
+    def _turn_holder_kind(self) -> Optional[str]:
+        """The ``hook_holder_kind`` stamp for the consent gate (None = unknown)."""
+        try:
+            value = (self.config.get("configurable") or {}).get("hook_holder_kind")
+        except AttributeError:
+            return None
+        return None if value is None else str(value)
 
     def _reset_graph_state(self) -> None:
         self._emitted_tool_starts: set[Any] = set()

@@ -162,6 +162,9 @@ _ENV_CATEGORIES: dict[str, tuple[str, ...]] = {
         "llm_stream_retry_initial_delay",
         "llm_stream_retry_max_delay",
         "llm_fallback_hold_seconds",
+        "llm_fallback_switch_mode",
+        "llm_fallback_prompt_timeout_seconds",
+        "llm_refusal_swap_mode",
         "cliproxy_management_url",
     ),
     "API Keys": (
@@ -428,6 +431,9 @@ def serialize_server_settings(settings: Any) -> ServerSettingsResponse:
         llm_stream_retry_initial_delay=settings.llm_stream_retry_initial_delay,
         llm_stream_retry_max_delay=settings.llm_stream_retry_max_delay,
         llm_fallback_hold_seconds=settings.llm_fallback_hold_seconds,
+        llm_fallback_switch_mode=settings.llm_fallback_switch_mode,
+        llm_fallback_prompt_timeout_seconds=settings.llm_fallback_prompt_timeout_seconds,
+        llm_refusal_swap_mode=settings.llm_refusal_swap_mode,
         context_management=settings.context_management,
         compact_threshold=settings.compact_threshold,
         compact_threshold_mode=settings.compact_threshold_mode,
@@ -574,6 +580,11 @@ _LLM_FIELDS = frozenset(
         "llm_stream_retry_initial_delay",
         "llm_stream_retry_max_delay",
         "llm_fallback_hold_seconds",
+        # The consent modes + prompt timeout bake into the per-thread decision
+        # callback closure at LLMConfig build, so changing them must rebuild.
+        "llm_fallback_switch_mode",
+        "llm_fallback_prompt_timeout_seconds",
+        "llm_refusal_swap_mode",
     }
 )
 _LLM_CREDENTIAL_FIELDS = frozenset(

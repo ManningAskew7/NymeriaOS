@@ -60,6 +60,10 @@ class ThreadLLMConfig(BaseModel):
     # llm_fallback_switch_mode; "auto" swaps silently, "ask" prompts on a
     # consent-capable interactive turn (see agent_llm_config / fallback gate).
     fallback_switch_mode: Optional[Literal["auto", "ask"]] = None
+    # Consent policy for the refusal swap (#105 P2): an EMPTY provider
+    # refusal discards the refused response and re-runs on the next fallback
+    # candidate. None inherits the global llm_refusal_swap_mode.
+    refusal_swap_mode: Optional[Literal["off", "ask", "auto"]] = None
 
     @field_validator("reasoning_effort", mode="before")
     @classmethod

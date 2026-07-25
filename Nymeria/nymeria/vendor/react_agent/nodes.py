@@ -600,6 +600,7 @@ def llm_activate_next_fallback(
     llm_config: Optional[LLMConfig],
     *,
     exc: BaseException,
+    hold_overrides: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     from_index = _llm_initial_candidate_index(llm_config)
     to_index = from_index + 1
@@ -611,6 +612,8 @@ def llm_activate_next_fallback(
         to_index,
         exc=exc,
     )
+    if hold_overrides:
+        payload.update(hold_overrides)
     payload = _activate_llm_fallback(llm_config, payload)
     _mark_llm_fallback_active(llm_config, to_index)
     return payload
@@ -654,6 +657,270 @@ def _activate_llm_fallback(
     if isinstance(activation, dict):
         return {**payload, **activation}
     return payload
+
+
+# --------------------------------------------------------------------------- #
+# Consent gate (user-consented fallback switching + the refusal swap).
+# The host wires an ASYNC ``fallback_decision_callback`` onto LLMConfig; the
+# helpers below consult it before a model switch is applied. A missing or
+# faulting callback always resolves to {"action": "auto"} (legacy silent
+# behavior), so bare vendored users and gate faults never change semantics.
+# --------------------------------------------------------------------------- #
+
+_FALLBACK_DECISION_ACTIONS = ("swap", "fail", "auto")
+
+
+def _turn_is_autonomous(run_config: Any) -> Optional[bool]:
+    """The turn-source stamp, or None when this run carries no source.
+
+    ``graph_run_config`` stamps ``hook_is_autonomous`` (which already folds in
+    self-invoke) only when the caller knows the source; a missing stamp means
+    the consent gate must treat the turn as NOT consent-capable.
+    """
+    try:
+        configurable = (run_config or {}).get("configurable") or {}
+    except AttributeError:
+        return None
+    value = configurable.get("hook_is_autonomous")
+    return None if value is None else bool(value)
+
+
+def _turn_holder_kind(run_config: Any) -> Optional[str]:
+    """The ``hook_holder_kind`` stamp (the turn's source label), or None.
+
+    Interactive turns stamp "user"; callable/handoff child turns stamp their
+    source, so the consent gate can refuse to park a turn whose "user" is
+    actually a waiting parent tool call.
+    """
+    try:
+        configurable = (run_config or {}).get("configurable") or {}
+    except AttributeError:
+        return None
+    value = configurable.get("hook_holder_kind")
+    return None if value is None else str(value)
+
+
+async def _aconsult_fallback_decision(
+    llm_config: Optional[LLMConfig],
+    payload: dict[str, Any],
+    *,
+    kind: str,
+    is_autonomous: Optional[bool],
+    holder_kind: Optional[str] = None,
+    sync_surface: bool = False,
+) -> dict[str, Any]:
+    """Ask the host's decision callback about a pending model switch.
+
+    Returns a dict with ``action`` in ("swap", "fail", "auto") plus optional
+    ``hold_seconds``/``hold_permanent`` on a swap. "auto" means "behave as if
+    consent were unwired" (transport: silent swap; refusal: no swap).
+    """
+    callback = getattr(llm_config, "fallback_decision_callback", None)
+    if callback is None:
+        return {"action": "auto"}
+    context = {
+        **payload,
+        "kind": kind,
+        "is_autonomous": is_autonomous,
+        "holder_kind": holder_kind,
+        "sync_surface": bool(sync_surface),
+    }
+    try:
+        decision = await callback(context)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[LLM FALLBACK] decision callback failed; proceeding as auto",
+            exc_info=True,
+        )
+        return {"action": "auto"}
+    if (
+        not isinstance(decision, dict)
+        or decision.get("action") not in _FALLBACK_DECISION_ACTIONS
+    ):
+        return {"action": "auto"}
+    return decision
+
+
+def _consult_fallback_decision_sync(
+    llm_config: Optional[LLMConfig],
+    payload: dict[str, Any],
+    *,
+    kind: str,
+    is_autonomous: Optional[bool],
+    holder_kind: Optional[str] = None,
+) -> dict[str, Any]:
+    """Sync bridge for the decision callback (the sync invoke path).
+
+    Legal because the sync turn runs on an ``asyncio.to_thread`` worker with
+    no running loop (same bridge the hook dispatcher uses for its sync
+    ``require_approval`` path). If a loop IS running in this thread, parking
+    would deadlock it, so the gate degrades to auto instead.
+
+    Stamps ``sync_surface=True``: the sync invoke path serves ``/chat/sync``
+    (bots and programmatic callers) whose clients cannot render a consent
+    prompt, so the gate never parks these turns; the bridge exists only to
+    reach the callback's non-parking decisions.
+    """
+    if getattr(llm_config, "fallback_decision_callback", None) is None:
+        return {"action": "auto"}
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop in this worker thread: exactly the state the
+        # asyncio.run bridge below requires, so nothing to handle.
+        pass
+    else:
+        logger.warning(
+            "[LLM FALLBACK] sync decision gate called with a running event "
+            "loop; proceeding as auto"
+        )
+        return {"action": "auto"}
+    try:
+        return asyncio.run(
+            _aconsult_fallback_decision(
+                llm_config,
+                payload,
+                kind=kind,
+                is_autonomous=is_autonomous,
+                holder_kind=holder_kind,
+                sync_surface=True,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[LLM FALLBACK] sync decision bridge failed; proceeding as auto",
+            exc_info=True,
+        )
+        return {"action": "auto"}
+
+
+def llm_fallback_hold_overrides(
+    decision: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """The hold fields of a consent decision, shaped for the activation payload.
+
+    Permanent wins over a timed hold. Returns None when the decision carries
+    no hold choice (public: the core stream processor shares this merge).
+    """
+    overrides: dict[str, Any] = {}
+    if decision.get("hold_permanent"):
+        overrides["hold_permanent"] = True
+    elif decision.get("hold_seconds") is not None:
+        overrides["hold_seconds"] = decision["hold_seconds"]
+    return overrides or None
+
+
+def _payload_with_hold(
+    payload: dict[str, Any], decision: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge a consented hold choice into an activation payload."""
+    merged = dict(payload)
+    merged.update(llm_fallback_hold_overrides(decision) or {})
+    return merged
+
+
+async def llm_consult_transport_fallback(
+    llm_config: Optional[LLMConfig],
+    *,
+    exc: BaseException,
+    is_autonomous: Optional[bool],
+    holder_kind: Optional[str] = None,
+) -> dict[str, Any]:
+    """Consent consult for the post-chunk recovery site (core-side, async).
+
+    Builds the same payload the eventual ``llm_activate_next_fallback`` call
+    will build, so the prompt shows the real from/to candidates. When no next
+    candidate exists the consult is moot ("auto": the activate call returns
+    None and the caller raises).
+    """
+    from_index = _llm_initial_candidate_index(llm_config)
+    to_index = from_index + 1
+    if to_index >= _llm_candidate_count(llm_config):
+        return {"action": "auto"}
+    payload = _llm_fallback_payload(llm_config, from_index, to_index, exc=exc)
+    return await _aconsult_fallback_decision(
+        llm_config,
+        payload,
+        kind="transport",
+        is_autonomous=is_autonomous,
+        holder_kind=holder_kind,
+    )
+
+
+def _is_empty_refusal_response(response: Any) -> bool:
+    """True for the EMPTY provider-refusal shape (no text, no tool calls).
+
+    Mirrors ``_finish_response``'s refusal detection exactly: Anthropic spells
+    it ``stop_reason="refusal"``, OpenAI-shaped gateways
+    ``finish_reason="content_filter"``. Partial-output refusals return False:
+    the user already saw content, so they are never swapped (or rewound).
+    """
+    metadata = getattr(response, "response_metadata", None) or {}
+    refused = (
+        metadata.get("stop_reason") == "refusal"
+        or metadata.get("finish_reason") == "content_filter"
+    )
+    if not refused:
+        return False
+    if _visible_text_of(getattr(response, "content", None)):
+        return False
+    return not bool(getattr(response, "tool_calls", None))
+
+
+def _llm_refusal_payload(
+    llm_config: Optional[LLMConfig],
+    from_index: int,
+    to_index: int,
+) -> dict[str, Any]:
+    """A fallback payload for a refusal-triggered swap (no exception)."""
+    from_candidate = _llm_candidate_descriptor(llm_config, from_index)
+    to_candidate = _llm_candidate_descriptor(llm_config, to_index)
+    return {
+        "from_provider": from_candidate["provider"],
+        "from_model": from_candidate["model"],
+        "from_provider_route": from_candidate["provider_route"],
+        "from_openai_api_mode": from_candidate["openai_api_mode"],
+        "to_provider": to_candidate["provider"],
+        "to_model": to_candidate["model"],
+        "to_provider_route": to_candidate["provider_route"],
+        "to_openai_api_mode": to_candidate["openai_api_mode"],
+        "reason": "refusal",
+        "http_status": None,
+    }
+
+
+def _refusal_swap_next_index(
+    llm_config: Optional[LLMConfig], candidate_index: int
+) -> Optional[int]:
+    """The candidate to swap to on an empty refusal, or None when the swap
+    cannot apply (no consent wiring, or no candidate left).
+
+    The refusal-swap MODE (off/ask/auto) is host policy and lives inside the
+    decision callback: an "off" host answers the consult with
+    ``{"action": "fail"}`` and the node falls through to the rewind path.
+    A None callback means no consent was wired, so the swap cannot apply."""
+    if getattr(llm_config, "fallback_decision_callback", None) is None:
+        return None
+    next_index = candidate_index + 1
+    if next_index >= _llm_candidate_count(llm_config):
+        return None
+    return next_index
+
+
+def _refusal_swap_telemetry(
+    response: Any, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """The ``response_refused`` payload for a refusal that is about to be
+    swapped away: same shape ``_finish_response`` emits, plus ``swapped``
+    so consumers know the swap (not the notice/rewind path) handles it."""
+    return {
+        "produced_output": False,
+        "output_tokens": (getattr(response, "usage_metadata", None) or {}).get(
+            "output_tokens"
+        ),
+        "model": payload.get("from_model") or "",
+        "swapped": True,
+    }
 
 
 def _visible_text_of(content: Any) -> str:
@@ -1111,6 +1378,21 @@ def _invoke_llm_with_retries(
                     time.sleep(decision.delay)
                 continue
 
+            consent = _consult_fallback_decision_sync(
+                llm_config,
+                decision.payload,
+                kind="transport",
+                is_autonomous=_turn_is_autonomous(run_config),
+                holder_kind=_turn_holder_kind(run_config),
+            )
+            if consent.get("action") == "fail":
+                logger.warning(
+                    "[LLM FALLBACK] fallback to %s declined by the user; "
+                    "failing the turn with the original error: %s",
+                    _llm_candidate_label(llm_config, decision.next_index),
+                    exc,
+                )
+                raise
             logger.warning(
                 "[LLM FALLBACK] transient sync call failure on %s after retries; "
                 "switching to %s: %s",
@@ -1118,7 +1400,9 @@ def _invoke_llm_with_retries(
                 _llm_candidate_label(llm_config, decision.next_index),
                 exc,
             )
-            payload = _activate_llm_fallback(llm_config, decision.payload)
+            payload = _activate_llm_fallback(
+                llm_config, _payload_with_hold(decision.payload, consent)
+            )
             _dispatch_provider_event("provider_fallback", payload, run_config)
             controller.commit_fallback(decision.next_index)
 
@@ -1830,6 +2114,7 @@ def create_agent_node(
                         "produced_output": False,
                         "output_tokens": output_tokens,
                         "model": getattr(llm_config, "model", "") or "",
+                        "swapped": False,
                     },
                     config,
                 )
@@ -1856,6 +2141,7 @@ def create_agent_node(
                         "produced_output": True,
                         "output_tokens": output_tokens,
                         "model": getattr(llm_config, "model", "") or "",
+                        "swapped": False,
                     },
                     config,
                 )
@@ -1879,6 +2165,7 @@ def create_agent_node(
         # sync path, which the live tokens/s display does not ride.
         call_started_at = time.monotonic()
         image_strip_attempted = False
+        refusal_swap_attempted = False
         while True:
             try:
                 # No clamp needed here: the instance already carries the
@@ -1891,6 +2178,52 @@ def create_agent_node(
                     tools,
                     config,
                 )
+                # Refusal swap (#105 P2): discard an EMPTY refusal before it
+                # enters graph state and re-run once on the next fallback
+                # candidate, subject to the consent gate. Mirrors the async
+                # block in async_agent_node (see the comment there).
+                if (
+                    not refusal_swap_attempted
+                    and _is_empty_refusal_response(response)
+                ):
+                    from_index = _llm_initial_candidate_index(llm_config)
+                    next_index = _refusal_swap_next_index(llm_config, from_index)
+                    if next_index is not None:
+                        payload = _llm_refusal_payload(
+                            llm_config, from_index, next_index
+                        )
+                        consent = _consult_fallback_decision_sync(
+                            llm_config,
+                            payload,
+                            kind="refusal",
+                            is_autonomous=_turn_is_autonomous(config),
+                            holder_kind=_turn_holder_kind(config),
+                        )
+                        if consent.get("action") == "swap":
+                            logger.warning(
+                                "[LLM FALLBACK] empty provider refusal on %s; "
+                                "discarding the refused response and re-running "
+                                "on %s",
+                                _llm_candidate_label(llm_config, from_index),
+                                _llm_candidate_label(llm_config, next_index),
+                            )
+                            # The refusal stays visible in telemetry even
+                            # though the swap discards it: #105's premise is
+                            # that refusals must never pass silently.
+                            _dispatch_provider_event(
+                                "response_refused",
+                                _refusal_swap_telemetry(response, payload),
+                                config,
+                            )
+                            payload = _activate_llm_fallback(
+                                llm_config, _payload_with_hold(payload, consent)
+                            )
+                            _dispatch_provider_event(
+                                "provider_fallback", payload, config
+                            )
+                            _mark_llm_fallback_active(llm_config, next_index)
+                            refusal_swap_attempted = True
+                            continue
                 break
             except Exception as exc:
                 # One-shot image strip-and-retry: a model that rejects image/file
@@ -1942,6 +2275,7 @@ def create_agent_node(
         controller = _RetryFallbackController(llm_config)
         candidate_cache = {0: llm_with_tools}
         image_strip_attempted = False
+        refusal_swap_attempted = False
         while True:
             chunks_this_attempt = 0
             try:
@@ -2026,6 +2360,74 @@ def create_agent_node(
                     response = await candidate.ainvoke(messages_with_system)
                 else:
                     response = message_chunk_to_message(merged_chunk)
+
+                # Refusal swap (#105 P2): an EMPTY provider refusal (no text,
+                # no tool calls) is discarded BEFORE it enters graph state and
+                # the same call re-runs once on the next fallback candidate,
+                # subject to the consent gate. The refused message never
+                # reaching state is what satisfies Anthropic's reset-the-
+                # refused-turn requirement; a declined/off/second refusal
+                # falls through to _finish_response, whose marker drives the
+                # shipped post-turn rewind (backlog #105 P1). Mirrors the
+                # sync block in agent_node.
+                if (
+                    not refusal_swap_attempted
+                    and _is_empty_refusal_response(response)
+                ):
+                    next_index = _refusal_swap_next_index(
+                        llm_config, controller.candidate_index
+                    )
+                    if next_index is not None:
+                        payload = _llm_refusal_payload(
+                            llm_config, controller.candidate_index, next_index
+                        )
+                        consent = await _aconsult_fallback_decision(
+                            llm_config,
+                            payload,
+                            kind="refusal",
+                            is_autonomous=_turn_is_autonomous(config),
+                            holder_kind=_turn_holder_kind(config),
+                        )
+                        if consent.get("action") == "swap":
+                            logger.warning(
+                                "[LLM FALLBACK] empty provider refusal on %s; "
+                                "discarding the refused response and re-running "
+                                "on %s",
+                                _llm_candidate_label(
+                                    llm_config, controller.candidate_index
+                                ),
+                                _llm_candidate_label(llm_config, next_index),
+                            )
+                            # The refusal stays visible in telemetry even
+                            # though the swap discards it. Deliberate
+                            # asymmetry with the transport rule below (which
+                            # never retries after a streamed chunk): an EMPTY
+                            # refusal streamed at most thinking, never visible
+                            # text or tool calls, so re-running duplicates a
+                            # reasoning trace on screen but never duplicates
+                            # output. Accepted; the Phase 2 consent card
+                            # accounts for it.
+                            await _adispatch_provider_event(
+                                "response_refused",
+                                _refusal_swap_telemetry(response, payload),
+                                config,
+                            )
+                            payload = _activate_llm_fallback(
+                                llm_config, _payload_with_hold(payload, consent)
+                            )
+                            await _adispatch_provider_event(
+                                "provider_fallback", payload, config
+                            )
+                            controller.commit_fallback(next_index)
+                            refusal_swap_attempted = True
+                            # The refused attempt completed and billed tokens;
+                            # its generation time counts.
+                            _accumulate_llm_seconds(
+                                config, time.monotonic() - attempt_started_at
+                            )
+                            merged_chunk = None
+                            continue
+
                 # Only successful calls contribute generation time (a failed
                 # attempt's tokens are discarded with it).
                 _accumulate_llm_seconds(config, time.monotonic() - attempt_started_at)
@@ -2093,6 +2495,21 @@ def create_agent_node(
                         await asyncio.sleep(decision.delay)
                     continue
 
+                consent = await _aconsult_fallback_decision(
+                    llm_config,
+                    decision.payload,
+                    kind="transport",
+                    is_autonomous=_turn_is_autonomous(config),
+                    holder_kind=_turn_holder_kind(config),
+                )
+                if consent.get("action") == "fail":
+                    logger.warning(
+                        "[LLM FALLBACK] fallback to %s declined by the user; "
+                        "failing the turn with the original error: %s",
+                        _llm_candidate_label(llm_config, decision.next_index),
+                        exc,
+                    )
+                    raise
                 logger.warning(
                     "[LLM FALLBACK] transient stream failure before chunks on %s "
                     "after retries; switching to %s: %s",
@@ -2100,7 +2517,9 @@ def create_agent_node(
                     _llm_candidate_label(llm_config, decision.next_index),
                     exc,
                 )
-                payload = _activate_llm_fallback(llm_config, decision.payload)
+                payload = _activate_llm_fallback(
+                    llm_config, _payload_with_hold(decision.payload, consent)
+                )
                 await _adispatch_provider_event("provider_fallback", payload, config)
                 controller.commit_fallback(decision.next_index)
 

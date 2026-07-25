@@ -72,6 +72,21 @@ class LLMConfig:
         default=None,
         repr=False,
     )
+    # Consent gate for model switches (user-consented fallback switching + the
+    # refusal swap). This callback is the ONLY consent surface the vendored
+    # runtime knows: the policy (switch/refusal modes, prompt timeout, holds)
+    # lives host-side inside the closure, so the boundary carries one thing.
+    # ASYNC, distinct from the sync activation callback above. Called with a
+    # context dict (the fallback payload plus "kind": "transport"|"refusal"
+    # and turn-source fields) before a switch is applied. Returns
+    # {"action": "swap", "hold_seconds"?, "hold_permanent"?} |
+    # {"action": "fail"} | {"action": "auto"} (proceed as if unwired).
+    # None (the host did not wire consent) or a callback error = "auto";
+    # for the refusal swap a None callback means the swap cannot apply.
+    fallback_decision_callback: Optional[Callable[[dict[str, Any]], Any]] = field(
+        default=None,
+        repr=False,
+    )
 
     # For custom providers
     custom_llm: Optional[object] = field(default=None, repr=False)
