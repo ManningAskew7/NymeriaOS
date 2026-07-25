@@ -52,10 +52,18 @@ class _Transient(RuntimeError):
 
 @pytest.fixture(autouse=True)
 def _isolated_store(tmp_path, monkeypatch):
-    """Point the approval store at a temp dir and reset the coordinator."""
+    """Point the approval store at a temp dir and reset the coordinator.
+
+    Also clears the process-global turn-origin registry entry for the gate
+    tests' thread: other suites on the same xdist worker (the in-process bot
+    adapter stamps origins on every chat_stream) must not make the park gate
+    see a bot origin for "t1"."""
+    from nymeria.core.bot_reactions import clear_turn_origin
+
     settings = MagicMock(data_dir=tmp_path, fcm_enabled=False)
     monkeypatch.setattr("nymeria.config.get_settings", lambda: settings)
     monkeypatch.setattr(fa, "_coordinator", None)
+    clear_turn_origin("t1")
     yield
 
 
@@ -238,15 +246,58 @@ async def test_gate_ask_mode_skips_sync_surface_turns():
 
 
 @pytest.mark.asyncio
-async def test_gate_ask_mode_skips_bot_origin_threads(monkeypatch):
+async def test_gate_ask_mode_bot_origin_is_platform_aware(monkeypatch):
+    """Phase 3: bot-origin turns park where the bot renders inline button
+    prompts (telegram/discord); every other platform keeps the instant
+    auto-swap. The gate means "cannot render-and-wait", judged per platform.
+    """
     import nymeria.core.bot_reactions as bot_reactions
 
-    monkeypatch.setattr(
-        bot_reactions, "get_turn_origin", lambda thread_id: {"platform": "telegram"}
-    )
+    for platform in ("slack", "whatsapp", "teams", "somethingnew"):
+        monkeypatch.setattr(
+            bot_reactions,
+            "get_turn_origin",
+            lambda thread_id, p=platform: {"platform": p},
+        )
+        decide = _gate()
+        assert await decide(_context()) == {"action": "auto"}, platform
+        assert list_pending() == []
+
+    for platform in ("telegram", "discord"):
+        monkeypatch.setattr(
+            bot_reactions,
+            "get_turn_origin",
+            lambda thread_id, p=platform: {"platform": p},
+        )
+        decide = _gate()
+        task = asyncio.create_task(decide(_context()))
+        record_id = await _wait_for_record()
+        assert get_fallback_approval_coordinator().resolve(
+            record_id, approved=True, resolved_by="u1", hold_seconds=600
+        )
+        result = await task
+        assert result["action"] == "swap", platform
+        assert list_pending() == []
+
+
+@pytest.mark.asyncio
+async def test_gate_bot_origin_registry_fault_does_not_block_park(monkeypatch):
+    """A broken origin-registry read must not silently degrade a GUI turn's
+    ask mode to auto (fail-open, the pre-Phase-3 posture kept)."""
+    import nymeria.core.bot_reactions as bot_reactions
+
+    def boom(thread_id):
+        raise RuntimeError("registry exploded")
+
+    monkeypatch.setattr(bot_reactions, "get_turn_origin", boom)
     decide = _gate()
-    assert await decide(_context()) == {"action": "auto"}
-    assert list_pending() == []
+    task = asyncio.create_task(decide(_context()))
+    record_id = await _wait_for_record()
+    assert get_fallback_approval_coordinator().resolve(
+        record_id, approved=False, resolved_by="u1"
+    )
+    result = await task
+    assert result["action"] == "fail"
 
 
 @pytest.mark.asyncio

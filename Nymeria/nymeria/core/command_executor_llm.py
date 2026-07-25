@@ -112,25 +112,14 @@ class LLMCommandsMixin:
         )
 
     async def _cmd_fallback(self, args: list[str], rest: str) -> str:
-        """Manage the fallback chain, active holds, and consent prompts."""
+        """Manage the fallback chain (list/add/remove/clear/set).
+
+        The consent subcommands (status/revert/approvals/approve/deny) are
+        registered child paths, so the registry's longest-prefix match routes
+        them to ``_cmd_fallback_<sub>`` before this parent ever parses; only
+        the chain grammar and unknown tokens reach here.
+        """
         sub = args[0].lower() if args else "list"
-
-        # Human-only subcommands: the agent must never resolve its own parked
-        # switch prompts or revert a hold out from under the user (same
-        # re-check the /hook family does for its approvals path).
-        if self.actor == "agent" and sub in {"approvals", "approve", "deny", "revert"}:
-            return f"[Error]: Command `/fallback {sub}` is not available to the agent."
-
-        if sub == "status":
-            return await self._cmd_fallback_status()
-        if sub == "revert":
-            return await self._cmd_fallback_revert()
-        if sub == "approvals":
-            return self._cmd_fallback_approvals()
-        if sub == "approve":
-            return self._resolve_fallback_approval(args[1:], approved=True)
-        if sub == "deny":
-            return self._resolve_fallback_approval(args[1:], approved=False)
 
         settings = await self.api.get_settings()
         chain = self._fallback_chain(settings)
@@ -180,7 +169,7 @@ class LLMCommandsMixin:
             "[list|add|remove|clear|set|status|revert|approvals|approve|deny]"
         )
 
-    async def _cmd_fallback_status(self) -> str:
+    async def _fallback_status_markdown(self) -> str:
         """The consent modes plus the active thread's fallback hold, if any."""
         settings = await self.api.get_settings()
         lines = [
@@ -217,7 +206,7 @@ class LLMCommandsMixin:
                 )
         return "[Info]: Fallback status\n" + "\n".join(lines)
 
-    async def _cmd_fallback_revert(self) -> str:
+    async def _fallback_revert_markdown(self) -> str:
         """Clear the active thread's fallback hold (permanent or timed)."""
         missing = self._require_thread()
         if missing:
@@ -246,6 +235,28 @@ class LLMCommandsMixin:
             f"configured model (was on {cleared.provider}/{cleared.model})."
         )
 
+    # -- registered child-path handlers (Phase 3) ---------------------------
+    #
+    # The registry's longest-prefix match dispatches "/fallback <sub>" to
+    # these directly (the parent never parses these tokens), and
+    # CommandService.execute rejects agent callers pre-dispatch for the
+    # agent_allowed=False registrations, so no actor re-check is needed here.
+
+    async def _cmd_fallback_status(self, args: list[str], rest: str) -> str:
+        return await self._fallback_status_markdown()
+
+    async def _cmd_fallback_revert(self, args: list[str], rest: str) -> str:
+        return await self._fallback_revert_markdown()
+
+    async def _cmd_fallback_approvals(self, args: list[str], rest: str) -> str:
+        return self._fallback_approvals_markdown()
+
+    async def _cmd_fallback_approve(self, args: list[str], rest: str) -> str:
+        return self._resolve_fallback_approval(args, approved=True)
+
+    async def _cmd_fallback_deny(self, args: list[str], rest: str) -> str:
+        return self._resolve_fallback_approval(args, approved=False)
+
     def _thread_config_manager_or_none(self) -> Any | None:
         agent = self._agent()
         return getattr(agent, "thread_config_manager", None) if agent else None
@@ -258,7 +269,7 @@ class LLMCommandsMixin:
             return list_pending()
         return list_pending(self.user_id)
 
-    def _cmd_fallback_approvals(self) -> str:
+    def _fallback_approvals_markdown(self) -> str:
         records = self._visible_fallback_approvals()
         if not records:
             return "[Info]: No pending fallback prompts."

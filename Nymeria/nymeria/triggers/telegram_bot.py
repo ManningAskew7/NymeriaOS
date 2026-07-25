@@ -50,8 +50,11 @@ from .sse_consumer import (
     consume_autonomous_firehose,
     consume_sse_stream,
     dispatch_event,
+    fallback_hold_phrase,
     format_auth_prompt_message,
+    format_fallback_prompt_message,
     format_hook_approval_message,
+    format_provider_fallback_message,
 )
 from ..core.service_health import HEARTBEAT_INTERVAL_SECONDS, write_service_heartbeat
 
@@ -137,6 +140,11 @@ STOP_BUTTON_TOKEN_TTL_SECONDS = 60 * 60
 # just-expired message still gets a clean "no longer pending" answer instead
 # of "expired button". The backend window ceiling is 600s.
 HOOK_APPROVAL_TOKEN_TTL_SECONDS = 30 * 60
+# Fallback-consent tokens back both the Swap/Don't-swap prompt buttons and
+# the Revert button left on resolved/notice messages. Reverts stay useful for
+# the whole hold (hours, or permanent), so the TTL is a day, not the approval
+# window; a click after the hold lapsed is an idempotent no-op PATCH.
+FALLBACK_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 COMMAND_ACCESS_PUBLIC = "public"
 COMMAND_ACCESS_LINKED = "linked"
@@ -289,6 +297,27 @@ class _HookApprovalToken:
     expires_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class _FallbackToken:
+    """Server-side state behind fallback-consent inline-keyboard tokens.
+
+    Same opaque-token pattern as :class:`_HookApprovalToken` (Telegram
+    callback data is client-visible, 64-byte cap). One dataclass backs both
+    button families: the Swap/Don't-swap prompt (``fbap:``, resolved via the
+    REST approval endpoint) and the Revert button (``fbrv:``) minted onto
+    resolved prompts and swap notices, which clears the thread's active
+    fallback via a thread-config PATCH. ``default_hold_seconds`` is the hold
+    a plain Swap press applies (the prompt's advertised default)."""
+
+    record_id: str
+    thread_id: str
+    chat_id: int
+    nymeria_user_id: str
+    message_id: Optional[int]
+    default_hold_seconds: int
+    expires_at: float
+
+
 def _thread_title(thread: dict) -> str:
     title = str(thread.get("title") or "").strip()
     return title or "New Chat"
@@ -433,6 +462,11 @@ class NymeriaTelegramBot:
         # so hook_approval_resolved events can edit the original message.
         self._hook_approval_tokens: Dict[str, _HookApprovalToken] = {}
         self._hook_approval_by_record: Dict[str, str] = {}
+        # Fallback-consent buttons (Swap/Don't-swap prompts + Revert), same
+        # opaque-token pattern; the record index lets fallback_prompt_resolved
+        # events edit the original prompt message.
+        self._fallback_tokens: Dict[str, _FallbackToken] = {}
+        self._fallback_by_record: Dict[str, str] = {}
         # Shared-bot only: subordinate user-owned bots, keyed by row id.
         # Always empty on user-owned bot instances.
         self._user_bots: Dict[int, "NymeriaTelegramBot"] = {}
@@ -845,6 +879,28 @@ class NymeriaTelegramBot:
             self._hook_approval_by_record.pop(record.record_id, None)
         return record
 
+    def _prune_fallback_tokens(self) -> None:
+        now = time.monotonic()
+        expired = [
+            token
+            for token, record in self._fallback_tokens.items()
+            if record.expires_at <= now
+        ]
+        for token in expired:
+            record = self._fallback_tokens.pop(token, None)
+            if record is not None and self._fallback_by_record.get(
+                record.record_id
+            ) == token:
+                self._fallback_by_record.pop(record.record_id, None)
+
+    def _pop_fallback_token(self, token: str) -> Optional[_FallbackToken]:
+        record = self._fallback_tokens.pop(token, None)
+        if record is not None and self._fallback_by_record.get(
+            record.record_id
+        ) == token:
+            self._fallback_by_record.pop(record.record_id, None)
+        return record
+
     def run(self) -> None:
         """Build the Application, register handlers, and start polling."""
         app = (
@@ -957,6 +1013,12 @@ class NymeriaTelegramBot:
         # and the backend longest-prefix path match routes them).
         command("hook", self._cmd_hook)
 
+        # LLM fallback-consent commands (single /fallback token, same backend
+        # path-match routing; the consent prompt copy advertises these, so
+        # they must resolve here and not fall into Telegram's silent drop of
+        # unregistered slash commands).
+        command("fallback", self._cmd_fallback)
+
         # Config commands
         command("config_show", self._cmd_config_show)
         command("config_get", self._cmd_config_get)
@@ -993,10 +1055,17 @@ class NymeriaTelegramBot:
         command("new", self._cmd_new)
         command("unbind", self._cmd_unbind)
 
-        # Callback query handlers (stop button, hook-approval buttons)
+        # Callback query handlers (stop button, hook-approval buttons,
+        # fallback-consent Swap/Don't-swap and Revert buttons)
         app.add_handler(CallbackQueryHandler(self._on_stop_button, pattern=r"^stop:"))
         app.add_handler(
             CallbackQueryHandler(self._on_hook_approval_button, pattern=r"^hkap:")
+        )
+        app.add_handler(
+            CallbackQueryHandler(self._on_fallback_prompt_button, pattern=r"^fbap:")
+        )
+        app.add_handler(
+            CallbackQueryHandler(self._on_fallback_revert_button, pattern=r"^fbrv:")
         )
 
         # Plain text messages, photos, document uploads, voice notes, and
@@ -1478,6 +1547,12 @@ class NymeriaTelegramBot:
                 )
             except Exception:
                 logger.warning("Failed to send auth prompt to Telegram", exc_info=True)
+
+        async def on_provider_fallback(self, event: Dict[str, Any]) -> None:
+            # Applied model swap mid-turn: notice + inline Revert button.
+            await self._bot._send_fallback_swap_notice(
+                self._chat_id, self._thread_id, event
+            )
 
         async def on_error(self, content: str) -> None:
             self._saw_error = True
@@ -2349,6 +2424,15 @@ class NymeriaTelegramBot:
         """
         await self._send_backend_command(update, context, "hook")
 
+    async def _cmd_fallback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /fallback [status|revert|approvals|approve|deny ...].
+
+        Same single-token passthrough as ``/hook``: the consent prompt copy
+        advertises ``/fallback approve <id>`` as the buttonless resolve path,
+        so the command must reach the backend dispatcher from Telegram too.
+        """
+        await self._send_backend_command(update, context, "fallback")
+
     # =========================================================================
     # Config Commands
     # =========================================================================
@@ -3047,9 +3131,15 @@ class NymeriaTelegramBot:
         ``bot._application.bot`` (the autonomous firehose has no update).
         """
 
-        def __init__(self, bot: "NymeriaTelegramBot", chat_id: int) -> None:
+        def __init__(
+            self,
+            bot: "NymeriaTelegramBot",
+            chat_id: int,
+            thread_id: str = "",
+        ) -> None:
             self._bot = bot
             self._chat_id = chat_id
+            self._thread_id = thread_id
             self._text_buffer = ""
             self._tool_count = 0
             self._response_seen = False
@@ -3185,6 +3275,15 @@ class NymeriaTelegramBot:
                 await self._bot._send_html(self._chat_id, message)
             except Exception as e:
                 logger.warning(f"Failed to send autonomous auth prompt: {e}")
+
+        async def on_provider_fallback(self, event: Dict[str, Any]) -> None:
+            # Applied model swap on an autonomous/attached turn: notice +
+            # inline Revert. Bus copies carry thread_id; fall back to the
+            # handler's bound thread when a payload lacks it.
+            thread_id = str(event.get("thread_id") or self._thread_id or "")
+            await self._bot._send_fallback_swap_notice(
+                self._chat_id, thread_id, event
+            )
 
         async def on_error(self, content: str) -> None:
             try:
@@ -3372,6 +3471,372 @@ class NymeriaTelegramBot:
             return
         await query.answer("Approved." if approved else "Denied.")
 
+    def _fallback_swap_button_label(self, seconds: int) -> str:
+        if seconds >= 3600 and seconds % 3600 == 0:
+            return f"✅ Swap ({seconds // 3600}h)"
+        if seconds >= 60:
+            return f"✅ Swap ({seconds // 60}m)"
+        return "✅ Swap"
+
+    async def _on_fallback_prompt_event(
+        self, chat_id: int, event: Dict[str, Any]
+    ) -> None:
+        """Post a model-swap consent prompt with inline Swap/Don't-swap buttons.
+
+        Mirrors the hook-approval prompt: the body is the shared text
+        fallback (it carries the ``/fallback approve <id>`` commands, so the
+        prompt stays resolvable if the buttons fail), and authorization
+        state lives server-side behind an opaque token. A plain Swap press
+        applies the prompt's advertised default hold; "until reverted" rides
+        the same token with ``hold_permanent``.
+        """
+        record_id = str(event.get("record_id") or "")
+        owner = str(event.get("user_id") or "")
+        thread_id = str(event.get("thread_id") or "")
+        if not record_id:
+            return
+        self._prune_fallback_tokens()
+        token = secrets.token_urlsafe(16)
+        # None-vs-0 matters: 0 is a legitimate operator choice ("swap for
+        # this turn only, no cross-turn hold") and must pass through, so
+        # only an ABSENT value falls back to the 2h preset.
+        raw_hold = event.get("default_hold_seconds")
+        try:
+            default_hold = 7200 if raw_hold is None else max(0, int(raw_hold))
+        except (TypeError, ValueError):
+            default_hold = 7200
+        top_row = [
+            InlineKeyboardButton(
+                self._fallback_swap_button_label(default_hold),
+                callback_data=f"fbap:a:{token}",
+            ),
+        ]
+        if event.get("allow_permanent", True):
+            top_row.append(
+                InlineKeyboardButton(
+                    "Swap until reverted", callback_data=f"fbap:p:{token}"
+                )
+            )
+        reply_markup = InlineKeyboardMarkup([
+            top_row,
+            [InlineKeyboardButton("🚫 Don't swap", callback_data=f"fbap:d:{token}")],
+        ])
+        text = escape_html(format_fallback_prompt_message(event))
+        message = None
+        try:
+            message = await self._send_html(chat_id, text, reply_markup=reply_markup)
+        except Exception as e:
+            logger.warning(f"Failed to send fallback consent prompt: {e}")
+        message_id = getattr(message, "message_id", None)
+        self._fallback_tokens[token] = _FallbackToken(
+            record_id=record_id,
+            thread_id=thread_id,
+            chat_id=int(chat_id),
+            nymeria_user_id=owner,
+            message_id=int(message_id) if message_id is not None else None,
+            default_hold_seconds=default_hold,
+            expires_at=time.monotonic() + FALLBACK_TOKEN_TTL_SECONDS,
+        )
+        self._fallback_by_record[record_id] = token
+
+    async def _on_fallback_prompt_resolved_event(
+        self, event: Dict[str, Any]
+    ) -> None:
+        """Edit the original consent prompt on resolution, any surface.
+
+        Same single-edit-path contract as hook approvals. When the thread
+        ends up ON the fallback (approved or the timeout auto-swap), the
+        edited message keeps a Revert button so undoing the swap stays one
+        tap; decline/abort just retract the keyboard.
+        """
+        record_id = str(event.get("record_id") or "")
+        token = self._fallback_by_record.get(record_id)
+        if token is None:
+            return
+        record = self._pop_fallback_token(token)
+        if record is None or record.message_id is None:
+            return
+        outcome = str(event.get("outcome") or "")
+        resolved_by = str(event.get("resolved_by") or "").strip()
+        if outcome == "approved":
+            # hold_seconds is the resolver's REQUEST, forwarded verbatim;
+            # None means "apply the configured default", so no phrase is
+            # rendered for it (the provider_fallback notice that follows
+            # carries the hold actually applied). Mirrors the desktop card.
+            if event.get("hold_permanent") or event.get("hold_seconds") is not None:
+                hold = " " + fallback_hold_phrase(
+                    event.get("hold_seconds"), event.get("hold_permanent")
+                )
+            else:
+                hold = ""
+            line = "✅ Swapped to the fallback" + hold + (
+                f" (by {resolved_by})" if resolved_by else ""
+            ) + "."
+        elif outcome == "declined":
+            by = f" (by {resolved_by})" if resolved_by else ""
+            if str(event.get("kind") or "") == "refusal":
+                line = f"🚫 Not swapped{by}; the refusal stands."
+            else:
+                line = (
+                    f"🚫 Not swapped{by}; the turn fails with the "
+                    "original provider error."
+                )
+        elif outcome == "timeout":
+            line = "⏰ No answer in time; auto-swapped to the fallback."
+        elif outcome == "aborted":
+            line = "Turn cancelled; the model-swap prompt was dropped."
+        else:
+            line = "No longer pending."
+        reply_markup = None
+        if outcome in ("approved", "timeout"):
+            reply_markup = self._mint_fallback_revert_markup(
+                thread_id=record.thread_id,
+                chat_id=record.chat_id,
+                record_id=record.record_id,
+                nymeria_user_id=record.nymeria_user_id,
+                message_id=record.message_id,
+            )
+        application = self._application
+        if application is None:
+            return
+        try:
+            await application.bot.edit_message_text(
+                chat_id=record.chat_id,
+                message_id=record.message_id,
+                text=f"Model swap prompt.\n\n{line}",
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+        except Exception as e:
+            logger.debug(f"Failed to edit fallback prompt message: {e}")
+
+    def _mint_fallback_revert_markup(
+        self,
+        *,
+        thread_id: str,
+        chat_id: int,
+        record_id: str = "",
+        nymeria_user_id: str = "",
+        message_id: Optional[int] = None,
+    ) -> "InlineKeyboardMarkup":
+        """Mint a fresh Revert token for a thread now ON its fallback.
+
+        Revert tokens live only in ``_fallback_tokens`` (never the by-record
+        index; that tracks prompt messages for resolved-event edits)."""
+        token = secrets.token_urlsafe(16)
+        self._fallback_tokens[token] = _FallbackToken(
+            record_id=record_id,
+            thread_id=thread_id,
+            chat_id=int(chat_id),
+            nymeria_user_id=nymeria_user_id,
+            message_id=message_id,
+            default_hold_seconds=0,
+            expires_at=time.monotonic() + FALLBACK_TOKEN_TTL_SECONDS,
+        )
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ Revert", callback_data=f"fbrv:{token}")]
+        ])
+
+    async def _send_fallback_swap_notice(
+        self, chat_id: int, thread_id: str, event: Dict[str, Any]
+    ) -> None:
+        """Send an applied model-swap notice with an inline Revert button.
+
+        Shared by the interactive and autonomous SSE handlers'
+        ``on_provider_fallback`` callbacks (locked decision: bots with
+        buttons get notice + Revert; the text body keeps ``/fallback
+        revert`` as the buttonless management path).
+        """
+        self._prune_fallback_tokens()
+        # On a dispatched turn (@mention routing, /quick) the wire chunks are
+        # stamped with the ORIGINATING thread id while the hold is activated
+        # on the dispatch TARGET, which rides along as dispatched_to; Revert
+        # must PATCH the thread that actually holds the fallback.
+        dispatched = event.get("dispatched_to")
+        hold_thread = (
+            str((dispatched or {}).get("thread_id") or "")
+            if isinstance(dispatched, dict)
+            else ""
+        ) or thread_id
+        reply_markup = None
+        if hold_thread:
+            reply_markup = self._mint_fallback_revert_markup(
+                thread_id=hold_thread, chat_id=int(chat_id)
+            )
+        try:
+            await self._send_html(
+                chat_id,
+                escape_html(format_provider_fallback_message(event)),
+                reply_markup=reply_markup,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send fallback swap notice: {e}")
+
+    async def _on_fallback_prompt_button(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle a Swap / Swap-until-reverted / Don't-swap button press.
+
+        The backend is the authorization authority (owner-or-admin via
+        Act-As): a 404 means this clicker may not resolve the prompt, a 409
+        means it is no longer pending. The message edit happens via the
+        ``fallback_prompt_resolved`` firehose event, not here, so every
+        resolution surface shares one edit path.
+        """
+        query = update.callback_query
+        if query is None or not isinstance(query.data, str):
+            return
+        parts = query.data.split(":", 2)
+        if len(parts) != 3:
+            return
+        _, verdict, token = parts
+        if verdict not in ("a", "p", "d"):
+            return
+        self._prune_fallback_tokens()
+        record = self._fallback_tokens.get(token)
+        if record is None:
+            await query.answer("That consent prompt expired.", show_alert=True)
+            return
+
+        callback_chat_id = None
+        if query.message is not None and query.message.chat is not None:
+            callback_chat_id = int(query.message.chat.id)
+        elif update.effective_chat is not None:
+            callback_chat_id = int(update.effective_chat.id)
+        if callback_chat_id != record.chat_id:
+            await query.answer(
+                "That prompt belongs to another chat.", show_alert=True
+            )
+            return
+
+        tg_user = update.effective_user
+        if tg_user is None:
+            await query.answer(
+                "Couldn't verify who pressed the button.", show_alert=True
+            )
+            return
+        user_id = await self.resolve_user_id(int(tg_user.id))
+        if user_id is None:
+            await query.answer(
+                "Link your Nymeria account first (/bind).", show_alert=True
+            )
+            return
+
+        approved = verdict != "d"
+        try:
+            await self.api.resolve_fallback_approval(
+                record.record_id,
+                approved,
+                hold_seconds=(
+                    record.default_hold_seconds if verdict == "a" else None
+                ),
+                hold_permanent=verdict == "p",
+                user_id=user_id,
+            )
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status == 404:
+                await query.answer(
+                    "Only the requester or an admin can resolve this.",
+                    show_alert=True,
+                )
+            elif status == 409:
+                self._pop_fallback_token(token)
+                await query.answer("No longer pending.", show_alert=True)
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    logger.debug("Failed to remove fallback buttons from message")
+            else:
+                logger.warning(f"Fallback consent resolve failed: {e}")
+                await query.answer("Couldn't resolve the prompt.", show_alert=True)
+            return
+        except Exception as e:
+            logger.warning(f"Fallback consent resolve failed: {e}")
+            await query.answer("Couldn't resolve the prompt.", show_alert=True)
+            return
+        await query.answer(
+            "Swapping." if approved else "Staying on the primary model."
+        )
+
+    async def _on_fallback_revert_button(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle a Revert press: clear the thread's active fallback.
+
+        Routes through the standard thread-config PATCH as the clicker, so
+        ownership is enforced server-side exactly like ``/fallback revert``.
+        Reverting an already-lapsed hold is an idempotent no-op.
+        """
+        query = update.callback_query
+        if query is None or not isinstance(query.data, str):
+            return
+        parts = query.data.split(":", 1)
+        if len(parts) != 2:
+            return
+        token = parts[1]
+        self._prune_fallback_tokens()
+        record = self._fallback_tokens.get(token)
+        if record is None:
+            await query.answer(
+                "That button expired. Use /fallback revert.", show_alert=True
+            )
+            return
+
+        callback_chat_id = None
+        if query.message is not None and query.message.chat is not None:
+            callback_chat_id = int(query.message.chat.id)
+        elif update.effective_chat is not None:
+            callback_chat_id = int(update.effective_chat.id)
+        if callback_chat_id != record.chat_id:
+            await query.answer(
+                "That button belongs to another chat.", show_alert=True
+            )
+            return
+
+        tg_user = update.effective_user
+        if tg_user is None:
+            await query.answer(
+                "Couldn't verify who pressed the button.", show_alert=True
+            )
+            return
+        user_id = await self.resolve_user_id(int(tg_user.id))
+        if user_id is None:
+            await query.answer(
+                "Link your Nymeria account first (/bind).", show_alert=True
+            )
+            return
+
+        try:
+            await self.api.update_thread_config(
+                record.thread_id, clear_active_fallback=True, user_id=user_id
+            )
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status in (403, 404):
+                await query.answer(
+                    "Only the thread owner or an admin can revert.",
+                    show_alert=True,
+                )
+            else:
+                logger.warning(f"Fallback revert failed: {e}")
+                await query.answer(
+                    "Couldn't revert. Use /fallback revert.", show_alert=True
+                )
+            return
+        except Exception as e:
+            logger.warning(f"Fallback revert failed: {e}")
+            await query.answer(
+                "Couldn't revert. Use /fallback revert.", show_alert=True
+            )
+            return
+        self._pop_fallback_token(token)
+        await query.answer("Reverted to the primary model.")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logger.debug("Failed to remove revert button from message")
+
     async def _on_reaction_request_event(
         self, chat_id: int, event: Dict[str, Any]
     ) -> None:
@@ -3472,6 +3937,18 @@ class NymeriaTelegramBot:
             await self._on_hook_approval_resolved_event(event)
             return
 
+        # Fallback-consent prompts bypass the same gates for the inverse
+        # stake: an unanswered prompt AUTO-SWAPS the thread's model, so
+        # muting a thread must not silently cost the user their say. The
+        # pair is bus-only (never on the turn stream), so this is also
+        # ahead of the attach firehose suppression by construction.
+        if event_type == "fallback_prompt":
+            await self._on_fallback_prompt_event(chat_id, event)
+            return
+        if event_type == "fallback_prompt_resolved":
+            await self._on_fallback_prompt_resolved_event(event)
+            return
+
         # Outbound reaction sends (the react tool) are explicit agent
         # requests like approval prompts, not autonomous transcript delivery,
         # so they also bypass the delivery-mode gates.
@@ -3523,7 +4000,7 @@ class NymeriaTelegramBot:
         # Full delivery: get-or-create the per-thread handler, then route.
         state: Optional[Dict[str, Any]] = self._autonomous_state.get(thread_id)
         if state is None:
-            handler = self._AutonomousSSEHandler(self, chat_id)
+            handler = self._AutonomousSSEHandler(self, chat_id, thread_id)
             state = {"handler": handler}
             self._autonomous_state[thread_id] = state
         else:
@@ -3560,7 +4037,7 @@ class NymeriaTelegramBot:
                     ):
                         old_task.cancel()
                     self._autonomous_state.pop(thread_id, None)
-                    handler = self._AutonomousSSEHandler(self, chat_id)
+                    handler = self._AutonomousSSEHandler(self, chat_id, thread_id)
                     state = {"handler": handler}
                     self._autonomous_state[thread_id] = state
                     attach = None

@@ -651,3 +651,111 @@ def test_session_usage_skips_turns_marked_unrecorded() -> None:
     )
     assert state.session_usage.total_input == 130
     assert state.session_usage.turn_count == 2
+
+
+def test_provider_fallback_and_retry_reduce_to_status_notices() -> None:
+    """Model switches and retries render as one transcript line each instead
+    of falling through to a raw unknown-event diagnostic (Phase 3)."""
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=0.1)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "provider_retry",
+            "provider": "anthropic",
+            "model": "claude-fable-5",
+            "attempt": 1,
+            "max_retries": 2,
+            "reason": "timeout",
+        },
+        now=1.0,
+    )
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "provider_fallback",
+            "from_model": "claude-fable-5",
+            "to_model": "claude-haiku-4-5-20251001",
+            "hold_seconds": 7200,
+            "reason": "provider_server_error",
+            "http_status": 529,
+        },
+        now=2.0,
+    )
+
+    notices = [
+        message
+        for message in state.messages
+        if isinstance(message, SystemMessage) and message.kind == "provider_status"
+    ]
+    assert len(notices) == 2
+    assert "Retrying claude-fable-5 (1/2): timeout." == notices[0].content
+    assert (
+        "Switched to fallback claude-haiku-4-5-20251001 for 2 hours "
+        "(provider_server_error, HTTP 529). Revert with /fallback revert."
+        == notices[1].content
+    )
+    assert not state.diagnostics
+
+
+def test_provider_fallback_refusal_copy_is_distinct() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "provider_fallback",
+            "from_model": "claude-fable-5",
+            "to_model": "claude-opus-4-8",
+            "permanent": True,
+            "reason": "refusal",
+        },
+        now=1.0,
+    )
+    notice = state.messages[-1]
+    assert isinstance(notice, SystemMessage)
+    assert notice.kind == "provider_status"
+    assert "refused this turn" in notice.content
+    assert "not an error" in notice.content
+    assert "until reverted" in notice.content
+
+
+def test_provider_fallback_rewound_notice_flags_superseded_output() -> None:
+    # The mid-stream recovery shape rolls the turn back and re-drives it; the
+    # CLI transcript keeps the already-rendered partial text, so the notice
+    # must say it was superseded.
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "provider_fallback",
+            "from_model": "claude-fable-5",
+            "to_model": "claude-opus-4-8",
+            "hold_seconds": 7200,
+            "reason": "stream_error",
+            "rewound": True,
+            "stream_chunks": 12,
+        },
+        now=1.0,
+    )
+    notice = state.messages[-1]
+    assert isinstance(notice, SystemMessage)
+    assert "superseded" in notice.content
+
+
+def test_provider_fallback_hold_phrase_matches_bot_surfaces() -> None:
+    # The reducer feeds the SHARED formatter: a 90s hold must render "for 1
+    # min" exactly like the bots (the retired local helper said "for 90s").
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = reduce_stream_event(
+        state,
+        {
+            "type": "provider_fallback",
+            "to_model": "claude-opus-4-8",
+            "hold_seconds": 90,
+            "reason": "provider_server_error",
+        },
+        now=1.0,
+    )
+    notice = state.messages[-1]
+    assert isinstance(notice, SystemMessage)
+    assert "for 1 min" in notice.content

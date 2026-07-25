@@ -115,6 +115,8 @@
   let compactThresholdMode = $state<'default' | 'percentage' | 'tokens'>('default');
   let compactThresholdPct = $state('');
   let compactThresholdTokens = $state('');
+  let fallbackSwitchMode = $state<'default' | 'auto' | 'ask'>('default');
+  let refusalSwapMode = $state<'default' | 'off' | 'ask' | 'auto'>('default');
   let providerCatalog = $state<LLMProviderSpec[]>([]);
   let mobileThreadProviderGroups = $derived(buildMobileProviderGroups(providerCatalog));
 
@@ -506,6 +508,17 @@
     }
   });
 
+  // Keep the local snapshot tracking the store while the panel is open, so a
+  // background refresh (ChatPanel reloads the config on provider_fallback)
+  // surfaces the active-fallback Revert row live. Only the snapshot syncs;
+  // form fields are NOT re-initialized, so in-flight edits survive.
+  $effect(() => {
+    const cfg = threadConfigStore.configs.get(threadId);
+    if (open && cfg && cfg !== threadConfig) {
+      threadConfig = cfg;
+    }
+  });
+
   $effect(() => {
     if (open) {
       untrack(() => {
@@ -590,6 +603,8 @@
       ? String(cfg.llmConfig.compact_threshold) : '';
     compactThresholdTokens = cfg?.llmConfig?.compact_threshold_tokens != null
       ? String(cfg.llmConfig.compact_threshold_tokens) : '';
+    fallbackSwitchMode = cfg?.llmConfig?.fallback_switch_mode ?? 'default';
+    refusalSwapMode = cfg?.llmConfig?.refusal_swap_mode ?? 'default';
 
     // Tools
     if (cfg?.hasCustomizations) {
@@ -659,6 +674,8 @@
       ? String(orig.llmConfig.compact_threshold) : '';
     const origCompactTokens = orig?.llmConfig?.compact_threshold_tokens != null
       ? String(orig.llmConfig.compact_threshold_tokens) : '';
+    const origFallbackSwitchMode = orig?.llmConfig?.fallback_switch_mode ?? 'default';
+    const origRefusalSwapMode = orig?.llmConfig?.refusal_swap_mode ?? 'default';
     const origSystemPrompt = orig?.systemPrompt ?? '';
     const origCallable = orig?.callable ?? false;
     const origCallableName = orig?.callableName ?? '';
@@ -708,6 +725,8 @@
     if (compactThresholdMode !== origCompactMode) return true;
     if (compactThresholdPct !== origCompactPct) return true;
     if (compactThresholdTokens !== origCompactTokens) return true;
+    if (fallbackSwitchMode !== origFallbackSwitchMode) return true;
+    if (refusalSwapMode !== origRefusalSwapMode) return true;
     if (disabledTools.size !== origDisabled.size) return true;
     for (const t of disabledTools) { if (!origDisabled.has(t)) return true; }
     if (enabledTools.size !== origEnabled.size) return true;
@@ -787,7 +806,8 @@
         llmExtendedThinking !== 'default' || llmReasoningEffort ||
         llmUseModelDefaults !== 'default' || llmProviderRoute !== 'default' ||
         llmOpenAiApiMode !== 'default' ||
-        compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens;
+        compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens ||
+        fallbackSwitchMode !== 'default' || refusalSwapMode !== 'default';
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
@@ -819,6 +839,8 @@
         llm.compact_threshold_mode = compactThresholdMode === 'default' ? null : compactThresholdMode;
         llm.compact_threshold = compactThresholdPct ? parseFloat(compactThresholdPct) : null;
         llm.compact_threshold_tokens = compactThresholdTokens ? parseInt(compactThresholdTokens, 10) : null;
+        llm.fallback_switch_mode = fallbackSwitchMode === 'default' ? null : fallbackSwitchMode;
+        llm.refusal_swap_mode = refusalSwapMode === 'default' ? null : refusalSwapMode;
         updates.llm_config = llm;
       } else {
         updates.clear_llm_config = true;
@@ -918,6 +940,28 @@
       error = humanizeErrorText(e, { action: 'start', resource: 'dreaming' });
     } finally {
       dreamRunning = false;
+    }
+  }
+
+  // Revert an active fallback hold (mirrors /fallback revert): the PATCH
+  // clear_active_fallback flag clears the hold and latches the model-facing
+  // end note. The returned config replaces the local snapshot directly (no
+  // initFormFromConfig) so in-flight form edits survive the revert.
+  let fallbackRevertBusy = $state(false);
+  let fallbackRevertError = $state('');
+
+  async function revertActiveFallback() {
+    if (fallbackRevertBusy) return;
+    fallbackRevertBusy = true;
+    fallbackRevertError = '';
+    try {
+      threadConfig = await threadConfigStore.updateConfig(threadId, {
+        clear_active_fallback: true,
+      });
+    } catch (e) {
+      fallbackRevertError = humanizeErrorText(e, { action: 'update', resource: 'the fallback hold' });
+    } finally {
+      fallbackRevertBusy = false;
     }
   }
 
@@ -1259,6 +1303,35 @@
         {/if}
 
       {:else if activeTab === 'model'}
+        {#if threadConfig?.activeLlmFallback}
+          <!-- Active fallback hold (llm-fallback-consent): this thread is
+               pinned to its fallback model. Revert mirrors /fallback revert
+               (the PATCH clear_active_fallback flag) and leaves the
+               model-facing end note. -->
+          <div class="setting-group active-fallback-row">
+            <span class="active-fallback-text">
+              Fallback active: <strong>{threadConfig.activeLlmFallback.model}</strong>
+              {threadConfig.activeLlmFallback.reason === 'refusal' ? 'after a refusal' : 'after provider errors'}
+              {#if threadConfig.activeLlmFallback.expiresAt}
+                (until {new Date(threadConfig.activeLlmFallback.expiresAt).toLocaleString()})
+              {:else}
+                (until reverted)
+              {/if}
+            </span>
+            <button
+              type="button"
+              class="revert-fallback-btn"
+              onclick={revertActiveFallback}
+              disabled={fallbackRevertBusy}
+            >
+              Revert to {threadConfig.activeLlmFallback.sourceModel}
+            </button>
+            {#if fallbackRevertError}
+              <p class="hint revert-error">{fallbackRevertError}</p>
+            {/if}
+          </div>
+        {/if}
+
         <div class="setting-group">
           <label class="setting-label" for="mobile-thread-provider">Provider</label>
           <ProviderSelect
@@ -1527,6 +1600,27 @@
             />
           </div>
         {/if}
+
+        <div class="setting-group">
+          <label class="setting-label" for="thread-fallback-switch-mode">Error Fallback Consent</label>
+          <select id="thread-fallback-switch-mode" class="setting-input" bind:value={fallbackSwitchMode}>
+            <option value="default">Default (inherit global)</option>
+            <option value="auto">Swap silently</option>
+            <option value="ask">Ask first</option>
+          </select>
+          <p class="hint">Whether a provider-failure fallback swap asks before switching this thread's model.</p>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="thread-refusal-swap-mode">Refusal Swap</label>
+          <select id="thread-refusal-swap-mode" class="setting-input" bind:value={refusalSwapMode}>
+            <option value="default">Default (inherit global)</option>
+            <option value="ask">Ask first</option>
+            <option value="auto">Swap silently</option>
+            <option value="off">Off (rewind and explain)</option>
+          </select>
+          <p class="hint">What happens when the model's safety classifier refuses a turn (a clean response, not an error).</p>
+        </div>
 
       {:else if activeTab === 'tools'}
         <div class="tools-search">
@@ -1891,6 +1985,43 @@
 {/if}
 
 <style>
+  .active-fallback-row {
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-elevated) 88%, var(--warning, var(--accent-primary)));
+    border: 1px solid var(--border-subtle);
+  }
+
+  .active-fallback-text {
+    display: block;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-sm);
+  }
+
+  .revert-fallback-btn {
+    min-height: var(--touch-target-min);
+    padding: 8px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+  }
+
+  .revert-fallback-btn:active:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .revert-fallback-btn:disabled {
+    opacity: 0.55;
+  }
+
+  .revert-error {
+    color: var(--error, #e5484d);
+  }
+
   .thread-settings-modal {
     position: fixed;
     inset: 0;

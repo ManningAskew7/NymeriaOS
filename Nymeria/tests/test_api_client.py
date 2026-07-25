@@ -314,6 +314,39 @@ def test_api_client_account_wrappers_preserve_paths_headers_and_bodies(monkeypat
     assert requests[7]["headers"]["X-Nymeria-Act-As"] == "user-1"
 
 
+def test_api_client_fallback_approval_wrappers(monkeypatch):
+    """The consent wrappers hit the llm-fallback router with the resolve
+    payload shape (hold fields only when chosen) and Act-As for the clicker."""
+    _patch_async_client(monkeypatch)
+
+    async def run() -> None:
+        client = NymeriaAPIClient(base_url="http://api", api_key="secret")
+        try:
+            await client.get_fallback_approvals(user_id="user-1")
+            await client.resolve_fallback_approval(
+                "rec/1", True, hold_seconds=600, user_id="user-1"
+            )
+            await client.resolve_fallback_approval(
+                "rec-2", True, hold_permanent=True, user_id="user-1"
+            )
+            await client.resolve_fallback_approval("rec-3", False, user_id="user-1")
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+    requests = FakeAsyncClient.instances[0].requests
+    assert [request["method"] for request in requests] == [
+        "GET", "POST", "POST", "POST",
+    ]
+    assert requests[0]["url"] == "http://api/llm/fallback-approvals"
+    assert requests[1]["url"] == "http://api/llm/fallback-approvals/rec%2F1/resolve"
+    assert requests[1]["json"] == {"approved": True, "hold_seconds": 600}
+    assert requests[2]["json"] == {"approved": True, "hold_permanent": True}
+    assert requests[3]["json"] == {"approved": False}
+    assert requests[3]["headers"]["X-Nymeria-Act-As"] == "user-1"
+
+
 def test_api_client_cli_domain_wrappers_use_desktop_api_routes(monkeypatch):
     _patch_async_client(monkeypatch)
 

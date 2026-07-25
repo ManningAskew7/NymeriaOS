@@ -225,8 +225,23 @@ class InProcessBotAPI:
         return self._chat_stream(message, thread_id, user_id)
 
     async def _chat_stream(self, message: str, thread_id: str, user_id: str):
+        from ...core.bot_reactions import set_turn_origin
+
         authed = self._authenticated_user(user_id)
         self._require_thread_access(authed, thread_id)
+        # Mirror the HTTP route's platform_origin stamping: the adapter's
+        # origin_client_id IS the platform name ("whatsapp"/"teams"). The
+        # webhook layer does not thread message ids down here, so the ids
+        # stay empty; that is enough for the platform-aware backend gates
+        # (the fallback-consent park gate must see these turns as bot-origin
+        # on a button-less platform and auto-swap instead of parking), and
+        # the react tool has no executor bot on these platforms anyway.
+        set_turn_origin(
+            thread_id,
+            platform=self._origin_client_id,
+            channel_id="",
+            message_id="",
+        )
         # Global interactive-turn admission (backlog #83): the adapter is an
         # in-process mirror of POST /chat, so its turns draw against the same
         # ceiling. Busy-thread prompts pass through (they queue onto the

@@ -405,6 +405,37 @@ Per-thread delivery is controlled from Thread Settings:
 | `notify_only` | Suppress normal autonomous output; send only explicit `notify` events and task errors. |
 | `off` | Suppress autonomous Telegram delivery for the thread. |
 
+## Model-Swap Consent (LLM Fallback)
+
+Telegram is a park-capable platform for the LLM fallback-consent layer:
+because the bot streams turns over SSE (with keepalives), a Telegram-origin
+turn in `ask` mode parks exactly like a GUI turn instead of auto-swapping.
+
+- A `fallback_prompt` event posts a consent prompt with inline buttons:
+  **Swap** labeled with the prompt's default hold (e.g. **Swap (2h)**; a 0
+  default renders plain **Swap** and applies to this turn only), **Swap
+  until reverted** (when permanent holds are allowed), and **Don't swap**.
+  The message body is the
+  shared text prompt, so `/fallback approve <id> [minutes|permanent]` and
+  `/fallback deny <id>` always work even if the buttons fail. No answer by
+  the deadline auto-swaps (a fallback is a resilience action).
+- Buttons carry opaque tokens (Telegram callback data is client-visible and
+  capped at 64 bytes); the backend authorizes the clicker (owner-or-admin),
+  so a 404 answer means "not yours to resolve" and a 409 means "no longer
+  pending".
+- `fallback_prompt_resolved` is the single edit path for the prompt message
+  from every resolve surface (buttons, commands, REST, desktop, timeout,
+  abort). When the thread ends up ON the fallback (approved or timeout),
+  the edited message keeps an inline **Revert** button that clears the hold
+  via the standard thread-config PATCH as the clicker.
+- Applied swaps (`provider_fallback`, any consent mode) post a short notice
+  with the same Revert button; unlike the consent prompt, the notice
+  respects the autonomous delivery-mode gate. The consent prompt pair
+  bypasses `full`/`notify_only`/`off` (muting a thread must not silently
+  cost the user their say).
+- `/fallback` (status, revert, approvals, approve, deny) is forwarded to the
+  backend command service like `/hook`.
+
 ## Emoji Reactions
 
 Two-way emoji reactions, opt-in via `TELEGRAM_REACTION_TRIGGER_ENABLED=true`

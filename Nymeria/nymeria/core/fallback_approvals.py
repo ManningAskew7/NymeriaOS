@@ -31,15 +31,18 @@ Deliberate policy (developer-locked, do not "fix"):
   resilience action; an unanswered prompt should keep the turn working.
   (Inverse of the hook ``require_approval`` deny-on-timeout, which guards
   dangerous actions.)
-- Only a turn a human is actually watching parks. That means ALL of:
-  interactive source stamp (``is_autonomous`` False; autonomous/self-invoke/
-  sourceless turns never park), holder kind "user" (callable/handoff child
-  turns serve a waiting parent tool call, not a person), an async streaming
-  surface (``sync_surface`` False: ``/chat/sync`` serves bots and
-  programmatic callers that cannot render the prompt), and no chat-bot
-  platform origin (``core/bot_reactions.py``; interactive bot buttons are a
-  later phase). Everything else skips: transport asks resolve "auto"
-  (legacy silent swap), refusal asks resolve "swap".
+- Only a turn a human is actually watching, on a surface that can render the
+  prompt and wait, parks. That means ALL of: interactive source stamp
+  (``is_autonomous`` False; autonomous/self-invoke/sourceless turns never
+  park), holder kind "user" (callable/handoff child turns serve a waiting
+  parent tool call, not a person), an async streaming surface
+  (``sync_surface`` False: ``/chat/sync`` serves the webhook bots, the
+  native bots' streaming-failure fallback, and programmatic callers, none of
+  which can wait), and no chat-bot platform origin UNLESS that platform's
+  bot renders inline button prompts (``PARK_CAPABLE_BOT_PLATFORMS``:
+  telegram + discord since Phase 3, via ``core/bot_reactions.py``).
+  Everything else skips: transport asks resolve "auto" (legacy silent
+  swap), refusal asks resolve "swap".
 """
 
 from __future__ import annotations
@@ -601,15 +604,35 @@ async def _await_parked_decision(
     return decision
 
 
-def _thread_has_bot_origin(thread_id: str) -> bool:
-    """True when the current turn came in through a chat-platform bot.
+#: Chat platforms whose bots render the consent prompt with inline buttons
+#: and stream their turns over SSE (keepalive-safe for the park window), so
+#: their turns may park like GUI turns (Phase 3). Everything else keeps the
+#: instant auto-swap: slack (streams, but no button surface yet) and
+#: whatsapp/teams (button-less webhook adapters) stamp the turn-origin
+#: registry so this gate can see them, and unknown platforms block too.
+PARK_CAPABLE_BOT_PLATFORMS = frozenset({"telegram", "discord"})
 
-    Bots cannot render the consent prompt until the bot-buttons phase ships,
-    so their turns are treated as non-button channels and auto-swap
-    immediately (developer-locked: no reply-word convention)."""
+
+def _bot_origin_blocks_park(thread_id: str) -> bool:
+    """True when the turn's chat-platform origin cannot render-and-wait.
+
+    The gate's meaning since Phase 3: "this surface cannot render the
+    consent prompt and wait for an answer", judged per platform, NOT "bots
+    never park". A registry FAULT does not block (pre-Phase-3 posture kept):
+    the dominant turns are GUI ones, and silently degrading their ask mode
+    to auto because an unrelated registry read broke would be worse than a
+    rare parked-then-timeout turn on a button-less platform. The residual
+    cost of that posture: a turn whose origin was never stamped (a custom
+    privileged caller posing as a bot) or whose park-capable bot is not
+    actually listening parks with no visible prompt, stalling bounded by
+    the prompt window (default 180s) before auto-swapping."""
     try:
         from .bot_reactions import get_turn_origin
-        return get_turn_origin(thread_id) is not None
+        origin = get_turn_origin(thread_id)
+        if origin is None:
+            return False
+        platform = str(origin.get("platform") or "").lower()
+        return platform not in PARK_CAPABLE_BOT_PLATFORMS
     except Exception:  # noqa: BLE001
         return False
 
@@ -660,14 +683,18 @@ def make_fallback_decision_callback(
         # "ask": only a turn a human is watching parks (see the module
         # docstring's locked policy). Autonomous/self-invoke/source-unknown
         # turns, callable/handoff child turns (their "user" is a waiting
-        # parent tool call), sync-surface turns (/chat/sync: bots and
-        # programmatic callers), and bot-origin threads all skip.
+        # parent tool call), sync-surface turns (/chat/sync: webhook bots,
+        # the native bots' streaming-failure fallback, programmatic
+        # callers), and bot-origin threads on platforms without inline
+        # buttons all skip. Telegram/Discord-origin turns park like GUI
+        # turns since Phase 3 (their bots render button prompts and stream
+        # over SSE).
         consent_capable = (
             context.get("is_autonomous") is False
             and context.get("holder_kind") == "user"
             and not context.get("sync_surface")
         )
-        if not consent_capable or _thread_has_bot_origin(thread_id):
+        if not consent_capable or _bot_origin_blocks_park(thread_id):
             return skip_result
 
         try:

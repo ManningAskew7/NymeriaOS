@@ -1910,8 +1910,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 133
-    assert sum(cmd.executable for cmd in service._commands.values()) == 116
+    assert len(service._commands) == 138
+    assert sum(cmd.executable for cmd in service._commands.values()) == 121
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -1971,6 +1971,24 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     assert (hook_create.agent_allowed, hook_create.mutates_state) == (False, True)
     assert "telegram" not in hook_create.surfaces
     assert by_name["hook delete"].danger_level == "dangerous"
+
+    # Fallback consent family (Phase 3): the five children are registered
+    # paths, so longest-prefix parsing dispatches "/fallback <sub>" straight
+    # to the _cmd_fallback_<sub> handlers (the parent keeps only the chain
+    # grammar), and the human-only ones carry agent_allowed=False, enforced
+    # pre-dispatch (the agent must not resolve or revert its own consent).
+    assert by_name["fallback"].agent_allowed is True
+    assert by_name["fallback status"].agent_allowed is True
+    for sub in ("revert", "approvals", "approve", "deny"):
+        entry = by_name[f"fallback {sub}"]
+        assert entry.agent_allowed is False, sub
+        assert entry.category == "LLM", sub
+    assert by_name["fallback approve"].mutates_state is True
+    assert by_name["fallback deny"].mutates_state is True
+    assert by_name["fallback revert"].mutates_state is True
+    assert service._subcommands_for_path(("fallback",)) == [
+        "approvals", "approve", "deny", "revert", "status",
+    ]
 
     # The catalog registers onto whichever service instance is passed in.
     fresh = CommandService()

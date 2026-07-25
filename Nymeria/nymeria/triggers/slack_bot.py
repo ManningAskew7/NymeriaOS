@@ -439,6 +439,7 @@ class NymeriaSlackBot:
             user_id=user_id,
             target=target,
             attachments=attachments or None,
+            origin_message_id=ts,
         )
 
     def _resolve_thread_id(
@@ -687,6 +688,7 @@ class NymeriaSlackBot:
         user_id: str,
         target: SlackReplyTarget,
         attachments: Optional[List[Dict[str, Any]]] = None,
+        origin_message_id: str = "",
     ) -> None:
         handler = _SlackStreamHandler(self, target)
         try:
@@ -697,6 +699,15 @@ class NymeriaSlackBot:
                     user_id,
                     attachments=attachments,
                     force_unsupported_attachments=bool(attachments),
+                    # Stamps the turn-origin registry so platform-aware
+                    # backend gates (the fallback-consent park gate) know
+                    # this turn's surface cannot render interactive prompts.
+                    platform_origin={
+                        "platform": "slack",
+                        "channel_id": target.channel_id,
+                        "message_id": origin_message_id,
+                        "kind": "message",
+                    } if origin_message_id else None,
                 ),
                 handler,
             )

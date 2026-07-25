@@ -41,6 +41,7 @@ SystemMessageKind: TypeAlias = Literal[
     "error",
     "tool_reload",
     "autonomous",
+    "provider_status",
     "diagnostic",
 ]
 

@@ -75,6 +75,7 @@ class FakeAPI:
         user_id,
         attachments=None,
         force_unsupported_attachments=False,
+        platform_origin=None,
     ):
         self.chat_stream_calls.append(
             {
@@ -83,6 +84,7 @@ class FakeAPI:
                 "user_id": user_id,
                 "attachments": attachments,
                 "force_unsupported_attachments": force_unsupported_attachments,
+                "platform_origin": platform_origin,
             }
         )
         yield {"type": "response", "content": "hello "}
@@ -201,6 +203,15 @@ def test_dm_message_streams_to_native_slack_dm_thread():
             "user_id": "user-1",
             "attachments": None,
             "force_unsupported_attachments": False,
+            # Stamps the turn-origin registry: the fallback-consent park gate
+            # must see slack turns as bot-origin on a button-less platform
+            # (instant auto-swap, never a silent park).
+            "platform_origin": {
+                "platform": "slack",
+                "channel_id": "D1",
+                "message_id": "171.100",
+                "kind": "message",
+            },
         }
     ]
     assert client.posts == [
