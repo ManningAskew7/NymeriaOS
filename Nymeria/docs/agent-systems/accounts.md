@@ -278,6 +278,30 @@ NYMERIA_SERVICE_TOKEN=nym_...
 
 Then `docker compose --env-file .env.docker up -d` to propagate the variable into every container. Discord/Telegram bots print `Auth: service token` at startup when they pick it up - `NYMERIA_API_KEY` is retired, so the service token is now the only way for shared infrastructure to authenticate.
 
+**The service token expires.** It is a regular account token, so it dies at
+`ACCOUNT_TOKEN_TTL_DAYS` (default 90 days) with no advance warning. When it
+expires, worker relays and bot admin lookups all 401 at once ("Autonomous
+task error ... 401 for .../chat" in threads, "Service token rejected by API
+(401)" in worker logs, and bots may wrongly claim accounts aren't linked).
+Rotate with:
+
+```bash
+docker exec nymeria-api python3 run.py users issue-token bot-service --label nymeria_service_token
+```
+
+then update `NYMERIA_SERVICE_TOKEN` in `.env.docker` and recreate with
+`docker compose --env-file .env.docker up -d`, including `--profile <bot>`
+flags for any running bot containers (`restart` does not reload env, and
+profile-gated services are skipped without their profile). Set
+`ACCOUNT_TOKEN_TTL_DAYS` higher before minting if 90 days is too short for
+your deployment; the `users` CLI honors it, provided the variable actually
+reaches the process. The full-stack `docker-compose.yml` forwards the three
+`ACCOUNT_*` vars into the containers (added 2026-07-25); on an older compose
+file that does not, pass it explicitly at mint time:
+`docker exec -e ACCOUNT_TOKEN_TTL_DAYS=365 nymeria-api python3 run.py users
+issue-token ...`, and verify with `docker exec nymeria-api printenv
+ACCOUNT_TOKEN_TTL_DAYS`.
+
 **How the header is honored:** Every authenticated route now resolves the caller via `verify_api_key`/`require_user`, which honors `X-Nymeria-Act-As: <user_id>` for admin callers. Non-admin callers sending it get 403; unknown/disabled targets get 404. Bots and the worker rely on this everywhere - they hold the admin service token and act-as the resolved per-user identity per request.
 
 **What the bots send:**
