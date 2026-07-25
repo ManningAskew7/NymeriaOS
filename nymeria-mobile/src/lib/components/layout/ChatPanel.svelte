@@ -792,6 +792,7 @@
           toProvider?: string;
           toModel?: string;
           holdSeconds?: number;
+          permanent?: boolean;
           expiresAt?: string | null;
           reason?: string;
           httpStatus?: number | null;
@@ -806,6 +807,7 @@
           toProvider: data.toProvider,
           toModel: data.toModel,
           holdSeconds: data.holdSeconds,
+          permanent: data.permanent,
           expiresAt: data.expiresAt,
           reason: data.reason,
           httpStatus: data.httpStatus,

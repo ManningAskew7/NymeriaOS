@@ -351,7 +351,15 @@ def test_expired_fallback_is_cleared_when_thread_idle():
 
     assert config.provider == "anthropic"
     assert config.model == "claude-sonnet-4-6"
-    agent.thread_config_manager.delete_config.assert_called_once_with("thread-1")
+    # The shared clear path SAVES (never deletes): it latches the model-facing
+    # end note on the config for the next turn (Phase 2, persisted-context
+    # principle). The consume path runs the save-or-delete choice later.
+    agent.thread_config_manager.delete_config.assert_not_called()
+    agent.thread_config_manager.save_config.assert_called_once()
+    saved = agent.thread_config_manager.save_config.call_args.args[0]
+    assert saved.active_llm_fallback is None
+    assert saved.pending_fallback_note["phase"] == "end"
+    assert "expired" in saved.pending_fallback_note["text"]
     agent.invalidate_thread_config_cache.assert_called_once_with("thread-1")
 
 

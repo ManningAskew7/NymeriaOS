@@ -102,6 +102,21 @@
     return null;
   });
 
+  // Active fallback hold (llm-fallback-consent): the thread is temporarily
+  // pinned to its fallback model. The chip deep-links to the Model tab, whose
+  // status row carries the Revert button.
+  const activeFallback = $derived(threadConfig?.activeLlmFallback ?? null);
+  const activeFallbackTooltip = $derived.by(() => {
+    if (!activeFallback) return '';
+    const cause = activeFallback.reason === 'refusal'
+      ? 'Refusal swap active'
+      : 'Provider-failure fallback active';
+    const until = activeFallback.expiresAt
+      ? ` until ${new Date(activeFallback.expiresAt).toLocaleString()}`
+      : ' until reverted';
+    return `${cause}${until}; was ${activeFallback.sourceModel}. Open Model settings to revert.`;
+  });
+
   let activeSkillCount = $state<number | null>(null);
   let activeSkillTooltip = $state('');
   let activeKitCount = $state<number | null>(null);
@@ -309,6 +324,15 @@
         label: effectiveModel.name,
         tooltip: `${effectiveModel.full}${effectiveModel.isOverride ? ' (thread override)' : ''}`,
         variant: effectiveModel.isOverride ? 'accent' : 'default',
+        settingsTab: 'model',
+      });
+    }
+    if (activeFallback) {
+      parts.push({
+        id: 'fallback',
+        label: `fallback: ${shortModelName(activeFallback.model)}`,
+        tooltip: activeFallbackTooltip,
+        variant: 'accent',
         settingsTab: 'model',
       });
     }
@@ -612,6 +636,15 @@
         aria-label="Configure thread model"
         onclick={() => onOpenSettings('model')}
       >{effectiveModel.name}</button>
+    {/if}
+    {#if activeFallback}
+      <button
+        class="header-model accent"
+        type="button"
+        data-tooltip={activeFallbackTooltip}
+        aria-label="Configure fallback hold"
+        onclick={() => onOpenSettings('model')}
+      >fallback: {shortModelName(activeFallback.model)}</button>
     {/if}
   {:else if metaParts.length > 0}
     <button

@@ -495,4 +495,10 @@ def create_graph(
         checkpointer=checkpointer,
     )
     logger.debug(f"[CHECKPOINT] Graph compiled, checkpointer={type(compiled.checkpointer).__name__ if compiled.checkpointer else 'None'}")
+    # Expose the LLMConfig instance the node closures actually read. Host-side
+    # stream-recovery machinery (GraphStreamProcessor.drive) must mutate THIS
+    # object for fallback activation / pending-note stamps to be visible to
+    # the re-driven agent node; a freshly resolved config with equal values is
+    # a different object and its mutations are dead state.
+    compiled.nymeria_llm_config = config.llm
     return compiled

@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, Tool
 from .agent_history import (
     build_message_timestamp_map,
     format_conversation_history,
+    strip_fallback_note,
     strip_prompt_context,
 )
 from .agent_text_extract import extract_content_parts
@@ -463,6 +464,10 @@ def _prompt_text_of(message: HumanMessage) -> str:
         text = "\n".join(part for part in parts if part)
     else:
         text = str(content or "")
+    # A model-facing fallback note appended to this prompt (a refusal swap
+    # that then hit a second refusal and rewound) must never leak into the
+    # composer-restored prompt: strip the stamped suffix exactly.
+    text = strip_fallback_note(message, text)
     return strip_prompt_context(text).strip()
 
 
@@ -561,8 +566,9 @@ def refusal_rewind_content(model: str) -> str:
     return (
         f"{label}'s safety classifier declined this turn, so the refused "
         "exchange was rewound: the conversation is back at the end of the "
-        "previous turn. Try again with different phrasing, rewind further, "
-        "or switch to a different model."
+        "previous turn. Try again with different phrasing; if it still "
+        "refuses, rewind further, compact the thread, or switch to a "
+        "different model."
     )
 
 
@@ -574,7 +580,8 @@ def refusal_gated_content(model: str) -> str:
     return (
         f"{label} declined this turn (a provider-side refusal) and produced "
         "no reply. Refusals tend to repeat while the triggering content "
-        "stays in context: rewind this thread and rephrase, or switch to a "
+        "stays in context: rewind this thread and rephrase; if it still "
+        "refuses, rewind further, compact the thread, or switch to a "
         "different model and continue from here."
     )
 
@@ -691,9 +698,12 @@ def flush_memories_before_trim(
                     continue
                 # Save previous turn if exists
                 if current_user_msg and current_ai_parts:
-                    # Strip time context from user message
+                    # Strip time context + any appended fallback note from the
+                    # user message (harness context must never be indexed as
+                    # the user's words).
                     user_content, _ = extract_content_parts(current_user_msg.content)
                     user_content = strip_prompt_context(user_content)
+                    user_content = strip_fallback_note(current_user_msg, user_content)
 
                     turn_content = f"User: {user_content}\n\nAssistant: {' '.join(current_ai_parts)}"
                     memory_index.add_chunk(
@@ -723,6 +733,7 @@ def flush_memories_before_trim(
         if current_user_msg and current_ai_parts:
             user_content, _ = extract_content_parts(current_user_msg.content)
             user_content = strip_prompt_context(user_content)
+            user_content = strip_fallback_note(current_user_msg, user_content)
 
             turn_content = f"User: {user_content}\n\nAssistant: {' '.join(current_ai_parts)}"
             memory_index.add_chunk(

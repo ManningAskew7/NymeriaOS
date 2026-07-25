@@ -104,6 +104,22 @@ def strip_prompt_context(content: str) -> str:
     return content
 
 
+def strip_fallback_note(msg: Any, content: str) -> str:
+    """Strip a model-facing fallback note suffix from a message's text.
+
+    The note (a model switch explained in-conversation;
+    ``nodes.fallback_note_stamp``) persists in the checkpoint so the model
+    keeps seeing it, but it is harness context, not the author's words. Every
+    human-or-index-facing reader of a note-carrying message scrubs it here:
+    history bubbles, composer restores, and the pre-trim RAG flush. The strip
+    is exact-suffix (the stamp records the appended text byte for byte)."""
+    note = (getattr(msg, "additional_kwargs", None) or {}).get("fallback_note")
+    text = str(note.get("text") or "") if isinstance(note, dict) else ""
+    if text and content:
+        return content.removesuffix(text).rstrip()
+    return content
+
+
 #: Hard cap on how many checkpoints we'll deserialize when computing
 #: message timestamps. Threads without compaction can accumulate
 #: thousands of checkpoints; walking all of them to find the creation
@@ -424,6 +440,21 @@ def _handle_human_history_message(
     if not timestamp_iso:
         timestamp_iso = extract_timestamp(raw_content)
 
+    # A model-facing fallback note appended to this message (a model switch
+    # explained to the model in-conversation; nodes.fallback_note_stamp) is
+    # stripped from the rendered bubble and re-emitted below as a typed
+    # system notice, so clients never paint harness context as user words.
+    fallback_note = (getattr(msg, "additional_kwargs", None) or {}).get(
+        "fallback_note"
+    )
+    note_text = (
+        str(fallback_note.get("text") or "")
+        if isinstance(fallback_note, dict)
+        else ""
+    )
+    if note_text:
+        raw_content = strip_fallback_note(msg, raw_content)
+
     if ctx.show_prompt_metadata:
         entry["content"] = raw_content
     else:
@@ -446,6 +477,35 @@ def _handle_human_history_message(
         entry["message_id"] = msg.id
 
     ctx.history.append(entry)
+
+    if isinstance(fallback_note, dict) and note_text:
+        notice: Dict[str, Any] = {
+            "id": ctx.next_entry_id(),
+            "role": "system",
+            "kind": "fallback_notice",
+            "content": _fallback_notice_summary(fallback_note),
+            "phase": str(fallback_note.get("phase") or "swap"),
+            "note_kind": str(fallback_note.get("kind") or "transport"),
+            "from_model": str(fallback_note.get("from_model") or ""),
+            "to_model": str(fallback_note.get("to_model") or ""),
+            "reason": str(fallback_note.get("reason") or ""),
+        }
+        if timestamp_iso:
+            notice["timestamp"] = timestamp_iso
+        ctx.history.append(notice)
+
+
+def _fallback_notice_summary(note: Dict[str, Any]) -> str:
+    """One-line human copy for a ``fallback_notice`` entry (simple renderers,
+    e.g. the CLI, can print ``content`` without knowing the taxonomy)."""
+    from_model = str(note.get("from_model") or "the model")
+    to_model = str(note.get("to_model") or "the fallback model")
+    if note.get("phase") == "end":
+        how = "reverted" if note.get("reason") == "reverted" else "expired"
+        return f"Fallback hold {how}; this thread is back on {to_model}."
+    if note.get("kind") == "refusal":
+        return f"{from_model} refused this turn; switched to {to_model}."
+    return f"{from_model} was failing; switched to {to_model}."
 
 
 def _handle_ai_history_message(

@@ -335,6 +335,14 @@
       : '';
   }
 
+  function getInitialFallbackSwitchMode(): 'default' | 'auto' | 'ask' {
+    return threadConfig?.llmConfig?.fallback_switch_mode ?? 'default';
+  }
+
+  function getInitialRefusalSwapMode(): 'default' | 'off' | 'ask' | 'auto' {
+    return threadConfig?.llmConfig?.refusal_swap_mode ?? 'default';
+  }
+
   // LLM form state
   let threadDisplayProvider = $state<ThreadDisplayProvider>(getInitialThreadDisplayProvider());
   let llmProvider = $state(getInitialLlmProvider());
@@ -356,6 +364,8 @@
   let proactiveCompactEnabled = $state<'default' | 'true' | 'false'>(getInitialProactiveCompactEnabled());
   let proactiveCompactIdleSeconds = $state<string>(getInitialProactiveCompactIdleSeconds());
   let proactiveCompactMinPct = $state<string>(getInitialProactiveCompactMinPct());
+  let fallbackSwitchMode = $state<'default' | 'auto' | 'ask'>(getInitialFallbackSwitchMode());
+  let refusalSwapMode = $state<'default' | 'off' | 'ask' | 'auto'>(getInitialRefusalSwapMode());
 
   function getEffectiveProvider(): string {
     return llmProvider || serverSettingsStore.provider || '';
@@ -524,7 +534,8 @@
   const modelProviderCustomized = $derived(
     Boolean(
       threadDisplayProvider || llmModel || llmBaseUrl || llmApiKey ||
-      llmProviderRoute !== 'default' || llmOpenAiApiMode !== 'default'
+      llmProviderRoute !== 'default' || llmOpenAiApiMode !== 'default' ||
+      fallbackSwitchMode !== 'default' || refusalSwapMode !== 'default'
     )
   );
   const modelGenerationCustomized = $derived(
@@ -724,6 +735,8 @@
     if (proactiveCompactEnabled !== origProactiveEnabled) return true;
     if (proactiveCompactIdleSeconds !== origProactiveIdle) return true;
     if (proactiveCompactMinPct !== origProactivePct) return true;
+    if (fallbackSwitchMode !== getInitialFallbackSwitchMode()) return true;
+    if (refusalSwapMode !== getInitialRefusalSwapMode()) return true;
     if (systemPrompt !== origSystemPrompt) return true;
     if (notepad !== origNotepad) return true;
     if (isCallable !== origCallable) return true;
@@ -844,7 +857,8 @@
         llmUseModelDefaults !== 'default' || llmProviderRoute !== 'default' ||
         llmOpenAiApiMode !== 'default' || llmBaseUrl || llmApiKey ||
         compactThresholdMode !== 'default' || compactThresholdPct || compactThresholdTokens ||
-        proactiveCompactEnabled !== 'default' || proactiveCompactIdleSeconds || proactiveCompactMinPct;
+        proactiveCompactEnabled !== 'default' || proactiveCompactIdleSeconds || proactiveCompactMinPct ||
+        fallbackSwitchMode !== 'default' || refusalSwapMode !== 'default';
 
       if (hasLlm) {
         const llm: Record<string, unknown> = {};
@@ -889,6 +903,8 @@
         llm.compact_proactive_min_pct = proactiveCompactMinPct
           ? parseInt(proactiveCompactMinPct, 10)
           : null;
+        llm.fallback_switch_mode = fallbackSwitchMode === 'default' ? null : fallbackSwitchMode;
+        llm.refusal_swap_mode = refusalSwapMode === 'default' ? null : refusalSwapMode;
         updates.llm_config = llm;
       } else {
         updates.clear_llm_config = true;
@@ -1000,6 +1016,26 @@
     }
   }
 
+  // Revert an active fallback hold (mirrors /fallback revert): the PATCH
+  // clear_active_fallback flag clears the hold and latches the model-facing
+  // end note. The store refresh flows back into the threadConfig prop, so
+  // the Model-tab row (and the chat-header chip) drop reactively.
+  let fallbackRevertBusy = $state(false);
+  let fallbackRevertError = $state('');
+
+  async function revertActiveFallback() {
+    if (fallbackRevertBusy) return;
+    fallbackRevertBusy = true;
+    fallbackRevertError = '';
+    try {
+      await threadConfigStore.updateConfig(thread.id, { clear_active_fallback: true });
+    } catch (e) {
+      fallbackRevertError = humanizeErrorText(e, { action: 'update', resource: 'the fallback hold' });
+    } finally {
+      fallbackRevertBusy = false;
+    }
+  }
+
   // Reset every form field to its "no override" baseline. The notepad is the
   // agent's persistent memory (not a config override), so it is intentionally
   // left untouched here.
@@ -1030,6 +1066,8 @@
     proactiveCompactEnabled = 'default';
     proactiveCompactIdleSeconds = '';
     proactiveCompactMinPct = '';
+    fallbackSwitchMode = 'default';
+    refusalSwapMode = 'default';
     isCallable = false;
     callableName = '';
     callableDescription = '';
@@ -1242,6 +1280,12 @@
                 bind:proactiveCompactEnabled
                 bind:proactiveCompactIdleSeconds
                 bind:proactiveCompactMinPct
+                bind:fallbackSwitchMode
+                bind:refusalSwapMode
+                activeFallback={threadConfig?.activeLlmFallback ?? null}
+                {fallbackRevertBusy}
+                {fallbackRevertError}
+                onRevertFallback={revertActiveFallback}
               />
             {:else if activeTab === 'tools-native' || activeTab === 'tools-mcp'}
               {#if toolSection === 'mcp'}

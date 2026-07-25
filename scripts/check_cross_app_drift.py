@@ -28,6 +28,7 @@ MOBILE_SRC = REPO_ROOT / "nymeria-mobile" / "src"
 EXACT_MATCH: set[str] = {
     "lib/actions/focus.ts",
     "lib/components/account/RoleChip.svelte",
+    "lib/components/chat/FallbackPromptCard.svelte",
     "lib/components/chat/FilePreview.svelte",
     "lib/components/chat/StreamingText.svelte",
     "lib/components/chat/TurnPausedCard.svelte",
@@ -60,6 +61,7 @@ EXACT_MATCH: set[str] = {
     "lib/services/api/hooks.ts",
     "lib/services/api/humanizeError.ts",
     "lib/services/api/index.ts",
+    "lib/services/api/llm-fallback.ts",
     "lib/services/api/ui-prompts.ts",
     "lib/services/api/workflows.ts",
     "lib/stores/autonomous.test.ts",

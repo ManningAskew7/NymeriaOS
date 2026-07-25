@@ -638,6 +638,11 @@ def make_fallback_decision_callback(
     async def decide(context: Dict[str, Any]) -> Dict[str, Any]:
         kind = str(context.get("kind") or "transport")
         if kind == "refusal":
+            # NOT the resolved default ("ask"): the caller always passes a
+            # resolved non-empty mode, so an absent one means a miswired
+            # construction. Degrade to "off" (the P1 rewind fallthrough)
+            # rather than parking a turn on machinery whose wiring is
+            # already suspect. Pinned by test_gate_refusal_modes.
             mode = (refusal_mode or "off").lower()
             if mode == "off":
                 return {"action": "fail"}

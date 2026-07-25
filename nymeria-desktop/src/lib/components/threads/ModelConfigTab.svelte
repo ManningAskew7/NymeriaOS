@@ -2,7 +2,7 @@
   import { modelsStore } from '$lib/stores/models.svelte';
   import { serverSettingsStore } from '$lib/stores/serverSettings.svelte';
   import { api } from '$lib/services/api.svelte';
-  import type { LLMProviderSpec, ProviderRoute } from '$lib/types';
+  import type { ActiveLLMFallback, LLMProviderSpec, ProviderRoute } from '$lib/types';
   import ProviderSelect from '$lib/components/common/ProviderSelect.svelte';
   import { loadAvailableModels, type AvailableModelsState } from '$lib/utils/models';
   import {
@@ -51,6 +51,13 @@
     proactiveCompactEnabled: 'default' | 'true' | 'false';
     proactiveCompactIdleSeconds: string;
     proactiveCompactMinPct: string;
+    fallbackSwitchMode: 'default' | 'auto' | 'ask';
+    refusalSwapMode: 'default' | 'off' | 'ask' | 'auto';
+    /** Active fallback hold on this thread (read-only status row + Revert). */
+    activeFallback?: ActiveLLMFallback | null;
+    fallbackRevertBusy?: boolean;
+    fallbackRevertError?: string;
+    onRevertFallback?: () => void;
   }
 
   let {
@@ -75,6 +82,12 @@
     proactiveCompactEnabled = $bindable(),
     proactiveCompactIdleSeconds = $bindable(),
     proactiveCompactMinPct = $bindable(),
+    fallbackSwitchMode = $bindable(),
+    refusalSwapMode = $bindable(),
+    activeFallback = null,
+    fallbackRevertBusy = false,
+    fallbackRevertError = '',
+    onRevertFallback = undefined,
   }: Props = $props();
 
   const threadModelMeta = $derived(modelsStore.getById(llmModel));
@@ -201,6 +214,34 @@
 
 <div class="tab-body">
   {#if section === 'provider'}
+    {#if activeFallback}
+      <!-- Active fallback hold (llm-fallback-consent): this thread is pinned
+           to its fallback model. Revert mirrors /fallback revert (the PATCH
+           clear_active_fallback flag) and leaves the model-facing end note. -->
+      <div class="active-fallback-row">
+        <span class="active-fallback-text">
+          Fallback active: <strong>{activeFallback.model}</strong>
+          {activeFallback.reason === 'refusal' ? 'after a refusal' : 'after provider errors'}
+          {#if activeFallback.expiresAt}
+            (until {new Date(activeFallback.expiresAt).toLocaleString()})
+          {:else}
+            (until reverted)
+          {/if}
+        </span>
+        <button
+          type="button"
+          class="revert-fallback-btn"
+          onclick={() => onRevertFallback?.()}
+          disabled={fallbackRevertBusy || !onRevertFallback}
+        >
+          Revert to {activeFallback.sourceModel}
+        </button>
+      </div>
+      {#if fallbackRevertError}
+        <span class="field-hint revert-error">{fallbackRevertError}</span>
+      {/if}
+    {/if}
+
     <div class="field-group">
       <label class="field-label" for="llm-provider">Provider</label>
       <ProviderSelect
@@ -280,6 +321,28 @@
         <span class="field-hint">Responses API is the default for OpenAI-compatible reasoning models. Chat Completions remains a compatibility override.</span>
       </div>
     {/if}
+
+    <div class="grid-2">
+      <div class="field-group">
+        <label class="field-label" for="llm-fallback-switch-mode">Error fallback consent</label>
+        <select id="llm-fallback-switch-mode" class="field-select" bind:value={fallbackSwitchMode}>
+          <option value="default">Default (inherit global)</option>
+          <option value="auto">Swap silently</option>
+          <option value="ask">Ask first</option>
+        </select>
+        <span class="field-hint">Whether a provider-failure fallback swap asks before switching this thread's model.</span>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="llm-refusal-swap-mode">Refusal swap</label>
+        <select id="llm-refusal-swap-mode" class="field-select" bind:value={refusalSwapMode}>
+          <option value="default">Default (inherit global)</option>
+          <option value="ask">Ask first</option>
+          <option value="auto">Swap silently</option>
+          <option value="off">Off (rewind and explain)</option>
+        </select>
+        <span class="field-hint">What happens when the model's safety classifier refuses a turn (a clean response, not an error).</span>
+      </div>
+    </div>
 
     <div class="field-group last">
       <label class="field-label" for="llm-model">Model</label>
@@ -488,6 +551,51 @@
     /* §5 — reading text capped to 60ch so multi-line hints stay readable
        on wide displays instead of stretching the full panel width. */
     max-width: 60ch;
+  }
+
+  .active-fallback-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+    margin-bottom: var(--spacing-md);
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-elevated) 88%, var(--warning, var(--accent-primary)));
+    border: 1px solid var(--border-subtle);
+  }
+
+  .active-fallback-text {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+  }
+
+  .revert-fallback-btn {
+    padding: 5px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .revert-fallback-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--bg-elevated) 80%, var(--accent-primary));
+    border-color: var(--accent-primary);
+  }
+
+  .revert-fallback-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .revert-error {
+    color: var(--error, #e5484d);
+    margin-bottom: var(--spacing-md);
   }
 
   .tier-quickpick {

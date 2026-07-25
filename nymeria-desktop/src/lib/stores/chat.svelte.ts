@@ -6,6 +6,7 @@ import type {
   ToolCallStatus,
   ToolReloadInfo,
   TurnPausedInfo,
+  FallbackPromptInfo,
   FileAttachment,
   WorkspaceArtifact,
   ContextStats,
@@ -564,8 +565,22 @@ export function createChatStore() {
       this._forceFlush();
       if (!isLastAssistantStreaming()) return;
 
-      const lastIndex = messages.length - 1;
-      const lastMessage = messages[lastIndex];
+      // Ask-mode post-chunk recovery: the fallback consent card's carrier
+      // sits between the failed attempt and this event (the failed partial
+      // output lives in the PREVIOUS bubble, completed when the card was
+      // pushed; the re-drive streams into the carrier). Walk back past
+      // still-empty carriers so the trim hits the bubble that actually
+      // holds the failed attempt's steps.
+      let targetIndex = messages.length - 1;
+      while (
+        targetIndex > 0 &&
+        messages[targetIndex].fallbackPromptInfo &&
+        (messages[targetIndex].steps || []).length === 0 &&
+        messages[targetIndex - 1].role === 'assistant'
+      ) {
+        targetIndex--;
+      }
+      const lastMessage = messages[targetIndex];
       if (lastMessage.role !== 'assistant') return;
 
       const steps = [...(lastMessage.steps || [])];
@@ -581,7 +596,7 @@ export function createChatStore() {
         .join('');
 
       messages = [
-        ...messages.slice(0, lastIndex),
+        ...messages.slice(0, targetIndex),
         {
           ...lastMessage,
           content: responseContent,
@@ -589,7 +604,8 @@ export function createChatStore() {
           intermediateContent: this._computeIntermediateContent(steps),
           activityPhase: 'processing',
           activityUpdatedAt: new Date()
-        }
+        },
+        ...messages.slice(targetIndex + 1)
       ];
     },
 
@@ -1564,6 +1580,61 @@ export function createChatStore() {
           turnPausedInfo: { ...info },
         }
       ];
+    },
+
+    // LLM fallback consent prompt (llm-fallback-consent Phase 2): the turn
+    // parked before a model switch and is waiting for the user's decision
+    // (auto-swap on timeout). Follows the handleToolReload carrier idiom: the
+    // pushed message is a STREAMING assistant carrier, so when the turn
+    // continues (swap approved, or the timeout auto-swap) the retried model's
+    // output flows into this carrier's bubble right under the card.
+    handleFallbackPrompt(info: FallbackPromptInfo) {
+      this._forceFlush();
+
+      const lastIndex = messages.length - 1;
+      if (lastIndex >= 0 && messages[lastIndex].role === 'assistant') {
+        messages = [
+          ...messages.slice(0, lastIndex),
+          { ...messages[lastIndex], status: 'complete' as const }
+        ];
+      }
+
+      messages = [
+        ...messages,
+        {
+          id: generateId(),
+          role: 'assistant' as const,
+          content: '',
+          steps: [],
+          timestamp: new Date(),
+          status: 'streaming' as const,
+          activityPhase: 'processing' as const,
+          activityUpdatedAt: new Date(),
+          fallbackPromptInfo: { ...info },
+        }
+      ];
+    },
+
+    // Stamp the card's outcome when fallback_prompt_resolved arrives (from
+    // this client's resolve, another client's, or the backend timeout /
+    // abort). Global, not thread-gated, so a late thread switch never
+    // strands live buttons; a stale record id no-ops.
+    resolveFallbackPromptCard(
+      recordId: string,
+      resolved: NonNullable<FallbackPromptInfo['resolved']>
+    ) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const info = messages[i].fallbackPromptInfo;
+        if (info && info.recordId === recordId) {
+          if (info.resolved) return; // First resolution wins (optimistic clear vs SSE)
+          messages = [
+            ...messages.slice(0, i),
+            { ...messages[i], fallbackPromptInfo: { ...info, resolved: { ...resolved } } },
+            ...messages.slice(i + 1)
+          ];
+          return;
+        }
+      }
     },
 
     /**

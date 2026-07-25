@@ -102,6 +102,10 @@ class ThreadConfigUpdateRequest(BaseModel):
     clear_enabled_skills: bool = False
     clear_disabled_skills: bool = False
     clear_llm_config: bool = False
+    # Revert an active fallback hold (the GUI chip / Model-tab Revert):
+    # clears active_llm_fallback and latches the model-facing end note,
+    # mirroring /fallback revert.
+    clear_active_fallback: bool = False
     clear_system_prompt: bool = False
     clear_notification_profile: bool = False
     clear_memory_char_limit: bool = False

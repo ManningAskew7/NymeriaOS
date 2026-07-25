@@ -522,16 +522,18 @@ class Settings(BaseSettings):
         ),
     )
     llm_refusal_swap_mode: Literal["off", "ask", "auto"] = Field(
-        default="off",
+        default="ask",
         description=(
             "Whether an empty provider refusal (the model's safety classifier "
             "ended the response before any text or tool call, e.g. Fable 5's "
             "stop_reason='refusal') swaps the turn to the next fallback model "
-            "and re-runs the call. 'off' keeps the shipped rewind-and-restore "
-            "behavior. 'ask' pauses a consent-capable interactive turn to ask "
+            "and re-runs the call. 'ask' (default since the consent card "
+            "shipped) pauses a consent-capable interactive turn to ask "
             "(timeout auto-swaps); autonomous/background turns and "
             "non-interactive channels auto-swap immediately. 'auto' swaps "
-            "silently everywhere. Partial-output refusals are never swapped."
+            "silently everywhere. 'off' disables swapping entirely and keeps "
+            "the rewind-and-restore recovery. Partial-output refusals are "
+            "never swapped."
         ),
     )
     llm_temperature: float = Field(default=1.0, ge=0.0, le=2.0)

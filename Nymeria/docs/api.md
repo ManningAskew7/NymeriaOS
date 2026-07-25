@@ -847,7 +847,7 @@ GET /threads/{thread_id}/history
 Authorization: Bearer <token>
 ```
 
-Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups and compact prompts) that are hidden by default. Compaction markers are visible by default as `system` messages with `kind: "compaction_notice"`.
+Optional query: `include_internal=true` returns system-generated messages (autonomous wake-ups and compact prompts) that are hidden by default. Compaction markers are visible by default as `system` messages with `kind: "compaction_notice"`. Model-switch notes appear as `system` messages with `kind: "fallback_notice"` (fields: `phase` `swap`|`end`, `note_kind` `refusal`|`transport`, `from_model`, `to_model`, `reason`, and a renderable one-line `content`): the runtime explains a fallback swap, or the end of a hold, to the model inside the conversation, and history strips that appended note from the user bubble and re-emits it as this typed entry.
 
 Optional query: `show_autonomous_prompts=true|false` overrides the per-thread `show_autonomous_prompts` config for this request only (without mutating thread state). When omitted, the backend falls back to the per-thread field. The desktop and mobile clients pass this query param based on their global "Show autonomous prompts" preference (combined with the per-thread force-on override), so a single global setting can drive history filtering without flipping every thread's config. MCP and CLI callers don't pass it and keep today's behavior. Ignored when `include_internal=true` (which always returns everything).
 
@@ -1728,7 +1728,7 @@ GET /settings
 Authorization: Bearer <token>
 ```
 
-**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, the model tier settings `llm_fast_model`, `llm_smart_model`, `llm_background_model`, and `llm_background_base_url` (each with a read-only `*_resolved` companion giving the effective `provider:model`), `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, LLM stream retry settings, and `llm_fallback_hold_seconds`; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`; plus RAG engine settings such as `embedding_provider`, `embedding_model`, `embedding_dimensions`, `rag_retrieval_mode`, `rag_rerank_enabled`, `rag_rerank_provider`, `rag_rerank_model`, and `rag_embed_tool_results`.
+**Response:** includes LLM settings such as `llm_provider`, `llm_model`, `llm_base_url`, the model tier settings `llm_fast_model`, `llm_smart_model`, `llm_background_model`, and `llm_background_base_url` (each with a read-only `*_resolved` companion giving the effective `provider:model`), `llm_context_length`, `llm_ollama_num_ctx`, `llm_provider_route`, `openai_api_mode`, LLM stream retry settings, `llm_fallback_hold_seconds`, and the fallback-consent settings `llm_fallback_switch_mode`, `llm_fallback_prompt_timeout_seconds`, and `llm_refusal_swap_mode`; context settings such as `context_management`, `compact_threshold`, and `compact_keep_messages`; tool runtime settings such as `tool_output_max_chars`; plus voice runtime settings such as `tts_provider`, `tts_base_url`, `tts_model`, `tts_voice`, `tts_output_format`, `tts_speed`, `stt_provider`, `stt_base_url`, `stt_model`, `stt_language`, and `voice_default_thread_id`; plus RAG engine settings such as `embedding_provider`, `embedding_model`, `embedding_dimensions`, `rag_retrieval_mode`, `rag_rerank_enabled`, `rag_rerank_provider`, `rag_rerank_model`, and `rag_embed_tool_results`.
 
 Settings are server-wide. The authenticated user controls access to the endpoint, but the returned LLM provider/model/base URL are not scoped to that user. Provider and capability API keys are not included in this response.
 
@@ -1935,6 +1935,9 @@ Authorization: Bearer <admin-token>
 | `llm_stream_retry_initial_delay` | float | 0-60 | Initial LLM retry backoff delay in seconds |
 | `llm_stream_retry_max_delay` | float | 0-300 | Maximum LLM retry backoff delay in seconds |
 | `llm_fallback_hold_seconds` | int | 0-604800 | Seconds to keep a fallback provider/model active for the thread after retries are exhausted. Default is 7200. |
+| `llm_fallback_switch_mode` | string | `auto`/`ask` | How a transport fallback (primary exhausted retries) is applied. `auto` (default) swaps silently; `ask` parks a consent-capable interactive turn on a `fallback_prompt` (timeout auto-swaps). Per-thread overridable via `llm_config.fallback_switch_mode`. |
+| `llm_fallback_prompt_timeout_seconds` | int | 10-600 | How long an `ask`-mode consent prompt waits before auto-swapping. Default is 180. |
+| `llm_refusal_swap_mode` | string | `off`/`ask`/`auto` | Whether an EMPTY provider refusal discards the refused response and re-runs the call on the next fallback model. Default `ask` (parks a consent-capable interactive turn; other turns auto-swap); `auto` swaps silently everywhere; `off` keeps the rewind-and-restore recovery only. Per-thread overridable via `llm_config.refusal_swap_mode`. |
 | `tool_output_max_chars` | int | 1000-2000000 | Max stored characters per tool result; larger outputs keep head and tail with a marker |
 
 **Response:**
@@ -3165,6 +3168,9 @@ Updates thread config. Key fields for callable threads:
 | `llm_config.context_length` | int | Per-thread context-window override for local endpoints or proxies with missing metadata |
 | `llm_config.ollama_num_ctx` | int | Per-thread Ollama `options.num_ctx` override |
 | `llm_config.provider_route` | string | Per-thread adapter route override: `native`, `openai_compat`, or `anthropic_messages`. Only applies to providers whose catalog row advertises multiple `supported_routes` (`anthropic_messages` routes a gateway's Claude models through langchain-anthropic for native thinking). |
+| `llm_config.fallback_switch_mode` | string | Per-thread override of `llm_fallback_switch_mode` (`auto`/`ask`); null inherits the global. |
+| `llm_config.refusal_swap_mode` | string | Per-thread override of `llm_refusal_swap_mode` (`off`/`ask`/`auto`); null inherits the global. |
+| `clear_active_fallback` | bool | Revert an active fallback hold (the GUI chip / Model-tab Revert, mirroring `/fallback revert`): clears `active_llm_fallback` and latches a model-facing end note for the thread's next turn. |
 | `telegram_autonomous_delivery` | `"full" \| "notify_only" \| "off"` | Telegram delivery for autonomous outputs. Default `full`. |
 | `in_app_notification_level` | `"notify_only" \| "all_autonomous" \| "off"` | Notification-center behavior. Default `notify_only`. |
 | `llm_temperature` | float | Override temperature |
@@ -4356,11 +4362,19 @@ the hook's own flag all allow it:
 
 ## LLM Fallback Consent Prompts
 
-When `LLM_FALLBACK_SWITCH_MODE=ask` (or `LLM_REFUSAL_SWAP_MODE=ask`), a
+When `LLM_FALLBACK_SWITCH_MODE=ask` (or `LLM_REFUSAL_SWAP_MODE=ask`, the
+default since the consent card shipped), a
 consent-capable interactive turn parks before a model switch and publishes a
 `fallback_prompt` event. These endpoints are the list/resolve surface (the
 `/fallback approvals|approve|deny` slash commands front them; both are
 human-only, the agent cannot resolve its own parked switch).
+
+Every applied swap also leaves a model-facing note IN the conversation
+(persisted, never repeated): mid-turn it is appended to the last tool result,
+on a first-call switch to the prompt message itself, and when a hold ends
+(expiry or any revert surface) the next turn carries a back-on-primary note.
+History renders these as `fallback_notice` system entries (see Conversation
+History).
 
 ### Pending Fallback Prompts
 

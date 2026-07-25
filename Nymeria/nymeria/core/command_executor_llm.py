@@ -186,7 +186,7 @@ class LLMCommandsMixin:
         lines = [
             f"Switch mode: {settings.get('llm_fallback_switch_mode') or 'auto'} "
             f"(transport errors), refusal swap: "
-            f"{settings.get('llm_refusal_swap_mode') or 'off'}",
+            f"{settings.get('llm_refusal_swap_mode') or 'ask'}",
             f"Default hold: {int(settings.get('llm_fallback_hold_seconds') or 0)}s, "
             f"prompt timeout: "
             f"{int(settings.get('llm_fallback_prompt_timeout_seconds') or 0)}s",
@@ -226,31 +226,24 @@ class LLMCommandsMixin:
             # Same non-leaking shape as the REST 404: existence is not
             # disclosed to a non-owner.
             return "[Error]: No thread matching this id."
+        agent = self._agent()
         tc = self._thread_config_manager_or_none()
-        if tc is None:
+        if agent is None or tc is None:
             return "[Error]: Thread configuration is unavailable."
         config = tc.get_config(self.thread_id)
         active = getattr(config, "active_llm_fallback", None) if config else None
         if config is None or active is None:
             return "[Info]: This thread has no active fallback hold."
-        label = f"{active.provider}/{active.model}"
-        config.active_llm_fallback = None
-        saved = (
-            tc.save_config(config)
-            if config.has_customizations()
-            else tc.delete_config(self.thread_id)
-        )
-        if not saved:
+        from .agent_llm_config import clear_active_llm_fallback
+
+        # Shared clear path: also latches the model-facing end note so the
+        # next turn tells the model it is back on the primary.
+        cleared = clear_active_llm_fallback(agent, self.thread_id, reason="reverted")
+        if cleared is None:
             return "[Error]: Failed to clear the fallback hold."
-        agent = self._agent()
-        if agent is not None:
-            try:
-                agent.invalidate_thread_config_cache(self.thread_id)
-            except Exception:  # noqa: BLE001
-                logger.warning("fallback revert cache invalidation failed", exc_info=True)
         return (
             f"[Success]: Fallback hold cleared; this thread returns to its "
-            f"configured model (was on {label})."
+            f"configured model (was on {cleared.provider}/{cleared.model})."
         )
 
     def _thread_config_manager_or_none(self) -> Any | None:

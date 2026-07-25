@@ -70,6 +70,7 @@ export interface MessageStep {
   maxRetries?: number;
   delaySeconds?: number;
   holdSeconds?: number;
+  permanent?: boolean;   // Fallback hold pinned until manually reverted
   expiresAt?: string | null;
   reason?: string;
   httpStatus?: number | null;
@@ -120,6 +121,34 @@ export interface TurnPausedInfo {
   resumed?: boolean; // Set client-side when the turn_resumed event arrives
 }
 
+// LLM fallback consent prompt (llm-fallback-consent Phase 2). Present on the
+// inline card message pushed when a turn parks on a `fallback_prompt` bus
+// event: the primary model failed (transport) or refused (refusal) and the
+// backend is asking whether to swap to the fallback model. An unanswered
+// prompt auto-swaps at `expiresAt`. `resolved` is stamped client-side from
+// the fallback_prompt_resolved event (or optimistically on a 200 resolve).
+export interface FallbackPromptInfo {
+  recordId: string;
+  kind: 'transport' | 'refusal' | string;
+  fromProvider: string;
+  fromModel: string;
+  toProvider: string;
+  toModel: string;
+  reason: string;
+  httpStatus?: number | null;
+  timeoutSeconds?: number | null;
+  holdOptions: number[];
+  allowPermanent: boolean;
+  defaultHoldSeconds?: number | null;
+  createdAt: string;
+  expiresAt: string;
+  resolved?: {
+    outcome: 'approved' | 'declined' | 'timeout' | 'aborted' | 'stale' | string;
+    holdSeconds?: number | null;
+    holdPermanent?: boolean;
+  } | null;
+}
+
 export interface DispatchInfo {
   threadId: string;
   title: string;
@@ -158,7 +187,7 @@ export interface CommandExecuteResponse {
 export interface Message {
   id: string;
   role: MessageRole;
-  kind?: 'compaction_notice' | 'command_result' | 'turn_rewound';
+  kind?: 'compaction_notice' | 'command_result' | 'turn_rewound' | 'fallback_notice';
   content: string;
   steps?: MessageStep[];          // Ordered list of thinking/tool_call/response steps
   intermediateContent?: string;   // Legacy history fallback for messages without steps
@@ -174,6 +203,7 @@ export interface Message {
   autonomousSource?: string;      // Source of autonomous prompt: 'scheduler' | 'watchdog' | 'trigger'
   toolReloadInfo?: ToolReloadInfo; // Present on messages that follow a tool hot-reload
   turnPausedInfo?: TurnPausedInfo; // Present on the turn-safety halt card (iteration limit)
+  fallbackPromptInfo?: FallbackPromptInfo; // Present on the LLM fallback consent card (parked model switch)
   dispatchInfo?: DispatchInfo;    // Present on responses routed to another thread
   commandInput?: string;          // Raw slash command typed by the user
 }
@@ -248,6 +278,10 @@ export interface ThreadLLMConfig {
   compact_threshold_mode?: 'percentage' | 'tokens' | null;
   compact_threshold?: number | null;
   compact_threshold_tokens?: number | null;
+  // Consent-policy overrides for model switches (null inherits the global
+  // llm_fallback_switch_mode / llm_refusal_swap_mode).
+  fallback_switch_mode?: 'auto' | 'ask' | null;
+  refusal_swap_mode?: 'off' | 'ask' | 'auto' | null;
 }
 
 export interface DreamingConfig {
@@ -352,6 +386,9 @@ export interface ThreadConfigUpdateRequest {
   clear_enabled_skills?: boolean;
   clear_disabled_skills?: boolean;
   clear_llm_config?: boolean;
+  // Revert an active fallback hold (mirrors /fallback revert): clears
+  // active_llm_fallback and latches the model-facing end note.
+  clear_active_fallback?: boolean;
   clear_system_prompt?: boolean;
   clear_memory_char_limit?: boolean;
   clear_image_window_size?: boolean;
@@ -1031,6 +1068,10 @@ export interface ServerSettings {
   llm_stream_retry_initial_delay: number;
   llm_stream_retry_max_delay: number;
   llm_fallback_hold_seconds: number;
+  // LLM fallback consent (llm-fallback-consent Phase 2)
+  llm_fallback_switch_mode: 'auto' | 'ask';
+  llm_fallback_prompt_timeout_seconds: number;
+  llm_refusal_swap_mode: 'off' | 'ask' | 'auto';
   context_management: string;
   compact_threshold: number;
   compact_threshold_mode: 'percentage' | 'tokens';
@@ -1154,6 +1195,9 @@ export interface ServerSettingsUpdate {
   llm_provider_route?: ProviderRoute | null;
   openai_api_mode?: OpenAIApiMode | null;
   llm_fallback_hold_seconds?: number;
+  llm_fallback_switch_mode?: 'auto' | 'ask';
+  llm_fallback_prompt_timeout_seconds?: number;
+  llm_refusal_swap_mode?: 'off' | 'ask' | 'auto';
   // Provider/capability credentials are write-only through PATCH /settings.
   anthropic_api_key?: string | null;
   anthropic_direct_api_key?: string | null;

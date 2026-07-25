@@ -256,6 +256,18 @@ services:
       LLM_STREAM_MAX_RETRIES: ${LLM_STREAM_MAX_RETRIES:-2}
       LLM_STREAM_RETRY_INITIAL_DELAY: ${LLM_STREAM_RETRY_INITIAL_DELAY:-1.0}
       LLM_STREAM_RETRY_MAX_DELAY: ${LLM_STREAM_RETRY_MAX_DELAY:-8.0}
+      # Fallback consent (non-empty interpolation defaults: an empty string
+      # trips the settings empty-to-None coercion and fails startup on these
+      # non-Optional fields). LLM_FALLBACK_MODELS carries the code default
+      # literally (the LLM_MODEL idiom above): a bare `:-` would pass "",
+      # which coerces to None and REPLACES the code-default chain with "no
+      # fallbacks", while omitting the var would silently ignore an
+      # operator's .env.docker setting.
+      LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-anthropic:claude-haiku-4-5-20251001}
+      LLM_FALLBACK_SWITCH_MODE: ${LLM_FALLBACK_SWITCH_MODE:-auto}
+      LLM_FALLBACK_PROMPT_TIMEOUT_SECONDS: ${LLM_FALLBACK_PROMPT_TIMEOUT_SECONDS:-180}
+      LLM_REFUSAL_SWAP_MODE: ${LLM_REFUSAL_SWAP_MODE:-ask}
+      LLM_FALLBACK_HOLD_SECONDS: ${LLM_FALLBACK_HOLD_SECONDS:-7200}
       # Database
       DATABASE_BACKEND: postgres
       POSTGRES_URI: postgresql://${POSTGRES_USER:-nymeria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nymeria}

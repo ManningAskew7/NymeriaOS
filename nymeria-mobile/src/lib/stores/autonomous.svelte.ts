@@ -625,6 +625,50 @@ function createAutonomousStore() {
         break;
       }
 
+      // LLM fallback consent prompts (llm-fallback-consent Phase 2). A
+      // consent-capable turn parked before a model switch (transport failure
+      // or classifier refusal). Same scoping as hook_approval: the card
+      // renders only for the open thread (elsewhere, the in-app notification
+      // and /fallback approvals cover it), while resolution clears globally
+      // so a late thread switch never strands live buttons.
+      case 'fallback_prompt': {
+        const recordId = event.record_id as string | undefined;
+        if (!recordId) break;
+        if (isCurrentThread) {
+          chatStore.handleFallbackPrompt({
+            recordId,
+            kind: (event.kind as string) || 'transport',
+            fromProvider: (event.from_provider as string) || '',
+            fromModel: (event.from_model as string) || '',
+            toProvider: (event.to_provider as string) || '',
+            toModel: (event.to_model as string) || '',
+            reason: (event.reason as string) || '',
+            httpStatus: (event.http_status as number | null | undefined) ?? null,
+            timeoutSeconds: (event.timeout_seconds as number | null | undefined) ?? null,
+            holdOptions: Array.isArray(event.hold_options)
+              ? (event.hold_options as number[])
+              : [],
+            allowPermanent: event.allow_permanent !== false,
+            defaultHoldSeconds:
+              (event.default_hold_seconds as number | null | undefined) ?? null,
+            createdAt: (event.created_at as string) || '',
+            expiresAt: (event.expires_at as string) || ''
+          });
+        }
+        break;
+      }
+
+      case 'fallback_prompt_resolved': {
+        const recordId = event.record_id as string | undefined;
+        if (!recordId) break;
+        chatStore.resolveFallbackPromptCard(recordId, {
+          outcome: (event.outcome as string) || 'stale',
+          holdSeconds: (event.hold_seconds as number | null | undefined) ?? null,
+          holdPermanent: event.hold_permanent === true
+        });
+        break;
+      }
+
       case 'workflow_approval':
       case 'workflow_approval_resolved':
         // A run suspended on nym.approve, or a suspension was resolved

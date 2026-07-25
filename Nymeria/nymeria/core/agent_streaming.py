@@ -25,6 +25,7 @@ from ..vendor.react_agent.nodes import (
     llm_max_retries,
     llm_retry_delay,
     llm_retry_payload_for_active_candidate,
+    llm_stamp_pending_fallback_note,
 )
 from .agent_compaction import COMPACTING_MESSAGE
 from .agent_text_extract import (
@@ -204,6 +205,18 @@ class GraphStreamProcessor:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Drive one graph invocation and yield converted SSE events."""
         self._reset_graph_state()
+        # Adopt the LLMConfig baked into THIS graph's node closures (stashed
+        # on the compiled graph by create_graph). The recovery path below
+        # mutates it (fallback activation, pending-note stamp), and those
+        # mutations only reach the re-driven agent node if this is the SAME
+        # object the node reads: a freshly resolved config with equal values
+        # is dead state. Adopting per drive also keeps the processor aligned
+        # across mid-turn graph rebuilds (tool reload / sub-turn compaction),
+        # which bake a new instance. The constructor's llm_config stays as
+        # the fallback for graphs without the attribute (test stubs).
+        graph_llm_config = getattr(graph_obj, "nymeria_llm_config", None)
+        if graph_llm_config is not None:
+            self.llm_config = graph_llm_config
         attempt_input_state = input_state
         recovery_attempt = 0
         max_retries = llm_max_retries(self.llm_config)
@@ -289,6 +302,13 @@ class GraphStreamProcessor:
                     )
                     if payload is None:
                         raise
+                    # This site switches the model OUTSIDE the graph and then
+                    # re-drives it, so it cannot attach the model-facing swap
+                    # note itself: stamp it for the re-driven agent node to
+                    # attach (and persist) before calling the fallback.
+                    llm_stamp_pending_fallback_note(
+                        self.llm_config, payload, kind="transport"
+                    )
                     self._rollback_current_model_output()
                     payload["rewound"] = True
                     payload["stream_chunks"] = stream_chunks

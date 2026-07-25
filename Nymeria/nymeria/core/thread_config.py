@@ -14,7 +14,7 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Literal, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -220,6 +220,13 @@ class ThreadConfig(BaseModel):
     disabled_skills: List[str] = Field(default_factory=list, max_length=50)
     llm_config: Optional[ThreadLLMConfig] = None
     active_llm_fallback: Optional[ActiveLLMFallback] = None
+    # Latched model-facing note for the NEXT turn (persisted-context principle:
+    # a hold ending between turns is explained to the model in the next turn's
+    # human message, once). Stamped by agent_llm_config.clear_active_llm_fallback
+    # (expiry, /fallback revert, the REST clear), consumed + cleared by the
+    # turn-input build (agent_streaming_input). Shape = the
+    # additional_kwargs["fallback_note"] stamp (nodes.fallback_note_stamp).
+    pending_fallback_note: Optional[Dict[str, Any]] = None
     # Full system prompt replacement (overrides soul.md entirely)
     system_prompt: Optional[str] = Field(default=None, max_length=50000)
     # Callable thread fields — any thread can become callable by Nymeria
@@ -342,6 +349,8 @@ class ThreadConfig(BaseModel):
             if d:
                 return True
         if self.active_llm_fallback:
+            return True
+        if self.pending_fallback_note:
             return True
         if self.system_prompt:
             return True

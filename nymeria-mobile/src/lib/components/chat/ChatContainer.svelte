@@ -3,6 +3,7 @@
   import MessageBubble from './MessageBubble.svelte';
   import ToolReloadIndicator from './ToolReloadIndicator.svelte';
   import TurnPausedCard from './TurnPausedCard.svelte';
+  import FallbackPromptCard from './FallbackPromptCard.svelte';
   import Icon from '$lib/components/common/Icon.svelte';
   import Spinner from '$lib/components/common/Spinner.svelte';
 
@@ -113,6 +114,11 @@
         {:else}
           {#if message.toolReloadInfo}
             <ToolReloadIndicator info={message.toolReloadInfo} />
+          {/if}
+          {#if message.fallbackPromptInfo}
+            <!-- Fallback consent card: renders above its carrier bubble so a
+                 post-swap continuation streams right under the card. -->
+            <FallbackPromptCard info={message.fallbackPromptInfo} />
           {/if}
           <MessageBubble {message} />
         {/if}
