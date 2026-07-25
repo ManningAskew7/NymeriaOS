@@ -18,12 +18,9 @@ decides?", so they share the durable pending records, the in-process
 (``LLMConfig.fallback_decision_callback``).
 
 Structure mirrors ``core/hook_approvals.py``: durable JSON records under
-``data_dir/llm/fallback_approvals/`` with atomic writes, waiter-deletes-record
-semantics, an orphan TTL sweep, and announce helpers that publish autonomous
-events plus an in-app notification. This is the THIRD near-copy of the durable
-approval-record store (hook_approvals, workflows/approvals); extracting a
-shared ``ApprovalRecordStore`` is a filed backlog follow-up, the same
-threshold that produced ``future_rendezvous.py``.
+``data_dir/llm/fallback_approvals/`` (the shared ``approval_records`` store)
+with atomic writes, waiter-deletes-record semantics, an orphan TTL sweep, and
+announce helpers that publish autonomous events plus an in-app notification.
 
 Deliberate policy (developer-locked, do not "fix"):
 
@@ -48,18 +45,20 @@ Deliberate policy (developer-locked, do not "fix"):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .future_rendezvous import FutureRendezvous, safe_set_result
-from .storage_paths import mtime_sort_key, write_text_atomic
+from .approval_records import ApprovalRecordStore
+from .approval_records import clamp_window as _clamp_window
+from .future_rendezvous import FutureRendezvous
+from .notifications import notify_user_best_effort
+from .time_utils import utc_now as _utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -88,64 +87,40 @@ STALE_RECORD_SLACK_SECONDS = 300
 VALID_KINDS = ("transport", "refusal")
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 # --------------------------------------------------------------------------- #
 # Durable record store (data_dir/llm/fallback_approvals/<record_id>.json)
 # --------------------------------------------------------------------------- #
+# Mechanics live in the shared ApprovalRecordStore; the module-level names
+# below are the stable public surface. The store resolves paths itself, so
+# the redirect seam for tests is settings-level (`nymeria.config.get_settings`),
+# not these functions.
+
+_STORE = ApprovalRecordStore("llm/fallback_approvals", noun="fallback approval")
+
 
 def approvals_dir() -> Path:
-    from ..config import get_settings
-    return get_settings().data_dir / "llm" / "fallback_approvals"
+    return _STORE.dir()
 
 
 def _record_path(record_id: str) -> Path:
-    safe = "".join(c for c in record_id if c.isalnum() or c in ("-", "_"))
-    return approvals_dir() / f"{safe}.json"
+    return _STORE.record_path(record_id)
 
 
 def _write_record(record: Dict[str, Any]) -> None:
-    path = _record_path(record["record_id"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_text_atomic(path, json.dumps(record, indent=2, default=str))
+    _STORE.write(record)
 
 
 def load_record(record_id: str) -> Optional[Dict[str, Any]]:
-    try:
-        record = json.loads(_record_path(record_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return record if isinstance(record, dict) else None
+    return _STORE.load(record_id)
 
 
 def delete_record(record_id: str) -> None:
-    try:
-        _record_path(record_id).unlink(missing_ok=True)
-    except OSError:
-        logger.warning(
-            "could not delete fallback approval record %s", record_id, exc_info=True
-        )
+    _STORE.delete(record_id)
 
 
 def list_pending(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Pending records, newest first; ``user_id`` filters to one owner."""
-    base = approvals_dir()
-    if not base.is_dir():
-        return []
-    records: List[Dict[str, Any]] = []
-    for path in sorted(base.glob("*.json"), key=mtime_sort_key, reverse=True):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        if user_id is not None and record.get("user_id") != user_id:
-            continue
-        records.append(record)
-    return records
+    return _STORE.list(user_id)
 
 
 def public_entry(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -178,22 +153,7 @@ def sweep_stale_records() -> int:
     deletes its record); this sweep is hygiene for records whose waiter died
     without cleanup. Called from the API's hourly heartbeat.
     """
-    now = _utc_now()
-    removed = 0
-    for record in list_pending():
-        expires = record.get("expires_at")
-        try:
-            expiry = datetime.fromisoformat(str(expires))
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-        except (TypeError, ValueError):
-            expiry = None
-        if expiry is None or now > expiry + timedelta(seconds=STALE_RECORD_SLACK_SECONDS):
-            delete_record(str(record.get("record_id") or ""))
-            removed += 1
-    if removed:
-        logger.info("swept %d stale fallback approval record(s)", removed)
-    return removed
+    return _STORE.sweep_stale(STALE_RECORD_SLACK_SECONDS)
 
 
 # --------------------------------------------------------------------------- #
@@ -253,25 +213,19 @@ class FallbackApprovalCoordinator(FutureRendezvous[PendingFallbackApproval]):
         note: str = "",
     ) -> bool:
         """Wake the parked turn. False = nothing to wake (lost the race,
-        already timed out, or the waiter is gone)."""
-        try:
-            return self._resolve(
-                record_id,
-                lambda rec: {
-                    "status": "resolved",
-                    "approved": bool(approved),
-                    "hold_seconds": hold_seconds,
-                    "hold_permanent": bool(hold_permanent),
-                    "resolved_by": resolved_by,
-                    "note": note or "",
-                },
-            )
-        except RuntimeError:
-            logger.warning(
-                "fallback approval %s could not be woken (waiter loop closed)",
-                record_id,
-            )
-            return False
+        already timed out, or the waiter is gone, including a waiter whose
+        loop died: the base ``_wake`` reports that as False)."""
+        return self._resolve(
+            record_id,
+            lambda rec: {
+                "status": "resolved",
+                "approved": bool(approved),
+                "hold_seconds": hold_seconds,
+                "hold_permanent": bool(hold_permanent),
+                "resolved_by": resolved_by,
+                "note": note or "",
+            },
+        )
 
     def abort_thread(self, thread_id: str) -> int:
         """Resolve every pending prompt for ``thread_id`` as aborted.
@@ -282,13 +236,8 @@ class FallbackApprovalCoordinator(FutureRendezvous[PendingFallbackApproval]):
         matched = self._drain_matching(lambda rec: rec.thread_id == thread_id)
         aborted = 0
         for rec in matched:
-            future = rec.future
-            if future.done():
-                continue
-            future.get_loop().call_soon_threadsafe(
-                safe_set_result, future, {"status": "aborted"}
-            )
-            aborted += 1
+            if self._wake(rec.future, {"status": "aborted"}):
+                aborted += 1
         if aborted:
             logger.info(
                 "fallback_approval_coordinator aborted %d pending prompt(s) for thread %s",
@@ -323,11 +272,12 @@ def get_fallback_approval_coordinator() -> FallbackApprovalCoordinator:
 
 def clamp_window(value: Any) -> float:
     """The effective prompt window for a configured value."""
-    try:
-        window = float(value)
-    except (TypeError, ValueError):
-        return DEFAULT_PROMPT_WINDOW_SECONDS
-    return max(MIN_PROMPT_WINDOW_SECONDS, min(window, MAX_PROMPT_WINDOW_SECONDS))
+    return _clamp_window(
+        value,
+        default=DEFAULT_PROMPT_WINDOW_SECONDS,
+        minimum=MIN_PROMPT_WINDOW_SECONDS,
+        maximum=MAX_PROMPT_WINDOW_SECONDS,
+    )
 
 
 def build_pending_record(
@@ -446,32 +396,23 @@ def announce_request(record: Dict[str, Any]) -> None:
 
 def _announce_notifications(record: Dict[str, Any]) -> None:
     """In-app notification + FCM push for a pending prompt; never raises."""
+    label = "refused this turn" if record.get("kind") == "refusal" else "is failing"
     try:
-        from ..config import get_settings
-        from .notifications import create_notification
-        label = "refused this turn" if record.get("kind") == "refusal" else "is failing"
-        summary = (
-            f"Model {record.get('from_model') or 'primary'} {label}: "
-            f"swap to {record.get('to_model') or 'the fallback model'}? "
-            f"(auto-swaps in {int(float(record.get('timeout_seconds') or 0))}s)"
-        )
-        create_notification(
-            user_id=str(record.get("user_id") or ""),
-            summary=summary[:200],
-            thread_id=str(record.get("thread_id") or "") or None,
-            task_id=None,
-        )
-        settings = get_settings()
-        if getattr(settings, "fcm_enabled", False):
-            from .fcm import send_to_all_devices
-            send_to_all_devices(
-                data_dir=str(settings.data_dir),
-                text=summary,
-                thread_id=str(record.get("thread_id") or ""),
-                user_id=str(record.get("user_id") or ""),
-            )
-    except Exception:  # noqa: BLE001
-        logger.warning("fallback approval notification failed", exc_info=True)
+        window = int(float(record.get("timeout_seconds") or 0))
+    except (TypeError, ValueError):
+        window = 0
+    summary = (
+        f"Model {record.get('from_model') or 'primary'} {label}: "
+        f"swap to {record.get('to_model') or 'the fallback model'}? "
+        f"(auto-swaps in {window}s)"
+    )
+    notify_user_best_effort(
+        str(record.get("user_id") or ""),
+        summary,
+        thread_id=str(record.get("thread_id") or "") or None,
+        push=True,
+        log_label="fallback approval notification",
+    )
 
 
 def publish_resolved_event(

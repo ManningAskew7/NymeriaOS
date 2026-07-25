@@ -18,9 +18,9 @@ approvals. This module owns that store plus the resume executor:
   by a small heartbeat in the API app (the process workflows execute in, in
   both deployment shapes).
 
-Records are integrity state, not observability: writes are atomic
-(temp + replace, the hook-store idiom), unlike the best-effort run records
-in ``trace.py``.
+Records are integrity state, not observability: writes are atomic (the
+shared ``approval_records`` store), unlike the best-effort run records in
+``trace.py``.
 """
 
 from __future__ import annotations
@@ -31,12 +31,13 @@ import logging
 import os
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ...config import get_settings
-from ..storage_paths import mtime_sort_key
+from ..approval_records import ApprovalRecordStore
+from ..notifications import notify_user_best_effort
+from ..time_utils import utc_now as _utc_now
 from .envelope import (
     KIND_RESUME_INVALID,
     WorkflowError,
@@ -53,25 +54,23 @@ STALE_CLAIM_SECONDS = 24 * 3600
 APPROVAL_SWEEP_INTERVAL_SECONDS = 3600
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+# Mechanics live in the shared ApprovalRecordStore; the module-level names
+# below are the stable public surface. The store resolves paths itself, so
+# the redirect seam for tests is settings-level (`nymeria.config.get_settings`),
+# not these functions.
+_STORE = ApprovalRecordStore("workflows/pending", noun="workflow approval")
 
 
 def pending_dir() -> Path:
-    return get_settings().data_dir / "workflows" / "pending"
+    return _STORE.dir()
 
 
 def _record_path(record_id: str) -> Path:
-    safe = "".join(c for c in record_id if c.isalnum() or c in ("-", "_"))
-    return pending_dir() / f"{safe}.json"
+    return _STORE.record_path(record_id)
 
 
 def _write_record(record: Dict[str, Any]) -> None:
-    path = _record_path(record["record_id"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
-    temp.replace(path)
+    _STORE.write(record)
 
 
 def create_pending_approval(
@@ -125,31 +124,12 @@ def create_pending_approval(
 
 
 def load_approval(record_id: str) -> Optional[Dict[str, Any]]:
-    path = _record_path(record_id)
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return record if isinstance(record, dict) else None
+    return _STORE.load(record_id)
 
 
 def list_pending_approvals(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Pending records, newest first; ``user_id`` filters to one owner."""
-    base = pending_dir()
-    if not base.is_dir():
-        return []
-    records: List[Dict[str, Any]] = []
-    for path in sorted(base.glob("*.json"), key=mtime_sort_key, reverse=True):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        if user_id is not None and record.get("user_id") != user_id:
-            continue
-        records.append(record)
-    return records
+    return _STORE.list(user_id)
 
 
 def public_approval_entry(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -201,26 +181,15 @@ def finish_claim(record_id: str) -> None:
 
 def delete_approval(record_id: str) -> None:
     """Remove an unclaimed record (e.g. the run ended without suspending)."""
-    try:
-        _record_path(record_id).unlink(missing_ok=True)
-    except OSError:
-        logger.warning("could not delete approval record %s", record_id, exc_info=True)
-
-
-def _parse_iso(value: Any) -> Optional[datetime]:
-    try:
-        parsed = datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    _STORE.delete(record_id)
 
 
 def expired_approvals() -> List[Dict[str, Any]]:
     """Pending records past ``expires_at`` (also purges stale claim files)."""
     now = _utc_now()
-    base = pending_dir()
+    # Same path authority as the record half (the shared store), so both
+    # halves always read one directory.
+    base = _STORE.dir()
     if base.is_dir():
         for stale in base.glob("*.json.claimed"):
             try:
@@ -230,12 +199,7 @@ def expired_approvals() -> List[Dict[str, Any]]:
                     logger.warning("purged stale claimed approval %s", stale.name)
             except OSError:
                 continue
-    out: List[Dict[str, Any]] = []
-    for record in list_pending_approvals():
-        expires = _parse_iso(record.get("expires_at"))
-        if expires is not None and expires <= now:
-            out.append(record)
-    return out
+    return _STORE.expired()
 
 
 # --- resume ---------------------------------------------------------------
@@ -271,17 +235,15 @@ def _load_target(record: Dict[str, Any]):
 
 
 def _notify_owner(record: Dict[str, Any], summary: str) -> None:
-    try:
-        from ..notifications import create_notification
-
-        create_notification(
-            user_id=str(record.get("user_id") or ""),
-            summary=summary[:200],
-            thread_id=str(record.get("thread_id") or "") or None,
-            task_id=None,
-        )
-    except Exception:  # noqa: BLE001 - announcements are best-effort
-        logger.warning("workflow approval notification failed", exc_info=True)
+    # Deliberately push-less: workflow approvals are day-scale decisions
+    # surfaced by the notification feed, not minute-scale urgent holds.
+    notify_user_best_effort(
+        str(record.get("user_id") or ""),
+        summary,
+        thread_id=str(record.get("thread_id") or "") or None,
+        push=False,
+        log_label="workflow approval notification",
+    )
 
 
 def _publish_resolved_event(

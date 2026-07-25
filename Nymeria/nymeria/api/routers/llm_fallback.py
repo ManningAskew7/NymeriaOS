@@ -70,10 +70,12 @@ def create_llm_fallback_router(verify_api_key_fn) -> APIRouter:
     ):
         """Approve or decline a parked model switch (owner or admin).
 
-        404 covers both a missing record and another user's record. 409 means
-        the prompt is no longer pending (it timed out and auto-swapped, was
-        resolved elsewhere, or its turn ended); stale records are cleaned up
-        on the spot.
+        404 covers a missing record, another user's record, and the common
+        already-ended cases: the parked waiter deletes its record on every
+        exit, so a timed-out/resolved/aborted prompt is usually gone before
+        a late resolve arrives. 409 is the rarer stale shape: the record
+        still exists but no waiter is parked on it (typically a crash orphan
+        surviving a restart); stale records are cleaned up on the spot.
         """
         from ...core.fallback_approvals import (
             delete_record,

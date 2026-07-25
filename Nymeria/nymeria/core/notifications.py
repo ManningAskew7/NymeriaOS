@@ -399,3 +399,43 @@ def create_notification(
         delivered_to=delivered_to,
         errors=errors,
     )
+
+
+def notify_user_best_effort(
+    user_id: str,
+    summary: str,
+    thread_id: Optional[str] = None,
+    *,
+    push: bool = False,
+    log_label: str = "user notification",
+) -> None:
+    """In-app notification row (and optionally an FCM push) that never raises.
+
+    The shared delivery half of the approval announce paths (hook, workflow,
+    and fallback approvals): a notification-center row (summary truncated to
+    the store's 200-char cap) plus, when ``push`` and ``settings.fcm_enabled``,
+    a push carrying the untruncated text. Summary COPY stays with the caller;
+    only delivery lives here.
+    """
+    try:
+        create_notification(
+            user_id=str(user_id or ""),
+            summary=summary[:200],
+            thread_id=str(thread_id) if thread_id else None,
+            task_id=None,
+        )
+        if push:
+            from ..config import get_settings
+
+            settings = get_settings()
+            if getattr(settings, "fcm_enabled", False):
+                from .fcm import send_to_all_devices
+
+                send_to_all_devices(
+                    data_dir=str(settings.data_dir),
+                    text=summary,
+                    thread_id=str(thread_id or ""),
+                    user_id=str(user_id or ""),
+                )
+    except Exception:  # noqa: BLE001 - announcements are best-effort
+        logger.warning("%s failed", log_label, exc_info=True)

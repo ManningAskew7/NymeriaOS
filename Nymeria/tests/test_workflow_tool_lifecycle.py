@@ -590,8 +590,10 @@ def test_workflow_info_approvals_action(wf_env, monkeypatch):
     """Phase 4: the approvals action lists suspensions, owner-scoped."""
     from nymeria.core.workflows.approvals import create_pending_approval
 
+    # The shared ApprovalRecordStore resolves settings lazily via
+    # nymeria.config.get_settings, so that is the redirect seam.
     monkeypatch.setattr(
-        "nymeria.core.workflows.approvals.get_settings",
+        "nymeria.config.get_settings",
         lambda: SimpleNamespace(data_dir=wf_env.tmp),
     )
     assert "no workflow runs are suspended" in _info("approvals", admin=False)

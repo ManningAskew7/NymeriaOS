@@ -286,8 +286,10 @@ def test_aggregate_runs_across_workflows_user_scoped(
 
 
 def _approvals_store(monkeypatch, tmp_path):
+    # The shared ApprovalRecordStore resolves settings lazily via
+    # nymeria.config.get_settings, so that is the redirect seam.
     monkeypatch.setattr(
-        "nymeria.core.workflows.approvals.get_settings",
+        "nymeria.config.get_settings",
         lambda: SimpleNamespace(data_dir=tmp_path),
     )
 

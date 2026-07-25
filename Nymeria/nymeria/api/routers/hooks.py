@@ -405,10 +405,13 @@ def create_hook_router(
     ):
         """Approve or deny a held tool call (owner or admin).
 
-        404 covers both a missing record and another user's record (existence
-        is not leaked). 409 means the hold is already over: the decision lost
-        a race, the window expired, or the waiter is gone (restart/abort);
-        stale records are cleaned up on the spot.
+        404 covers a missing record, another user's record (existence is not
+        leaked), and the common already-ended cases: the waiting action
+        deletes its record on every exit, so a timed-out/resolved/aborted
+        hold is usually gone before a late resolve arrives. 409 is the rarer
+        stale shape: the record still exists but no waiter is parked on it
+        (typically a crash orphan surviving a restart); stale records are
+        cleaned up on the spot.
         """
         from ...core.hook_approvals import (
             delete_record,
@@ -429,8 +432,9 @@ def create_hook_router(
             note=body.note or "",
         )
         if not woke:
-            # Nothing is waiting: the hold already ended (timeout/abort race)
-            # or the waiter died with the record behind (restart). Clean up so
+            # A record with no live waiter: either this resolve raced the
+            # waiter's own cleanup (it deletes the record on every exit) or
+            # the waiter died leaving a crash orphan (restart). Clean up so
             # the stale row disappears from every surface.
             await run_in_threadpool(delete_record, record_id)
             publish_resolved_event(record, outcome="stale", resolved_by=user.id)

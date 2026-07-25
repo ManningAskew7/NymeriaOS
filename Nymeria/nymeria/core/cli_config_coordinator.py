@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .future_rendezvous import FutureRendezvous, safe_set_result
+from .future_rendezvous import FutureRendezvous
 
 logger = logging.getLogger(__name__)
 
@@ -92,15 +92,11 @@ class CLIConfigCoordinator(FutureRendezvous[PendingCLIConfigCommand]):
         matched = self._drain_matching(lambda cmd: cmd.thread_id == thread_id)
         aborted = 0
         for cmd in matched:
-            future = cmd.future
-            if future.done():
-                continue
-            future.get_loop().call_soon_threadsafe(
-                safe_set_result,
-                future,
+            if self._wake(
+                cmd.future,
                 {"ok": False, "status": "aborted", "error": "thread aborted"},
-            )
-            aborted += 1
+            ):
+                aborted += 1
         if aborted:
             logger.info(
                 "cli_config_coordinator aborted %d pending command(s) for thread %s",

@@ -61,15 +61,12 @@ SUSPEND_SOURCE = (
 def _pending_store(tmp_path, monkeypatch):
     """Redirect the approval record store (and silence announcements).
 
-    The global settings patch also redirects trace.py's run-record store
-    (the resume_invalid path persists a stepless record); the engine reads
-    only ``data_dir`` from global settings.
+    The shared ``ApprovalRecordStore`` resolves settings lazily via
+    ``nymeria.config.get_settings``, so the one global patch redirects the
+    record store AND trace.py's run-record store (the resume_invalid path
+    persists a stepless record); the engine reads only ``data_dir`` from
+    global settings.
     """
-    monkeypatch.setattr(
-        approvals_module,
-        "get_settings",
-        lambda: SimpleNamespace(data_dir=tmp_path),
-    )
     monkeypatch.setattr(
         "nymeria.config.get_settings",
         lambda: SimpleNamespace(data_dir=tmp_path),

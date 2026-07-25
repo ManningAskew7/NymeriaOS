@@ -67,7 +67,7 @@ class FutureRendezvous(Generic[TRecord]):
         self._items: dict[str, TRecord] = {}
         self._lock = threading.Lock()
         self._sweep_task: Optional[asyncio.Task] = None
-        self._sweep_started = False
+        self._sweep_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ttl_seconds = ttl_seconds
         self._sweep_interval_seconds = sweep_interval_seconds
         self._log_label = log_label
@@ -78,7 +78,7 @@ class FutureRendezvous(Generic[TRecord]):
         """Store ``record`` under ``key`` and ensure the sweep loop is running."""
         with self._lock:
             self._items[key] = record
-        self._start_sweep_locked()
+        self._ensure_sweep()
 
     def get(self, key: str) -> Optional[TRecord]:
         with self._lock:
@@ -114,8 +114,7 @@ class FutureRendezvous(Generic[TRecord]):
         future = record.future
         if future.done():
             return False
-        future.get_loop().call_soon_threadsafe(safe_set_result, future, build_result(record))
-        return True
+        return self._wake(future, build_result(record))
 
     def _drain_matching(self, predicate: Callable[[TRecord], bool]) -> list[TRecord]:
         """Pop and return every record matching ``predicate`` (under the lock).
@@ -131,15 +130,52 @@ class FutureRendezvous(Generic[TRecord]):
 
     # Sweep loop
 
-    def _start_sweep_locked(self) -> None:
-        if self._sweep_started:
-            return
+    def _ensure_sweep(self) -> None:
+        """Arm the orphan sweep on the current loop, re-arming after loop death.
+
+        Coordinators are process-wide singletons but registrations can arrive
+        from short-lived loops (e.g. a sync dispatch bridge's ``asyncio.run``).
+        A plain started-once flag would latch onto whichever loop registered
+        first and leave the coordinator sweep-less forever once that loop
+        closed; instead the owning loop is tracked and the sweep lazily
+        re-arms on the next registration whenever that loop is gone. Lazy
+        re-arm is sufficient: registration precedes every park, and the sweep
+        is orphan hygiene, not a liveness dependency (waiters carry their own
+        timeouts).
+        """
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        self._sweep_started = True
-        self._sweep_task = loop.create_task(self._sweep_forever())
+        with self._lock:
+            task, owner = self._sweep_task, self._sweep_loop
+            if task is not None and owner is not None:
+                if owner is loop and not task.done():
+                    return
+                if owner is not loop and not owner.is_closed() and not task.done():
+                    return  # alive on another still-open loop
+            # Create first, assign both after: a failed create_task must not
+            # leave _sweep_loop pointing at a loop whose task was never made.
+            new_task = loop.create_task(self._sweep_forever())
+            self._sweep_loop = loop
+            self._sweep_task = new_task
+
+    def _wake(self, future: asyncio.Future, payload: dict[str, Any]) -> bool:
+        """Schedule ``payload`` onto ``future`` on its owning loop.
+
+        Returns False without raising when there is nothing to wake: the
+        future is already done, or its owning loop has closed (the waiter
+        died with its loop), so bulk paths (sweep, thread aborts) can keep
+        going past a dead record instead of aborting mid-batch.
+        """
+        if future.done():
+            return False
+        try:
+            future.get_loop().call_soon_threadsafe(safe_set_result, future, payload)
+        except RuntimeError:
+            logger.warning("%s could not wake a waiter (loop closed)", self._log_label)
+            return False
+        return True
 
     async def _sweep_forever(self) -> None:
         while True:
@@ -157,13 +193,10 @@ class FutureRendezvous(Generic[TRecord]):
             orphan_keys = [key for key, record in self._items.items() if record.created_at < cutoff]
             orphans = [self._items.pop(key) for key in orphan_keys]
         for orphan in orphans:
-            future = orphan.future
-            if future.done():
+            if orphan.future.done():
                 continue
             self._on_orphan_swept(orphan)
-            future.get_loop().call_soon_threadsafe(
-                safe_set_result, future, self._swept_result(orphan)
-            )
+            self._wake(orphan.future, self._swept_result(orphan))
 
     # Subclass hooks
 

@@ -5,10 +5,10 @@ holds a matched ``pre_tool_use`` tool call while the user decides. This module
 owns everything around that hold:
 
 - A durable JSON record per pending approval under
-  ``data_dir/hooks/approvals/`` (the workflow-approvals store idiom: atomic
-  temp+replace writes), so every resolve surface (REST, ``/hook`` command,
-  bots, CLI, frontends) can list what is pending and so a crash leaves an
-  auditable orphan instead of nothing.
+  ``data_dir/hooks/approvals/`` (the shared ``approval_records`` store:
+  atomic writes, corrupt-skipping lists), so every resolve surface (REST,
+  ``/hook`` command, bots, CLI, frontends) can list what is pending and so a
+  crash leaves an auditable orphan instead of nothing.
 - A :class:`FutureRendezvous` coordinator (the auth-prompt/browser-command
   idiom) keyed by ``record_id``. The action awaits the future with the hook's
   window; a resolver wakes it from any thread. Single-process by design: the
@@ -41,12 +41,15 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .future_rendezvous import FutureRendezvous, safe_set_result
-from .storage_paths import mtime_sort_key
+from .approval_records import ApprovalRecordStore
+from .approval_records import clamp_window as _clamp_window
+from .future_rendezvous import FutureRendezvous
+from .notifications import notify_user_best_effort
+from .time_utils import utc_now as _utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -75,64 +78,40 @@ _ARGS_PREVIEW_CAP = 2_000
 _PROMPT_CAP = 500
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 # --------------------------------------------------------------------------- #
 # Durable record store (data_dir/hooks/approvals/<record_id>.json)
 # --------------------------------------------------------------------------- #
+# Mechanics live in the shared ApprovalRecordStore; the module-level names
+# below are the stable public surface. The store resolves paths itself, so
+# the redirect seam for tests is settings-level (`nymeria.config.get_settings`),
+# not these functions.
+
+_STORE = ApprovalRecordStore("hooks/approvals", noun="hook approval")
+
 
 def approvals_dir() -> Path:
-    from ..config import get_settings
-    return get_settings().data_dir / "hooks" / "approvals"
+    return _STORE.dir()
 
 
 def _record_path(record_id: str) -> Path:
-    safe = "".join(c for c in record_id if c.isalnum() or c in ("-", "_"))
-    return approvals_dir() / f"{safe}.json"
+    return _STORE.record_path(record_id)
 
 
 def _write_record(record: Dict[str, Any]) -> None:
-    path = _record_path(record["record_id"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
-    temp.replace(path)
+    _STORE.write(record)
 
 
 def load_record(record_id: str) -> Optional[Dict[str, Any]]:
-    try:
-        record = json.loads(_record_path(record_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return record if isinstance(record, dict) else None
+    return _STORE.load(record_id)
 
 
 def delete_record(record_id: str) -> None:
-    try:
-        _record_path(record_id).unlink(missing_ok=True)
-    except OSError:
-        logger.warning("could not delete hook approval record %s", record_id, exc_info=True)
+    _STORE.delete(record_id)
 
 
 def list_pending(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Pending records, newest first; ``user_id`` filters to one owner."""
-    base = approvals_dir()
-    if not base.is_dir():
-        return []
-    records: List[Dict[str, Any]] = []
-    for path in sorted(base.glob("*.json"), key=mtime_sort_key, reverse=True):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        if user_id is not None and record.get("user_id") != user_id:
-            continue
-        records.append(record)
-    return records
+    return _STORE.list(user_id)
 
 
 def public_entry(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -160,22 +139,7 @@ def sweep_stale_records() -> int:
     record); this sweep is hygiene for records whose waiter died without
     cleanup (process crash mid-hold). Called from the API's hourly heartbeat.
     """
-    now = _utc_now()
-    removed = 0
-    for record in list_pending():
-        expires = record.get("expires_at")
-        try:
-            expiry = datetime.fromisoformat(str(expires))
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-        except (TypeError, ValueError):
-            expiry = None
-        if expiry is None or now > expiry + timedelta(seconds=STALE_RECORD_SLACK_SECONDS):
-            delete_record(str(record.get("record_id") or ""))
-            removed += 1
-    if removed:
-        logger.info("swept %d stale hook approval record(s)", removed)
-    return removed
+    return _STORE.sweep_stale(STALE_RECORD_SLACK_SECONDS)
 
 
 # --------------------------------------------------------------------------- #
@@ -236,27 +200,19 @@ class HookApprovalCoordinator(FutureRendezvous[PendingHookApproval]):
         note: str = "",
     ) -> bool:
         """Wake the held tool call. False = nothing to wake (lost the race,
-        already timed out, or the waiter is gone).
-
-        A future whose owning loop already died (e.g. shutdown races a
-        resolve) counts as waiter-gone: report False so the caller takes the
-        stale-record path instead of surfacing a RuntimeError.
+        already timed out, or the waiter is gone, including a waiter whose
+        loop died: the base ``_wake`` reports that as False, so the caller
+        takes the stale-record path instead of surfacing a RuntimeError).
         """
-        try:
-            return self._resolve(
-                record_id,
-                lambda rec: {
-                    "status": "resolved",
-                    "approved": bool(approved),
-                    "resolved_by": resolved_by,
-                    "note": note or "",
-                },
-            )
-        except RuntimeError:
-            logger.warning(
-                "hook approval %s could not be woken (waiter loop closed)", record_id
-            )
-            return False
+        return self._resolve(
+            record_id,
+            lambda rec: {
+                "status": "resolved",
+                "approved": bool(approved),
+                "resolved_by": resolved_by,
+                "note": note or "",
+            },
+        )
 
     def abort_thread(self, thread_id: str) -> int:
         """Resolve every pending approval for ``thread_id`` as aborted.
@@ -269,13 +225,8 @@ class HookApprovalCoordinator(FutureRendezvous[PendingHookApproval]):
         matched = self._drain_matching(lambda rec: rec.thread_id == thread_id)
         aborted = 0
         for rec in matched:
-            future = rec.future
-            if future.done():
-                continue
-            future.get_loop().call_soon_threadsafe(
-                safe_set_result, future, {"status": "aborted"}
-            )
-            aborted += 1
+            if self._wake(rec.future, {"status": "aborted"}):
+                aborted += 1
         if aborted:
             logger.info(
                 "hook_approval_coordinator aborted %d pending approval(s) for thread %s",
@@ -310,11 +261,12 @@ def get_hook_approval_coordinator() -> HookApprovalCoordinator:
 
 def clamp_window(value: Any) -> float:
     """The effective approval window for an author-supplied value."""
-    try:
-        window = float(value)
-    except (TypeError, ValueError):
-        return DEFAULT_APPROVAL_WINDOW_SECONDS
-    return max(MIN_APPROVAL_WINDOW_SECONDS, min(window, MAX_APPROVAL_WINDOW_SECONDS))
+    return _clamp_window(
+        value,
+        default=DEFAULT_APPROVAL_WINDOW_SECONDS,
+        minimum=MIN_APPROVAL_WINDOW_SECONDS,
+        maximum=MAX_APPROVAL_WINDOW_SECONDS,
+    )
 
 
 def args_preview(tool_args: Optional[dict]) -> str:
@@ -418,30 +370,17 @@ def announce_request(record: Dict[str, Any]) -> None:
 
 def _announce_notifications(record: Dict[str, Any]) -> None:
     """In-app notification + FCM push for a pending approval; never raises."""
-    try:
-        from ..config import get_settings
-        from .notifications import create_notification
-        summary = (
-            f"Approval needed: {record.get('tool_name')} "
-            f"({record.get('prompt') or 'tool call held by a hook'})"
-        )
-        create_notification(
-            user_id=str(record.get("user_id") or ""),
-            summary=summary[:200],
-            thread_id=str(record.get("thread_id") or "") or None,
-            task_id=None,
-        )
-        settings = get_settings()
-        if getattr(settings, "fcm_enabled", False):
-            from .fcm import send_to_all_devices
-            send_to_all_devices(
-                data_dir=str(settings.data_dir),
-                text=summary,
-                thread_id=str(record.get("thread_id") or ""),
-                user_id=str(record.get("user_id") or ""),
-            )
-    except Exception:  # noqa: BLE001
-        logger.warning("hook approval notification failed", exc_info=True)
+    summary = (
+        f"Approval needed: {record.get('tool_name')} "
+        f"({record.get('prompt') or 'tool call held by a hook'})"
+    )
+    notify_user_best_effort(
+        str(record.get("user_id") or ""),
+        summary,
+        thread_id=str(record.get("thread_id") or "") or None,
+        push=True,
+        log_label="hook approval notification",
+    )
 
 
 def publish_resolved_event(
