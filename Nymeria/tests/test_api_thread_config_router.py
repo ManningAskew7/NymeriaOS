@@ -619,3 +619,56 @@ def test_thread_config_hook_enable_fields_round_trip(
     cleared = agent.thread_config_manager.get_config(thread_id)
     assert cleared.hooks_enabled is None
     assert cleared.hook_overrides == {}
+
+
+def test_thread_config_clear_active_fallback_reverts_and_latches_end_note(
+    tmp_path: Path, api_client_builder
+):
+    """The typed GUI revert: clears the hold and latches the model-facing end
+    note (mirroring /fallback revert), through the route's own save."""
+    from nymeria.core.thread_config import ActiveLLMFallback
+
+    client, agent, token = _client(tmp_path, api_client_builder)
+    headers = api_client_builder.auth(token)
+    thread_id = "thread-fallback-revert"
+    agent.accounts_repo.claim_thread(thread_id, "owner")
+    agent.thread_config_manager.save_config(
+        ThreadConfig(
+            thread_id=thread_id,
+            active_llm_fallback=ActiveLLMFallback(
+                provider="openai",
+                model="gpt-5.5",
+                source_provider="anthropic",
+                source_model="claude-fable-5",
+                reason="refusal",
+            ),
+        )
+    )
+
+    resp = client.patch(
+        f"/threads/{thread_id}/config",
+        json={"clear_active_fallback": True},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+
+    saved = agent.thread_config_manager.get_config(thread_id)
+    assert saved.active_llm_fallback is None
+    note = saved.pending_fallback_note
+    assert note is not None and note["phase"] == "end"
+    assert note["kind"] == "refusal"
+    assert "manually reverted" in note["text"]
+    assert note["to_model"] == "claude-fable-5"
+    assert thread_id in agent.invalidated
+
+    # Idempotent: a second clear with no active hold changes nothing, and in
+    # particular does NOT touch the still-unconsumed end-note latch.
+    resp2 = client.patch(
+        f"/threads/{thread_id}/config",
+        json={"clear_active_fallback": True},
+        headers=headers,
+    )
+    assert resp2.status_code == 200
+    saved2 = agent.thread_config_manager.get_config(thread_id)
+    assert saved2.active_llm_fallback is None
+    assert saved2.pending_fallback_note == note

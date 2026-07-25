@@ -192,7 +192,7 @@ class ServerSettingsResponse(BaseModel):
     llm_fallback_hold_seconds: int
     llm_fallback_switch_mode: str = "auto"
     llm_fallback_prompt_timeout_seconds: int = 180
-    llm_refusal_swap_mode: str = "off"
+    llm_refusal_swap_mode: str = "ask"
     context_management: str
     compact_threshold: float
     compact_threshold_mode: str = "tokens"

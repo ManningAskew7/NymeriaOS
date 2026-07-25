@@ -60,7 +60,7 @@ class FakeSettings:
     llm_fallback_hold_seconds: int = 7200
     llm_fallback_switch_mode: str = "auto"
     llm_fallback_prompt_timeout_seconds: int = 180
-    llm_refusal_swap_mode: str = "off"
+    llm_refusal_swap_mode: str = "ask"
     context_management: str = "none"
     compact_threshold: float = 0.8
     compact_threshold_mode: str = "percentage"

@@ -190,6 +190,67 @@ def _thread_is_busy(host: LLMConfigHost, thread_id: str) -> bool:
         return False
 
 
+def fallback_end_note_stamp(active: ActiveLLMFallback, *, reason: str) -> dict[str, Any]:
+    """The end-note latch stamp for a clearing hold (shared by every clear
+    surface, incl. the thread-config PATCH which mutates its own config
+    object instead of calling :func:`clear_active_llm_fallback`).
+
+    from = the fallback that was holding, to = the primary coming back.
+    """
+    from ..vendor.react_agent.nodes import fallback_note_stamp
+
+    return fallback_note_stamp(
+        {
+            "from_provider": active.provider,
+            "from_model": active.model,
+            "to_provider": active.source_provider,
+            "to_model": active.source_model,
+            "reason": reason,
+        },
+        kind="refusal" if active.reason == "refusal" else "transport",
+        phase="end",
+    )
+
+
+def clear_active_llm_fallback(
+    host: LLMConfigHost,
+    thread_id: str,
+    *,
+    reason: str,
+):
+    """Clear a thread's active fallback hold and latch the model-facing end note.
+
+    The shared clear path for every revert/expiry surface (expiry sweep,
+    ``/fallback revert``, the REST ``clear_active_fallback`` flag). Stamps
+    ``ThreadConfig.pending_fallback_note`` so the next turn (any source) tells
+    the model it is back on the primary (persisted-context principle; the
+    latch shape is the ``fallback_note`` message stamp). ``reason`` is
+    "expired" or "reverted". Returns the cleared ``ActiveLLMFallback`` record,
+    or None when there was nothing to clear or the save failed.
+    """
+    if not thread_id:
+        return None
+    tc = host.thread_config_manager.get_config(thread_id)
+    active = tc.active_llm_fallback if tc is not None else None
+    if tc is None or active is None:
+        return None
+
+    tc.active_llm_fallback = None
+    tc.pending_fallback_note = fallback_end_note_stamp(active, reason=reason)
+    # Always save (never delete): the latch itself is state worth keeping even
+    # on an otherwise-default config; the consume path runs the save-or-delete
+    # choice once the latch is gone.
+    if not host.thread_config_manager.save_config(tc):
+        logger.warning("Failed to clear LLM fallback for thread %s", thread_id)
+        return None
+    host.invalidate_thread_config_cache(thread_id)
+    logger.info(
+        "Cleared %s LLM fallback for thread %s (%s/%s)",
+        reason, thread_id, active.provider, active.model,
+    )
+    return active
+
+
 def clear_expired_llm_fallback_if_idle(
     host: LLMConfigHost,
     thread_id: str,
@@ -205,19 +266,39 @@ def clear_expired_llm_fallback_if_idle(
         return False
     if _thread_is_busy(host, thread_id):
         return False
+    return clear_active_llm_fallback(host, thread_id, reason="expired") is not None
 
-    tc.active_llm_fallback = None
+
+def consume_pending_fallback_note(
+    host: LLMConfigHost,
+    thread_id: str,
+) -> dict[str, Any] | None:
+    """Pop the latched end-note stamp for this thread's next turn, or None.
+
+    Clearing the latch persists BEFORE the note is returned; if that save
+    fails the note is withheld this turn (deferred to a later successful
+    consume) rather than risking a duplicate injection every turn.
+    """
+    if not thread_id:
+        return None
+    tc = host.thread_config_manager.get_config(thread_id)
+    note = getattr(tc, "pending_fallback_note", None) if tc is not None else None
+    if not note:
+        return None
+    tc.pending_fallback_note = None
     saved = (
         host.thread_config_manager.save_config(tc)
         if tc.has_customizations()
         else host.thread_config_manager.delete_config(thread_id)
     )
     if not saved:
-        logger.warning("Failed to clear expired LLM fallback for thread %s", thread_id)
-        return False
+        logger.warning(
+            "Failed to clear pending fallback note for thread %s; "
+            "withholding it this turn", thread_id,
+        )
+        return None
     host.invalidate_thread_config_cache(thread_id)
-    logger.info("Cleared expired LLM fallback for thread %s", thread_id)
-    return True
+    return dict(note)
 
 
 def activate_temporary_llm_fallback(
@@ -262,6 +343,11 @@ def activate_temporary_llm_fallback(
     tc = host.thread_config_manager.get_config(thread_id)
     if tc is None:
         tc = ThreadConfig(thread_id=thread_id)
+    # A hold-end note latched by a previous hold's expiry/revert is obsolete
+    # the moment a new hold activates: delivering "back on the primary" while
+    # a different fallback is live would misinform the model. The swap note
+    # for THIS activation supersedes it.
+    tc.pending_fallback_note = None
     tc.active_llm_fallback = ActiveLLMFallback(
         provider=provider,
         model=model,
@@ -618,7 +704,7 @@ def get_llm_config_for_thread(
         "fallback_switch_mode", getattr(host.settings, "llm_fallback_switch_mode", "auto")
     )
     refusal_swap_mode = resolve(
-        "refusal_swap_mode", getattr(host.settings, "llm_refusal_swap_mode", "off")
+        "refusal_swap_mode", getattr(host.settings, "llm_refusal_swap_mode", "ask")
     )
     fallback_prompt_timeout = getattr(
         host.settings, "llm_fallback_prompt_timeout_seconds", 180

@@ -105,6 +105,11 @@
   let llmBackgroundBaseUrl = $state('');
   let llmFallbackModels = $state(''); // comma/newline-separated provider:model entries
   let llmFallbackHoldSeconds = $state(7200);
+  // Fallback consent (llm-fallback-consent Phase 2): whether a model switch
+  // asks first, and how long the in-chat prompt waits before auto-swapping.
+  let llmFallbackSwitchMode = $state<'auto' | 'ask'>('auto');
+  let llmFallbackPromptTimeoutSeconds = $state(180);
+  let llmRefusalSwapMode = $state<'off' | 'ask' | 'auto'>('ask');
   // LLM tab sub-view toggle: main provider / model tiers.
   let llmSubView = $state<'main' | 'fallback'>('main');
   let llmTemperature = $state(1);
@@ -679,6 +684,9 @@
       llmBackgroundBaseUrl,
       llmFallbackModels,
       llmFallbackHoldSeconds,
+      llmFallbackSwitchMode,
+      llmFallbackPromptTimeoutSeconds,
+      llmRefusalSwapMode,
       llmTemperature,
       llmMaxTokens,
       llmTopP,
@@ -907,6 +915,9 @@
       llmBackgroundBaseUrl = serverSettings.llm_background_base_url ?? '';
       llmFallbackModels = (serverSettings.llm_fallback_models ?? []).join(', ');
       llmFallbackHoldSeconds = serverSettings.llm_fallback_hold_seconds ?? 7200;
+      llmFallbackSwitchMode = serverSettings.llm_fallback_switch_mode ?? 'auto';
+      llmFallbackPromptTimeoutSeconds = serverSettings.llm_fallback_prompt_timeout_seconds ?? 180;
+      llmRefusalSwapMode = serverSettings.llm_refusal_swap_mode ?? 'ask';
       llmTemperature = serverSettings.llm_temperature;
       llmMaxTokens = serverSettings.llm_max_tokens;
       llmTopP = serverSettings.llm_top_p;
@@ -1164,6 +1175,9 @@
           llm_background_base_url: llmBackgroundBaseUrl.trim(),
           llm_fallback_models: llmFallbackModels.trim(),
           llm_fallback_hold_seconds: llmFallbackHoldSeconds,
+          llm_fallback_switch_mode: llmFallbackSwitchMode,
+          llm_fallback_prompt_timeout_seconds: llmFallbackPromptTimeoutSeconds,
+          llm_refusal_swap_mode: llmRefusalSwapMode,
           llm_temperature: llmTemperature,
           llm_max_tokens: llmMaxTokens,
           llm_top_p: llmTopP,
@@ -2269,6 +2283,57 @@
           <p class="hint">
             How long an activated fallback stays pinned to a thread after the
             primary recovers. 0 disables the timed hold.
+          </p>
+        </div>
+
+        <div class="field">
+          <h3 class="section-heading">Model-switch consent</h3>
+          <p class="hint">
+            Whether a model switch asks first. When a watched interactive turn
+            hits a failing or refusing model, an in-chat card offers the swap;
+            an unanswered card auto-swaps when the prompt times out.
+            Autonomous and bot turns always swap silently.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="llm-fallback-switch-mode">Error fallback (provider failures)</label>
+          <select id="llm-fallback-switch-mode" bind:value={llmFallbackSwitchMode}>
+            <option value="auto">Swap silently (default)</option>
+            <option value="ask">Ask first</option>
+          </select>
+          <p class="hint">
+            Applies when the primary model exhausts its retries and the
+            fallback chain takes over.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="llm-refusal-swap-mode">Refusal swap (safety classifier refusals)</label>
+          <select id="llm-refusal-swap-mode" bind:value={llmRefusalSwapMode}>
+            <option value="ask">Ask first (default)</option>
+            <option value="auto">Swap silently</option>
+            <option value="off">Off (rewind and explain instead)</option>
+          </select>
+          <p class="hint">
+            A refusal is not a provider error: the model returned a clean
+            response with no content because its safety classifier flagged the
+            request, often a false positive. Swapping retries the turn on the
+            fallback model; off keeps the rewind-and-rephrase recovery.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="llm-fallback-prompt-timeout">Consent prompt timeout (seconds)</label>
+          <input
+            id="llm-fallback-prompt-timeout"
+            type="number"
+            min="10"
+            max="600"
+            bind:value={llmFallbackPromptTimeoutSeconds}
+          />
+          <p class="hint">
+            How long the in-chat card waits for an answer before auto-swapping.
           </p>
         </div>
         {/if}

@@ -819,6 +819,260 @@ def _payload_with_hold(
     return merged
 
 
+# --------------------------------------------------------------------------- #
+# Model-facing swap notes (persisted-context principle, dev-locked 2026-07-25):
+# when the runtime switches models mid-conversation, the incoming model is
+# told why IN the conversation itself, exactly once, at the point of the
+# switch, and the note is persisted to the checkpoint at the position the
+# model saw it. Never ephemeral (context a model saw once and later turns
+# cannot see causes confusion), never repeated per-turn (unlike the [Time:]
+# metadata block, whose content changes every turn). The note merges into the
+# EXISTING conversation tail (the last tool result mid-turn, the prompt
+# message itself on a first-call switch) rather than adding a synthetic
+# message, for the widest provider/API compatibility. The [System info]
+# framing follows the established in-result harness notes ([Auth check],
+# [Duration:]).
+# --------------------------------------------------------------------------- #
+
+
+def fallback_note_text(payload: dict[str, Any], *, kind: str, phase: str = "swap") -> str:
+    """The model-facing note for a model switch (or the end of one).
+
+    Public: the core hold-end latch (``agent_llm_config``) reuses it so the
+    swap and end notes cannot drift apart in voice.
+    """
+    from_model = str(payload.get("from_model") or "the previous model")
+    to_model = str(payload.get("to_model") or "the configured fallback model")
+    if phase == "end":
+        ended = (
+            "was manually reverted"
+            if payload.get("reason") == "reverted"
+            else "expired"
+        )
+        return (
+            f"[System info]: The fallback hold on this thread {ended}; the "
+            f"thread is back on its primary model ({to_model}). {from_model} "
+            "handled the conversation since the switch."
+        )
+    if kind == "refusal":
+        return (
+            f"[System info]: The previous model ({from_model}) refused to "
+            "continue this turn: its safety classifier flagged the request as "
+            "potentially harmful, which is often a false positive. No output "
+            f"was produced. You are now {to_model}, the configured fallback "
+            "model, continuing this conversation. Continue the task "
+            "naturally, and notify the user that the model was switched."
+        )
+    reason = str(payload.get("reason") or "provider error")
+    status = payload.get("http_status")
+    detail = f"{reason}, HTTP {status}" if status else reason
+    return (
+        f"[System info]: The previous model ({from_model}) failed after "
+        f"retries ({detail}). You are now {to_model}, the configured "
+        "fallback model, continuing this conversation. Mention the switch "
+        "to the user if it is relevant."
+    )
+
+
+def fallback_note_stamp(
+    payload: dict[str, Any], *, kind: str, phase: str = "swap", text: str = ""
+) -> dict[str, Any]:
+    """The ``additional_kwargs["fallback_note"]`` stamp for a note-carrying
+    message: records the EXACT appended text (history strips it from the
+    rendered bubble and re-emits it as a typed ``fallback_notice`` entry)
+    plus the switch facts. Public for the core hold-end latch."""
+    return {
+        "text": text or fallback_note_text(payload, kind=kind, phase=phase),
+        "phase": phase,
+        "kind": kind,
+        "from_provider": str(payload.get("from_provider") or ""),
+        "from_model": str(payload.get("from_model") or ""),
+        "to_provider": str(payload.get("to_provider") or ""),
+        "to_model": str(payload.get("to_model") or ""),
+        "reason": str(payload.get("reason") or ""),
+        "http_status": payload.get("http_status"),
+    }
+
+
+def append_fallback_note(message: Any, stamp: dict[str, Any]) -> Any:
+    """A copy of ``message`` (same id) with the note appended to its content
+    and the stamp on ``additional_kwargs``. String content gets a blank-line
+    suffix (never a prefix: the head position belongs to the [Time:] strip
+    frame); block-list content gets a trailing text block.
+
+    Public: the ONE owner of the append shape. The stamped ``text`` is the
+    exact-suffix strip contract for every reader (history, composer restore,
+    RAG flush), so the core hold-end latch (``agent_streaming_input``) reuses
+    this instead of authoring the suffix a second time."""
+    note = stamp["text"]
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        new_content: Any = [*content, {"type": "text", "text": note}]
+    else:
+        text = content if isinstance(content, str) else str(content or "")
+        new_content = f"{text}\n\n{note}" if text else note
+    kwargs = dict(getattr(message, "additional_kwargs", None) or {})
+    kwargs["fallback_note"] = stamp
+    return message.model_copy(
+        update={"content": new_content, "additional_kwargs": kwargs}
+    )
+
+
+def _without_appended_note(message: Any, note_text: str) -> Any:
+    """Undo ``append_fallback_note`` on a message (exact-suffix removal), so a
+    second note on the same tail can re-append one merged block instead of
+    layering. Returns the message unchanged when the suffix is not present."""
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        if (
+            content
+            and isinstance(content[-1], dict)
+            and content[-1].get("type") == "text"
+            and content[-1].get("text") == note_text
+        ):
+            return message.model_copy(update={"content": list(content[:-1])})
+        return message
+    text = content if isinstance(content, str) else str(content or "")
+    if text.endswith(note_text):
+        stripped = text.removesuffix(note_text)
+        stripped = stripped.removesuffix("\n\n")
+        return message.model_copy(update={"content": stripped})
+    return message
+
+
+def _attach_fallback_note(
+    call_messages: Optional[List[BaseMessage]],
+    state_messages: Optional[List[Any]],
+    payload: dict[str, Any],
+    *,
+    kind: str,
+) -> Optional[Any]:
+    """Attach the swap note to the conversation tail, wire AND state.
+
+    Mutates ``call_messages`` in place (replacing its tail element, so the
+    retry loops that re-invoke with the same list object send the note to the
+    incoming model BEFORE it generates) and returns a note-carrying copy of
+    the ORIGINAL state tail for the node to fold into its result (same id, so
+    the add_messages reducer replaces it in place). The state copy is built
+    from the STATE message, never the wire one: the wire tail may be a
+    windowed/sanitized copy (image window, Anthropic sanitizer), and
+    persisting that would e.g. strip attachments from state permanently.
+
+    Returns None (note skipped, switch proceeds without it) when the tails
+    do not line up or the tail is not a Human/Tool message; defensive, not
+    an expected path.
+    """
+    if not call_messages or not state_messages:
+        return None
+    wire_tail = call_messages[-1]
+    state_tail = state_messages[-1]
+    if not isinstance(state_tail, (HumanMessage, ToolMessage)):
+        logger.warning(
+            "[LLM FALLBACK] swap note skipped: conversation tail is %s",
+            type(state_tail).__name__,
+        )
+        return None
+    # An id is required: the add_messages reducer replaces by id, and a
+    # message without one would APPEND a duplicate instead of upserting.
+    # Checkpointed state always carries ids; this guards direct-invoke
+    # callers (tests, exotic embeddings of the node).
+    if not getattr(state_tail, "id", None):
+        logger.warning("[LLM FALLBACK] swap note skipped: state tail has no id")
+        return None
+    if getattr(wire_tail, "id", None) != getattr(state_tail, "id", None):
+        logger.warning(
+            "[LLM FALLBACK] swap note skipped: wire/state tails do not line up"
+        )
+        return None
+    stamp = fallback_note_stamp(payload, kind=kind)
+    # The same tail can take a SECOND note in one node run (a site-3 pending
+    # note then a transport failure, or a refusal swap whose fallback then
+    # fails transport-wise). Our earlier in-place replacement stamped the
+    # WIRE tail (the raw state list still holds the pre-note original), and
+    # the stamp is single-valued with `text` as the exact-suffix strip
+    # contract, so merge: the new stamp wins on the switch facts, `text`
+    # grows to cover BOTH blocks, and each tail is stripped of any prior
+    # block it carries before the single merged append (no layering, and
+    # wire and state end up byte-identical in content).
+    prior = (getattr(wire_tail, "additional_kwargs", None) or {}).get(
+        "fallback_note"
+    ) or (getattr(state_tail, "additional_kwargs", None) or {}).get(
+        "fallback_note"
+    )
+    if isinstance(prior, dict) and prior.get("text"):
+        stamp["text"] = f"{prior['text']}\n\n{stamp['text']}"
+        wire_tail = _without_appended_note(wire_tail, str(prior["text"]))
+        state_tail = _without_appended_note(state_tail, str(prior["text"]))
+    call_messages[-1] = append_fallback_note(wire_tail, stamp)
+    return append_fallback_note(state_tail, stamp)
+
+
+def llm_stamp_pending_fallback_note(
+    llm_config: Optional[LLMConfig],
+    payload: dict[str, Any],
+    *,
+    kind: str,
+) -> None:
+    """Stamp a swap note for the NEXT agent-node run to attach (public: the
+    post-chunk recovery path in core switches the model outside the graph and
+    re-drives it, so it cannot attach the note itself)."""
+    if llm_config is None:
+        return
+    llm_config.pending_fallback_note = {"payload": dict(payload), "kind": kind}
+
+
+def _consume_pending_fallback_note(
+    llm_config: Optional[LLMConfig],
+    call_messages: List[BaseMessage],
+    state_messages: Optional[List[Any]],
+    note_sink: List[Any],
+) -> None:
+    """Attach + clear a stamped pending note (see llm_stamp_pending_fallback_note)."""
+    pending = getattr(llm_config, "pending_fallback_note", None)
+    if not pending:
+        return
+    llm_config.pending_fallback_note = None
+    upsert = _attach_fallback_note(
+        call_messages,
+        state_messages,
+        dict(pending.get("payload") or {}),
+        kind=str(pending.get("kind") or "transport"),
+    )
+    if upsert is not None:
+        note_sink.append(upsert)
+
+
+def _result_with_fallback_notes(result: dict, note_sink: List[Any]) -> dict:
+    """Fold attached note upserts into a node result (replace-by-id keeps
+    each note at its original conversation position)."""
+    if note_sink:
+        result["messages"] = [*note_sink, *result.get("messages", [])]
+    return result
+
+
+def _reapply_fallback_notes(
+    messages: List[BaseMessage], note_sink: List[Any]
+) -> None:
+    """Re-apply an attached note to a REBUILT wire list.
+
+    The image strip-and-retry rebuilds the outbound messages from state,
+    which does not carry the note until the node returns; without this a
+    swap-then-image-strip double failure would send the retry blind to a
+    note that still persists to the checkpoint. Tail-only, id-matched;
+    reversed so a same-tail second (merged) note wins over the first."""
+    if not messages or not note_sink:
+        return
+    tail = messages[-1]
+    for noted in reversed(note_sink):
+        if getattr(noted, "id", None) == getattr(tail, "id", None):
+            stamp = (getattr(noted, "additional_kwargs", None) or {}).get(
+                "fallback_note"
+            )
+            if stamp:
+                messages[-1] = append_fallback_note(tail, stamp)
+            return
+
+
 async def llm_consult_transport_fallback(
     llm_config: Optional[LLMConfig],
     *,
@@ -972,9 +1226,10 @@ _REFUSAL_NOTICE = (
     "The model declined to continue this response (a provider-side refusal), "
     "so this turn produced no result. Refusals are often phrasing-sensitive "
     "and tend to repeat while the content that triggered them stays in "
-    "context. To recover, either rewind this thread (the /rewind command, or "
-    "edit an earlier message) and rephrase the request, or switch this "
-    "thread to a different model and continue from here."
+    "context. To recover, rewind this thread (edit an earlier message, or "
+    "/undo in the CLI) and rephrase the request; if it still refuses, "
+    "rewind further, compact the thread (/compact), or switch this thread "
+    "to a different model and continue from here."
 )
 
 
@@ -1344,7 +1599,16 @@ def _invoke_llm_with_retries(
     primary_llm: BaseChatModel,
     tools: Optional[List[BaseTool]],
     run_config: Any = None,
+    *,
+    call_messages: Optional[List[BaseMessage]] = None,
+    state_messages: Optional[List[Any]] = None,
+    note_sink: Optional[List[Any]] = None,
 ) -> AIMessage:
+    """``call_messages``/``state_messages``/``note_sink`` (all-or-nothing,
+    optional for compatibility) let a transport fallback attach the
+    model-facing swap note before the re-invoke: ``invoke`` closes over the
+    same ``call_messages`` list object, so the in-place tail replacement is
+    what the fallback candidate sends."""
     controller = _RetryFallbackController(llm_config)
     candidate_cache = {0: primary_llm}
 
@@ -1405,6 +1669,12 @@ def _invoke_llm_with_retries(
             )
             _dispatch_provider_event("provider_fallback", payload, run_config)
             controller.commit_fallback(decision.next_index)
+            if note_sink is not None:
+                upsert = _attach_fallback_note(
+                    call_messages, state_messages, payload, kind="transport"
+                )
+                if upsert is not None:
+                    note_sink.append(upsert)
 
     raise RuntimeError("LLM retry loop exited unexpectedly")
 
@@ -2166,6 +2436,11 @@ def create_agent_node(
         call_started_at = time.monotonic()
         image_strip_attempted = False
         refusal_swap_attempted = False
+        state_messages = state.get("messages") or []
+        note_sink: List[Any] = []
+        _consume_pending_fallback_note(
+            llm_config, messages_with_system, state_messages, note_sink
+        )
         while True:
             try:
                 # No clamp needed here: the instance already carries the
@@ -2177,6 +2452,9 @@ def create_agent_node(
                     llm_with_tools,
                     tools,
                     config,
+                    call_messages=messages_with_system,
+                    state_messages=state_messages,
+                    note_sink=note_sink,
                 )
                 # Refusal swap (#105 P2): discard an EMPTY refusal before it
                 # enters graph state and re-run once on the next fallback
@@ -2222,6 +2500,14 @@ def create_agent_node(
                                 "provider_fallback", payload, config
                             )
                             _mark_llm_fallback_active(llm_config, next_index)
+                            upsert = _attach_fallback_note(
+                                messages_with_system,
+                                state_messages,
+                                payload,
+                                kind="refusal",
+                            )
+                            if upsert is not None:
+                                note_sink.append(upsert)
                             refusal_swap_attempted = True
                             continue
                 break
@@ -2236,6 +2522,7 @@ def create_agent_node(
                     rebuilt = _image_stripped_retry_messages(exc, state, config)
                     if rebuilt is not None:
                         messages_with_system = rebuilt
+                        _reapply_fallback_notes(messages_with_system, note_sink)
                         image_strip_attempted = True
                         _dispatch_provider_event(
                             "image_input_unsupported",
@@ -2248,7 +2535,9 @@ def create_agent_node(
                         continue
                 raise
         _accumulate_llm_seconds(config, time.monotonic() - call_started_at)
-        return _finish_response(response, config)
+        return _result_with_fallback_notes(
+            _finish_response(response, config), note_sink
+        )
 
     async def async_agent_node(state: AgentState, config: Any = None) -> dict:
         """
@@ -2276,6 +2565,11 @@ def create_agent_node(
         candidate_cache = {0: llm_with_tools}
         image_strip_attempted = False
         refusal_swap_attempted = False
+        state_messages = state.get("messages") or []
+        note_sink: List[Any] = []
+        _consume_pending_fallback_note(
+            llm_config, messages_with_system, state_messages, note_sink
+        )
         while True:
             chunks_this_attempt = 0
             try:
@@ -2419,6 +2713,14 @@ def create_agent_node(
                                 "provider_fallback", payload, config
                             )
                             controller.commit_fallback(next_index)
+                            upsert = _attach_fallback_note(
+                                messages_with_system,
+                                state_messages,
+                                payload,
+                                kind="refusal",
+                            )
+                            if upsert is not None:
+                                note_sink.append(upsert)
                             refusal_swap_attempted = True
                             # The refused attempt completed and billed tokens;
                             # its generation time counts.
@@ -2461,6 +2763,7 @@ def create_agent_node(
                     rebuilt = _image_stripped_retry_messages(exc, state, config)
                     if rebuilt is not None:
                         messages_with_system = rebuilt
+                        _reapply_fallback_notes(messages_with_system, note_sink)
                         image_strip_attempted = True
                         await _adispatch_provider_event(
                             "image_input_unsupported",
@@ -2522,6 +2825,11 @@ def create_agent_node(
                 )
                 await _adispatch_provider_event("provider_fallback", payload, config)
                 controller.commit_fallback(decision.next_index)
+                upsert = _attach_fallback_note(
+                    messages_with_system, state_messages, payload, kind="transport"
+                )
+                if upsert is not None:
+                    note_sink.append(upsert)
 
         logger.info(
             "[LLM STREAM] async_complete chunks=%d text_chunks=%d text_chars=%d "
@@ -2536,7 +2844,9 @@ def create_agent_node(
             first_chunk_ms if first_chunk_ms is not None else "none",
             int((time.monotonic() - stream_started_at) * 1000),
         )
-        return _finish_response(response, config)
+        return _result_with_fallback_notes(
+            _finish_response(response, config), note_sink
+        )
 
     return RunnableLambda(agent_node, afunc=async_agent_node, name="agent")
 

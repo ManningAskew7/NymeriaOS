@@ -572,6 +572,7 @@ export class ChatApi extends CredentialsApi {
               toProviderRoute: data.to_provider_route as string | null | undefined,
               toOpenaiApiMode: data.to_openai_api_mode as string | null | undefined,
               holdSeconds: data.hold_seconds as number | undefined,
+              permanent: data.permanent as boolean | undefined,
               expiresAt: data.expires_at as string | null | undefined,
               reason: data.reason as string | undefined,
               httpStatus: data.http_status as number | null | undefined,

@@ -87,6 +87,15 @@ class LLMConfig:
         default=None,
         repr=False,
     )
+    # Pending model-facing swap note (persisted-context principle: a model
+    # switch is explained to the model IN the conversation, once, at the swap
+    # point; see nodes._attach_fallback_note). The in-node swap sites attach
+    # the note directly; this stamp exists only for the post-chunk recovery
+    # path, which switches the model OUTSIDE the graph and then re-drives it:
+    # the stream processor stamps {"payload", "kind"} here and the next agent
+    # node run consumes it (attach + clear) before calling the model. Mutated
+    # on the graph-cached config, like active_fallback_candidate_index.
+    pending_fallback_note: Optional[dict[str, Any]] = field(default=None, repr=False)
 
     # For custom providers
     custom_llm: Optional[object] = field(default=None, repr=False)

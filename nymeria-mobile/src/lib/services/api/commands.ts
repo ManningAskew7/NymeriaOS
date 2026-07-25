@@ -1,5 +1,5 @@
 import type { CommandExecuteResponse, SlashCommandInfo } from '$lib/types';
-import { WorkflowsApi } from './workflows';
+import { LlmFallbackApi } from './llm-fallback';
 
 type CommandActor = 'user' | 'agent' | 'system';
 type CommandSurface = 'desktop' | 'mobile' | 'cli' | 'discord' | 'telegram' | 'slack' | 'whatsapp' | 'teams' | 'twitch' | 'api' | 'agent';
@@ -16,7 +16,7 @@ function defaultCommandSurface(): CommandSurface {
   return 'desktop';
 }
 
-export class CommandsApi extends WorkflowsApi {
+export class CommandsApi extends LlmFallbackApi {
   async executeCommand(
     command: string,
     threadId?: string,

@@ -1076,3 +1076,116 @@ describe('chatStore: turn-paused card + resume request (backlog #27)', () => {
     expect(store.resumeRequest).toBe(2);
   });
 });
+
+describe('chatStore: LLM fallback consent card (llm-fallback-consent Phase 2)', () => {
+  let store: ReturnType<typeof createChatStore>;
+
+  const promptInfo = {
+    recordId: 'fb-1',
+    kind: 'refusal',
+    fromProvider: 'anthropic',
+    fromModel: 'claude-fable-5',
+    toProvider: 'anthropic',
+    toModel: 'claude-opus-4-8',
+    reason: 'refusal',
+    httpStatus: null,
+    timeoutSeconds: 180,
+    holdOptions: [600, 3600, 7200, 28800],
+    allowPermanent: true,
+    defaultHoldSeconds: 7200,
+    createdAt: '2026-07-25T00:00:00+00:00',
+    expiresAt: '2026-07-25T00:03:00+00:00',
+  };
+
+  beforeEach(() => {
+    store = createChatStore();
+  });
+
+  it('handleFallbackPrompt completes the streaming reply and appends a streaming carrier', () => {
+    store.addUserMessage('do the task');
+    store.addAssistantMessage();
+    store.appendToLastMessage('partial output');
+
+    store.handleFallbackPrompt({ ...promptInfo });
+
+    const messages = store.messages;
+    const card = messages[messages.length - 1];
+    expect(card.fallbackPromptInfo).toMatchObject({
+      recordId: 'fb-1',
+      kind: 'refusal',
+      toModel: 'claude-opus-4-8',
+    });
+    // The carrier stays STREAMING: after the swap the retried model's
+    // output continues into this bubble, right under the card.
+    expect(card.status).toBe('streaming');
+    // The preceding assistant reply was finalized, not left streaming.
+    expect(messages[messages.length - 2].status).toBe('complete');
+  });
+
+  it('post-swap continuation streams into the carrier bubble', () => {
+    store.addUserMessage('do the task');
+    store.addAssistantMessage();
+    store.handleFallbackPrompt({ ...promptInfo });
+
+    store.appendToLastMessage('continued on the fallback model');
+    store._forceFlush();
+
+    const card = store.messages[store.messages.length - 1];
+    expect(card.fallbackPromptInfo?.recordId).toBe('fb-1');
+    expect(card.content).toContain('continued on the fallback model');
+  });
+
+  it('resolveFallbackPromptCard stamps the outcome once; first resolution wins', () => {
+    store.handleFallbackPrompt({ ...promptInfo });
+
+    store.resolveFallbackPromptCard('fb-1', {
+      outcome: 'approved',
+      holdSeconds: 7200,
+      holdPermanent: false,
+    });
+    const card = store.messages.find((m) => m.fallbackPromptInfo);
+    expect(card?.fallbackPromptInfo?.resolved).toMatchObject({
+      outcome: 'approved',
+      holdSeconds: 7200,
+    });
+
+    // A later SSE flip (e.g. the timeout event racing an optimistic clear)
+    // must not overwrite the first outcome.
+    store.resolveFallbackPromptCard('fb-1', { outcome: 'timeout' });
+    const after = store.messages.find((m) => m.fallbackPromptInfo);
+    expect(after?.fallbackPromptInfo?.resolved?.outcome).toBe('approved');
+  });
+
+  it('rewindLastAssistantToStablePoint trims the failed attempt behind an empty carrier', () => {
+    // Ask-mode post-chunk recovery: the failed partial output lives in the
+    // bubble BEHIND the consent card's still-empty carrier; the rewound
+    // provider_fallback must trim that bubble, not the carrier.
+    store.addUserMessage('do the task');
+    store.addAssistantMessage();
+    store.appendToLastMessage('doomed partial output');
+    store._forceFlush();
+    store.handleFallbackPrompt({ ...promptInfo, kind: 'transport', reason: 'overloaded' });
+
+    store.rewindLastAssistantToStablePoint();
+
+    const messages = store.messages;
+    const card = messages[messages.length - 1];
+    // The carrier (and its card) survives; the re-drive streams into it.
+    expect(card.fallbackPromptInfo?.recordId).toBe('fb-1');
+    expect(card.status).toBe('streaming');
+    // The failed attempt's text was trimmed from the previous bubble.
+    const attempt = messages[messages.length - 2];
+    expect(attempt.role).toBe('assistant');
+    expect(attempt.content).toBe('');
+    expect(attempt.steps ?? []).toHaveLength(0);
+  });
+
+  it('resolveFallbackPromptCard no-ops on an unknown record id', () => {
+    store.handleFallbackPrompt({ ...promptInfo });
+    const snapshot = structuredClone(store.messages);
+
+    store.resolveFallbackPromptCard('fb-unknown', { outcome: 'declined' });
+
+    expect(store.messages).toEqual(snapshot);
+  });
+});

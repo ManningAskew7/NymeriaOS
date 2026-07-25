@@ -882,6 +882,7 @@
           toProvider?: string;
           toModel?: string;
           holdSeconds?: number;
+          permanent?: boolean;
           expiresAt?: string | null;
           reason?: string;
           httpStatus?: number | null;
@@ -896,12 +897,21 @@
           toProvider: data.toProvider,
           toModel: data.toModel,
           holdSeconds: data.holdSeconds,
+          permanent: data.permanent,
           expiresAt: data.expiresAt,
           reason: data.reason,
           httpStatus: data.httpStatus,
           rewound: data.rewound,
           streamChunks: data.streamChunks,
         });
+        // The swap pinned active_llm_fallback onto the thread config; refresh
+        // it so the header chip and the Model tab's Revert row appear live.
+        // Key off the event's thread (the `done` handler idiom), not the
+        // current selection: the user may have switched threads mid-turn.
+        const fallbackThreadId = event.threadId ?? threadsStore.currentThreadId;
+        if (fallbackThreadId) {
+          void threadConfigStore.loadConfig(fallbackThreadId).catch(() => {});
+        }
         break;
       }
 

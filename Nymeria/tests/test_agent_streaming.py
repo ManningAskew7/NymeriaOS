@@ -625,6 +625,91 @@ def test_graph_stream_processor_switches_fallback_after_midstream_retry_budget()
     ]
 
 
+def test_drive_adopts_graph_baked_llm_config():
+    """drive() must mutate the LLMConfig instance the graph's node closures
+    read (stashed by create_graph as ``nymeria_llm_config``): a fallback
+    activation or pending-note stamp on a freshly resolved equal-valued copy
+    is dead state, leaving the re-drive on the primary and the swap note
+    unattached. The constructor's llm_config stays only as the fallback for
+    graphs without the attribute."""
+    exc = _RetryableStreamError("server_error after partial stream")
+    exc.nymeria_stream_chunks_before_error = 1
+    graph = _FlakyGraph(
+        first_events=[{"event": "on_chat_model_start", "run_id": "model-1"}],
+        second_events=[
+            {
+                "event": "on_chat_model_end",
+                "run_id": "model-2",
+                "data": {"output": AIMessage(content="fallback")},
+            },
+        ],
+        exc=exc,
+    )
+
+    def _config():
+        return LLMConfig(
+            provider="custom",
+            model="primary",
+            stream_max_retries=0,
+            stream_retry_initial_delay=0.0,
+            stream_retry_max_delay=0.0,
+            fallbacks=[LLMFallbackConfig(provider="backup", model="secondary")],
+        )
+
+    graph_config = _config()
+    constructor_config = _config()
+    graph.nymeria_llm_config = graph_config
+    processor = GraphStreamProcessor(
+        thread_id="thread-a",
+        config={"configurable": {"thread_id": "thread-a"}},
+        abort_event=threading.Event(),
+        is_self_invoke=False,
+        response_parts=[],
+        clean_tool_result=lambda result: result,
+        tool_result_extra_events=lambda *args: [],
+        llm_config=constructor_config,
+    )
+
+    async def collect():
+        return [chunk async for chunk in processor.drive(graph, {"messages": ["input"]})]
+
+    chunks = asyncio.run(collect())
+
+    assert processor.llm_config is graph_config
+    assert any(chunk.get("type") == "provider_fallback" for chunk in chunks)
+    # Activation + the site-3 note stamp landed on the GRAPH's config (what
+    # the re-driven node reads), not the constructor's throwaway copy.
+    assert graph_config.active_fallback_candidate_index == 1
+    assert graph_config.pending_fallback_note is not None
+    assert graph_config.pending_fallback_note["kind"] == "transport"
+    assert constructor_config.active_fallback_candidate_index == 0
+    assert constructor_config.pending_fallback_note is None
+
+
+def test_create_graph_stashes_node_llm_config(monkeypatch):
+    """The compiled graph exposes the very LLMConfig its node closures read,
+    the identity contract drive()'s adoption (above) depends on."""
+    from unittest.mock import MagicMock
+
+    from nymeria.vendor.react_agent import nodes as nodes_module
+    from nymeria.vendor.react_agent.config import AgentConfig, CheckpointerConfig
+    from nymeria.vendor.react_agent.graph import create_graph
+
+    # Node construction eagerly builds the provider LLM; stub it so the
+    # compile needs no credentials.
+    monkeypatch.setattr(
+        nodes_module, "create_llm_with_tools", lambda config, tools: MagicMock()
+    )
+    llm = LLMConfig(provider="custom", model="primary")
+    compiled = create_graph(
+        config=AgentConfig(
+            llm=llm,
+            checkpointer=CheckpointerConfig(backend="memory"),
+        ),
+    )
+    assert compiled.nymeria_llm_config is llm
+
+
 def test_graph_stream_processor_does_not_replay_reasoning_on_model_end():
     chunks, response_parts, _graph = _collect_processor_events([
         {"event": "on_chat_model_start", "run_id": "model-1"},

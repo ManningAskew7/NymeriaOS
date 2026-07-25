@@ -29,6 +29,46 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _apply_pending_fallback_note(
+    agent: "NymeriaAgent", thread_id: str, human_msg: HumanMessage
+) -> None:
+    """Fold a latched fallback end note into this turn's human message.
+
+    The latch is stamped when a fallback hold clears between turns
+    (``agent_llm_config.clear_active_llm_fallback``); the model learns it is
+    back on the primary IN the conversation, once, persisted (dev-locked
+    2026-07-25: no ephemeral model context). Applies to any turn source (user
+    prompt, autonomous wakeup, dream, callable) because every source builds
+    its input here. Suffix + ``fallback_note`` stamp, same shape as the
+    in-turn swap notes, so history strips and renders it identically. Never
+    raises: a fault leaves the latch for a later turn.
+    """
+    try:
+        from ..vendor.react_agent.nodes import append_fallback_note
+        from .agent_llm_config import consume_pending_fallback_note
+
+        note = consume_pending_fallback_note(agent, thread_id)
+        if not note or not note.get("text"):
+            return
+        # The latch lives in the agent-writable thread-config store; cap the
+        # injected text like every sibling free-text config field so a raw
+        # store edit cannot smuggle unbounded content into the prompt.
+        text = str(note["text"])
+        if len(text) > 2000:
+            note = {**note, "text": text[:2000]}
+        # One owner of the append shape (the exact-suffix strip contract):
+        # reuse the nodes helper for the content, then fold the result back
+        # into the caller-held message in place.
+        noted = append_fallback_note(human_msg, note)
+        human_msg.content = noted.content
+        human_msg.additional_kwargs["fallback_note"] = note
+    except Exception:  # noqa: BLE001 - the note is best-effort, never turn-fatal
+        logger.warning(
+            "pending fallback note could not be applied for thread %s",
+            thread_id, exc_info=True,
+        )
+
+
 def prepare_astream_input(
     agent: "NymeriaAgent",
     *,
@@ -103,6 +143,7 @@ def prepare_astream_input(
             human_msg.additional_kwargs["attachments"] = meta
         if user_message_id:
             human_msg.id = user_message_id
+        _apply_pending_fallback_note(agent, thread_id, human_msg)
         return {"messages": [human_msg]}, context_summary_for_ui, None
 
     # Image attachments require a compatibility check against the model.
@@ -162,4 +203,5 @@ def prepare_astream_input(
     human_msg.additional_kwargs["attachments"] = _attachments_metadata()
     if user_message_id:
         human_msg.id = user_message_id
+    _apply_pending_fallback_note(agent, thread_id, human_msg)
     return {"messages": [human_msg]}, context_summary_for_ui, None

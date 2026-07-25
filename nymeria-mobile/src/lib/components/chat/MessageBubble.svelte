@@ -253,9 +253,19 @@
       return `Provider error. Retrying ${retryLabel}${delay}${attempt}.${rewind}`;
     }
     const fallbackLabel = providerLabel(step.toProvider, step.toModel);
-    const duration = formatProviderDuration(step.holdSeconds);
+    const hold = step.permanent
+      ? 'until reverted'
+      : `for ${formatProviderDuration(step.holdSeconds)}`;
     const rewind = step.rewound ? ' Rewound to the last stable step.' : '';
-    return `Using fallback ${fallbackLabel} for ${duration}.${rewind}`;
+    // A refusal swap is not a provider error: the model returned a clean
+    // response with no content because its safety classifier flagged the
+    // request (often a false positive). Keep the copy distinct from the
+    // transport-failure fallback.
+    if (step.reason === 'refusal') {
+      const primaryLabel = providerLabel(step.fromProvider, step.fromModel);
+      return `${primaryLabel} refused this turn (safety classifier, not an error). Using ${fallbackLabel} ${hold}.${rewind}`;
+    }
+    return `Using fallback ${fallbackLabel} ${hold}.${rewind}`;
   }
 
   async function downloadAttachment(file: FileAttachment) {
@@ -353,6 +363,19 @@
   </div>
   <div class="compaction-body">
     <div class="compaction-title">Turn rewound</div>
+    <div class="compaction-meta">{message.content}</div>
+  </div>
+</div>
+{:else if message.kind === 'fallback_notice'}
+<!-- Model-switch note from history (llm-fallback-consent Phase 2): a swap
+     was applied, or a hold ended, and the runtime left a persisted note in
+     the conversation; history re-emits it as this typed entry. -->
+<div class="compaction-notice fallback-notice">
+  <div class="compaction-icon">
+    <Icon name="refresh" size={18} />
+  </div>
+  <div class="compaction-body">
+    <div class="compaction-title">Model switch</div>
     <div class="compaction-meta">{message.content}</div>
   </div>
 </div>
