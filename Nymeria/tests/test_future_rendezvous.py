@@ -4,6 +4,7 @@ machinery behind AuthPromptCoordinator and BrowserCommandCoordinator."""
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,15 +43,13 @@ class _StubRendezvous(FutureRendezvous[_StubRecord]):
         return self._resolve(record_id, lambda record: result)
 
     def abort_user(self, user_id: str) -> int:
+        # Mirrors the production abort_thread loops: _wake skips done futures
+        # and dead-loop records without aborting the batch.
         matched = self._drain_matching(lambda r: r.user_id == user_id)
         count = 0
         for record in matched:
-            if record.future.done():
-                continue
-            record.future.get_loop().call_soon_threadsafe(
-                safe_set_result, record.future, {"status": "aborted"}
-            )
-            count += 1
+            if self._wake(record.future, {"status": "aborted"}):
+                count += 1
         return count
 
     def _swept_result(self, record: _StubRecord) -> dict[str, Any]:
@@ -158,3 +157,99 @@ def test_sweep_resolves_orphans_via_hooks() -> None:
         assert coord.pending_count() == 0
 
     asyncio.run(run())
+
+
+def test_sweep_rearms_after_owning_loop_closes() -> None:
+    """The #106 sweep-latch fix: coordinators are process-wide singletons, but
+    the loop that first arms the sweep can be a short-lived ``asyncio.run``
+    loop (the hook sync dispatch bridge). The sweep must re-arm on the next
+    registration instead of staying latched to the dead loop."""
+    coord = _StubRendezvous(ttl_seconds=0.05, sweep_interval_seconds=0.02)
+
+    async def arm_then_clean_up() -> None:
+        coord.register("r1", "u1")
+        coord.discard("r1")  # waiter cleaned up; sweep is armed on THIS loop
+
+    asyncio.run(arm_then_clean_up())  # the arming loop closes here
+
+    async def second_loop() -> None:
+        future = coord.register("r2", "u1")
+        try:
+            result = await asyncio.wait_for(future, timeout=2)
+        except asyncio.TimeoutError:
+            pytest.fail("sweep did not re-arm on the new loop")
+        assert result["status"] == "swept"
+
+    asyncio.run(second_loop())
+    assert coord.pending_count() == 0
+
+
+def test_sweep_survives_a_dead_loop_orphan() -> None:
+    """An orphan whose owning loop died is dropped (nothing left to wake)
+    without breaking the sweep for live records."""
+    coord = _StubRendezvous(ttl_seconds=0.05, sweep_interval_seconds=0.02)
+
+    async def leave_orphan() -> None:
+        coord.register("dead", "u1")  # never resolved; its loop closes below
+
+    asyncio.run(leave_orphan())
+
+    async def second_loop() -> None:
+        live = coord.register("live", "u1")
+        result = await asyncio.wait_for(live, timeout=2)
+        assert result["status"] == "swept"
+
+    asyncio.run(second_loop())
+    assert coord.pending_count() == 0
+    assert "dead" in coord.swept_log and "live" in coord.swept_log
+
+
+def test_sweep_not_rearmed_while_owner_loop_alive() -> None:
+    """A registration from a second loop must NOT steal the sweep while the
+    arming loop is still open (one sweep task, no double-arming)."""
+    coord = _StubRendezvous()
+    armed = threading.Event()
+    release = threading.Event()
+    holder: dict[str, Any] = {}
+
+    def owner_loop() -> None:
+        async def arm_and_hold() -> None:
+            coord.register("r1", "u1")
+            holder["task"] = coord._sweep_task
+            armed.set()
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+
+        asyncio.run(arm_and_hold())
+
+    thread = threading.Thread(target=owner_loop, daemon=True)
+    thread.start()
+    assert armed.wait(2)
+
+    async def second_loop() -> None:
+        coord.register("r2", "u2")
+        assert coord._sweep_task is holder["task"]
+
+    try:
+        asyncio.run(second_loop())
+    finally:
+        release.set()
+        thread.join(2)
+
+
+def test_abort_survives_a_dead_loop_record() -> None:
+    coord = _StubRendezvous()
+
+    async def leave_orphan() -> None:
+        coord.register("dead", "victim")
+
+    asyncio.run(leave_orphan())
+
+    async def abort_on_new_loop() -> None:
+        live = coord.register("live", "victim")
+        assert coord.abort_user("victim") == 1  # dead skipped, live aborted
+        await asyncio.sleep(0)
+        assert live.result()["status"] == "aborted"
+
+    asyncio.run(abort_on_new_loop())
+    assert coord.pending_count() == 0

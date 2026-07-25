@@ -38,7 +38,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .future_rendezvous import FutureRendezvous, safe_set_result
+from .future_rendezvous import FutureRendezvous
 
 logger = logging.getLogger(__name__)
 
@@ -111,15 +111,11 @@ class UiPromptCoordinator(FutureRendezvous[PendingUiPrompt]):
         matched = self._drain_matching(lambda prompt: prompt.thread_id == thread_id)
         aborted = 0
         for prompt in matched:
-            future = prompt.future
-            if future.done():
-                continue
-            future.get_loop().call_soon_threadsafe(
-                safe_set_result,
-                future,
+            if self._wake(
+                prompt.future,
                 {"ok": False, "status": "aborted", "error": "thread aborted"},
-            )
-            aborted += 1
+            ):
+                aborted += 1
         if aborted:
             logger.info(
                 "ui_prompt_coordinator aborted %d pending prompt(s) for thread %s",

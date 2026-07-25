@@ -235,6 +235,13 @@ services:
       # so existing .env.docker values don't break compose validation.
       NYMERIA_API_KEY: ${NYMERIA_API_KEY:-}
       NYMERIA_SERVICE_TOKEN: ${NYMERIA_SERVICE_TOKEN:-}
+      # Account-token lifecycle. NYMERIA_SERVICE_TOKEN is a regular account
+      # token, so it expires on ACCOUNT_TOKEN_TTL_DAYS like any other; without
+      # this passthrough the in-container `run.py users issue-token` and the
+      # API's own AccountsRepo silently fall back to the 90-day default.
+      ACCOUNT_TOKEN_TTL_DAYS: ${ACCOUNT_TOKEN_TTL_DAYS:-90}
+      ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER: ${ACCOUNT_MAX_ACTIVE_TOKENS_PER_USER:-10}
+      ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS: ${ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS:-24}
       NYMERIA_SECRETS_KEY: ${NYMERIA_SECRETS_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

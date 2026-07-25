@@ -4322,9 +4322,12 @@ Content-Type: application/json
 
 Approve or deny a held tool call (owner or admin; the resolver's identity is
 recorded as `resolved_by`). Returns `{"ok", "record_id", "decision"}`. `404`
-covers both a missing record and another user's record (existence is not
-leaked); `409` means the hold already ended (timed out, resolved elsewhere, or
-its turn died); the stale record is cleaned up on the spot. Every resolution
+covers a missing record, another user's record (existence is not leaked), and
+the common already-ended cases (timed out and denied, resolved elsewhere, or
+its turn died: the waiting action removes its record on every exit). `409` is
+the rarer stale shape: the record still exists but no waiter is parked on it
+(typically a crash orphan surviving a restart); stale records are cleaned up
+on the spot. Every resolution
 (including timeout and turn abort) publishes a `hook_approval_resolved` SSE
 event so all surfaces retract their prompt. The `/hook approvals`,
 `/hook approve <id> [note]`, and `/hook deny <id> [note]` slash commands are a
