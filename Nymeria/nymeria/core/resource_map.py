@@ -120,6 +120,13 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "generated, read-only",
     ),
     _StoreRow(
+        "service_token_warnings.json",
+        "Service-token expiry-warning dedupe state (hourly sweep)",
+        "global",
+        "n/a",
+        "generated; safe to delete (worst case: one duplicate warning)",
+    ),
+    _StoreRow(
         "README.md, schema/",
         "This map (generated at startup, write-if-changed)",
         "global",

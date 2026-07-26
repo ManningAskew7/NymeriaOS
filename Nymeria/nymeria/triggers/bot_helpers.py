@@ -25,6 +25,45 @@ class PlatformResolverAPI(Protocol):
         """Resolve a platform user id to a Nymeria user id."""
 
 
+class PlatformResolveUnavailableError(Exception):
+    """Platform-user resolution failed for infrastructure reasons.
+
+    Raised by ``UserResolver.resolve`` when the lookup itself failed (backend
+    auth rejected the bot's service token, backend unreachable, timeout),
+    as opposed to resolving cleanly to "no binding" (``None``). Bots must
+    render infrastructure copy for this, never account-link instructions
+    (backlog #108: an expired service token read as "account isn't linked").
+    """
+
+    def __init__(self, platform: str, cause: Exception) -> None:
+        self.status_code: Optional[int] = None
+        if isinstance(cause, httpx.HTTPStatusError) and cause.response is not None:
+            self.status_code = cause.response.status_code
+        if self.status_code is not None:
+            detail = f"HTTP {self.status_code}"
+        else:
+            # e.g. a bare httpx.ReadTimeout() stringifies to "", keep the type.
+            detail = str(cause) or type(cause).__name__
+        super().__init__(f"{platform} user resolution unavailable: {detail}")
+
+
+# Shared user-facing copy for PlatformResolveUnavailableError. Deliberately
+# the opposite of the link instructions: the account binding may be intact.
+RESOLVER_UNAVAILABLE_MESSAGE = (
+    "The bot can't reach or authenticate to the Nymeria backend right now, "
+    "so your account can't be looked up. This is not an account-linking "
+    "problem. Ask the admin to check the service token and the bot/worker "
+    "logs, then try again."
+)
+
+# Compact variant for surfaces with tight length caps (e.g. Telegram button
+# alerts are limited to 200 characters).
+RESOLVER_UNAVAILABLE_SHORT = (
+    "Backend unavailable: the bot can't authenticate to Nymeria. "
+    "Ask the admin to check the service token, then try again."
+)
+
+
 def fmt_tokens(n: Optional[int]) -> str:
     """Format token counts for compact bot status messages."""
     if not n:
@@ -194,7 +233,14 @@ class UserResolver:
         self._cache: dict[str, tuple[Optional[str], float]] = {}
 
     async def resolve(self, platform_user_id: int | str) -> Optional[str]:
-        """Resolve and cache a platform user id, including confirmed misses."""
+        """Resolve and cache a platform user id, including confirmed misses.
+
+        Returns the Nymeria user id, or ``None`` for a confirmed "no binding"
+        (cached like a hit). A lookup that FAILS (backend auth/unreachable)
+        raises ``PlatformResolveUnavailableError`` instead of returning
+        ``None`` and is never cached, so recovery after the backend heals is
+        immediate.
+        """
         key = str(platform_user_id)
         now = self._clock()
         cached = self._cache.get(key)
@@ -205,13 +251,16 @@ class UserResolver:
         try:
             user_id = await self._api.resolve_platform_user(self._platform, key)
         except Exception as exc:  # noqa: BLE001
-            self._logger.warning(
-                "resolve_platform_user(%s, %s) failed: %s",
+            error = PlatformResolveUnavailableError(self._platform, exc)
+            self._logger.error(
+                "resolve_platform_user(%s, %s) failed (%s): %s",
                 self._platform,
                 key,
+                f"HTTP {error.status_code}" if error.status_code is not None else "no status",
                 exc,
+                exc_info=True,
             )
-            return None
+            raise error from exc
         self._cache[key] = (user_id, now + self._ttl_seconds)
         return user_id
 

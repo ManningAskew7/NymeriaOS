@@ -5,9 +5,12 @@ from typing import Optional
 
 import httpx
 
+import pytest
+
 from nymeria.triggers.bot_helpers import (
     SEEN_EVENT_MAX,
     SEEN_EVENT_TTL_SECONDS,
+    PlatformResolveUnavailableError,
     SeenEventCache,
     UserResolver,
     coerce_value,
@@ -94,6 +97,62 @@ def test_user_resolver_caches_hits_misses_and_invalidates() -> None:
         ("telegram", "123"),
         ("telegram", "123"),
     ]
+
+
+class FlakyPlatformAPI:
+    """resolve_platform_user fake with a scripted per-call outcome queue."""
+
+    def __init__(self, outcomes: list) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[tuple[str, str]] = []
+
+    async def resolve_platform_user(self, platform: str, platform_user_id: str) -> Optional[str]:
+        self.calls.append((platform, platform_user_id))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def test_user_resolver_raises_typed_error_on_lookup_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Backlog #108: a failed lookup (backend auth outage) must be
+    # distinguishable from a confirmed "no binding" (None), must never be
+    # cached, and must log at ERROR with the HTTP status.
+    auth_error = _http_status_error(httpx.Response(401, json={"detail": "Invalid token"}))
+    api = FlakyPlatformAPI([auth_error, "alice"])
+    resolver = UserResolver(api, "telegram", ttl_seconds=30)
+
+    async def run() -> None:
+        with pytest.raises(PlatformResolveUnavailableError) as excinfo:
+            await resolver.resolve(123)
+        assert excinfo.value.status_code == 401
+        assert excinfo.value.__cause__ is auth_error
+
+        # The failure was not cached: the next call re-hits the API and
+        # recovery after the backend heals is immediate.
+        assert await resolver.resolve(123) == "alice"
+
+    with caplog.at_level("ERROR", logger="nymeria.triggers.bot_helpers"):
+        asyncio.run(run())
+
+    assert api.calls == [("telegram", "123"), ("telegram", "123")]
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert error_records, "resolver failure must log at ERROR"
+    assert "HTTP 401" in error_records[0].getMessage()
+
+
+def test_user_resolver_wraps_non_http_failures_without_status() -> None:
+    api = FlakyPlatformAPI([httpx.ConnectError("connection refused")])
+    resolver = UserResolver(api, "discord", ttl_seconds=30)
+
+    async def run() -> None:
+        with pytest.raises(PlatformResolveUnavailableError) as excinfo:
+            await resolver.resolve(9)
+        assert excinfo.value.status_code is None
+
+    asyncio.run(run())
 
 
 def test_seen_event_cache_default_constants_match_legacy_bot_values() -> None:

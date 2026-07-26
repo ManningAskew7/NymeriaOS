@@ -228,6 +228,15 @@ class Settings(BaseSettings):
         ge=1,
         description="Lifetime, in hours, for the first-run bootstrap admin token",
     )
+    service_token_warn_days: int = Field(
+        default=14,
+        ge=0,
+        description=(
+            "Warn admins when a service-shaped account token (the bot-service "
+            "user, or any token whose label contains 'service') is within this "
+            "many days of expiry; 0 disables the warning sweep"
+        ),
+    )
     nymeria_allow_self_edit: bool = Field(
         default=True,
         description="Allow admin-only self_file_write/delete/reload tools to mutate Nymeria source",

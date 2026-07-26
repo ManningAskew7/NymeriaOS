@@ -21,6 +21,8 @@ import httpx
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
 from .bot_helpers import (
+    RESOLVER_UNAVAILABLE_MESSAGE,
+    PlatformResolveUnavailableError,
     SeenEventCache,
     UserResolver,
     forward_backend_command,
@@ -389,7 +391,11 @@ class NymeriaSlackBot:
         if not clean_text.strip() and attachments:
             clean_text = "[attachment]" if len(attachments) == 1 else "[attachments]"
 
-        user_id = await self.resolve_user_id(slack_user_id, team_id=team_id)
+        try:
+            user_id = await self.resolve_user_id(slack_user_id, team_id=team_id)
+        except PlatformResolveUnavailableError:
+            await self._reject_unavailable(target)
+            return
         if user_id is None:
             await self._reject_unlinked(target, slack_user_id, team_id)
             return
@@ -559,7 +565,11 @@ class NymeriaSlackBot:
         thread_ts: Optional[str],
         target: SlackReplyTarget,
     ) -> None:
-        user_id = await self.resolve_user_id(slack_user_id, team_id=team_id)
+        try:
+            user_id = await self.resolve_user_id(slack_user_id, team_id=team_id)
+        except PlatformResolveUnavailableError:
+            await self._reject_unavailable(target)
+            return
         if user_id is None:
             await self._reject_unlinked(target, slack_user_id, team_id)
             return
@@ -588,7 +598,11 @@ class NymeriaSlackBot:
         thread_ts: Optional[str],
         target: SlackReplyTarget,
     ) -> None:
-        user_id = await self.resolve_user_id(slack_user_id, team_id=team_id)
+        try:
+            user_id = await self.resolve_user_id(slack_user_id, team_id=team_id)
+        except PlatformResolveUnavailableError:
+            await self._reject_unavailable(target)
+            return
         if user_id is None:
             await self._reject_unlinked(target, slack_user_id, team_id)
             return
@@ -611,6 +625,10 @@ class NymeriaSlackBot:
         if notice:
             message = f"{message}\n\n{notice}"
         await self._send_text(target, message)
+
+    async def _reject_unavailable(self, target: SlackReplyTarget) -> None:
+        """Honest infra copy when the resolver itself failed (never link copy)."""
+        await self._send_text(target, RESOLVER_UNAVAILABLE_MESSAGE)
 
     async def _reject_unlinked(
         self,

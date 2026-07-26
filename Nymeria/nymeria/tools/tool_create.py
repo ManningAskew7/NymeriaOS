@@ -802,22 +802,10 @@ def _user_is_admin(user_id: str) -> bool:
 
 
 def _active_admin_user_ids() -> list[str]:
-    """All enabled admin account ids; empty on any resolution failure."""
-    try:
-        from ..core.agent import get_current_agent
+    """All enabled admin account ids (shared helper; kept as the patch seam)."""
+    from ..core.notifications import active_admin_user_ids
 
-        agent = get_current_agent()
-        repo = getattr(agent, "accounts_repo", None) if agent is not None else None
-        if repo is None:
-            return []
-        return [
-            user.id
-            for user in repo.list_users()
-            if getattr(user, "role", None) == "admin" and not getattr(user, "disabled", False)
-        ]
-    except Exception:  # noqa: BLE001 - announcement is best-effort
-        logger.warning("could not enumerate admin users", exc_info=True)
-        return []
+    return active_admin_user_ids()
 
 
 def _notify_user(user_id: str, summary: str, thread_id: str = "") -> None:

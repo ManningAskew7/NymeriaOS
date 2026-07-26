@@ -12,6 +12,19 @@ from nymeria.config.settings import (
 from nymeria.triggers.api import _validate_cors_settings
 
 
+def test_suite_hermeticity_pins_root_and_disables_dotenv_chain():
+    # Pins the conftest hermeticity mechanism (backlog #101 entry 20): a
+    # model_config refactor or conftest reshuffle that silently re-opens the
+    # ambient-instance leak must fail here, not resurface as RAG-default
+    # failures on multi-instance hosts.
+    import os
+    from pathlib import Path
+
+    assert Settings.model_config.get("env_file") == ()
+    pinned_root = Path(os.environ["NYMERIA_PROJECT_ROOT"]).resolve()
+    assert pinned_root == Path(__file__).resolve().parents[1]
+
+
 def test_cors_default_is_restricted_to_local_ui_origins():
     assert Settings.model_fields["cors_origins"].default == DEFAULT_CORS_ORIGINS
     assert DEFAULT_CORS_ORIGINS != "*"

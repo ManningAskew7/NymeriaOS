@@ -624,7 +624,28 @@ def finalize(
                 shadow_keys.update(init_seed_env)
             _warn_shadowing_process_env(console, shadow_keys)
     else:
-        repo = AccountsRepo(data_dir / "accounts.db")
+        # Honor the configured account TTL/cap policy (backlog #107 fold-in):
+        # a bare construction silently minted with constructor defaults.
+        # Resolve settings against the TARGET root's env files (an `init
+        # --root` must not mint with the launch root's policy) and NEVER let
+        # this crash: init is deliberately validation-free (run.py registers
+        # it with full_validation=False) precisely so a wizard re-run can fix
+        # a broken config, so an invalid pre-existing value falls back to
+        # constructor defaults instead of aborting a half-finished install.
+        # Residual caveat, consistent with the alternate-root story (backlog
+        # #101 entries 6/10/15a): process env, which run.py already merged
+        # from the launch root's dotenv, still outranks the target root's
+        # files inside Settings.
+        try:
+            from ..config.settings import Settings as _Settings
+            from ..config.settings import get_env_file_paths as _env_paths
+
+            _account_settings = _Settings(
+                _env_file=tuple(str(p) for p in _env_paths(root))
+            )
+        except Exception:  # noqa: BLE001 - init must fix broken installs
+            _account_settings = None
+        repo = AccountsRepo.from_settings(_account_settings, data_dir / "accounts.db")
         admin_token = repo.ensure_bootstrap_admin(data_dir)
         token_path = data_dir / BOOTSTRAP_TOKEN_FILENAME
         console.print(f"[green]Data dir:[/green] {data_dir}")
