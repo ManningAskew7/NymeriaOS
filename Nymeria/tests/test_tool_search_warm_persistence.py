@@ -28,7 +28,7 @@ def _fake_embedder(dim: int = 8):
 
 def _index(db: Path) -> ToolSearchIndex:
     index = ToolSearchIndex(
-        openai_api_key="sk-real-looking-key",
+        embedding_api_key="sk-real-looking-key",
         embedding_dimensions=8,
         db_path=db,
     )

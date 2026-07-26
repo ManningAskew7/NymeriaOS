@@ -14,13 +14,13 @@ import re
 import sqlite3
 import struct
 import threading
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .embedding_client import EmbeddingClient
 from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -40,17 +40,9 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 # gets a generous ceiling (batches of up to 128 short chunks still finish well
 # inside it) and the query path overrides to a tighter ceiling so a stalled
 # endpoint degrades rag_search to BM25 in seconds instead of hanging the turn.
-# The native cohere/gemini providers already bound themselves in _native_embed_post.
+# The native cohere/gemini providers bound themselves inside EmbeddingClient.
 EMBED_CLIENT_TIMEOUT_SECONDS = 60.0
 EMBED_QUERY_TIMEOUT_SECONDS = 12.0
-
-# Browser User-Agent for native embedding HTTP calls (Cohere). Some managed
-# endpoints sit behind a CDN that rejects a bare urllib User-Agent; a browser UA
-# is harmless for the providers that do not need it.
-_EMBED_UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0 Safari/537.36"
-)
 
 
 def _canonical_json(text: str) -> Optional[str]:
@@ -65,9 +57,6 @@ def _canonical_json(text: str) -> Optional[str]:
     except (ValueError, TypeError):
         return None
 
-
-# Process-local cache of loaded local embedding models (model load is expensive).
-_LOCAL_EMBEDDERS: Dict[str, Any] = {}
 
 # Reciprocal Rank Fusion constant. Higher values flatten the contribution of
 # rank position; 60 is the value from the original RRF paper and the common
@@ -372,7 +361,16 @@ class MemoryIndex:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self._lock = threading.RLock()
-        self._openai_client = None
+        # Shared provider-dispatching embedding client (openai/cohere/gemini/
+        # local); the same implementation serves the skills and tool-search
+        # indexes, so provider behavior cannot drift between the three. Built
+        # lazily per config (see _get_embedding_client): callers like the RAG
+        # eval harness mutate the embedding_* instance attrs post-construction
+        # (e.g. embedding_provider="none" to defer vectors during a bulk load),
+        # and those mutations must keep taking effect exactly as they did when
+        # the provider dispatch read the attrs per call.
+        self._embedding_client: Optional[EmbeddingClient] = None
+        self._embedding_client_cfg: Optional[tuple] = None
         self._dim_mismatch = False
         # Cached SQLite connection (lazily opened on first use, sqlite-vec loaded
         # once). The instance is held per user by the agent and the memory tools,
@@ -603,40 +601,6 @@ class MemoryIndex:
             finally:
                 conn.close()
 
-    def _get_openai_client(self):
-        """Lazily initialize OpenAI client."""
-        if self._openai_client is None:
-            if not self.embedding_api_key:
-                raise RuntimeError("EMBEDDING_API_KEY not configured")
-            if self.embedding_api_key.startswith("cpx-"):
-                raise RuntimeError("EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key")
-            try:
-                from openai import OpenAI
-                kwargs: Dict[str, Any] = {
-                    "api_key": self.embedding_api_key,
-                    "timeout": EMBED_CLIENT_TIMEOUT_SECONDS,
-                }
-                if self.embedding_base_url:
-                    kwargs["base_url"] = self.embedding_base_url
-                self._openai_client = OpenAI(**kwargs)
-            except ImportError:
-                raise ImportError("openai package required for embeddings. Install with: pip install openai")
-        return self._openai_client
-
-    def _embed_kwargs(self) -> Dict[str, Any]:
-        """Model-side kwargs for an OpenAI ``embeddings.create`` call.
-
-        When an explicit ``embedding_dimensions`` was requested and the model is
-        a text-embedding-3-* model (which supports Matryoshka truncation), pass
-        ``dimensions`` so the model emits exactly that width. Production builds
-        the index without ``embedding_dimensions``, so nothing extra is sent and
-        the live embedding path is unchanged.
-        """
-        kwargs: Dict[str, Any] = {"model": self.embedding_model}
-        if self._dimensions_explicit and "text-embedding-3" in (self.embedding_model or ""):
-            kwargs["dimensions"] = self.embedding_dimensions
-        return kwargs
-
     def embed_text(self, text: str, input_type: str = "document") -> Optional[List[float]]:
         """Get an embedding vector for ``text``.
 
@@ -661,231 +625,46 @@ class MemoryIndex:
             return []
         return self._embed_batch(texts, input_type)
 
+    def _get_embedding_client(self) -> EmbeddingClient:
+        """Return the shared ``EmbeddingClient`` for the CURRENT embedding
+        config, rebuilding it when any ``embedding_*`` instance attr changed
+        since the last call (the config used to be read per call, and eval
+        tooling mutates these attrs on a live index)."""
+        cfg = (
+            self.embedding_provider,
+            self.embedding_api_key,
+            self.embedding_base_url,
+            self.embedding_model,
+            self.embedding_dimensions,
+            self._dimensions_explicit,
+            self.embedding_input_type,
+        )
+        if self._embedding_client is None or self._embedding_client_cfg != cfg:
+            self._embedding_client = EmbeddingClient(
+                provider=self.embedding_provider,
+                api_key=self.embedding_api_key,
+                base_url=self.embedding_base_url,
+                model=self.embedding_model,
+                dimensions=self.embedding_dimensions,
+                dimensions_explicit=self._dimensions_explicit,
+                input_type=self.embedding_input_type,
+                timeout=EMBED_CLIENT_TIMEOUT_SECONDS,
+            )
+            self._embedding_client_cfg = cfg
+        return self._embedding_client
+
     def _embed_batch(
         self, texts: List[str], input_type: str
     ) -> List[Optional[List[float]]]:
-        """Provider dispatch for embedding a batch. ``input_type`` is ``"query"``
-        or ``"document"`` (honored only by asymmetric providers)."""
-        # Truncate to the model's limit; managed providers reject empty strings in
-        # a batch, so substitute a single space.
-        inputs = [(t[:8000] if t and t.strip() else " ") for t in texts]
-        provider = self.embedding_provider
-        if provider == "openai":
-            return self._embed_openai(inputs, input_type)
-        if provider == "cohere":
-            return self._embed_cohere(inputs, input_type)
-        if provider == "gemini":
-            return self._embed_gemini(inputs, input_type)
-        if provider == "local":
-            return self._embed_local(inputs)
-        logger.warning(f"Unknown embedding provider: {provider}")
-        return [None] * len(texts)
-
-    def _embed_openai(
-        self, inputs: List[str], input_type: str
-    ) -> List[Optional[List[float]]]:
-        """Embed via the OpenAI-compatible client (real OpenAI, Voyage, or a local
-        shim). Asymmetric models (``embedding_input_type`` set, e.g. Voyage) get an
-        ``input_type`` via ``extra_body``; symmetric models leave it unset."""
-        out: List[Optional[List[float]]] = [None] * len(inputs)
-        try:
-            client = self._get_openai_client()
-            # The search query path fails fast (a stalled endpoint degrades to
-            # BM25 in seconds); batch indexing keeps the generous client ceiling.
-            if input_type == "query":
-                client = client.with_options(timeout=EMBED_QUERY_TIMEOUT_SECONDS)
-            kwargs = self._embed_kwargs()
-            if self.embedding_input_type:
-                it = "query" if input_type == "query" else "document"
-                kwargs["extra_body"] = {"input_type": it}
-            response = client.embeddings.create(input=inputs, **kwargs)
-            # Map by item.index when present, else by response order (some
-            # OpenAI-compatible shims leave index unset).
-            for i, item in enumerate(response.data):
-                idx = getattr(item, "index", None)
-                if idx is None:
-                    idx = i
-                emb = item.embedding
-                if len(emb) == self.embedding_dimensions:
-                    out[idx] = emb
-                else:
-                    logger.error(
-                        "Embedding dimension mismatch: expected %s, got %s",
-                        self.embedding_dimensions, len(emb),
-                    )
-        except Exception as e:
-            logger.error(f"Failed to get OpenAI embedding: {e}")
-        return out
-
-    def _embed_cohere(
-        self, inputs: List[str], input_type: str
-    ) -> List[Optional[List[float]]]:
-        """Embed via native Cohere v2/embed (embed-v4.0 is not OpenAI-compatible).
-        Asymmetric via ``input_type`` search_query / search_document;
-        ``output_dimension`` truncates the Matryoshka vector to the index width."""
-        if not self.embedding_api_key:
-            logger.error("EMBEDDING_API_KEY not configured for cohere embeddings")
-            return [None] * len(inputs)
-        it = "search_query" if input_type == "query" else "search_document"
-        headers = {
-            "Authorization": f"Bearer {self.embedding_api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": _EMBED_UA,
-        }
-        out: List[Optional[List[float]]] = []
-        for start in range(0, len(inputs), 96):  # v2/embed batch cap
-            batch = inputs[start:start + 96]
-            payload = {
-                "model": self.embedding_model,
-                "input_type": it,
-                "embedding_types": ["float"],
-                "output_dimension": self.embedding_dimensions,
-                "texts": batch,
-            }
-            out.extend(self._native_embed_post(
-                "https://api.cohere.com/v2/embed", headers, payload,
-                len(batch), parse="cohere",
-            ))
-        return out
-
-    def _embed_gemini(
-        self, inputs: List[str], input_type: str
-    ) -> List[Optional[List[float]]]:
-        """Embed via native Gemini batchEmbedContents (gemini-embedding-001).
-        Asymmetric via ``taskType`` RETRIEVAL_QUERY / RETRIEVAL_DOCUMENT;
-        ``outputDimensionality`` truncates the Matryoshka vector. Gemini does NOT
-        re-normalize a truncated vector, so the response parser L2-normalizes it
-        (vec0 cosine assumes unit length)."""
-        if not self.embedding_api_key:
-            logger.error("EMBEDDING_API_KEY not configured for gemini embeddings")
-            return [None] * len(inputs)
-        tt = "RETRIEVAL_QUERY" if input_type == "query" else "RETRIEVAL_DOCUMENT"
-        headers = {
-            "x-goog-api-key": self.embedding_api_key,
-            "Content-Type": "application/json",
-        }
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/"
-            f"models/{self.embedding_model}:batchEmbedContents"
+        """Embed a batch via the shared provider-dispatching ``EmbeddingClient``
+        (``core/embedding_client.py``). ``input_type`` is ``"query"`` or
+        ``"document"`` (honored only by asymmetric providers). The search query
+        path fails fast (a stalled endpoint degrades to BM25 in seconds); batch
+        indexing keeps the generous base-client ceiling."""
+        timeout = EMBED_QUERY_TIMEOUT_SECONDS if input_type == "query" else None
+        return self._get_embedding_client().embed_batch(
+            texts, input_type=input_type, timeout=timeout
         )
-        out: List[Optional[List[float]]] = []
-        for start in range(0, len(inputs), 100):  # batchEmbedContents cap
-            batch = inputs[start:start + 100]
-            reqs = [{
-                "model": f"models/{self.embedding_model}",
-                "content": {"parts": [{"text": t}]},
-                "taskType": tt,
-                "outputDimensionality": self.embedding_dimensions,
-            } for t in batch]
-            out.extend(self._native_embed_post(
-                url, headers, {"requests": reqs}, len(batch), parse="gemini",
-            ))
-        return out
-
-    def _embed_local(self, inputs: List[str]) -> List[Optional[List[float]]]:
-        """Embed in-process with a local sentence-transformers model (granite,
-        bge, ...). Fully private, no network. Lazy-imports sentence-transformers
-        so the dependency stays optional; vectors are L2-normalized for vec0
-        cosine. Symmetric (no query/document prompts), matching granite-r2."""
-        try:
-            model = self._get_local_embedder()
-        except Exception as e:
-            logger.error(
-                "local embedder unavailable (%s); install the local-rag extra: %s",
-                self.embedding_model, e,
-            )
-            return [None] * len(inputs)
-        out: List[Optional[List[float]]] = [None] * len(inputs)
-        try:
-            vecs = model.encode(
-                inputs, normalize_embeddings=True, convert_to_numpy=True,
-                show_progress_bar=False,
-            )
-            for i, v in enumerate(vecs):
-                vec = [float(x) for x in v]
-                if len(vec) == self.embedding_dimensions:
-                    out[i] = vec
-                else:
-                    logger.error(
-                        "Embedding dimension mismatch: expected %s, got %s",
-                        self.embedding_dimensions, len(vec),
-                    )
-        except Exception as e:
-            logger.error(f"local embedding failed: {e}")
-        return out
-
-    def _get_local_embedder(self):
-        """Load (and process-cache) a local sentence-transformers model on CPU."""
-        encoder = _LOCAL_EMBEDDERS.get(self.embedding_model)
-        if encoder is None:
-            from sentence_transformers import SentenceTransformer  # optional dep
-            encoder = SentenceTransformer(self.embedding_model, device="cpu")
-            _LOCAL_EMBEDDERS[self.embedding_model] = encoder
-        return encoder
-
-    def _native_embed_post(
-        self, url: str, headers: Dict[str, str], payload: Dict[str, Any],
-        n: int, parse: str,
-    ) -> List[Optional[List[float]]]:
-        """POST a native embedding request with 429/5xx backoff and parse the
-        response into vectors aligned to the batch (None per failure). Never
-        raises: a hard failure returns Nones so ingest/search degrade, not crash.
-        """
-        import urllib.error
-        import urllib.request
-
-        data = json.dumps(payload).encode()
-        delay = 2.0
-        for attempt in range(6):
-            try:
-                req = urllib.request.Request(
-                    url, data=data, headers=headers, method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=120.0) as resp:
-                    body = json.loads(resp.read().decode())
-                vecs = self._parse_native_embeddings(body, parse)
-                cleaned: List[Optional[List[float]]] = [
-                    (v if v is not None and len(v) == self.embedding_dimensions else None)
-                    for v in vecs
-                ]
-                cleaned += [None] * (n - len(cleaned))  # defensive: align to batch
-                return cleaned[:n]
-            except urllib.error.HTTPError as e:
-                retryable = e.code in (408, 429, 500, 502, 503, 529)
-                if retryable and attempt < 5:
-                    time.sleep(delay)
-                    delay = min(delay * 2, 60.0)
-                    continue
-                detail = e.read().decode()[:200] if hasattr(e, "read") else ""
-                logger.error(f"{parse} embed HTTP {e.code}: {detail}")
-                return [None] * n
-            except (urllib.error.URLError, TimeoutError) as e:
-                if attempt < 5:
-                    time.sleep(delay)
-                    delay = min(delay * 2, 60.0)
-                    continue
-                logger.error(f"{parse} embed failed: {e}")
-                return [None] * n
-        return [None] * n
-
-    @staticmethod
-    def _parse_native_embeddings(
-        body: Dict[str, Any], parse: str
-    ) -> List[Optional[List[float]]]:
-        """Pull vectors out of a native provider response. Cohere returns
-        ``embeddings.float``; Gemini returns ``embeddings[].values`` which are
-        L2-normalized here because a truncated Gemini vector is not unit length."""
-        if parse == "cohere":
-            return (body.get("embeddings") or {}).get("float") or []
-        out: List[Optional[List[float]]] = []
-        for e in body.get("embeddings") or []:
-            v = e.get("values") or []
-            if not v:
-                out.append(None)
-                continue
-            norm = math.sqrt(sum(x * x for x in v))
-            out.append([x / norm for x in v] if norm > 0 else v)
-        return out
 
     def _stored_vec_dim(self, cursor) -> Optional[int]:
         """Width of the vectors already stored in vec_chunks, or None if the table

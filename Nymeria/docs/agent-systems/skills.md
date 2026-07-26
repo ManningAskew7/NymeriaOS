@@ -375,10 +375,16 @@ active skill.
 queries find the right skill even when the query and the skill name share no
 keywords:
 
-1. **Semantic**  -  OpenAI-compatible embeddings indexed in `sqlite-vec`,
-   using `EMBEDDING_MODEL` (default `text-embedding-3-small`) and
-   `EMBEDDING_API_KEY`. Returns top-k by cosine similarity on
-   `name + description + allowed-tools`.
+1. **Semantic**  -  the server's configured embedder (the shared
+   `core/embedding_client.py` dispatch: any OpenAI-compatible endpoint,
+   native Cohere or Gemini, or a local in-process sentence-transformers
+   model such as granite) indexed in `sqlite-vec` at
+   `EMBEDDING_DIMENSIONS` width, per the `EMBEDDING_*` settings. The
+   `local` provider needs no API key. Returns top-k by cosine similarity
+   on `name + description + allowed-tools`. Changing the embedder
+   (provider, model, width, or input type) wipes the stored vectors;
+   the installed namespace re-embeds on the next skill reload (including
+   startup) and marketplace namespaces on their next TTL refresh.
 2. **BM25 / FTS5**  -  sqlite `FTS5` full-text search with Porter stemming,
    ranked by `bm25()`. No model, no network. Kicks in when semantic is
    unavailable or returns no results.
@@ -392,7 +398,7 @@ The tool's JSON response always includes a ``mode`` field (`"semantic"`,
 {
   "count": 3,
   "mode": "bm25",
-  "warning": "semantic search unavailable (EMBEDDING_API_KEY not set; semantic search disabled); falling back to keyword search. Set EMBEDDING_API_KEY on the server for better skill discovery.",
+  "warning": "semantic search unavailable (EMBEDDING_API_KEY not set; semantic search disabled); falling back to keyword search. Configure server embeddings (the EMBEDDING_* settings) for better skill discovery.",
   "results": [{"name": "pdf", "description": "…", "score": 0.71, "scope": "user"}]
 }
 ```
@@ -503,10 +509,10 @@ Marketplace installs or thread enables through `skill_manage` use
 
 ## Future improvements
 
-- **Local-server embeddings.** OpenAI-compatible `/v1/embeddings` endpoints
-  can be used by pointing `EMBEDDING_BASE_URL` at the server and setting
-  `EMBEDDING_API_KEY` to that server's accepted token. The current sqlite-vec
-  schema expects 1536-dimensional vectors, so use a compatible model.
+- **Local-server embeddings**  -  shipped: `EMBEDDING_PROVIDER=local` runs an
+  in-process sentence-transformers model with no key, and an OpenAI-compatible
+  `/v1/embeddings` endpoint still works via `EMBEDDING_BASE_URL` +
+  `EMBEDDING_API_KEY`. The vector width follows `EMBEDDING_DIMENSIONS`.
 - **Agent-authored skill resources**  -  v1 writes only `SKILL.md`; future work
   can add validated reference files, assets, and scripts when a concrete use
   case needs them.
@@ -524,4 +530,4 @@ Marketplace installs or thread enables through `skill_manage` use
 - Skills module: `nymeria/skills/` (loader, meta-tool factory, marketplace, embedding index)
 - Agent-facing tools: `nymeria/tools/search_skills.py`
 - Desktop UI: `nymeria-desktop/src/lib/components/skills/`, `stores/skills.svelte.ts`
-- [Anthropic `tool_search_with_embeddings` cookbook](https://github.com/anthropics/claude-cookbooks/blob/main/tool_use/tool_search_with_embeddings.ipynb)  -  canonical embedding-search pattern that this implementation mirrors (differs only in embedding model: we reuse Nymeria's existing `text-embedding-3-small` instead of `all-MiniLM-L6-v2` to avoid shipping a local model)
+- [Anthropic `tool_search_with_embeddings` cookbook](https://github.com/anthropics/claude-cookbooks/blob/main/tool_use/tool_search_with_embeddings.ipynb)  -  canonical embedding-search pattern that this implementation mirrors (differs only in embedding model: we reuse Nymeria's configured embedder, remote or local, instead of a hardcoded `all-MiniLM-L6-v2`)

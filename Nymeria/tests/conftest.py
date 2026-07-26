@@ -146,7 +146,7 @@ def _offline_tool_search_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     from nymeria.core import tool_search_index as tsi
 
     monkeypatch.setattr(
-        tsi, "_DEFAULT_INDEX", tsi.ToolSearchIndex(openai_api_key=None)
+        tsi, "_DEFAULT_INDEX", tsi.ToolSearchIndex(embedding_api_key=None)
     )
 
 

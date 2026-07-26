@@ -344,3 +344,44 @@ def test_llm_for_uses_public_agent_accessor(monkeypatch):
 
     assert out == ("LLM", cfg)
     assert captured["thread_id"] == "t-42"
+
+
+def test_quickstart_local_shape_clears_skill_and_tool_semantic_gates(tmp_path, monkeypatch):
+    """The wizard's recommended keyless local-RAG shape must yield WORKING
+    semantic skill and tool search, not the old misdiagnosing
+    'EMBEDDING_API_KEY not set' degradation (backlog #101 entry 13). Wires the
+    quickstart env values straight into both index constructors."""
+    pytest.importorskip("sqlite_vec")
+    import importlib.util as ilu
+
+    from nymeria.core.tool_search_index import ToolSearchIndex
+    from nymeria.skills.embedding_index import SkillEmbeddingIndex
+
+    s = WizardState()
+    apply_quickstart_rag(s)
+    env = rag_env_for_state(s)
+    assert "EMBEDDING_API_KEY" not in env
+
+    real_find_spec = ilu.find_spec
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name, *a, **k: object() if name == "sentence_transformers"
+        else real_find_spec(name, *a, **k),
+    )
+
+    skills_idx = SkillEmbeddingIndex(
+        db_path=tmp_path / "skills.db",
+        embedding_provider=env["EMBEDDING_PROVIDER"],
+        embedding_api_key=None,
+        embedding_model=env["EMBEDDING_MODEL"],
+        embedding_dimensions=int(env["EMBEDDING_DIMENSIONS"]),
+    )
+    assert skills_idx.is_semantic_available() is True
+
+    tool_idx = ToolSearchIndex(
+        embedding_provider=env["EMBEDDING_PROVIDER"],
+        embedding_api_key=None,
+        embedding_model=env["EMBEDDING_MODEL"],
+        embedding_dimensions=int(env["EMBEDDING_DIMENSIONS"]),
+    )
+    assert tool_idx.is_semantic_available() is True

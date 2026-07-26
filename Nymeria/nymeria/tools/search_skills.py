@@ -346,7 +346,8 @@ def search_skills(
 ) -> str:
     """Search for Agent Skills by natural-language query.
 
-    Uses semantic similarity (OpenAI embeddings) when available, falls back
+    Uses semantic similarity (the server's configured embedder) when
+    available, falls back
     to keyword BM25 search, then substring matching. This means you can
     search by intent like "extract text from images" and find skills named
     `ocr-tool` even though your query doesn't contain "ocr".
@@ -367,7 +368,7 @@ def search_skills(
               be install_skill'd first.
             - ``warning`` is only present when search is running in degraded
               mode. Surface its message to the user so they can set up a
-              better configuration (typically set EMBEDDING_API_KEY).
+              better configuration (the server's EMBEDDING_* settings).
             - each result is ``{name, description, score, ...}``
     """
     agent = current_agent()

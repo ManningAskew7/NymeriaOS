@@ -20,6 +20,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional
 
+from .embedding_client import EmbeddingClient
 from .time_utils import ensure_aware_utc, utc_now
 from .tool_embedding_store import ToolEmbeddingStore
 
@@ -40,6 +41,11 @@ EMBED_REQUEST_TIMEOUT_SECONDS = 10.0
 # per-request timeout.
 EMBED_BATCH_SIZE = 128
 EMBED_BATCH_TIMEOUT_SECONDS = 60.0
+
+# After a remote embed failure the client skips remote calls for this long
+# (keyword ranking keeps serving, warning kept) instead of re-paying the
+# timeout on every per-turn search against a dead endpoint.
+EMBED_FAILURE_COOLDOWN_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -160,18 +166,38 @@ class ToolSearchIndex:
     def __init__(
         self,
         *,
-        openai_api_key: Optional[str] = None,
-        openai_base_url: Optional[str] = None,
+        embedding_provider: Optional[str] = None,
+        embedding_api_key: Optional[str] = None,
+        embedding_base_url: Optional[str] = None,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         embedding_dimensions: Optional[int] = None,
+        embedding_input_type: Optional[str] = None,
         db_path: Optional[Path] = None,
     ) -> None:
-        self._openai_key = openai_api_key
-        self._openai_base_url = openai_base_url
+        self._provider = (embedding_provider or "openai").strip().lower()
         self._embedding_model = embedding_model or DEFAULT_EMBEDDING_MODEL
         self._dimensions = int(embedding_dimensions or EMBEDDING_DIMENSIONS)
         self._dimensions_explicit = embedding_dimensions is not None
-        self._openai_client = None
+        self._input_type = embedding_input_type
+        # Shared provider-dispatching embedding client (openai/cohere/gemini/
+        # local; ``core/embedding_client.py``), the same implementation the
+        # memory and skills indexes use. Search runs on the agent turn hot
+        # path, so remote budgets are tight (no SDK retries, bounded native
+        # timeout) and failures arm a short cooldown instead of stalling every
+        # subsequent search against a dead endpoint.
+        self._client = EmbeddingClient(
+            provider=self._provider,
+            api_key=embedding_api_key,
+            base_url=embedding_base_url,
+            model=self._embedding_model,
+            dimensions=self._dimensions,
+            dimensions_explicit=self._dimensions_explicit,
+            input_type=embedding_input_type,
+            timeout=EMBED_REQUEST_TIMEOUT_SECONDS,
+            max_retries=0,
+            native_timeout=EMBED_REQUEST_TIMEOUT_SECONDS,
+            failure_cooldown_seconds=EMBED_FAILURE_COOLDOWN_SECONDS,
+        )
         self._semantic_available: Optional[bool] = None
         self._last_error: Optional[str] = None
         self._catalog: dict[str, ToolSearchDocument] = {}
@@ -189,6 +215,8 @@ class ToolSearchIndex:
                     Path(db_path),
                     model=self._embedding_model,
                     dimensions=self._dimensions,
+                    provider=self._provider,
+                    input_type=self._input_type,
                 )
                 self._store = store if store.usable else None
             except Exception as exc:  # noqa: BLE001 - the cache is optional.
@@ -218,16 +246,10 @@ class ToolSearchIndex:
     def is_semantic_available(self) -> bool:
         if self._semantic_available is not None:
             return self._semantic_available
-        if not self._openai_key:
+        err = self._client.availability_error()
+        if err:
             self._semantic_available = False
-            self._last_error = "EMBEDDING_API_KEY not set; semantic search disabled"
-            return False
-        if self._openai_key.startswith("cpx-"):
-            self._semantic_available = False
-            self._last_error = (
-                "EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key; "
-                "set a real embeddings key or base URL"
-            )
+            self._last_error = err
             return False
         self._semantic_available = True
         return True
@@ -640,41 +662,21 @@ class ToolSearchIndex:
             )
 
     def _embed_texts(self, texts: list[str]) -> list[Optional[list[float]]]:
-        """Embed a batch of texts in one request. Returns a list aligned to
-        ``texts`` (None for any slot that fails or returns the wrong width). A
-        request failure degrades semantic search for the process (like
-        ``_embed``); the warm retries on its next pass."""
+        """Embed a batch of texts in one request via the shared
+        ``EmbeddingClient``. Returns a list aligned to ``texts`` (None for any
+        slot that fails or returns the wrong width). A request failure degrades
+        this pass only (never latches semantic off); the warm retries on its
+        next pass/heartbeat."""
         if not texts:
             return []
         if not self.is_semantic_available():
             return [None] * len(texts)
-        inputs = [(t[:8000] if t and t.strip() else " ") for t in texts]
-        out: list[Optional[list[float]]] = [None] * len(texts)
-        try:
-            client = self._get_openai().with_options(timeout=EMBED_BATCH_TIMEOUT_SECONDS)
-            resp = client.embeddings.create(input=inputs, **self._embed_create_kwargs())
-            # Map by item.index when present, else response order (some
-            # OpenAI-compatible shims leave index unset).
-            for i, item in enumerate(resp.data):
-                idx = getattr(item, "index", None)
-                if idx is None:
-                    idx = i
-                emb = list(item.embedding)
-                if len(emb) == self._dimensions:
-                    out[idx] = emb
-                else:
-                    logger.error(
-                        "tool embedding dimension mismatch: expected %s, got %s",
-                        self._dimensions,
-                        len(emb),
-                    )
-        except Exception as exc:  # noqa: BLE001 - degraded search is intentional.
-            # Do NOT latch semantic off here: a transient endpoint error must not
-            # permanently disable tool semantic search. Record it and let the
-            # background warm retry on its next pass/heartbeat.
-            self._last_error = f"embedding call failed: {type(exc).__name__}: {exc}"
+        out = self._client.embed_batch(
+            texts, input_type="document", timeout=EMBED_BATCH_TIMEOUT_SECONDS,
+        )
+        if self._client.last_error:
+            self._last_error = self._client.last_error
             logger.warning("tool semantic search degrading: %s", self._last_error)
-            return [None] * len(texts)
         return out
 
     def _semantic_search(
@@ -778,60 +780,23 @@ class ToolSearchIndex:
                 ranked.append((1.0 + _lexical_bonus(query, doc), doc))
         return ranked
 
-    def _get_openai(self):
-        if self._openai_client is None:
-            if not self._openai_key:
-                raise RuntimeError("EMBEDDING_API_KEY not configured")
-            if self._openai_key.startswith("cpx-"):
-                raise RuntimeError("EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key")
-            from openai import OpenAI
-
-            kwargs: dict[str, Any] = {
-                "api_key": self._openai_key,
-                "timeout": EMBED_REQUEST_TIMEOUT_SECONDS,
-                "max_retries": 0,
-            }
-            if self._openai_base_url:
-                kwargs["base_url"] = self._openai_base_url
-            self._openai_client = OpenAI(**kwargs)
-        return self._openai_client
-
-    def _embed_create_kwargs(self) -> dict[str, Any]:
-        """Model-side kwargs for ``embeddings.create``. Sends ``dimensions``
-        only when an explicit width was configured for a text-embedding-3-*
-        model (Matryoshka truncation); otherwise the wire is unchanged."""
-        kwargs: dict[str, Any] = {"model": self._embedding_model}
-        if self._dimensions_explicit and "text-embedding-3" in (self._embedding_model or ""):
-            kwargs["dimensions"] = self._dimensions
-        return kwargs
-
     def _embed(self, text: str) -> Optional[list[float]]:
         if not text.strip() or not self.is_semantic_available():
             return None
-        try:
-            resp = self._get_openai().embeddings.create(
-                input=text[:8000],
-                **self._embed_create_kwargs(),
-            )
-            embedding = list(resp.data[0].embedding)
-            if len(embedding) != self._dimensions:
-                raise ValueError(
-                    "embedding dimension mismatch: expected "
-                    f"{self._dimensions}, got {len(embedding)}"
-                )
-            return embedding
-        except Exception as exc:  # noqa: BLE001 - degraded search is intentional.
+        vec = self._client.embed_text(text, input_type="query")
+        if vec is None and self._client.last_error:
             # A transient query-embed failure must not latch semantic off (a
             # later search/warm must be free to retry); just degrade this call.
-            self._last_error = f"embedding call failed: {type(exc).__name__}: {exc}"
+            self._last_error = self._client.last_error
             logger.warning("tool semantic search degrading: %s", self._last_error)
-            return None
+        return vec
 
     def _fallback_warning(self) -> str:
         reason = self._last_error or "semantic search unavailable"
         return (
             f"semantic search unavailable ({reason}); falling back to keyword search. "
-            "Set EMBEDDING_API_KEY on the server for better tool discovery."
+            "Configure server embeddings (the EMBEDDING_* settings) for better "
+            "tool discovery."
         )
 
     def _warming_warning(self) -> str:
@@ -1074,10 +1039,12 @@ def get_tool_search_index() -> ToolSearchIndex:
 
             settings = get_settings()
             _DEFAULT_INDEX = ToolSearchIndex(
-                openai_api_key=settings.embedding_api_key,
-                openai_base_url=settings.embedding_base_url,
+                embedding_provider=settings.embedding_provider,
+                embedding_api_key=settings.embedding_api_key,
+                embedding_base_url=settings.embedding_base_url,
                 embedding_model=settings.embedding_model,
                 embedding_dimensions=settings.embedding_dimensions,
+                embedding_input_type=settings.embedding_input_type,
                 db_path=settings.data_dir / "tool_search_embeddings.db",
             )
         return _DEFAULT_INDEX

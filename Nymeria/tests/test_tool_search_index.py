@@ -34,7 +34,7 @@ class FakeAgent:
 
 
 def test_bm25_fallback_without_embedding_key_finds_browser_tools():
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
 
     response = index.search("browser", user_id="default", top_k=5)
 
@@ -60,7 +60,7 @@ def test_mcp_server_result_carries_provenance_and_setup_axis():
         install_status="ready",
     )
     try:
-        index = ToolSearchIndex(openai_api_key=None)
+        index = ToolSearchIndex(embedding_api_key=None)
         response = index.search(
             "notion search documents",
             user_id="default",
@@ -99,7 +99,7 @@ def test_mcp_server_result_setup_axis_flags_unconfigured_server():
         install_status="needs_config",
     )
     try:
-        index = ToolSearchIndex(openai_api_key=None)
+        index = ToolSearchIndex(embedding_api_key=None)
         response = index.search(
             "linear list issues",
             user_id="default",
@@ -114,7 +114,7 @@ def test_mcp_server_result_setup_axis_flags_unconfigured_server():
 
 
 def test_cliproxy_gatekeeper_key_does_not_hit_embeddings():
-    index = ToolSearchIndex(openai_api_key="cpx-local-test")
+    index = ToolSearchIndex(embedding_api_key="cpx-local-test")
 
     response = index.search("browser", user_id="default", top_k=5)
 
@@ -140,8 +140,8 @@ def test_embedding_client_uses_bounded_timeout_and_no_retries():
     original = openai.OpenAI
     openai.OpenAI = _RecordingClient
     try:
-        index = ToolSearchIndex(openai_api_key="sk-real-looking-key")
-        index._get_openai()
+        index = ToolSearchIndex(embedding_api_key="sk-real-looking-key")
+        index._client._get_openai_client()
     finally:
         openai.OpenAI = original
 
@@ -150,7 +150,7 @@ def test_embedding_client_uses_bounded_timeout_and_no_retries():
 
 
 def test_fuzzy_fallback_handles_typo():
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
 
     response = index.search("brwoser", user_id="default", top_k=5)
 
@@ -159,7 +159,7 @@ def test_fuzzy_fallback_handles_typo():
 
 
 def test_changed_tool_metadata_updates_catalog_fingerprint():
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     tool_id = "zz_price_probe"
     old = CUSTOM_TOOL_METADATA.get(tool_id)
     try:
@@ -181,7 +181,7 @@ def test_changed_tool_metadata_updates_catalog_fingerprint():
 
 
 def test_developer_only_tools_are_hidden_from_non_admins():
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
 
     user_response = index.search("hello_test", user_role="user", user_id="owner")
     admin_response = index.search("hello_test", user_role="admin", user_id="admin")
@@ -204,7 +204,7 @@ def test_thread_visible_callable_tools_are_indexed(tmp_path: Path):
             callable_description="Look up supplier prices",
         )
     )
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
 
     response = index.search(
         "supplier prices",
@@ -239,7 +239,7 @@ def test_search_never_triggers_full_catalog_embed():
     """The cold-start hang was search() embedding the whole catalog inline.
     Even with semantic configured but not yet warmed, search must serve keyword
     results and never call the embedder (neither the batch nor the single)."""
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     index._semantic_available = True  # pretend a real embedder is configured
     calls = {"texts": 0, "single": 0}
 
@@ -262,7 +262,7 @@ def test_search_never_triggers_full_catalog_embed():
 
 
 def test_semantic_requires_fully_embedded():
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     index._semantic_available = True
     embed = _fake_embedder()
     index._embed = lambda text: embed(text)
@@ -281,11 +281,11 @@ def test_semantic_requires_fully_embedded():
 
 
 def test_warming_warning_distinct_from_no_key_warning():
-    no_key = ToolSearchIndex(openai_api_key=None)
+    no_key = ToolSearchIndex(embedding_api_key=None)
     r1 = no_key.search("browser", user_id="default")
     assert "EMBEDDING_API_KEY" in (r1.warning or "")
 
-    warming = ToolSearchIndex(openai_api_key=None)
+    warming = ToolSearchIndex(embedding_api_key=None)
     warming._semantic_available = True  # configured but not warmed yet
     r2 = warming.search("browser", user_id="default")
     assert "warming" in (r2.warning or "")
@@ -293,7 +293,7 @@ def test_warming_warning_distinct_from_no_key_warning():
 
 
 def test_mark_dirty_resets_fully_embedded_and_rewarm_is_delta():
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     index._semantic_available = True
     embed = _fake_embedder()
     index._embed = lambda text: embed(text)
@@ -327,7 +327,7 @@ def test_mark_dirty_resets_fully_embedded_and_rewarm_is_delta():
 def test_embed_failure_does_not_permanently_disable_semantic():
     """A transient embeddings-endpoint error must not latch semantic search off
     for the process lifetime; the warm/heartbeat must stay free to retry."""
-    index = ToolSearchIndex(openai_api_key="sk-real-looking-key")
+    index = ToolSearchIndex(embedding_api_key="sk-real-looking-key")
     assert index.is_semantic_available() is True
 
     class _BoomClient:
@@ -339,16 +339,24 @@ def test_embed_failure_does_not_permanently_disable_semantic():
         def with_options(self, **_kwargs):
             return self
 
-    index._openai_client = _BoomClient()
+    index._client._openai_client = _BoomClient()
 
     assert index._embed_texts(["a", "b"]) == [None, None]
+    # The failure arms the client's short cooldown; within it the next embed
+    # is a fast no-op that keeps the honest error.
+    assert index._embed("query") is None
+    assert index._last_error  # recorded for diagnostics
+    # Past the cooldown a real retry happens (still failing here) and
+    # semantic search is STILL not latched off: the warm/heartbeat stays
+    # free to recover when the endpoint does.
+    index._client._cooldown_until = 0.0
     assert index._embed("query") is None
     assert index.is_semantic_available() is True  # NOT latched off by the blip
-    assert index._last_error  # recorded for diagnostics
+    assert index._last_error
 
 
 def test_transient_warm_failure_recovers_on_next_pass():
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     index._semantic_available = True
     embed = _fake_embedder()
     state = {"fail": True}
@@ -402,7 +410,7 @@ class _BrokenProfileAgent:
 
 
 def test_callable_thread_docs_warns_on_agent_surface_break(caplog):
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
         out = index._callable_thread_docs(_BrokenConfigAgent(), "u1", "t1", set())
     assert out == {}
@@ -417,7 +425,7 @@ def test_custom_tool_tags_warns_on_loader_break(monkeypatch, caplog):
         raise RuntimeError("loader surface break")
 
     monkeypatch.setattr(custom_tools, "get_custom_tool_loader", _boom)
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
         out = index._custom_tool_tags()
     assert out == {}
@@ -428,7 +436,7 @@ def test_custom_tool_tags_warns_on_loader_break(monkeypatch, caplog):
 def test_default_tool_set_warns_and_falls_back_to_seed(caplog):
     from nymeria.tools import resolve_default_tool_names
 
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
         out = index._default_tool_set(_BrokenProfileAgent(), "u1")
     # Behavior preserved: falls back to the seed default tool set on failure.
@@ -438,7 +446,7 @@ def test_default_tool_set_warns_and_falls_back_to_seed(caplog):
 
 
 def test_thread_status_warns_on_agent_surface_break(caplog):
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
         out = index._thread_status(_BrokenConfigAgent(), "t1")
     assert out == (set(), {}, set())
@@ -449,7 +457,7 @@ def test_thread_status_warns_on_agent_surface_break(caplog):
 def test_thread_status_no_warning_on_empty_short_circuit(caplog):
     """The ``agent is None``/empty-thread guard returns before the try, so it
     must not emit the new failure warning."""
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
     with caplog.at_level(logging.WARNING, logger=_TS_LOGGER):
         assert index._thread_status(None, "t1") == (set(), {}, set())
         assert index._thread_status(_BrokenConfigAgent(), "") == (set(), {}, set())
@@ -507,7 +515,7 @@ def test_search_results_carry_needs_setup_then_connected(tmp_path, monkeypatch):
     import nymeria.tools.productivity_service_integrations  # noqa: F401
 
     repo = _auth_vault(tmp_path, monkeypatch)
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
 
     response = index.search("todoist", agent=None, user_id="alice", include_status=True)
     hit = _find(response.results, "todoist_list_tasks")
@@ -534,7 +542,7 @@ def test_non_integration_result_has_no_auth_axis(tmp_path, monkeypatch):
     from nymeria.tools.credential_registry import spec_for_tool
 
     _auth_vault(tmp_path, monkeypatch)
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
 
     response = index.search("browser", agent=None, user_id="alice", include_status=True)
     # Any result the credential registry has no provider spec for = no
@@ -548,7 +556,7 @@ def test_include_status_false_suppresses_auth_axis(tmp_path, monkeypatch):
     import nymeria.tools.productivity_service_integrations  # noqa: F401
 
     _auth_vault(tmp_path, monkeypatch)
-    index = ToolSearchIndex(openai_api_key=None)
+    index = ToolSearchIndex(embedding_api_key=None)
 
     response = index.search("todoist", agent=None, user_id="alice", include_status=False)
     hit = _find(response.results, "todoist_list_tasks")
@@ -624,3 +632,49 @@ def test_auth_status_map_empty_when_status_excluded():
     ranked = [(1.0, _doc("todoist_list_tasks"))]
     assert ToolSearchIndex._auth_status_map(ranked, "alice", False) == {}
     assert ToolSearchIndex._auth_status_map([], "alice", True) == {}
+
+
+def test_local_provider_semantic_gate_needs_no_key(monkeypatch):
+    """EMBEDDING_PROVIDER=local must clear the semantic gate with NO key
+    configured (regression for backlog #101 entry 13: the old OpenAI-only gate
+    silently disabled semantic tool search on local-embedding installs), and
+    the query embed must route to the local encoder."""
+    from nymeria.core.embedding_client import EmbeddingClient
+
+    class _FakeEncoder:
+        def encode(self, inputs, **kwargs):
+            return [[1.0, 0.0, 0.0, 0.0] for _ in inputs]
+
+    monkeypatch.setattr(
+        EmbeddingClient, "_get_local_embedder", lambda self: _FakeEncoder()
+    )
+    index = ToolSearchIndex(
+        embedding_provider="local",
+        embedding_api_key=None,
+        embedding_model="fake-granite",
+        embedding_dimensions=4,
+    )
+
+    assert index.is_semantic_available() is True
+    assert index.last_error is None
+    assert index._embed("browser automation") == [1.0, 0.0, 0.0, 0.0]
+
+
+def test_local_provider_without_extra_reports_honest_error(monkeypatch):
+    """provider=local with sentence-transformers missing must report the local
+    dependency, never the misdiagnosing EMBEDDING_API_KEY message."""
+    import importlib.util as ilu
+
+    real_find_spec = ilu.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "sentence_transformers":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr("importlib.util.find_spec", fake_find_spec)
+    index = ToolSearchIndex(embedding_provider="local", embedding_api_key=None)
+
+    assert index.is_semantic_available() is False
+    assert "local-rag" in (index.last_error or "")
+    assert "EMBEDDING_API_KEY" not in (index.last_error or "")

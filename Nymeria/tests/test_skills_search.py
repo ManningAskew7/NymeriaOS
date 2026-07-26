@@ -37,7 +37,7 @@ class FakeSkill:
 
 def _fresh_index(tmp_path: Path) -> SkillEmbeddingIndex:
     # No EMBEDDING_API_KEY => semantic path disabled, BM25/substring remain.
-    return SkillEmbeddingIndex(db_path=tmp_path / "skills.db", openai_api_key=None)
+    return SkillEmbeddingIndex(db_path=tmp_path / "skills.db", embedding_api_key=None)
 
 
 SAMPLE_SKILLS = [
@@ -70,7 +70,7 @@ def test_bm25_fallback_returns_keyword_matches(tmp_path):
 
 
 def test_cliproxy_gatekeeper_key_does_not_hit_embeddings(tmp_path):
-    idx = SkillEmbeddingIndex(db_path=tmp_path / "skills.db", openai_api_key="cpx-local-test")
+    idx = SkillEmbeddingIndex(db_path=tmp_path / "skills.db", embedding_api_key="cpx-local-test")
     summary = idx.rebuild("installed", SAMPLE_SKILLS)
 
     assert summary["semantic_indexed"] == 0
@@ -133,8 +133,8 @@ def test_semantic_search_finds_intent_matches(tmp_path):
     can find skills whose names don't share keywords with the query."""
     idx = SkillEmbeddingIndex(
         db_path=tmp_path / "skills.db",
-        openai_api_key=os.environ.get("EMBEDDING_API_KEY"),
-        openai_base_url=os.environ.get("EMBEDDING_BASE_URL"),
+        embedding_api_key=os.environ.get("EMBEDDING_API_KEY"),
+        embedding_base_url=os.environ.get("EMBEDDING_BASE_URL"),
         embedding_model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
     )
     idx.rebuild("installed", SAMPLE_SKILLS)
@@ -164,9 +164,9 @@ def test_embedding_client_uses_bounded_timeout_and_no_retries(tmp_path):
     try:
         idx = SkillEmbeddingIndex(
             db_path=tmp_path / "skills.db",
-            openai_api_key="sk-real-looking-key",
+            embedding_api_key="sk-real-looking-key",
         )
-        idx._get_openai()
+        idx._client._get_openai_client()
     finally:
         openai.OpenAI = original
 
@@ -236,3 +236,190 @@ def test_cached_search_connection_sees_later_committed_writes(tmp_path):
     r3 = idx.search("pdf", namespace="installed", top_k=5)
     assert idx._conn is cached
     assert any(h.name == "pdf" for h in r3.results)
+
+
+class _FakeLocalEncoder:
+    """Deterministic stand-in for a sentence-transformers model (4-d)."""
+
+    def encode(self, inputs, **kwargs):
+        import math
+
+        out = []
+        for text in inputs:
+            t = text.lower()
+            v = [
+                1.0 + 3.0 * t.count("pdf"),
+                1.0 + 3.0 * (t.count("image") + t.count("photograph") + t.count("picture")),
+                1.0 + 3.0 * t.count("email"),
+                1.0,
+            ]
+            norm = math.sqrt(sum(x * x for x in v))
+            out.append([x / norm for x in v])
+        return out
+
+
+def test_local_provider_semantic_search_needs_no_key(tmp_path, monkeypatch):
+    """EMBEDDING_PROVIDER=local (the wizard-recommended granite shape) must get
+    semantic skill search with NO key configured. Regression for backlog #101
+    entry 13: the old OpenAI-only gate reported 'EMBEDDING_API_KEY not set' and
+    disabled semantic search on exactly this install shape."""
+    pytest.importorskip("sqlite_vec")
+    from nymeria.core.embedding_client import EmbeddingClient
+
+    monkeypatch.setattr(
+        EmbeddingClient, "_get_local_embedder", lambda self: _FakeLocalEncoder()
+    )
+    idx = SkillEmbeddingIndex(
+        db_path=tmp_path / "skills.db",
+        embedding_provider="local",
+        embedding_api_key=None,
+        embedding_model="fake-granite",
+        embedding_dimensions=4,
+    )
+    assert idx.is_semantic_available() is True
+
+    summary = idx.rebuild("installed", SAMPLE_SKILLS)
+    assert summary["semantic_indexed"] == 4
+    assert summary["warning"] is None
+
+    r = idx.search("recognize text in pictures", namespace="installed", top_k=3)
+    assert r.mode == "semantic"
+    assert r.results[0].name == "ocr-tool"
+    assert r.warning is None
+
+
+def test_embedder_change_wipes_stale_vectors(tmp_path, monkeypatch):
+    """Changing the embedding (provider, model, dimensions) drops the stored
+    vector table (the vec0 width is fixed at creation and vectors from another
+    model are a different space) instead of mixing or erroring."""
+    pytest.importorskip("sqlite_vec")
+    import sqlite3
+
+    from nymeria.core.embedding_client import EmbeddingClient
+
+    monkeypatch.setattr(
+        EmbeddingClient, "_get_local_embedder", lambda self: _FakeLocalEncoder()
+    )
+    idx = SkillEmbeddingIndex(
+        db_path=tmp_path / "skills.db",
+        embedding_provider="local",
+        embedding_model="fake-a",
+        embedding_dimensions=4,
+    )
+    assert idx.rebuild("installed", SAMPLE_SKILLS)["semantic_indexed"] == 4
+    idx.close()
+
+    # Same DB, different model: the stale vectors must be gone before any
+    # rebuild runs, and the stamp updated.
+    idx2 = SkillEmbeddingIndex(
+        db_path=tmp_path / "skills.db",
+        embedding_provider="local",
+        embedding_model="fake-b",
+        embedding_dimensions=4,
+    )
+    conn = sqlite3.connect(str(tmp_path / "skills.db"))
+    try:
+        import sqlite_vec
+
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        count = conn.execute("SELECT count(*) FROM skills_vec").fetchone()[0]
+        stamp = dict(conn.execute("SELECT key, value FROM index_meta").fetchall())
+    finally:
+        conn.close()
+    assert count == 0
+    assert stamp["model"] == "fake-b"
+    idx2.close()
+
+
+def test_embed_failure_does_not_permanently_disable_semantic(tmp_path, monkeypatch):
+    """A transient embedding failure must degrade that call only, never latch
+    semantic search off for the whole process (mirrors the tool-search index)."""
+    idx = SkillEmbeddingIndex(
+        db_path=tmp_path / "skills.db",
+        embedding_api_key="sk-real-looking-key",
+    )
+
+    def _boom(self):
+        raise RuntimeError("endpoint down")
+
+    from nymeria.core.embedding_client import EmbeddingClient
+
+    monkeypatch.setattr(EmbeddingClient, "_get_openai_client", _boom)
+
+    assert idx._embed("hello") is None
+    assert "endpoint down" in (idx.last_error or "")
+    # The old behavior latched _semantic_available False here.
+    assert idx.is_semantic_available() is True
+
+
+def test_legacy_unstamped_db_adopted_without_wipe(tmp_path):
+    """A pre-stamp DB (the OpenAI-only 1536 world) whose current config still
+    matches what could have produced it is adopted in place: stamped, vectors
+    kept, no wipe."""
+    pytest.importorskip("sqlite_vec")
+    import struct
+
+    idx = SkillEmbeddingIndex(
+        db_path=tmp_path / "skills.db",
+        embedding_api_key="sk-real-looking-key",
+    )
+    # Plant a vector row, then strip the stamp to simulate the legacy DB.
+    conn = idx._get_connection()
+    vec = struct.pack("1536f", *([0.1] * 1536))
+    conn.execute(
+        "INSERT INTO skills_vec(skill_key, embedding) VALUES (?, ?)",
+        ("installed:pdf", vec),
+    )
+    conn.execute("DELETE FROM index_meta")
+    conn.commit()
+    idx.close()
+
+    idx2 = SkillEmbeddingIndex(
+        db_path=tmp_path / "skills.db",
+        embedding_api_key="sk-real-looking-key",
+    )
+    conn = idx2._get_connection()
+    count = conn.execute("SELECT count(*) FROM skills_vec").fetchone()[0]
+    stamp = dict(conn.execute("SELECT key, value FROM index_meta").fetchall())
+    idx2.close()
+    assert count == 1  # adopted, not wiped
+    assert stamp["provider"] == "openai"
+    assert stamp["dim"] == "1536"
+    assert stamp["input_type"] == ""
+
+
+class _FlakyLocalEncoder(_FakeLocalEncoder):
+    """Fake encoder that can be broken mid-test (rebuild works, query fails)."""
+
+    def __init__(self):
+        self.fail = False
+
+    def encode(self, inputs, **kwargs):
+        if self.fail:
+            raise RuntimeError("weights corrupted")
+        return super().encode(inputs, **kwargs)
+
+
+def test_search_warns_when_query_embed_fails(tmp_path, monkeypatch):
+    """A failed query embed while semantic search is nominally available must
+    surface the degradation warning, not silently serve keyword results."""
+    pytest.importorskip("sqlite_vec")
+    from nymeria.core.embedding_client import EmbeddingClient
+
+    enc = _FlakyLocalEncoder()
+    monkeypatch.setattr(EmbeddingClient, "_get_local_embedder", lambda self: enc)
+    idx = SkillEmbeddingIndex(
+        db_path=tmp_path / "skills.db",
+        embedding_provider="local",
+        embedding_model="fake-granite",
+        embedding_dimensions=4,
+    )
+    assert idx.rebuild("installed", SAMPLE_SKILLS)["semantic_indexed"] == 4
+
+    enc.fail = True
+    r = idx.search("pdf", namespace="installed", top_k=3)
+    assert r.mode in ("bm25", "substring")
+    assert r.warning and "semantic search unavailable" in r.warning
+    assert idx.is_semantic_available() is True  # still not latched off

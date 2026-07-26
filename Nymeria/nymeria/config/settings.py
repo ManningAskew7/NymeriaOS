@@ -1245,11 +1245,11 @@ class Settings(BaseSettings):
     )
     embedding_model: str = Field(
         default="text-embedding-3-small",
-        description="1536-dimensional embedding model name for memory and skill semantic search",
+        description="Embedding model name for memory, skill, and tool semantic search (a sentence-transformers id when embedding_provider='local')",
     )
     embedding_provider: str = Field(
         default="openai",
-        description="Embedding backend for the memory index: 'openai' (any OpenAI-compatible endpoint, including Voyage), 'cohere' (native v2/embed, e.g. embed-v4.0), 'gemini' (native batchEmbedContents, e.g. gemini-embedding-001), or 'local' (in-process sentence-transformers, e.g. granite, needs the optional local-rag extra). Defaults to 'openai' so existing deployments are unchanged.",
+        description="Embedding backend for the memory, skills, and tool-search indexes (shared core/embedding_client.py dispatch): 'openai' (any OpenAI-compatible endpoint, including Voyage), 'cohere' (native v2/embed, e.g. embed-v4.0), 'gemini' (native batchEmbedContents, e.g. gemini-embedding-001), or 'local' (in-process sentence-transformers, e.g. granite, needs the optional local-rag extra). Defaults to 'openai' so existing deployments are unchanged.",
     )
     embedding_dimensions: Optional[int] = Field(
         default=None,

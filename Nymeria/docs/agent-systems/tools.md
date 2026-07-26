@@ -920,9 +920,10 @@ thread tools visible from the current `thread_id`. Developer-only diagnostic
 tools are hidden from non-admin users. Admin-only tools remain discoverable but
 return enable hints that make the admin requirement explicit.
 
-Ranking tries embeddings first when `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL`,
-and `EMBEDDING_MODEL` are configured. CLIProxy gatekeeper keys such as
-`cpx-*` are rejected for embeddings. If semantic search is unavailable, the
+Ranking tries embeddings first when the server's configured embedder (the
+`EMBEDDING_*` settings; any OpenAI-compatible endpoint, native Cohere/Gemini,
+or the keyless `local` sentence-transformers provider) is usable. CLIProxy
+gatekeeper keys such as `cpx-*` are rejected for embeddings. If semantic search is unavailable, the
 service falls back to BM25, then fuzzy matching, then substring matching. Each
 result includes status and an exact enable/disable hint such as
 `/tools enable browser_open`.

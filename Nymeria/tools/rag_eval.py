@@ -255,8 +255,9 @@ def _embed_query(index: MemoryIndex, query: str) -> Optional[List[float]]:
     if not query.strip() or index.embedding_provider != "openai":
         return None
     try:
-        client = index._get_openai_client()
-        kwargs = index._embed_kwargs()
+        ec = index._get_embedding_client()
+        client = ec._get_openai_client()
+        kwargs = ec._embed_kwargs()
         param = getattr(index, "_eval_input_type_param", "input_type")
         kwargs["extra_body"] = {param: it}
         resp = client.embeddings.create(input=query[:8000], **kwargs)
@@ -675,7 +676,9 @@ def _force_ua_client(index: MemoryIndex, ua: str = _BROWSER_UA) -> MemoryIndex:
                               "default_headers": {"User-Agent": ua}}
     if index.embedding_base_url:
         kwargs["base_url"] = index.embedding_base_url
-    index._openai_client = OpenAI(**kwargs)
+    # Inject into the shared embedding client (the per-config cache keeps this
+    # instance alive as long as the embedding_* attrs stay unchanged).
+    index._get_embedding_client()._openai_client = OpenAI(**kwargs)
     return index
 
 
@@ -987,12 +990,13 @@ def _embed_texts_ordered(index: MemoryIndex, texts: List[str]) -> List[Optional[
     over-large batch) drops to per-item, which itself retries each item."""
     if not texts:
         return []
-    client = index._get_openai_client()
+    ec = index._get_embedding_client()
+    client = ec._get_openai_client()
     inputs = [(t[:8000] if t and t.strip() else " ") for t in texts]
     dim = index.embedding_dimensions
     # Document-side input_type (Voyage 'document'), when a scheme is configured,
     # so the corpus is embedded with the provider's asymmetric document prompt.
-    embed_kwargs = index._embed_kwargs()
+    embed_kwargs = ec._embed_kwargs()
     doc_it = getattr(index, "_eval_doc_input_type", None)
     if doc_it:
         param = getattr(index, "_eval_input_type_param", "input_type")
