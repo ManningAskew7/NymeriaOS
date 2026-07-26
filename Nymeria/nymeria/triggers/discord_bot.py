@@ -26,7 +26,11 @@ import httpx
 
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
-from .bot_helpers import UserResolver
+from .bot_helpers import (
+    RESOLVER_UNAVAILABLE_MESSAGE,
+    PlatformResolveUnavailableError,
+    UserResolver,
+)
 from .message_splitter import split_discord_message as split_message
 from .sse_consumer import (
     AutonomousTurnAttach,
@@ -211,10 +215,31 @@ class NymeriaDiscordBot(_BotBase):
     async def resolve_user_id(self, discord_user_id: int) -> Optional[str]:
         """
         Resolve a Discord user id to the Nymeria account it's linked to.
-        Returns ``None`` for unlinked Discord users or transient lookup
-        failures.
+        Returns ``None`` only for confirmed-unlinked Discord users; raises
+        ``PlatformResolveUnavailableError`` (never cached) when the lookup
+        itself failed, e.g. the backend rejected the bot's service token.
+        Callers must render infra copy for that, not link instructions.
         """
         return await self._user_resolver.resolve(discord_user_id)
+
+    async def _send_resolver_unavailable(self, interaction: "discord.Interaction") -> None:
+        """Shared infra copy for interactions when resolution itself failed.
+
+        Handles both pre-defer and post-defer states like the funnel's
+        ``_send`` does; the button views reuse this so they cannot drift from
+        that handling.
+        """
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    RESOLVER_UNAVAILABLE_MESSAGE, ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    RESOLVER_UNAVAILABLE_MESSAGE, ephemeral=True
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not send resolver-unavailable notice: %s", e)
 
     async def _reject_unlinked(self, message: "discord.Message") -> None:
         """Reply to an unlinked Discord user with a polite rejection."""
@@ -244,8 +269,6 @@ class NymeriaDiscordBot(_BotBase):
         already been responded to (e.g. ``defer(ephemeral=True)``), uses
         followup; otherwise responds directly.
         """
-        user_id = await self.resolve_user_id(interaction.user.id)
-
         async def _send(msg: str) -> None:
             try:
                 if interaction.response.is_done():
@@ -254,6 +277,12 @@ class NymeriaDiscordBot(_BotBase):
                     await interaction.response.send_message(msg, ephemeral=True)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Could not send rejection: %s", e)
+
+        try:
+            user_id = await self.resolve_user_id(interaction.user.id)
+        except PlatformResolveUnavailableError:
+            await self._send_resolver_unavailable(interaction)
+            return None
 
         if user_id is None:
             await _send(
@@ -833,7 +862,14 @@ class NymeriaDiscordBot(_BotBase):
 
         guild_id = message.guild.id if message.guild else None
         thread_id = make_thread_id(guild_id, message.channel.id)
-        user_id = await self.resolve_user_id(message.author.id)
+        try:
+            user_id = await self.resolve_user_id(message.author.id)
+        except PlatformResolveUnavailableError:
+            try:
+                await message.channel.send(RESOLVER_UNAVAILABLE_MESSAGE)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Could not send backend-unavailable notice: %s", e)
+            return
         if user_id is None:
             await self._reject_unlinked(message)
             return
@@ -938,7 +974,16 @@ class NymeriaDiscordBot(_BotBase):
         ):
             return
 
-        user_id = await self.resolve_user_id(payload.user_id)
+        try:
+            user_id = await self.resolve_user_id(payload.user_id)
+        except PlatformResolveUnavailableError:
+            # A reaction is a one-tap gesture; no reply spam on infra faults
+            # either (the resolver already logged at ERROR).
+            logger.debug(
+                "Reaction trigger: resolution unavailable for Discord user %s",
+                payload.user_id,
+            )
+            return
         if user_id is None:
             # A reaction is a one-tap gesture; replying with link-your-account
             # onboarding would let anyone spam the channel by tapping emojis.
@@ -1316,7 +1361,11 @@ class NymeriaDiscordBot(_BotBase):
                         "Already resolved.", ephemeral=True
                     )
                     return
-                user_id = await bot.resolve_user_id(interaction.user.id)
+                try:
+                    user_id = await bot.resolve_user_id(interaction.user.id)
+                except PlatformResolveUnavailableError:
+                    await bot._send_resolver_unavailable(interaction)
+                    return
                 if user_id is None:
                     await interaction.response.send_message(
                         "This Discord account isn't linked to a Nymeria user "
@@ -1509,7 +1558,11 @@ class NymeriaDiscordBot(_BotBase):
                         "Already resolved.", ephemeral=True
                     )
                     return
-                user_id = await bot.resolve_user_id(interaction.user.id)
+                try:
+                    user_id = await bot.resolve_user_id(interaction.user.id)
+                except PlatformResolveUnavailableError:
+                    await bot._send_resolver_unavailable(interaction)
+                    return
                 if user_id is None:
                     await interaction.response.send_message(
                         "This Discord account isn't linked to a Nymeria user "
@@ -1612,7 +1665,11 @@ class NymeriaDiscordBot(_BotBase):
             async def revert(
                 self, interaction: "discord.Interaction", button: "discord.ui.Button"
             ) -> None:
-                user_id = await bot.resolve_user_id(interaction.user.id)
+                try:
+                    user_id = await bot.resolve_user_id(interaction.user.id)
+                except PlatformResolveUnavailableError:
+                    await bot._send_resolver_unavailable(interaction)
+                    return
                 if user_id is None:
                     await interaction.response.send_message(
                         "This Discord account isn't linked to a Nymeria user "

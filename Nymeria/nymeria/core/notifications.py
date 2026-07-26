@@ -401,6 +401,34 @@ def create_notification(
     )
 
 
+def active_admin_user_ids(repo: object = None) -> List[str]:
+    """All enabled admin account ids; empty on any resolution failure.
+
+    The shared enumeration half of every "announce to admins" path (workflow
+    approval requests, the service-token expiry sweep). Pass an
+    ``AccountsRepo`` when the caller already holds one; otherwise the repo is
+    resolved from the current agent, and any failure yields ``[]`` because
+    announcements are best-effort.
+    """
+    try:
+        if repo is None:
+            from .agent import get_current_agent
+
+            agent = get_current_agent()
+            repo = getattr(agent, "accounts_repo", None) if agent is not None else None
+        if repo is None:
+            return []
+        return [
+            user.id
+            for user in repo.list_users()  # type: ignore[attr-defined]
+            if getattr(user, "role", None) == "admin"
+            and not getattr(user, "disabled", False)
+        ]
+    except Exception:  # noqa: BLE001 - announcements are best-effort
+        logger.warning("could not enumerate admin users", exc_info=True)
+        return []
+
+
 def notify_user_best_effort(
     user_id: str,
     summary: str,

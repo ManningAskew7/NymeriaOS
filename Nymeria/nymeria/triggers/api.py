@@ -1047,6 +1047,10 @@ def create_api_app(
     _register_hook_approval_sweep_lifecycle(app)
     _register_fallback_approval_sweep_lifecycle(app)
 
+    # Warn admins ahead of service-token expiry (backlog #107). Unconditional:
+    # the accounts repo lives in the API process in both shapes.
+    _register_service_token_warning_lifecycle(app, agent_getter=get_agent)
+
     # Proactive idle compaction (opt-in via compact_proactive_enabled).
     # Unconditional for the same reason: turns run in the API process in
     # both shapes, so the turn-end stamps and the sweep live here too.
@@ -1441,6 +1445,57 @@ def _register_fallback_approval_sweep_lifecycle(app: FastAPI) -> None:
         startup_delay_seconds=180,
         start_log="Fallback approval sweep task started",
         error_label="Fallback approval sweep",
+    )
+
+
+def _register_service_token_warning_lifecycle(
+    app: FastAPI, *, agent_getter: Callable[[], NymeriaAgent]
+) -> None:
+    """Warn admins BEFORE a service-shaped account token expires (backlog #107).
+
+    Token expiry is otherwise lazy: nothing reads ``expires_at`` until a
+    caller presents the token and 401s, which is how the reference host's
+    ``NYMERIA_SERVICE_TOKEN`` died silently for two days. The sweep is a pure
+    read over the accounts repo (no lazy revocation) plus best-effort admin
+    notifications, phase-deduped on disk so it never re-fires hourly. Runs in
+    the API process in both shapes (the accounts repo lives here);
+    ``service_token_warn_days=0`` disables it.
+    """
+
+    async def _run_pass() -> None:
+        import asyncio as _asyncio
+
+        from ..core.service_bootstrap import sweep_expiring_service_tokens
+
+        settings = get_settings()
+        warn_days = int(getattr(settings, "service_token_warn_days", 14) or 0)
+        if warn_days <= 0:
+            return
+        agent = agent_getter()
+        repo = getattr(agent, "accounts_repo", None)
+        if repo is None:
+            return
+        warned = await _asyncio.to_thread(
+            sweep_expiring_service_tokens,
+            repo,
+            settings.data_dir,
+            warn_days=warn_days,
+        )
+        if warned:
+            logger.info(
+                "Service-token expiry sweep issued warning(s) for %d token(s)", warned
+            )
+
+    from ..core.workflows.approvals import APPROVAL_SWEEP_INTERVAL_SECONDS
+
+    _register_periodic_task(
+        app,
+        state_prefix="service_token_warning",
+        run_pass=_run_pass,
+        interval_seconds=APPROVAL_SWEEP_INTERVAL_SECONDS,
+        startup_delay_seconds=240,
+        start_log="Service-token expiry warning task started",
+        error_label="Service-token expiry warning",
     )
 
 

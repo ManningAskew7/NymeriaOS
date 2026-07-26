@@ -348,6 +348,35 @@ def test_global_model_change_requires_admin_before_backend_command():
     assert interaction.messages[0]["content"] == "Admin only."
 
 
+def test_resolver_failure_renders_infra_copy_in_interaction_funnel():
+    # Backlog #108: a backend auth failure (expired service token) must render
+    # infrastructure copy, never account-link instructions. Uses the real
+    # resolve_user_id -> UserResolver path, no monkeypatched resolver.
+    import httpx
+
+    from nymeria.triggers.bot_helpers import UserResolver
+
+    class _AuthDownAPI(_FakeAPI):
+        async def resolve_platform_user(self, platform: str, platform_user_id: str):
+            request = httpx.Request("GET", "http://api.test/platform/resolve")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError("401", request=request, response=response)
+
+    api = _AuthDownAPI()
+    bot = NymeriaDiscordBot.__new__(NymeriaDiscordBot)
+    bot.api = api
+    bot._user_resolver = UserResolver(api, "discord")
+    interaction = _FakeInteraction()
+
+    result = asyncio.run(bot._resolve_or_reject_interaction(interaction))
+
+    assert result is None
+    content = interaction.messages[0]["content"]
+    assert "isn't linked" not in content
+    assert "service token" in content
+    assert interaction.messages[0]["ephemeral"] is True
+
+
 def test_help_merges_backend_catalog_with_discord_local_commands_without_duplicates():
     api = _FakeAPI()
     bot = _bot(api)

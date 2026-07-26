@@ -32,12 +32,7 @@ VALID_PROVIDERS = (
 
 def _repo() -> AccountsRepo:
     settings = get_settings()
-    return AccountsRepo(
-        settings.data_dir / "accounts.db",
-        token_ttl_days=settings.account_token_ttl_days,
-        max_active_tokens_per_user=settings.account_max_active_tokens_per_user,
-        bootstrap_token_ttl_hours=settings.account_bootstrap_token_ttl_hours,
-    )
+    return AccountsRepo.from_settings(settings, settings.data_dir / "accounts.db")
 
 
 def _resolve_user_id_by_email(repo: AccountsRepo, email: str) -> str:

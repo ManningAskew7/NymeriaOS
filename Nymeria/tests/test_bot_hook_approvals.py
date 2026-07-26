@@ -317,6 +317,9 @@ class _FakeInteractionResponse:
     def __init__(self) -> None:
         self.sent: list[tuple] = []
 
+    def is_done(self) -> bool:
+        return bool(self.sent)
+
     async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
         self.sent.append((content, ephemeral))
 
@@ -416,6 +419,33 @@ def test_discord_view_rejects_unlinked_clicker():
 
     assert api.resolved == []
     assert "isn't linked" in interaction.response.sent[0][0]
+    assert view.resolved is False
+
+
+def test_discord_view_renders_infra_copy_when_resolution_unavailable():
+    # Backlog #108: a resolver infra failure on the approval button must render
+    # backend-unavailable copy, never link instructions, and must not resolve.
+    from nymeria.triggers.bot_helpers import PlatformResolveUnavailableError
+
+    channel = _FakeDiscordChannel()
+    api = _FakeAPI()
+    bot = _make_discord_bot(channel, api=api)
+
+    async def _raise(_discord_user_id: int):
+        raise PlatformResolveUnavailableError("discord", RuntimeError("backend down"))
+
+    bot.resolve_user_id = _raise  # type: ignore[method-assign]
+    asyncio.run(bot._handle_sse_event(_discord_event()))
+    view = channel.messages[0].view
+
+    interaction = _fake_interaction()
+    asyncio.run(view._resolve(interaction, True))
+
+    assert api.resolved == []
+    assert interaction.response.sent, "infra copy must be sent"
+    content = interaction.response.sent[0][0]
+    assert "service token" in content
+    assert "isn't linked" not in content
     assert view.resolved is False
 
 

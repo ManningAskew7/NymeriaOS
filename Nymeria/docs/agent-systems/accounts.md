@@ -279,11 +279,16 @@ NYMERIA_SERVICE_TOKEN=nym_...
 Then `docker compose --env-file .env.docker up -d` to propagate the variable into every container. Discord/Telegram bots print `Auth: service token` at startup when they pick it up - `NYMERIA_API_KEY` is retired, so the service token is now the only way for shared infrastructure to authenticate.
 
 **The service token expires.** It is a regular account token, so it dies at
-`ACCOUNT_TOKEN_TTL_DAYS` (default 90 days) with no advance warning. When it
-expires, worker relays and bot admin lookups all 401 at once ("Autonomous
-task error ... 401 for .../chat" in threads, "Service token rejected by API
-(401)" in worker logs, and bots may wrongly claim accounts aren't linked).
-Rotate with:
+`ACCOUNT_TOKEN_TTL_DAYS` (default 90 days). When it expires, worker relays
+and bot admin lookups all 401 at once ("Autonomous task error ... 401 for
+.../chat" in threads, "Service token rejected by API (401)" in worker logs,
+and bots reporting that they can't authenticate to the backend). Two
+mitigations (both added 2026-07-26): an hourly API-process sweep warns every
+enabled admin via the notification center (plus push) when a service-shaped
+token is within `SERVICE_TOKEN_WARN_DAYS` (default 14) of expiry, escalating
+at 3 days, 1 day, and expiry, at most one warning per threshold; and the
+bots now render honest infrastructure copy on resolver auth failures instead
+of claiming accounts aren't linked. Rotate with:
 
 ```bash
 docker exec nymeria-api python3 run.py users issue-token bot-service --label nymeria_service_token

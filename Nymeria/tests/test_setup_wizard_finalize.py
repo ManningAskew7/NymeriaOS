@@ -61,6 +61,67 @@ def test_noninteractive_writes_config_and_bootstrap_token(monkeypatch, tmp_path,
     assert calls == [("anthropic", "claude-test-model", "sk-ant-test-key")]
 
 
+def test_noninteractive_bootstrap_mint_honors_configured_ttl(monkeypatch, tmp_path):
+    # Backlog #107 fold-in: finalize's AccountsRepo construction was the third
+    # site still on constructor defaults, so the wizard's bootstrap-admin mint
+    # ignored ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS. Mirrors
+    # test_cli_users.py::test_issue_token_honors_configured_ttl.
+    from datetime import timedelta
+
+    from nymeria.core.accounts import AccountsRepo, _parse_timestamp
+
+    _stub_llm(monkeypatch)
+    monkeypatch.setenv("ACCOUNT_BOOTSTRAP_TOKEN_TTL_HOURS", "48")
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic",
+            "--model", "claude-test-model",
+            "--api-key", "sk-ant-test-key",
+            "--root", str(root),
+            "--non-interactive",
+        ]
+    )
+    assert rc == 0
+
+    repo = AccountsRepo(root / "data" / "accounts.db")
+    tokens = [
+        t for t in repo.list_tokens_for_user("default") if t.label == "bootstrap"
+    ]
+    assert len(tokens) == 1
+    created = _parse_timestamp(tokens[0].created_at)
+    expires = _parse_timestamp(tokens[0].expires_at)
+    assert created is not None and expires is not None
+    assert expires - created == timedelta(hours=48)
+
+
+def test_noninteractive_init_survives_invalid_preexisting_account_env(
+    monkeypatch, tmp_path
+):
+    # init is deliberately validation-free (run.py registers it with
+    # full_validation=False) so a wizard re-run can FIX a broken config. The
+    # #107 fold-in's settings read must therefore never crash finalize on an
+    # invalid pre-existing value: it falls back to constructor defaults and
+    # the bootstrap admin still mints (review finding, 2026-07-26).
+    _stub_llm(monkeypatch)
+    monkeypatch.setenv("ACCOUNT_TOKEN_TTL_DAYS", "0")  # ge=1: invalid
+    root = tmp_path / "runtime"
+
+    rc = setup_main(
+        [
+            "--provider", "anthropic",
+            "--model", "claude-test-model",
+            "--api-key", "sk-ant-test-key",
+            "--root", str(root),
+            "--non-interactive",
+        ]
+    )
+
+    assert rc == 0
+    assert (root / "data" / "BOOTSTRAP_TOKEN.txt").exists()
+
+
 def test_default_init_root_honors_runtime_project_root(monkeypatch, tmp_path):
     # Regression: an editable/source install resolves NYMERIA_PROJECT_ROOT to the
     # checkout, and the runtime (settings._get_project_root) honors it first. init

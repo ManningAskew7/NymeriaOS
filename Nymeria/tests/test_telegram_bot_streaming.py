@@ -422,6 +422,36 @@ def test_telegram_command_policy_rejects_unlinked_linked_command():
     assert "isn't linked" in update.message.replies[0]
 
 
+def test_telegram_command_policy_renders_infra_copy_on_resolver_failure():
+    # Backlog #108: a backend auth failure (expired service token) must render
+    # infrastructure copy, never account-link instructions.
+    import httpx
+
+    class _AuthDownAPI(_CaptureAPI):
+        async def resolve_platform_user(self, platform: str, platform_user_id: str):
+            request = httpx.Request("GET", "http://api.test/platform/resolve")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError("401", request=request, response=response)
+
+    api = _AuthDownAPI()
+    bot = NymeriaTelegramBot(api=api, bot_token="test-token")
+    called = False
+
+    async def handler(update, context):
+        nonlocal called
+        called = True
+
+    update = _fake_update(telegram_user_id=42)
+    context = SimpleNamespace(bot=_FakeBot(), args=[])
+
+    asyncio.run(bot._guarded_command("thread", handler)(update, context))
+
+    assert called is False
+    reply = update.message.replies[0]
+    assert "isn't linked" not in reply
+    assert "service token" in reply
+
+
 def test_telegram_command_policy_rejects_non_admin_admin_command():
     api = _CaptureAPI(user_map={"42": "user-1"}, role="user")
     bot = NymeriaTelegramBot(api=api, bot_token="test-token")

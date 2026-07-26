@@ -17,16 +17,24 @@ The token is an internal service credential, not a human first-run
 bootstrap token: it is intentionally distinct from
 ``data/BOOTSTRAP_TOKEN.txt`` (minted by ``AccountsRepo.ensure_bootstrap_admin``
 for the desktop Setup Wizard).
+
+This module also owns the other half of the service-token lifecycle
+(backlog #107): the expiry-warning sweep at the bottom of the file, run
+hourly by the API process in both shapes, which notifies admins before a
+service-shaped token dies instead of letting it 401 silently.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import math
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
-    from .accounts import AccountsRepo
+    from .accounts import AccountsRepo, TokenRecord
 
 logger = logging.getLogger(__name__)
 
@@ -252,3 +260,186 @@ def ensure_slim_service_token(
 # ``ensure_slim_service_token`` name is kept for back-compat with existing
 # imports and tests.
 ensure_service_token = ensure_slim_service_token
+
+
+# ---------------------------------------------------------------------------
+# Service-token expiry warning sweep (backlog #107)
+#
+# Token expiry is otherwise lazy: nothing looks at ``expires_at`` until a
+# caller presents the token and 401s, which is exactly how the reference
+# host's NYMERIA_SERVICE_TOKEN died silently for two days in 2026-07. This
+# sweep is the before-the-fact half: warn every human admin while there is
+# still time to mint a replacement. Docker's operator-minted env token cannot
+# auto-rotate (the raw value is baked into container env), so warning is the
+# floor for both shapes.
+# ---------------------------------------------------------------------------
+
+SERVICE_TOKEN_WARN_STATE_FILENAME = "service_token_warnings.json"
+
+
+# Labels that mark a token as a service credential when it lives on a user
+# other than bot-service. Deliberately exact-match: a substring test would
+# false-positive on free-text human labels ("customer-service") and leak
+# another user's token label into every admin's notifications.
+SERVICE_TOKEN_LABELS = frozenset({SLIM_SERVICE_TOKEN_LABEL, "nymeria_service_token", "service"})
+
+
+def is_service_token(record: "TokenRecord") -> bool:
+    """Service-shaped: the internal bot-service user, or an exact service label.
+
+    The token table has no "kind" column; identity is convention.
+    ``bot-service`` covers both shapes' internal identity (the slim/API
+    self-mint and the documented Docker operator mint) regardless of label;
+    elsewhere only the exact conventional labels match (case-insensitive).
+    A custom-labelled operator token is not auto-detected: relabel it (or
+    mint onto ``bot-service``) to opt in. ``bootstrap`` never matches.
+    """
+    if record.user_id == SLIM_SERVICE_USER_ID:
+        return True
+    return (record.label or "").lower() in SERVICE_TOKEN_LABELS
+
+
+def _warn_phases(warn_days: int) -> list[int]:
+    """Descending warning thresholds in days; 0 means "has expired"."""
+    return sorted({t for t in (warn_days, 3, 1, 0) if t <= warn_days}, reverse=True)
+
+
+def _load_warn_state(path: Path) -> dict:
+    """Read the dedupe state; a corrupt file deliberately reads as empty.
+
+    This is a pure dedupe cache (worst case: one duplicate notification per
+    threshold), so it is overwritten in place rather than quarantined like
+    the real stores.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _warn_state_key(record: "TokenRecord") -> str:
+    """Non-secret dedupe key. Deliberately NOT the token hash.
+
+    The state file lives in the agent-readable data dir while ``accounts.db``
+    is on the file-tool secrets denylist, so hashes must not leak into it;
+    and keying on fields the summary already exposes means tampering can at
+    worst duplicate or repeat a notification, never mine the token store.
+    A rotation changes ``expires_at``, so a replacement token re-arms.
+    """
+    return f"{record.user_id}|{record.label or ''}|{record.expires_at or ''}"
+
+
+def sweep_expiring_service_tokens(
+    repo: "AccountsRepo",
+    data_dir: Path,
+    *,
+    warn_days: int,
+    now: Optional[datetime] = None,
+) -> int:
+    """Warn enabled human admins about service tokens nearing (or past) expiry.
+
+    Every in-window token is logged at WARNING on every pass (the log is the
+    channel that survives a broken notification store); notifications are
+    bounded and restart-safe: at most one per token per threshold phase
+    (``warn_days`` out, 3 days, 1 day, expired), with the last-notified phase
+    persisted to ``data_dir/service_token_warnings.json`` (atomic write,
+    ``{key: phase}``). State entries for tokens no longer expiring (rotated
+    or revoked) are pruned, so a replacement token re-arms naturally.
+    Returns the number of tokens a notification was issued for.
+    """
+    if warn_days <= 0:
+        return 0
+    from .accounts import _parse_timestamp
+    from .notifications import active_admin_user_ids, notify_user_best_effort
+    from .storage_paths import write_text_atomic
+
+    current = now or datetime.now(timezone.utc)
+    cutoff = current + timedelta(days=warn_days)
+    candidates = [
+        record
+        for record in repo.list_unrevoked_tokens_expiring_before(cutoff)
+        if is_service_token(record)
+    ]
+
+    state_path = Path(data_dir) / SERVICE_TOKEN_WARN_STATE_FILENAME
+    state = _load_warn_state(state_path)
+    phases = _warn_phases(warn_days)
+    new_state: dict = {}
+    warned = 0
+
+    admin_ids = [
+        admin_id
+        for admin_id in active_admin_user_ids(repo)
+        if admin_id != SLIM_SERVICE_USER_ID
+    ]
+    if candidates and not admin_ids:
+        logger.warning(
+            "Service-token expiry warning has no enabled human admin to notify"
+        )
+
+    for record in candidates:
+        expires = _parse_timestamp(record.expires_at)
+        if expires is None or expires <= current:
+            phase = 0
+            days_left = 0.0
+        else:
+            days_left = (expires - current).total_seconds() / 86400.0
+            phase = min((t for t in phases if days_left <= t), default=phases[0])
+
+        summary = _expiry_warning_summary(record, phase=phase, days_left=days_left)
+        # Unconditional per-pass log for in-window tokens; only the
+        # notifications are phase-deduped.
+        logger.warning("%s", summary)
+
+        key = _warn_state_key(record)
+        prior_phase = state.get(key)
+        already_notified = (
+            isinstance(prior_phase, int)
+            and not isinstance(prior_phase, bool)
+            and phase >= prior_phase
+        )
+
+        if already_notified:
+            new_state[key] = prior_phase
+        else:
+            for admin_id in admin_ids:
+                notify_user_best_effort(
+                    admin_id,
+                    summary,
+                    push=True,
+                    log_label="service token expiry warning",
+                )
+            warned += 1
+            new_state[key] = phase
+
+    if new_state != state:
+        try:
+            write_text_atomic(state_path, json.dumps(new_state, indent=2))
+        except OSError as exc:
+            logger.warning("Could not persist service-token warning state: %s", exc)
+
+    return warned
+
+
+def _expiry_warning_summary(record: "TokenRecord", *, phase: int, days_left: float) -> str:
+    label = record.label or "unlabeled"
+    date = (record.expires_at or "")[:10] or "unknown date"
+    if phase <= 0:
+        return (
+            f"Service token '{label}' (user {record.user_id}) has EXPIRED "
+            f"({date}). Internal calls (worker relays, bots, MCP) will 401 "
+            "until it is replaced."
+        )
+    # floor, never ceil: understating the time left is the safe direction.
+    days = max(1, math.floor(days_left))
+    unit = "day" if days == 1 else "days"
+    return (
+        f"Service token '{label}' (user {record.user_id}) expires in {days} "
+        f"{unit} ({date}). Mint a replacement and update the deployment "
+        "before internal calls start failing."
+    )

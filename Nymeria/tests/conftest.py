@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,7 +9,26 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from nymeria.triggers import api as api_module
+# Suite hermeticity, layer 1 (backlog #101 entry 20): pin the project root to
+# this checkout BEFORE the first `nymeria` import below. Importing any
+# `nymeria.*` module runs `configure_project_root()` and freezes both
+# `config.settings.PROJECT_ROOT` and the Settings dotenv paths at import time,
+# so an ambient NYMERIA_PROJECT_ROOT (e.g. a multi-instance operator export)
+# would silently point the whole suite at another instance's config.env.
+os.environ["NYMERIA_PROJECT_ROOT"] = str(Path(__file__).resolve().parents[1])
+
+from nymeria.config.settings import Settings as _Settings  # noqa: E402
+from nymeria.triggers import api as api_module  # noqa: E402
+
+# Suite hermeticity, layer 2: with the root pinned, the dotenv chain still
+# reads any repo-local .env / config.env / .env.docker (a stray .env.docker is
+# exactly why `_offline_tool_search_singleton` below exists). pydantic-settings
+# resolves `env_file` from model_config per instantiation, so emptying it here
+# makes every Settings() the suite builds resolve from real env vars and field
+# defaults only. Real env vars keep their normal precedence; this only removes
+# the dotenv fallthrough. Composes with the suite-wide `clear_settings_cache`
+# fixture below.
+_Settings.model_config["env_file"] = ()
 
 
 @dataclass
@@ -109,11 +129,13 @@ def _offline_tool_search_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the shared tool-search catalog offline during the suite.
 
     ``get_tool_search_index()`` builds a process singleton from
-    ``settings.embedding_api_key``. On a developer shell (or with a stray
-    ``.env.docker`` on the path) that key is populated, so the first semantic
-    tool search makes a live OpenAI embeddings call. Without a client timeout
-    that hung for the SDK default and tripped pytest-timeout; even with the new
-    bounded timeout, unit tests should never reach the network.
+    ``settings.embedding_api_key``. Historically a developer shell or a stray
+    ``.env.docker`` on the path populated that key, so the first semantic
+    tool search made a live OpenAI embeddings call (the dotenv half of that
+    leak is now closed by the module-level env-file neutralization above; a
+    shell-exported key still applies). Without a client timeout that hung for
+    the SDK default and tripped pytest-timeout; even with the new bounded
+    timeout, unit tests should never reach the network.
 
     Pre-seed the singleton with a keyless index so the real
     ``is_semantic_available`` logic returns False and search degrades to the

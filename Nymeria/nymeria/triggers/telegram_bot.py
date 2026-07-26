@@ -31,7 +31,13 @@ from nymeria.core.thread_classification import NATIVE_PLATFORM_PREFIXES as _NATI
 
 from . import attachment_helpers
 from .api_client import NymeriaAPIClient
-from .bot_helpers import UserResolver, http_error_detail
+from .bot_helpers import (
+    RESOLVER_UNAVAILABLE_MESSAGE,
+    RESOLVER_UNAVAILABLE_SHORT,
+    PlatformResolveUnavailableError,
+    UserResolver,
+    http_error_detail,
+)
 from .telegram_format import (
     escape_html,
     export_messages_json,
@@ -501,9 +507,23 @@ class NymeriaTelegramBot:
         """Resolve a Telegram user id to a linked Nymeria account, or None.
 
         Caches the result (including ``None`` for confirmed-unlinked users)
-        so admin relinks propagate without a restart.
+        so admin relinks propagate without a restart. Raises
+        ``PlatformResolveUnavailableError`` (never cached) when the lookup
+        itself failed, e.g. the backend rejected the bot's service token;
+        callers must render infra copy for that, not link instructions.
         """
         return await self._user_resolver.resolve(telegram_user_id)
+
+    async def _answer_resolver_unavailable(self, query) -> None:
+        """Shared infra copy for button callbacks when resolution failed.
+
+        Uses the short variant: Telegram caps ``query.answer`` alerts at 200
+        characters.
+        """
+        try:
+            await query.answer(RESOLVER_UNAVAILABLE_SHORT, show_alert=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not send resolver-unavailable alert: %s", e)
 
     # =========================================================================
     # Per-thread chat-app bindings (Telegram chat <-> Nymeria thread)
@@ -764,7 +784,6 @@ class NymeriaTelegramBot:
         tg_user = update.effective_user
         if tg_user is None:
             return None
-        user_id = await self.resolve_user_id(tg_user.id)
 
         async def _reply(msg: str) -> None:
             try:
@@ -774,6 +793,12 @@ class NymeriaTelegramBot:
                     await update.effective_chat.send_message(msg)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Could not send rejection: %s", e)
+
+        try:
+            user_id = await self.resolve_user_id(tg_user.id)
+        except PlatformResolveUnavailableError:
+            await _reply(RESOLVER_UNAVAILABLE_MESSAGE)
+            return None
 
         if user_id is None:
             await _reply(
@@ -2329,7 +2354,12 @@ class NymeriaTelegramBot:
         chat_id = update.effective_chat.id
         user_id = None
         if update.effective_user is not None:
-            user_id = await self.resolve_user_id(update.effective_user.id)
+            try:
+                user_id = await self.resolve_user_id(update.effective_user.id)
+            except PlatformResolveUnavailableError:
+                # /help still works unauthenticated: degrade to the
+                # service-command catalog, same as an unlinked caller.
+                user_id = None
 
         try:
             if user_id:
@@ -2677,7 +2707,11 @@ class NymeriaTelegramBot:
             await query.answer("Only the requester can stop this run.", show_alert=True)
             return
 
-        user_id = await self.resolve_user_id(int(tg_user.id))
+        try:
+            user_id = await self.resolve_user_id(int(tg_user.id))
+        except PlatformResolveUnavailableError:
+            await self._answer_resolver_unavailable(query)
+            return
         if user_id != record.nymeria_user_id:
             await query.answer("Only the requester can stop this run.", show_alert=True)
             return
@@ -2742,7 +2776,16 @@ class NymeriaTelegramBot:
         telegram_user_id = update.effective_user.id
         thread_id = self.resolve_thread_id_for_chat(chat_id)
 
-        nymeria_user_id = await self.resolve_user_id(telegram_user_id)
+        try:
+            nymeria_user_id = await self.resolve_user_id(telegram_user_id)
+        except PlatformResolveUnavailableError:
+            try:
+                await update.message.reply_text(RESOLVER_UNAVAILABLE_MESSAGE)
+            except Exception:
+                logger.warning(
+                    "Failed to send backend-unavailable message to Telegram", exc_info=True
+                )
+            return
         if nymeria_user_id is None:
             try:
                 await update.message.reply_text(
@@ -2876,7 +2919,15 @@ class NymeriaTelegramBot:
         ):
             return
 
-        nymeria_user_id = await self.resolve_user_id(user.id)
+        try:
+            nymeria_user_id = await self.resolve_user_id(user.id)
+        except PlatformResolveUnavailableError:
+            # A reaction is a one-tap gesture; no reply spam on infra faults
+            # either (the resolver already logged at ERROR).
+            logger.debug(
+                "Reaction trigger: resolution unavailable for Telegram user %s", user.id
+            )
+            return
         if nymeria_user_id is None:
             # A reaction is a one-tap gesture; no onboarding reply spam.
             logger.debug(
@@ -3436,7 +3487,11 @@ class NymeriaTelegramBot:
                 "Couldn't verify who pressed the button.", show_alert=True
             )
             return
-        user_id = await self.resolve_user_id(int(tg_user.id))
+        try:
+            user_id = await self.resolve_user_id(int(tg_user.id))
+        except PlatformResolveUnavailableError:
+            await self._answer_resolver_unavailable(query)
+            return
         if user_id is None:
             await query.answer(
                 "Link your Nymeria account first (/bind).", show_alert=True
@@ -3715,7 +3770,11 @@ class NymeriaTelegramBot:
                 "Couldn't verify who pressed the button.", show_alert=True
             )
             return
-        user_id = await self.resolve_user_id(int(tg_user.id))
+        try:
+            user_id = await self.resolve_user_id(int(tg_user.id))
+        except PlatformResolveUnavailableError:
+            await self._answer_resolver_unavailable(query)
+            return
         if user_id is None:
             await query.answer(
                 "Link your Nymeria account first (/bind).", show_alert=True
@@ -3800,7 +3859,11 @@ class NymeriaTelegramBot:
                 "Couldn't verify who pressed the button.", show_alert=True
             )
             return
-        user_id = await self.resolve_user_id(int(tg_user.id))
+        try:
+            user_id = await self.resolve_user_id(int(tg_user.id))
+        except PlatformResolveUnavailableError:
+            await self._answer_resolver_unavailable(query)
+            return
         if user_id is None:
             await query.answer(
                 "Link your Nymeria account first (/bind).", show_alert=True

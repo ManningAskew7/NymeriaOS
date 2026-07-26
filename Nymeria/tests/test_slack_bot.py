@@ -286,6 +286,40 @@ def test_unlinked_user_gets_rejection_without_agent_call():
     assert "T1:U1" in client.posts[0]["text"]
 
 
+def test_resolver_failure_gets_infra_copy_not_link_instructions():
+    # Backlog #108: a backend auth failure (expired service token) must render
+    # infrastructure copy, never account-link instructions.
+    import httpx
+
+    class _AuthDownAPI(FakeAPI):
+        async def resolve_platform_user(self, platform: str, platform_user_id: str):
+            request = httpx.Request("GET", "http://api.test/platform/resolve")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError("401", request=request, response=response)
+
+    bot, api, client = make_bot(_AuthDownAPI())
+
+    asyncio.run(
+        bot.handle_slack_event(
+            {
+                "type": "app_mention",
+                "channel": "C1",
+                "channel_type": "channel",
+                "user": "U1",
+                "team": "T1",
+                "ts": "171.300",
+                "text": "<@UBOT> hello",
+            },
+            source="app_mention",
+        )
+    )
+
+    assert api.chat_stream_calls == []
+    text = client.posts[0]["text"]
+    assert "not linked" not in text
+    assert "service token" in text
+
+
 def test_link_and_bind_commands_claim_codes():
     bot, api, client = make_bot()
 

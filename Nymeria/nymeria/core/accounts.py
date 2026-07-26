@@ -526,6 +526,35 @@ class AccountsRepo:
                 raise
         return raw
 
+    @classmethod
+    def from_settings(cls, settings: object, db_path: Path) -> "AccountsRepo":
+        """Construct honoring the three ``account_*`` policy settings.
+
+        The single settings-driven construction path (backlog #107 review):
+        before it existed, three call sites (agent runtime, users CLI, wizard
+        finalize) each hand-passed the kwargs, and the ones that forgot minted
+        tokens with silent wrong defaults. Tolerates ``None`` or partial
+        settings objects by falling back to the constructor defaults, so
+        callers that must never crash on a broken config (e.g. ``nymeria
+        init``) can pass whatever they managed to load.
+        """
+        return cls(
+            db_path,
+            token_ttl_days=getattr(
+                settings, "account_token_ttl_days", DEFAULT_TOKEN_TTL_DAYS
+            ),
+            max_active_tokens_per_user=getattr(
+                settings,
+                "account_max_active_tokens_per_user",
+                DEFAULT_MAX_ACTIVE_TOKENS_PER_USER,
+            ),
+            bootstrap_token_ttl_hours=getattr(
+                settings,
+                "account_bootstrap_token_ttl_hours",
+                DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS,
+            ),
+        )
+
     def _expiry_for_label(self, label: Optional[str], *, created_at: str) -> str:
         base = _parse_timestamp(created_at) or datetime.now(timezone.utc)
         if label == BOOTSTRAP_TOKEN_LABEL:
@@ -663,6 +692,39 @@ class AccountsRepo:
             )
             conn.commit()
             return cur.rowcount
+
+    def list_unrevoked_tokens_expiring_before(self, cutoff: datetime) -> List[TokenRecord]:
+        """Cross-user, READ-ONLY probe for tokens expiring before ``cutoff``.
+
+        Backs the service-token expiry-warning sweep (backlog #107). Unlike
+        ``list_tokens_for_user`` this deliberately performs no lazy
+        revocation: a warning check must not write. Rows whose ``expires_at``
+        fails to parse count as expiring (mirroring ``_token_expired``), and
+        already-expired-but-unrevoked rows are included so a missed warning
+        still surfaces after the fact.
+        """
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM user_tokens WHERE revoked_at IS NULL"
+            ).fetchall()
+        records = []
+        for r in rows:
+            expires = _parse_timestamp(r["expires_at"])
+            if expires is not None and expires > cutoff:
+                continue
+            records.append(
+                TokenRecord(
+                    token_hash=r["token_hash"],
+                    user_id=r["user_id"],
+                    label=r["label"],
+                    created_at=r["created_at"],
+                    expires_at=r["expires_at"],
+                    last_used_at=r["last_used_at"],
+                    revoked_at=r["revoked_at"],
+                )
+            )
+        records.sort(key=lambda t: t.expires_at or "")
+        return records
 
     def list_tokens_for_user(self, user_id: str) -> List[TokenRecord]:
         with self._lock, self._connect() as conn:
