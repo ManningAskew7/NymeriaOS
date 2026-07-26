@@ -29,16 +29,23 @@ import threading
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
+from .embedding_client import embedder_stamp
+
 logger = logging.getLogger(__name__)
 
 
 class ToolEmbeddingStore:
     """Disk-backed cache of tool embeddings keyed by content hash."""
 
-    def __init__(self, db_path: Path, *, model: str, dimensions: int) -> None:
+    def __init__(
+        self, db_path: Path, *, model: str, dimensions: int,
+        provider: str = "openai", input_type: Optional[str] = None,
+    ) -> None:
         self.db_path = Path(db_path)
         self._model = model or ""
         self._dimensions = int(dimensions)
+        self._provider = (provider or "openai").strip().lower()
+        self._input_type = input_type or ""
         self._lock = threading.RLock()
         self._usable = False
         try:
@@ -88,15 +95,27 @@ class ToolEmbeddingStore:
                     )
                     """
                 )
-                # Reconcile against the configured (model, dimensions). A
-                # mismatch means stored vectors are from a different embedding
-                # space, so drop them rather than mixing incompatible vectors.
-                stored_model = self._meta_get(c, "model")
-                stored_dim = self._meta_get(c, "dim")
-                if stored_model != self._model or stored_dim != str(self._dimensions):
+                # Reconcile against the configured embedder identity
+                # (shared shape: embedder_stamp). A mismatch means stored
+                # vectors are from a different embedding space, so drop them
+                # rather than mixing incompatible vectors. Missing stored keys
+                # take legacy defaults (provider "openai", input_type "": the
+                # only values that existed before each key was stamped), so
+                # pre-existing caches survive the upgrade un-wiped.
+                current = embedder_stamp(
+                    self._provider, self._model,
+                    self._dimensions, self._input_type,
+                )
+                stored = {
+                    "provider": self._meta_get(c, "provider") or "openai",
+                    "model": self._meta_get(c, "model"),
+                    "dim": self._meta_get(c, "dim"),
+                    "input_type": self._meta_get(c, "input_type") or "",
+                }
+                if stored != current:
                     c.execute("DELETE FROM tool_embeddings")
-                    self._meta_set(c, "model", self._model)
-                    self._meta_set(c, "dim", str(self._dimensions))
+                for key, value in current.items():
+                    self._meta_set(c, key, value)
                 conn.commit()
             finally:
                 conn.close()

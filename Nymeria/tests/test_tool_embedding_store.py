@@ -76,3 +76,33 @@ def test_unusable_store_degrades_to_noop(tmp_path: Path):
     store.put_many([("h1", [0.1, 0.2, 0.3, 0.4])])
     assert store.get_many(["h1"]) == {}
     assert store.count() == 0
+
+
+def test_provider_change_wipes_cache(tmp_path: Path):
+    db = tmp_path / "t.db"
+    first = ToolEmbeddingStore(db, model="m", dimensions=4, provider="openai")
+    first.put_many([("h1", [0.1, 0.2, 0.3, 0.4])])
+    assert first.count() == 1
+
+    # Same model name through a different provider is a different embedding
+    # space; the cache must not mix them.
+    second = ToolEmbeddingStore(db, model="m", dimensions=4, provider="local")
+    assert second.count() == 0
+
+
+def test_legacy_store_without_provider_stamp_survives_as_openai(tmp_path: Path):
+    """Pre-provider-stamp stores (only openai existed then) must NOT be wiped
+    by the upgrade: a missing stored provider reads as 'openai'."""
+    import sqlite3
+
+    db = tmp_path / "t.db"
+    first = ToolEmbeddingStore(db, model="m", dimensions=4)
+    first.put_many([("h1", [0.1, 0.2, 0.3, 0.4])])
+    # Simulate a legacy store: remove the provider stamp the constructor wrote.
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM meta WHERE key = 'provider'")
+        conn.commit()
+
+    second = ToolEmbeddingStore(db, model="m", dimensions=4, provider="openai")
+    assert second.count() == 1
+    assert second.get_many(["h1"])

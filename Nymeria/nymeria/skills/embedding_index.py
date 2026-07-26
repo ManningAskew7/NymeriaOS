@@ -1,7 +1,9 @@
 """Skill embedding index — semantic search over installed + marketplace skills.
 
 Fallback chain (highest quality first):
-    1. Configured OpenAI-compatible embeddings via sqlite-vec cosine similarity
+    1. Configured embeddings (shared ``core/embedding_client.py`` provider
+       dispatch: openai-compatible, cohere, gemini, or local
+       sentence-transformers) via sqlite-vec cosine similarity
     2. SQLite FTS5 / BM25 over name+description (keyword, no model)
     3. Substring match (final safety net)
 
@@ -10,8 +12,8 @@ namespace per marketplace source (e.g. `marketplace:anthropic`). The tool
 layer is responsible for triggering rebuilds when the underlying data
 changes — this class is a passive store.
 
-Uses the same embedding configuration as Nymeria's memory index, so no new
-model weight is shipped.
+Uses the same embedding configuration (and, for local models, the same
+process-cached model weights) as Nymeria's memory index.
 """
 
 from __future__ import annotations
@@ -25,19 +27,39 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from ..core.embedding_client import EmbeddingClient, embedder_stamp
+
 logger = logging.getLogger(__name__)
 
-# Must match memory_index.py (same provider, same model).
+# Legacy defaults, kept for construction without explicit settings; the live
+# values come from the EMBEDDING_* settings via the construction site.
 EMBEDDING_DIMENSIONS = 1536
 EMBEDDING_MODEL = "text-embedding-3-small"
 
-# Each _embed() call sends a single short text, on both the search-query path
-# (latency-sensitive: a hang stalls the agent turn) and the rebuild path. The
-# OpenAI SDK otherwise defaults to a 600s timeout with 2 retries, so a hung
-# socket can block for minutes; bound it so _embed() degrades to FTS5/keyword
-# search instead. A rebuild that hits the timeout costs exactly one stall: the
-# first failure latches _semantic_available off, so later items skip the embed.
+# Search-query embeds are latency-sensitive (a hang stalls the agent turn) and
+# the rebuild path embeds each namespace in one batched call, so a hung remote
+# endpoint costs at most one bounded stall per call before degrading to
+# FTS5/keyword search. (The OpenAI SDK would otherwise default to a 600s
+# timeout with 2 retries.)
 EMBED_REQUEST_TIMEOUT_SECONDS = 10.0
+
+# Rebuilds embed a namespace in capped batches (one request or local encode per
+# batch), matching the tool-search warm and the memory backfill, so a large
+# marketplace namespace cannot blow a provider's per-request ceiling or hand a
+# single giant encode to torch.
+EMBED_BATCH_SIZE = 128
+
+# Per-request ceiling for those rebuild batches. The base client budget
+# (EMBED_REQUEST_TIMEOUT_SECONDS) is query-shaped; a 128-document batch needs
+# more headroom, on the native cohere/gemini path especially, where this
+# override is the only bound that applies.
+EMBED_BATCH_TIMEOUT_SECONDS = 60.0
+
+# After a remote embed failure, the client skips remote calls for this long
+# (fast keyword fallback, honest warning kept) instead of re-paying the timeout
+# on every per-turn search against a dead endpoint. This replaces the old
+# permanent process-wide latch.
+EMBED_FAILURE_COOLDOWN_SECONDS = 60.0
 
 # Skills we index — accepts either a Skill object or a MarketplaceSkillEntry-shaped object.
 # Both have .name and .description; indexable attrs below are all optional.
@@ -81,17 +103,33 @@ class SkillEmbeddingIndex:
     def __init__(
         self,
         db_path: Path,
-        openai_api_key: Optional[str] = None,
-        openai_base_url: Optional[str] = None,
+        embedding_provider: Optional[str] = None,
+        embedding_api_key: Optional[str] = None,
+        embedding_base_url: Optional[str] = None,
         embedding_model: str = EMBEDDING_MODEL,
+        embedding_dimensions: Optional[int] = None,
+        embedding_input_type: Optional[str] = None,
     ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._openai_key = openai_api_key
-        self._openai_base_url = openai_base_url
-        self._embedding_model = embedding_model
-        self._openai_client = None
+        self._provider = (embedding_provider or "openai").strip().lower()
+        self._embedding_model = embedding_model or EMBEDDING_MODEL
+        self._dimensions = int(embedding_dimensions or EMBEDDING_DIMENSIONS)
+        self._input_type = embedding_input_type
+        self._client = EmbeddingClient(
+            provider=self._provider,
+            api_key=embedding_api_key,
+            base_url=embedding_base_url,
+            model=self._embedding_model,
+            dimensions=self._dimensions,
+            dimensions_explicit=embedding_dimensions is not None,
+            input_type=embedding_input_type,
+            timeout=EMBED_REQUEST_TIMEOUT_SECONDS,
+            max_retries=0,
+            native_timeout=EMBED_REQUEST_TIMEOUT_SECONDS,
+            failure_cooldown_seconds=EMBED_FAILURE_COOLDOWN_SECONDS,
+        )
         self._semantic_available: Optional[bool] = None  # lazy-probed
         self._last_error: Optional[str] = None
         self._vec_available = False
@@ -191,13 +229,66 @@ class SkillEmbeddingIndex:
                     )
                 """)
 
+                # Embedder identity stamp (shared shape: embedder_stamp).
+                # Stored vectors are only valid for the (provider, model,
+                # dimensions, input_type) that produced them, and the vec0
+                # column width is fixed at table creation, so on a mismatch the
+                # vector table is dropped and recreated at the current width;
+                # the next rebuild re-embeds (installed namespace on every
+                # SkillManager construction, marketplace namespaces on their
+                # TTL refresh). A legacy un-stamped DB whose config still
+                # matches what could have produced it (the pre-stamp world was
+                # always an OpenAI-compatible embedder at the 1536 slot with no
+                # input_type) is ADOPTED, not wiped, mirroring the tool store's
+                # legacy rule. Reconciled only when sqlite-vec is loaded
+                # (dropping a vec0 virtual table needs the module registered);
+                # the stamp is written in the same pass as the drop, and the
+                # safe failure direction is drop-without-stamp (a later boot
+                # reconciles again), never stamp-without-drop.
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS index_meta (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )
+                """)
+                if self._vec_available:
+                    current = embedder_stamp(
+                        self._provider, self._embedding_model,
+                        self._dimensions, self._input_type,
+                    )
+                    # Read the stamp by its named keys (drift-proof: a foreign
+                    # row in the generically named index_meta table must not
+                    # force a wipe on every boot).
+                    rows = {
+                        r["key"]: r["value"]
+                        for r in c.execute(
+                            "SELECT key, value FROM index_meta WHERE key IN "
+                            "('provider', 'model', 'dim', 'input_type')"
+                        ).fetchall()
+                    }
+                    stored = {k: rows.get(k) for k in current}
+                    legacy_compatible = (
+                        not rows
+                        and self._provider == "openai"
+                        and self._dimensions == 1536
+                        and not self._input_type
+                    )
+                    if stored != current and not legacy_compatible:
+                        c.execute("DROP TABLE IF EXISTS skills_vec")
+                    if stored != current:
+                        for key, value in current.items():
+                            c.execute(
+                                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                                (key, value),
+                            )
+
                 # Vector table via sqlite-vec.
                 if self._vec_available:
                     try:
                         c.execute(f"""
                             CREATE VIRTUAL TABLE IF NOT EXISTS skills_vec USING vec0(
                                 skill_key TEXT PRIMARY KEY,
-                                embedding FLOAT[{EMBEDDING_DIMENSIONS}]
+                                embedding FLOAT[{self._dimensions}]
                             )
                         """)
                     except sqlite3.OperationalError as e:
@@ -213,41 +304,20 @@ class SkillEmbeddingIndex:
     # embedding provider
     # ------------------------------------------------------------------
 
-    def _get_openai(self):
-        if self._openai_client is None:
-            if not self._openai_key:
-                raise RuntimeError("EMBEDDING_API_KEY not configured")
-            from openai import OpenAI
-            kwargs = {
-                "api_key": self._openai_key,
-                "timeout": EMBED_REQUEST_TIMEOUT_SECONDS,
-                "max_retries": 0,
-            }
-            if self._openai_base_url:
-                kwargs["base_url"] = self._openai_base_url
-            self._openai_client = OpenAI(**kwargs)
-        return self._openai_client
-
     def is_semantic_available(self) -> bool:
-        """True when OpenAI embeddings AND sqlite-vec are both usable."""
+        """True when the configured embedder AND sqlite-vec are both usable."""
         if self._semantic_available is not None:
             return self._semantic_available
         if not self._vec_available:
             self._semantic_available = False
             self._last_error = "sqlite-vec extension not loaded"
             return False
-        if not self._openai_key:
+        err = self._client.availability_error()
+        if err:
             self._semantic_available = False
-            self._last_error = "EMBEDDING_API_KEY not set; semantic search disabled"
+            self._last_error = err
             return False
-        if self._openai_key.startswith("cpx-"):
-            self._semantic_available = False
-            self._last_error = (
-                "EMBEDDING_API_KEY looks like a CLIProxy gatekeeper key; "
-                "set a real embeddings key or base URL"
-            )
-            return False
-        # Lazy-probe on first real use via embed_text() instead of upfront.
+        # Lazy-probe on first real use via the embed path instead of upfront.
         self._semantic_available = True
         return True
 
@@ -255,27 +325,19 @@ class SkillEmbeddingIndex:
     def last_error(self) -> Optional[str]:
         return self._last_error
 
-    def _embed(self, text: str) -> Optional[List[float]]:
+    def _embed(self, text: str, input_type: str = "document") -> Optional[List[float]]:
         if not text.strip():
             return None
         if not self.is_semantic_available():
             return None
-        try:
-            resp = self._get_openai().embeddings.create(
-                model=self._embedding_model, input=text[:8000],
-            )
-            embedding = resp.data[0].embedding
-            if len(embedding) != EMBEDDING_DIMENSIONS:
-                raise ValueError(
-                    f"embedding dimension mismatch: expected {EMBEDDING_DIMENSIONS}, got {len(embedding)}"
-                )
-            return embedding
-        except Exception as e:
-            # Permanently degrade for this process so we don't retry on every search.
-            self._semantic_available = False
-            self._last_error = f"embedding call failed: {type(e).__name__}: {e}"
+        vec = self._client.embed_text(text, input_type=input_type)
+        if vec is None and self._client.last_error:
+            # A transient failure degrades this call only; never latch semantic
+            # off for the process (the next search or rebuild is free to
+            # retry), mirroring the tool-search index.
+            self._last_error = self._client.last_error
             logger.warning("skills semantic search degrading: %s", self._last_error)
-            return None
+        return vec
 
     @staticmethod
     def _pack(vec: List[float]) -> bytes:
@@ -320,6 +382,7 @@ class SkillEmbeddingIndex:
 
                 embed_count = 0
                 fts_count = 0
+                to_embed: List[tuple] = []  # (skill_key, indexable text)
                 for item in items:
                     name = getattr(item, "name", None)
                     description = getattr(item, "description", None) or ""
@@ -348,24 +411,48 @@ class SkillEmbeddingIndex:
                         (skill_key, namespace, name, description),
                     )
                     fts_count += 1
+                    to_embed.append(
+                        (skill_key, self._indexable_text(name, description, extra))
+                    )
 
-                    if self._vec_available and self.is_semantic_available():
-                        text = self._indexable_text(name, description, extra)
-                        vec = self._embed(text)
-                        if vec is not None:
-                            c.execute(
-                                "INSERT INTO skills_vec(skill_key, embedding) VALUES (?, ?)",
-                                (skill_key, self._pack(vec)),
-                            )
-                            embed_count += 1
+                # Embed the namespace in capped batches (a handful of HTTP
+                # round trips, or local encodes) instead of one call per
+                # skill; a failure degrades this rebuild's vectors only.
+                batch_error: Optional[str] = None
+                if to_embed and self._vec_available and self.is_semantic_available():
+                    for start in range(0, len(to_embed), EMBED_BATCH_SIZE):
+                        chunk = to_embed[start:start + EMBED_BATCH_SIZE]
+                        vecs = self._client.embed_batch(
+                            [text for _, text in chunk], input_type="document",
+                            timeout=EMBED_BATCH_TIMEOUT_SECONDS,
+                        )
+                        if self._client.last_error:
+                            batch_error = self._client.last_error
+                        for (skill_key, _), vec in zip(chunk, vecs):
+                            if vec is not None:
+                                c.execute(
+                                    "INSERT INTO skills_vec(skill_key, embedding) VALUES (?, ?)",
+                                    (skill_key, self._pack(vec)),
+                                )
+                                embed_count += 1
+                    if batch_error:
+                        self._last_error = batch_error
+                        logger.warning(
+                            "skills semantic search degrading: %s", batch_error
+                        )
 
                 conn.commit()
+                warning = None
+                if not self.is_semantic_available():
+                    warning = self._last_error
+                elif batch_error:
+                    warning = batch_error
                 return {
                     "namespace": namespace,
                     "fts_indexed": fts_count,
                     "semantic_indexed": embed_count,
                     "semantic_available": self.is_semantic_available(),
-                    "warning": self._last_error if not self.is_semantic_available() else None,
+                    "warning": warning,
                 }
             finally:
                 conn.close()
@@ -491,18 +578,25 @@ class SkillEmbeddingIndex:
             conn = self._get_connection()
             warning: Optional[str] = None
             # Attempt semantic.
+            query_embed_failed = False
             if self._vec_available and self.is_semantic_available():
-                q_vec = self._embed(query)
+                q_vec = self._embed(query, input_type="query")
                 if q_vec is not None:
                     hits = self._vec_search(conn, q_vec, namespace, top_k)
                     if hits:
                         return SearchResponse(results=hits, mode="semantic")
                     # Empty semantic result — fall through to keyword to catch edge cases.
-            if not self.is_semantic_available():
+                elif query.strip():
+                    # The embed itself failed (semantic stays available since
+                    # the de-latch); surface the degradation instead of
+                    # silently serving keyword results with no warning.
+                    query_embed_failed = True
+            if not self.is_semantic_available() or query_embed_failed:
                 warning = (
                     f"semantic search unavailable ({self._last_error}); "
                     "falling back to keyword search. "
-                    "Set EMBEDDING_API_KEY on the server for better skill discovery."
+                    "Configure server embeddings (the EMBEDDING_* settings) "
+                    "for better skill discovery."
                 )
 
             # Attempt BM25 / FTS5.

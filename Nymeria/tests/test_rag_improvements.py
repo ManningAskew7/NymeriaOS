@@ -933,14 +933,16 @@ def test_embed_kwargs_sends_dimensions_only_for_v3_models_when_explicit():
         large = MemoryIndex(Path(tmp) / "a.db", embedding_provider="none",
                             embedding_model="text-embedding-3-large",
                             embedding_dimensions=3072)
-        assert large._embed_kwargs() == {"model": "text-embedding-3-large",
-                                         "dimensions": 3072}
+        assert large._get_embedding_client()._embed_kwargs() == {
+            "model": "text-embedding-3-large", "dimensions": 3072}
         # Explicit dim but a model without Matryoshka support: never sent.
         ada = MemoryIndex(Path(tmp) / "b.db", embedding_provider="none",
                           embedding_model="text-embedding-ada-002",
                           embedding_dimensions=1536)
-        assert ada._embed_kwargs() == {"model": "text-embedding-ada-002"}
+        assert ada._get_embedding_client()._embed_kwargs() == {
+            "model": "text-embedding-ada-002"}
         # Production path (no explicit dim): nothing extra sent, even for 3-*.
         prod = MemoryIndex(Path(tmp) / "c.db", embedding_provider="none",
                            embedding_model="text-embedding-3-small")
-        assert prod._embed_kwargs() == {"model": "text-embedding-3-small"}
+        assert prod._get_embedding_client()._embed_kwargs() == {
+            "model": "text-embedding-3-small"}

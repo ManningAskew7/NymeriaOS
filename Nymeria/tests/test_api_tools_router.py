@@ -342,7 +342,7 @@ def test_user_tool_search_endpoint_returns_ranked_hints(
     monkeypatch.setattr(
         search_index_module,
         "_DEFAULT_INDEX",
-        ToolSearchIndex(openai_api_key=None),
+        ToolSearchIndex(embedding_api_key=None),
     )
 
     response = client.get(
@@ -467,7 +467,7 @@ def test_tool_search_response_model_preserves_auth_fields(
     monkeypatch.setattr(
         search_index_module,
         "_DEFAULT_INDEX",
-        ToolSearchIndex(openai_api_key=None),
+        ToolSearchIndex(embedding_api_key=None),
     )
 
     response = client.get(

@@ -328,9 +328,12 @@ class NymeriaAgent:
             skill_index_db = self.settings.skills_dir / "index.db"
             skill_index = SkillEmbeddingIndex(
                 db_path=skill_index_db,
-                openai_api_key=self.settings.embedding_api_key,
-                openai_base_url=self.settings.embedding_base_url,
+                embedding_provider=self.settings.embedding_provider,
+                embedding_api_key=self.settings.embedding_api_key,
+                embedding_base_url=self.settings.embedding_base_url,
                 embedding_model=self.settings.embedding_model,
+                embedding_dimensions=self.settings.embedding_dimensions,
+                embedding_input_type=self.settings.embedding_input_type,
             )
             self.skill_manager = SkillManager(
                 bundled_dir=self.settings.bundled_skills_dir,
