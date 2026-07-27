@@ -35,10 +35,12 @@ FORM_PANEL_NAME_MIN_WIDTH = 14
 FORM_PANEL_NAME_MAX_WIDTH = 48
 FORM_PANEL_NAME_GUTTER = 2
 
-FieldKind = Literal["search", "radio", "checkbox"]
+FieldKind = Literal["search", "text", "radio", "checkbox"]
 
 _DEFAULT_FOOTER = "↑↓ move · Space toggle · Enter set · Esc close"
 _RADIO_FOOTER = "↑↓ move · Enter set · Esc close"
+_TEXT_FOOTER = "Enter submit · Esc close"
+_SECRET_MASK = "•"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,12 +56,18 @@ class FormOption:
 
 @dataclass(frozen=True, slots=True)
 class FormField:
-    """A field within a tab: a search box or an option list."""
+    """A field within a tab: a typed input (search/text) or an option list.
+
+    ``secret`` (text fields) masks the rendered value and asks the composer
+    to mask its own display while the field is active.
+    """
 
     kind: FieldKind
     key: str
     options: tuple[FormOption, ...] = ()
     placeholder: str = ""
+    label: str = ""
+    secret: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +81,14 @@ class FormTab:
 
     label: str
     fields: tuple[FormField, ...]
+    # Open the form on this tab (first active tab wins; else tab 0). Chained
+    # commands use it as a step rail: the response re-sends all reached
+    # steps as tabs with the next undecided one active.
+    active: bool = False
+
+    # Invariant addition (text fields): a tab holds at most one TYPED input
+    # (search or text), because the composer line feeds exactly one value;
+    # ``input_field`` surfaces the first of either kind.
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +162,17 @@ def search_field(tab: FormTab | None) -> FormField | None:
     return None
 
 
+def input_field(tab: FormTab | None) -> FormField | None:
+    """The tab's composer-fed field: the first search OR text field."""
+
+    if tab is None:
+        return None
+    for candidate in tab.fields:
+        if candidate.kind in ("search", "text"):
+            return candidate
+    return None
+
+
 def filter_options(field_obj: FormField | None, filter_text: str) -> list[FormOption]:
     """Return options whose label/meta contain ``filter_text`` (case-folded)."""
 
@@ -177,15 +204,31 @@ def active_field_is_checkbox(spec: FormSpec, state: FormState) -> bool:
     return field_obj is not None and field_obj.kind == "checkbox"
 
 
+def active_input_is_secret(spec: FormSpec | None, state: FormState | None) -> bool:
+    """True when the active tab's composer-fed field is a secret text field.
+
+    Drives the composer's password display mode while the form is open.
+    """
+
+    if spec is None or state is None:
+        return False
+    field_obj = input_field(active_tab(spec, state))
+    return field_obj is not None and field_obj.kind == "text" and field_obj.secret
+
+
 # --------------------------------------------------------------------------- #
 # State transitions (pure mutations of FormState)
 # --------------------------------------------------------------------------- #
 
 
 def init_state(spec: FormSpec) -> FormState:
-    """Build a fresh state, parking each radio cursor on its current option."""
+    """Build a fresh state, parking each radio cursor on its current option
+    and the active tab on the first tab flagged ``active`` (else tab 0)."""
 
     state = FormState()
+    state.active_tab = next(
+        (index for index, tab in enumerate(spec.tabs) if tab.active), 0
+    )
     for tab in spec.tabs:
         for field_obj in tab.fields:
             if field_obj.kind not in ("radio", "checkbox"):
@@ -304,6 +347,8 @@ def build_result(spec: FormSpec, state: FormState) -> FormResult:
 def _footer_hint(spec: FormSpec, state: FormState) -> str:
     if spec.footer_hint:
         return spec.footer_hint
+    if not has_navigable_list(spec, state):
+        return _TEXT_FOOTER
     return _DEFAULT_FOOTER if active_field_is_checkbox(spec, state) else _RADIO_FOOTER
 
 
@@ -320,7 +365,7 @@ def form_panel_height(
     rows = 1  # header
     if len(spec.tabs) > 1:
         rows += 1
-    if search_field(active_tab(spec, state)) is not None:
+    if input_field(active_tab(spec, state)) is not None:
         rows += 1
     options = visible_options(spec, state)
     if has_navigable_list(spec, state):
@@ -361,10 +406,10 @@ def form_panel_fragments(
     if len(spec.tabs) > 1:
         lines.append(_tab_bar_fragments(spec, state, panel_width))
 
-    # Search line
-    field_search = search_field(active_tab(spec, state))
-    if field_search is not None:
-        lines.append(_search_fragments(field_search, state, panel_width))
+    # Typed-input line (search filter or text value)
+    field_input = input_field(active_tab(spec, state))
+    if field_input is not None:
+        lines.append(_input_fragments(field_input, state, panel_width))
 
     # Option list
     if has_navigable_list(spec, state):
@@ -408,21 +453,32 @@ def _tab_bar_fragments(
     return parts
 
 
-def _search_fragments(
+def _input_fragments(
     field_obj: FormField,
     state: FormState,
     panel_width: int,
 ) -> list[tuple[str, str]]:
-    prefix = "Filter: "
+    """Render the composer-fed line: the search filter or a text value.
+
+    Secret text renders as one mask bullet per character, never the value.
+    """
+
+    if field_obj.kind == "text":
+        prefix = f"{field_obj.label or 'Input'}: "
+        default_placeholder = "type, then Enter"
+    else:
+        prefix = "Filter: "
+        default_placeholder = "type to filter"
     text = state.filter_text
     if text:
-        body = _fit_cell(text, max(1, panel_width - cell_len(prefix)))
+        shown = _SECRET_MASK * len(text) if field_obj.secret else text
+        body = _fit_cell(shown, max(1, panel_width - cell_len(prefix)))
         return [
             ("class:form-panel.search", prefix),
             ("class:form-panel.search", body),
             ("class:form-panel.search", " " * max(0, panel_width - cell_len(prefix) - cell_len(body))),
         ]
-    placeholder = field_obj.placeholder or "type to filter"
+    placeholder = field_obj.placeholder or default_placeholder
     body = _fit_cell(placeholder, max(1, panel_width - cell_len(prefix)))
     return [
         ("class:form-panel.search", prefix),
@@ -543,6 +599,7 @@ __all__ = [
     "FormState",
     "FormTab",
     "active_field_is_checkbox",
+    "active_input_is_secret",
     "active_tab",
     "build_result",
     "clamp_selection",
@@ -551,6 +608,7 @@ __all__ = [
     "form_panel_height",
     "has_navigable_list",
     "init_state",
+    "input_field",
     "list_field",
     "move_selection",
     "move_tab",

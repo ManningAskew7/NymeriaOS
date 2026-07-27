@@ -138,6 +138,7 @@ EXPECTED_ROUTES = [
     ('/me/tokens/{token_hash_prefix}', ('DELETE',)),
     ('/models', ('GET',)),
     ('/models/available', ('GET',)),
+    ('/models/available', ('POST',)),
     ('/notifications', ('DELETE',)),
     ('/notifications', ('GET',)),
     ('/notifications/channel-types', ('GET',)),

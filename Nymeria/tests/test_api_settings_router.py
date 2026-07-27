@@ -695,6 +695,58 @@ def test_available_models_returns_empty_on_provider_http_error(
         FakeAsyncClient.response_body = None
 
 
+def test_available_models_post_uses_ephemeral_key_and_never_echoes_it(
+    tmp_path: Path,
+    monkeypatch,
+):
+    # The POST variant backs the /provider setup flow: a just-pasted key rides
+    # the request body, wins over vault/settings resolution for that one
+    # listing, and never appears in the response.
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": [{"id": "m-1", "name": "M One"}]}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/models/available",
+        headers=_auth(token),
+        json={
+            "provider": "lmstudio",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "sk-ephemeral-test",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["id"] for entry in body] == ["m-1"]
+    call = FakeAsyncClient.calls[0]
+    assert call["url"] == "http://localhost:1234/v1/models"
+    assert call["headers"]["Authorization"] == "Bearer sk-ephemeral-test"
+    assert "sk-ephemeral-test" not in response.text
+
+
+def test_available_models_post_is_admin_only(
+    tmp_path: Path,
+    monkeypatch,
+):
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, agent, _admin_token, _provider = _client(monkeypatch, tmp_path)
+    agent.accounts_repo.create_user("alice", "alice@example.com", "Alice")
+    user_token = agent.accounts_repo.issue_token("alice")
+
+    response = client.post(
+        "/models/available",
+        headers=_auth(user_token),
+        json={"provider": "lmstudio", "api_key": "sk-should-not-be-used"},
+    )
+
+    assert response.status_code == 403
+    assert FakeAsyncClient.calls == []
+
+
 def test_available_models_normalizes_openai_cliproxy_base_url_without_v1(
     tmp_path: Path,
     monkeypatch,
