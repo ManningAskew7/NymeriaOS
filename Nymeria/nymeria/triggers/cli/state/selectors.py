@@ -73,11 +73,12 @@ def select_activity_phase(
     - ``processing`` quiet >= 1s becomes ``formulating`` (no visible output
       this LLM call: the warm-up label; note tool-call arguments also stream
       under ``processing``, since only the first delta per call reaches the
-      client). ``thinking`` is deliberately sticky: reasoning deltas arrive
-      in sparse bursts (measured multi-second gaps mid-thought on fable-5
-      via CLIProxy), and demoting an in-progress thought stream back to
-      "Formulating" on a 1s token gap made the label wrong for most of the
-      first thinking block.
+      client). ``thinking`` is deliberately sticky: the reducer sets it from
+      the ``llm_call_started`` status event BEFORE any delta arrives (the
+      provider's prompt-processing wait, measured 3-8s+ on large contexts),
+      and it must hold through that window and through any delta gap
+      (summarizer pauses, provider hiccups) instead of flapping back to
+      "Formulating".
     - ``typing`` quiet >= 1.5s becomes ``finalizing``: after the last visible
       token the server still runs post-turn work (checkpoint, stats, hooks)
       before the done event, and claiming "Streaming" through that window was

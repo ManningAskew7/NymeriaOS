@@ -149,6 +149,50 @@ def _reasoning_enabled(provider: str, model: str, route: str, effort: str | None
     return not can_disable
 
 
+def reasoning_enabled_for_config(
+    config: LLMConfig | None,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    provider_route: str | None = None,
+) -> bool:
+    """Public form of the capability-gated reasoning predicate.
+
+    Answers "will a call on this config actually emit reasoning output?"
+    exactly as :func:`classify_reasoning_passback` does for its
+    ``reasoning_enabled`` field. The keyword overrides exist for the
+    fallback-candidate case (a swapped call runs a different
+    provider/model than the config's primary); effort and
+    ``extended_thinking`` always read from the config itself.
+    """
+    if config is None:
+        return False
+    resolved_provider = (
+        normalize_llm_provider(
+            provider if provider is not None else getattr(config, "provider", "")
+        )
+        or ""
+    )
+    resolved_model = str(
+        (model if model is not None else getattr(config, "model", "")) or ""
+    )
+    route = resolve_provider_route(
+        resolved_provider,
+        route_override=(
+            provider_route
+            if provider_route is not None
+            else getattr(config, "provider_route", None)
+        ),
+    )
+    return _reasoning_enabled(
+        resolved_provider,
+        resolved_model,
+        route,
+        getattr(config, "reasoning_effort", None),
+        bool(getattr(config, "extended_thinking", False)),
+    )
+
+
 def _mechanism_for(config: LLMConfig, provider: str, route: str) -> str:
     """Resolve the passback mechanism, mirroring create_llm dispatch order."""
     base_url = getattr(config, "base_url", None)

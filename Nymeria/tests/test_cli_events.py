@@ -16,6 +16,7 @@ from nymeria.triggers.cli.events import (
     HookApprovalEvent,
     HookApprovalResolvedEvent,
     IterationLimitEvent,
+    LLMCallStartedEvent,
     QueuedEvent,
     ResponseEvent,
     TaskCompletedEvent,
@@ -198,6 +199,10 @@ def test_normalizes_fallback_consent_and_provider_events() -> None:
 
 def test_normalizes_all_known_stream_event_types() -> None:
     cases: list[tuple[dict[str, Any], object]] = [
+        (
+            {"type": "llm_call_started", "reasoning": True, "model": "claude-x"},
+            LLMCallStartedEvent(thread_id="thread-a", reasoning=True, model="claude-x"),
+        ),
         (
             {"type": "thinking", "content": "checking context"},
             ThinkingEvent(thread_id="thread-a", content="checking context"),

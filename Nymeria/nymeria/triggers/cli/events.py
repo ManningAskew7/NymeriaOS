@@ -9,6 +9,7 @@ from typing import Any, Literal, TypeAlias
 
 
 KnownEventType: TypeAlias = Literal[
+    "llm_call_started",
     "thinking",
     "tool_call_delta",
     "tool_call",
@@ -68,6 +69,19 @@ class CLIStreamEvent:
                 if value not in (None, "", {}, [], ())
             }
         return data
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LLMCallStartedEvent(CLIStreamEvent):
+    """An LLM call is in flight server-side (the pre-first-token window).
+
+    ``reasoning`` = the call's first output will be thinking tokens, so the
+    activity label can honestly read "Thinking" before any delta arrives.
+    """
+
+    type: Literal["llm_call_started"] = "llm_call_started"
+    reasoning: bool = False
+    model: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -360,6 +374,7 @@ class DiagnosticEvent(CLIStreamEvent):
 
 NormalizedEvent: TypeAlias = (
     CLIStreamEvent
+    | LLMCallStartedEvent
     | ThinkingEvent
     | ToolCallDeltaEvent
     | ToolCallEvent
@@ -418,6 +433,14 @@ def normalize_stream_event(
         )
         or default_thread_id
     )
+
+    if event_type == "llm_call_started":
+        return LLMCallStartedEvent(
+            thread_id=thread_id,
+            reasoning=_bool(_first(payload, "reasoning", default=False)),
+            model=_text(_first(payload, "model"), default=""),
+            raw=raw,
+        )
 
     if event_type == "thinking":
         return ThinkingEvent(
@@ -962,6 +985,7 @@ __all__ = [
     "KnownEventType",
     "NormalizedEvent",
     "NormalizedEventType",
+    "LLMCallStartedEvent",
     "ThinkingEvent",
     "ToolCallDeltaEvent",
     "ToolCallEvent",

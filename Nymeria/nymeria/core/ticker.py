@@ -1055,10 +1055,12 @@ class Ticker:
         def on_chunk(chunk: dict, collection: StreamCollection) -> None:
             nonlocal started_published
             # Hold task_started until astream actually owns the thread
-            # lock AND a real content event arrives. Queue-meta events
-            # (queued, prompt_queued, prompt_injected, prompt_absorbed,
+            # lock AND turn work has begun (the first non-queue-meta
+            # chunk; since the llm_call_started status event this is LLM
+            # dispatch, pre-first-token). Queue-meta events (queued,
+            # prompt_queued, prompt_injected, prompt_absorbed,
             # turn_halted, fanout_dropped) signal queue transitions, not
-            # the start of model work — firing task_started on them
+            # the start of model work; firing task_started on them
             # would flip the frontend into autonomous-streaming mode
             # before the worker actually has a response.
             if (

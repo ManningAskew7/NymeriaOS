@@ -1598,11 +1598,13 @@ def create_chat_router(
 
                     # Publish task_started on the first non-queue-meta chunk
                     # so the frontend handoff happens only after the thread
-                    # lock is acquired AND a real content event arrives.
-                    # Queue-meta events (queued / prompt_queued /
-                    # prompt_injected / prompt_absorbed / turn_halted /
-                    # fanout_dropped) signal queue transitions, not the
-                    # start of work.
+                    # lock is acquired AND turn work has actually begun
+                    # (since the llm_call_started status event, that is LLM
+                    # dispatch, pre-first-token, rather than the first
+                    # content chunk). Queue-meta events (queued /
+                    # prompt_queued / prompt_injected / prompt_absorbed /
+                    # turn_halted / fanout_dropped) signal queue
+                    # transitions, not the start of work.
                     if chunk.get("type") == "prompt_queued":
                         autonomous_fanout = True
 

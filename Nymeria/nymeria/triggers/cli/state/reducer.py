@@ -20,6 +20,7 @@ from ..events import (
     DoneEvent,
     ErrorEvent,
     IterationLimitEvent,
+    LLMCallStartedEvent,
     NormalizedEvent,
     QueuedEvent,
     ResponseEvent,
@@ -160,6 +161,8 @@ def reduce_stream_event(
 
     if isinstance(normalized, QueuedEvent):
         return _reduce_queued(state, normalized, timestamp)
+    if isinstance(normalized, LLMCallStartedEvent):
+        return _reduce_llm_call_started(state, normalized, timestamp)
     if isinstance(normalized, ThinkingEvent):
         return _reduce_thinking(state, normalized, timestamp)
     if isinstance(normalized, ToolCallDeltaEvent):
@@ -221,6 +224,27 @@ def _reduce_queued(
         ),
         updated_at=timestamp,
     )
+
+
+def _reduce_llm_call_started(
+    state: CLIUIState,
+    event: LLMCallStartedEvent,
+    timestamp: float,
+) -> CLIUIState:
+    """An LLM call is in flight: the provider is working on the prompt.
+
+    For a reasoning-enabled call the first output will be thinking tokens,
+    so the phase flips to ``thinking`` BEFORE any delta arrives, covering
+    the TTFT dead window (measured 3-8s+ on large contexts) with the honest
+    label; the sticky-thinking selector holds it from here. A non-reasoning
+    call is a no-op: the turn's current phase (the ``processing`` warm-up,
+    or ``processing_results`` after a tool batch) is already the honest
+    label for that wait, and stamping generic ``processing`` here would
+    clobber the more specific one.
+    """
+    if not event.reasoning:
+        return state
+    return _ensure_streaming_assistant(state, timestamp, phase="thinking")
 
 
 def _reduce_thinking(

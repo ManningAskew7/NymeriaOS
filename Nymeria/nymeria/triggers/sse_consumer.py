@@ -704,6 +704,7 @@ async def consume_autonomous_firehose(
 ATTACH_SKIP_EVENT_TYPES = frozenset({
     "turn_attach",
     "turn_started",
+    "llm_call_started",
     "queued",
     "prompt_queued",
     "prompt_injected",

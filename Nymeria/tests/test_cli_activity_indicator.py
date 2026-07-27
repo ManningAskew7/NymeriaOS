@@ -48,8 +48,8 @@ def test_quiet_processing_becomes_formulating_but_thinking_sticks() -> None:
         now=3.0,
     )
 
-    # Reasoning deltas arrive in sparse bursts; the label must not flap back
-    # to Formulating between them.
+    # Thinking is sticky: the label must hold through delta gaps (summarizer
+    # pauses, provider hiccups) instead of flapping back to Formulating.
     assert activity_state_from_ui_state(state, now=3.9).phase == "thinking"
     assert activity_state_from_ui_state(state, now=4.01).phase == "thinking"
     assert activity_state_from_ui_state(state, now=30.0).phase == "thinking"
@@ -260,3 +260,56 @@ def test_label_segment_is_stable_and_long_detail_truncates_to_width() -> None:
     assert len(results_render.text) == 40
     assert thinking_render.text.endswith("...")
     assert results_render.text.endswith("...")
+
+
+def test_llm_call_started_shows_thinking_through_the_ttft_window() -> None:
+    """The backend's llm_call_started status event flips the label to
+    Thinking BEFORE any delta arrives (reasoning-enabled call), so the
+    provider's prompt-processing wait no longer reads as Formulating."""
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "llm_call_started", "reasoning": True, "model": "claude-test"},
+        now=1.5,
+    )
+
+    # Sticky through the whole dead window, however long TTFT takes.
+    assert activity_state_from_ui_state(state, now=2.0).phase == "thinking"
+    assert activity_state_from_ui_state(state, now=30.0).phase == "thinking"
+
+    # A non-reasoning call is a reducer no-op: the turn keeps its current
+    # phase (processing warm-up here; processing_results after tools).
+    state2 = create_initial_state(thread_id="thread-1", now=0.0)
+    state2 = start_turn(state2, "hello", now=1.0)
+    state2 = reduce_stream_event(
+        state2,
+        {"type": "llm_call_started", "reasoning": False, "model": "gpt-test"},
+        now=1.5,
+    )
+    assert activity_state_from_ui_state(state2, now=1.9).phase == "processing"
+    assert activity_state_from_ui_state(state2, now=3.0).phase == "formulating"
+
+
+def test_llm_call_started_flips_post_tool_wait_to_thinking() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "tool please", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "tool_call", "id": "call-1", "name": "lookup", "args": {}},
+        now=2.0,
+    )
+    state = reduce_stream_event(
+        state,
+        {"type": "tool_result", "id": "call-1", "name": "lookup", "result": "ok"},
+        now=3.0,
+    )
+    assert activity_state_from_ui_state(state, now=3.5).phase == "processing_results"
+
+    # The next sub-turn call dispatches: the wait is the model thinking.
+    state = reduce_stream_event(
+        state,
+        {"type": "llm_call_started", "reasoning": True, "model": "claude-test"},
+        now=4.0,
+    )
+    assert activity_state_from_ui_state(state, now=8.0).phase == "thinking"

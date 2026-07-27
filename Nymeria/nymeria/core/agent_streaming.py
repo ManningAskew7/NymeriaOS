@@ -20,6 +20,7 @@ from typing import (
 from ..vendor.react_agent.nodes import (
     is_retryable_llm_error,
     llm_activate_next_fallback,
+    llm_active_candidate_descriptor,
     llm_consult_transport_fallback,
     llm_fallback_hold_overrides,
     llm_max_retries,
@@ -27,6 +28,7 @@ from ..vendor.react_agent.nodes import (
     llm_retry_payload_for_active_candidate,
     llm_stamp_pending_fallback_note,
 )
+from ..vendor.react_agent.reasoning_passback import reasoning_enabled_for_config
 from .agent_compaction import COMPACTING_MESSAGE
 from .agent_text_extract import (
     InlineThinkingTextStripper,
@@ -385,7 +387,8 @@ class GraphStreamProcessor:
         event_type = event.get("event")
 
         if event_type == "on_chat_model_start":
-            self._handle_model_start(event)
+            for converted in self._handle_model_start(event):
+                yield converted
         elif event_type == "on_tool_start":
             for converted in self._handle_tool_start(event):
                 yield converted
@@ -411,7 +414,7 @@ class GraphStreamProcessor:
         payload = data if isinstance(data, dict) else {"data": data}
         return {**payload, "type": name}
 
-    def _handle_model_start(self, event: dict[str, Any]) -> None:
+    def _handle_model_start(self, event: dict[str, Any]) -> Iterable[dict[str, Any]]:
         self._model_call_count += 1
         self._current_model_stream_events = 0
         self._current_model_started_at = time.monotonic()
@@ -427,6 +430,40 @@ class GraphStreamProcessor:
             self.is_self_invoke,
             event.get("run_id"),
         )
+        # Status signal for clients: an LLM call is now in flight, so the
+        # provider is working on the prompt (the TTFT window, measured 3-8s+
+        # on big contexts, during which nothing else streams). ``reasoning``
+        # tells the client whether the call's first output will be thinking,
+        # so its activity label can read "Thinking" through that window
+        # instead of a generic warm-up. Fires per model call, so post-tool
+        # sub-turn waits get the same signal.
+        candidate = llm_active_candidate_descriptor(self.llm_config)
+        return [
+            {
+                "type": "llm_call_started",
+                "model": self._active_model_name(event, candidate),
+                "reasoning": reasoning_enabled_for_config(
+                    self.llm_config,
+                    provider=candidate.get("provider"),
+                    model=candidate.get("model"),
+                    provider_route=candidate.get("provider_route"),
+                ),
+            }
+        ]
+
+    def _active_model_name(
+        self, event: dict[str, Any], candidate: dict[str, Any]
+    ) -> str:
+        """Model for this call: the live instance's name when langchain
+        exposes it, else the active candidate's (swap-aware)."""
+        metadata = event.get("metadata")
+        if isinstance(metadata, dict):
+            name = metadata.get("ls_model_name")
+            if isinstance(name, str) and name:
+                return name
+        if self.llm_config is None:
+            return ""
+        return str(candidate.get("model") or "")
 
     def _mcp_provenance(self, tool_name: str) -> dict[str, Any]:
         """Return SSE provenance fields for a managed MCP tool, or ``{}``.
