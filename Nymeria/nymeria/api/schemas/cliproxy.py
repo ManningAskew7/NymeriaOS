@@ -61,6 +61,10 @@ class CLIProxyOAuthCallbackRequest(BaseModel):
 
 class CLIProxyOAuthStatusResponse(BaseModel):
     status: Literal["wait", "ok", "error"]
+    # Confirmed ok: the account label when known. Error: what went wrong
+    # (notably the unconfirmed-ok trap: the proxy answers ok for unknown or
+    # expired sessions, so ok without an active auth file reports here).
+    detail: str = ""
 
 
 class CLIProxyAuthFilePatchRequest(BaseModel):

@@ -52,7 +52,10 @@ export class CLIProxyApi extends CommandsApi {
     return response.json();
   }
 
-  async getCLIProxyOAuthStatus(state: string, provider?: string): Promise<'wait' | 'ok' | 'error'> {
+  async getCLIProxyOAuthStatus(
+    state: string,
+    provider?: string
+  ): Promise<{ status: 'wait' | 'ok' | 'error'; detail: string }> {
     const params = new URLSearchParams({ state });
     if (provider) params.set('provider', provider);
     const response = await fetch(
@@ -63,7 +66,9 @@ export class CLIProxyApi extends CommandsApi {
       throw new Error(await this._toastAndExtractError(response, 'Failed to check the login'));
     }
     const payload = await response.json();
-    return payload.status;
+    // detail carries the account label on a confirmed ok, and the backend's
+    // explanation (e.g. the expired-session trap) on error.
+    return { status: payload.status, detail: payload.detail ?? '' };
   }
 
   async deliverCLIProxyOAuthCallback(provider: string, redirectUrl: string): Promise<void> {

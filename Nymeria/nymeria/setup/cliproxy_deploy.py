@@ -15,6 +15,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+# Re-exported for the module's historical import surface; the mint itself
+# lives with the management client so the REST apply-route fallback can use
+# it without importing setup.
+from ..cliproxy.management_client import mint_gatekeeper_key
 from .environment import docker_available
 
 # Digest-pinned: floating tags can be reassigned upstream and the cloak gate
@@ -33,10 +37,6 @@ MANAGEMENT_SECRET_FILENAME = "MANAGEMENT_SECRET.txt"
 
 def mint_management_secret() -> str:
     return "cpm-nymeria-" + secrets.token_urlsafe(24)
-
-
-def mint_gatekeeper_key() -> str:
-    return "cpx-nymeria-" + secrets.token_urlsafe(24)
 
 
 @dataclass(frozen=True)

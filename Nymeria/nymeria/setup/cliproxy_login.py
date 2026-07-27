@@ -22,7 +22,6 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from typing import Any, Sequence
 
 from rich.console import Console
 from rich.markup import escape
@@ -34,8 +33,11 @@ from ..cliproxy.management_client import (
     CLIProxyManagementError,
     CLIProxyUnreachable,
     CLIProxyUnsupported,
+    active_login_entry,
+    confirm_login_landed,
+    login_account_label,
+    resolve_or_mint_gatekeeper,
 )
-from .cliproxy_deploy import mint_gatekeeper_key
 from .environment import browser_launch_blocked_reason
 from .state import WizardState
 
@@ -96,44 +98,13 @@ async def ensure_gatekeeper_key(
 ) -> None:
     """Fill `state.cliproxy_gatekeeper_key` from the proxy's api-keys list.
 
-    Any gatekeeper key unlocks every data-plane route (they are not
-    provider-scoped), so the first configured key is reused; when the proxy
-    has none, one is minted and appended through the management API.
+    Thin wizard-state wrapper over the shared
+    `management_client.resolve_or_mint_gatekeeper` (also used by the REST
+    apply-route fallback).
     """
     if state.cliproxy_gatekeeper_key.strip():
         return
-    knobs = await client.get_config_knobs(["api-keys"])
-    keys = [k for k in (knobs.get("api-keys") or []) if isinstance(k, str) and k]
-    if keys:
-        state.cliproxy_gatekeeper_key = keys[0]
-        return
-    minted = mint_gatekeeper_key()
-    await client.set_config_knob("api-keys", [minted])
-    state.cliproxy_gatekeeper_key = minted
-
-
-def active_login_entry(
-    files: Sequence[dict[str, Any]], spec: CLIProxyProviderSpec
-) -> dict[str, Any] | None:
-    """The first enabled, available auth-file entry for this provider, or None.
-
-    "Active" mirrors the wizard login step's filter: the entry's provider
-    matches the spec's auth-file provider and it is neither disabled nor
-    marked unavailable by the proxy.
-    """
-    for entry in files:
-        if (
-            str(entry.get("provider") or "").lower() == spec.auth_file_provider
-            and not entry.get("disabled")
-            and not entry.get("unavailable")
-        ):
-            return entry
-    return None
-
-
-def login_account_label(entry: dict[str, Any]) -> str:
-    """Best-effort account identity from an auth-file entry ("" when unknown)."""
-    return str(entry.get("account") or entry.get("email") or "")
+    state.cliproxy_gatekeeper_key = await resolve_or_mint_gatekeeper(client)
 
 
 async def ensure_claude_tool_prefix_disabled(client: CLIProxyManagementClient) -> None:
@@ -326,42 +297,29 @@ async def _login_console(
                         f"{escape(str(exc))}[/red] Paste the full redirect URL "
                         "again."
                     )
+        # confirm_login_landed is THE confirm-on-ok implementation (a bare
+        # polled ok proves nothing; see management_client).
         try:
-            status = await client.auth_status(started["state"])
+            status, detail = await confirm_login_landed(
+                client, started["state"], spec
+            )
         except CLIProxyManagementError as exc:
             console.print(
                 f"[red]Lost contact with the proxy: {escape(str(exc))}[/red]"
             )
             return False
         if status == "ok":
-            try:
-                files = await client.list_auth_files()
-            except CLIProxyManagementError as exc:
-                console.print(
-                    f"[red]Lost contact with the proxy: {escape(str(exc))}[/red]"
-                )
-                return False
-            entry = active_login_entry(files, spec)
-            if entry is None:
-                # The proxy answers ok for unknown/expired sessions, so a bare
-                # ok with no auth file means the login did not actually land.
-                console.print(
-                    f"[red]The proxy reported the login complete but lists no "
-                    f"active {spec.label} auth file; re-run --cliproxy-login "
-                    "(the proxy's status endpoint answers ok for unknown "
-                    "sessions).[/red]"
-                )
-                return False
-            account = login_account_label(entry)
             console.print(
                 f"[green]Logged in to {spec.label}"
-                f"{f' as {escape(account)}' if account else ''}.[/green]"
+                f"{f' as {escape(detail)}' if detail else ''}.[/green]"
             )
             await _post_login_console(state, client, spec)
             return True
         if status == "error":
             console.print(
-                "[red]The provider reported a login error; re-run "
+                f"[red]{escape(detail)}[/red]"
+                if detail
+                else "[red]The provider reported a login error; re-run "
                 "--cliproxy-login to try again.[/red]"
             )
             return False

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -254,7 +255,7 @@ def test_oauth_status_ok_runs_claude_fixup():
     payload = client.get(
         "/cliproxy/oauth/status", params={"state": "s1", "provider": "claude"}
     ).json()
-    assert payload == {"status": "ok"}
+    assert payload == {"status": "ok", "detail": ""}
     calls = [
         call
         for instance in FakeManagementClient.instances
@@ -262,6 +263,37 @@ def test_oauth_status_ok_runs_claude_fixup():
         if call[0] == "ensure_tool_prefix_disabled"
     ]
     assert calls == [("ensure_tool_prefix_disabled", "claude-a.json")]
+
+
+def test_oauth_status_confirms_ok_against_auth_files():
+    """A bare proxy ok with no active auth file is reported as an error
+    (the proxy's status endpoint answers ok for unknown/expired sessions),
+    and a confirmed ok carries the account label as detail."""
+    FakeManagementClient.status_result = "ok"
+    FakeManagementClient.auth_files = []  # nothing landed
+    client, _, _ = make_app()
+    payload = client.get(
+        "/cliproxy/oauth/status", params={"state": "s1", "provider": "claude"}
+    ).json()
+    assert payload["status"] == "error"
+    assert "no active" in payload["detail"]
+
+    FakeManagementClient.auth_files = [
+        {"name": "claude-a.json", "provider": "claude", "email": "max@x.io"},
+    ]
+    payload = client.get(
+        "/cliproxy/oauth/status", params={"state": "s1", "provider": "claude"}
+    ).json()
+    assert payload == {"status": "ok", "detail": "max@x.io"}
+
+    # A disabled entry does not count as a login.
+    FakeManagementClient.auth_files = [
+        {"name": "claude-a.json", "provider": "claude", "disabled": True},
+    ]
+    payload = client.get(
+        "/cliproxy/oauth/status", params={"state": "s1", "provider": "claude"}
+    ).json()
+    assert payload["status"] == "error"
 
 
 def test_oauth_status_ok_for_codex_skips_fixup():
@@ -280,6 +312,68 @@ def test_oauth_status_ok_for_codex_skips_fixup():
         if call[0] == "ensure_tool_prefix_disabled"
     ]
     assert calls == []
+
+
+class _FakeDataPlaneClient:
+    """Stands in for httpx.AsyncClient on the proxy's /v1/models call."""
+
+    response_body: dict | None = None
+    calls: list[dict] = []
+
+    def __init__(self, *, timeout: float):
+        self.timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def get(self, url: str, *, headers: dict):
+        _FakeDataPlaneClient.calls.append({"url": url, "headers": headers})
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            json=_FakeDataPlaneClient.response_body or {"data": []},
+            request=request,
+        )
+
+
+def test_models_lists_via_server_resolved_gatekeeper(monkeypatch):
+    """The data plane is hit with a gatekeeper the backend resolved through
+    the management API; the key never rides the REST contract."""
+    FakeManagementClient.knobs = {"api-keys": ["cpx-first"]}
+    _FakeDataPlaneClient.response_body = {
+        "data": [
+            {"id": "gpt-5.5"},
+            {"id": "claude-opus-4-7", "owned_by": "anthropic"},
+        ]
+    }
+    _FakeDataPlaneClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeDataPlaneClient)
+    client, _, _ = make_app()
+    response = client.get("/cliproxy/models")
+    assert response.status_code == 200
+    assert response.json() == {
+        "models": [
+            {"id": "claude-opus-4-7", "owned_by": "anthropic"},
+            {"id": "gpt-5.5", "owned_by": ""},
+        ]
+    }
+    call = _FakeDataPlaneClient.calls[0]
+    assert call["url"] == "http://proxy.test:8317/v1/models"
+    assert call["headers"]["Authorization"] == "Bearer cpx-first"
+
+
+def test_models_400_when_unconfigured():
+    settings = SimpleNamespace(
+        cliproxy_management_url="",
+        cliproxy_management_key="",
+        anthropic_api_key=None,
+        openai_api_key=None,
+    )
+    client, _, _ = make_app(settings=settings)
+    assert client.get("/cliproxy/models").status_code == 400
 
 
 def test_auth_files_filter_by_provider():
@@ -405,9 +499,134 @@ def test_apply_route_reuses_configured_gatekeeper_key():
     assert captured["updates"].anthropic_api_key == "cpx-existing"
 
 
-def test_apply_route_422_without_any_gatekeeper_key():
+def test_apply_route_auto_resolves_gatekeeper_via_management_api():
+    """Fresh install: no key in the request or settings -> the route reads
+    the proxy's first configured api-key (or mints one) instead of 422ing,
+    because no frontend can supply the masked knob itself."""
+    captured: dict[str, Any] = {}
+
+    def fake_apply(updates, *, settings, agent, get_settings_fn):
+        captured["updates"] = updates
+        return {"restart_required": False}
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    FakeManagementClient.knobs = {"api-keys": ["cpx-first", "cpx-second"]}
     client, _, _ = make_app()
-    response = client.post("/cliproxy/apply-route", json={"provider": "claude"})
+    import unittest.mock as mock
+
+    with mock.patch.object(
+        settings_router_module, "apply_server_settings_update", fake_apply
+    ):
+        response = client.post(
+            "/cliproxy/apply-route", json={"provider": "claude"}
+        )
+    assert response.status_code == 200
+    assert captured["updates"].anthropic_api_key == "cpx-first"
+
+
+def test_apply_route_mints_gatekeeper_when_proxy_has_none():
+    captured: dict[str, Any] = {}
+
+    def fake_apply(updates, *, settings, agent, get_settings_fn):
+        captured["updates"] = updates
+        return {"restart_required": False}
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    FakeManagementClient.knobs = {"api-keys": []}
+    client, _, _ = make_app()
+    import unittest.mock as mock
+
+    with mock.patch.object(
+        settings_router_module, "apply_server_settings_update", fake_apply
+    ):
+        response = client.post(
+            "/cliproxy/apply-route", json={"provider": "codex"}
+        )
+    assert response.status_code == 200
+    minted = captured["updates"].openai_api_key
+    assert minted.startswith("cpx-nymeria-")
+    writes = [
+        call
+        for instance in FakeManagementClient.instances
+        for call in instance.calls
+        if call[0] == "set_config_knob"
+    ]
+    assert writes == [("set_config_knob", ("api-keys", [minted]))]
+
+
+def test_apply_route_rejects_non_gatekeeper_settings_key():
+    """A REAL provider key in the settings slot (an sk- OPENAI_API_KEY on a
+    codex route) must not be adopted as the proxy gatekeeper: it is
+    validated against the proxy's api-keys list and loses to a configured
+    cpx- key."""
+    captured: dict[str, Any] = {}
+
+    def fake_apply(updates, *, settings, agent, get_settings_fn):
+        captured["updates"] = updates
+        return {"restart_required": False}
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    FakeManagementClient.knobs = {"api-keys": ["cpx-first"]}
+    settings = SimpleNamespace(
+        cliproxy_management_url="http://proxy.test:8317",
+        cliproxy_management_key="secret",
+        anthropic_api_key=None,
+        openai_api_key="sk-real-openai-key",
+    )
+    client, _, _ = make_app(settings=settings)
+    import unittest.mock as mock
+
+    with mock.patch.object(
+        settings_router_module, "apply_server_settings_update", fake_apply
+    ):
+        response = client.post(
+            "/cliproxy/apply-route", json={"provider": "codex"}
+        )
+    assert response.status_code == 200
+    assert captured["updates"].openai_api_key == "cpx-first"
+
+
+def test_models_route_reads_but_never_mints(monkeypatch):
+    """A key-less proxy has an OPEN data plane: the models route must go
+    out unauthenticated rather than mint (a mint would flip the proxy to
+    key-required as a side effect of a READ)."""
+    FakeManagementClient.knobs = {"api-keys": []}
+    _FakeDataPlaneClient.response_body = {"data": [{"id": "gpt-5.5"}]}
+    _FakeDataPlaneClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeDataPlaneClient)
+    client, _, _ = make_app()
+    response = client.get("/cliproxy/models")
+    assert response.status_code == 200
+    assert [m["id"] for m in response.json()["models"]] == ["gpt-5.5"]
+    assert "Authorization" not in _FakeDataPlaneClient.calls[0]["headers"]
+    writes = [
+        call
+        for instance in FakeManagementClient.instances
+        for call in instance.calls
+        if call[0] == "set_config_knob"
+    ]
+    assert writes == []
+
+
+def test_apply_route_422_when_gatekeeper_resolution_fails():
+    class _BrokenKnobsClient(FakeManagementClient):
+        async def get_config_knobs(self, paths=None):
+            raise CLIProxyUnreachable("proxy down")
+
+    import unittest.mock as mock
+
+    from nymeria.api.routers import cliproxy as router_module
+
+    client, _, _ = make_app()
+    with mock.patch.object(
+        router_module, "CLIProxyManagementClient", _BrokenKnobsClient
+    ):
+        response = client.post(
+            "/cliproxy/apply-route", json={"provider": "claude"}
+        )
     assert response.status_code == 422
 
 
