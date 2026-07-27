@@ -138,6 +138,12 @@ class AssistantMessage:
     status: MessageStatus = "streaming"
     activity_phase: AssistantActivityPhase = "processing"
     activity_updated_at: float = 0.0
+    # Whether the LLM call currently in flight has reasoning enabled
+    # (stamped from the llm_call_started status event, per call). Consulted
+    # by the quiet-processing demotion, which suppresses the "Formulating"
+    # guess for reasoning calls (their quiet is genuine waiting, not
+    # invisible output); never a phase by itself.
+    llm_call_reasoning: bool = False
     tool_calls: tuple[ToolCallStep, ...] = ()
     tool_reload_info: ToolReloadInfo | None = None
     dispatch_info: dict[str, Any] = field(default_factory=dict)

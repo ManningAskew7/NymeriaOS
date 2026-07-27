@@ -579,10 +579,11 @@ LLM call of the turn is dispatched to the provider (the first call and every
 post-tool sub-turn call, as in the example above), before any token arrives.
 `reasoning` tells the client whether the call's first output will be thinking
 tokens (capability-gated: it also accounts for models that cannot disable
-reasoning), so activity indicators can honestly read "Thinking" through the
-provider's prompt-processing wait instead of a generic warm-up label;
-`model` is the active candidate (swap-aware across provider fallbacks).
-Clients that ignore the event behave as before.
+reasoning), so activity indicators can label the pre-first-token wait
+honestly (for example suppressing a "writing a tool call" style guess when
+the call will stream visible thinking first); `model` is the active
+candidate (swap-aware across provider fallbacks). Clients that ignore the
+event behave as before.
 
 **Turn identity and re-attach:** when the request wins the thread lock and
 becomes the executing (holder) turn, the stream opens with a `turn_started`

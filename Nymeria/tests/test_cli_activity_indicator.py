@@ -262,10 +262,12 @@ def test_label_segment_is_stable_and_long_detail_truncates_to_width() -> None:
     assert results_render.text.endswith("...")
 
 
-def test_llm_call_started_shows_thinking_through_the_ttft_window() -> None:
-    """The backend's llm_call_started status event flips the label to
-    Thinking BEFORE any delta arrives (reasoning-enabled call), so the
-    provider's prompt-processing wait no longer reads as Formulating."""
+def test_llm_call_started_reasoning_suppresses_the_formulating_guess() -> None:
+    """The Formulating guess exists for output the client cannot see
+    (invisible tool-call argument streaming). A reasoning-enabled call's
+    thinking streams VISIBLY when it starts, so its quiet TTFT window is
+    genuine waiting: honest "Processing..." holds however long it takes,
+    and "Thinking..." appears only on real thinking deltas."""
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "hello", now=1.0)
     state = reduce_stream_event(
@@ -274,12 +276,19 @@ def test_llm_call_started_shows_thinking_through_the_ttft_window() -> None:
         now=1.5,
     )
 
-    # Sticky through the whole dead window, however long TTFT takes.
-    assert activity_state_from_ui_state(state, now=2.0).phase == "thinking"
-    assert activity_state_from_ui_state(state, now=30.0).phase == "thinking"
+    assert activity_state_from_ui_state(state, now=1.9).phase == "processing"
+    assert activity_state_from_ui_state(state, now=2.5).phase == "processing"
+    assert activity_state_from_ui_state(state, now=30.0).phase == "processing"
 
-    # A non-reasoning call is a reducer no-op: the turn keeps its current
-    # phase (processing warm-up here; processing_results after tools).
+    state = reduce_stream_event(
+        state,
+        {"type": "thinking", "content": "real reasoning tokens"},
+        now=31.0,
+    )
+    assert activity_state_from_ui_state(state, now=31.1).phase == "thinking"
+
+    # A non-reasoning call keeps the original Formulating guess: its first
+    # output could be invisible tool-call arguments.
     state2 = create_initial_state(thread_id="thread-1", now=0.0)
     state2 = start_turn(state2, "hello", now=1.0)
     state2 = reduce_stream_event(
@@ -291,7 +300,50 @@ def test_llm_call_started_shows_thinking_through_the_ttft_window() -> None:
     assert activity_state_from_ui_state(state2, now=3.0).phase == "formulating"
 
 
-def test_llm_call_started_flips_post_tool_wait_to_thinking() -> None:
+def test_tool_call_delta_flips_thinking_to_formulating() -> None:
+    """A reasoning turn that goes straight from thinking to writing a tool
+    call (no visible response text) must read Thinking -> Formulating on
+    the tool_call_delta evidence, immediately and without a Streaming
+    phase in between; the tool_call event then takes over (waiting)."""
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "thinking", "content": "planning the tool call"},
+        now=2.0,
+    )
+    assert activity_state_from_ui_state(state, now=2.5).phase == "thinking"
+
+    state = reduce_stream_event(state, {"type": "tool_call_delta"}, now=3.0)
+    # Immediate: evidence, not a quiet-time guess.
+    assert activity_state_from_ui_state(state, now=3.1).phase == "formulating"
+    # Long tool arguments (a big file write) stay honestly Formulating.
+    assert activity_state_from_ui_state(state, now=20.0).phase == "formulating"
+
+    state = reduce_stream_event(
+        state,
+        {"type": "tool_call", "id": "call-1", "name": "file_write", "args": {}},
+        now=21.0,
+    )
+    assert activity_state_from_ui_state(state, now=21.1).phase == "waiting"
+
+
+def test_tool_call_delta_beats_the_quiet_guess_from_processing() -> None:
+    """On a non-reasoning call the tool_call_delta evidence flips
+    Processing to Formulating at once, without waiting out the 1s quiet
+    window."""
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(state, {"type": "tool_call_delta"}, now=1.3)
+    assert activity_state_from_ui_state(state, now=1.4).phase == "formulating"
+
+
+def test_llm_call_started_opens_a_fresh_processing_window_per_sub_turn() -> None:
+    """Each sub-turn dispatch (context + tool results heading back to the
+    provider) reopens honest "Processing...": the brief post-tool
+    "Processing results..." yields at dispatch, the quiet clock restarts,
+    and the agentic loop reads Processing -> Thinking -> Formulating ->
+    tool -> Processing -> ... with real deltas driving each flip."""
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "tool please", now=1.0)
     state = reduce_stream_event(
@@ -304,12 +356,37 @@ def test_llm_call_started_flips_post_tool_wait_to_thinking() -> None:
         {"type": "tool_result", "id": "call-1", "name": "lookup", "result": "ok"},
         now=3.0,
     )
-    assert activity_state_from_ui_state(state, now=3.5).phase == "processing_results"
+    # Between the tool result and the next dispatch: results in hand.
+    assert activity_state_from_ui_state(state, now=3.2).phase == "processing_results"
 
-    # The next sub-turn call dispatches: the wait is the model thinking.
+    # Sub-turn call dispatches: fresh TTFT, honest Processing throughout
+    # (reasoning call, so no Formulating guess however long it takes).
     state = reduce_stream_event(
         state,
         {"type": "llm_call_started", "reasoning": True, "model": "claude-test"},
-        now=4.0,
+        now=3.5,
     )
-    assert activity_state_from_ui_state(state, now=8.0).phase == "thinking"
+    assert activity_state_from_ui_state(state, now=4.0).phase == "processing"
+    assert activity_state_from_ui_state(state, now=9.0).phase == "processing"
+
+    state = reduce_stream_event(
+        state,
+        {"type": "thinking", "content": "reading the results"},
+        now=9.5,
+    )
+    assert activity_state_from_ui_state(state, now=9.6).phase == "thinking"
+
+
+def test_llm_call_started_restarts_the_quiet_clock_at_dispatch() -> None:
+    """Slow backend prep before dispatch must not pre-burn the 1s guess
+    window: a non-reasoning call dispatched 2.5s after submit still shows
+    Processing for its first second in flight."""
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "llm_call_started", "reasoning": False, "model": "gpt-test"},
+        now=3.5,
+    )
+    assert activity_state_from_ui_state(state, now=4.0).phase == "processing"
+    assert activity_state_from_ui_state(state, now=4.6).phase == "formulating"
