@@ -231,20 +231,34 @@ def _reduce_llm_call_started(
     event: LLMCallStartedEvent,
     timestamp: float,
 ) -> CLIUIState:
-    """An LLM call is in flight: the provider is working on the prompt.
+    """An LLM call just dispatched: a fresh TTFT window opens.
 
-    For a reasoning-enabled call the first output will be thinking tokens,
-    so the phase flips to ``thinking`` BEFORE any delta arrives, covering
-    the TTFT dead window (measured 3-8s+ on large contexts) with the honest
-    label; the sticky-thinking selector holds it from here. A non-reasoning
-    call is a no-op: the turn's current phase (the ``processing`` warm-up,
-    or ``processing_results`` after a tool batch) is already the honest
-    label for that wait, and stamping generic ``processing`` here would
-    clobber the more specific one.
+    Every call's pre-first-token wait reads honest "Processing..." from
+    the moment of dispatch, at turn start AND at each post-tool sub-turn
+    (the context window plus tool results are on their way back to the
+    provider), with the quiet clock restarted at dispatch. The stamped
+    reasoning flag makes ``select_activity_phase`` SUPPRESS the quiet-time
+    "Formulating..." guess for a reasoning-enabled call: its thinking
+    streams visibly when it starts, so quiet is genuine waiting and
+    "Processing..." holds until real deltas arrive.
     """
-    if not event.reasoning:
+    index = _last_assistant_index(state.messages)
+    if index is None:
         return state
-    return _ensure_streaming_assistant(state, timestamp, phase="thinking")
+    message = state.messages[index]
+    if not isinstance(message, AssistantMessage) or message.status != "streaming":
+        return state
+    return _replace_message(
+        state,
+        index,
+        replace(
+            message,
+            activity_phase="processing",
+            activity_updated_at=timestamp,
+            llm_call_reasoning=event.reasoning,
+        ),
+        timestamp,
+    )
 
 
 def _reduce_thinking(
@@ -266,7 +280,11 @@ def _reduce_tool_call_delta(
     event: ToolCallDeltaEvent,
     timestamp: float,
 ) -> CLIUIState:
-    state = _ensure_streaming_assistant(state, timestamp, phase="processing")
+    # Direct evidence the model is now writing a tool call (the backend
+    # emits one hint per LLM call at the first tool-argument chunk), so
+    # "Formulating..." applies immediately: it ends a thinking stretch
+    # without any Streaming in between, and beats the quiet-time guess.
+    state = _ensure_streaming_assistant(state, timestamp, phase="formulating")
     return replace(
         state,
         turn_status="streaming",

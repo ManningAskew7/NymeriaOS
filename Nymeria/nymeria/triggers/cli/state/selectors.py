@@ -70,15 +70,20 @@ def select_activity_phase(
     The reducer stores the direct phase; this selector applies the two
     quiet-time transitions:
 
-    - ``processing`` quiet >= 1s becomes ``formulating`` (no visible output
-      this LLM call: the warm-up label; note tool-call arguments also stream
-      under ``processing``, since only the first delta per call reaches the
-      client). ``thinking`` is deliberately sticky: the reducer sets it from
-      the ``llm_call_started`` status event BEFORE any delta arrives (the
-      provider's prompt-processing wait, measured 3-8s+ on large contexts),
-      and it must hold through that window and through any delta gap
-      (summarizer pauses, provider hiccups) instead of flapping back to
-      "Formulating".
+    - ``processing`` quiet >= 1s becomes ``formulating`` ONLY when the
+      in-flight call might be producing output the client cannot see
+      (tool-call arguments stream under ``processing``, since only the
+      first delta per call reaches the client). When the
+      ``llm_call_started`` flag says the call has reasoning enabled, that
+      hypothesis is false (thinking streams visibly when it starts), so
+      quiet is genuine waiting (the provider's prompt-processing TTFT,
+      measured 3-8s+ on large contexts) and the honest "Processing..."
+      holds for the whole window; ``thinking`` appears ONLY on real
+      thinking deltas. Once set it is deliberately sticky against TIME:
+      it must hold through delta gaps (summarizer pauses, provider
+      hiccups) instead of flapping back to a guess; it ends on EVIDENCE
+      instead (the reducer stores ``formulating`` on the
+      ``tool_call_delta`` hint, ``typing`` on the first response delta).
     - ``typing`` quiet >= 1.5s becomes ``finalizing``: after the last visible
       token the server still runs post-turn work (checkpoint, stats, hooks)
       before the done event, and claiming "Streaming" through that window was
@@ -98,7 +103,11 @@ def select_activity_phase(
             return "finalizing"
         return "typing"
 
-    if phase == "processing" and quiet_seconds >= quiet_to_formulating_seconds:
+    if (
+        phase == "processing"
+        and quiet_seconds >= quiet_to_formulating_seconds
+        and not message.llm_call_reasoning
+    ):
         return "formulating"
 
     return phase
