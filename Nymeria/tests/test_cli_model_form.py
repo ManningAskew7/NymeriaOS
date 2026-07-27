@@ -181,7 +181,10 @@ def test_model_root_opens_backend_declared_form_in_rich_repl() -> None:
     result = run(_backend_registry().dispatch_async(ctx, "/model"))
 
     assert result.ok is True
-    assert result.payload.get("suppress_transcript") is True
+    # The markdown renders alongside the form (form-bearing commands are
+    # often status-shaped; the picker replaces none of that output).
+    assert result.payload.get("suppress_transcript") is None
+    assert result.messages
     assert ("execute_command", {"command": "/model"}) in client.calls
 
     open_actions = [action for action in actions if action.get("type") == "open_form"]

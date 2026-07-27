@@ -1114,6 +1114,101 @@ def test_reasoning_and_thinking_are_catalog_aliases_of_think() -> None:
     ]
 
 
+def test_think_bare_attaches_the_scope_form() -> None:
+    """Bare /think keeps its markdown and declares the level picker: one tab
+    per writable scope, each with its own tab-level submit template."""
+    api = FakeCommandApi()
+    api.thread_config["llm_config"] = {"reasoning_effort": "medium"}
+
+    result = _run_think(api, "/think")
+
+    assert result.success is True
+    assert "Thinking:" in result.markdown  # fallback intact
+    form = (result.data or {}).get("form")
+    assert form is not None
+    assert form["title"] == "Thinking"
+    assert form["submit"] == {"command": "think {thread_level} thread"}
+    labels = [tab["label"] for tab in form["tabs"]]
+    assert labels == ["This thread", "Global"]
+    assert form["tabs"][0]["submit"] == {"command": "think {thread_level} thread"}
+    assert form["tabs"][1]["submit"] == {"command": "think {global_level} global"}
+    # Distinct field keys per tab: the CLI renderer keys its cursor by field
+    # key alone, so a shared key would park the cursor on the OTHER tab's
+    # current value (last tab wins in init_state) and Enter would apply the
+    # wrong level.
+    assert form["tabs"][0]["fields"][0]["key"] == "thread_level"
+    assert form["tabs"][1]["fields"][0]["key"] == "global_level"
+
+    def current_of(tab: dict[str, Any]) -> str:
+        options = tab["fields"][0]["options"]
+        assert [o["id"] for o in options] == [
+            "off", "on", "low", "medium", "high", "xhigh", "max",
+        ]
+        return next(o["id"] for o in options if o["current"])
+
+    # Thread tab parks on the thread's effective value (the override);
+    # global tab on the global state (thinking disabled, no effort).
+    assert current_of(form["tabs"][0]) == "medium"
+    assert current_of(form["tabs"][1]) == "off"
+
+
+def test_think_form_meta_carries_clamp_notes_for_the_active_model() -> None:
+    api = _ModeledCommandApi("openai", "gpt-5.1")
+
+    result = _run_think(api, "/think")
+
+    form = (result.data or {}).get("form")
+    assert form is not None
+    options = form["tabs"][0]["fields"][0]["options"]
+    xhigh = next(o for o in options if o["id"] == "xhigh")
+    assert xhigh["meta"] == "runs at high"
+
+
+def test_think_bare_without_thread_offers_only_the_global_tab() -> None:
+    api = FakeCommandApi()
+
+    result = run(
+        CommandService().execute(
+            CommandContext(
+                user_id="alice",
+                thread_id="",
+                actor="user",
+                surface="cli",
+                is_admin=True,
+            ),
+            "/think",
+            api=api,
+        )
+    )
+
+    assert result.success is True
+    form = (result.data or {}).get("form")
+    assert form is not None
+    assert [tab["label"] for tab in form["tabs"]] == ["Global"]
+    assert form["submit"] == {"command": "think {global_level} global"}
+
+
+def test_think_show_reports_on_for_an_effort_only_config() -> None:
+    """A persisted level enables thinking at every provider factory even
+    with the extended_thinking flag off (they gate on either signal), so the
+    status line and the form's current flag agree on that."""
+
+    class _EffortOnlyApi(FakeCommandApi):
+        async def get_settings(self, user_id: str | None = None) -> dict[str, Any]:
+            data = await super().get_settings(user_id=user_id)
+            data["llm_reasoning_effort"] = "high"
+            return data
+
+    result = _run_think(_EffortOnlyApi(), "/think")
+
+    assert result.success is True
+    assert "Thinking: on" in result.markdown
+    form = (result.data or {}).get("form")
+    assert form is not None
+    options = form["tabs"][1]["fields"][0]["options"]
+    assert next(o["id"] for o in options if o["current"]) == "high"
+
+
 def test_think_rejects_unknown_tokens() -> None:
     api = FakeCommandApi()
 
@@ -1201,6 +1296,75 @@ def test_provider_show_degrades_when_env_listing_is_admin_gated() -> None:
     assert "unknown (unavailable (admin only))" in result.markdown
 
 
+def test_provider_root_attaches_the_switch_test_form() -> None:
+    """Bare /provider keeps its markdown and declares the two-tab picker:
+    Switch and Test tabs share the registry-wide provider list, each with
+    its own tab-level submit template."""
+    api = FakeCommandApi()
+    api.env_set_keys = {"openai_api_key"}
+
+    result = _run_command(api, "/provider")
+
+    assert result.success is True
+    assert "Active provider" in result.markdown  # fallback intact
+    form = (result.data or {}).get("form")
+    assert form is not None
+    assert form["version"] == 1
+    assert form["title"] == "Provider"
+    assert form["submit"] == {"command": "provider switch {provider}"}
+    labels = [tab["label"] for tab in form["tabs"]]
+    assert labels == ["Switch", "Test"]
+    assert form["tabs"][0]["submit"] == {"command": "provider switch {provider}"}
+    assert form["tabs"][1]["submit"] == {"command": "provider test {provider}"}
+
+    fields = form["tabs"][0]["fields"]
+    assert [field["kind"] for field in fields] == ["search", "radio"]
+    options = fields[1]["options"]
+    by_id = {option["id"]: option for option in options}
+    # Registry-wide, not the /provider set trio.
+    assert "groq" in by_id
+    assert by_id["openai"]["current"] is True
+    # Credential status rides meta for the managed trio only.
+    assert "authenticated" in by_id["openai"]["meta"]
+    assert "authenticated" not in by_id["groq"]["meta"]
+    # notes_for_user is folded into meta (the renderer shows meta OR
+    # description, and meta is never empty here); description stays empty.
+    from nymeria.config.llm_providers import get_llm_provider_spec
+
+    groq_spec = get_llm_provider_spec("groq")
+    assert groq_spec is not None and groq_spec.notes_for_user
+    assert groq_spec.notes_for_user in by_id["groq"]["meta"]
+    assert all(not option["description"] for option in options)
+    # Grouped by tier: every native option precedes the first gateway one.
+    tiers = ["[NATIVE]" if "[NATIVE]" in o["meta"] else "" for o in options]
+    assert "[NATIVE]" not in tiers[tiers.index("") :]
+    # The Test tab lists only testable providers: a resolvable model (spec
+    # default, or the active provider's configured model) is required.
+    from nymeria.config.llm_providers import list_llm_provider_specs
+
+    test_ids = {o["id"] for o in form["tabs"][1]["fields"][1]["options"]}
+    switch_ids = {o["id"] for o in options}
+    assert test_ids <= switch_ids
+    assert "openai" in test_ids  # active
+    no_default = {s.id for s in list_llm_provider_specs() if not s.default_model}
+    assert no_default  # the filter has something to filter
+    assert not (test_ids & no_default - {"openai"})
+    # No secret material anywhere in the payload.
+    assert "sk-" not in str(form)
+
+
+def test_provider_root_skips_the_form_for_non_admins() -> None:
+    """The picker's submit targets (switch/test) are admin-registered, so a
+    caller the context marks non-admin gets markdown only."""
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider", is_admin=False)
+
+    assert result.success is True
+    assert "Active provider" in result.markdown
+    assert not (result.data or {}).get("form")
+
+
 def test_provider_list_groups_by_tier_without_secrets() -> None:
     api = FakeCommandApi()
     api.env_set_keys = {"anthropic_api_key"}
@@ -1228,7 +1392,15 @@ def test_provider_set_maps_credential_fields_to_settings() -> None:
 
     unknown = _run_command(api, "/provider set bogus api_key=x")
     assert unknown.success is False
-    assert "Unknown provider" in unknown.markdown
+    assert "Unknown provider for /provider set" in unknown.markdown
+
+    # A registered provider without credential settings fields is refused by
+    # set (which stays trio-only), pointing at the virtual llm_api_key slot
+    # (a bare /env set GROQ_API_KEY would be silently dropped by the
+    # settings model).
+    unmanaged = _run_command(api, "/provider set groq api_key=x")
+    assert unmanaged.success is False
+    assert "/env set llm_api_key" in unmanaged.markdown
 
     bad_field = _run_command(api, "/provider set openai token=x")
     assert bad_field.success is False
@@ -1255,11 +1427,52 @@ def test_provider_switch_warns_without_server_credential() -> None:
     assert result.success is True
     assert "Switched provider to Anthropic" in result.markdown
     assert "no server credential" in result.markdown
+    # Honest scope note: switch changes only llm_provider, and says so.
+    assert "model (gpt-test) stays unchanged" in result.markdown
     assert (
         "update_settings",
         (),
         {"user_id": "alice", "llm_provider": "anthropic"},
     ) in api.calls
+
+
+def test_provider_switch_accepts_any_registered_provider() -> None:
+    """switch is registry-wide (not the /provider set trio); unmanaged
+    providers get a generic env-var hint instead of credential status."""
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider switch groq")
+
+    assert result.success is True
+    assert "Switched provider to Groq" in result.markdown
+    assert "GROQ_API_KEY" in result.markdown
+    assert (
+        "update_settings",
+        (),
+        {"user_id": "alice", "llm_provider": "groq"},
+    ) in api.calls
+
+    unknown = _run_command(api, "/provider switch bogus")
+    assert unknown.success is False
+    assert "Unknown provider" in unknown.markdown
+    assert "/provider list" in unknown.markdown
+
+
+def test_provider_test_uses_spec_default_model_for_inactive_provider() -> None:
+    api = FakeCommandApi()
+
+    result = _run_command(api, "/provider test groq")
+
+    assert result.success is True
+    test_calls = [call for call in api.calls if call[0] == "test_llm_provider_config"]
+    assert len(test_calls) == 1
+    request = test_calls[0][1][0]
+    # Not the active provider: the spec's default model is used, and the
+    # active provider's base_url/api_mode are NOT leaked into the request.
+    assert request == {
+        "llm_provider": "groq",
+        "llm_model": "llama-3.3-70b-versatile",
+    }
 
 
 def test_provider_test_builds_request_without_client_secret() -> None:

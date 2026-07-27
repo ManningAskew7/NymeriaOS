@@ -151,6 +151,91 @@ def test_confirm_with_empty_selection_is_a_quiet_noop() -> None:
     assert result.ok is True
 
 
+def test_confirm_uses_the_active_tabs_submit_template() -> None:
+    """A tab-level submit template wins over the form-level default while
+    that tab is active; tabs without their own fall back to the form-level
+    template."""
+
+    provider_options = [
+        {"id": "anthropic", "label": "Anthropic", "current": True},
+        {"id": "openrouter", "label": "OpenRouter", "current": False},
+    ]
+    payload = _form_payload(
+        title="Provider",
+        tabs=[
+            {
+                "label": "Switch",
+                "fields": [{"kind": "radio", "key": "provider", "options": provider_options}],
+            },
+            {
+                "label": "Test",
+                "submit": {"command": "provider test {provider}"},
+                "fields": [{"kind": "radio", "key": "provider", "options": provider_options}],
+            },
+        ],
+        submit={"command": "provider switch {provider}"},
+    )
+    client = _RecordingClient()
+    context, _dispatched = _context(client)
+    spec = form_spec_from_payload(payload, context=context)
+    assert spec is not None
+    assert [tab.label for tab in spec.tabs] == ["Switch", "Test"]
+
+    run(
+        spec.on_confirm(
+            FormResult(spec_title="Provider", tab_label="Test", radio_value="openrouter")
+        )
+    )
+    run(
+        spec.on_confirm(
+            FormResult(spec_title="Provider", tab_label="Switch", radio_value="openrouter")
+        )
+    )
+    # An unknown tab label falls back to the FIRST tab (and its template).
+    run(
+        spec.on_confirm(
+            FormResult(spec_title="Provider", tab_label="Gone", radio_value="anthropic")
+        )
+    )
+
+    assert client.calls == [
+        "/provider test openrouter",
+        "/provider switch openrouter",
+        "/provider switch anthropic",
+    ]
+
+
+def test_duplicate_tab_labels_resolve_first_wins_end_to_end() -> None:
+    """Values AND template must come from the same tab: _active_tab matches
+    the first label, so the template map keeps the first duplicate too."""
+
+    options = [{"id": "a", "label": "a", "current": True}]
+    payload = _form_payload(
+        title="Dup",
+        tabs=[
+            {
+                "label": "X",
+                "submit": {"command": "first {pick}"},
+                "fields": [{"kind": "radio", "key": "pick", "options": options}],
+            },
+            {
+                "label": "X",
+                "submit": {"command": "second {pick}"},
+                "fields": [{"kind": "radio", "key": "pick", "options": options}],
+            },
+        ],
+        submit={"command": "fallback {pick}"},
+    )
+    client = _RecordingClient()
+    context, _dispatched = _context(client)
+    spec = form_spec_from_payload(payload, context=context)
+    assert spec is not None
+
+    run(spec.on_confirm(FormResult(spec_title="Dup", tab_label="X", radio_value="a")))
+
+    assert client.calls == ["/first a"]
+
+
 def test_substitute_template_joins_checkbox_values() -> None:
     assert (
         substitute_template("tools enable {tools}", {"tools": "alpha beta"})
@@ -239,8 +324,9 @@ def test_execute_backend_command_opens_declared_form() -> None:
     result = run(_execute_backend_command(context, ("model",), []))
 
     assert result.ok is True
-    assert result.payload.get("suppress_transcript") is True
-    assert not result.messages
+    # The markdown fallback renders in the transcript alongside the form.
+    assert result.payload.get("suppress_transcript") is None
+    assert [message.content for message in result.messages] == ["fallback text"]
     (action,) = dispatched
     assert action["type"] == "open_form"
     assert isinstance(action["spec"], FormSpec)
