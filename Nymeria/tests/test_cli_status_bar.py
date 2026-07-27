@@ -145,23 +145,32 @@ def test_status_bar_shows_connected_backend_model() -> None:
     assert "gpt-5.5" in text
 
 
-def test_quiet_activity_status_becomes_formulating() -> None:
+def test_quiet_activity_status_formulating_and_thinking_sticky() -> None:
     renderer = StatusBarRenderer()
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "think", now=1.0)
-    state = reduce_stream_event(
-        state,
-        {"type": "thinking", "content": "private"},
-        now=1.2,
-    )
 
+    # Quiet processing (nothing streamed yet) demotes to the warm-up label.
     text = renderer.render_text(
         state,
         capabilities=FakeTerminalCapabilities(supports_unicode=False, width=100),
         now=2.3,
     )
-
     assert "Formulating..." in text
+
+    # Once thinking tokens have streamed, the label sticks through the
+    # sparse delta gaps instead of flapping back to Formulating.
+    state = reduce_stream_event(
+        state,
+        {"type": "thinking", "content": "private"},
+        now=2.5,
+    )
+    text = renderer.render_text(
+        state,
+        capabilities=FakeTerminalCapabilities(supports_unicode=False, width=100),
+        now=6.0,
+    )
+    assert "Thinking..." in text
     assert "private" not in text
 
 

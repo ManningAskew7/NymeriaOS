@@ -16,6 +16,7 @@ from .model import (
 )
 
 QUIET_TO_FORMULATING_SECONDS = 1.0
+QUIET_TYPING_TO_FINALIZING_SECONDS = 1.5
 
 
 def select_last_assistant_message(state: CLIUIState) -> AssistantMessage | None:
@@ -62,11 +63,25 @@ def select_activity_phase(
     *,
     now: float | None = None,
     quiet_to_formulating_seconds: float = QUIET_TO_FORMULATING_SECONDS,
+    quiet_typing_to_finalizing_seconds: float = QUIET_TYPING_TO_FINALIZING_SECONDS,
 ) -> AssistantActivityPhase | None:
     """Return the current visible activity phase.
 
-    The reducer stores the direct phase. This selector applies the desktop
-    quiet-time hook that turns silent processing/thinking into formulating.
+    The reducer stores the direct phase; this selector applies the two
+    quiet-time transitions:
+
+    - ``processing`` quiet >= 1s becomes ``formulating`` (no visible output
+      this LLM call: the warm-up label; note tool-call arguments also stream
+      under ``processing``, since only the first delta per call reaches the
+      client). ``thinking`` is deliberately sticky: reasoning deltas arrive
+      in sparse bursts (measured multi-second gaps mid-thought on fable-5
+      via CLIProxy), and demoting an in-progress thought stream back to
+      "Formulating" on a 1s token gap made the label wrong for most of the
+      first thinking block.
+    - ``typing`` quiet >= 1.5s becomes ``finalizing``: after the last visible
+      token the server still runs post-turn work (checkpoint, stats, hooks)
+      before the done event, and claiming "Streaming" through that window was
+      stale. A mid-stream stall flips back to typing on the next chunk.
     """
 
     message = select_last_assistant_message(state)
@@ -74,13 +89,16 @@ def select_activity_phase(
         return None
 
     phase = message.activity_phase
+    current_time = time.monotonic() if now is None else now
+    quiet_seconds = current_time - message.activity_updated_at
+
     if phase == "typing":
+        if quiet_seconds >= quiet_typing_to_finalizing_seconds:
+            return "finalizing"
         return "typing"
 
-    if phase in {"processing", "thinking"}:
-        current_time = time.monotonic() if now is None else now
-        if current_time - message.activity_updated_at >= quiet_to_formulating_seconds:
-            return "formulating"
+    if phase == "processing" and quiet_seconds >= quiet_to_formulating_seconds:
+        return "formulating"
 
     return phase
 
@@ -122,6 +140,7 @@ def step_text(step: MessageStep) -> str:
 
 __all__ = [
     "QUIET_TO_FORMULATING_SECONDS",
+    "QUIET_TYPING_TO_FINALIZING_SECONDS",
     "select_activity_phase",
     "select_context_usage",
     "select_intermediate_content",
