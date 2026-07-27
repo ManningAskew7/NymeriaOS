@@ -242,7 +242,9 @@ def activity_status_text(activity: Any, *, width: int | None = None) -> str:
     if activity is None or not getattr(activity, "active", True):
         return ""
     phase = getattr(activity, "phase", "")
-    if phase == "typing":
+    if phase in ("typing", "finalizing"):
+        # Plain output has no live status line: response text already streams
+        # to stdout, and a printed "Finalizing..." would interleave into it.
         return ""
     label = {
         "processing": "Processing...",

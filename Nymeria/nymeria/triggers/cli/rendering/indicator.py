@@ -28,6 +28,7 @@ PHASE_LABELS: dict[ActivityPhase, str] = {
     "thinking": "Thinking...",
     "typing": "Streaming...",
     "formulating": "Formulating...",
+    "finalizing": "Finalizing...",
     "compacting": "Compacting...",
     "processing_results": "Processing results...",
     "waiting": "Waiting...",

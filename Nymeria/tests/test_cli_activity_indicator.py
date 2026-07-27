@@ -21,18 +21,21 @@ from nymeria.triggers.cli.state import (
 
 
 def test_phase_labels_match_desktop_text_with_ellipses() -> None:
+    # "finalizing" is CLI-only (the desktop hides its indicator during
+    # typing, so it has no post-stream label to show).
     assert PHASE_LABELS == {
         "processing": "Processing...",
         "thinking": "Thinking...",
         "typing": "Streaming...",
         "formulating": "Formulating...",
+        "finalizing": "Finalizing...",
         "compacting": "Compacting...",
         "processing_results": "Processing results...",
         "waiting": "Waiting...",
     }
 
 
-def test_processing_and_thinking_become_formulating_after_quiet_timeout() -> None:
+def test_quiet_processing_becomes_formulating_but_thinking_sticks() -> None:
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "hello", now=1.0)
 
@@ -45,8 +48,63 @@ def test_processing_and_thinking_become_formulating_after_quiet_timeout() -> Non
         now=3.0,
     )
 
+    # Reasoning deltas arrive in sparse bursts; the label must not flap back
+    # to Formulating between them.
     assert activity_state_from_ui_state(state, now=3.9).phase == "thinking"
-    assert activity_state_from_ui_state(state, now=4.01).phase == "formulating"
+    assert activity_state_from_ui_state(state, now=4.01).phase == "thinking"
+    assert activity_state_from_ui_state(state, now=30.0).phase == "thinking"
+
+
+def test_quiet_typing_becomes_finalizing() -> None:
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "response", "content": "answer text"},
+        now=2.0,
+    )
+
+    # Streaming stays honest through ordinary token gaps (boundary is 1.5s
+    # of quiet)...
+    assert activity_state_from_ui_state(state, now=3.4).phase == "typing"
+    # ...but a longer quiet window (post-stream server work before the done
+    # event) is labeled as finalizing instead of a stale "Streaming".
+    assert activity_state_from_ui_state(state, now=3.6).phase == "finalizing"
+
+    # A late chunk (mid-stream stall) flips straight back to typing.
+    state = reduce_stream_event(
+        state,
+        {"type": "response", "content": "more"},
+        now=4.0,
+    )
+    assert activity_state_from_ui_state(state, now=4.1).phase == "typing"
+
+    # The done event finalizes the assistant: no indicator at all.
+    state = reduce_stream_event(state, {"type": "done"}, now=5.0)
+    assert activity_state_from_ui_state(state, now=5.01) is None
+
+
+def test_finalizing_renders_on_indicator_but_not_in_plain_mode() -> None:
+    from nymeria.triggers.cli.rendering.plain import activity_status_text
+
+    caps = FakeTerminalCapabilities()
+    indicator = ActivityIndicator()
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "response", "content": "answer"},
+        now=2.0,
+    )
+
+    rendered = indicator.render_from_state(state, capabilities=caps, now=4.0)
+    assert rendered is not None
+    assert rendered.label == "Finalizing..."
+
+    # Plain output suppresses typing AND its quiet finalizing variant: the
+    # response text already streams to stdout.
+    activity = activity_state_from_ui_state(state, now=4.0)
+    assert activity_status_text(activity) == ""
 
 
 def test_compacting_state_renders_compacting_label() -> None:

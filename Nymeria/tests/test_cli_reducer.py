@@ -153,24 +153,31 @@ def test_tool_result_can_match_running_tool_by_name_without_id() -> None:
     assert select_running_tool_calls(state) == ()
 
 
-def test_activity_phase_formulates_after_quiet_thinking_period() -> None:
+def test_activity_phase_quiet_transitions() -> None:
     state = create_initial_state(thread_id="thread-1", now=0.0)
     state = start_turn(state, "think", now=0.1)
+    # Quiet processing (nothing streamed yet) demotes to formulating.
+    assert select_activity_phase(state, now=0.5) == "processing"
+    assert select_activity_phase(state, now=1.2) == "formulating"
+
     state = reduce_stream_event(
         state,
         {"type": "thinking", "content": "working"},
-        now=1.0,
+        now=1.5,
     )
-
-    assert select_activity_phase(state, now=1.5) == "thinking"
-    assert select_activity_phase(state, now=2.01) == "formulating"
+    # Thinking is sticky through sparse reasoning-delta gaps.
+    assert select_activity_phase(state, now=2.0) == "thinking"
+    assert select_activity_phase(state, now=9.0) == "thinking"
 
     state = reduce_stream_event(
         state,
         {"type": "response", "content": "Done."},
-        now=2.2,
+        now=9.2,
     )
-    assert select_activity_phase(state, now=4.0) == "typing"
+    # Typing stays honest through short gaps, then reads as finalizing while
+    # the server wraps up the turn ahead of the done event.
+    assert select_activity_phase(state, now=10.0) == "typing"
+    assert select_activity_phase(state, now=11.0) == "finalizing"
 
 
 def test_compacted_event_replaces_transcript_with_notice() -> None:
