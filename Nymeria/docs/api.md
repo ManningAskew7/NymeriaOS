@@ -1483,16 +1483,22 @@ text into their normal chat path instead of string-matching the error copy.
 the declarative form contract (schema owned by `core/command_forms.py`):
 `data.form` is a versioned form definition (v1: title, tabs of
 search/radio/checkbox fields, and a submit command template with `{key}`
-placeholders; on confirm the client substitutes the selected values and
-dispatches the resulting slash command), and `data.state` is a dict of
+placeholders; on confirm the client substitutes the ACTIVE tab's selected
+values and dispatches the resulting slash command; a tab may declare its own
+`submit` template, which wins over the form-level default while that tab is
+active, so tabs can mean different actions, e.g. `/provider`'s Switch vs
+Test), and `data.state` is a dict of
 client-state sync hints (for example `{"model": ...}` after a model change,
 `{"reasoning": {"enabled": ..., "effort": ...}}` after `/think` or its
 `/reasoning`/`/thinking` aliases change thinking mode, carrying the level the
 model will actually run at, or `{"switch_thread": {"thread_id": ...}}` after
 `/thread switch`). The
 markdown fallback is always present, so frontends may ignore `data`
-entirely; the Rich CLI is the first consumer (bare `/model` renders as a
-native picker there). Clients that render forms should treat unknown
+entirely; the Rich CLI is the consumer. Backend-declared forms so far: bare
+`/model` (model picker), bare `/provider` (two tabs, Switch and Test, over
+every registered provider spec), and bare `/think` (thinking level per
+writable scope, a "This thread" tab only when a thread is active). Clients
+that render forms should treat unknown
 versions or field kinds as "render the markdown instead".
 
 ### Chat Slash Commands

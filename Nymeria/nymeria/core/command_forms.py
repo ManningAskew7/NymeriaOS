@@ -16,7 +16,9 @@ behind the version number later):
       "version": 1,
       "title": str,
       "footer_hint": str | None,
-      "tabs": [{"label": str, "fields": [
+      "tabs": [{"label": str,
+                "submit": {"command": str} | absent,
+                "fields": [
           {"kind": "search", "key": str, "placeholder": str | None},
           {"kind": "radio" | "checkbox", "key": str, "options": [
               {"id": str, "label": str, "meta": str, "description": str,
@@ -29,7 +31,12 @@ behind the version number later):
 Submit semantics are declarative: on confirm the client substitutes each
 ``{key}`` placeholder with the field's value (radio: the selected option id;
 checkbox: the selected ids joined by spaces) and dispatches the resulting
-string through its normal slash-command path. Cancel is a no-op. The
+string through its normal slash-command path. Only the ACTIVE tab's field
+values are substituted, so tabs whose selections mean different actions
+(e.g. /provider's Switch vs Test) carry their own tab-level ``submit``
+template, which wins over the form-level one; the form-level template stays
+required as the default for tabs without their own (and the action an older
+client that predates tab submits will apply). Cancel is a no-op. The
 markdown fallback is ALWAYS present on the result, so frontends that do not
 render forms (bots, plain terminals, current desktop/mobile) need zero
 changes and there is no capability negotiation on the wire.
@@ -92,8 +99,19 @@ def checkbox_field(key: str, options: list[dict[str, Any]]) -> dict[str, Any]:
     return {"kind": "checkbox", "key": key, "options": list(options)}
 
 
-def form_tab(label: str, fields: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"label": label, "fields": list(fields)}
+def form_tab(
+    label: str,
+    fields: list[dict[str, Any]],
+    *,
+    submit_command: str = "",
+) -> dict[str, Any]:
+    """Build a tab dict; ``submit_command`` (optional) overrides the
+    form-level submit template while this tab is active."""
+
+    tab: dict[str, Any] = {"label": label, "fields": list(fields)}
+    if submit_command:
+        tab["submit"] = {"command": submit_command}
+    return tab
 
 
 def form_payload(

@@ -4,8 +4,9 @@ Backend slash commands can attach a form payload to their result
 (``CommandResult.data["form"]``, built by ``core/command_forms.py``; the
 schema is documented there). This module adapts that JSON payload to the
 Rich REPL's :class:`FormSpec` and supplies the one shared confirm handler:
-substitute the selected field values into the payload's submit template and
-dispatch the resulting slash command through the normal backend path.
+substitute the active tab's field values into the submit template (the
+tab-level template when the tab declares one, else the form-level default)
+and dispatch the resulting slash command through the normal backend path.
 
 It also applies ``data["state"]`` sync hints (client-state side effects a
 pure text forwarder would otherwise drop, e.g. the status-bar model label).
@@ -50,10 +51,15 @@ def form_spec_from_payload(
         return None
 
     tabs: list[FormTab] = []
+    templates: dict[str, str] = {}
     for raw_tab in _sequence(payload.get("tabs")):
         tab = _tab_from_payload(raw_tab)
         if tab is not None:
             tabs.append(tab)
+            # setdefault: duplicate labels resolve FIRST-wins, matching
+            # _active_tab's first-match lookup (values and template must
+            # come from the same tab).
+            templates.setdefault(tab.label, _tab_submit_template(raw_tab) or template)
     if not tabs:
         return None
 
@@ -61,7 +67,7 @@ def form_spec_from_payload(
     return FormSpec(
         title=title,
         tabs=tab_tuple,
-        on_confirm=lambda result: _confirm(context, template, tab_tuple, result),
+        on_confirm=lambda result: _confirm(context, templates, tab_tuple, result),
         footer_hint=str(payload.get("footer_hint") or ""),
     )
 
@@ -131,11 +137,15 @@ def substitute_template(
 
 async def _confirm(
     context: CommandContext,
-    template: str,
+    templates: Mapping[str, str],
     tabs: tuple[FormTab, ...],
     result: FormResult,
 ) -> CommandResult:
-    values = _result_values(tabs, result)
+    active = _active_tab(tabs, result)
+    template = templates.get(active.label, "") if active is not None else ""
+    if not template:
+        return CommandResult.completed()
+    values = _result_values(active, result)
     list_values = [
         value for key, value in values.items() if "{" + key + "}" in template
     ]
@@ -154,8 +164,18 @@ async def _confirm(
     return await _execute_backend_command(context, (tokens[0],), tokens[1:])
 
 
-def _result_values(
+def _active_tab(
     tabs: tuple[FormTab, ...],
+    result: FormResult,
+) -> FormTab | None:
+    active = next((tab for tab in tabs if tab.label == result.tab_label), None)
+    if active is None and tabs:
+        active = tabs[0]
+    return active
+
+
+def _result_values(
+    active: FormTab | None,
     result: FormResult,
 ) -> dict[str, str]:
     """Map field keys of the submitted tab to their selected values.
@@ -166,9 +186,6 @@ def _result_values(
     separate arguments).
     """
 
-    active = next((tab for tab in tabs if tab.label == result.tab_label), None)
-    if active is None and tabs:
-        active = tabs[0]
     values: dict[str, str] = {}
     for field in active.fields if active is not None else ():
         if field.kind == "radio":
@@ -189,6 +206,17 @@ def _quote_value(value: str) -> str:
     if any(ch.isspace() for ch in stripped):
         return shlex.quote(stripped)
     return stripped
+
+
+def _tab_submit_template(raw_tab: Any) -> str:
+    """The tab-level submit template, or "" when the tab declares none."""
+
+    if not isinstance(raw_tab, Mapping):
+        return ""
+    submit = raw_tab.get("submit")
+    if not isinstance(submit, Mapping):
+        return ""
+    return str(submit.get("command") or "").strip()
 
 
 def _tab_from_payload(raw_tab: Any) -> FormTab | None:

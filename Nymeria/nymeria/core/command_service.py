@@ -2232,7 +2232,11 @@ class CommandService:
                     return CommandResult(False, f"**Error:** {exc}", command_label, level="error")
 
         executor = _CommandExecutor(
-            api=client, thread_id=ctx.thread_id, user_id=ctx.user_id, actor=actor
+            api=client,
+            thread_id=ctx.thread_id,
+            user_id=ctx.user_id,
+            actor=actor,
+            is_admin=ctx.is_admin,
         )
 
         method_name = "_cmd_" + "_".join(definition.path)
@@ -2645,11 +2649,22 @@ def prepare_skill_slash_command(
 class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMixin):
     """Per-request command executor with the migrated command bodies."""
 
-    def __init__(self, api: Any, thread_id: str | None, user_id: str, actor: str = "user"):
+    def __init__(
+        self,
+        api: Any,
+        thread_id: str | None,
+        user_id: str,
+        actor: str = "user",
+        is_admin: bool | None = None,
+    ):
         self.api = api
         self.thread_id = thread_id or ""
         self.user_id = user_id
         self.actor = actor
+        # The context's admin verdict (None = unknown). Handlers use it only
+        # for cosmetic gating (e.g. not attaching a form whose submit targets
+        # are admin-only); authorization stays at the dispatch gate.
+        self.is_admin = is_admin
 
     def _require_thread(self) -> str | None:
         if self.thread_id:

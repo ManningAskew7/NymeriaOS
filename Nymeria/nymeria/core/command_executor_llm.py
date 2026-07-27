@@ -23,22 +23,29 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from .command_forms import CommandOutput, command_data
+if TYPE_CHECKING:
+    from ..config.llm_providers import LLMProviderSpec
+
+from .command_forms import (
+    CommandOutput,
+    command_data,
+    form_option,
+    form_payload,
+    form_tab,
+    radio_field,
+    search_field,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # ── Provider catalog (ported from the retired CLI provider command) ──────────
 
-# Display labels for the providers whose credentials /provider can manage.
-PROVIDER_LABELS = {
-    "anthropic": "Anthropic",
-    "openai": "OpenAI",
-    "openrouter": "OpenRouter",
-}
-
 # Maps /provider set credential fields to backend settings keys. Adding a
-# provider here requires the matching fields on the /settings model.
+# provider here requires the matching fields on the /settings model. Only
+# these providers have credential-bearing settings fields, so /provider set
+# (and the rich credential status) stays scoped to them; switch and test
+# accept ANY registered provider spec.
 PROVIDER_SECRET_SETTINGS = {
     "anthropic": {
         "api_key": "anthropic_api_key",
@@ -48,14 +55,8 @@ PROVIDER_SECRET_SETTINGS = {
     "openrouter": {"api_key": "openrouter_api_key"},
 }
 
-DEFAULT_PROVIDER_MODELS = {
-    "anthropic": "claude-sonnet-4-6",
-    "openai": "gpt-4o-mini",
-    "openrouter": "anthropic/claude-sonnet-4.5",
-}
-
 OPENAI_API_MODES = {"chat_completions", "responses"}
-PROVIDERS = tuple(PROVIDER_LABELS)
+PROVIDERS = tuple(PROVIDER_SECRET_SETTINGS)
 
 _TIER_BADGES = {
     "native": "[NATIVE]",
@@ -82,6 +83,7 @@ class LLMCommandsMixin:
     thread_id: str
     user_id: str
     actor: str
+    is_admin: bool | None
 
     if TYPE_CHECKING:
         def _require_thread(self) -> str | None: ...
@@ -472,7 +474,7 @@ class LLMCommandsMixin:
             return await self._think_set_thread(value)
         return await self._think_set_global(value)
 
-    async def _think_show(self) -> str:
+    async def _think_show(self) -> str | CommandOutput:
         settings = await self.api.get_settings()
         global_thinking = bool(settings.get("llm_extended_thinking", False))
         global_effort = str(settings.get("llm_reasoning_effort") or "")
@@ -502,6 +504,11 @@ class LLMCommandsMixin:
         if str(effective_effort or "").lower() == "off":
             # Explicit effort "off" wins over extended_thinking.
             effective_thinking = False
+        elif str(effective_effort or "").lower() in _THINK_LEVELS:
+            # An explicit level enables thinking at every provider factory
+            # (they gate on extended_thinking OR a set effort), so report it
+            # as on even when the extended_thinking flag itself is False.
+            effective_thinking = True
 
         provider, model = self._resolve_provider_model(settings, thread_llm)
         runs_at = self._clamp_for_model(provider, model, effective_effort)
@@ -533,7 +540,108 @@ class LLMCommandsMixin:
         if ladder:
             rows.append(f"  Supported  {', '.join(ladder)} ({model})")
         rows.append("Set with: /think <off|on|low|medium|high|xhigh|max> [global|thread]")
-        return "[Info]: " + "\n".join(rows)
+        text = "[Info]: " + "\n".join(rows)
+        form = self._think_picker_form(
+            provider=provider,
+            model=model,
+            global_current=self._think_current_value(global_thinking, global_effort),
+            thread_current=self._think_current_value(
+                effective_thinking, effective_effort
+            ),
+        )
+        return CommandOutput(text, data=command_data(form=form))
+
+    @staticmethod
+    def _think_current_value(enabled: bool, effort: str | None) -> str:
+        """Collapse the (enabled, effort) pair onto the /think value space."""
+        level = str(effort or "").lower()
+        if level == "off":
+            return "off"
+        if level in _THINK_LEVELS:
+            return level
+        return "on" if enabled else "off"
+
+    def _think_picker_form(
+        self,
+        *,
+        provider: str,
+        model: str,
+        global_current: str,
+        thread_current: str,
+    ) -> dict[str, Any]:
+        """The thinking-level picker attached to bare ``/think``.
+
+        One tab per writable scope ("This thread" only with an active
+        thread), each submitting the scoped set command via its tab-level
+        template; option meta carries the active model's clamp notes so an
+        unhonored level is visible before it is chosen.
+        """
+
+        def _options(current: str) -> list[dict[str, Any]]:
+            options: list[dict[str, Any]] = []
+            for value in ("off", "on", *_THINK_LEVELS):
+                meta = ""
+                description = ""
+                if value == "on":
+                    description = "enable (default effort)"
+                elif value == "off":
+                    description = "disable thinking"
+                    clamped = self._clamp_for_model(provider, model, "off")
+                    if clamped and clamped != "off":
+                        meta = f"cannot disable, runs at {clamped}"
+                else:
+                    clamped = self._clamp_for_model(provider, model, value)
+                    if clamped and clamped != value:
+                        meta = f"runs at {clamped}"
+                options.append(
+                    form_option(
+                        value,
+                        meta=meta,
+                        description=description,
+                        current=value == current,
+                    )
+                )
+            return options
+
+        # Distinct field keys per tab: the renderer's FormState keys its
+        # cursor by field key alone, so a shared key would let the LAST
+        # tab's current value park the cursor on every tab (Enter would
+        # then apply the other scope's level). The per-tab submit template
+        # names its own key, so cursor state stays scope-local.
+        tabs: list[dict[str, Any]] = []
+        if self.thread_id:
+            tabs.append(
+                form_tab(
+                    "This thread",
+                    [radio_field("thread_level", _options(thread_current))],
+                    submit_command="think {thread_level} thread",
+                )
+            )
+        tabs.append(
+            form_tab(
+                "Global",
+                [radio_field("global_level", _options(global_current))],
+                submit_command="think {global_level} global",
+            )
+        )
+        # The form-level default mirrors the bare command's scope default:
+        # thread when one is active, else global.
+        default_submit = (
+            "think {thread_level} thread"
+            if self.thread_id
+            else "think {global_level} global"
+        )
+        footer = (
+            "←→ tab · Enter apply · Esc cancel"
+            if len(tabs) > 1
+            else "Enter apply · Esc cancel"
+        )
+        return form_payload(
+            "Thinking",
+            tabs,
+            submit_command=default_submit,
+            footer_hint=footer,
+        )
 
     async def _think_set_global(self, value: str) -> str | CommandOutput:
         settings = await self.api.get_settings()
@@ -735,7 +843,7 @@ class LLMCommandsMixin:
 
     # ── Provider ──────────────────────────────────────────────────────────
 
-    async def _cmd_provider(self, args: list[str], rest: str) -> str:
+    async def _cmd_provider(self, args: list[str], rest: str) -> str | CommandOutput:
         if args:
             return "[Error]: Usage: /provider [list|set|switch|test|reasoning-passback]"
         from ..config.llm_providers import get_llm_provider_spec
@@ -777,7 +885,98 @@ class LLMCommandsMixin:
         lines.append(
             "Manage with: /provider [list|set|switch|test|reasoning-passback]"
         )
-        return "[Info]: " + "\n".join(lines)
+        text = "[Info]: " + "\n".join(lines)
+        # The picker's submit targets (switch/test) are admin-registered, so
+        # mirror the dispatch gate (which blocks only on a definite False)
+        # and skip the form for callers who could never submit it.
+        if self.is_admin is False:
+            return text
+        form = self._provider_picker_form(settings, status)
+        if form is None:
+            return text
+        return CommandOutput(text, data=command_data(form=form))
+
+    def _provider_picker_form(
+        self,
+        settings: Mapping[str, Any],
+        status: Mapping[str, Mapping[str, str]],
+    ) -> dict[str, Any] | None:
+        """The two-tab Switch/Test picker attached to bare ``/provider``.
+
+        Both tabs list every registered provider spec grouped by tier
+        (native, gateway, unverified; registration order within a tier);
+        each tab submits its own subcommand via the tab-level submit
+        template. The markdown fallback always rides alongside, so
+        form-less frontends lose nothing.
+        """
+        from ..config.llm_providers import get_llm_provider_spec
+
+        entries = self._provider_entries(settings, status)
+        ordered = sorted(
+            entries,
+            key=lambda entry: (
+                _TIER_ORDER.index(entry["tier"])
+                if entry["tier"] in _TIER_ORDER
+                else len(_TIER_ORDER)
+            ),
+        )
+
+        def _option(entry: Mapping[str, Any]) -> dict[str, Any]:
+            # Everything user-facing rides meta (the renderer shows meta OR
+            # description, and meta is never empty here, so a description
+            # would be dead payload); notes_for_user is folded in so the
+            # unverified-tier warnings stay visible in the picker.
+            meta_parts = [_TIER_BADGES.get(entry["tier"], str(entry["tier"]))]
+            if entry["provider"] in PROVIDER_SECRET_SETTINGS:
+                meta_parts.append(str(entry["status"]))
+            if entry["notes_for_user"]:
+                meta_parts.append(str(entry["notes_for_user"]))
+            return form_option(
+                entry["provider"],
+                label=entry["label"],
+                meta=" ".join(part for part in meta_parts if part),
+                current=bool(entry["active"]),
+            )
+
+        switch_options: list[dict[str, Any]] = []
+        test_options: list[dict[str, Any]] = []
+        for entry in ordered:
+            spec = get_llm_provider_spec(str(entry["provider"]))
+            if spec is None:
+                # The synthetic unregistered-active entry: it cannot be
+                # switched to or tested, so it stays markdown-only.
+                continue
+            switch_options.append(_option(entry))
+            # Test needs a resolvable model: the spec default, or the
+            # configured model when the provider is active.
+            if entry["active"] or spec.default_model:
+                test_options.append(_option(entry))
+        if not switch_options:
+            return None
+
+        def _fields(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                search_field("filter", placeholder="Filter providers…"),
+                radio_field("provider", options),
+            ]
+
+        return form_payload(
+            "Provider",
+            [
+                form_tab(
+                    "Switch",
+                    _fields(switch_options),
+                    submit_command="provider switch {provider}",
+                ),
+                form_tab(
+                    "Test",
+                    _fields(test_options),
+                    submit_command="provider test {provider}",
+                ),
+            ],
+            submit_command="provider switch {provider}",
+            footer_hint="←→ tab · Enter apply · Esc cancel",
+        )
 
     async def _cmd_provider_list(self, args: list[str], rest: str) -> str:
         settings = await self.api.get_settings()
@@ -811,8 +1010,14 @@ class LLMCommandsMixin:
         if len(args) < 2:
             return "[Error]: Usage: /provider set <provider> <key=value> [key=value...]"
         provider = self._normalize_provider(args[0])
-        if provider not in PROVIDERS:
-            return self._unknown_provider_error(args[0])
+        if provider not in PROVIDER_SECRET_SETTINGS:
+            return (
+                f"[Error]: Unknown provider for /provider set: {args[0]}. "
+                f"Credential fields exist for: {', '.join(PROVIDERS)}. "
+                "For any other registered provider: /provider switch "
+                "<provider>, then /env set llm_api_key <key> (the virtual "
+                "slot routes to the active provider's declared key env var)."
+            )
         values, error = self._parse_provider_values(provider, args[1:])
         if error:
             return f"[Error]: {error}"
@@ -833,23 +1038,64 @@ class LLMCommandsMixin:
         return f"[Success]: {message}"
 
     async def _cmd_provider_switch(self, args: list[str], rest: str) -> str:
+        """Switch the active provider; any registered spec is accepted.
+
+        Credential feedback is rich only for the /provider-managed trio
+        (their keys live in settings fields the status map can see); other
+        providers get a generic env-var hint.
+        """
         if len(args) != 1:
             return "[Error]: Usage: /provider switch <provider>"
-        provider = self._normalize_provider(args[0])
-        if provider not in PROVIDERS:
-            return self._unknown_provider_error(args[0])
+        from ..config.llm_providers import get_llm_provider_spec
 
-        status = await self._provider_status_map()
+        spec = get_llm_provider_spec(args[0])
+        if spec is None:
+            return self._unknown_provider_error(args[0])
+        provider = spec.id
+
+        settings = await self.api.get_settings()
         result = await self.api.update_settings(
             user_id=self.user_id, llm_provider=provider
         )
-        entry = status.get(provider) or {}
-        if entry.get("status") == "authenticated":
-            suffix = " A server credential is configured."
-        else:
+        if provider in PROVIDER_SECRET_SETTINGS:
+            status = await self._provider_status_map()
+            entry = status.get(provider) or {}
+            if entry.get("status") == "authenticated":
+                suffix = " A server credential is configured."
+            else:
+                suffix = (
+                    " Warning: no server credential found for this provider;"
+                    f" set one with /provider set {provider} api_key=<key>."
+                )
+        elif spec.requires_api_key:
+            env_name = spec.api_key_env_vars[0] if spec.api_key_env_vars else ""
+            hint = f" ({env_name})" if env_name else ""
             suffix = (
-                " Warning: no server credential found for this provider;"
-                f" set one with /provider set {provider} api_key=<key>."
+                " Credential status is not tracked for this provider;"
+                f" make sure its API key env var{hint} is set."
+            )
+        else:
+            suffix = ""
+        # Honest scope note: switch changes ONLY llm_provider. The model and
+        # base URL usually belong to the previous provider, so name them
+        # instead of implying a complete switch (deliberately not rewritten
+        # automatically: on gateway installs, e.g. CLIProxy, the base URL is
+        # provider-independent and clearing it would break routing).
+        model = str(settings.get("llm_model", "") or "").strip()
+        base_url = str(settings.get("llm_base_url", "") or "").strip()
+        if model or base_url:
+            kept = " and ".join(
+                part
+                for part in (
+                    f"model ({model})" if model else "",
+                    f"base URL ({base_url})" if base_url else "",
+                )
+                if part
+            )
+            suffix += (
+                f" The configured {kept} stays unchanged; update it if it"
+                " belongs to the previous provider (/model, /env set"
+                " llm_base_url)."
             )
         if result.get("restart_required"):
             suffix += " Restart required."
@@ -861,20 +1107,23 @@ class LLMCommandsMixin:
     async def _cmd_provider_test(self, args: list[str], rest: str) -> str:
         if len(args) > 1:
             return "[Error]: Usage: /provider test [provider]"
+        from ..config.llm_providers import get_llm_provider_spec
+
         settings = await self.api.get_settings()
-        provider = self._normalize_provider(
-            args[0] if args else settings.get("llm_provider", "")
-        )
-        if provider not in PROVIDERS:
-            return self._unknown_provider_error(provider or "<active>")
+        raw = str(args[0] if args else settings.get("llm_provider", "") or "")
+        spec = get_llm_provider_spec(raw)
+        if spec is None:
+            return self._unknown_provider_error(raw or "<active>")
 
         # No api_key is sent: the backend test resolves the credential from
         # the vault, settings, and environment in that order.
-        request = self._provider_test_request(provider, settings)
+        request, error = self._provider_test_request(spec, settings)
+        if error:
+            return f"[Error]: {error}"
         result = await self.api.test_llm_provider_config(
             request, user_id=self.user_id
         )
-        label = self._provider_label(provider)
+        label = self._provider_label(spec.id)
         if bool(result.get("ok", False)):
             return f"[Success]: {label} provider test succeeded."
         message = str(result.get("message", "") or "").strip() or "unknown error"
@@ -1018,11 +1267,19 @@ class LLMCommandsMixin:
         settings: Mapping[str, Any],
         status: Mapping[str, Mapping[str, str]],
     ) -> list[dict[str, Any]]:
-        from ..config.llm_providers import list_llm_provider_specs
+        from ..config.llm_providers import (
+            get_llm_provider_spec,
+            list_llm_provider_specs,
+        )
 
-        active_provider = LLMCommandsMixin._normalize_provider(
+        # Canonicalize through the spec registry so an alias in llm_provider
+        # marks its canonical spec active instead of appending a ghost
+        # "unknown provider" entry.
+        raw_active = LLMCommandsMixin._normalize_provider(
             settings.get("llm_provider", "")
         )
+        active_spec = get_llm_provider_spec(raw_active)
+        active_provider = active_spec.id if active_spec is not None else raw_active
         entries: list[dict[str, Any]] = []
         seen: set[str] = set()
         for spec in list_llm_provider_specs():
@@ -1094,32 +1351,43 @@ class LLMCommandsMixin:
 
     @staticmethod
     def _provider_test_request(
-        provider: str,
+        spec: "LLMProviderSpec",
         settings: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        active_provider = LLMCommandsMixin._normalize_provider(
-            settings.get("llm_provider", "")
+    ) -> tuple[dict[str, Any], str]:
+        """Build the connectivity-test request for a provider spec.
+
+        Returns ``(request, error)``; ``error`` is non-empty when no model
+        can be resolved (a registered spec with no default model that is not
+        the active provider).
+        """
+        from ..config.llm_providers import get_llm_provider_spec
+
+        active_spec = get_llm_provider_spec(
+            str(settings.get("llm_provider", "") or "")
         )
-        active = provider == active_provider
+        active = active_spec is not None and active_spec.id == spec.id
         model = (
             str(settings.get("llm_model", "") or "").strip() if active else ""
         )
         if not model:
-            model = DEFAULT_PROVIDER_MODELS[provider]
-        request: dict[str, Any] = {"llm_provider": provider, "llm_model": model}
+            model = str(spec.default_model or "").strip()
+        if not model:
+            return {}, (
+                f"No model could be resolved for {spec.label} (no configured "
+                "model, no spec default). Set one with /model, then retest."
+            )
+        request: dict[str, Any] = {"llm_provider": spec.id, "llm_model": model}
         base_url = str(settings.get("llm_base_url", "") or "").strip()
         if active and base_url:
             request["llm_base_url"] = base_url
-        if provider in {"openai", "openrouter"}:
+        if spec.id in {"openai", "openrouter"}:
             mode = str(settings.get("openai_api_mode", "") or "responses").strip()
             request["openai_api_mode"] = mode if mode in OPENAI_API_MODES else "responses"
-        return request
+        return request, ""
 
     @staticmethod
     def _provider_label(provider: str) -> str:
         canonical = LLMCommandsMixin._normalize_provider(provider)
-        if canonical in PROVIDER_LABELS:
-            return PROVIDER_LABELS[canonical]
         try:
             from ..config.llm_providers import get_llm_provider_spec
 
@@ -1146,5 +1414,5 @@ class LLMCommandsMixin:
     def _unknown_provider_error(provider: str) -> str:
         return (
             f"[Error]: Unknown provider: {provider}. "
-            f"Supported providers: {', '.join(PROVIDERS)}"
+            "Run /provider list to see the registered providers."
         )

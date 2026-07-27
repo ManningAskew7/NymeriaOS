@@ -216,10 +216,15 @@ async def _execute_backend_command(
                 spec = form_spec_from_payload(data.get("form"), context=context)
                 if spec is not None:
                     await context.dispatch({"type": "open_form", "spec": spec})
+                    # The markdown renders too: form-bearing commands are
+                    # often status-shaped (/think's effective breakdown,
+                    # /provider's active table) and the form replaces none
+                    # of that output, so suppressing it would make the bare
+                    # command the only surface that CANNOT show its status.
                     return CommandResult.completed(
+                        message,
                         command_path=path,
                         payload={
-                            "suppress_transcript": True,
                             "backend_command": True,
                             "command": payload.get("command"),
                         },
