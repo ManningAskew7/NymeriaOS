@@ -263,3 +263,46 @@ def test_fanout_mirror_events_rejected_before_rendering() -> None:
     }
     decision = decide_autonomous_event(event, active_thread_id="active-thread")
     assert decision.accepted is False
+
+
+def test_statusbar_set_turn_bar_and_off_sentinel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime, client = _make_runtime(tmp_path, monkeypatch)
+
+    # Pin the turn line to custom refs.
+    run(
+        runtime._apply_autonomous_event(
+            _event("statusbar_set", {"bar": "turn", "segments": ["turn_time", "cost"]})
+        )
+    )
+    _command_id, result = client.acks[-1]
+    assert result["ok"] is True
+    assert result["data"]["turn"] == ["turn_time", "cost"]
+    assert runtime.turn_summary_bar_renderer.layout == ("turn_time", "cost")
+    assert load_statusbar_layout().turn == ("turn_time", "cost")
+
+    # A single "off" hides it (pins empty), distinct from reset.
+    run(
+        runtime._apply_autonomous_event(
+            _event("statusbar_set", {"bar": "turn", "segments": ["off"]})
+        )
+    )
+    _command_id, result = client.acks[-1]
+    assert result["ok"] is True
+    assert result["data"]["turn"] == []
+    assert load_statusbar_layout().turn == ()
+    assert runtime.turn_summary_bar_renderer.layout == ()
+
+    # An empty list resets to the default line.
+    run(
+        runtime._apply_autonomous_event(
+            _event("statusbar_set", {"bar": "turn", "segments": []})
+        )
+    )
+    _command_id, result = client.acks[-1]
+    assert result["ok"] is True
+    assert result["data"]["turn"] is None
+    assert result["data"]["turn_default_segments"] == ["turn_time", "tps"]
+    assert load_statusbar_layout().turn is None

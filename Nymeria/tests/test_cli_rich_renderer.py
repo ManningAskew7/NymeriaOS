@@ -2105,3 +2105,77 @@ def test_startup_thread_ref_selects_existing_thread_and_missing_exits() -> None:
     assert selected._startup_history_thread_id == "thread-2"
     assert missing.state.thread_id != "thread-2"
     assert missing._startup_history_thread_id is None
+
+
+def test_turn_end_prints_summary_line_once_and_not_on_replay() -> None:
+    from cli_fixtures import FakeTerminalCapabilities as Caps
+
+    output = io.StringIO()
+    console = Console(file=output, width=80, force_terminal=False, no_color=True)
+    renderer = RichReplRenderer(
+        capabilities=Caps(width=80),
+        console=console,
+        width=80,
+    )
+    calls: list[Any] = []
+
+    def source(state: Any) -> str:
+        calls.append(state)
+        return "❋ 12s · 31 tok/s"
+
+    renderer.turn_summary_source = source
+
+    renderer.start_turn("hello", thread_id="t1", user_id="u1", now=100.0)
+    renderer.render_event({"type": "response", "content": "The answer."}, now=104.0)
+    renderer.render_event(
+        {
+            "type": "done",
+            "context_stats": {"tokens_per_second": 31.0, "turn_recorded": True},
+        },
+        now=112.0,
+    )
+
+    text = output.getvalue()
+    assert text.count("❋ 12s · 31 tok/s") == 1
+    # The line lands after the response, separated by exactly one blank.
+    tail = [line.rstrip() for line in text.splitlines()[-3:]]
+    assert tail[0].endswith("The answer.")
+    assert tail[1] == ""
+    assert tail[2] == "❋ 12s · 31 tok/s"
+    assert len(calls) == 1
+
+    # Replaying the same completed state must not print another summary.
+    replay_output = io.StringIO()
+    replay_console = Console(
+        file=replay_output, width=80, force_terminal=False, no_color=True
+    )
+    replay_renderer = RichReplRenderer(
+        capabilities=Caps(width=80),
+        console=replay_console,
+        width=80,
+    )
+    replay_renderer.turn_summary_source = source
+    replay_renderer.reset_state(renderer.state)
+    replay_renderer.render_state()
+    assert "❋" not in replay_output.getvalue()
+
+
+def test_turn_end_summary_failure_never_breaks_the_render() -> None:
+    from cli_fixtures import FakeTerminalCapabilities as Caps
+
+    output = io.StringIO()
+    console = Console(file=output, width=80, force_terminal=False, no_color=True)
+    renderer = RichReplRenderer(
+        capabilities=Caps(width=80),
+        console=console,
+        width=80,
+    )
+
+    def broken_source(state: Any) -> str:
+        raise RuntimeError("segment fault")
+
+    renderer.turn_summary_source = broken_source
+    renderer.start_turn("hello", thread_id="t1", user_id="u1", now=1.0)
+    renderer.render_event({"type": "response", "content": "Fine."}, now=2.0)
+    renderer.render_event({"type": "done"}, now=3.0)
+    assert "Fine." in output.getvalue()

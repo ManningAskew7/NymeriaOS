@@ -461,3 +461,152 @@ def test_default_segment_keys_are_the_documented_builtins() -> None:
         "queued",
         "cwd",
     )
+
+
+# ---------------------------------------------------------------------------
+# Turn-summary line bar (the third segment surface)
+# ---------------------------------------------------------------------------
+
+
+def test_turn_bar_roundtrip_pinned_hidden_and_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "cli.json"
+    monkeypatch.setenv(THEME_CONFIG_ENV, str(config_path))
+
+    # Pinned refs persist.
+    save_statusbar_layout(StatusBarLayout(turn=("turn_time", "cost")))
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["status_bar"] == {"turn": ["turn_time", "cost"]}
+    assert load_statusbar_layout().turn == ("turn_time", "cost")
+
+    # Explicit empty persists as the hidden pin.
+    save_statusbar_layout(StatusBarLayout(turn=()))
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["status_bar"] == {"turn": []}
+    loaded = load_statusbar_layout()
+    assert loaded.turn == ()
+    assert loaded.turn_refs() == ()
+
+    # Default (None) removes the section entirely.
+    save_statusbar_layout(StatusBarLayout())
+    assert json.loads(config_path.read_text(encoding="utf-8")) == {}
+    loaded = load_statusbar_layout()
+    assert loaded.turn is None
+    assert loaded.turn_refs() == ("turn_time", "tps")
+
+
+def test_turn_bar_all_invalid_refs_fall_back_to_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "cli.json"
+    monkeypatch.setenv(THEME_CONFIG_ENV, str(config_path))
+    config_path.write_text(
+        json.dumps({"status_bar": {"turn": ["bogus", 7]}}),
+        encoding="utf-8",
+    )
+    layout = load_statusbar_layout()
+    assert layout.turn is None
+    assert layout.turn_refs() == ("turn_time", "tps")
+
+
+def test_turn_bar_name_aliases_and_off_sentinel() -> None:
+    from nymeria.triggers.cli.statusbar_config import is_off_ref_list
+
+    assert normalize_bar_name("turn") == "turn"
+    assert normalize_bar_name("SUMMARY") == "turn"
+    assert normalize_segment_ref("turn_time") == "turn_time"
+    assert normalize_segment_ref("Cost") == "cost"
+
+    assert is_off_ref_list(["off"])
+    assert is_off_ref_list([" None "])
+    assert is_off_ref_list(["hidden"])
+    assert not is_off_ref_list([])
+    assert not is_off_ref_list(["off", "tps"])
+    assert not is_off_ref_list(["tps"])
+
+
+def test_statusbar_command_set_turn_off_and_reset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "cli.json"
+    monkeypatch.setenv(THEME_CONFIG_ENV, str(config_path))
+    dispatched: list[Any] = []
+
+    async def dispatch(action: Any) -> None:
+        dispatched.append(action)
+
+    context = CommandContext(
+        client=None,
+        output=ListCommandOutputSink(),
+        dispatch_state=dispatch,
+        registry=CommandRegistry(),
+    )
+
+    result = run(
+        statusbar_commands._handle_statusbar_set(
+            context, ["turn", "turn_time", "cost"]
+        )
+    )
+    assert result.ok
+    assert load_statusbar_layout().turn == ("turn_time", "cost")
+
+    result = run(statusbar_commands._handle_statusbar_set(context, ["turn", "off"]))
+    assert result.ok
+    assert "Hid the turn summary line" in result.messages[0].content
+    assert load_statusbar_layout().turn == ()
+
+    result = run(statusbar_commands._handle_statusbar_reset(context, ["turn"]))
+    assert result.ok
+    assert load_statusbar_layout().turn is None
+    assert len(dispatched) == 3
+    assert all(a["type"] == "statusbar_updated" for a in dispatched)
+
+
+def test_runtime_wires_turn_summary_into_renderer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from dataclasses import replace as dc_replace
+
+    runtime = _make_runtime(tmp_path, monkeypatch)
+    renderer = runtime.renderer
+    assert renderer.turn_summary_source is not None
+
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = dc_replace(
+        state,
+        last_turn_duration_seconds=12.0,
+        context_stats={"tokens_per_second": 31.0},
+    )
+
+    # Default layout: glyph + turn_time + tps.
+    line = renderer.turn_summary_source(state)
+    assert line == "❋ 12s · 31 tok/s"
+
+    # Hidden turn bar: no line.
+    runtime.apply_statusbar_layout(StatusBarLayout(turn=()))
+    assert renderer.turn_summary_source(state) == ""
+
+    # Pinned custom refs apply live.
+    runtime.apply_statusbar_layout(StatusBarLayout(turn=("tps",)))
+    assert renderer.turn_summary_source(state) == "❋ 31 tok/s"
+
+
+def test_statusbar_command_rejects_off_for_top_bar(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(THEME_CONFIG_ENV, str(tmp_path / "cli.json"))
+    context = CommandContext(
+        client=None,
+        output=ListCommandOutputSink(),
+        registry=CommandRegistry(),
+    )
+    result = run(statusbar_commands._handle_statusbar_set(context, ["top", "off"]))
+    assert not result.ok
+    assert "cannot be hidden" in result.messages[0].content
+    assert load_statusbar_layout().is_default

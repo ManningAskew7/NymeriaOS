@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, TextIO
 
 from rich.console import Console
@@ -119,6 +119,10 @@ class RichReplRenderer:
         self._stream_line_buffer = ""
         self._turn_seen_tool = False
         self.transcript_verbose = False
+        # Optional end-of-turn summary line source (state -> text), wired by
+        # the Rich REPL runtime from the configured "turn" status-bar layout.
+        # Empty/None output means no line; the bare separator blank remains.
+        self.turn_summary_source: Callable[[CLIUIState], str] | None = None
 
     def set_theme(self, theme: CLITheme) -> None:
         """Update colors for future transcript output."""
@@ -971,9 +975,28 @@ class RichReplRenderer:
         if not _assistant_has_renderable_body(message):
             return
         self.console.print()
+        summary = self._turn_summary_text(state)
+        if summary:
+            self.console.print(
+                Text(summary, style=_style_for_line_kind("diagnostic", self.theme))
+            )
         self._rendered_turn_end_ids.add(message.id)
         self._last_rendered_block = None
         self._last_markdown_block = None
+
+    def _turn_summary_text(self, state: CLIUIState) -> str:
+        """End-of-turn summary from the wired source; "" disables the line.
+
+        Live turn ends only: replay marks ``_rendered_turn_end_ids`` before
+        ``_render_turn_end`` can fire, so history never grows summary lines.
+        """
+        source = self.turn_summary_source
+        if source is None:
+            return ""
+        try:
+            return str(source(state) or "").strip()
+        except Exception:  # noqa: BLE001 - a summary fault must not kill the turn render.
+            return ""
 
     def _render_transcript_line(self, line: TranscriptLine) -> None:
         self.console.print(
