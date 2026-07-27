@@ -37,6 +37,7 @@ from ...cliproxy.management_client import (
     CLIProxyManagementClient,
     CLIProxyManagementError,
     CLIProxyUnsupported,
+    confirm_login_landed,
 )
 from ...onboarding import ProviderAuthMethod
 from ..cliproxy_deploy import (
@@ -485,18 +486,26 @@ class CLIProxyLoginStep(WizardStep):
 
         deadline = asyncio.get_event_loop().time() + LOGIN_TIMEOUT_SECONDS
         while asyncio.get_event_loop().time() < deadline:
+            # confirm_login_landed is THE confirm-on-ok implementation (a
+            # bare polled ok proves nothing; see management_client).
             try:
-                status = await client.auth_status(self._oauth_state)
+                status, detail = await confirm_login_landed(
+                    client, self._oauth_state, spec
+                )
             except CLIProxyManagementError as error:
                 self._status(f"Lost contact with the proxy: {error}")
                 return
             if status == "ok":
                 await self._post_login(client, spec)
-                self._status("Login complete. Press Enter to continue.")
+                self._status(
+                    f"Login complete{f' as {detail}' if detail else ''}. "
+                    "Press Enter to continue."
+                )
                 return
             if status == "error":
                 self._status(
-                    "The provider reported a login error. Ctrl+R to try again."
+                    (detail or "The provider reported a login error.")
+                    + " Ctrl+R to try again."
                 )
                 return
             await asyncio.sleep(LOGIN_POLL_INTERVAL_SECONDS)

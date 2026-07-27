@@ -4482,18 +4482,26 @@ route shapes; frontends never derive base URLs or key slots themselves.
 | GET | `/cliproxy/catalog` | Static provider catalog (id, label, flow, route shape, default model, ToS warning) |
 | GET | `/cliproxy/status` | Reachability plus per-provider support (live probe, cached 15 min; `?refresh=true` re-probes) and login state. Degrades to `configured/reachable: false` instead of erroring |
 | POST | `/cliproxy/oauth/start` | `{provider}` -> `{url, state, flow}`; open `url` in any browser |
-| GET | `/cliproxy/oauth/status?state=&provider=` | Poll the pending login: `wait` / `ok` / `error`. On `ok` for Claude the backend re-asserts `tool_prefix_disabled` on the auth file |
+| GET | `/cliproxy/oauth/status?state=&provider=` | Poll the pending login: `{status: wait\|ok\|error, detail}`. `ok` is server-CONFIRMED against the auth-file list (the proxy answers a bare ok for unknown or expired sessions, so an unconfirmed ok comes back as `error` with the trap explained in `detail`); a confirmed ok carries the account label in `detail`, and for Claude re-asserts `tool_prefix_disabled` on the auth file |
 | POST | `/cliproxy/oauth/callback` | `{provider, redirect_url}` (or `code`+`state`): deliver a browser callback that landed on a dead localhost page |
 | GET | `/cliproxy/auth-files?provider=` | List the proxy's stored logins with status |
 | PATCH | `/cliproxy/auth-files/{name}` | `{disabled?, priority?}` |
 | DELETE | `/cliproxy/auth-files/{name}` | Remove a login from the proxy |
 | GET / PATCH | `/cliproxy/config` | The surfaced knob subset (`api-keys`, `request-retry`, `max-retry-interval`, `routing/strategy`, `oauth-model-alias`, `oauth-excluded-models`, `quota-exceeded/*`) |
-| POST | `/cliproxy/apply-route` | `{provider, model?, scope: global\|thread, thread_id?, gatekeeper_key?}`: turn a catalog entry into LLM settings. Global scope hot-reloads through the settings applier; thread scope writes the per-thread LLM config |
+| GET | `/cliproxy/models` | Live `{models: [{id, owned_by}]}` from the proxy's `/v1/models`, authenticated with the first configured gatekeeper key READ through the management API (a key-less proxy has an open data plane, so the request then goes out unauthenticated; a read never mints); lists every logged-in provider's models |
+| POST | `/cliproxy/apply-route` | `{provider, model?, scope: global\|thread, thread_id?, gatekeeper_key?}`: turn a catalog entry into LLM settings. Global scope hot-reloads through the settings applier; thread scope writes the per-thread LLM config. Gatekeeper resolution order: request `gatekeeper_key` -> the settings key IF it is `cpx-`-shaped or matches the proxy's `api-keys` list (a real provider key, e.g. an `sk-` OPENAI_API_KEY on a codex route, is never adopted as the gatekeeper when the proxy has its own keys) -> the proxy's first configured key, or mint-and-write a `cpx-nymeria-*` key via the management API -> only then 422 |
 
 Status codes: 400 (management not configured / bad request), 404 (unknown
 provider or auth file), 409 (proxy state conflict), 422 (provider unsupported
-by the pinned proxy binary or no gatekeeper key available), 502 (proxy
-unreachable or management key rejected).
+by the pinned proxy binary, or gatekeeper resolution failed against both
+settings and the management API), 502 (proxy unreachable or management key
+rejected).
+
+The `/provider cliproxy` slash command drives this whole surface as a chained
+in-REPL flow (overview with logged-in badges, OAuth login with paste/status
+steps, model pick from `/cliproxy/models`, route apply); it is excluded from
+chat-bot surfaces and agents because pasted authorization codes must not
+persist in platform chat history.
 
 ## Error Responses
 

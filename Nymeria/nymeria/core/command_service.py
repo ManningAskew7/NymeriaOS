@@ -892,6 +892,76 @@ class CommandHttpClient:
         params = {"provider": provider} if provider else None
         return await self._get("/models/available", params=params, act_as=user_id)
 
+    # --- CLIProxy subscription OAuth (admin-only routes) ------------------
+    # All six pass act_as so the route-level admin check evaluates the
+    # ACTING user, not the service token (the get_env_vars idiom). The
+    # chain applies routes globally only, so there is no scope parameter.
+
+    async def cliproxy_auth_files(
+        self,
+        provider: Optional[str] = None,
+        *,
+        user_id: Optional[str] = None,
+    ) -> list[dict]:
+        params = {"provider": provider} if provider else None
+        return list(
+            await self._get("/cliproxy/auth-files", params=params, act_as=user_id)
+            or []
+        )
+
+    async def cliproxy_oauth_start(
+        self, provider: str, *, user_id: Optional[str] = None
+    ) -> dict:
+        return await self._post(
+            "/cliproxy/oauth/start",
+            json={"provider": provider},
+            act_as=user_id,
+        )
+
+    async def cliproxy_oauth_callback(
+        self,
+        provider: str,
+        *,
+        redirect_url: Optional[str] = None,
+        code: Optional[str] = None,
+        state: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        body: dict = {"provider": provider}
+        if redirect_url:
+            body["redirect_url"] = redirect_url
+        if code:
+            body["code"] = code
+        if state:
+            body["state"] = state
+        return await self._post(
+            "/cliproxy/oauth/callback", json=body, act_as=user_id
+        )
+
+    async def cliproxy_oauth_status(
+        self, state: str, provider: str, *, user_id: Optional[str] = None
+    ) -> dict:
+        return await self._get(
+            "/cliproxy/oauth/status",
+            params={"state": state, "provider": provider},
+            act_as=user_id,
+        )
+
+    async def cliproxy_models(
+        self, *, user_id: Optional[str] = None
+    ) -> list[dict]:
+        payload = await self._get("/cliproxy/models", act_as=user_id)
+        return list((payload or {}).get("models") or [])
+
+    async def cliproxy_apply_route(
+        self, provider: str, model: str, *, user_id: Optional[str] = None
+    ) -> dict:
+        return await self._post(
+            "/cliproxy/apply-route",
+            json={"provider": provider, "model": model, "scope": "global"},
+            act_as=user_id,
+        )
+
 
 @dataclass(frozen=True)
 class _CommandBackendUser:
@@ -1578,6 +1648,168 @@ class CommandBackendClient:
             vault=getattr(self.agent, "credential_vault", None),
             owner_user_id=self.user.id,
         )
+        return response.model_dump(mode="json")
+
+    # --- CLIProxy subscription OAuth (in-process twins) -------------------
+    # Same module-scope bodies as the /cliproxy routes (the
+    # `_available_models` precedent), so the two TurnExecutor shapes cannot
+    # drift; management errors map to the routes' wire statuses.
+
+    def _cliproxy_client_or_400(self):
+        from ..api.routers.cliproxy import management_client_from_settings
+
+        client = management_client_from_settings(self._settings())
+        if client is None:
+            _raise_http_status(
+                400,
+                "CLIProxy management is not configured; set "
+                "CLIPROXY_MANAGEMENT_URL and CLIPROXY_MANAGEMENT_KEY first",
+            )
+        return client
+
+    @staticmethod
+    def _cliproxy_raise(error: Exception) -> NoReturn:
+        from ..api.routers.cliproxy import management_error_status
+        from ..cliproxy.management_client import CLIProxyManagementError
+
+        if isinstance(error, CLIProxyManagementError):
+            _raise_http_status(management_error_status(error), str(error))
+        _raise_http_status(502, str(error))
+
+    def _cliproxy_spec_or_404(self, provider: str):
+        from ..cliproxy.catalog import get_cliproxy_provider
+
+        spec = get_cliproxy_provider(provider)
+        if spec is None:
+            _raise_http_status(404, f"Unknown CLIProxy provider: {provider}")
+        return spec
+
+    async def cliproxy_auth_files(
+        self,
+        provider: Optional[str] = None,
+        *,
+        user_id: Optional[str] = None,
+    ) -> list[dict]:
+        # user_id is accepted for HTTP-twin signature parity; this client's
+        # acting user was fixed at construction.
+        self._require_admin()
+        from ..cliproxy.management_client import CLIProxyManagementError
+
+        client = self._cliproxy_client_or_400()
+        try:
+            files = await client.list_auth_files()
+        except CLIProxyManagementError as error:
+            self._cliproxy_raise(error)
+        if provider:
+            spec = self._cliproxy_spec_or_404(provider)
+            files = [
+                entry
+                for entry in files
+                if str(entry.get("provider") or "").lower()
+                == spec.auth_file_provider
+            ]
+        return files
+
+    async def cliproxy_oauth_start(
+        self, provider: str, *, user_id: Optional[str] = None
+    ) -> dict:
+        self._require_admin()
+        from ..cliproxy.management_client import CLIProxyManagementError
+
+        spec = self._cliproxy_spec_or_404(provider)
+        client = self._cliproxy_client_or_400()
+        try:
+            started = await client.start_oauth(spec)
+        except CLIProxyManagementError as error:
+            self._cliproxy_raise(error)
+        return {
+            "provider": spec.id,
+            "flow": spec.flow,
+            "url": started["url"],
+            "state": started["state"],
+        }
+
+    async def cliproxy_oauth_callback(
+        self,
+        provider: str,
+        *,
+        redirect_url: Optional[str] = None,
+        code: Optional[str] = None,
+        state: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        self._require_admin()
+        from ..cliproxy.management_client import CLIProxyManagementError
+
+        spec = self._cliproxy_spec_or_404(provider)
+        if not redirect_url and not (code and state):
+            _raise_http_status(400, "Provide redirect_url or code and state")
+        client = self._cliproxy_client_or_400()
+        try:
+            await client.oauth_callback(
+                spec, redirect_url=redirect_url, code=code, state=state
+            )
+        except CLIProxyManagementError as error:
+            self._cliproxy_raise(error)
+        return {"status": "ok"}
+
+    async def cliproxy_oauth_status(
+        self, state: str, provider: str, *, user_id: Optional[str] = None
+    ) -> dict:
+        self._require_admin()
+        from ..api.routers.cliproxy import confirmed_oauth_status
+        from ..cliproxy.management_client import CLIProxyManagementError
+
+        client = self._cliproxy_client_or_400()
+        try:
+            status, detail = await confirmed_oauth_status(
+                client, state, provider
+            )
+        except CLIProxyManagementError as error:
+            self._cliproxy_raise(error)
+        return {"status": status, "detail": detail}
+
+    async def cliproxy_models(
+        self, *, user_id: Optional[str] = None
+    ) -> list[dict]:
+        self._require_admin()
+        from ..api.routers.cliproxy import list_cliproxy_models
+        from ..cliproxy.management_client import CLIProxyManagementError
+
+        client = self._cliproxy_client_or_400()
+        settings = self._settings()
+        management_url = (
+            getattr(settings, "cliproxy_management_url", None) or ""
+        ).strip()
+        try:
+            return await list_cliproxy_models(client, management_url)
+        except CLIProxyManagementError as error:
+            self._cliproxy_raise(error)
+        except httpx.HTTPError as error:
+            _raise_http_status(502, f"CLIProxy model list failed: {error}")
+
+    async def cliproxy_apply_route(
+        self, provider: str, model: str, *, user_id: Optional[str] = None
+    ) -> dict:
+        self._require_admin()
+        from fastapi import HTTPException
+
+        from ..api.routers.cliproxy import perform_apply_route
+        from ..api.schemas.cliproxy import CLIProxyApplyRouteRequest
+
+        # Global scope only: the chain has no thread apply, and a thread
+        # apply through this facade would skip the thread-access gate.
+        request = CLIProxyApplyRouteRequest(provider=provider, model=model)
+        try:
+            response = await perform_apply_route(
+                request,
+                settings=self._settings(),
+                agent=self.agent,
+                get_settings_fn=self.settings_fn,
+                admin=self.user,
+            )
+        except HTTPException as error:
+            _raise_http_status(error.status_code, str(error.detail))
         return response.model_dump(mode="json")
 
     async def update_thread_config(

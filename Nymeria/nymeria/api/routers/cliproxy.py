@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...cliproxy.catalog import (
@@ -30,6 +31,9 @@ from ...cliproxy.management_client import (
     CLIProxyManagementError,
     CLIProxyNotFound,
     CLIProxyUnsupported,
+    configured_gatekeeper_keys,
+    confirm_login_landed,
+    resolve_or_mint_gatekeeper,
 )
 from ...core.thread_config import ThreadConfig, ThreadLLMConfig
 from ..schemas.cliproxy import (
@@ -176,6 +180,120 @@ def _apply_route_global(
     )
 
 
+def management_error_status(error: CLIProxyManagementError) -> int:
+    """HTTP status for a management-client error (shared with the facade).
+
+    Unreachable and auth failures are both upstream problems: 502 so
+    frontends distinguish them from their own bad requests.
+    """
+    if isinstance(error, CLIProxyUnsupported):
+        return 422
+    if isinstance(error, CLIProxyNotFound):
+        return 404
+    if isinstance(error, CLIProxyConflict):
+        return 409
+    return 502
+
+
+def management_client_from_settings(
+    settings: Any,
+) -> Optional[CLIProxyManagementClient]:
+    """Build a management client from settings, or None when unconfigured.
+
+    Module-scope (the `_available_models` precedent): the single client
+    factory behind the REST routes AND the in-process command facade, so the
+    two TurnExecutor shapes cannot drift. Uses this module's
+    `CLIProxyManagementClient` symbol on purpose: tests stub the client by
+    monkeypatching it here.
+    """
+    url = (getattr(settings, "cliproxy_management_url", None) or "").strip()
+    key = (getattr(settings, "cliproxy_management_key", None) or "").strip()
+    if not url or not key:
+        return None
+    return CLIProxyManagementClient(url, key)
+
+
+async def _fixup_claude_auth_files(client: CLIProxyManagementClient) -> None:
+    """Keep tool_prefix_disabled true on Claude auth files (idempotent).
+
+    Inert on v7 binaries but required if the proxy is ever rolled back to
+    v6.9.36. Best-effort: a failure here must not fail the login.
+    """
+    try:
+        for entry in await client.list_auth_files():
+            if str(entry.get("provider") or "").lower() != "claude":
+                continue
+            name = str(entry.get("name") or "")
+            if name:
+                await client.ensure_tool_prefix_disabled(name)
+    except CLIProxyManagementError as error:
+        logger.warning("Claude tool_prefix_disabled fixup failed: %s", error)
+
+
+async def confirmed_oauth_status(
+    client: CLIProxyManagementClient,
+    state: str,
+    provider: Optional[str],
+) -> tuple[str, str]:
+    """(status, detail) for a pending login, with confirm-on-ok.
+
+    Thin wrapper over the ONE confirm-on-ok implementation
+    (`management_client.confirm_login_landed`); this layer resolves the
+    provider spec and runs the Claude post-login fixup on a confirmed ok.
+    Without a known provider the bare (unconfirmable) status is returned.
+    """
+    spec = get_cliproxy_provider(provider) if provider else None
+    if spec is None:
+        status = await client.auth_status(state)
+        if status not in ("wait", "ok", "error"):
+            status = "error"
+        return status, ""
+    status, detail = await confirm_login_landed(client, state, spec)
+    if status == "ok" and spec.id == "claude":
+        await _fixup_claude_auth_files(client)
+    return status, detail
+
+
+async def list_cliproxy_models(
+    client: CLIProxyManagementClient,
+    management_url: str,
+) -> list[dict[str, str]]:
+    """Live model list through the proxy's data plane.
+
+    The proxy's OpenAI-compatible /v1/models spans every logged-in
+    subscription (there is no per-provider attribution), so the list is
+    unfiltered. The gatekeeper is READ through the management API (the
+    api-keys knob is masked on REST reads, so no frontend can resolve one
+    itself); a key-less proxy has an OPEN data plane, so the request then
+    goes out unauthenticated. Never mints: a read must not flip the proxy
+    to key-required (that is apply-route's job). Raises
+    CLIProxyManagementError / httpx.HTTPError upward.
+    """
+    keys = await configured_gatekeeper_keys(client)
+    headers = {"Authorization": f"Bearer {keys[0]}"} if keys else {}
+    base = (management_url or "").strip().rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")].rstrip("/")
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        response = await http.get(f"{base}/v1/models", headers=headers)
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    models = [
+        {
+            "id": str(item.get("id") or ""),
+            "owned_by": str(item.get("owned_by") or ""),
+        }
+        for item in (data if isinstance(data, list) else [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    models.sort(key=lambda entry: entry["id"])
+    return models
+
+
 def create_cliproxy_router(
     require_admin_user: Callable,
     get_agent_fn: Callable[[], Any],
@@ -189,12 +307,7 @@ def create_cliproxy_router(
     probe_cache: dict[str, tuple[float, dict[str, bool]]] = {}
 
     def _client_or_none() -> Optional[CLIProxyManagementClient]:
-        settings = get_settings_fn()
-        url = (getattr(settings, "cliproxy_management_url", None) or "").strip()
-        key = (getattr(settings, "cliproxy_management_key", None) or "").strip()
-        if not url or not key:
-            return None
-        return CLIProxyManagementClient(url, key)
+        return management_client_from_settings(get_settings_fn())
 
     def _client_or_400() -> CLIProxyManagementClient:
         client = _client_or_none()
@@ -224,15 +337,9 @@ def create_cliproxy_router(
         return probed
 
     def _raise_for(error: CLIProxyManagementError) -> HTTPException:
-        if isinstance(error, CLIProxyUnsupported):
-            return HTTPException(status_code=422, detail=str(error))
-        if isinstance(error, CLIProxyNotFound):
-            return HTTPException(status_code=404, detail=str(error))
-        if isinstance(error, CLIProxyConflict):
-            return HTTPException(status_code=409, detail=str(error))
-        # Unreachable and auth failures are both upstream problems: 502 so
-        # frontends distinguish them from their own bad requests.
-        return HTTPException(status_code=502, detail=str(error))
+        return HTTPException(
+            status_code=management_error_status(error), detail=str(error)
+        )
 
     @router.get("/catalog")
     async def get_catalog(
@@ -338,39 +445,46 @@ def create_cliproxy_router(
         provider: Optional[str] = None,
         admin=Depends(require_admin_user),
     ) -> CLIProxyOAuthStatusResponse:
-        """Poll a pending login; on success runs the Claude post-login fixup."""
+        """Poll a pending login: confirm-on-ok + the Claude post-login fixup.
+
+        With a provider, ok means an active auth file was VERIFIED (detail
+        carries the account label); a bare proxy ok with no auth file comes
+        back as error with the explanation (the proxy answers ok for unknown
+        or expired sessions).
+        """
         client = _client_or_400()
         try:
-            status = await client.auth_status(state)
+            status, detail = await confirmed_oauth_status(
+                client, state, provider
+            )
         except CLIProxyManagementError as error:
             raise _raise_for(error) from error
-        if status == "ok" and provider:
-            spec = get_cliproxy_provider(provider)
-            if spec is not None and spec.id == "claude":
-                await _fixup_claude_auth_files(client)
-        if status not in ("wait", "ok", "error"):
-            status = "error"
-        return CLIProxyOAuthStatusResponse(status=status)  # type: ignore[arg-type]
+        return CLIProxyOAuthStatusResponse(status=status, detail=detail)  # type: ignore[arg-type]
 
-    async def _fixup_claude_auth_files(
-        client: CLIProxyManagementClient,
-    ) -> None:
-        """Keep tool_prefix_disabled true on Claude auth files (idempotent).
+    @router.get("/models")
+    async def get_models(
+        admin=Depends(require_admin_user),
+    ) -> dict[str, Any]:
+        """Live model list via the proxy data plane (server-resolved cpx- key).
 
-        Inert on v7 binaries but required if the proxy is ever rolled back to
-        v6.9.36. Best-effort: a failure here must not fail the login.
+        Spans every logged-in subscription; the gatekeeper never leaves the
+        backend (the api-keys knob is masked on REST reads by design).
         """
+        settings = get_settings_fn()
+        client = _client_or_400()
+        management_url = (
+            getattr(settings, "cliproxy_management_url", None) or ""
+        ).strip()
         try:
-            for entry in await client.list_auth_files():
-                if str(entry.get("provider") or "").lower() != "claude":
-                    continue
-                name = str(entry.get("name") or "")
-                if name:
-                    await client.ensure_tool_prefix_disabled(name)
+            models = await list_cliproxy_models(client, management_url)
         except CLIProxyManagementError as error:
-            logger.warning(
-                "Claude tool_prefix_disabled fixup failed: %s", error
-            )
+            raise _raise_for(error) from error
+        except httpx.HTTPError as error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"CLIProxy model list failed: {error}",
+            ) from error
+        return {"models": models}
 
     @router.get("/auth-files")
     async def list_auth_files(
@@ -489,62 +603,126 @@ def create_cliproxy_router(
         request: CLIProxyApplyRouteRequest,
         admin=Depends(require_admin_user),
     ) -> CLIProxyApplyRouteResponse:
-        """Turn a catalog entry into Nymeria LLM settings (global or thread).
-
-        The single source of the route-shape math: base URL derived from the
-        management URL (the LLM caller is the same process as the management
-        caller, so the host is reachable by construction), root vs /v1 and
-        the key slot from the catalog. The cpx- gatekeeper goes to
-        ANTHROPIC_API_KEY / OPENAI_API_KEY, never the *_DIRECT_* slots (see
-        core/agent_llm_config.py).
-        """
-        spec = _require_spec(request.provider)
-        settings = get_settings_fn()
-        management_url = (
-            getattr(settings, "cliproxy_management_url", None) or ""
-        ).strip()
-        if not management_url:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "CLIPROXY_MANAGEMENT_URL is not set; configure the proxy "
-                    "before applying a route"
-                ),
-            )
-        base_url = cliproxy_data_plane_url(management_url, spec)
-        model = request.model.strip() or spec.default_model
-        gatekeeper = (request.gatekeeper_key or "").strip()
-        if not gatekeeper:
-            gatekeeper = (getattr(settings, spec.key_setting, None) or "").strip()
-        if not gatekeeper:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"No gatekeeper key available for {spec.id}; pass "
-                    "gatekeeper_key (a cpx- key from the proxy's api-keys list)"
-                ),
-            )
-
-        agent = get_agent_fn()
-        if request.scope == "thread":
-            return _apply_route_thread(
-                agent=agent,
-                admin=admin,
-                spec=spec,
-                thread_id=request.thread_id,
-                model=model,
-                base_url=base_url,
-                gatekeeper=gatekeeper,
-                require_thread_access_fn=require_thread_access_fn,
-            )
-        return _apply_route_global(
-            agent=agent,
-            settings=settings,
-            spec=spec,
-            model=model,
-            base_url=base_url,
-            gatekeeper=gatekeeper,
+        """Turn a catalog entry into Nymeria LLM settings (global or thread)."""
+        return await perform_apply_route(
+            request,
+            settings=get_settings_fn(),
+            agent=get_agent_fn(),
             get_settings_fn=get_settings_fn,
+            admin=admin,
+            require_thread_access_fn=require_thread_access_fn,
         )
 
     return router
+
+
+async def perform_apply_route(
+    request: CLIProxyApplyRouteRequest,
+    *,
+    settings: Any,
+    agent: Any,
+    get_settings_fn: Callable[[], Any],
+    admin: Any,
+    require_thread_access_fn: Optional[Callable[[Any, str], Any]] = None,
+) -> CLIProxyApplyRouteResponse:
+    """The POST /cliproxy/apply-route body, module-scope for facade sharing.
+
+    The single source of the route-shape math: base URL derived from the
+    management URL (the LLM caller is the same process as the management
+    caller, so the host is reachable by construction), root vs /v1 and the
+    key slot from the catalog. The cpx- gatekeeper goes to
+    ANTHROPIC_API_KEY / OPENAI_API_KEY, never the *_DIRECT_* slots (see
+    core/agent_llm_config.py). Raises HTTPException; the in-process command
+    facade converts it to the wire-shaped error.
+    """
+    spec = _require_spec(request.provider)
+    management_url = (
+        getattr(settings, "cliproxy_management_url", None) or ""
+    ).strip()
+    if not management_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "CLIPROXY_MANAGEMENT_URL is not set; configure the proxy "
+                "before applying a route"
+            ),
+        )
+    base_url = cliproxy_data_plane_url(management_url, spec)
+    model = request.model.strip() or spec.default_model
+    gatekeeper = (request.gatekeeper_key or "").strip()
+    if not gatekeeper:
+        # The settings slot may hold a REAL provider key (e.g. an sk-
+        # OPENAI_API_KEY on a codex route): adopting that as the proxy
+        # gatekeeper would 401 every call on a key-required proxy. A cpx-
+        # key is trusted by shape; anything else is validated against the
+        # proxy's api-keys list, falling through to read-or-mint (the
+        # fresh-install fallback: no frontend can supply the key because
+        # the api-keys knob is masked on REST reads by design).
+        candidate = (getattr(settings, spec.key_setting, None) or "").strip()
+        if candidate.startswith("cpx-"):
+            gatekeeper = candidate
+        else:
+            client = management_client_from_settings(settings)
+            if client is not None:
+                try:
+                    keys = await configured_gatekeeper_keys(client)
+                    if candidate and candidate in keys:
+                        gatekeeper = candidate
+                    elif keys:
+                        gatekeeper = keys[0]
+                    elif candidate:
+                        # Open data plane: any value works; keep the
+                        # existing key rather than minting (a mint would
+                        # flip the proxy to key-required for every other
+                        # consumer).
+                        gatekeeper = candidate
+                    else:
+                        gatekeeper = await resolve_or_mint_gatekeeper(client)
+                except CLIProxyManagementError as error:
+                    logger.warning(
+                        "apply-route gatekeeper auto-resolve failed: %s", error
+                    )
+                    # Management read failed: an existing settings key is
+                    # still the best available answer (legacy behavior).
+                    gatekeeper = candidate
+            else:
+                gatekeeper = candidate
+    if not gatekeeper:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No gatekeeper key available for {spec.id}: none in the "
+                "request or settings, and one could not be read or minted "
+                "through the management API; pass gatekeeper_key (a cpx- "
+                "key from the proxy's api-keys list)"
+            ),
+        )
+
+    if request.scope == "thread":
+        if require_thread_access_fn is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Thread-scoped apply is not supported on this surface; "
+                    "use scope=global or the REST route"
+                ),
+            )
+        return _apply_route_thread(
+            agent=agent,
+            admin=admin,
+            spec=spec,
+            thread_id=request.thread_id,
+            model=model,
+            base_url=base_url,
+            gatekeeper=gatekeeper,
+            require_thread_access_fn=require_thread_access_fn,
+        )
+    return _apply_route_global(
+        agent=agent,
+        settings=settings,
+        spec=spec,
+        model=model,
+        base_url=base_url,
+        gatekeeper=gatekeeper,
+        get_settings_fn=get_settings_fn,
+    )

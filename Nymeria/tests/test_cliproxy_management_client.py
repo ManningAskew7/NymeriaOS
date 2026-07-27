@@ -257,3 +257,34 @@ async def test_not_found_on_named_resource_maps_to_not_found():
     )
     with pytest.raises(CLIProxyNotFound):
         await client.delete_auth_file("missing.json")
+
+@pytest.mark.asyncio
+async def test_resolve_or_mint_gatekeeper_reuses_first_configured_key():
+    from nymeria.cliproxy.management_client import resolve_or_mint_gatekeeper
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/v0/management/api-keys"
+        return httpx.Response(200, json={"api-keys": ["cpx-first", "cpx-second"]})
+
+    client, recorder = make_client(respond)
+    assert await resolve_or_mint_gatekeeper(client) == "cpx-first"
+    assert len(recorder.requests) == 1  # read only, no write
+
+
+@pytest.mark.asyncio
+async def test_resolve_or_mint_gatekeeper_mints_when_proxy_has_none():
+    from nymeria.cliproxy.management_client import resolve_or_mint_gatekeeper
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"api-keys": []})
+        assert request.method == "PUT"
+        assert request.url.path == "/v0/management/api-keys"
+        return httpx.Response(200, json={"status": "ok"})
+
+    client, recorder = make_client(respond)
+    minted = await resolve_or_mint_gatekeeper(client)
+    assert minted.startswith("cpx-nymeria-")
+    put = recorder.requests[-1]
+    assert json.loads(put.content) == {"items": [minted]}

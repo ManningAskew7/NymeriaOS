@@ -52,6 +52,24 @@ class FakeCommandApi:
     async def close(self) -> None:
         self.closed = True
 
+    async def cliproxy_auth_files(
+        self, provider: str | None = None, *, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        # The default fake models an unconfigured install: the real facade
+        # answers the wire-shaped 400 the /cliproxy routes return.
+        self.calls.append(("cliproxy_auth_files", (provider,), {}))
+        request = httpx.Request("GET", "http://test/cliproxy/auth-files")
+        response = httpx.Response(
+            400,
+            json={"detail": "CLIProxy management is not configured"},
+            request=request,
+        )
+        raise httpx.HTTPStatusError(
+            "CLIProxy management is not configured",
+            request=request,
+            response=response,
+        )
+
     async def list_threads(self, user_id: str | None = None) -> list[dict[str, Any]]:
         self.calls.append(("list_threads", (user_id,), {}))
         return [dict(thread) for thread in self.threads]
@@ -2825,3 +2843,102 @@ def test_in_process_list_available_models_prefers_ephemeral_credentials(
     assert [m["id"] for m in models] == ["m-eph"]
     assert calls[0]["url"] == "http://localhost:1234/v1/models"
     assert calls[0]["headers"]["Authorization"] == "Bearer sk-ephemeral"
+
+
+def test_http_client_cliproxy_facade_hits_the_admin_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The HTTP twins map onto the /cliproxy admin routes verb-for-verb."""
+
+    client = CommandHttpClient("http://api.test", "token", use_act_as=True)
+    calls: list[tuple[Any, ...]] = []
+
+    async def fake_get(path, params=None, act_as=None):
+        calls.append(("GET", path, params))
+        if path == "/cliproxy/models":
+            return {"models": [{"id": "m-1", "owned_by": "anthropic"}]}
+        if path == "/cliproxy/oauth/status":
+            return {"status": "ok", "detail": "alice@example.com"}
+        return []
+
+    async def fake_post(path, json=None, params=None, act_as=None):
+        calls.append(("POST", path, json))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    run(client.cliproxy_auth_files("claude"))
+    run(client.cliproxy_oauth_start("claude"))
+    run(client.cliproxy_oauth_callback("claude", code="abc", state="st-1"))
+    run(client.cliproxy_oauth_status("st-1", "claude"))
+    models = run(client.cliproxy_models())
+    run(client.cliproxy_apply_route("claude", "claude-opus-4-7"))
+    run(client.close())
+
+    assert calls == [
+        ("GET", "/cliproxy/auth-files", {"provider": "claude"}),
+        ("POST", "/cliproxy/oauth/start", {"provider": "claude"}),
+        (
+            "POST",
+            "/cliproxy/oauth/callback",
+            {"provider": "claude", "code": "abc", "state": "st-1"},
+        ),
+        ("GET", "/cliproxy/oauth/status", {"state": "st-1", "provider": "claude"}),
+        ("GET", "/cliproxy/models", None),
+        (
+            "POST",
+            "/cliproxy/apply-route",
+            {"provider": "claude", "model": "claude-opus-4-7", "scope": "global"},
+        ),
+    ]
+    # The models payload is unwrapped to the bare list.
+    assert [m["id"] for m in models] == ["m-1"]
+
+
+def test_in_process_cliproxy_requires_admin() -> None:
+    client = CommandBackendClient(
+        SimpleNamespace(),
+        user=_CommandBackendUser(id="bob", role="user"),
+        settings_fn=lambda: SimpleNamespace(),
+    )
+    for call in (
+        client.cliproxy_auth_files(),
+        client.cliproxy_oauth_start("claude"),
+        client.cliproxy_oauth_callback("claude", code="x", state="y"),
+        client.cliproxy_oauth_status("st", "claude"),
+        client.cliproxy_models(),
+        client.cliproxy_apply_route("claude", "m"),
+    ):
+        with pytest.raises(httpx.HTTPStatusError) as excinfo:
+            run(call)
+        assert excinfo.value.response.status_code == 403
+
+
+def test_in_process_cliproxy_400_when_management_unconfigured() -> None:
+    """No management URL/key -> the wire-shaped 400 the routes return."""
+    client = CommandBackendClient(
+        SimpleNamespace(),
+        user=_CommandBackendUser(id="alice", role="admin"),
+        settings_fn=lambda: SimpleNamespace(
+            cliproxy_management_url=None, cliproxy_management_key=None
+        ),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(client.cliproxy_oauth_start("claude"))
+    assert excinfo.value.response.status_code == 400
+    assert "not configured" in str(excinfo.value)
+
+
+def test_in_process_cliproxy_unknown_provider_404s() -> None:
+    client = CommandBackendClient(
+        SimpleNamespace(),
+        user=_CommandBackendUser(id="alice", role="admin"),
+        settings_fn=lambda: SimpleNamespace(
+            cliproxy_management_url="http://127.0.0.1:8317",
+            cliproxy_management_key="secret",
+        ),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        run(client.cliproxy_oauth_start("bogus"))
+    assert excinfo.value.response.status_code == 404

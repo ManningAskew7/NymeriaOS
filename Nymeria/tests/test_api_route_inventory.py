@@ -67,6 +67,7 @@ EXPECTED_ROUTES = [
     ('/cliproxy/catalog', ('GET',)),
     ('/cliproxy/config', ('GET',)),
     ('/cliproxy/config', ('PATCH',)),
+    ('/cliproxy/models', ('GET',)),
     ('/cliproxy/oauth/callback', ('POST',)),
     ('/cliproxy/oauth/start', ('POST',)),
     ('/cliproxy/oauth/status', ('GET',)),

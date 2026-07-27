@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from typing import Any, Optional, Sequence
 
 import httpx
@@ -30,6 +31,35 @@ from .catalog import CLIPROXY_PROVIDERS, CLIProxyProviderSpec
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
+
+
+def mint_gatekeeper_key() -> str:
+    """A fresh cpx- data-plane key in the proxy's api-keys list format."""
+    return "cpx-nymeria-" + secrets.token_urlsafe(24)
+
+
+def active_login_entry(
+    files: Sequence[dict[str, Any]], spec: CLIProxyProviderSpec
+) -> Optional[dict[str, Any]]:
+    """The first enabled, available auth-file entry for this provider, or None.
+
+    The auth-file list is the ground truth for "logged in": the proxy's
+    `/get-auth-status` answers ok for unknown or expired sessions, so every
+    completed login must be confirmed against this before it is trusted.
+    """
+    for entry in files:
+        if (
+            str(entry.get("provider") or "").lower() == spec.auth_file_provider
+            and not entry.get("disabled")
+            and not entry.get("unavailable")
+        ):
+            return entry
+    return None
+
+
+def login_account_label(entry: dict[str, Any]) -> str:
+    """Best-effort account identity from an auth-file entry ("" when unknown)."""
+    return str(entry.get("account") or entry.get("email") or "")
 
 # Knobs surfaced through GET/PATCH /cliproxy/config. Path -> JSON kind.
 CONFIG_KNOB_PATHS: dict[str, str] = {
@@ -345,6 +375,76 @@ class CLIProxyManagementClient:
         await self._request("PUT", f"/{path}", json_body=body)
 
 
+async def configured_gatekeeper_keys(
+    client: CLIProxyManagementClient,
+) -> list[str]:
+    """The proxy's configured api-keys, READ-ONLY (never mints/writes).
+
+    Any gatekeeper key unlocks every data-plane route (they are not
+    provider-scoped). Read paths (model listing, validation) use this;
+    mutating resolution belongs to :func:`resolve_or_mint_gatekeeper`,
+    which only apply-route may call: writing the api-keys knob flips a
+    key-less proxy from an OPEN data plane to key-required, which must
+    never happen as a side effect of a read.
+    """
+    knobs = await client.get_config_knobs(["api-keys"])
+    return [
+        key
+        for key in (knobs.get("api-keys") or [])
+        if isinstance(key, str) and key
+    ]
+
+
+async def resolve_or_mint_gatekeeper(client: CLIProxyManagementClient) -> str:
+    """First configured api-key, minting one when the proxy has none.
+
+    The mint APPENDS to whatever the knob currently holds (the PUT replaces
+    the list, so the raw entries are written back alongside the new key;
+    a non-string entry the string filter skips is preserved, never wiped).
+    Mutating: only the apply-route path should call this (see
+    :func:`configured_gatekeeper_keys`).
+    """
+    knobs = await client.get_config_knobs(["api-keys"])
+    raw = list(knobs.get("api-keys") or [])
+    keys = [key for key in raw if isinstance(key, str) and key]
+    if keys:
+        return keys[0]
+    minted = mint_gatekeeper_key()
+    await client.set_config_knob("api-keys", raw + [minted])
+    return minted
+
+
+async def confirm_login_landed(
+    client: CLIProxyManagementClient,
+    state: str,
+    spec: CLIProxyProviderSpec,
+) -> tuple[str, str]:
+    """(status, detail) for a pending login, with confirm-on-ok.
+
+    THE one implementation of the confirm-on-ok invariant (see
+    docs/private/cliproxy.md): the proxy's /get-auth-status answers ok for
+    unknown or expired sessions, so a bare ok proves nothing. An ok is
+    trusted only once an active auth file for the provider exists;
+    confirmed ok carries the account label as detail, unconfirmed ok is
+    reported as an error explaining the trap. Callers own any post-login
+    side effects (e.g. the Claude tool_prefix_disabled fixup).
+    """
+    status = await client.auth_status(state)
+    if status == "ok":
+        entry = active_login_entry(await client.list_auth_files(), spec)
+        if entry is None:
+            return (
+                "error",
+                f"The proxy reported the login complete but lists no active "
+                f"{spec.label} auth file (its status endpoint answers ok for "
+                "unknown or expired sessions); restart the login.",
+            )
+        return "ok", login_account_label(entry)
+    if status not in ("wait", "error"):
+        status = "error"
+    return status, ""
+
+
 def _error_message(response: httpx.Response) -> str:
     try:
         payload = response.json()
@@ -385,4 +485,10 @@ __all__ = [
     "CLIProxyUnreachable",
     "CONFIG_KNOB_PATHS",
     "DEFAULT_TIMEOUT_SECONDS",
+    "active_login_entry",
+    "configured_gatekeeper_keys",
+    "confirm_login_landed",
+    "login_account_label",
+    "mint_gatekeeper_key",
+    "resolve_or_mint_gatekeeper",
 ]

@@ -328,13 +328,23 @@ def register_default_commands(service: "CommandService") -> None:
         danger_level="dangerous",
         agent_allowed=False,
     )
+    # Same surface restriction as "provider setup": OAuth authorization
+    # codes ride the typed "/provider cliproxy paste <url>" path, which on
+    # a chat platform would persist them in the platform's message history.
     service.register(
         "provider cliproxy",
-        description="CLIProxy subscription-OAuth guidance and status",
+        description="CLIProxy subscription OAuth: login and route apply",
         category="LLM",
-        usage="/provider cliproxy [target]",
+        usage=(
+            "/provider cliproxy [target|login|use|relogin|paste|check"
+            "|model|apply|cancel]"
+        ),
         aliases=("provider_cliproxy",),
+        surfaces=("desktop", "mobile", "cli", "api"),
         requires_admin=True,
+        mutates_state=True,
+        danger_level="dangerous",
+        agent_allowed=False,
     )
     service.register(
         "provider list",

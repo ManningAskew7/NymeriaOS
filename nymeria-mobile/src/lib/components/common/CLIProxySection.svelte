@@ -69,14 +69,14 @@
         }
         try {
           const result = await api.getCLIProxyOAuthStatus(started.state, provider.id);
-          if (result === 'ok') {
+          if (result.status === 'ok') {
             stopPolling();
             oauthProvider = null;
-            message = `${provider.label} login complete.`;
+            message = `${provider.label} login complete${result.detail ? ` as ${result.detail}` : ''}.`;
             await refresh();
-          } else if (result === 'error') {
+          } else if (result.status === 'error') {
             stopPolling();
-            oauthDetail = 'The provider reported a login error; start it again.';
+            oauthDetail = result.detail || 'The provider reported a login error; start it again.';
           }
         } catch (e) {
           stopPolling();

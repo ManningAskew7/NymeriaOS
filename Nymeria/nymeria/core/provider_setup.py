@@ -122,6 +122,97 @@ def clear_setup(user_id: str) -> bool:
         return _pending.pop(str(user_id), None) is not None
 
 
+@dataclass
+class PendingCliproxyLogin:
+    """One user's in-flight CLIProxy subscription OAuth chain.
+
+    ``oauth_state`` is the proxy's pending-session token (the proxy holds
+    the actual OAuth session server-side; nothing here is a secret, but the
+    state token and auth URL are single-purpose and expire with the proxy's
+    ~10-minute session, which the TTL mirrors). ``account`` is filled once
+    the login is CONFIRMED against the auth-file list.
+    """
+
+    target: str
+    oauth_state: str = ""
+    auth_url: str = ""
+    flow: str = "browser"
+    # Monotonic stamp of the oauth start. The proxy answers ok for a
+    # session it no longer knows (expired, ~10 min), so an ok on an OLD
+    # session with no callback delivered through this chain is refused as
+    # the stale-session trap; within the session's lifetime an unknown-
+    # session ok cannot happen for our state, so ok is genuine (the local-
+    # browser flow delivers the callback straight to the proxy's port,
+    # nothing is ever pasted).
+    oauth_started_at: float = 0.0
+    # True once a callback was delivered (pasted) for THIS session; a
+    # delivery to a dead session errors, so a post-paste ok stays
+    # trustworthy even past the session-age guard.
+    callback_delivered: bool = False
+    account: str = ""
+    model: str | None = None
+    model_custom: bool = False
+    model_options: list[dict[str, object]] | None = None
+    models_note: str = ""
+    expires_at: float = field(default=0.0)
+
+    def __post_init__(self) -> None:
+        if not self.expires_at:
+            self.expires_at = time.monotonic() + PENDING_SETUP_TTL_SECONDS
+
+
+_pending_cliproxy: dict[str, PendingCliproxyLogin] = {}
+
+
+def _purge_expired_cliproxy_locked(now: float) -> None:
+    for user_id in [
+        u for u, p in _pending_cliproxy.items() if p.expires_at <= now
+    ]:
+        _pending_cliproxy.pop(user_id, None)
+
+
+def start_cliproxy_login(user_id: str, target: str) -> PendingCliproxyLogin:
+    """Start (or restart) the user's pending CLIProxy chain for ``target``."""
+    record = PendingCliproxyLogin(target=target)
+    with _lock:
+        _purge_expired_cliproxy_locked(time.monotonic())
+        _pending_cliproxy[str(user_id)] = record
+    return record
+
+
+def get_cliproxy_login(user_id: str) -> PendingCliproxyLogin | None:
+    with _lock:
+        now = time.monotonic()
+        _purge_expired_cliproxy_locked(now)
+        record = _pending_cliproxy.get(str(user_id))
+        if record is not None:
+            record.expires_at = now + PENDING_SETUP_TTL_SECONDS
+        return record
+
+
+def update_cliproxy_login(
+    user_id: str, **fields: object
+) -> PendingCliproxyLogin | None:
+    """Update the user's pending chain in place; None when absent/expired."""
+    with _lock:
+        now = time.monotonic()
+        _purge_expired_cliproxy_locked(now)
+        record = _pending_cliproxy.get(str(user_id))
+        if record is None:
+            return None
+        for name, value in fields.items():
+            if not hasattr(record, name):
+                raise AttributeError(f"Unknown pending-login field: {name}")
+            setattr(record, name, value)
+        record.expires_at = now + PENDING_SETUP_TTL_SECONDS
+        return record
+
+
+def clear_cliproxy_login(user_id: str) -> bool:
+    with _lock:
+        return _pending_cliproxy.pop(str(user_id), None) is not None
+
+
 def clean_pasted_secret(raw: str) -> tuple[str, list[str]]:
     """Normalize a pasted secret and report suspicious content.
 
@@ -162,10 +253,15 @@ def clean_pasted_secret(raw: str) -> tuple[str, list[str]]:
 
 __all__ = [
     "PENDING_SETUP_TTL_SECONDS",
+    "PendingCliproxyLogin",
     "PendingProviderSetup",
     "clean_pasted_secret",
+    "clear_cliproxy_login",
     "clear_setup",
+    "get_cliproxy_login",
     "get_setup",
+    "start_cliproxy_login",
     "start_setup",
+    "update_cliproxy_login",
     "update_setup",
 ]

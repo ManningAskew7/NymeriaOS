@@ -131,20 +131,42 @@ function createCLIProxyStore() {
       }
       try {
         const result = await api.getCLIProxyOAuthStatus(oauthState, providerId);
-        if (result === 'ok') {
+        if (result.status === 'ok') {
           stopOAuthPolling();
-          oauth = { ...current, status: 'ok', detail: 'Login complete.' };
+          oauth = {
+            ...current,
+            status: 'ok',
+            detail: result.detail ? `Logged in as ${result.detail}.` : 'Login complete.'
+          };
           message = `${providerLabel} login complete.`;
           await refresh(true);
-        } else if (result === 'error') {
+        } else if (result.status === 'error') {
           stopOAuthPolling();
-          oauth = { ...current, status: 'error', detail: 'The provider reported a login error.' };
+          // Prefer the backend's explanation (notably the confirmed-ok trap:
+          // the proxy answers ok for expired sessions and the backend refuses
+          // it with a message far more useful than a generic error line).
+          oauth = {
+            ...current,
+            status: 'error',
+            detail: result.detail || 'The provider reported a login error.'
+          };
         }
       } catch (e) {
         stopOAuthPolling();
         oauth = { ...current, status: 'error', detail: humanizeErrorText(e, { action: 'connect', resource: 'the proxy' }) };
       }
     }, POLL_INTERVAL_MS);
+  }
+
+  async function openExternal(href: string) {
+    // Packaged (Tauri) builds cannot window.open; use the opener plugin
+    // with a plain-browser fallback (AuthPromptModal precedent).
+    try {
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(href);
+    } catch {
+      window.open(href, '_blank', 'noopener,noreferrer');
+    }
   }
 
   async function startOAuth(provider: CLIProxyProviderInfo) {
@@ -164,7 +186,7 @@ function createCLIProxyStore() {
             ? 'Open the link and approve the login; this panel updates automatically.'
             : 'Approve the login in the browser. If it ends on a dead localhost page, paste that page\'s full URL below.'
       };
-      window.open(started.url, '_blank', 'noopener');
+      void openExternal(started.url);
       startStatusPolling(provider.id, provider.label, started.state, LOGIN_TIMEOUT_MS);
     } catch (e) {
       fail(e, 'start', 'the login');
@@ -191,6 +213,12 @@ function createCLIProxyStore() {
       const latest = oauth;
       if (!latest || latest.state !== current.state || latest.status === 'ok') return;
       oauth = { ...latest, status: 'wait', detail: humanizeErrorText(e, { action: 'send', resource: 'the callback' }) };
+      // A failed delivery must also revive a dead poller (timeout/error
+      // before the paste), or the panel can never confirm a retry.
+      if (!oauthTimer) {
+        const spec = status?.providers.find((entry) => entry.id === current.provider);
+        startStatusPolling(current.provider, spec?.label ?? current.provider, current.state, 120_000);
+      }
     }
   }
 
