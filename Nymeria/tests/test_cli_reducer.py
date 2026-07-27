@@ -759,3 +759,113 @@ def test_provider_fallback_hold_phrase_matches_bot_surfaces() -> None:
     notice = state.messages[-1]
     assert isinstance(notice, SystemMessage)
     assert "for 1 min" in notice.content
+
+
+# ---------------------------------------------------------------------------
+# Turn wall-time stamping (turn-summary line)
+# ---------------------------------------------------------------------------
+
+
+def test_turn_timing_stamped_on_start_and_closed_on_done() -> None:
+    state = create_initial_state(thread_id="t", now=0.0)
+    state = start_turn(state, "hello", now=10.0)
+    assert state.turn_started_at == 10.0
+    state = reduce_stream_event(state, {"type": "response", "content": "hi"}, now=11.0)
+    state = reduce_stream_event(state, {"type": "done"}, now=22.5)
+    assert state.turn_started_at is None
+    assert state.last_turn_duration_seconds == 12.5
+    assert state.last_turn_outcome == "complete"
+
+
+def test_turn_timing_survives_cancelled_error_and_closes_on_done() -> None:
+    state = create_initial_state(thread_id="t", now=0.0)
+    state = start_turn(state, "hello", now=5.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "error", "content": "stopped", "code": "cancelled"},
+        now=6.0,
+    )
+    # The cancelled-code error is not terminal: the done that follows the
+    # stop closes the turn and its timing with the cancelled outcome.
+    assert state.turn_started_at == 5.0
+    state = reduce_stream_event(
+        state, {"type": "done", "status": "cancelled"}, now=13.0
+    )
+    assert state.last_turn_duration_seconds == 8.0
+    assert state.last_turn_outcome == "cancelled"
+
+
+def test_turn_timing_closes_on_terminal_stream_error() -> None:
+    state = create_initial_state(thread_id="t", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "error", "content": "boom", "code": "provider_error"},
+        now=4.5,
+    )
+    assert state.turn_started_at is None
+    assert state.last_turn_duration_seconds == 3.5
+    assert state.last_turn_outcome == "error"
+
+
+def test_no_turn_timing_without_local_turn_start() -> None:
+    """A mid-turn viewer attach (done without a locally-seen start) must not
+    record a misleading partial duration. The outcome is still stamped so
+    stats-derived summary segments can tell how the turn ended."""
+    state = create_initial_state(thread_id="t", now=0.0)
+    state = reduce_stream_event(state, {"type": "response", "content": "x"}, now=1.0)
+    state = reduce_stream_event(state, {"type": "done"}, now=2.0)
+    assert state.last_turn_duration_seconds is None
+    assert state.last_turn_outcome == "complete"
+
+
+def test_attach_turn_end_clears_previous_turn_timing() -> None:
+    """A turn observed only mid-flight must not inherit the PREVIOUS turn's
+    recorded duration onto its own summary line."""
+    state = create_initial_state(thread_id="t", now=0.0)
+    state = start_turn(state, "hello", now=0.0)
+    state = reduce_stream_event(state, {"type": "done"}, now=12.5)
+    assert state.last_turn_duration_seconds == 12.5
+
+    # Next turn: the start was never seen locally (viewer attach), only its
+    # tail. Closing it clears the stale 12.5s instead of carrying it over.
+    state = reduce_stream_event(state, {"type": "response", "content": "x"}, now=20.0)
+    state = reduce_stream_event(state, {"type": "done"}, now=21.0)
+    assert state.last_turn_duration_seconds is None
+    assert state.last_turn_outcome == "complete"
+
+
+def test_redundant_done_after_terminal_error_preserves_timing() -> None:
+    """The done that can trail a terminal stream error is redundant: the
+    error already closed and rendered the turn, so its recorded timing must
+    survive (no turn is in flight to clear it for)."""
+    state = create_initial_state(thread_id="t", now=0.0)
+    state = start_turn(state, "hello", now=1.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "error", "content": "boom", "code": "provider_error"},
+        now=4.5,
+    )
+    assert state.last_turn_duration_seconds == 3.5
+    state = reduce_stream_event(state, {"type": "done"}, now=5.0)
+    assert state.last_turn_duration_seconds == 3.5
+    assert state.last_turn_outcome == "error"
+
+
+def test_autonomous_task_turn_timing() -> None:
+    state = create_initial_state(thread_id="t", now=0.0)
+    state = reduce_stream_event(
+        state,
+        {"type": "task_started", "task_id": "todo-1", "prompt": "check logs",
+         "source": "scheduler"},
+        now=1.0,
+    )
+    assert state.turn_started_at == 1.0
+    state = reduce_stream_event(
+        state,
+        {"type": "task_completed", "task_id": "todo-1", "content": "done"},
+        now=31.0,
+    )
+    assert state.turn_started_at is None
+    assert state.last_turn_duration_seconds == 30.0
+    assert state.last_turn_outcome == "complete"

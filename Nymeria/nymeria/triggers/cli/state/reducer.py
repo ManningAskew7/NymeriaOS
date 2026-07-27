@@ -107,6 +107,7 @@ def start_turn(
         user_id=selected_user_id,
         messages=state.messages + (user_message, assistant_message),
         turn_status="submitting",
+        turn_started_at=timestamp,
         current_assistant_id=assistant_message.id,
         is_queued=False,
         queue=None,
@@ -574,6 +575,7 @@ def _reduce_task_started(
         messages=state.messages + (notice, assistant),
         current_assistant_id=assistant.id,
         turn_status="streaming",
+        turn_started_at=timestamp,
         is_queued=False,
         queue=None,
         active_tool_calls={},
@@ -623,6 +625,7 @@ def _reduce_task_completed(
         active_tool_calls={},
         tool_call_delta_buffer="",
         errors=errors,
+        **_turn_timing_updates(state, timestamp, "error" if event.error else "complete"),
     )
 
 
@@ -761,6 +764,14 @@ def _reduce_error(
         message_status = "error"
 
     content = event.content or "Unknown error"
+    # A cancelled-code error is not terminal (the done event that follows the
+    # stop closes the turn and its timing); a real stream error may be the
+    # last event the stream ever yields, so timing closes here.
+    timing = (
+        {}
+        if event.code == "cancelled"
+        else _turn_timing_updates(state, timestamp, "error")
+    )
     state = _update_last_assistant(
         state,
         lambda message: _with_error_response(message, content, timestamp, message_status),
@@ -769,8 +780,44 @@ def _reduce_error(
         errors=state.errors + (notice,),
         is_queued=False,
         queue=None,
+        **timing,
     )
     return state
+
+
+def _turn_timing_updates(
+    state: CLIUIState,
+    timestamp: float,
+    outcome: str,
+) -> dict[str, Any]:
+    """State updates closing out turn timing at a turn-ending event.
+
+    Three cases:
+    - The session saw the turn start: close timing with the real duration.
+    - No start seen and no turn in flight (the redundant terminal event that
+      trails a close, e.g. the done after a terminal error or after
+      task_completed): keep the recorded values; the turn they describe was
+      already closed and rendered.
+    - No start seen but a turn WAS in flight (mid-turn viewer attach): a
+      partial duration would be misleading, so the previous turn's duration
+      is cleared rather than carried onto this turn's summary line. The
+      outcome is still stamped so stats-derived summary segments can tell
+      how the turn ended.
+    """
+    if state.turn_started_at is not None:
+        return {
+            "turn_started_at": None,
+            "last_turn_duration_seconds": max(
+                0.0, timestamp - state.turn_started_at
+            ),
+            "last_turn_outcome": outcome,
+        }
+    if state.turn_status in ("complete", "error"):
+        return {}
+    return {
+        "last_turn_duration_seconds": None,
+        "last_turn_outcome": outcome,
+    }
 
 
 def _reduce_done(
@@ -803,6 +850,7 @@ def _reduce_done(
         )
     )
 
+    outcome = "cancelled" if event.status == "cancelled" else turn_status
     state = _update_last_assistant(
         state,
         lambda message: _finalize_assistant(message, message_status),
@@ -816,6 +864,7 @@ def _reduce_done(
         active_model=active_model,
         tool_call_count=event.tool_call_count,
         session_usage=session_usage,
+        **_turn_timing_updates(state, timestamp, outcome),
     )
     return state
 

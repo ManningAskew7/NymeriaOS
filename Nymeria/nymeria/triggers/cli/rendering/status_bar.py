@@ -113,6 +113,12 @@ class StatusBarRenderer:
         self._segment_providers: dict[str, SegmentProvider] = dict(
             _DEFAULT_SEGMENT_PROVIDERS
         )
+        # Extras: resolvable by explicit layout refs only, never part of the
+        # default order (and so never in ``segment_keys``); a
+        # ``register_segment`` with the same key shadows the extra.
+        self._extra_providers: dict[str, SegmentProvider] = dict(
+            _EXTRA_SEGMENT_PROVIDERS
+        )
         self._layout: tuple[str, ...] | None = None
         self._script_source: ScriptSource | None = None
 
@@ -190,8 +196,14 @@ class StatusBarRenderer:
         context: StatusBarContext | None = None,
         width: int | None = None,
         now: float | None = None,
+        separator: str = STATUS_SEPARATOR,
     ) -> StatusBarRender:
-        """Render a fitted status bar for the current state."""
+        """Render a fitted status bar for the current state.
+
+        ``separator`` must be cell-width-identical to ``STATUS_SEPARATOR``
+        (the fitter's width math assumes 3 cells per joint); the turn-summary
+        line passes its quieter middle-dot variant.
+        """
 
         selected_context = context or StatusBarContext()
         current_time = time.monotonic() if now is None else now
@@ -204,10 +216,12 @@ class StatusBarRenderer:
             context=selected_context,
             now=current_time,
         )
-        fitted_segments = _fit_status_segment_records(segments, render_width)
+        fitted_segments = _fit_status_segment_records(
+            segments, render_width, separator=separator
+        )
         fitted = [segment.text for segment in fitted_segments]
         return StatusBarRender(
-            text=STATUS_SEPARATOR.join(fitted),
+            text=separator.join(fitted),
             width=render_width,
             segments=tuple(fitted),
             fragments=tuple(_status_fragments(fitted_segments, capabilities)),
@@ -305,7 +319,7 @@ class StatusBarRenderer:
             if not text:
                 return None
             return StatusSegment(text=text, priority=2, min_width=1)
-        provider = self._segment_providers.get(ref)
+        provider = self._segment_providers.get(ref) or self._extra_providers.get(ref)
         if provider is None:
             return None
         return provider(self, state, capabilities, context, now)
@@ -555,6 +569,54 @@ def _cwd_provider(
     return StatusSegment(text=cwd, priority=3, min_width=8)
 
 
+def _turn_time_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    """Last turn's total wall time: submit to done, tool execution included.
+
+    Client-stamped by the reducer (``last_turn_duration_seconds``); absent
+    until a turn completes in this session, so history replays and mid-turn
+    viewer attaches never show a misleading partial time.
+    """
+    duration = state.last_turn_duration_seconds
+    if duration is None:
+        return None
+    text = format_duration(duration)
+    if state.last_turn_outcome == "cancelled":
+        text = f"stopped after {text}"
+    elif state.last_turn_outcome == "error":
+        text = f"failed after {text}"
+    return StatusSegment(text=text, priority=1, min_width=5)
+
+
+def _cost_provider(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    capabilities: Any,
+    context: StatusBarContext,
+    now: float,
+) -> StatusSegment | None:
+    """Last turn's LLM cost, when the backend priced it (``cost_usd_last``)."""
+    stats = state.context_stats or {}
+    if stats.get("cost_unavailable"):
+        return None
+    cost = stats.get("cost_usd_last")
+    if not isinstance(cost, (int, float)) or isinstance(cost, bool) or cost <= 0:
+        return None
+    if cost < 0.095:
+        text = f"${cost:.4f}"
+        if text == "$0.0000":
+            # A sub-0.1-cent cost would render as zero; show a floor instead.
+            text = "<$0.0001"
+    else:
+        text = f"${cost:.2f}"
+    return StatusSegment(text=text, priority=2, min_width=5)
+
+
 _DEFAULT_SEGMENT_PROVIDERS: dict[str, SegmentProvider] = {
     "brand": _brand_provider,
     "activity": _activity_provider,
@@ -570,7 +632,17 @@ _DEFAULT_SEGMENT_PROVIDERS: dict[str, SegmentProvider] = {
     "cwd": _cwd_provider,
 }
 
+# Built-in segments that are valid layout refs everywhere but deliberately
+# NOT part of the default bar order (layout None): they exist for explicit
+# layouts, primarily the turn-summary line's defaults.
+_EXTRA_SEGMENT_PROVIDERS: dict[str, SegmentProvider] = {
+    "turn_time": _turn_time_provider,
+    "cost": _cost_provider,
+}
+
 DEFAULT_SEGMENT_KEYS: tuple[str, ...] = tuple(_DEFAULT_SEGMENT_PROVIDERS)
+EXTRA_SEGMENT_KEYS: tuple[str, ...] = tuple(_EXTRA_SEGMENT_PROVIDERS)
+ALL_SEGMENT_KEYS: tuple[str, ...] = DEFAULT_SEGMENT_KEYS + EXTRA_SEGMENT_KEYS
 
 
 def select_status_notice(
@@ -801,8 +873,16 @@ def fit_status_segments(
 def _fit_status_segment_records(
     segments: list[StatusSegment] | tuple[StatusSegment, ...],
     width: int,
+    *,
+    separator: str = STATUS_SEPARATOR,
 ) -> list[StatusSegment]:
-    """Drop low-priority segment records, then truncate survivors to fit one line."""
+    """Drop low-priority segment records, then truncate survivors to fit one line.
+
+    ``separator`` only affects the collapsed last-resort record (everything
+    joined and truncated into one segment); the width math assumes the
+    3-cell ``STATUS_SEPARATOR`` regardless, which every caller's separator
+    matches.
+    """
 
     render_width = coerce_width(width)
     active = [segment for segment in segments if normalize_detail(segment.text)]
@@ -844,7 +924,7 @@ def _fit_status_segment_records(
             text=truncate_cell_width(segment.text, target_width),
         )
 
-    text = STATUS_SEPARATOR.join(segment.text for segment in active)
+    text = separator.join(segment.text for segment in active)
     if _cell_width(text) <= render_width:
         return active
     return [
@@ -856,6 +936,70 @@ def _fit_status_segment_records(
             removable=False,
         )
     ]
+
+
+# ----- turn-summary line (rendered into the transcript at turn end) ------- #
+
+TURN_SUMMARY_GLYPH = "❋"
+TURN_SUMMARY_GLYPH_ASCII = "*"
+_TURN_SUMMARY_SEPARATOR = " · "
+_TURN_SUMMARY_SEPARATOR_ASCII = " | "
+
+# context_stats keys that describe the LAST RECORDED turn (stamped by the
+# done event) rather than the thread. An errored turn never refreshes them,
+# so the summary line must not attribute the previous turn's numbers to it.
+_TURN_LEVEL_STATS_KEYS = ("tokens_per_second", "cost_usd_last")
+
+
+def render_turn_summary_text(
+    renderer: StatusBarRenderer,
+    state: CLIUIState,
+    *,
+    capabilities: Any,
+    context: StatusBarContext | None = None,
+    width: int | None = None,
+    now: float | None = None,
+    ascii_only: bool = False,
+) -> str:
+    """Render the end-of-turn summary line: glyph + configured segments.
+
+    Reuses the status-bar segment registry and width fitting; the renderer's
+    layout holds the turn bar's refs. The join separator differs from the
+    live bars (middle dot, quieter) but is cell-width-identical to
+    ``STATUS_SEPARATOR``, so the fitted segments still fit. Returns "" when
+    no segment produced text, in which case nothing should be printed.
+    """
+    glyph = TURN_SUMMARY_GLYPH_ASCII if ascii_only else TURN_SUMMARY_GLYPH
+    separator = (
+        _TURN_SUMMARY_SEPARATOR_ASCII if ascii_only else _TURN_SUMMARY_SEPARATOR
+    )
+    if state.last_turn_outcome == "error":
+        # An errored turn produced no fresh turn-level stats: context_stats
+        # still carries the PREVIOUS turn's rate and cost, and this line is
+        # a permanent transcript record. Strip those keys so tps/cost go
+        # silent instead of crediting the old turn's numbers to this one
+        # (thread-level stats like context occupancy stay).
+        stripped = {
+            key: value
+            for key, value in (state.context_stats or {}).items()
+            if key not in _TURN_LEVEL_STATS_KEYS
+        }
+        state = replace(state, context_stats=stripped)
+    render_width = coerce_width(
+        width if width is not None else getattr(capabilities, "width", 80)
+    )
+    body_width = max(1, render_width - _cell_width(glyph) - 1)
+    result = renderer.render(
+        state,
+        capabilities=capabilities,
+        context=context,
+        width=body_width,
+        now=now,
+        separator=separator,
+    )
+    if not result.segments:
+        return ""
+    return f"{glyph} {separator.join(result.segments)}"
 
 
 def _context_style_class(percent: float | int | None) -> str:
@@ -981,13 +1125,17 @@ def _first_number(payload: dict[str, Any], *keys: str) -> float | None:
 
 
 __all__ = [
+    "ALL_SEGMENT_KEYS",
     "DEFAULT_NOTICE_TTL_SECONDS",
     "DEFAULT_SEGMENT_KEYS",
+    "EXTRA_SEGMENT_KEYS",
     "NoticeLevel",
     "SCRIPT_REF_PREFIX",
     "STATUS_SEPARATOR",
     "ScriptSource",
     "TEXT_REF_PREFIX",
+    "TURN_SUMMARY_GLYPH",
+    "TURN_SUMMARY_GLYPH_ASCII",
     "StatusBarContext",
     "StatusBarRender",
     "StatusBarRenderer",
@@ -997,5 +1145,6 @@ __all__ = [
     "cwd_label",
     "fit_status_segments",
     "format_duration",
+    "render_turn_summary_text",
     "select_status_notice",
 ]

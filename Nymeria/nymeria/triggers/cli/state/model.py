@@ -219,6 +219,15 @@ class CLIUIState:
     user_id: str = "default"
     messages: tuple[TranscriptMessage, ...] = ()
     turn_status: TurnStatus = "idle"
+    # Wall-clock (monotonic) turn timing for the turn-summary line and the
+    # turn_time status segment. ``turn_started_at`` is stamped when a turn
+    # visibly begins in THIS session (user submit / task_started) and is None
+    # otherwise, so mid-turn viewer attaches and history replays never yield
+    # a misleading partial duration. ``last_turn_outcome`` is
+    # "complete" | "error" | "cancelled" | "".
+    turn_started_at: float | None = None
+    last_turn_duration_seconds: float | None = None
+    last_turn_outcome: str = ""
     current_assistant_id: str | None = None
     is_queued: bool = False
     queue: QueueState | None = None

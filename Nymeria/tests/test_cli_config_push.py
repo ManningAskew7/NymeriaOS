@@ -111,7 +111,7 @@ def test_set_validates_before_dispatch() -> None:
         return bad_bar, bad_ref, bad_type
 
     bad_bar, bad_ref, bad_type = asyncio.run(run())
-    assert "[Error]" in bad_bar and "'top' or 'under'" in bad_bar
+    assert "[Error]" in bad_bar and "'top', 'under', or 'turn'" in bad_bar
     assert "[Error]" in bad_ref and "Unknown segment ref" in bad_ref
     assert "[Error]" in bad_type
     # Validation failures never register a pending command.
@@ -389,3 +389,73 @@ def test_result_cross_user_returns_404(env) -> None:
     coord = get_cli_config_coordinator()
     assert coord.get(command_id) is not None
     coord.discard(command_id)
+
+
+def test_set_accepts_turn_bar_extras_and_off_sentinel() -> None:
+    async def run() -> tuple[str, str]:
+        # Validation happens before dispatch; with no coordinator ack these
+        # time out, so patch the dispatcher to observe what passes the gate.
+        dispatched: list[dict[str, Any]] = []
+
+        async def fake_dispatch(*, command_type: str, args: dict[str, Any], config):
+            dispatched.append({"command_type": command_type, "args": args})
+            return "ok"
+
+        import nymeria.tools.cli_statusbar as mod
+
+        original = mod._dispatch
+        mod._dispatch = fake_dispatch
+        try:
+            ok_turn = await cli_statusbar_set.ainvoke(
+                {"bar": "turn", "segments": ["turn_time", "cost"]},
+                config=_config(),
+            )
+            ok_off = await cli_statusbar_set.ainvoke(
+                {"bar": "turn", "segments": ["off"]},
+                config=_config(),
+            )
+        finally:
+            mod._dispatch = original
+        assert dispatched[0]["args"] == {
+            "bar": "turn",
+            "segments": ["turn_time", "cost"],
+        }
+        assert dispatched[1]["args"] == {"bar": "turn", "segments": ["off"]}
+        return ok_turn, ok_off
+
+    ok_turn, ok_off = asyncio.run(run())
+    assert ok_turn == "ok" and ok_off == "ok"
+
+
+def test_set_still_rejects_script_refs_on_the_turn_bar() -> None:
+    async def run() -> str:
+        return await cli_statusbar_set.ainvoke(
+            {"bar": "turn", "segments": ["script:~/bin/x.sh"]},
+            config=_config(),
+        )
+
+    result = asyncio.run(run())
+    assert "[Error]" in result and "script:" in result
+
+
+def test_tool_segment_and_off_constants_match_the_cli_side() -> None:
+    """Drift gate: the backend tool's hand-copied literals must track the
+    CLI's registries (the CLI re-validates on apply, so drift degrades to an
+    ack error; this pins it at the source instead)."""
+    import nymeria.tools.cli_statusbar as tool_mod
+    from nymeria.triggers.cli import statusbar_config
+    from nymeria.triggers.cli.rendering.status_bar import ALL_SEGMENT_KEYS
+
+    assert tool_mod._ALL_SEGMENTS == ALL_SEGMENT_KEYS
+    assert set(tool_mod._OFF_REFS) == set(statusbar_config._OFF_REFS)
+
+
+def test_set_rejects_off_sentinel_for_the_top_bar() -> None:
+    async def run() -> str:
+        return await cli_statusbar_set.ainvoke(
+            {"bar": "top", "segments": ["off"]},
+            config=_config(),
+        )
+
+    result = asyncio.run(run())
+    assert "[Error]" in result and "cannot be hidden" in result

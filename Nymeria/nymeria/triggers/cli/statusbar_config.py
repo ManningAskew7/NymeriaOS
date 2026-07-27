@@ -5,12 +5,16 @@ Mirrors ``theme.py``: a frozen value object, load/save against the shared
 other top-level keys survive), and a ``/statusbar`` command dispatching a
 ``statusbar_updated`` action that the REPL applies live.
 
-Layout model: two bars, each an ordered list of segment refs.
+Layout model: three bars, each an ordered list of segment refs.
 
 - ``top``: the existing status bar above the composer. ``None`` means "the
   built-in default order" (which tracks new built-in segments across
   upgrades); an explicit list pins exactly those segments.
 - ``under_prompt``: a second bar below the composer; empty means hidden.
+- ``turn``: the end-of-turn summary line printed into the transcript when a
+  turn finishes. ``None`` means the built-in default
+  (``DEFAULT_TURN_SEGMENTS``); an explicit list pins; explicit empty hides
+  the line (``/statusbar set turn off``).
 
 Segment ref grammar:
 
@@ -28,12 +32,14 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from .rendering.status_bar import (
+    ALL_SEGMENT_KEYS,
     DEFAULT_SEGMENT_KEYS,
+    EXTRA_SEGMENT_KEYS,
     SCRIPT_REF_PREFIX,
     TEXT_REF_PREFIX,
 )
@@ -41,7 +47,14 @@ from .theme import cli_theme_config_path
 
 STATUSBAR_CONFIG_KEY = "status_bar"
 
-BAR_NAMES: tuple[str, ...] = ("top", "under")
+BAR_NAMES: tuple[str, ...] = ("top", "under", "turn")
+
+# Default refs for the end-of-turn summary line (used when ``turn`` is None).
+DEFAULT_TURN_SEGMENTS: tuple[str, ...] = ("turn_time", "tps")
+
+# A single one of these as the whole ref list means "hide this bar"
+# (pins an explicit empty list, distinct from a reset to defaults).
+_OFF_REFS = frozenset({"off", "none", "hidden"})
 
 
 class StatusBarConfigError(ValueError):
@@ -54,18 +67,28 @@ class StatusBarLayout:
 
     top: tuple[str, ...] | None = None
     under_prompt: tuple[str, ...] = ()
+    turn: tuple[str, ...] | None = None
 
     @property
     def is_default(self) -> bool:
-        return self.top is None and not self.under_prompt
+        return self.top is None and not self.under_prompt and self.turn is None
+
+    def turn_refs(self) -> tuple[str, ...]:
+        """Effective refs for the turn-summary line (empty = hidden)."""
+
+        return DEFAULT_TURN_SEGMENTS if self.turn is None else self.turn
 
     def refs(self) -> tuple[str, ...]:
-        """All configured refs across both bars (top ``None`` contributes none)."""
+        """All configured refs across the bars (``None`` contributes none)."""
 
-        return tuple(self.top or ()) + tuple(self.under_prompt)
+        return (
+            tuple(self.top or ())
+            + tuple(self.under_prompt)
+            + tuple(self.turn or ())
+        )
 
     def script_commands(self) -> tuple[str, ...]:
-        """Unique script commands across both bars, in first-seen order."""
+        """Unique script commands across the bars, in first-seen order."""
 
         seen: list[str] = []
         for ref in self.refs():
@@ -77,30 +100,48 @@ class StatusBarLayout:
 
     def with_bar(self, bar: str, refs: tuple[str, ...]) -> "StatusBarLayout":
         if bar == "top":
-            return StatusBarLayout(top=refs, under_prompt=self.under_prompt)
-        return StatusBarLayout(top=self.top, under_prompt=refs)
+            return replace(self, top=refs)
+        if bar == "turn":
+            return replace(self, turn=refs)
+        return replace(self, under_prompt=refs)
 
     def without_bar(self, bar: str | None = None) -> "StatusBarLayout":
         if bar is None:
             return StatusBarLayout()
         if bar == "top":
-            return StatusBarLayout(top=None, under_prompt=self.under_prompt)
-        return StatusBarLayout(top=self.top, under_prompt=())
+            return replace(self, top=None)
+        if bar == "turn":
+            return replace(self, turn=None)
+        return replace(self, under_prompt=())
 
 
 DEFAULT_STATUSBAR_LAYOUT = StatusBarLayout()
 
 
 def normalize_bar_name(bar: str) -> str:
-    """Validate and normalize a bar name (``top`` | ``under``)."""
+    """Validate and normalize a bar name (``top`` | ``under`` | ``turn``)."""
 
     normalized = str(bar or "").strip().casefold()
-    aliases = {"top": "top", "under": "under", "under_prompt": "under", "bottom": "under"}
+    aliases = {
+        "top": "top",
+        "under": "under",
+        "under_prompt": "under",
+        "bottom": "under",
+        "turn": "turn",
+        "summary": "turn",
+    }
     if normalized not in aliases:
         raise StatusBarConfigError(
             f"Unknown bar: {bar}. Use one of: {', '.join(BAR_NAMES)}"
         )
     return aliases[normalized]
+
+
+def is_off_ref_list(refs: Sequence[str]) -> bool:
+    """True when the whole ref list is a single off/none/hidden sentinel."""
+
+    cleaned = [str(ref).strip().casefold() for ref in refs if str(ref).strip()]
+    return len(cleaned) == 1 and cleaned[0] in _OFF_REFS
 
 
 def normalize_segment_ref(ref: str) -> str:
@@ -120,10 +161,10 @@ def normalize_segment_ref(ref: str) -> str:
             )
         return text
     key = text.casefold()
-    if key not in DEFAULT_SEGMENT_KEYS:
+    if key not in ALL_SEGMENT_KEYS:
         raise StatusBarConfigError(
             f"Unknown segment: {ref}. Built-in segments: "
-            f"{', '.join(DEFAULT_SEGMENT_KEYS)}; custom refs: text:<literal>, "
+            f"{', '.join(ALL_SEGMENT_KEYS)}; custom refs: text:<literal>, "
             "script:<command>"
         )
     return key
@@ -172,7 +213,15 @@ def load_statusbar_layout(
             # fall back to the default order instead of pinning a blank bar.
             top = None
     under = _normalized_ref_list(section.get("under_prompt")) or ()
-    return StatusBarLayout(top=top, under_prompt=under)
+    turn: tuple[str, ...] | None = None
+    if "turn" in section:
+        raw_turn = section.get("turn")
+        turn = _normalized_ref_list(raw_turn)
+        if not turn and isinstance(raw_turn, Sequence) and len(raw_turn) > 0:
+            # Same all-refs-dropped fallback as top. A stored empty list
+            # stays (): that is the persisted "hidden" pin.
+            turn = None
+    return StatusBarLayout(top=top, under_prompt=under, turn=turn)
 
 
 def save_statusbar_layout(
@@ -202,6 +251,9 @@ def save_statusbar_layout(
             section["top"] = list(layout.top)
         if layout.under_prompt:
             section["under_prompt"] = list(layout.under_prompt)
+        if layout.turn is not None:
+            # An explicit empty list persists the "hidden" pin.
+            section["turn"] = list(layout.turn)
         data[STATUSBAR_CONFIG_KEY] = section
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,15 +272,25 @@ def format_statusbar_show(layout: StatusBarLayout) -> str:
         f"(default) {' '.join(DEFAULT_SEGMENT_KEYS)}"
     )
     under_label = " ".join(layout.under_prompt) if layout.under_prompt else "(hidden)"
+    if layout.turn is None:
+        turn_label = f"(default) {' '.join(DEFAULT_TURN_SEGMENTS)}"
+    elif layout.turn:
+        turn_label = " ".join(layout.turn)
+    else:
+        turn_label = "(hidden)"
     return "\n".join(
         [
             "Status Bars",
             f"  top    {top_label}",
             f"  under  {under_label}",
+            f"  turn   {turn_label}  (end-of-turn summary line)",
             "",
             f"Built-in segments: {', '.join(DEFAULT_SEGMENT_KEYS)}",
+            f"Extra segments (explicit layouts only): {', '.join(EXTRA_SEGMENT_KEYS)}",
             "Custom refs: text:<literal>, script:<command> (statusline contract:",
             "JSON snapshot on stdin, first stdout line shown)",
+            "Hide the under or turn bar: /statusbar set <under|turn> off; "
+            "reset any: /statusbar reset <bar>",
         ]
     )
 
@@ -236,12 +298,14 @@ def format_statusbar_show(layout: StatusBarLayout) -> str:
 __all__ = [
     "BAR_NAMES",
     "DEFAULT_STATUSBAR_LAYOUT",
+    "DEFAULT_TURN_SEGMENTS",
     "SCRIPT_REF_PREFIX",
     "STATUSBAR_CONFIG_KEY",
     "StatusBarConfigError",
     "StatusBarLayout",
     "TEXT_REF_PREFIX",
     "format_statusbar_show",
+    "is_off_ref_list",
     "load_statusbar_layout",
     "normalize_bar_name",
     "normalize_segment_ref",

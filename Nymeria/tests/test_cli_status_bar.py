@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from cli_fixtures import FakeTerminalCapabilities
 from rich.cells import cell_len
 
@@ -461,6 +463,8 @@ def test_context_usage_label_null_backend_trigger_disables_compact_cap() -> None
 
 def test_status_segments_come_from_keyed_registry_in_default_order() -> None:
     renderer = StatusBarRenderer()
+    # Extras (turn_time, cost) live in a separate tier: resolvable by
+    # explicit layout refs, never part of the default registry order.
     assert renderer.segment_keys == (
         "brand",
         "activity",
@@ -475,6 +479,36 @@ def test_status_segments_come_from_keyed_registry_in_default_order() -> None:
         "queued",
         "cwd",
     )
+
+
+def test_extra_segments_render_only_when_a_layout_names_them() -> None:
+    from nymeria.triggers.cli.rendering.status_bar import (
+        DEFAULT_SEGMENT_KEYS,
+        EXTRA_SEGMENT_KEYS,
+    )
+
+    assert "turn_time" in EXTRA_SEGMENT_KEYS
+    assert "cost" in EXTRA_SEGMENT_KEYS
+    assert not set(EXTRA_SEGMENT_KEYS) & set(DEFAULT_SEGMENT_KEYS)
+
+    renderer = StatusBarRenderer()
+    caps = FakeTerminalCapabilities(width=200)
+    state = create_initial_state(thread_id="thread-1", now=0.0)
+    state = replace(
+        state,
+        last_turn_duration_seconds=12.0,
+        context_stats={"cost_usd_last": 0.0421},
+    )
+
+    # Default order: extras stay out of the bar.
+    default_render = renderer.render(state, capabilities=caps, width=200, now=5.0)
+    assert "12s" not in default_render.segments
+    assert "$0.0421" not in default_render.segments
+
+    # Explicit layout: extras render.
+    renderer.set_layout(("turn_time", "cost"))
+    pinned = renderer.render(state, capabilities=caps, width=200, now=5.0)
+    assert pinned.segments == ("12s", "$0.0421")
 
 
 def test_register_segment_supports_append_anchor_override_and_remove() -> None:
@@ -566,3 +600,131 @@ def test_tokens_per_second_segment_shows_after_recorded_turn() -> None:
     )
     render = renderer.render(state, capabilities=caps, width=200, now=6.0)
     assert "6.4 tok/s" in render.segments
+
+
+def test_turn_time_segment_formats_duration_and_cancel_variant() -> None:
+    renderer = StatusBarRenderer()
+    renderer.set_layout(("turn_time",))
+    caps = FakeTerminalCapabilities(width=100)
+    base = create_initial_state(thread_id="t", now=0.0)
+
+    completed = replace(base, last_turn_duration_seconds=12.4)
+    render = renderer.render(completed, capabilities=caps, width=100, now=1.0)
+    assert render.segments == ("12s",)
+
+    cancelled = replace(
+        base,
+        last_turn_duration_seconds=8.0,
+        last_turn_outcome="cancelled",
+    )
+    render = renderer.render(cancelled, capabilities=caps, width=100, now=1.0)
+    # Sub-10s durations keep one decimal, matching the activity clock.
+    assert render.segments == ("stopped after 8.0s",)
+
+    # Unknown duration renders nothing.
+    render = renderer.render(base, capabilities=caps, width=100, now=1.0)
+    assert render.segments == ()
+
+
+def test_render_turn_summary_text_glyph_separator_and_ascii() -> None:
+    from nymeria.triggers.cli.rendering.status_bar import render_turn_summary_text
+
+    renderer = StatusBarRenderer()
+    renderer.set_layout(("turn_time", "tps"))
+    caps = FakeTerminalCapabilities(width=100)
+    state = create_initial_state(thread_id="t", now=0.0)
+    state = replace(
+        state,
+        last_turn_duration_seconds=12.0,
+        context_stats={"tokens_per_second": 31.0},
+    )
+
+    line = render_turn_summary_text(renderer, state, capabilities=caps, width=100)
+    assert line == "❋ 12s · 31 tok/s"
+
+    ascii_line = render_turn_summary_text(
+        renderer, state, capabilities=caps, width=100, ascii_only=True
+    )
+    assert ascii_line == "* 12s | 31 tok/s"
+
+    # No producing segments: no line at all.
+    empty = render_turn_summary_text(
+        renderer,
+        create_initial_state(thread_id="t", now=0.0),
+        capabilities=caps,
+        width=100,
+    )
+    assert empty == ""
+
+
+def test_turn_time_segment_error_variant() -> None:
+    renderer = StatusBarRenderer()
+    renderer.set_layout(("turn_time",))
+    caps = FakeTerminalCapabilities(width=100)
+    errored = replace(
+        create_initial_state(thread_id="t", now=0.0),
+        last_turn_duration_seconds=4.0,
+        last_turn_outcome="error",
+    )
+    render = renderer.render(errored, capabilities=caps, width=100, now=1.0)
+    assert render.segments == ("failed after 4.0s",)
+
+
+def test_turn_summary_omits_stale_stats_on_errored_turn() -> None:
+    """An errored turn never refreshes context_stats, so the permanent
+    transcript line must not credit the PREVIOUS turn's tps/cost to it."""
+    from nymeria.triggers.cli.rendering.status_bar import render_turn_summary_text
+
+    renderer = StatusBarRenderer()
+    renderer.set_layout(("turn_time", "tps", "cost"))
+    caps = FakeTerminalCapabilities(width=100)
+    state = replace(
+        create_initial_state(thread_id="t", now=0.0),
+        last_turn_duration_seconds=4.0,
+        last_turn_outcome="error",
+        # Sticky stats from the previous successful turn.
+        context_stats={"tokens_per_second": 30.0, "cost_usd_last": 0.01},
+    )
+
+    line = render_turn_summary_text(renderer, state, capabilities=caps, width=100)
+    assert line == "❋ failed after 4.0s"
+
+    # The strip is summary-line-only: the live bars keep the pre-existing
+    # sticky semantics (transient staleness, replaced at the next done).
+    live = renderer.render(state, capabilities=caps, width=100, now=1.0)
+    assert "30 tok/s" in live.segments
+
+
+def test_cost_segment_floors_sub_cent_costs() -> None:
+    renderer = StatusBarRenderer()
+    renderer.set_layout(("cost",))
+    caps = FakeTerminalCapabilities(width=100)
+    base = create_initial_state(thread_id="t", now=0.0)
+
+    def cost_render(value):
+        state = replace(base, context_stats={"cost_usd_last": value})
+        return renderer.render(state, capabilities=caps, width=100, now=1.0).segments
+
+    assert cost_render(0.0421) == ("$0.0421",)
+    assert cost_render(0.5) == ("$0.50",)
+    # Sub-0.1-cent costs floor instead of rendering as zero.
+    assert cost_render(0.00002) == ("<$0.0001",)
+
+
+def test_fitter_collapse_uses_the_callers_separator() -> None:
+    """The last-resort collapsed record joins with the caller's separator,
+    so a too-narrow turn-summary line never leaks the live bars' " | "."""
+    from nymeria.triggers.cli.rendering.status_bar import (
+        StatusSegment,
+        _fit_status_segment_records,
+    )
+
+    segments = [
+        StatusSegment(text="alpha", min_width=5, removable=False),
+        StatusSegment(text="bravo", min_width=5, removable=False),
+        StatusSegment(text="charlie", min_width=7, removable=False),
+    ]
+    fitted = _fit_status_segment_records(segments, 14, separator=" · ")
+    assert len(fitted) == 1
+    assert " | " not in fitted[0].text
+    assert " · " in fitted[0].text

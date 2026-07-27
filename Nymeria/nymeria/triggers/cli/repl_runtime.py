@@ -52,14 +52,18 @@ from .rendering.slash_panel import (
 )
 from .rendering.status_bar import (
     DEFAULT_SEGMENT_KEYS,
+    EXTRA_SEGMENT_KEYS,
     StatusBarContext,
     StatusBarRenderer,
     StatusNotice,
+    render_turn_summary_text,
 )
 from .script_segments import ScriptSegmentRunner
 from .statusbar_config import (
+    DEFAULT_TURN_SEGMENTS,
     StatusBarConfigError,
     StatusBarLayout,
+    is_off_ref_list,
     load_statusbar_layout,
     normalize_bar_name,
     normalize_segment_ref,
@@ -115,6 +119,11 @@ class _RichReplRuntime:
         self.capabilities = capabilities
         self.status_bar_renderer = StatusBarRenderer()
         self.under_status_bar_renderer = StatusBarRenderer()
+        # Third segment surface: the end-of-turn summary line printed into
+        # the transcript (the "turn" bar of the statusbar layout). The source
+        # callback reads the live layout at call time, so one bind suffices.
+        self.turn_summary_bar_renderer = StatusBarRenderer()
+        renderer.turn_summary_source = self._turn_summary_text
         self._statusbar_layout = StatusBarLayout()
         self._script_runner: ScriptSegmentRunner | None = None
         self.footer = FollowFooterEngine(
@@ -359,17 +368,34 @@ class _RichReplRuntime:
         return self._statusbar_layout
 
     def apply_statusbar_layout(self, layout: StatusBarLayout) -> None:
-        """Apply a persisted layout to both bars and the script runner."""
+        """Apply a persisted layout to all three bars and the script runner."""
 
         self._statusbar_layout = layout
         self.status_bar_renderer.set_layout(layout.top)
         self.under_status_bar_renderer.set_layout(layout.under_prompt)
+        self.turn_summary_bar_renderer.set_layout(layout.turn_refs())
         commands = layout.script_commands()
         if commands:
             self._ensure_script_runner().set_commands(commands)
         elif self._script_runner is not None:
             self._script_runner.set_commands(())
         self.invalidate()
+
+    def _turn_summary_text(self, state: Any) -> str:
+        """Render the end-of-turn summary line for the current turn layout."""
+
+        if not self._statusbar_layout.turn_refs():
+            return ""
+        return render_turn_summary_text(
+            self.turn_summary_bar_renderer,
+            state,
+            capabilities=self.capabilities,
+            context=self._status_context(),
+            width=self.terminal_width(),
+            ascii_only=not bool(
+                getattr(self.capabilities, "unicode_enabled", False)
+            ),
+        )
 
     def under_status_visible(self) -> bool:
         return bool(self._statusbar_layout.under_prompt)
@@ -396,6 +422,9 @@ class _RichReplRuntime:
             )
             self.status_bar_renderer.set_script_source(self._script_runner.lookup)
             self.under_status_bar_renderer.set_script_source(
+                self._script_runner.lookup
+            )
+            self.turn_summary_bar_renderer.set_script_source(
                 self._script_runner.lookup
             )
         return self._script_runner
@@ -927,7 +956,12 @@ class _RichReplRuntime:
             except Exception:  # noqa: BLE001 - ack is best effort; another CLI may answer.
                 pass
         if command_type == "statusbar_set" and result.get("ok"):
-            bar = str(args.get("bar", "") or "bar") if isinstance(args, dict) else "bar"
+            raw_bar = str(args.get("bar", "") or "") if isinstance(args, dict) else ""
+            try:
+                bar = normalize_bar_name(raw_bar)
+            except StatusBarConfigError:
+                bar = raw_bar or "status"
+            label = "turn summary line" if bar == "turn" else f"{bar} bar"
             segments = args.get("segments") if isinstance(args, dict) else None
             summary = (
                 " ".join(str(ref) for ref in segments)
@@ -937,7 +971,7 @@ class _RichReplRuntime:
             from .rendering.markdown import truncate_cell_width
 
             self.set_status_notice(
-                truncate_cell_width(f"Agent set {bar} bar: {summary}", 70)
+                truncate_cell_width(f"Agent set {label}: {summary}", 70)
             )
 
     def _execute_cli_config_command(
@@ -982,14 +1016,30 @@ class _RichReplRuntime:
             }
         try:
             bar = normalize_bar_name(str(args.get("bar", "")))
-            refs = tuple(
-                normalize_segment_ref(str(ref)) for ref in raw_segments
+            explicit_off = is_off_ref_list([str(ref) for ref in raw_segments])
+            if explicit_off and bar == "top":
+                # top=() would pin a blank row, not hide one: the top bar's
+                # row is fixed footer chrome. Mirrors the /statusbar command.
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "error": (
+                        "The top bar cannot be hidden; send an empty "
+                        "segments list to reset it to the defaults instead."
+                    ),
+                }
+            refs = (
+                ()
+                if explicit_off
+                else tuple(normalize_segment_ref(str(ref)) for ref in raw_segments)
             )
         except StatusBarConfigError as exc:
             return {"ok": False, "status": "error", "error": str(exc)}
 
         layout = load_statusbar_layout()
-        if refs:
+        if refs or explicit_off:
+            # An explicit off/none/hidden sentinel pins the bar empty
+            # (hides it); a bare empty list resets it to defaults.
             layout = layout.with_bar(bar, refs)
         else:
             layout = layout.without_bar(bar)
@@ -1013,7 +1063,11 @@ class _RichReplRuntime:
         return {
             "top": list(layout.top) if layout.top is not None else None,
             "under_prompt": list(layout.under_prompt),
+            # None = default turn line; [] = hidden; list = pinned refs.
+            "turn": list(layout.turn) if layout.turn is not None else None,
+            "turn_default_segments": list(DEFAULT_TURN_SEGMENTS),
             "builtin_segments": list(DEFAULT_SEGMENT_KEYS),
+            "extra_segments": list(EXTRA_SEGMENT_KEYS),
         }
 
     # -- require_approval holds (backlog #77) --------------------------------

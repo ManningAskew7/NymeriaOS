@@ -12,6 +12,7 @@ from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandR
 from ..statusbar_config import (
     StatusBarConfigError,
     format_statusbar_show,
+    is_off_ref_list,
     load_statusbar_layout,
     normalize_bar_name,
     normalize_segment_ref,
@@ -56,25 +57,39 @@ async def _handle_statusbar_set(
 ) -> CommandResult:
     if len(args) < 2:
         return CommandResult.failed(
-            "Usage: /statusbar set <top|under> <segment...> "
-            '(e.g. /statusbar set under context tps "text:hi")',
+            "Usage: /statusbar set <top|under|turn> <segment...> "
+            '(e.g. /statusbar set under context tps "text:hi"; '
+            "/statusbar set turn off hides the summary line)",
             error_code="usage_error",
         )
     try:
         bar = normalize_bar_name(args[0])
-        refs = tuple(normalize_segment_ref(ref) for ref in args[1:])
+        off_requested = is_off_ref_list(args[1:])
+        if off_requested and bar == "top":
+            # top=() would persist a pinned BLANK row, not hide it: the top
+            # bar's row is part of the fixed footer chrome.
+            return CommandResult.failed(
+                "The top bar cannot be hidden; use /statusbar reset top to "
+                "restore the default segments.",
+                error_code="statusbar_validation_error",
+            )
+        refs = (
+            ()
+            if off_requested
+            else tuple(normalize_segment_ref(ref) for ref in args[1:])
+        )
     except StatusBarConfigError as exc:
         return CommandResult.failed(str(exc), error_code="statusbar_validation_error")
 
     layout = load_statusbar_layout().with_bar(bar, refs)
     path = save_statusbar_layout(layout)
     await context.dispatch({"type": "statusbar_updated", "layout": layout})
-    return CommandResult.completed(
-        CommandMessage(
-            f"Set {bar} bar to: {' '.join(refs)}. Saved {path}.",
-            level="success",
-        )
-    )
+    label = "turn summary line" if bar == "turn" else f"{bar} bar"
+    if refs:
+        message = f"Set {label} to: {' '.join(refs)}. Saved {path}."
+    else:
+        message = f"Hid the {label}. Saved {path}."
+    return CommandResult.completed(CommandMessage(message, level="success"))
 
 
 async def _handle_statusbar_reset(
@@ -83,7 +98,7 @@ async def _handle_statusbar_reset(
 ) -> CommandResult:
     if len(args) > 1:
         return CommandResult.failed(
-            "Usage: /statusbar reset [top|under]",
+            "Usage: /statusbar reset [top|under|turn]",
             error_code="usage_error",
         )
     try:
@@ -95,9 +110,13 @@ async def _handle_statusbar_reset(
     path = save_statusbar_layout(layout)
     await context.dispatch({"type": "statusbar_updated", "layout": layout})
     if bar is None:
-        message = f"Reset both status bars to defaults. Saved {path}."
+        message = f"Reset all status bars to defaults. Saved {path}."
     elif bar == "top":
         message = f"Reset the top bar to the default segments. Saved {path}."
+    elif bar == "turn":
+        message = (
+            f"Reset the turn summary line to the default segments. Saved {path}."
+        )
     else:
         message = f"Hid the under-prompt bar. Saved {path}."
     return CommandResult.completed(CommandMessage(message, level="success"))
@@ -105,8 +124,8 @@ async def _handle_statusbar_reset(
 
 def _usage_error() -> CommandResult:
     return CommandResult.failed(
-        "Usage: /statusbar show | /statusbar set <top|under> <segment...> | "
-        "/statusbar reset [top|under]",
+        "Usage: /statusbar show | /statusbar set <top|under|turn> <segment...> | "
+        "/statusbar reset [top|under|turn]",
         error_code="usage_error",
     )
 
@@ -132,14 +151,14 @@ def register(registry: CommandRegistry) -> None:
                 "set": Command(
                     name="set",
                     description="Set one bar's ordered segments",
-                    usage="set <top|under> <segment...>",
+                    usage="set <top|under|turn> <segment...>",
                     handler=_handle_statusbar_set,
                     category="System",
                 ),
                 "reset": Command(
                     name="reset",
                     description="Reset one bar or the whole layout",
-                    usage="reset [top|under]",
+                    usage="reset [top|under|turn]",
                     handler=_handle_statusbar_reset,
                     category="System",
                 ),

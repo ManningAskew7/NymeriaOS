@@ -37,12 +37,20 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_SECONDS = 10
 
 # Kept in sync with the CLI's built-in segment registry
-# (triggers/cli/rendering/status_bar.py DEFAULT_SEGMENT_KEYS); the CLI
-# re-validates on apply, so drift degrades to a clear ack error, not a crash.
+# (triggers/cli/rendering/status_bar.py DEFAULT_SEGMENT_KEYS /
+# EXTRA_SEGMENT_KEYS); the CLI re-validates on apply, so drift degrades to
+# a clear ack error, not a crash.
 _BUILTIN_SEGMENTS = (
     "brand", "activity", "notice", "connection", "model", "fast",
     "reasoning", "thread", "context", "tps", "queued", "cwd",
 )
+# Valid refs everywhere, excluded from the default top-bar order.
+_EXTRA_SEGMENTS = ("turn_time", "cost")
+_ALL_SEGMENTS = _BUILTIN_SEGMENTS + _EXTRA_SEGMENTS
+
+# A single one of these as the whole segments list pins the bar empty
+# (hides it), mirroring the CLI's is_off_ref_list sentinel.
+_OFF_REFS = ("off", "none", "hidden")
 
 
 def _format_result(payload: dict[str, Any]) -> str:
@@ -110,9 +118,11 @@ async def cli_statusbar_get(
     """Read the user's current CLI status-bar layout.
 
     Returns JSON with the layout: "top" (list of segment refs, or null when
-    the built-in default order is active) and "under_prompt" (list of
-    segment refs; empty means the under-prompt bar is hidden), plus the
-    available built-in segment keys.
+    the built-in default order is active), "under_prompt" (list of segment
+    refs; empty means the under-prompt bar is hidden), and "turn" (the
+    end-of-turn summary line printed into the transcript: null = default
+    segments, empty list = hidden, list = pinned refs), plus the available
+    built-in and extra segment keys.
 
     Requires a connected Nymeria CLI session; errors out after a short
     timeout when none is connected.
@@ -128,13 +138,16 @@ async def cli_statusbar_set(
 ) -> str:
     """Reconfigure one of the user's CLI status bars.
 
-    bar: "top" (the bar above the composer) or "under" (a second bar below
-    the composer, hidden by default).
+    bar: "top" (the bar above the composer), "under" (a second bar below
+    the composer, hidden by default), or "turn" (the end-of-turn summary
+    line printed into the transcript after each turn, default
+    "turn_time tps").
     segments: ordered segment refs. Each ref is a built-in segment key
     (brand, activity, notice, connection, model, fast, reasoning, thread,
-    context, tps, queued, cwd) or "text:<literal>" for a static label. An
-    EMPTY list resets the bar: top returns to the built-in default order,
-    under becomes hidden.
+    context, tps, queued, cwd, plus turn_time and cost, which render only
+    in explicit layouts) or "text:<literal>" for a static label. An EMPTY
+    list resets the bar to its default (top: built-in order, under: hidden,
+    turn: default segments). A single "off" hides the bar instead.
 
     "script:<command>" segments (commands executed periodically on the
     user's machine) can NOT be pushed from here: they are user-installed
@@ -146,13 +159,23 @@ async def cli_statusbar_set(
     a ref is invalid or no CLI session is connected.
     """
     normalized_bar = str(bar or "").strip().casefold()
-    if normalized_bar not in ("top", "under", "under_prompt", "bottom"):
-        return "[Error]: bar must be 'top' or 'under'."
+    if normalized_bar not in (
+        "top", "under", "under_prompt", "bottom", "turn", "summary",
+    ):
+        return "[Error]: bar must be 'top', 'under', or 'turn'."
     if not isinstance(segments, list) or not all(
         isinstance(ref, str) and ref.strip() for ref in segments
     ):
         return "[Error]: segments must be a list of non-empty strings."
-    for ref in segments:
+    is_off_sentinel = (
+        len(segments) == 1 and segments[0].strip().casefold() in _OFF_REFS
+    )
+    if is_off_sentinel and normalized_bar == "top":
+        return (
+            "[Error]: the top bar cannot be hidden; pass an empty segments "
+            "list to reset it to the default order instead."
+        )
+    for ref in [] if is_off_sentinel else segments:
         text = ref.strip()
         if text.startswith("script:"):
             # Security boundary: an agent-pushed script would execute
@@ -166,10 +189,10 @@ async def cli_statusbar_set(
             )
         if text.startswith("text:"):
             continue
-        if text.casefold() not in _BUILTIN_SEGMENTS:
+        if text.casefold() not in _ALL_SEGMENTS:
             return (
                 f"[Error]: Unknown segment ref: {ref}. Built-in segments: "
-                f"{', '.join(_BUILTIN_SEGMENTS)}; custom refs: "
+                f"{', '.join(_ALL_SEGMENTS)}; custom refs: "
                 "text:<literal>."
             )
     return await _dispatch(
