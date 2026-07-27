@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory, ConditionalAutoSuggest
 from prompt_toolkit.completion import Completer, Completion, PathCompleter
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
@@ -19,7 +19,12 @@ from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.processors import Processor, Transformation
+from prompt_toolkit.layout.processors import (
+    ConditionalProcessor,
+    PasswordProcessor,
+    Processor,
+    Transformation,
+)
 from prompt_toolkit.widgets import TextArea
 from rich.cells import cell_len
 
@@ -217,6 +222,7 @@ class ComposerController:
         form_is_active: StateGetter | None = None,
         form_tab_enabled: StateGetter | None = None,
         active_field_is_checkbox: StateGetter | None = None,
+        active_field_is_secret: StateGetter | None = None,
         on_form_move: FormMoveHandler | None = None,
         on_form_tab: FormTabHandler | None = None,
         on_form_toggle: FormActionHandler | None = None,
@@ -239,6 +245,7 @@ class ComposerController:
         self.form_is_active = form_is_active or (lambda: False)
         self.form_tab_enabled = form_tab_enabled or (lambda: False)
         self.active_field_is_checkbox = active_field_is_checkbox or (lambda: False)
+        self.active_field_is_secret = active_field_is_secret or (lambda: False)
         self.on_form_move = on_form_move
         self.on_form_tab = on_form_tab
         self.on_form_toggle = on_form_toggle
@@ -255,6 +262,18 @@ class ComposerController:
         input_processors: list[Processor] = []
         if show_slash_usage_hints and command_registry is not None:
             input_processors.append(SlashUsageHintProcessor(command_registry))
+        # Secret form fields (e.g. the /provider setup API-key step) mask the
+        # composer's own echo: the panel renders bullets, and this processor
+        # keeps the buffer display masked too. History is safe structurally
+        # (form Enter routes to submit_form_selection, never handle_enter /
+        # append_to_history), and history GHOSTS are suppressed below so a
+        # prior prompt cannot render as gray suggestion text mid-secret.
+        input_processors.append(
+            ConditionalProcessor(
+                PasswordProcessor("•"),
+                Condition(lambda: bool(self.active_field_is_secret())),
+            )
+        )
         self.text_area = TextArea(
             height=input_height,
             dont_extend_height=multiline,
@@ -263,7 +282,10 @@ class ComposerController:
             wrap_lines=True,
             get_line_prefix=self._line_prefix,
             history=_history(history_path),
-            auto_suggest=AutoSuggestFromHistory(),
+            auto_suggest=ConditionalAutoSuggest(
+                AutoSuggestFromHistory(),
+                Condition(lambda: not self.active_field_is_secret()),
+            ),
             completer=ComposerCompleter(command_registry, cwd=self.cwd),
             complete_while_typing=False,
             accept_handler=self.handle_enter,
@@ -585,6 +607,7 @@ def create_rich_repl_composer(
     form_is_active: StateGetter | None = None,
     form_tab_enabled: StateGetter | None = None,
     active_field_is_checkbox: StateGetter | None = None,
+    active_field_is_secret: StateGetter | None = None,
     on_form_move: FormMoveHandler | None = None,
     on_form_tab: FormTabHandler | None = None,
     on_form_toggle: FormActionHandler | None = None,
@@ -608,6 +631,7 @@ def create_rich_repl_composer(
         form_is_active=form_is_active,
         form_tab_enabled=form_tab_enabled,
         active_field_is_checkbox=active_field_is_checkbox,
+        active_field_is_secret=active_field_is_secret,
         on_form_move=on_form_move,
         on_form_tab=on_form_tab,
         on_form_toggle=on_form_toggle,

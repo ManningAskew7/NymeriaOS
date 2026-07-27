@@ -1482,12 +1482,19 @@ text into their normal chat path instead of string-matching the error copy.
 `data` is usually `null`. On success it may carry the structured payloads of
 the declarative form contract (schema owned by `core/command_forms.py`):
 `data.form` is a versioned form definition (v1: title, tabs of
-search/radio/checkbox fields, and a submit command template with `{key}`
-placeholders; on confirm the client substitutes the ACTIVE tab's selected
-values and dispatches the resulting slash command; a tab may declare its own
-`submit` template, which wins over the form-level default while that tab is
-active, so tabs can mean different actions, e.g. `/provider`'s Switch vs
-Test), and `data.state` is a dict of
+search/text/radio/checkbox fields, and a submit command template with
+`{key}` placeholders; on confirm the client substitutes the ACTIVE tab's
+selected values and dispatches the resulting slash command; a tab may
+declare its own `submit` template, which wins over the form-level default
+while that tab is active, so tabs can mean different actions). A `text`
+field is a free-typed value fed from the client's composer; `secret: true`
+asks the client to mask the display and keep the value out of input
+history, and secrets are NEVER echoed back into form payloads (in-flight
+secret state lives server-side, e.g. `core/provider_setup.py`). A tab may
+carry `active: true`, asking the client to open the form on that tab:
+chained multi-step commands use it as a step rail, re-sending the reached
+steps as tabs with the next undecided one active so arrowing between tabs
+is back/forward navigation. `data.state` is a dict of
 client-state sync hints (for example `{"model": ...}` after a model change,
 `{"reasoning": {"enabled": ..., "effort": ...}}` after `/think` or its
 `/reasoning`/`/thinking` aliases change thinking mode, carrying the level the
@@ -1495,10 +1502,14 @@ model will actually run at, or `{"switch_thread": {"thread_id": ...}}` after
 `/thread switch`). The
 markdown fallback is always present, so frontends may ignore `data`
 entirely; the Rich CLI is the consumer. Backend-declared forms so far: bare
-`/model` (model picker), bare `/provider` (two tabs, Switch and Test, over
-every registered provider spec), and bare `/think` (thinking level per
-writable scope, a "This thread" tab only when a thread is active). Clients
-that render forms should treat unknown
+`/model` (model picker), bare `/provider` (Providers tab submitting into
+the chained `/provider setup` configure flow, plus a CLIProxy tab over the
+subscription catalog behind `/provider cliproxy`), the `/provider setup`
+chain itself (masked key entry or Keep/Replace/Clear, API mode, base URL,
+live model list fetched with the pending credentials, review, then a
+test-first atomic apply in one settings patch), and bare `/think` (thinking
+level per writable scope, a "This thread" tab only when a thread is
+active). Clients that render forms should treat unknown
 versions or field kinds as "render the markdown instead".
 
 ### Chat Slash Commands
@@ -1875,6 +1886,24 @@ Chat Completions responses standardize usage token fields, but model context
 window is not standardized. When `/models/available` sees context metadata,
 Nymeria caches it so `/threads/{thread_id}/context` can report frontend context
 percentage more accurately.
+
+```http
+POST /models/available
+Content-Type: application/json
+Authorization: Bearer <admin-token>
+
+{"provider": "groq", "base_url": "https://api.groq.com/openai/v1", "api_key": "..."}
+```
+
+The POST variant (admin-only, like the provider test endpoint) accepts an
+EPHEMERAL `api_key` override in the request body: the key is used for that
+one listing and never stored, logged, or echoed. POST keeps the key out of
+URLs and access logs; it backs the `/provider setup` flow's model step,
+where a just-pasted key lists models before anything is saved (a successful
+list doubles as a credential probe). All fields are optional: an omitted
+`provider` or `base_url` resolves like the GET's query params (active
+settings), and an omitted `api_key` falls back to the stored credential for
+the effective provider.
 
 ---
 

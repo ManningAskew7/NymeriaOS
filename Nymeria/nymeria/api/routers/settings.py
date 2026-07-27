@@ -49,6 +49,7 @@ from ...vendor.react_agent.providers import resolve_max_output_tokens
 from ..schemas.settings import (
     HIDDEN_CONFIG_SETTINGS,
     server_settings_env_mapping,
+    AvailableModelsRequest,
     DreamPromptInfo,
     DreamPromptsResponse,
     DreamPromptsUpdate,
@@ -931,6 +932,173 @@ async def _test_llm_provider_config(
     )
 
 
+async def _available_models(
+    *,
+    provider: Optional[str],
+    base_url: Optional[str],
+    api_key: Optional[str],
+    vault: Any,
+    owner_user_id: Optional[str],
+    settings: Any,
+) -> list[dict]:
+    """Fetch available models from the configured LLM provider or CLIProxy.
+
+    Module-scope on purpose (mirroring ``_test_llm_provider_config``): the
+    single implementation behind GET/POST /models/available AND
+    ``CommandBackendClient.list_available_models``, so the two TurnExecutor
+    shapes cannot drift (the previous in-process hand-copy lacked the
+    CLIProxy /v1 normalization and probe headers). ``api_key`` is an
+    EPHEMERAL credential override (nothing stored, never logged): it wins
+    over the vault/settings resolution so the /provider setup flow can list
+    models with a just-pasted key before saving it.
+    """
+    effective_provider = normalize_llm_provider(provider or settings.llm_provider)
+    credential = get_llm_provider_credential(
+        effective_provider,
+        vault=vault,
+        owner_user_id=owner_user_id,
+    )
+
+    effective_base_url = base_url
+    api_key = (api_key or "").strip() or (
+        credential.api_key if credential else None
+    )
+    if effective_base_url:
+        effective_base_url = effective_base_url.strip().rstrip("/")
+    if (
+        not effective_base_url
+        and effective_provider == normalize_llm_provider(settings.llm_provider)
+    ):
+        effective_base_url = settings.llm_base_url
+    if not effective_base_url and credential and credential.base_url:
+        effective_base_url = credential.base_url
+
+    # Whether a non-default base URL was configured (query/settings/credential)
+    # before provider defaults are applied. Drives the anthropic cloak header
+    # below, matching the provider-test path.
+    had_custom_base = bool(effective_base_url)
+
+    if effective_provider == "anthropic":
+        api_key = api_key or (
+            settings.anthropic_direct_api_key or settings.anthropic_api_key
+        )
+        effective_base_url = effective_base_url or "https://api.anthropic.com"
+        clean_base = effective_base_url.rstrip("/")
+        models_url = (
+            f"{clean_base}/models"
+            if clean_base.endswith("/v1")
+            else f"{clean_base}/v1/models"
+        )
+    elif is_openai_compatible_provider(effective_provider):
+        api_key = api_key or resolve_provider_api_key(
+            effective_provider,
+            settings=settings,
+        )
+        effective_base_url = effective_base_url or resolve_provider_base_url(
+            effective_provider,
+            settings=settings,
+        )
+        if not effective_base_url:
+            return []
+        models_base = effective_base_url.rstrip("/")
+        if effective_provider == "openai":
+            # CLIProxy serves its OpenAI surface under /v1; mirror the
+            # provider-test path so a proxy root without /v1 still lists models.
+            models_base = cliproxy_base_url_with_v1(models_base)
+        models_url = f"{models_base}/models"
+    else:
+        return []
+
+    if (
+        not api_key
+        and provider_requires_api_key(effective_provider)
+        and not base_url_allows_no_api_key(effective_base_url)
+    ):
+        return []
+    if not api_key:
+        api_key = "not-needed"
+
+    headers = provider_probe_headers(
+        effective_provider, api_key, has_custom_base_url=had_custom_base
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(models_url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+        raw_models = data.get("data", [])
+        result = []
+        for m in sorted(raw_models, key=lambda x: x.get("id", "")):
+            model_id = m.get("id", "")
+            if not model_id:
+                continue
+            model_name = m.get("name") or m.get("display_name") or model_id
+            metadata = extract_model_metadata(m)
+            # Anthropic publishes a per-model capabilities tree with
+            # per-effort-level support flags; registering it here makes
+            # the advertised ladder exact for newly released models
+            # without a static-table edit.
+            live_efforts = parse_anthropic_reasoning_capabilities(
+                m.get("capabilities")
+            )
+            register_model_metadata(
+                model_id=model_id,
+                name=model_name,
+                context_length=metadata["context_length"],
+                max_completion_tokens=metadata["max_completion_tokens"],
+                input_modalities=set(metadata["input_modalities"]),
+                supported_parameters=set(metadata["supported_parameters"]),
+                reasoning_efforts=live_efforts,
+                default_temperature=metadata["default_temperature"],
+                default_top_p=metadata["default_top_p"],
+                default_frequency_penalty=metadata["default_frequency_penalty"],
+                pricing_prompt=metadata["pricing_prompt"],
+                pricing_completion=metadata["pricing_completion"],
+                tokenizer=metadata["tokenizer"],
+            )
+            result.append({
+                "id": model_id,
+                "name": model_name,
+                "owned_by": m.get("owned_by", ""),
+                "created": m.get("created"),
+                **metadata,
+                # Effort ladder computed with the provider this listing was
+                # proxied for, so it matches the runtime clamp for threads
+                # routed through that provider.
+                "supported_reasoning_efforts": list(
+                    supported_reasoning_efforts(effective_provider, model_id)
+                ),
+                "max_reasoning_effort": max_reasoning_effort(
+                    effective_provider, model_id
+                ),
+            })
+        return result
+    except httpx.HTTPStatusError as e:
+        # Distinguish provider-side rejections (e.g. 401 bad key, 404 wrong
+        # endpoint) from transport failures so the log is actionable. The
+        # response contract stays "[] == no models" for the frontend.
+        logger.warning(
+            "Model fetch from %s returned HTTP %s: %s",
+            models_url,
+            e.response.status_code,
+            e,
+        )
+        return []
+    except httpx.HTTPError as e:
+        logger.warning("Model fetch from %s failed (transport): %s", models_url, e)
+        return []
+    except Exception as e:
+        logger.error(
+            "Unexpected error fetching models from %s: %s",
+            models_url,
+            e,
+            exc_info=True,
+        )
+        return []
+
+
 def create_settings_router(
     verify_api_key: Callable[..., Any],
     require_admin_user: Callable[..., Any],
@@ -1451,149 +1619,36 @@ def create_settings_router(
         settings: Settings = Depends(get_settings_fn),
     ):
         """Fetch available models from the configured LLM provider or CLIProxy."""
-        effective_provider = normalize_llm_provider(provider or settings.llm_provider)
-        agent = get_agent_fn()
-        credential = get_llm_provider_credential(
-            effective_provider,
-            vault=getattr(agent, "credential_vault", None),
+        return await _available_models(
+            provider=provider,
+            base_url=base_url,
+            api_key=None,
+            vault=getattr(get_agent_fn(), "credential_vault", None),
             owner_user_id=user.id,
+            settings=settings,
         )
 
-        effective_base_url = base_url
-        api_key = credential.api_key if credential else None
-        if effective_base_url:
-            effective_base_url = effective_base_url.strip().rstrip("/")
-        if (
-            not effective_base_url
-            and effective_provider == normalize_llm_provider(settings.llm_provider)
-        ):
-            effective_base_url = settings.llm_base_url
-        if not effective_base_url and credential and credential.base_url:
-            effective_base_url = credential.base_url
+    @router.post("/models/available")
+    async def list_models_with_credentials(
+        request: AvailableModelsRequest,
+        user: AuthenticatedUser = Depends(require_admin_user),
+        settings: Settings = Depends(get_settings_fn),
+    ):
+        """List models with an ephemeral credential override (nothing stored).
 
-        # Whether a non-default base URL was configured (query/settings/credential)
-        # before provider defaults are applied. Drives the anthropic cloak header
-        # below, matching the provider-test path.
-        had_custom_base = bool(effective_base_url)
-
-        if effective_provider == "anthropic":
-            api_key = api_key or (
-                settings.anthropic_direct_api_key or settings.anthropic_api_key
-            )
-            effective_base_url = effective_base_url or "https://api.anthropic.com"
-            clean_base = effective_base_url.rstrip("/")
-            models_url = (
-                f"{clean_base}/models"
-                if clean_base.endswith("/v1")
-                else f"{clean_base}/v1/models"
-            )
-        elif is_openai_compatible_provider(effective_provider):
-            api_key = api_key or resolve_provider_api_key(
-                effective_provider,
-                settings=settings,
-            )
-            effective_base_url = effective_base_url or resolve_provider_base_url(
-                effective_provider,
-                settings=settings,
-            )
-            if not effective_base_url:
-                return []
-            models_base = effective_base_url.rstrip("/")
-            if effective_provider == "openai":
-                # CLIProxy serves its OpenAI surface under /v1; mirror the
-                # provider-test path so a proxy root without /v1 still lists models.
-                models_base = cliproxy_base_url_with_v1(models_base)
-            models_url = f"{models_base}/models"
-        else:
-            return []
-
-        if (
-            not api_key
-            and provider_requires_api_key(effective_provider)
-            and not base_url_allows_no_api_key(effective_base_url)
-        ):
-            return []
-        if not api_key:
-            api_key = "not-needed"
-
-        headers = provider_probe_headers(
-            effective_provider, api_key, has_custom_base_url=had_custom_base
+        POST so the key never appears in a URL or access log; admin-gated like
+        the provider connectivity test. Backs the /provider setup flow's model
+        step, where the pasted key exists only in the pending-setup state.
+        """
+        return await _available_models(
+            provider=request.provider,
+            base_url=request.base_url,
+            api_key=(
+                request.api_key.get_secret_value() if request.api_key else None
+            ),
+            vault=getattr(get_agent_fn(), "credential_vault", None),
+            owner_user_id=user.id,
+            settings=settings,
         )
-
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(models_url, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-
-            raw_models = data.get("data", [])
-            result = []
-            for m in sorted(raw_models, key=lambda x: x.get("id", "")):
-                model_id = m.get("id", "")
-                if not model_id:
-                    continue
-                model_name = m.get("name") or m.get("display_name") or model_id
-                metadata = extract_model_metadata(m)
-                # Anthropic publishes a per-model capabilities tree with
-                # per-effort-level support flags; registering it here makes
-                # the advertised ladder exact for newly released models
-                # without a static-table edit.
-                live_efforts = parse_anthropic_reasoning_capabilities(
-                    m.get("capabilities")
-                )
-                register_model_metadata(
-                    model_id=model_id,
-                    name=model_name,
-                    context_length=metadata["context_length"],
-                    max_completion_tokens=metadata["max_completion_tokens"],
-                    input_modalities=set(metadata["input_modalities"]),
-                    supported_parameters=set(metadata["supported_parameters"]),
-                    reasoning_efforts=live_efforts,
-                    default_temperature=metadata["default_temperature"],
-                    default_top_p=metadata["default_top_p"],
-                    default_frequency_penalty=metadata["default_frequency_penalty"],
-                    pricing_prompt=metadata["pricing_prompt"],
-                    pricing_completion=metadata["pricing_completion"],
-                    tokenizer=metadata["tokenizer"],
-                )
-                result.append({
-                    "id": model_id,
-                    "name": model_name,
-                    "owned_by": m.get("owned_by", ""),
-                    "created": m.get("created"),
-                    **metadata,
-                    # Effort ladder computed with the provider this listing was
-                    # proxied for, so it matches the runtime clamp for threads
-                    # routed through that provider.
-                    "supported_reasoning_efforts": list(
-                        supported_reasoning_efforts(effective_provider, model_id)
-                    ),
-                    "max_reasoning_effort": max_reasoning_effort(
-                        effective_provider, model_id
-                    ),
-                })
-            return result
-        except httpx.HTTPStatusError as e:
-            # Distinguish provider-side rejections (e.g. 401 bad key, 404 wrong
-            # endpoint) from transport failures so the log is actionable. The
-            # response contract stays "[] == no models" for the frontend.
-            logger.warning(
-                "Model fetch from %s returned HTTP %s: %s",
-                models_url,
-                e.response.status_code,
-                e,
-            )
-            return []
-        except httpx.HTTPError as e:
-            logger.warning("Model fetch from %s failed (transport): %s", models_url, e)
-            return []
-        except Exception as e:
-            logger.error(
-                "Unexpected error fetching models from %s: %s",
-                models_url,
-                e,
-                exc_info=True,
-            )
-            return []
 
     return router

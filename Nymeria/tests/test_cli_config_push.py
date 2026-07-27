@@ -15,6 +15,7 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.fernet import Fernet

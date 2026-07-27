@@ -25,6 +25,7 @@ import httpx
 from ..config import get_settings
 from .command_executor_context import ContextCommandsMixin
 from .command_executor_llm import LLMCommandsMixin
+from .command_executor_provider_setup import ProviderSetupCommandsMixin
 from .command_executor_threads import ThreadCommandsMixin
 from .command_forms import (
     CommandOutput,
@@ -873,7 +874,21 @@ class CommandHttpClient:
         self,
         provider: Optional[str] = None,
         user_id: Optional[str] = None,
+        *,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
     ) -> list[dict]:
+        if api_key or base_url:
+            # Ephemeral credential override: POST so the key rides the request
+            # body, never a query string (URLs and access logs).
+            body: dict = {}
+            if provider:
+                body["provider"] = provider
+            if api_key:
+                body["api_key"] = api_key
+            if base_url:
+                body["base_url"] = base_url
+            return await self._post("/models/available", json=body, act_as=user_id)
         params = {"provider": provider} if provider else None
         return await self._get("/models/available", params=params, act_as=user_id)
 
@@ -1677,113 +1692,26 @@ class CommandBackendClient:
         self,
         provider: Optional[str] = None,
         user_id: Optional[str] = None,
+        *,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
     ) -> list[dict]:
-        from ..config.llm_providers import (
-            is_openai_compatible_provider,
-            normalize_llm_provider,
-            provider_requires_api_key,
-            resolve_provider_api_key,
-            resolve_provider_base_url,
-        )
-        from ..config.model_capabilities import register_model_metadata
-        from .llm_credentials import get_llm_provider_credential
-        from .llm_provider_utils import base_url_allows_no_api_key, extract_model_metadata
+        # Delegates to the SAME module-scope implementation as GET/POST
+        # /models/available (the two-TurnExecutor-shape invariant, mirroring
+        # test_llm_provider_config above): the previous hand-copied body had
+        # drifted, missing the CLIProxy /v1 base normalization and the
+        # provider probe headers. ``api_key``/``base_url`` are the /provider
+        # setup flow's ephemeral overrides (nothing stored, never logged).
+        from ..api.routers.settings import _available_models
 
-        settings = self._settings()
-        effective_provider = normalize_llm_provider(provider or settings.llm_provider)
-        credential = get_llm_provider_credential(
-            effective_provider,
+        return await _available_models(
+            provider=provider,
+            base_url=base_url,
+            api_key=api_key,
             vault=getattr(self.agent, "credential_vault", None),
             owner_user_id=self.user.id,
+            settings=self._settings(),
         )
-        api_key = credential.api_key if credential else None
-        effective_base_url = None
-        if (
-            not effective_base_url
-            and effective_provider == normalize_llm_provider(settings.llm_provider)
-        ):
-            effective_base_url = settings.llm_base_url
-        if not effective_base_url and credential and credential.base_url:
-            effective_base_url = credential.base_url
-
-        if effective_provider == "anthropic":
-            api_key = api_key or (
-                settings.anthropic_direct_api_key or settings.anthropic_api_key
-            )
-            effective_base_url = effective_base_url or "https://api.anthropic.com"
-            clean_base = effective_base_url.rstrip("/")
-            models_url = (
-                f"{clean_base}/models"
-                if clean_base.endswith("/v1")
-                else f"{clean_base}/v1/models"
-            )
-        elif is_openai_compatible_provider(effective_provider):
-            api_key = api_key or resolve_provider_api_key(
-                effective_provider,
-                settings=settings,
-            )
-            effective_base_url = effective_base_url or resolve_provider_base_url(
-                effective_provider,
-                settings=settings,
-            )
-            if not effective_base_url:
-                return []
-            models_url = f"{effective_base_url.rstrip('/')}/models"
-        else:
-            return []
-
-        if (
-            not api_key
-            and provider_requires_api_key(effective_provider)
-            and not base_url_allows_no_api_key(effective_base_url)
-        ):
-            return []
-        if not api_key:
-            api_key = "not-needed"
-
-        headers = (
-            {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
-            if effective_provider == "anthropic"
-            else {"Authorization": f"Bearer {api_key}"}
-        )
-
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(models_url, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-            result = []
-            for model in sorted(data.get("data", []), key=lambda item: item.get("id", "")):
-                model_id = model.get("id", "")
-                if not model_id:
-                    continue
-                model_name = model.get("name") or model_id
-                metadata = extract_model_metadata(model)
-                register_model_metadata(
-                    model_id=model_id,
-                    name=model_name,
-                    context_length=metadata["context_length"],
-                    max_completion_tokens=metadata["max_completion_tokens"],
-                    input_modalities=set(metadata["input_modalities"]),
-                    supported_parameters=set(metadata["supported_parameters"]),
-                    default_temperature=metadata["default_temperature"],
-                    default_top_p=metadata["default_top_p"],
-                    default_frequency_penalty=metadata["default_frequency_penalty"],
-                    pricing_prompt=metadata["pricing_prompt"],
-                    pricing_completion=metadata["pricing_completion"],
-                    tokenizer=metadata["tokenizer"],
-                )
-                result.append({
-                    "id": model_id,
-                    "name": model_name,
-                    "owned_by": model.get("owned_by", ""),
-                    "created": model.get("created"),
-                    **metadata,
-                })
-            return result
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to fetch models from %s: %s", models_url, e)
-            return []
 
 
 class CommandService:
@@ -2646,7 +2574,12 @@ def prepare_skill_slash_command(
     )
 
 
-class _CommandExecutor(ContextCommandsMixin, ThreadCommandsMixin, LLMCommandsMixin):
+class _CommandExecutor(
+    ContextCommandsMixin,
+    ThreadCommandsMixin,
+    LLMCommandsMixin,
+    ProviderSetupCommandsMixin,
+):
     """Per-request command executor with the migrated command bodies."""
 
     def __init__(

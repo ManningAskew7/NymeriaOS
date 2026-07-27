@@ -9,8 +9,10 @@ active thread it writes that thread's llm_config, an explicit trailing
 ``global``/``thread`` token overrides), and the ``/provider`` family ported
 from the retired CLI ``triggers/cli/commands/provider.py`` module (minus the
 CLI-local credential file, which was retired with it: provider secrets live
-in backend settings/env and the credential vault). Handler methods are
-resolved by ``CommandService.execute`` via ``getattr(executor, "_cmd_<path>")``.
+in backend settings/env and the credential vault). The chained ``/provider
+setup`` flow and the ``/provider cliproxy`` guidance live in the sibling
+``command_executor_provider_setup.py`` mixin. Handler methods are resolved
+by ``CommandService.execute`` via ``getattr(executor, "_cmd_<path>")``.
 
 Nothing is imported from ``command_service`` here, so the module stays a
 runtime leaf with no import cycle (``command_service`` imports this module,
@@ -845,7 +847,10 @@ class LLMCommandsMixin:
 
     async def _cmd_provider(self, args: list[str], rest: str) -> str | CommandOutput:
         if args:
-            return "[Error]: Usage: /provider [list|set|switch|test|reasoning-passback]"
+            return (
+                "[Error]: Usage: /provider "
+                "[setup|list|set|switch|test|reasoning-passback]"
+            )
         from ..config.llm_providers import get_llm_provider_spec
 
         settings = await self.api.get_settings()
@@ -883,7 +888,7 @@ class LLMCommandsMixin:
         for label, value in rows:
             lines.append(f"  {label:<{width}}  {value}")
         lines.append(
-            "Manage with: /provider [list|set|switch|test|reasoning-passback]"
+            "Manage with: /provider [setup|list|set|switch|test|reasoning-passback]"
         )
         text = "[Info]: " + "\n".join(lines)
         # The picker's submit targets (switch/test) are admin-registered, so
@@ -901,14 +906,17 @@ class LLMCommandsMixin:
         settings: Mapping[str, Any],
         status: Mapping[str, Mapping[str, str]],
     ) -> dict[str, Any] | None:
-        """The two-tab Switch/Test picker attached to bare ``/provider``.
+        """The two-tab entry point attached to bare ``/provider``.
 
-        Both tabs list every registered provider spec grouped by tier
-        (native, gateway, unverified; registration order within a tier);
-        each tab submits its own subcommand via the tab-level submit
-        template. The markdown fallback always rides alongside, so
-        form-less frontends lose nothing.
+        Tab "Providers" lists every registered API-key provider spec grouped
+        by tier (native, gateway, unverified; registration order within a
+        tier) and submits into the chained ``/provider setup`` configure
+        flow. Tab "CLIProxy" lists the subscription-OAuth catalog and
+        submits the ``/provider cliproxy`` guidance command. The markdown
+        fallback always rides alongside, so form-less frontends lose
+        nothing; ``/provider switch``/``test`` stay as typed subcommands.
         """
+        from ..cliproxy.catalog import list_cliproxy_providers
         from ..config.llm_providers import get_llm_provider_spec
 
         entries = self._provider_entries(settings, status)
@@ -938,44 +946,48 @@ class LLMCommandsMixin:
                 current=bool(entry["active"]),
             )
 
-        switch_options: list[dict[str, Any]] = []
-        test_options: list[dict[str, Any]] = []
+        provider_options: list[dict[str, Any]] = []
         for entry in ordered:
             spec = get_llm_provider_spec(str(entry["provider"]))
             if spec is None:
                 # The synthetic unregistered-active entry: it cannot be
-                # switched to or tested, so it stays markdown-only.
+                # configured, so it stays markdown-only.
                 continue
-            switch_options.append(_option(entry))
-            # Test needs a resolvable model: the spec default, or the
-            # configured model when the provider is active.
-            if entry["active"] or spec.default_model:
-                test_options.append(_option(entry))
-        if not switch_options:
+            provider_options.append(_option(entry))
+        if not provider_options:
             return None
 
-        def _fields(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            return [
-                search_field("filter", placeholder="Filter providers…"),
-                radio_field("provider", options),
-            ]
+        cliproxy_options = [
+            form_option(
+                proxy_spec.id,
+                label=proxy_spec.label,
+                meta=(
+                    f"routes as {proxy_spec.nymeria_provider}"
+                    + (f" ({proxy_spec.api_mode})" if proxy_spec.api_mode else "")
+                ),
+            )
+            for proxy_spec in list_cliproxy_providers()
+        ]
 
         return form_payload(
             "Provider",
             [
                 form_tab(
-                    "Switch",
-                    _fields(switch_options),
-                    submit_command="provider switch {provider}",
+                    "Providers",
+                    [
+                        search_field("filter", placeholder="Filter providers…"),
+                        radio_field("provider", provider_options),
+                    ],
+                    submit_command="provider setup {provider}",
                 ),
                 form_tab(
-                    "Test",
-                    _fields(test_options),
-                    submit_command="provider test {provider}",
+                    "CLIProxy",
+                    [radio_field("target", cliproxy_options)],
+                    submit_command="provider cliproxy {target}",
                 ),
             ],
-            submit_command="provider switch {provider}",
-            footer_hint="←→ tab · Enter apply · Esc cancel",
+            submit_command="provider setup {provider}",
+            footer_hint="←→ tab · Enter select · Esc cancel",
         )
 
     async def _cmd_provider_list(self, args: list[str], rest: str) -> str:

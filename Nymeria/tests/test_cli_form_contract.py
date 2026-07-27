@@ -88,11 +88,18 @@ def test_form_spec_from_payload_adapts_v1_payload() -> None:
     assert spec.footer_hint == "Enter apply"
     (tab,) = spec.tabs
     assert tab.label == "Models"
+    assert tab.active is False  # flag absent -> default first tab
     assert [field.kind for field in tab.fields] == ["search", "radio"]
     options = tab.fields[1].options
     assert [option.id for option in options] == ["gpt-test", "gpt-next"]
     assert options[0].current is True
     assert options[0].meta == "128K ctx"
+
+    # The step-rail active flag survives adaptation.
+    flagged = _form_payload()
+    flagged["tabs"][0]["active"] = True
+    spec = form_spec_from_payload(flagged, context=context)
+    assert spec is not None and spec.tabs[0].active is True
 
 
 def test_form_spec_rejects_malformed_payloads() -> None:
@@ -203,6 +210,49 @@ def test_confirm_uses_the_active_tabs_submit_template() -> None:
         "/provider switch openrouter",
         "/provider switch anthropic",
     ]
+
+
+def test_text_field_adapts_and_confirm_substitutes_typed_value() -> None:
+    """A text-only tab is renderable (no option list needed), the secret
+    flag survives adaptation, and confirm substitutes the typed value from
+    the composer-fed filter_text."""
+
+    payload = _form_payload(
+        title="API key",
+        tabs=[
+            {
+                "label": "Key",
+                "fields": [
+                    {
+                        "kind": "text",
+                        "key": "api_key",
+                        "label": "API key",
+                        "placeholder": "sk-...",
+                        "secret": True,
+                    }
+                ],
+            }
+        ],
+        submit={"command": "provider setup key {api_key}"},
+    )
+    client = _RecordingClient()
+    context, _dispatched = _context(client)
+    spec = form_spec_from_payload(payload, context=context)
+    assert spec is not None
+    field = spec.tabs[0].fields[0]
+    assert (field.kind, field.label, field.placeholder, field.secret) == (
+        "text", "API key", "sk-...", True,
+    )
+
+    run(
+        spec.on_confirm(
+            FormResult(spec_title="API key", tab_label="Key", filter_text="sk-live-1")
+        )
+    )
+    # An empty typed value stays a quiet no-op, like an empty selection.
+    run(spec.on_confirm(FormResult(spec_title="API key", tab_label="Key")))
+
+    assert client.calls == ["/provider setup key sk-live-1"]
 
 
 def test_duplicate_tab_labels_resolve_first_wins_end_to_end() -> None:

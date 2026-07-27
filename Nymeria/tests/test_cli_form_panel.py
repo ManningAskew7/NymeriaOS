@@ -8,11 +8,13 @@ from nymeria.triggers.cli.rendering.form_panel import (
     FormResult,
     FormSpec,
     FormTab,
+    active_input_is_secret,
     build_result,
     filter_options,
     form_panel_fragments,
     form_panel_height,
     init_state,
+    input_field,
     move_selection,
     move_tab,
     sync_filter,
@@ -86,6 +88,93 @@ def _multi_tab_spec() -> FormSpec:
         ),
         on_confirm=_noop,
     )
+
+
+def _text_spec(*, secret: bool = False) -> FormSpec:
+    return FormSpec(
+        title="API key",
+        tabs=(
+            FormTab(
+                label="Key",
+                fields=(
+                    FormField(
+                        kind="text",
+                        key="api_key",
+                        label="API key",
+                        placeholder="sk-...",
+                        secret=secret,
+                    ),
+                ),
+            ),
+        ),
+        on_confirm=_noop,
+    )
+
+
+def test_text_only_tab_renders_input_line_and_text_footer() -> None:
+    spec = _text_spec()
+    state = init_state(spec)
+
+    # header + input line + footer, no list rows.
+    assert form_panel_height(spec, state) == 3
+    rendered = _rendered(form_panel_fragments(spec, state, width=40))
+    assert "API key: " in rendered
+    assert "sk-..." in rendered  # placeholder while empty
+    assert "Enter submit" in rendered
+
+    sync_filter(spec, state, "sk-test-123")
+    rendered = _rendered(form_panel_fragments(spec, state, width=40))
+    assert "sk-test-123" in rendered
+
+
+def test_secret_text_renders_mask_bullets_never_the_value() -> None:
+    spec = _text_spec(secret=True)
+    state = init_state(spec)
+    sync_filter(spec, state, "sk-secret-value")
+
+    rendered = _rendered(form_panel_fragments(spec, state, width=40))
+    assert "sk-secret-value" not in rendered
+    assert "•" * len("sk-secret-value") in rendered
+
+    # The composer-masking getter tracks the active tab's field.
+    assert active_input_is_secret(spec, state) is True
+    assert active_input_is_secret(_text_spec(secret=False), state) is False
+    assert active_input_is_secret(None, None) is False
+
+
+def test_input_field_prefers_first_typed_input_and_result_carries_text() -> None:
+    spec = _text_spec(secret=True)
+    state = init_state(spec)
+    field = input_field(spec.tabs[0])
+    assert field is not None and field.kind == "text"
+
+    sync_filter(spec, state, "the-value")
+    result = build_result(spec, state)
+    assert result.filter_text == "the-value"
+    assert result.radio_value is None
+
+
+def test_init_state_parks_on_the_active_tab() -> None:
+    # Step-rail forms flag the tab to open on; init_state honors the FIRST
+    # active flag and defaults to tab 0 when none is set.
+    spec = FormSpec(
+        title="Setup",
+        tabs=(
+            FormTab(label="Key", fields=(FormField(kind="radio", key="k", options=(
+                FormOption(id="keep", label="keep"),
+            )),)),
+            FormTab(label="Model", active=True, fields=(FormField(kind="radio", key="m", options=(
+                FormOption(id="a", label="a"),
+            )),)),
+        ),
+        on_confirm=_noop,
+    )
+    state = init_state(spec)
+    assert state.active_tab == 1
+    assert build_result(spec, state).tab_label == "Model"
+
+    plain = init_state(_multi_tab_spec())
+    assert plain.active_tab == 0
 
 
 def test_height_is_zero_when_empty() -> None:

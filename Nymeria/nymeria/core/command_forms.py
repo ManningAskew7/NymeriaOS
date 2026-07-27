@@ -18,8 +18,11 @@ behind the version number later):
       "footer_hint": str | None,
       "tabs": [{"label": str,
                 "submit": {"command": str} | absent,
+                "active": bool | absent,
                 "fields": [
           {"kind": "search", "key": str, "placeholder": str | None},
+          {"kind": "text", "key": str, "label": str | None,
+           "placeholder": str | None, "secret": bool},
           {"kind": "radio" | "checkbox", "key": str, "options": [
               {"id": str, "label": str, "meta": str, "description": str,
                "current": bool},
@@ -41,6 +44,21 @@ markdown fallback is ALWAYS present on the result, so frontends that do not
 render forms (bots, plain terminals, current desktop/mobile) need zero
 changes and there is no capability negotiation on the wire.
 
+A ``text`` field is a free-typed value substituted like any other field
+(``secret: true`` asks the client to mask the display and keep the value
+out of its input history; secrets must NEVER be echoed back into form
+payloads, which ship to every frontend). A tab holds at most ONE typed
+input (search or text) because rich clients feed it from their single
+composer line, and needs a typed input or an option list to be renderable.
+
+``active: true`` on a tab asks the client to OPEN the form on that tab
+(first active tab wins; absent means the first tab). Chained multi-step
+commands use it as a step rail: each step's response re-sends the whole
+form with the reached steps as tabs and the next undecided step active, so
+arrowing between tabs is back/forward navigation. Clients that predate the
+flag start on the first tab, which stays a valid (if less convenient)
+rendering.
+
 ``data["state"]`` is an optional dict of client-state sync hints (for
 example ``{"model": "gpt-5.5"}`` after a model change) that clients apply if
 they understand them and ignore otherwise. It replaces the client-local
@@ -54,7 +72,7 @@ from typing import Any
 
 FORM_CONTRACT_VERSION = 1
 
-FORM_FIELD_KINDS = ("search", "radio", "checkbox")
+FORM_FIELD_KINDS = ("search", "text", "radio", "checkbox")
 
 
 @dataclass(frozen=True)
@@ -91,6 +109,24 @@ def search_field(key: str, *, placeholder: str = "") -> dict[str, Any]:
     return {"kind": "search", "key": key, "placeholder": placeholder}
 
 
+def text_field(
+    key: str,
+    *,
+    label: str = "",
+    placeholder: str = "",
+    secret: bool = False,
+) -> dict[str, Any]:
+    """A free-typed input field; ``secret`` asks the client to mask it."""
+
+    return {
+        "kind": "text",
+        "key": key,
+        "label": label,
+        "placeholder": placeholder,
+        "secret": bool(secret),
+    }
+
+
 def radio_field(key: str, options: list[dict[str, Any]]) -> dict[str, Any]:
     return {"kind": "radio", "key": key, "options": list(options)}
 
@@ -104,13 +140,17 @@ def form_tab(
     fields: list[dict[str, Any]],
     *,
     submit_command: str = "",
+    active: bool = False,
 ) -> dict[str, Any]:
     """Build a tab dict; ``submit_command`` (optional) overrides the
-    form-level submit template while this tab is active."""
+    form-level submit template while this tab is active, and ``active``
+    asks the client to open the form on this tab."""
 
     tab: dict[str, Any] = {"label": label, "fields": list(fields)}
     if submit_command:
         tab["submit"] = {"command": submit_command}
+    if active:
+        tab["active"] = True
     return tab
 
 

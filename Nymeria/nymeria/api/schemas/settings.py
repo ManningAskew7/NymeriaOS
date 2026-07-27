@@ -934,6 +934,29 @@ class LLMProviderTestRequest(BaseModel):
         return value or None
 
 
+class AvailableModelsRequest(BaseModel):
+    """Request body for listing models with an ephemeral credential.
+
+    The POST variant of /models/available: the pasted key rides the request
+    body (never a query string, so it stays out of URLs and access logs) and
+    is used for that one listing only, nothing is persisted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[SecretStr] = None
+
+    @field_validator("base_url")
+    @classmethod
+    def _strip_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip().rstrip("/")
+        return value or None
+
+
 class LLMProviderTestResponse(BaseModel):
     """Sanitized response for a provider test attempt."""
 

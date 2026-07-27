@@ -194,7 +194,9 @@ def _result_values(
             values[field.key] = " ".join(
                 _quote_value(value) for value in result.checkbox_values
             )
-        elif field.kind == "search":
+        elif field.kind in ("search", "text"):
+            # Both are composer-fed: the FormResult carries the typed value
+            # as filter_text regardless of which kind consumed it.
             values[field.key] = _quote_value(result.filter_text)
     return values
 
@@ -230,9 +232,15 @@ def _tab_from_payload(raw_tab: Any) -> FormTab | None:
         field = _field_from_payload(raw_field)
         if field is not None:
             fields.append(field)
-    if not any(field.kind in _LIST_KINDS for field in fields):
+    # Renderable = an option list OR a typed text input (a search field
+    # alone filters nothing and stays insufficient).
+    if not any(field.kind in _LIST_KINDS or field.kind == "text" for field in fields):
         return None
-    return FormTab(label=label, fields=tuple(fields))
+    return FormTab(
+        label=label,
+        fields=tuple(fields),
+        active=bool(raw_tab.get("active")),
+    )
 
 
 def _field_from_payload(raw_field: Any) -> FormField | None:
@@ -247,6 +255,14 @@ def _field_from_payload(raw_field: Any) -> FormField | None:
             kind="search",
             key=key,
             placeholder=str(raw_field.get("placeholder") or ""),
+        )
+    if kind == "text":
+        return FormField(
+            kind="text",
+            key=key,
+            placeholder=str(raw_field.get("placeholder") or ""),
+            label=str(raw_field.get("label") or ""),
+            secret=bool(raw_field.get("secret")),
         )
     if kind == "radio" or kind == "checkbox":
         options = [

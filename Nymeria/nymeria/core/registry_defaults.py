@@ -309,7 +309,32 @@ def register_default_commands(service: "CommandService") -> None:
         "provider",
         description="Show the active LLM provider and credential status",
         category="LLM",
-        usage="/provider [list|set|switch|test|reasoning-passback]",
+        usage="/provider [setup|list|set|switch|test|reasoning-passback]",
+    )
+    # No chat-bot surfaces and no agent: the typed fallback path is
+    # "/provider setup key <secret>", which on a chat platform would persist
+    # the key in the platform's message history.
+    service.register(
+        "provider setup",
+        description=(
+            "Guided provider configuration: key, connection, model, test, apply"
+        ),
+        category="LLM",
+        usage="/provider setup <provider>",
+        aliases=("provider_setup",),
+        surfaces=("desktop", "mobile", "cli", "api"),
+        requires_admin=True,
+        mutates_state=True,
+        danger_level="dangerous",
+        agent_allowed=False,
+    )
+    service.register(
+        "provider cliproxy",
+        description="CLIProxy subscription-OAuth guidance and status",
+        category="LLM",
+        usage="/provider cliproxy [target]",
+        aliases=("provider_cliproxy",),
+        requires_admin=True,
     )
     service.register(
         "provider list",

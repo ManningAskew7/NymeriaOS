@@ -656,6 +656,11 @@ class _RichReplRuntime:
             return False
         return form_panel.active_field_is_checkbox(self._active_form, self._form_state)
 
+    def active_field_is_secret(self) -> bool:
+        """True while the open form's composer-fed field is a secret text
+        field; the composer masks its display for the duration."""
+        return form_panel.active_input_is_secret(self._active_form, self._form_state)
+
     def form_height(self) -> int:
         if self._active_form is None or self._form_state is None:
             return 0
@@ -1397,6 +1402,7 @@ class _RichReplPromptToolkitShell:
             form_is_active=self.runtime.form_is_active,
             form_tab_enabled=self.runtime.form_tab_enabled,
             active_field_is_checkbox=self.runtime.active_field_is_checkbox,
+            active_field_is_secret=self.runtime.active_field_is_secret,
             on_form_move=self.runtime.move_form_selection,
             on_form_tab=self.runtime.move_form_tab,
             on_form_toggle=self.runtime.toggle_form_option,

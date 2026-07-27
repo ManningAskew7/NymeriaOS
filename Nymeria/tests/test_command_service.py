@@ -1296,10 +1296,11 @@ def test_provider_show_degrades_when_env_listing_is_admin_gated() -> None:
     assert "unknown (unavailable (admin only))" in result.markdown
 
 
-def test_provider_root_attaches_the_switch_test_form() -> None:
-    """Bare /provider keeps its markdown and declares the two-tab picker:
-    Switch and Test tabs share the registry-wide provider list, each with
-    its own tab-level submit template."""
+def test_provider_root_attaches_the_providers_cliproxy_form() -> None:
+    """Bare /provider keeps its markdown and declares the two-layer entry
+    point: a Providers tab (registry-wide, tier-grouped) submitting into
+    the chained /provider setup flow, and a CLIProxy tab listing the
+    subscription-OAuth catalog behind /provider cliproxy."""
     api = FakeCommandApi()
     api.env_set_keys = {"openai_api_key"}
 
@@ -1311,11 +1312,11 @@ def test_provider_root_attaches_the_switch_test_form() -> None:
     assert form is not None
     assert form["version"] == 1
     assert form["title"] == "Provider"
-    assert form["submit"] == {"command": "provider switch {provider}"}
+    assert form["submit"] == {"command": "provider setup {provider}"}
     labels = [tab["label"] for tab in form["tabs"]]
-    assert labels == ["Switch", "Test"]
-    assert form["tabs"][0]["submit"] == {"command": "provider switch {provider}"}
-    assert form["tabs"][1]["submit"] == {"command": "provider test {provider}"}
+    assert labels == ["Providers", "CLIProxy"]
+    assert form["tabs"][0]["submit"] == {"command": "provider setup {provider}"}
+    assert form["tabs"][1]["submit"] == {"command": "provider cliproxy {target}"}
 
     fields = form["tabs"][0]["fields"]
     assert [field["kind"] for field in fields] == ["search", "radio"]
@@ -1338,19 +1339,33 @@ def test_provider_root_attaches_the_switch_test_form() -> None:
     # Grouped by tier: every native option precedes the first gateway one.
     tiers = ["[NATIVE]" if "[NATIVE]" in o["meta"] else "" for o in options]
     assert "[NATIVE]" not in tiers[tiers.index("") :]
-    # The Test tab lists only testable providers: a resolvable model (spec
-    # default, or the active provider's configured model) is required.
-    from nymeria.config.llm_providers import list_llm_provider_specs
+    # The CLIProxy tab mirrors the subscription catalog.
+    from nymeria.cliproxy.catalog import list_cliproxy_providers
 
-    test_ids = {o["id"] for o in form["tabs"][1]["fields"][1]["options"]}
-    switch_ids = {o["id"] for o in options}
-    assert test_ids <= switch_ids
-    assert "openai" in test_ids  # active
-    no_default = {s.id for s in list_llm_provider_specs() if not s.default_model}
-    assert no_default  # the filter has something to filter
-    assert not (test_ids & no_default - {"openai"})
+    cliproxy_ids = [o["id"] for o in form["tabs"][1]["fields"][0]["options"]]
+    assert cliproxy_ids == [spec.id for spec in list_cliproxy_providers()]
+    assert "claude" in cliproxy_ids
     # No secret material anywhere in the payload.
     assert "sk-" not in str(form)
+
+
+def test_provider_cliproxy_reports_target_route_and_management_status() -> None:
+    api = FakeCommandApi()
+
+    overview = _run_command(api, "/provider cliproxy")
+    assert overview.success is True
+    assert "claude" in overview.markdown
+    assert "not configured" in overview.markdown
+
+    detail = _run_command(api, "/provider cliproxy claude")
+    assert detail.success is True
+    assert "Claude (Max/Pro subscription)" in detail.markdown
+    assert "anthropic" in detail.markdown  # route shape
+    assert "cliproxy_management_url" in detail.markdown  # enable guidance
+
+    unknown = _run_command(api, "/provider cliproxy nope")
+    assert unknown.success is False
+    assert "Unknown CLIProxy target" in unknown.markdown
 
 
 def test_provider_root_skips_the_form_for_non_admins() -> None:
@@ -2123,8 +2138,8 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     by_name = {cmd.name: cmd for cmd in service._commands.values()}
 
     # Count tripwire: update when adding or removing a built-in command.
-    assert len(service._commands) == 138
-    assert sum(cmd.executable for cmd in service._commands.values()) == 121
+    assert len(service._commands) == 140
+    assert sum(cmd.executable for cmd in service._commands.values()) == 123
 
     help_cmd = by_name["help"]
     assert help_cmd.category == "General"
@@ -2709,3 +2724,104 @@ def test_in_process_branch_thread_refuses_while_processing() -> None:
         run(client.branch_thread("thread-1", title="fork"))
     assert excinfo.value.response.status_code == 409
     assert "processing" in excinfo.value.response.text.lower()
+
+
+def test_http_client_list_available_models_posts_ephemeral_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The HTTP facade routes credential overrides through POST, never a URL.
+
+    A plain listing keeps the GET; an api_key or base_url override switches to
+    the POST body so a just-pasted key from the /provider setup flow cannot
+    land in a query string or access log.
+    """
+
+    client = CommandHttpClient("http://api.test", "token", use_act_as=True)
+    calls: list[tuple[Any, ...]] = []
+
+    async def fake_get(path, params=None, act_as=None):
+        calls.append(("GET", path, params, act_as))
+        return []
+
+    async def fake_post(path, json=None, params=None, act_as=None):
+        calls.append(("POST", path, json, act_as))
+        return []
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    run(client.list_available_models("openai", "alice"))
+    run(
+        client.list_available_models(
+            "openai",
+            "alice",
+            api_key="sk-ephemeral",
+            base_url="http://proxy.test/v1",
+        )
+    )
+    run(client.close())
+
+    assert calls[0] == ("GET", "/models/available", {"provider": "openai"}, "alice")
+    assert calls[1] == (
+        "POST",
+        "/models/available",
+        {
+            "provider": "openai",
+            "api_key": "sk-ephemeral",
+            "base_url": "http://proxy.test/v1",
+        },
+        "alice",
+    )
+
+
+def test_in_process_list_available_models_prefers_ephemeral_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The in-process facade seeds the ephemeral key/base URL first.
+
+    Mirrors the POST /models/available contract: an override from the
+    /provider setup flow wins over vault/settings resolution and reaches the
+    provider probe as the Authorization credential.
+    """
+
+    calls: list[dict[str, Any]] = []
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str, *, headers: dict):
+            calls.append({"url": url, "headers": headers})
+            request = httpx.Request("GET", url)
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "m-eph", "name": "M"}]},
+                request=request,
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    agent = SimpleNamespace()  # no credential_vault -> vault resolution is a no-op
+    settings = SimpleNamespace(llm_provider="anthropic", llm_base_url=None)
+    client = CommandBackendClient(
+        agent,
+        user=_CommandBackendUser(id="alice", role="admin"),
+        settings_fn=lambda: settings,
+    )
+
+    models = run(
+        client.list_available_models(
+            "lmstudio",
+            api_key="sk-ephemeral",
+            base_url="http://localhost:1234/v1/",
+        )
+    )
+
+    assert [m["id"] for m in models] == ["m-eph"]
+    assert calls[0]["url"] == "http://localhost:1234/v1/models"
+    assert calls[0]["headers"]["Authorization"] == "Bearer sk-ephemeral"
