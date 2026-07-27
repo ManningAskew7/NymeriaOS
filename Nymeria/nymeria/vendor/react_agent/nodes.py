@@ -457,6 +457,21 @@ def _llm_initial_candidate_index(llm_config: Optional[LLMConfig]) -> int:
     return min(active_index, max(0, candidate_count - 1))
 
 
+def llm_active_candidate_descriptor(
+    llm_config: Optional[LLMConfig],
+) -> dict[str, Any]:
+    """Descriptor of the currently active candidate (primary or a fallback):
+    ``provider``/``model``/``provider_route``/``openai_api_mode``.
+
+    Swap-aware, unlike reading ``llm_config`` fields directly: a fallback
+    activation moves ``active_fallback_candidate_index`` without mutating the
+    primary's fields.
+    """
+    return _llm_candidate_descriptor(
+        llm_config, _llm_initial_candidate_index(llm_config)
+    )
+
+
 def _mark_llm_fallback_active(
     llm_config: Optional[LLMConfig],
     candidate_index: int,

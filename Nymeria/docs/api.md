@@ -562,15 +562,27 @@ finishes or errors.
 
 ```
 data: {"type": "turn_started", "turn_id": "9f2c...", "thread_id": "abc123", "seq": 1}
-data: {"type": "thinking", "content": "...", "thread_id": "abc123", "seq": 2}
-data: {"type": "response", "content": "I'll check that now.", "thread_id": "abc123", "seq": 3}
-data: {"type": "tool_call_delta", "thread_id": "abc123", "seq": 4}
-data: {"type": "tool_call", "name": "web_search_perplexity", "args": {...}, "thread_id": "abc123", "seq": 5}
-data: {"type": "tool_result", "name": "web_search_perplexity", "result": "...", "thread_id": "abc123", "seq": 6}
-data: {"type": "workspace_artifact", "tool_call_id": "tool1", "tool_name": "file_write", "path": "/workspace/report.csv", "name": "report.csv", "mime_type": "text/csv", "size_bytes": 1024, "thread_id": "abc123", "seq": 7}
-data: {"type": "response", "content": "...", "thread_id": "abc123", "seq": 8}
-data: {"type": "done", "thread_id": "abc123", "seq": 9}
+data: {"type": "llm_call_started", "model": "claude-fable-5", "reasoning": true, "thread_id": "abc123", "seq": 2}
+data: {"type": "thinking", "content": "...", "thread_id": "abc123", "seq": 3}
+data: {"type": "response", "content": "I'll check that now.", "thread_id": "abc123", "seq": 4}
+data: {"type": "tool_call_delta", "thread_id": "abc123", "seq": 5}
+data: {"type": "tool_call", "name": "web_search_perplexity", "args": {...}, "thread_id": "abc123", "seq": 6}
+data: {"type": "tool_result", "name": "web_search_perplexity", "result": "...", "thread_id": "abc123", "seq": 7}
+data: {"type": "workspace_artifact", "tool_call_id": "tool1", "tool_name": "file_write", "path": "/workspace/report.csv", "name": "report.csv", "mime_type": "text/csv", "size_bytes": 1024, "thread_id": "abc123", "seq": 8}
+data: {"type": "llm_call_started", "model": "claude-fable-5", "reasoning": true, "thread_id": "abc123", "seq": 9}
+data: {"type": "response", "content": "...", "thread_id": "abc123", "seq": 10}
+data: {"type": "done", "thread_id": "abc123", "seq": 11}
 ```
+
+**`llm_call_started`** is a lightweight status event emitted the moment each
+LLM call of the turn is dispatched to the provider (the first call and every
+post-tool sub-turn call, as in the example above), before any token arrives.
+`reasoning` tells the client whether the call's first output will be thinking
+tokens (capability-gated: it also accounts for models that cannot disable
+reasoning), so activity indicators can honestly read "Thinking" through the
+provider's prompt-processing wait instead of a generic warm-up label;
+`model` is the active candidate (swap-aware across provider fallbacks).
+Clients that ignore the event behave as before.
 
 **Turn identity and re-attach:** when the request wins the thread lock and
 becomes the executing (holder) turn, the stream opens with a `turn_started`
@@ -1290,6 +1302,7 @@ Returns the callable thread tools actually available from that caller thread aft
 
 | Type | Description | Fields |
 |------|-------------|--------|
+| `llm_call_started` | Status-only: an LLM call was just dispatched to the provider (fires per call, including post-tool sub-turn calls), before any token arrives. Lets activity indicators label the pre-first-token wait honestly. | `model` (active candidate, fallback-swap-aware), `reasoning` (whether the call's first output will be thinking tokens) |
 | `thinking` | Agent reasoning / extended-thinking text | `content` |
 | `tool_call_delta` | Status-only hint that the model is streaming tool-call argument chunks before the tool starts | none |
 | `tool_call` | Tool being invoked | `name`, `args`, `started_at` (server ISO-8601 UTC), `timeout_seconds` (max seconds before the backend terminates the call; render elapsed/max); on a managed MCP tool also `tool_type` (`mcp_server`), `server_id`, `server_name` (origin server for a provenance badge; the `name` stays the clean `mcp__server__tool`) |

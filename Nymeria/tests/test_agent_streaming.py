@@ -395,6 +395,7 @@ def test_graph_stream_processor_streams_reasoning_tool_delta_and_response_text()
     ])
 
     assert chunks == [
+        {"type": "llm_call_started", "model": "primary", "reasoning": False},
         {"type": "tool_call_delta"},
         {"type": "thinking", "content": "think"},
         {"type": "thinking", "content": "plan"},
@@ -507,6 +508,7 @@ def test_graph_stream_processor_recovers_midstream_provider_failure_from_checkpo
     chunks = asyncio.run(collect())
 
     assert chunks == [
+        {"type": "llm_call_started", "model": "primary", "reasoning": False},
         {"type": "response", "content": "partial"},
         {
             "type": "provider_retry",
@@ -522,6 +524,8 @@ def test_graph_stream_processor_recovers_midstream_provider_failure_from_checkpo
             "rewound": True,
             "stream_chunks": 1,
         },
+        # The rolled-back call re-runs, so a second status event fires.
+        {"type": "llm_call_started", "model": "primary", "reasoning": False},
         {"type": "response", "content": "recovered"},
     ]
     assert response_parts == ["recovered"]
@@ -599,6 +603,7 @@ def test_graph_stream_processor_switches_fallback_after_midstream_retry_budget()
     chunks = asyncio.run(collect())
 
     assert chunks == [
+        {"type": "llm_call_started", "model": "primary", "reasoning": False},
         {"type": "response", "content": "partial"},
         {
             "type": "provider_fallback",
@@ -615,6 +620,8 @@ def test_graph_stream_processor_switches_fallback_after_midstream_retry_budget()
             "rewound": True,
             "stream_chunks": 1,
         },
+        # The retry call reports the ACTIVE candidate (swap-aware naming).
+        {"type": "llm_call_started", "model": "secondary", "reasoning": False},
         {"type": "response", "content": "fallback"},
     ]
     assert response_parts == ["fallback"]
@@ -738,7 +745,10 @@ def test_graph_stream_processor_does_not_replay_reasoning_on_model_end():
         },
     ])
 
-    assert chunks == [{"type": "thinking", "content": "live reasoning"}]
+    assert chunks == [
+        {"type": "llm_call_started", "model": "primary", "reasoning": False},
+        {"type": "thinking", "content": "live reasoning"},
+    ]
     assert response_parts == []
 
 
@@ -915,3 +925,95 @@ def test_compact_with_progress_cancels_start_waiter_on_skip():
     assert events == []
     assert sink == [{"success": False, "reason": "skip"}]
     assert leaked == []
+
+
+def _llm_call_started_chunks(llm_config, events):
+    processor = GraphStreamProcessor(
+        thread_id="thread-a",
+        config={"configurable": {"thread_id": "thread-a"}},
+        abort_event=threading.Event(),
+        is_self_invoke=False,
+        response_parts=[],
+        clean_tool_result=lambda result: result,
+        tool_result_extra_events=lambda *args: [],
+        llm_config=llm_config,
+    )
+
+    async def collect():
+        chunks = []
+        async for chunk in processor.drive(_FakeGraph(events), {"messages": ["input"]}):
+            chunks.append(chunk)
+        return chunks
+
+    return [c for c in asyncio.run(collect()) if c["type"] == "llm_call_started"]
+
+
+def test_llm_call_started_reasoning_flag_reflects_config():
+    """The status event tells clients whether the call's first output will be
+    thinking, so activity labels can read Thinking through the TTFT window."""
+    start = [{"event": "on_chat_model_start", "run_id": "model-1"}]
+
+    on = _llm_call_started_chunks(
+        LLMConfig(provider="custom", model="primary", reasoning_effort="high"),
+        start,
+    )
+    assert on == [
+        {"type": "llm_call_started", "model": "primary", "reasoning": True}
+    ]
+
+    # "off" wins over extended_thinking (the documented LLMConfig contract).
+    off = _llm_call_started_chunks(
+        LLMConfig(
+            provider="custom",
+            model="primary",
+            reasoning_effort="off",
+            extended_thinking=True,
+        ),
+        start,
+    )
+    assert off[0]["reasoning"] is False
+
+    # None effort defers to the extended_thinking flag.
+    ext = _llm_call_started_chunks(
+        LLMConfig(provider="custom", model="primary", extended_thinking=True),
+        start,
+    )
+    assert ext[0]["reasoning"] is True
+
+    # Capability gate (shared with classify_reasoning_passback): a model
+    # whose effort ladder has no "off" (gpt-oss) reasons by default, even
+    # with nothing requested.
+    always_on = _llm_call_started_chunks(
+        LLMConfig(provider="openai", model="gpt-oss-120b"),
+        start,
+    )
+    assert always_on[0]["reasoning"] is True
+
+    # Swap-aware: the flag is evaluated against the ACTIVE candidate's
+    # model, not the primary's (whose ladder here would say False).
+    swapped = _llm_call_started_chunks(
+        LLMConfig(
+            provider="custom",
+            model="primary",
+            fallbacks=[LLMFallbackConfig(provider="openai", model="gpt-oss-120b")],
+            active_fallback_candidate_index=1,
+        ),
+        start,
+    )
+    assert swapped == [
+        {"type": "llm_call_started", "model": "gpt-oss-120b", "reasoning": True}
+    ]
+
+
+def test_llm_call_started_prefers_live_instance_model_name():
+    chunks = _llm_call_started_chunks(
+        LLMConfig(provider="custom", model="primary"),
+        [{
+            "event": "on_chat_model_start",
+            "run_id": "model-1",
+            "metadata": {"ls_model_name": "primary-live"},
+        }],
+    )
+    assert chunks == [
+        {"type": "llm_call_started", "model": "primary-live", "reasoning": False}
+    ]
