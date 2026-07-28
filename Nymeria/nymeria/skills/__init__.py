@@ -27,11 +27,17 @@ import threading
 import time
 from functools import cached_property
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, Iterable, List, Literal, Optional, Tuple
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from ..core.storage_paths import (
+    FileFingerprint,
+    compare_fingerprint,
+    scan_fingerprint_map,
+    settle_fingerprint,
+)
 from ..core.time_utils import parse_tool_ttl
 
 logger = logging.getLogger(__name__)
@@ -532,9 +538,9 @@ class SkillManager:
         self._embedding_index = embedding_index
 
         # Hot-load bookkeeping (resource-filesystem-layout plan, slice 2):
-        # SKILL.md path str -> (st_mtime_ns, st_size) captured at scan time,
-        # so raw file edits are detected without an explicit reload().
-        self._scan_sigs: Dict[str, Tuple[int, int]] = {}
+        # SKILL.md path str -> FileFingerprint captured at scan time, so raw
+        # file edits are detected without an explicit reload().
+        self._scan_sigs: Dict[str, FileFingerprint] = {}
         self._last_freshness_check = 0.0
         self._embed_rebuild_running = False
         self._embed_rebuild_dirty = False
@@ -582,9 +588,22 @@ class SkillManager:
         # hot-load refresh path uses the background variant instead.
         self._rebuild_embedding_index_now()
 
-    def _collect_scan_sigs(self) -> Dict[str, Tuple[int, int]]:
-        """Stat every SKILL.md across the scope roots (no parsing)."""
-        sigs: Dict[str, Tuple[int, int]] = {}
+    def _collect_scan_sigs(
+        self, previous: Optional[Dict[str, FileFingerprint]] = None
+    ) -> Tuple[Dict[str, FileFingerprint], List[str]]:
+        """Fingerprint every SKILL.md across the scope roots (no parsing).
+
+        Returns the fresh map plus the keys that changed (edited, added, or
+        removed). The KEYS, not just a bool, because the audit must name the
+        same files this verdict was derived from: re-deriving them by
+        comparing the two maps cannot see an edit whose fingerprint dropped
+        its content hash in the meantime, which is precisely the same-tick
+        case this machinery exists to catch.
+
+        Keyed by full path because skills live one directory deep under
+        several scope roots, unlike the flat JSON stores that key by filename.
+        """
+        entries: List[Tuple[str, Path]] = []
         roots: List[Path] = [self._bundled_dir, self._global_dir]
         try:
             if self._users_dir.is_dir():
@@ -595,24 +614,27 @@ class SkillManager:
             if not root.is_dir():
                 continue
             try:
-                entries = list(root.iterdir())
+                children = list(root.iterdir())
             except OSError:
                 continue
-            for entry in entries:
+            for entry in children:
                 skill_md = entry / "SKILL.md"
-                try:
-                    st = skill_md.stat()
-                except OSError:
-                    continue
-                sigs[str(skill_md)] = (st.st_mtime_ns, st.st_size)
-        return sigs
+                entries.append((str(skill_md), skill_md))
+        sigs, changed, removed = scan_fingerprint_map(entries, previous)
+        return sigs, changed + removed
 
     def _rescan_from_disk(self) -> None:
         """Rebuild the in-memory caches (and scan fingerprints) from disk."""
-        # Collect fingerprints BEFORE parsing: a file changing mid-scan then
-        # reads newer content against an older fingerprint, so the next
-        # freshness check re-detects it (never misses).
-        sigs = self._collect_scan_sigs()
+        # Collect fingerprints BEFORE parsing, so a file changing mid-scan is
+        # read as newer content against an older fingerprint and the next
+        # freshness check re-detects it. That ordering only pays off because
+        # the fingerprint is content-exact for recently written files: mtime
+        # is stamped from a coarse (~1ms) clock, so a same-size write landing
+        # in the scan's own tick would otherwise leave (mtime, size) untouched
+        # and be missed permanently rather than re-detected.
+        with self._lock:
+            previous = dict(self._scan_sigs)
+        sigs, _ = self._collect_scan_sigs(previous)
         with self._lock:
             self._bundled = self._scan_dir(self._bundled_dir, scope="bundled")
             self._global = self._scan_dir(self._global_dir, scope="global")
@@ -638,6 +660,13 @@ class SkillManager:
         the caches and schedules a background embedding rebuild (never
         inline: a raw edit must not pay the embed cost on the turn path).
         Returns True when a change was applied.
+
+        The scan itself runs outside the lock (it stats every skill file and
+        may hash a few), so two callers that both get past the debounce can
+        scan the same edit and each audit it. The debounce closes that window
+        for ordinary calls by stamping under the lock BEFORE scanning; only
+        concurrent ``force=True`` callers can still overlap, and the cost is a
+        duplicate audit line, never a wrong cache value.
         """
         now = time.monotonic()
         with self._lock:
@@ -645,24 +674,37 @@ class SkillManager:
                 return False
             self._last_freshness_check = now
 
-        sigs = self._collect_scan_sigs()
         with self._lock:
-            if sigs == self._scan_sigs:
+            previous = dict(self._scan_sigs)
+        sigs, changed_keys = self._collect_scan_sigs(previous)
+        with self._lock:
+            if not changed_keys:
+                # Settle in place: a file that has gone quiet since its
+                # fingerprint was taken drops its content hash, so it stops
+                # being re-read every sweep. settle_fingerprint declines any
+                # entry whose (mtime, size) moved under us, so this cannot
+                # clobber a concurrent _fresh_skill or reload update.
+                for key, fingerprint in sigs.items():
+                    settled = settle_fingerprint(self._scan_sigs.get(key), fingerprint)
+                    if settled is not None:
+                        self._scan_sigs[key] = settled
                 return False
-            old = dict(self._scan_sigs)
         logger.info("Skill store: external edit detected; rescanning")
         self._rescan_from_disk()
         self._schedule_embedding_rebuild()
-        self._audit_external_change(old, sigs)
+        self._audit_external_change(changed_keys)
         return True
 
-    def _audit_external_change(
-        self, old: Dict[str, Tuple[int, int]], new: Dict[str, Tuple[int, int]]
-    ) -> None:
-        """User-attributed audit line(s) for raw skill-file changes."""
-        changed = (set(old) ^ set(new)) | {
-            key for key in set(old) & set(new) if old[key] != new[key]
-        }
+    def _audit_external_change(self, changed: "Iterable[str]") -> None:
+        """User-attributed audit line(s) for raw skill-file changes.
+
+        Takes the keys the scan itself judged changed. Deriving them here by
+        re-comparing fingerprints would silently drop any edit whose file had
+        gone quiet by scan time (its hash is dropped, so the two fingerprints
+        no longer prove a difference), losing the audit for exactly the
+        same-tick edits this machinery exists to detect.
+        """
+        changed = set(changed)
         if not changed:
             return
         by_user: Dict[str, List[str]] = {}
@@ -792,18 +834,23 @@ class SkillManager:
         """Return ``skill``, reparsing its directory if the file changed."""
         skill_md = skill.path / "SKILL.md"
         key = str(skill_md)
-        try:
-            st = skill_md.stat()
-        except OSError:
+        with self._lock:
+            previous = self._scan_sigs.get(key)
+        sig, changed = compare_fingerprint(skill_md, previous)
+        if sig is None:
             # Deleted or unreadable out-of-band: rescan so a lower-precedence
             # skill of the same name (or None) resolves.
             self.refresh_if_stale(force=True)
             with self._lock:
                 return self._resolve_cached(skill.name, user_id)
-        sig = (st.st_mtime_ns, st.st_size)
-        with self._lock:
-            if self._scan_sigs.get(key) == sig:
-                return skill
+        if not changed:
+            with self._lock:
+                # Settle the (possibly downgraded) fingerprint, guarding the
+                # same concurrent-update race as the refresh sweep.
+                settled = settle_fingerprint(self._scan_sigs.get(key), sig)
+                if settled is not None:
+                    self._scan_sigs[key] = settled
+            return skill
 
         reloaded = load_skill_directory(
             skill.path, scope=skill.scope, user_id=skill.user_id

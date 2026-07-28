@@ -164,6 +164,13 @@ def read_run_records(
         runs_dir = Path(get_settings().data_dir) / "workflows" / "runs" / workflow_id
         if not runs_dir.is_dir():
             return []
+        # mtime picks WHICH files to open (cheap, and the early break keeps
+        # this to `limit` reads); the records that come back are then ordered
+        # by their own timestamps. mtime comes from a coarse clock (~1ms), so
+        # a burst of runs finishing in one tick would otherwise fall back to
+        # the filename tiebreak and display in run_id order, which is
+        # arbitrary. Coarse mtime therefore only blurs WHICH runs sit at the
+        # limit boundary within one such burst, never the order shown.
         paths = sorted(runs_dir.glob("*.json"), key=mtime_sort_key, reverse=True)
         records: List[dict] = []
         for path in paths:
@@ -178,6 +185,7 @@ def read_run_records(
             if user_id is not None and record.get("user_id") != user_id:
                 continue
             records.append(record)
+        records.sort(key=lambda r: str(r.get("timestamp") or ""), reverse=True)
         return records
     except Exception:  # noqa: BLE001 - a read surface must never raise into a turn
         logger.warning("workflow run record read failed", exc_info=True)
@@ -210,6 +218,12 @@ def read_recent_run_records(
         if not runs_root.is_dir():
             return []
 
+        # mtime picks the candidate WINDOW (the tree is unbounded, so the scan
+        # has to be capped without reading everything), then the records that
+        # survive are ordered by their own timestamps. Coarse mtime therefore
+        # blurs only WHICH runs are picked when a burst shares one tick (at the
+        # `limit` cut as well as the 500-file scan bound, both of which this
+        # surface already documents as approximate), never the order shown.
         paths = sorted(runs_root.glob("*/*.json"), key=mtime_sort_key, reverse=True)
         records: List[dict] = []
         for scanned, path in enumerate(paths):
@@ -226,6 +240,7 @@ def read_recent_run_records(
             if user_id is not None and record.get("user_id") != user_id:
                 continue
             records.append(record)
+        records.sort(key=lambda r: str(r.get("timestamp") or ""), reverse=True)
         return records
     except Exception:  # noqa: BLE001 - a read surface must never raise into a turn
         logger.warning("workflow run record aggregate read failed", exc_info=True)
@@ -236,8 +251,12 @@ def _prune(runs_dir: Path, cap: Optional[int] = None) -> None:
     # Read the module constant at call time (not as a bound default) so tests
     # and a future settings override both take effect.
     cap = MAX_RUN_RECORDS_PER_WORKFLOW if cap is None else cap
-    # Nanosecond mtime with the filename as a tiebreak, so rapid successive
-    # runs (equal coarse mtime) prune deterministically newest-first.
+    # mtime with the filename as a tiebreak, deliberately NOT the exact
+    # timestamp ordering the read surfaces use: this runs after every record
+    # write, so reading the whole directory to sort it precisely would put
+    # cap-many file reads on the write path. The imprecision is confined to
+    # runs sharing a coarse mtime tick, where the loser is a peer of the same
+    # age rather than a genuinely newer record, and only at the cap boundary.
     records = sorted(runs_dir.glob("*.json"), key=mtime_sort_key, reverse=True)
     for stale in records[cap:]:
         try:

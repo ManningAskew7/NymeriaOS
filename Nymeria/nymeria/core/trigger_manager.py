@@ -24,10 +24,12 @@ from .conditions import HookCondition as TriggerCondition  # re-export (shared m
 from .conditions import evaluate_conditions
 from .keyed_locks import KeyedRLockMap
 from .storage_paths import (
+    compare_fingerprint,
     quarantine_corrupt_file,
     read_store_fingerprint,
     record_store_fingerprint,
     safe_path_segment,
+    write_text_atomic,
 )
 from .time_utils import ensure_aware_utc, utc_now
 
@@ -221,14 +223,21 @@ class TriggerManager:
                 # after the audit acknowledges the edit so it is logged once,
                 # not once per poll or per instance. An absent sidecar (no
                 # manager write on record) means no audit: fail-safe.
+                # This store is never served from a cache (``_load`` re-reads
+                # the file every time), so the fingerprint guards only the
+                # audit line. It still compares against the sidecar as the
+                # baseline rather than a bare tuple: file-timestamp clocks are
+                # coarse, so an edit reusing the manager write's mtime and byte
+                # count would otherwise go unaudited.
                 expected = read_store_fingerprint(path)
                 if expected is not None:
-                    try:
-                        st = path.stat()
-                        sig = (st.st_mtime_ns, st.st_size)
-                    except OSError:
-                        sig = expected
-                    if sig != expected:
+                    current, edited_on_disk = compare_fingerprint(path, expected)
+                    # `current is None` means the file vanished between the
+                    # exists() check and this stat. compare_fingerprint calls
+                    # that "changed" (it is, from the sidecar's point of view),
+                    # but auditing it would log a raw EDIT for a deletion the
+                    # read below is about to fail on anyway.
+                    if current is not None and edited_on_disk:
                         record_store_fingerprint(path)
                         try:
                             from .activity_log import log_external_edit
@@ -288,12 +297,10 @@ class TriggerManager:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             store.updated_at = utc_now()
-            temp = path.with_suffix(".tmp")
-            temp.write_text(
+            write_text_atomic(
+                path,
                 json.dumps(store.model_dump(mode="json"), indent=2, default=str),
-                encoding="utf-8",
             )
-            temp.replace(path)
             # Record the write in the shared .sig sidecar so loaders (in any
             # instance or process) can tell manager writes from raw on-disk
             # edits (resource-filesystem-layout plan, slice 4).
@@ -466,9 +473,7 @@ class TriggerManager:
             entries.append(execution.model_dump(mode="json"))
             if len(entries) > MAX_EXECUTION_LOG:
                 entries = entries[-MAX_EXECUTION_LOG:]
-            temp = path.with_suffix(".tmp")
-            temp.write_text(json.dumps(entries, default=str), encoding="utf-8")
-            temp.replace(path)
+            write_text_atomic(path, json.dumps(entries, default=str))
         except Exception as e:
             logger.warning(f"Failed to log trigger execution: {e}")
 
@@ -514,9 +519,7 @@ class TriggerManager:
             ]
             deleted = len(loaded) - len(kept)
             if deleted:
-                temp = path.with_suffix(".tmp")
-                temp.write_text(json.dumps(kept, default=str), encoding="utf-8")
-                temp.replace(path)
+                write_text_atomic(path, json.dumps(kept, default=str))
             return deleted
         except Exception as e:
             logger.warning(f"Failed to delete trigger executions for {user_id}: {e}")

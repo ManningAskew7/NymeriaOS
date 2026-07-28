@@ -1,5 +1,6 @@
 """Filesystem tools for Nymeria."""
 
+import errno
 import logging
 import os
 import uuid
@@ -10,9 +11,16 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
 from ..config import get_settings
+from ..core.storage_paths import write_text_atomic
 from .execution_environment import resolve_tool_path
 from .image_read import prepare_image_for_native_context, sniff_image_mime
 from .utils import get_thread_id
+
+# The only errors that justify abandoning the atomic overwrite and writing in
+# place: a rename needs write permission on the DIRECTORY, which a plain
+# overwrite does not, so a writable file in a locked directory would otherwise
+# stop being writable. Every other OSError left the target intact.
+_FALLBACK_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
 
 logger = logging.getLogger(__name__)
 
@@ -417,9 +425,50 @@ def file_write(
         if not path.parent.exists():
             return f"[Error]: Directory does not exist: {path.parent}"
 
-        mode = "a" if append else "w"
-        with open(path, mode, encoding=encoding) as f:
-            f.write(content)
+        if append:
+            with open(path, "a", encoding=encoding) as f:
+                f.write(content)
+        else:
+            # Overwrites go through the atomic temp-plus-rename path. This tool
+            # is the sanctioned way to hand-edit Nymeria's own JSON stores under
+            # the resource root, and a bare truncating write that dies mid-way
+            # leaves a torn file the store loaders then QUARANTINE, losing the
+            # prior good bytes. ``file_edit`` already writes via rename; this
+            # closes the same gap here. Appends stay in place: there is no
+            # atomic append, and read-modify-write would corrupt concurrent
+            # appenders rather than protect them.
+            #
+            def _write_in_place() -> None:
+                with open(path, "w", encoding=encoding) as f:  # type: ignore[arg-type]
+                    f.write(content)
+
+            if path.exists() and not os.access(path, os.W_OK):
+                # A rename only needs permission on the DIRECTORY, so the
+                # atomic path would happily replace a file the user made
+                # read-only. Writing in place keeps `chmod 444` meaning what it
+                # has always meant here: PermissionError, same refusal as
+                # before the write became atomic.
+                _write_in_place()
+            else:
+                try:
+                    write_text_atomic(path, content, encoding=encoding)
+                except OSError as exc:
+                    # The rename ALSO needs write permission on the directory,
+                    # which a plain overwrite does not. Rather than lose the
+                    # ability to write a file in a directory the user cannot
+                    # create temps in, fall back. The atomic attempt cleans up
+                    # its own temp and leaves the target untouched, so this
+                    # cannot write twice.
+                    #
+                    # ONLY for permission errors. A full disk or a failing
+                    # device also raises OSError, and there the atomic attempt
+                    # failed SAFELY with the target intact; falling back would
+                    # open it "w", truncate it, and then fail too, turning a
+                    # clean failure into data loss on the very store files this
+                    # path exists to protect.
+                    if exc.errno not in _FALLBACK_ERRNOS:
+                        raise
+                    _write_in_place()
 
         action = "Appended to" if append else "Wrote"
         logger.debug(f"{action} {len(content)} characters to {file_path}")

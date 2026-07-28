@@ -23,7 +23,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, cast
 
 import httpx
 from langchain_core.tools import BaseTool, StructuredTool
@@ -38,6 +38,13 @@ from ..tools.metadata import (
 from .secret_interpolation import (
     interpolate_env_vars_with_names,
     resolve_credential_refs,
+)
+from .storage_paths import (
+    FileFingerprint,
+    compare_fingerprint,
+    scan_fingerprint_map,
+    settle_fingerprint,
+    write_text_atomic,
 )
 from .time_utils import utc_now
 
@@ -83,13 +90,13 @@ class CustomToolLoader:
         self._tools: Dict[str, BaseTool] = {}
 
         # Hot-load bookkeeping (resource-filesystem-layout plan, slice 2).
-        # _disk_sigs: filename -> (st_mtime_ns, st_size) recorded whenever a
+        # _disk_sigs: filename -> FileFingerprint recorded whenever a
         # definition file is parsed through this loader, so manager-driven
         # writes never register as external edits. _file_ids maps filename ->
         # the definition id it produced (a raw edit may change the id inside
         # the file). _pending_registry_sync collects ids whose BaseTool
         # changed via an external edit; the agent drains it to re-register.
-        self._disk_sigs: Dict[str, Tuple[int, int]] = {}
+        self._disk_sigs: Dict[str, FileFingerprint] = {}
         self._file_ids: Dict[str, str] = {}
         self._pending_registry_sync: Set[str] = set()
         self._last_freshness_check = 0.0
@@ -131,9 +138,9 @@ class CustomToolLoader:
         """Pick up external (non-manager) edits to the definition files.
 
         Stat-scans the tools dir (debounced) and re-parses only files whose
-        (mtime_ns, size) fingerprint changed, dropping definitions whose
-        files disappeared. Returns the affected tool ids; the corresponding
-        registry re-sync is the agent's job (see ``drain_registry_sync`` and
+        fingerprint changed, dropping definitions whose files disappeared.
+        Returns the affected tool ids; the corresponding registry re-sync is
+        the agent's job (see ``drain_registry_sync`` and
         ``agent_tools.sync_external_resource_edits``).
         """
         now = time.monotonic()
@@ -142,22 +149,20 @@ class CustomToolLoader:
                 return []
             self._last_freshness_check = now
 
-        try:
-            current: Dict[str, Tuple[int, int]] = {}
-            for json_file in self.tools_dir.glob("*.json"):
-                try:
-                    st = json_file.stat()
-                except OSError:
-                    continue
-                current[json_file.name] = (st.st_mtime_ns, st.st_size)
-        except OSError:
-            return []
-
         changed_ids: List[str] = []
         with self._lock:
-            stale = [name for name, sig in current.items() if self._disk_sigs.get(name) != sig]
-            removed = [name for name in self._disk_sigs if name not in current]
+            try:
+                entries = [(f.name, f) for f in self.tools_dir.glob("*.json")]
+            except OSError:
+                return []
+            current, stale, removed = scan_fingerprint_map(entries, self._disk_sigs)
             if not stale and not removed:
+                # Settle the possibly-downgraded fingerprints so quiet files
+                # stop being re-hashed on every sweep.
+                for name, fingerprint in current.items():
+                    settled = settle_fingerprint(self._disk_sigs.get(name), fingerprint)
+                    if settled is not None:
+                        self._disk_sigs[name] = settled
                 return []
 
             for name in removed:
@@ -216,11 +221,10 @@ class CustomToolLoader:
         Returns:
             LangChain tool or None if loading failed.
         """
-        try:
-            st = file_path.stat()
-            self._disk_sigs[file_path.name] = (st.st_mtime_ns, st.st_size)
-        except OSError:
-            pass  # Unreadable stat: the refresh sweep will retry the file.
+        fingerprint, _ = compare_fingerprint(file_path, None)
+        if fingerprint is not None:
+            self._disk_sigs[file_path.name] = fingerprint
+        # Unreadable stat: the refresh sweep will retry the file.
         try:
             data = json.loads(file_path.read_text(encoding="utf-8"))
             definition = CustomToolDefinition(**data)
@@ -475,10 +479,10 @@ class CustomToolLoader:
 
         file_path = self.tools_dir / f"{definition.id}.json"
         with self._lock:
-            file_path.write_text(
-                definition.model_dump_json(indent=2),
-                encoding="utf-8",
-            )
+            # Atomic: `_load_tool_file` QUARANTINES a file that no longer
+            # parses, so a torn write here would move the prior good bytes
+            # aside rather than merely fail.
+            write_text_atomic(file_path, definition.model_dump_json(indent=2))
 
             # Reload to update cache (also re-fingerprints the file, so this
             # manager-driven write never registers as an external edit).

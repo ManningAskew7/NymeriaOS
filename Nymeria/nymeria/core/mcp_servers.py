@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Union, cast
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -23,6 +23,12 @@ from ..tools.definitions.mcp_schema import (
 from .mcp_execution_gate import mcp_execution_gate, stamp_mcp_approval
 from .mcp_manager import get_mcp_manager
 from .mcp_tool_names import format_mcp_tool_name, registered_mcp_tool_names
+from .storage_paths import (
+    FileFingerprint,
+    compare_fingerprint,
+    scan_fingerprint_map,
+    settle_fingerprint,
+)
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -84,10 +90,10 @@ class MCPServerRegistry:
         self._tools: Dict[str, BaseTool] = {}
 
         # Hot-load bookkeeping (resource-filesystem-layout plan, slice 2).
-        # filename -> (st_mtime_ns, st_size) recorded whenever a definition
-        # file passes through this registry, so manager-driven writes never
+        # filename -> FileFingerprint recorded whenever a definition file
+        # passes through this registry, so manager-driven writes never
         # register as external edits; filename -> server id for removals.
-        self._disk_sigs: Dict[str, Tuple[int, int]] = {}
+        self._disk_sigs: Dict[str, FileFingerprint] = {}
         self._file_ids: Dict[str, str] = {}
         self._registry_sync_needed = False
         self._last_freshness_check = 0.0
@@ -106,11 +112,10 @@ class MCPServerRegistry:
 
     def _load_definition_file(self, json_file: Path) -> None:
         """Load one definition file, recording its disk fingerprint."""
-        try:
-            st = json_file.stat()
-            self._disk_sigs[json_file.name] = (st.st_mtime_ns, st.st_size)
-        except OSError:
-            pass  # Unreadable stat: the refresh sweep will retry the file.
+        fingerprint, _ = compare_fingerprint(json_file, None)
+        if fingerprint is not None:
+            self._disk_sigs[json_file.name] = fingerprint
+        # Unreadable stat: the refresh sweep will retry the file.
         try:
             data = json.loads(json_file.read_text(encoding="utf-8"))
             defn = MCPServerDefinition(**data)
@@ -144,9 +149,9 @@ class MCPServerRegistry:
         """Pick up external (non-manager) edits to the definition files.
 
         Stat-scans the servers dir (debounced) and re-parses only files whose
-        (mtime_ns, size) fingerprint changed, dropping servers whose files
-        disappeared. Returns the affected server ids; the agent re-registers
-        the wrapped tools via ``agent_tools.sync_external_resource_edits``.
+        fingerprint changed, dropping servers whose files disappeared. Returns
+        the affected server ids; the agent re-registers the wrapped tools via
+        ``agent_tools.sync_external_resource_edits``.
         """
         now = time.monotonic()
         with self._lock:
@@ -154,22 +159,20 @@ class MCPServerRegistry:
                 return []
             self._last_freshness_check = now
 
-        try:
-            current: Dict[str, Tuple[int, int]] = {}
-            for json_file in self.servers_dir.glob("*.json"):
-                try:
-                    st = json_file.stat()
-                except OSError:
-                    continue
-                current[json_file.name] = (st.st_mtime_ns, st.st_size)
-        except OSError:
-            return []
-
         changed_ids: List[str] = []
         with self._lock:
-            stale = [name for name, sig in current.items() if self._disk_sigs.get(name) != sig]
-            removed = [name for name in self._disk_sigs if name not in current]
+            try:
+                entries = [(f.name, f) for f in self.servers_dir.glob("*.json")]
+            except OSError:
+                return []
+            current, stale, removed = scan_fingerprint_map(entries, self._disk_sigs)
             if not stale and not removed:
+                # Settle the possibly-downgraded fingerprints so quiet files
+                # stop being re-hashed on every sweep.
+                for name, fingerprint in current.items():
+                    settled = settle_fingerprint(self._disk_sigs.get(name), fingerprint)
+                    if settled is not None:
+                        self._disk_sigs[name] = settled
                 return []
 
             for name in removed:
@@ -242,11 +245,10 @@ class MCPServerRegistry:
             write_text_atomic(file_path, defn.model_dump_json(indent=2))
             self._definitions[defn.id] = defn
             self._file_ids[file_path.name] = defn.id
-            try:
-                st = file_path.stat()
-                self._disk_sigs[file_path.name] = (st.st_mtime_ns, st.st_size)
-            except OSError:
-                pass  # Fingerprint refresh is best-effort; the sweep retries.
+            fingerprint, _ = compare_fingerprint(file_path, None)
+            if fingerprint is not None:
+                self._disk_sigs[file_path.name] = fingerprint
+            # Fingerprint refresh is best-effort; the sweep retries.
         logger.info(f"Saved MCP server definition: {defn.id}")
         return file_path
 
