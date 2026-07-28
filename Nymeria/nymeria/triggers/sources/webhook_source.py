@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Tuple
 
 from . import register_source
 from .base import BaseTriggerSource
+from ...core.storage_paths import write_text_atomic
 from ...core.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -74,9 +75,7 @@ class WebhookSource(BaseTriggerSource):
         try:
             path = self._get_queue_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            temp = path.with_suffix(".tmp")
-            temp.write_text(json.dumps(self._queues, default=str), encoding="utf-8")
-            temp.replace(path)
+            write_text_atomic(path, json.dumps(self._queues, default=str))
         except Exception as e:
             logger.warning(f"webhook source: failed to persist queue: {e}")
 

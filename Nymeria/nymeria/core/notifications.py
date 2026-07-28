@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import safe_path_segment, write_text_atomic
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -306,17 +306,14 @@ class NotificationStore:
         try:
             notifications_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Write atomically
-            temp_path = notifications_path.with_suffix(".tmp")
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(
+            write_text_atomic(
+                notifications_path,
+                json.dumps(
                     [n.model_dump(mode="json") for n in notifications],
-                    f,
                     indent=2,
                     default=str,
-                )
-
-            temp_path.replace(notifications_path)
+                ),
+            )
             return True
         except Exception as e:
             logger.error(f"Failed to save notifications for {user_id}: {e}")

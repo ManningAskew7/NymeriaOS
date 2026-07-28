@@ -17,6 +17,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from ..core.http_policy import SECRET_PATTERNS
+from ..core.storage_paths import write_text_atomic
 from ..core.time_utils import parse_tool_ttl
 from ..core.tool_reload import command_or_text, should_emit_reload_command
 from ..core.thread_config import ThreadConfig
@@ -535,9 +536,7 @@ def _validate_thread_templates(raw_templates: list, user_id: str) -> list[dict]:
 def _write_skill_md_atomic(target_dir: Path, markdown: str) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / "SKILL.md"
-    tmp = target_dir / ".SKILL.md.tmp"
-    tmp.write_text(markdown, encoding="utf-8")
-    tmp.replace(target)
+    write_text_atomic(target, markdown)
 
 
 def _invalidate_graph_caches(agent) -> None:
@@ -752,9 +751,7 @@ def _write_skill_package(
     old_skill_text = (target_dir / "SKILL.md").read_text(encoding="utf-8") if (target_dir / "SKILL.md").exists() else None
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        tmp = target_dir / ".SKILL.md.tmp"
-        tmp.write_text(markdown, encoding="utf-8")
-        tmp.replace(target_dir / "SKILL.md")
+        write_text_atomic(target_dir / "SKILL.md", markdown)
         written_scripts = _write_script_files(target_dir, scripts)
 
         loaded = load_skill_directory(

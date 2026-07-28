@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ...core.storage_paths import write_text_atomic
+
 CONFIG_VERSION = 1
 DEFAULT_PROFILE_NAME = "default"
 DEFAULT_CONFIG_PATH = Path("~/.nymeria/cli.json")
@@ -162,13 +164,14 @@ def write_cli_config(config: CLIProfileConfig, path: Path | str | None = None) -
         data.update(raw)
     data.update(_config_to_json(config))
 
-    tmp_path = selected_path.with_name(f".{selected_path.name}.tmp")
-    tmp_path.write_text(
+    # mode= so a FIRST write is created 0600 rather than at the umask
+    # default and tightened after: these are credentials, and the widened
+    # window would already contain them.
+    write_text_atomic(
+        selected_path,
         json.dumps(data, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        mode=0o600,
     )
-    os.chmod(tmp_path, 0o600)
-    os.replace(tmp_path, selected_path)
     os.chmod(selected_path, 0o600)
 
 

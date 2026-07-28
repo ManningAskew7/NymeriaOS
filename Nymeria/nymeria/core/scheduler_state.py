@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .storage_paths import write_text_atomic
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,12 +59,9 @@ class SchedulerStateManager:
     def _save_unlocked(self, state: dict[str, Any]) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            temp = self.path.with_suffix(".tmp")
-            temp.write_text(
-                json.dumps(state, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
+            write_text_atomic(
+                self.path, json.dumps(state, indent=2, sort_keys=True) + "\n"
             )
-            temp.replace(self.path)
         except Exception as exc:
             logger.warning("Failed to write scheduler state %s: %s", self.path, exc)
 
