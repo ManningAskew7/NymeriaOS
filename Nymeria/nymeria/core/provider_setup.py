@@ -142,6 +142,12 @@ class PendingCliproxyLogin:
     # client's in-process session ledger
     # (cliproxy/management_client.py), stamped inside start_oauth /
     # oauth_callback and applied by confirm_login_landed server-side.
+    #
+    # ``logged_in`` records whether an active auth file existed when the
+    # target step probed (or a login confirmed since): the Target tab is
+    # re-rendered from stored state on EVERY phase of the rail, so it must
+    # not need a per-render auth-file round trip.
+    logged_in: bool = False
     account: str = ""
     model: str | None = None
     model_custom: bool = False

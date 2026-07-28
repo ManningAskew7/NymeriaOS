@@ -32,11 +32,12 @@ if TYPE_CHECKING:
 from .command_forms import (
     CommandOutput,
     chain_form_output,
+    custom_model_tab,
     form_option,
     form_tab,
+    model_pick_tab,
     radio_field,
     rest_value,
-    search_field,
     text_field,
 )
 
@@ -278,12 +279,38 @@ class CliproxyCommandsMixin:
             lines.append(self._cliproxy_unconfigured_next(url_set, key_set))
             return "[Info]: " + "\n".join(lines)
 
-        setup_store.start_cliproxy_login(self.user_id, spec.id)
-        if account:
-            setup_store.update_cliproxy_login(self.user_id, account=account)
+        pending = setup_store.start_cliproxy_login(self.user_id, spec.id)
+        updated = setup_store.update_cliproxy_login(
+            self.user_id, logged_in=logged_in, account=account
+        )
+        if updated is not None:
+            pending = updated
 
+        tab = self._cliproxy_target_tab(pending, spec)
+        lines.append(
+            "Choose: /provider cliproxy "
+            + " | ".join(
+                str(option["id"]) for option in tab["fields"][0]["options"]
+            )
+        )
+        return chain_form_output(
+            f"CLIProxy: {spec.label}",
+            [tab],
+            tab,
+            lines,
+            fallback_text=f"CLIProxy target {spec.label}.",
+        )
+
+    @staticmethod
+    def _cliproxy_target_tab(
+        pending: "PendingCliproxyLogin", spec: "CLIProxyProviderSpec"
+    ) -> dict[str, Any]:
+        """The Target tab, rendered from STORED record state (no network),
+        so it rides EVERY phase of the rail: after a login starts, relogin
+        and cancel stay one arrow-left away (the tab-level submit template
+        carries the action while this tab is active)."""
         options: list[dict[str, Any]] = []
-        if logged_in:
+        if pending.logged_in:
             options.append(
                 form_option(
                     "use", label="Use the existing login", current=True
@@ -295,21 +322,10 @@ class CliproxyCommandsMixin:
                 form_option("login", label="Log in with OAuth", current=True)
             )
         options.append(form_option("cancel", label="Cancel"))
-        lines.append(
-            "Choose: /provider cliproxy "
-            + " | ".join(str(option["id"]) for option in options)
-        )
-        tab = form_tab(
+        return form_tab(
             spec.label,
             [radio_field("action", options)],
             submit_command="provider cliproxy {action}",
-        )
-        return chain_form_output(
-            f"CLIProxy: {spec.label}",
-            [tab],
-            tab,
-            lines,
-            fallback_text=f"CLIProxy target {spec.label}.",
         )
 
     async def _cliproxy_step(
@@ -337,7 +353,7 @@ class CliproxyCommandsMixin:
         if token in ("login", "relogin", "restart"):
             return await self._cliproxy_start_login(pending, spec)
         if token == "use":
-            if not pending.account:
+            if not pending.logged_in:
                 # "use" is only offered when logged in, but it is typed-
                 # reachable; applying a global route with no login would
                 # break every turn, so re-verify.
@@ -359,7 +375,9 @@ class CliproxyCommandsMixin:
                         " Use /provider cliproxy login first."
                     )
                 setup_store.update_cliproxy_login(
-                    self.user_id, account=login_account_label(entry)
+                    self.user_id,
+                    account=login_account_label(entry),
+                    logged_in=True,
                 )
             return await self._cliproxy_model_chain(pending, spec)
         if token == "paste":
@@ -446,7 +464,9 @@ class CliproxyCommandsMixin:
             [radio_field("action", status_options)],
             submit_command="provider cliproxy {action}",
         )
-        tabs: list[dict[str, Any]] = []
+        # The Target tab rides every phase (relogin/cancel one arrow-left
+        # away); the login tabs retire once the login confirms.
+        tabs: list[dict[str, Any]] = [self._cliproxy_target_tab(pending, spec)]
         if device:
             active_tab = status_tab
             tabs.append(status_tab)
@@ -680,7 +700,7 @@ class CliproxyCommandsMixin:
         from . import provider_setup as setup_store
 
         updated = setup_store.update_cliproxy_login(
-            self.user_id, account=account or pending.account
+            self.user_id, account=account or pending.account, logged_in=True
         )
         if updated is None:
             return self._CLIPROXY_GONE
@@ -698,12 +718,14 @@ class CliproxyCommandsMixin:
         *,
         note_lines: list[str] | None = None,
     ) -> CommandOutput:
-        """The post-login rail: Model tab, then Apply once a model is set."""
+        """The post-login rail: Target, Model, then Apply once a model is
+        set (Target persists so relogin/cancel stay one arrow-left away)."""
         chain = [await self._cliproxy_model_tab(pending, spec)]
         if chain[-1][1]:
             chain.append(self._cliproxy_apply_tab(pending, spec))
         active_tab, _decided, guidance = chain[-1]
-        tabs = [tab for tab, _d, _l in chain]
+        tabs = [self._cliproxy_target_tab(pending, spec)]
+        tabs.extend(tab for tab, _d, _l in chain)
         return chain_form_output(
             f"CLIProxy route: {spec.label}",
             tabs,
@@ -720,16 +742,9 @@ class CliproxyCommandsMixin:
         from . import provider_setup as setup_store
 
         if pending.model_custom:
-            tab = form_tab(
-                "Model",
-                [
-                    text_field(
-                        "model",
-                        label="Model id",
-                        placeholder=spec.default_model or "model-id",
-                    )
-                ],
-                submit_command="provider cliproxy model {model}",
+            tab = custom_model_tab(
+                spec.default_model or "model-id",
+                "provider cliproxy model {model}",
             )
             return tab, False, [
                 "Type the model id to use.",
@@ -784,23 +799,13 @@ class CliproxyCommandsMixin:
                     current=spec.default_model == preselect,
                 )
             )
-        if preselect and all(option["id"] != preselect for option in options):
-            insert_meta = (
-                "spec default"
-                if preselect == str(spec.default_model or "")
-                else "custom"
-            )
-            options.insert(
-                0, form_option(preselect, meta=insert_meta, current=True)
-            )
-        options.append(form_option("custom", label="Custom model id…"))
-        tab = form_tab(
-            "Model",
-            [
-                search_field("filter", placeholder="Filter models…"),
-                radio_field("model", options),
-            ],
-            submit_command="provider cliproxy model {model}",
+        insert_meta = (
+            "spec default"
+            if preselect == str(spec.default_model or "")
+            else "custom"
+        )
+        tab = model_pick_tab(
+            options, preselect, insert_meta, "provider cliproxy model {model}"
         )
         return tab, pending.model is not None, [
             str(pending.models_note or ""),

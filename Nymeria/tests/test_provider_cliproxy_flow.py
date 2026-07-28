@@ -316,11 +316,22 @@ def test_login_renders_rail_with_url_and_tunnel_hint() -> None:
     assert "ssh -N -L 1455:127.0.0.1:1455" in result.markdown
     assert "Type: /provider cliproxy paste" in result.markdown
     form = _form(result)
-    assert [tab["label"] for tab in form["tabs"]] == ["Paste", "Status"]
+    # The Target tab rides the rail (relogin/cancel one arrow-left away).
+    assert [tab["label"] for tab in form["tabs"]] == [
+        "Claude (Max/Pro subscription)",
+        "Paste",
+        "Status",
+    ]
     tab = _active_tab(form)
     assert tab["label"] == "Paste"
     assert tab["fields"][0]["kind"] == "text"
     assert tab["submit"] == {"command": "provider cliproxy paste {callback}"}
+    target_tab = form["tabs"][0]
+    assert target_tab["submit"] == {"command": "provider cliproxy {action}"}
+    assert [o["id"] for o in target_tab["fields"][0]["options"]] == [
+        "login",
+        "cancel",
+    ]
     pending = provider_setup.get_cliproxy_login("alice")
     assert pending is not None and pending.oauth_state == "st-1"
 
@@ -338,7 +349,10 @@ def test_device_flow_login_gets_status_tab_only() -> None:
     result = _run(api, "/provider cliproxy login")
 
     form = _form(result)
-    assert [tab["label"] for tab in form["tabs"]] == ["Status"]
+    assert [tab["label"] for tab in form["tabs"]] == [
+        "Kimi (Moonshot subscription)",
+        "Status",
+    ]
     tab = _active_tab(form)
     option_ids = [o["id"] for o in tab["fields"][0]["options"]]
     assert option_ids == ["check", "restart", "cancel"]
@@ -658,8 +672,18 @@ def test_model_pick_then_apply_routes_globally_and_clears() -> None:
 
     picked = _run(api, "/provider cliproxy model claude-opus-4-7")
     form = _form(picked)
-    assert [tab["label"] for tab in form["tabs"]] == ["Model", "Apply"]
+    assert [tab["label"] for tab in form["tabs"]] == [
+        "Claude (Max/Pro subscription)",
+        "Model",
+        "Apply",
+    ]
     assert _active_tab(form)["label"] == "Apply"
+    # The persistent Target tab offers the logged-in action set.
+    assert [o["id"] for o in form["tabs"][0]["fields"][0]["options"]] == [
+        "use",
+        "relogin",
+        "cancel",
+    ]
     assert "applies globally" in picked.markdown.lower()
 
     applied = _run(api, "/provider cliproxy apply")
