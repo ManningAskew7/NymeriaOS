@@ -72,6 +72,26 @@
     await cliproxyStore.applyRoute(provider.id, { model: modelFor(provider).trim() });
   }
 
+  // Auth-file import (migrating a login from another host without shell
+  // access): one hidden file input shared by the per-provider Import
+  // buttons; the provider clicked last is the confirm target.
+  let importInput = $state<HTMLInputElement | null>(null);
+  let importProviderId = $state('');
+
+  function pickImportFile(provider: CLIProxyProviderInfo) {
+    importProviderId = provider.id;
+    importInput?.click();
+  }
+
+  async function importPickedFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || !importProviderId) return;
+    const content = await file.text();
+    await cliproxyStore.importAuthFile(importProviderId, file.name, content);
+  }
+
   async function saveKnobs() {
     const update: Record<string, unknown> = {};
     const retry = Number.parseInt(requestRetry, 10);
@@ -227,6 +247,14 @@
               {provider.logged_in ? 'Re-login' : 'Log in'}
             </Button>
             <Button
+              variant="secondary"
+              onclick={() => pickImportFile(provider)}
+              disabled={provider.supported === false || !tosAccepted}
+            >
+              <Icon name="upload" size={14} />
+              Import auth file
+            </Button>
+            <Button
               variant="primary"
               onclick={() => applyGlobal(provider)}
               disabled={provider.supported === false || !provider.logged_in}
@@ -238,6 +266,13 @@
         </section>
       {/each}
     </div>
+    <input
+      class="import-input"
+      type="file"
+      accept=".json,application/json"
+      bind:this={importInput}
+      onchange={importPickedFile}
+    />
     <datalist id="cliproxy-model-ids">
       {#each cliproxyStore.models as model (model.id)}
         <option value={model.id}>{model.owned_by}</option>
@@ -316,6 +351,10 @@
 <style>
   .tab-content {
     padding: 1rem 0;
+  }
+
+  .import-input {
+    display: none;
   }
 
   .field {

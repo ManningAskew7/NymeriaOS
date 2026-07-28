@@ -267,6 +267,28 @@ function createCLIProxyStore() {
     }
   }
 
+  async function importAuthFile(provider: string, name: string, content: string) {
+    error = null;
+    message = null;
+    try {
+      const result = await api.importCLIProxyAuthFile(provider, name, content);
+      if (result.status === 'ok') {
+        message = result.account
+          ? `Imported ${name}: active login as ${result.account}.`
+          : `Imported ${name}: login active.`;
+      } else {
+        // Accepted-but-inactive is not a success; render the backend's
+        // honest explanation inline.
+        error = result.detail || `The proxy accepted ${name} but lists no active login.`;
+      }
+      await refresh();
+      return result.status === 'ok';
+    } catch (e) {
+      fail(e, 'save', 'the auth file');
+      return false;
+    }
+  }
+
   async function deleteAuthFile(name: string) {
     error = null;
     try {
@@ -409,6 +431,7 @@ function createCLIProxyStore() {
     deliverCallback,
     dismissOAuth,
     setAuthFileDisabled,
+    importAuthFile,
     deleteAuthFile,
     applyRoute,
     startLocal,

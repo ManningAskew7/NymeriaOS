@@ -86,6 +86,9 @@ class FakeManagementClient:
     async def delete_auth_file(self, name):
         self.calls.append(("delete_auth_file", name))
 
+    async def upload_auth_file(self, name, content):
+        self.calls.append(("upload_auth_file", (name, content)))
+
     async def get_config_knobs(self, paths=None):
         return dict(FakeManagementClient.knobs)
 
@@ -426,6 +429,62 @@ def test_auth_files_filter_by_provider():
         "/cliproxy/auth-files", params={"provider": "grok"}
     ).json()
     assert [entry["name"] for entry in payload] == ["xai-c.json"]
+
+
+def test_import_auth_file_confirms_active_login_and_runs_claude_fixup():
+    """POST /cliproxy/auth-files ports the headless --cliproxy-auth-file
+    ladder: upload, then CONFIRM an active login is listed (the confirm-
+    on-ok trust rule); a confirmed Claude import also gets the
+    tool_prefix_disabled fixup."""
+    FakeManagementClient.auth_files = [
+        {"name": "claude-a.json", "provider": "claude", "email": "max@x.io"},
+    ]
+    client, _, _ = make_app()
+    payload = client.post(
+        "/cliproxy/auth-files",
+        json={
+            "provider": "claude",
+            "name": "claude-a.json",
+            "content": '{"access_token": "tok"}',
+        },
+    ).json()
+    assert payload == {"status": "ok", "account": "max@x.io", "detail": ""}
+    calls = [c for i in FakeManagementClient.instances for c in i.calls]
+    assert ("upload_auth_file", ("claude-a.json", b'{"access_token": "tok"}')) in calls
+    assert ("ensure_tool_prefix_disabled", "claude-a.json") in calls
+
+
+def test_import_auth_file_reports_inactive_honestly():
+    """An upload the proxy ACCEPTED but does not list as an active login
+    (disabled/expired/wrong provider) must not read as success."""
+    FakeManagementClient.auth_files = [
+        {"name": "claude-a.json", "provider": "claude", "disabled": True},
+    ]
+    client, _, _ = make_app()
+    payload = client.post(
+        "/cliproxy/auth-files",
+        json={"provider": "claude", "name": "claude-a.json", "content": "{}"},
+    ).json()
+    assert payload["status"] == "inactive"
+    assert "no active" in payload["detail"]
+
+
+def test_import_auth_file_rejects_bad_names_and_bad_json():
+    client, _, _ = make_app()
+    for bad_name in ("../evil.json", "auths/x.json", ".hidden.json", "x.txt", ""):
+        response = client.post(
+            "/cliproxy/auth-files",
+            json={"provider": "claude", "name": bad_name, "content": "{}"},
+        )
+        assert response.status_code == 400, bad_name
+    response = client.post(
+        "/cliproxy/auth-files",
+        json={"provider": "claude", "name": "a.json", "content": "not json"},
+    )
+    assert response.status_code == 400
+    # Nothing reached the proxy on any refusal.
+    calls = [c for i in FakeManagementClient.instances for c in i.calls]
+    assert all(call[0] != "upload_auth_file" for call in calls)
 
 
 def test_patch_auth_file_dispatches_status_and_priority():
