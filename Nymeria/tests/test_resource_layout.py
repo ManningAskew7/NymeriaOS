@@ -11,7 +11,6 @@ import errno
 import json
 import os
 import stat
-import time
 from pathlib import Path
 
 from nymeria.core.resource_map import render_resource_readme, write_resource_map
@@ -517,6 +516,43 @@ def test_file_write_overwrite_is_atomic_and_preserves_semantics(tmp_path, monkey
     assert target.read_text(encoding="utf-8") == "via link\nmore\n"
 
 
+def test_atomic_write_mode_covers_a_first_write(tmp_path, monkeypatch):
+    """``mode=`` exists for the case the carry-over cannot cover: a file that
+    does not exist yet and must never sit at the umask default with its
+    contents already in it (the CLI credentials file). An existing file's own
+    mode still wins, since that is a deliberate choice by whoever set it."""
+    _require_unprivileged_posix("file permission bits")
+    from nymeria.core.storage_paths import write_text_atomic
+
+    fresh = tmp_path / "creds.json"
+    write_text_atomic(fresh, "{}", mode=0o600)
+    assert stat.S_IMODE(fresh.stat().st_mode) == 0o600
+
+    # Sampled with the content on disk, before any tightening chmod.
+    seen = []
+    real_chmod = os.chmod
+
+    def _spy(path_arg, mode_arg, *args, **kwargs):
+        try:
+            st = os.stat(path_arg)
+            seen.append((stat.S_IMODE(st.st_mode), st.st_size))
+        except OSError:
+            pass
+        return real_chmod(path_arg, mode_arg, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", _spy)
+    second = tmp_path / "creds2.json"
+    write_text_atomic(second, '{"token": "secret"}', mode=0o600)
+    assert seen and all(m & 0o077 == 0 and size > 0 for m, size in seen)
+
+    # An existing wider file is NOT narrowed by a mode= the caller passes.
+    existing = tmp_path / "public.json"
+    existing.write_text("{}", encoding="utf-8")
+    existing.chmod(0o644)
+    write_text_atomic(existing, "[]", mode=0o600)
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o644
+
+
 def test_file_write_falls_back_when_the_directory_is_not_writable(tmp_path, monkeypatch):
     """A rename needs write permission on the DIRECTORY; a plain write needs it
     on the file. So making writes atomic silently narrowed what file_write can
@@ -671,37 +707,29 @@ def test_store_fingerprint_sidecar_roundtrip(tmp_path):
     assert not store_fingerprint_path(target).exists()
 
 
-def test_store_fingerprint_sidecar_roundtrips_a_hashless_fingerprint(tmp_path):
-    """The other sidecar shape: a fingerprint recorded for a QUIET file.
-
-    Loaders re-record after acknowledging a raw edit, and an edit is often
-    discovered long after it happened, so the recorded fingerprint carries no
-    hash. The wire format has to round-trip that empty third field rather than
-    reading back as a corrupt sidecar (which fails safe by disabling the audit,
-    so the loss would be silent).
-    """
-    from nymeria.core.storage_paths import (
-        RACY_FINGERPRINT_MARGIN_NS,
-        compare_fingerprint,
-        read_store_fingerprint,
-        record_store_fingerprint,
-    )
+def test_legacy_hashless_record_compares_on_mtime_and_size(tmp_path):
+    """The one shape that still has an empty hash: a record written before the
+    field existed. It must compare the way it was written (on mtime and size
+    alone) rather than read as a mismatch, and it must upgrade itself, so the
+    legacy behavior lasts exactly one comparison per record."""
+    from nymeria.core.storage_paths import compare_fingerprint
 
     target = tmp_path / "store.json"
     target.write_text("{}", encoding="utf-8")
-    quiet = time.time_ns() - RACY_FINGERPRINT_MARGIN_NS * 2
-    os.utime(target, ns=(quiet, quiet))
+    st = target.stat()
+    legacy = (st.st_mtime_ns, st.st_size, "")
 
-    sig = record_store_fingerprint(target)
-    assert sig is not None and sig[2] == ""  # quiet file: mtime is trusted
-    assert read_store_fingerprint(target) == sig
+    upgraded, changed = compare_fingerprint(target, legacy)
+    assert changed is False  # not audited as an edit by the format change
+    assert upgraded[2] and len(upgraded[2]) == 64  # and no longer legacy
 
-    # A hashless baseline still answers both questions correctly.
-    _, changed = compare_fingerprint(target, sig)
-    assert changed is False
-    target.write_text("[]", encoding="utf-8")  # same size, later tick
-    os.utime(target, ns=(quiet + 1_000_000, quiet + 1_000_000))
-    _, changed = compare_fingerprint(target, sig)
+    # A genuine edit against a legacy baseline is still caught. Only a
+    # same-tick same-size rewrite could hide from it, and after this one
+    # comparison the record carries a hash, closing that hole too.
+    target.write_text("[]", encoding="utf-8")
+    bumped = st.st_mtime_ns + 1_000_000
+    os.utime(target, ns=(bumped, bumped))
+    _, changed = compare_fingerprint(target, legacy)
     assert changed is True
 
 
@@ -828,13 +856,24 @@ def test_legacy_two_field_sidecar_upgrades_without_a_spurious_audit(tmp_path, mo
     assert [h.name for h in reader.get_hooks_cached("u1")] == ["original"]
     assert recorder.records == []  # not audited as an edit by the format change
 
-    # A genuine raw edit against the legacy baseline is still caught, and the
-    # acknowledgement is written back in the new three-field format.
-    path.write_text(path.read_text(encoding="utf-8").replace("original", "renamed"), encoding="utf-8")
-    fresh = HookManager(tmp_path)
-    assert [h.name for h in fresh.get_hooks_cached("u1")] == ["renamed"]
-    assert [r[0] for r in recorder.records] == ["hooks"]
+    # The CLEAN read upgrades the sidecar. Without that it stays two-field
+    # forever, because the audit sites discard the fingerprint they are handed
+    # and only re-record when they detect an edit: the store would keep
+    # comparing on (mtime, size) alone, leaving the same-tick hole this whole
+    # mechanism exists to close open on every host that upgraded in place.
     assert sidecar.read_text(encoding="utf-8").count(":") == 2
+
+    # And a same-tick same-size edit, invisible to the legacy comparison, is
+    # now audited against the upgraded record.
+    before = os.stat(path).st_mtime_ns
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("original", "renamedx"),
+        encoding="utf-8",
+    )
+    os.utime(path, ns=(before, before))
+    fresh = HookManager(tmp_path)
+    assert [h.name for h in fresh.get_hooks_cached("u1")] == ["renamedx"]
+    assert [r[0] for r in recorder.records] == ["hooks"]
 
 
 def test_custom_tools_external_edit_is_audited(tmp_path, monkeypatch):
@@ -904,51 +943,117 @@ def test_fingerprint_detects_same_tick_same_size_rewrite(tmp_path):
     assert changed is True
 
 
-def test_fingerprint_settles_without_reporting_a_change(tmp_path):
+def test_repeated_comparisons_of_an_unchanged_file_never_report_a_change(tmp_path):
     """The false-positive direction, which matters more than the miss.
 
-    A fingerprint taken while a file was racy carries a hash; once the file is
-    old enough to trust mtime again it must DROP that hash so it stops being
-    re-read every sweep. If that downgrade were reported as a change it would
-    re-embed the whole skill pool and write an EXTERNAL_EDIT audit line
-    claiming a store was edited on disk when nothing touched it.
+    Every sweep re-fingerprints, so the value a comparison hands back has to be
+    stable for an untouched file. If it drifted, the next sweep would read the
+    drift as an edit, which re-embeds the whole skill pool and writes an
+    EXTERNAL_EDIT audit line claiming a store was edited when nothing touched
+    it. Fabricating audit records is a worse failure than the missed edit this
+    machinery exists to fix.
     """
-    from nymeria.core.storage_paths import (
-        RACY_FINGERPRINT_MARGIN_NS,
-        compare_fingerprint,
-    )
+    from nymeria.core.storage_paths import compare_fingerprint
 
     target = tmp_path / "store.json"
     target.write_text("{}", encoding="utf-8")
-    racy, _ = compare_fingerprint(target, None)
-    assert racy[2]  # hashed while recent
 
-    later = time.time_ns() + RACY_FINGERPRINT_MARGIN_NS * 2
-    settled, changed = compare_fingerprint(target, racy, now_ns=later)
-    assert changed is False  # no phantom edit
-    assert settled[2] == ""  # converged: no longer re-hashed
+    fingerprint, changed = compare_fingerprint(target, None)
+    assert changed is True  # first sight of a file is a change
+    for _ in range(5):
+        fresh, changed = compare_fingerprint(target, fingerprint)
+        assert changed is False
+        assert fresh == fingerprint  # stable, so the next sweep agrees
+        fingerprint = fresh
 
-    stable, changed = compare_fingerprint(target, settled, now_ns=later)
-    assert changed is False and stable[2] == ""
+    # And a metadata-only touch is not an edit. Every design that keyed on
+    # mtime read `touch`, `cp -p`, `rsync -a`, `tar -x` and a git checkout as
+    # a content change, each one fabricating an EXTERNAL_EDIT line and a full
+    # skill re-embed. Comparing content answers that correctly for free.
+    moved = target.stat().st_mtime_ns - 3_600_000_000_000
+    os.utime(target, ns=(moved, moved))
+    touched, changed = compare_fingerprint(target, fingerprint)
+    assert changed is False
+    assert touched[0] == moved  # the new mtime is recorded, just not believed
 
-    # A genuine later write is still caught off the hashless fingerprint,
-    # because a quiet file's next write lands on a later tick by definition:
-    # the hash was only dropped once mtime was margin-seconds old. Same SIZE
-    # and a pinned later tick, so this proves the mtime path rather than
-    # passing on a size difference or racing the real clock.
-    target.write_text("[]", encoding="utf-8")
-    bumped = stable[0] + 1_000_000
-    os.utime(target, ns=(bumped, bumped))
-    _, changed = compare_fingerprint(target, stable)
+
+def test_unreadable_file_with_a_good_record_is_not_an_edit(tmp_path):
+    """A transient read error must not fake an edit.
+
+    Every adopter answers "changed" by re-reading, and that read fails the
+    same way, which their loader then treats as corruption: the store gets
+    quarantined and a live hook set silently becomes empty. "stat succeeds,
+    open fails" is not exotic (fd exhaustion, a Windows share lock from a
+    backup agent, a uid mismatch over a bind mount, EIO), so the known-good
+    record is kept and the answer is "no change" until the file is readable
+    again. Nothing is lost: the record still describes the old bytes, so the
+    next readable comparison reports the difference then.
+    """
+    from nymeria.core import storage_paths
+    from nymeria.core.storage_paths import compare_fingerprint
+
+    target = tmp_path / "store.json"
+    target.write_text('{"hooks": []}', encoding="utf-8")
+    good, _ = compare_fingerprint(target, None)
+
+    real_hash = storage_paths._content_hash
+    storage_paths._content_hash = lambda path: None
+    try:
+        sig, changed = compare_fingerprint(target, good)
+        assert changed is False
+        assert sig == good  # the known-good record survives untouched
+    finally:
+        storage_paths._content_hash = real_hash
+
+    # Readable again, and an edit made while it was unreadable is now seen.
+    before = os.stat(target).st_mtime_ns
+    target.write_text('{"hooks": [1]}', encoding="utf-8")
+    os.utime(target, ns=(before, before))
+    _, changed = compare_fingerprint(target, good)
     assert changed is True
 
 
-def test_unreadable_racy_file_never_records_the_trusted_quiet_hash(tmp_path):
-    """``stat`` needs only directory search; ``open`` needs read on the file,
-    so a racy file can be statted and not read. Recording "" there would
-    assert that mtime is trustworthy and reintroduce the permanent same-tick
-    miss; recording nothing would make a directory scan report the file
-    REMOVED and evict a live definition over a transient error."""
+def test_non_regular_file_is_treated_as_unreadable_not_opened(tmp_path):
+    """A FIFO stats fine and blocks FOREVER on open. This runs on the turn and
+    graph-build paths over a directory the agent can write, so `mkfifo` on a
+    store path would wedge every turn with no timeout and no error."""
+    if os.name != "posix" or not hasattr(os, "mkfifo"):
+        import pytest
+
+        pytest.skip("mkfifo is POSIX-only")
+    import signal
+
+    from nymeria.core.storage_paths import (
+        UNREADABLE_FINGERPRINT_HASH,
+        compare_fingerprint,
+    )
+
+    fifo = tmp_path / "store.json"
+    os.mkfifo(fifo)
+
+    # An alarm proves it returns rather than blocking. Without the S_ISREG
+    # gate this raises inside _content_hash, and TimeoutError IS an OSError,
+    # so the helper would swallow it and the hang would look like a clean "?".
+    def _boom(signum, frame):
+        raise AssertionError("compare_fingerprint blocked on a FIFO")
+
+    signal.signal(signal.SIGALRM, _boom)
+    signal.setitimer(signal.ITIMER_REAL, 2.0)
+    try:
+        sig, changed = compare_fingerprint(fifo, None)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+    assert sig[2] == UNREADABLE_FINGERPRINT_HASH
+    assert changed is True
+
+
+def test_unreadable_file_never_records_an_empty_hash(tmp_path):
+    """``stat`` needs only search permission on the parent; ``open`` needs read
+    on the file, so a file can be statted and not read. Recording "" there
+    would mean "no hash on record, compare on mtime and size", reintroducing
+    the permanent same-tick miss; recording nothing would make a directory scan
+    report the file REMOVED and evict a live definition."""
     from nymeria.core import storage_paths
     from nymeria.core.storage_paths import (
         UNREADABLE_FINGERPRINT_HASH,
@@ -973,25 +1078,6 @@ def test_unreadable_racy_file_never_records_the_trusted_quiet_hash(tmp_path):
     os.utime(target, ns=(before, before))
     _, changed = compare_fingerprint(target, first)
     assert changed is True
-
-
-def test_settle_declines_to_write_back_a_hash(tmp_path):
-    """Settling is only ever a DOWNGRADE.
-
-    A caller that snapshotted outside its lock may hold an older fingerprint
-    than a concurrent scanner's. Equal (mtime, size) does not prove equal
-    content here (that is the whole collision this module exists for), so
-    writing back a stale HASH could hide an edit a peer already saw. Dropping
-    the hash is safe in that race because it only asserts what mtime proves.
-    """
-    from nymeria.core.storage_paths import settle_fingerprint
-
-    stored = (100, 8, "peer-saw-this-edit")
-    assert settle_fingerprint(stored, (100, 8, "stale-snapshot")) is None
-    assert settle_fingerprint(stored, (100, 8, "")) == (100, 8, "")
-    # The (mtime, size) guard still applies to the downgrade itself.
-    assert settle_fingerprint(stored, (101, 8, "")) is None
-    assert settle_fingerprint(None, (100, 8, "")) is None
 
 
 def test_atomic_write_never_widens_a_tightened_mode(tmp_path, monkeypatch):
@@ -1084,33 +1170,25 @@ def test_skills_same_tick_same_size_edit_is_audited(tmp_path, monkeypatch):
     assert recorder.records == []
 
 
-def test_skills_settling_a_quiet_file_is_not_an_edit(tmp_path, monkeypatch):
-    """The adopter-level settle path, forced rather than waited for.
+def test_skills_repeated_sweeps_of_an_untouched_pool_never_audit(tmp_path, monkeypatch):
+    """Adopter-level version of the stability property.
 
-    A cached fingerprint taken while the file was racy carries a hash. Once
-    the file is old enough to trust mtime again, the sweep must DOWNGRADE the
-    cached entry (so it stops re-hashing every sweep) without reporting an
-    edit: a false positive here re-embeds the whole skill pool and writes an
-    EXTERNAL_EDIT line claiming a store was edited when nothing touched it.
-    Shrinking the trust margin is how the test reaches "quiet" without sleeping
-    past it.
+    The skills sweep is the costliest false positive in the system: it rescans
+    every scope root, schedules a background re-embed of the whole installed
+    pool, and writes a user-attributed EXTERNAL_EDIT line. None of that may
+    happen because a sweep ran twice.
     """
-    from nymeria.core import storage_paths
-
     recorder = _AuditRecorder()
     monkeypatch.setattr("nymeria.core.activity_log.log_external_edit", recorder)
 
     manager, data = _make_skill_manager(tmp_path)
-    skill_dir = _write_skill(data / "global", "demo-skill", body="Body v1")
+    _write_skill(data / "global", "demo-skill", body="Body v1")
     manager.reload()
-    key = str(skill_dir / "SKILL.md")
-    assert manager._scan_sigs[key][2]  # hashed: written moments ago
     recorder.records.clear()
 
-    monkeypatch.setattr(storage_paths, "RACY_FINGERPRINT_MARGIN_NS", 0)
-    assert manager.refresh_if_stale(force=True) is False  # no phantom edit
+    for _ in range(5):
+        assert manager.refresh_if_stale(force=True) is False
     assert recorder.records == []
-    assert manager._scan_sigs[key][2] == ""  # converged: no longer re-hashed
     assert "Body v1" in manager.get("demo-skill").body
 
 

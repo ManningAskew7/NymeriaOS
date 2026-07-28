@@ -191,11 +191,13 @@ _ENCODE_CACHE_LOCK = threading.Lock()
 
 def _image_data_url_cached(path: Path, mime_type: str) -> str:
     # Plain (mtime, size) on purpose, not the content-exact fingerprint the
-    # store hot-loads use: this is a bounded re-encode cache, not a freshness
-    # authority. A coarse-clock collision would need a rewritten image landing
-    # on the exact same byte length within one tick, and the worst case is one
-    # stale render that normal LRU churn evicts. Generated images also get
-    # unique paths, so the key rarely repeats at all.
+    # store hot-loads use. That primitive reads the file to hash it, and what
+    # this cache stores IS the file's encoded bytes, so fingerprinting would
+    # pay exactly the read the cache exists to avoid: self-defeating, on images
+    # rather than small JSON. The exposure it trades away is narrow anyway (a
+    # rewritten image landing on the same byte length within one coarse tick,
+    # worst case one stale render that LRU churn evicts) and generated images
+    # get unique paths, so the key rarely repeats at all.
     st = path.stat()
     key = (str(path), st.st_mtime_ns, st.st_size, mime_type)
     with _ENCODE_CACHE_LOCK:

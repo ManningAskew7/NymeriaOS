@@ -25,9 +25,8 @@ from .mcp_manager import get_mcp_manager
 from .mcp_tool_names import format_mcp_tool_name, registered_mcp_tool_names
 from .storage_paths import (
     FileFingerprint,
-    compare_fingerprint,
+    capture_fingerprint,
     scan_fingerprint_map,
-    settle_fingerprint,
 )
 from .time_utils import utc_now
 
@@ -112,7 +111,7 @@ class MCPServerRegistry:
 
     def _load_definition_file(self, json_file: Path) -> None:
         """Load one definition file, recording its disk fingerprint."""
-        fingerprint, _ = compare_fingerprint(json_file, None)
+        fingerprint = capture_fingerprint(json_file)
         if fingerprint is not None:
             self._disk_sigs[json_file.name] = fingerprint
         # Unreadable stat: the refresh sweep will retry the file.
@@ -167,12 +166,6 @@ class MCPServerRegistry:
                 return []
             current, stale, removed = scan_fingerprint_map(entries, self._disk_sigs)
             if not stale and not removed:
-                # Settle the possibly-downgraded fingerprints so quiet files
-                # stop being re-hashed on every sweep.
-                for name, fingerprint in current.items():
-                    settled = settle_fingerprint(self._disk_sigs.get(name), fingerprint)
-                    if settled is not None:
-                        self._disk_sigs[name] = settled
                 return []
 
             for name in removed:
@@ -245,7 +238,7 @@ class MCPServerRegistry:
             write_text_atomic(file_path, defn.model_dump_json(indent=2))
             self._definitions[defn.id] = defn
             self._file_ids[file_path.name] = defn.id
-            fingerprint, _ = compare_fingerprint(file_path, None)
+            fingerprint = capture_fingerprint(file_path)
             if fingerprint is not None:
                 self._disk_sigs[file_path.name] = fingerprint
             # Fingerprint refresh is best-effort; the sweep retries.

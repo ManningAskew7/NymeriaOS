@@ -53,9 +53,9 @@ from .storage_paths import (
     quarantine_corrupt_file,
     read_store_fingerprint,
     record_store_fingerprint,
+    upgrade_legacy_store_fingerprint,
     safe_path_segment,
     scan_fingerprint_map,
-    settle_fingerprint,
     write_text_atomic,
 )
 from .time_utils import ensure_aware_utc, utc_now
@@ -253,6 +253,11 @@ class TeamManager:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 return TeamStore.model_validate(data)
+            except OSError as e:
+                # Unreadable, not corrupt: see the same split in
+                # hook_manager._load. Degrade for this call, leave the file.
+                logger.error("Could not read teams for %s: %s", user_id, e)
+                return TeamStore(user_id=user_id)
             except Exception as e:  # noqa: BLE001 - never let a bad file break a turn
                 quarantine = quarantine_corrupt_file(path)
                 logger.error(
@@ -409,11 +414,6 @@ class TeamManager:
         with self._get_lock(user_id):
             cached = self._read_cache.get(user_id)
             if cached is not None and not changed:
-                # Settle the possibly-downgraded fingerprint so a quiet store
-                # stops being re-read, without disturbing the cached store.
-                settled = settle_fingerprint(cached[0], sig)
-                if settled is not None:
-                    self._read_cache[user_id] = (settled, cached[1])
                 return cached[1]
             # Sidecar as the comparison baseline so a same-tick, same-size raw
             # edit (an equal-length team rename is the realistic one) is still
@@ -432,6 +432,11 @@ class TeamManager:
                         "Failed to record teams external-edit audit", exc_info=True
                     )
                 record_store_fingerprint(path)
+            else:
+                # A pre-hash sidecar compares on (mtime, size) alone, so it
+                # must be upgraded even when nothing changed, or this store
+                # stays on the degraded comparison forever.
+                upgrade_legacy_store_fingerprint(path, expected)
             store = self._load(user_id)
             self._read_cache[user_id] = (sig, store)
             return store

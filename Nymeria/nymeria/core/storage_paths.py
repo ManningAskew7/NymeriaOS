@@ -23,10 +23,11 @@ the file-backed stores' common plumbing, in four groups:
   tool, so it carries an existing file's permission bits across the rename)
   and ``quarantine_corrupt_file``, the corrupt-store quarantine
   (resource-filesystem-layout plan, slice 3).
-- Freshness: ``compare_fingerprint`` and friends, the ONE primitive behind
-  every hot-load cache in the package. Read its docstring before touching a
-  store's staleness check; the coarse-mtime trap it exists for is not
-  obvious.
+- Freshness: ``compare_fingerprint`` / ``capture_fingerprint`` /
+  ``scan_fingerprint_map``, the ONE primitive behind every hot-load cache in
+  the package. Read ``compare_fingerprint``'s docstring before touching a
+  store's staleness check; the coarse-mtime trap it exists for is not obvious,
+  and neither is why it reads every file rather than trusting a stat.
 - The cross-process ``.sig`` sidecar behind the external-edit audit
   (slice 4): ``record_store_fingerprint``/``read_store_fingerprint``.
 """
@@ -36,7 +37,6 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,7 +124,13 @@ def quarantine_corrupt_file(path: Path) -> Optional[Path]:
         return None
 
 
-def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> Path:
+def write_text_atomic(
+    path: Path,
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    mode: Optional[int] = None,
+) -> Path:
     """Write ``content`` to ``path`` atomically (sibling temp file + rename).
 
     A bare ``path.write_text`` can leave a torn or truncated file if the process
@@ -145,6 +151,11 @@ def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> P
     user set (an executable script, a tightened 0600) survives the write; a
     fresh file keeps the process umask, as a plain write would.
 
+    ``mode`` sets the permission bits for a NEW file, for callers writing
+    something that must never exist at the umask default even briefly (a
+    credentials file). An EXISTING file's own mode always wins over it, since
+    that is a deliberate choice by whoever set it.
+
     Still lost to the rename, and not worth restoring for the stores this
     serves: hard links to the old inode (they keep the OLD contents), file
     OWNERSHIP (the replacement belongs to the writing process, which matters
@@ -158,11 +169,13 @@ def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> P
     """
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        existing_mode = stat.S_IMODE(path.stat().st_mode)
+        target_mode: Optional[int] = stat.S_IMODE(path.stat().st_mode)
     except OSError:
-        existing_mode = None  # new file: umask default, as a plain write gives
+        # New file: the caller's requested mode, else the umask default a
+        # plain write would have given.
+        target_mode = mode
     try:
-        if existing_mode is None:
+        if target_mode is None:
             tmp.write_text(content, encoding=encoding)
         else:
             # The mode is applied at CREATE, not after the write: a temp born
@@ -172,11 +185,11 @@ def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> P
             # write never widened. O_CREAT masks the mode by the umask, so
             # this window is never more permissive than the target, and the
             # chmod after restores any bits the umask took off.
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, existing_mode)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, target_mode)
             with os.fdopen(fd, "w", encoding=encoding) as handle:
                 handle.write(content)
             try:
-                os.chmod(tmp, existing_mode)
+                os.chmod(tmp, target_mode)
             except OSError:
                 pass  # best-effort mode carry-over; never fail the write
         tmp.replace(path)
@@ -190,53 +203,21 @@ def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8") -> P
 
 
 FileFingerprint = Tuple[int, int, str]
+"""``(st_mtime_ns, st_size, content_hash)`` for one store file.
 
-# Recorded as a fingerprint's hash when a file that NEEDS one cannot be read
-# (``stat`` needs only directory search on the parent; ``open`` needs read on
-# the file, so the two can disagree). Not valid sha256 hex, so it never equals
-# a real digest: the next comparison re-reads and reports a change, which is
-# the right answer because whatever the caller parsed came from the same
-# unreadable file. The two wrong answers it exists to avoid are "" (which
-# asserts mtime is trustworthy, reintroducing the permanent same-tick miss)
-# and a dropped entry (which makes a directory scan report the file REMOVED
-# and evict a live definition over a transient read error).
-UNREADABLE_FINGERPRINT_HASH = "?"
-"""``(st_mtime_ns, st_size, content_hash)``; the hash is ``""`` when mtime alone
-is trustworthy for this file.
-
-Never compare two fingerprints with ``!=``: one side may legitimately carry a
-hash while the other does not, and a raw comparison reads that as an edit.
+Never compare two of these with ``!=``. The hash is empty on records written
+before it existed, so a raw comparison reads a format difference as an edit.
 Go through :func:`compare_fingerprint` (or :func:`scan_fingerprint_map` for a
-directory), which is the only thing that knows when a hash is required."""
+directory), which is the only thing that knows how to read the third field.
+"""
 
-# How far in the past a file's mtime must sit before mtime equality is proof
-# that the bytes did not change.
-#
-# Despite the ``_ns`` suffix, the kernel stamps mtimes from a coarse clock.
-# Measured on this project's Linux/ext4 hosts: the smallest nonzero delta
-# between two back-to-back writes is 1ms, and ~58% of same-size rewrite pairs
-# land on an IDENTICAL st_mtime_ns. So two writes inside one tick that keep the
-# file's size leave (mtime, size) unchanged, and a fingerprint captured between
-# them compares equal forever: the second write is missed permanently, not
-# merely late.
-#
-# 3s is deliberately far larger than the 1ms measured here. Granularity is a
-# property of the host, not of this contract: Windows' system clock ticks at
-# ~15.6ms (and we ship a Windows installer), FAT/exFAT is 2s, ext3/HFS+ 1s, and
-# container bind-mount backends have historically been lossier still. The
-# margin also absorbs clock skew between the filesystem and this process.
-#
-# This is a CORRECTNESS bound, not just a cost knob: it must exceed both the
-# filesystem's timestamp granularity and any skew where the filesystem clock
-# runs BEHIND this process (network and virtualised mounts). Past that, freshly
-# written files look quiet, no hash is ever stored, and the mechanism degrades
-# silently to the plain (mtime, size) behavior it replaced. That degradation is
-# graceful (never worse than before the hash existed), which is why a generous
-# constant beats a measured one: being wrong is cheap in one direction and
-# invisible in the other. Cost of generosity is only how long a just-written
-# file keeps paying for a hash, and "written in the last 3s" is normally zero
-# files, so probing the real granularity at startup would be over-engineering.
-RACY_FINGERPRINT_MARGIN_NS = 3_000_000_000
+# Recorded as the hash for a file seen for the FIRST time that cannot be read
+# (``stat`` needs only search permission on the parent; ``open`` needs read on
+# the file, so the two can disagree). Not valid sha256 hex, so it never equals
+# a real digest and the next comparison re-reads. When there IS a previous
+# record, ``compare_fingerprint`` keeps that instead; see the comment there for
+# why an unreadable file must not report a change.
+UNREADABLE_FINGERPRINT_HASH = "?"
 
 
 def _content_hash(path: Path) -> Optional[str]:
@@ -251,127 +232,125 @@ def _content_hash(path: Path) -> Optional[str]:
         return None
 
 
+def capture_fingerprint(path: Path) -> Optional[FileFingerprint]:
+    """``path``'s current fingerprint, or ``None`` when it cannot be statted.
+
+    For the "record what I just wrote or just parsed" case, where there is no
+    previous fingerprint and therefore no verdict to read.
+    """
+    fingerprint, _ = compare_fingerprint(path, None)
+    return fingerprint
+
+
 def compare_fingerprint(
     path: Path,
     previous: Optional[FileFingerprint],
-    *,
-    now_ns: Optional[int] = None,
 ) -> Tuple[Optional[FileFingerprint], bool]:
     """Return ``(fingerprint_to_store, changed)`` for ``path``.
 
     The shared freshness primitive behind every hot-load cache in this package.
-    It keeps the cheap one-stat-per-file path for ordinary files and pays for a
-    content hash only where mtime cannot be trusted, so steady-state cost is
-    identical to the plain ``(mtime, size)`` tuple it replaces.
+    Read this before touching a store's staleness check: the trap it exists for
+    is not obvious.
 
-    A file is *quiet* when its mtime is older than
-    :data:`RACY_FINGERPRINT_MARGIN_NS`: any later write must then land on a
-    strictly later tick, so unchanged ``(mtime, size)`` genuinely proves
-    unchanged bytes. A file written more recently than that is *racy* and its
-    fingerprint carries a hash, which is what closes the same-tick same-size
-    hole described on the margin constant.
+    WHY IT HASHES AT ALL. Despite the ``_ns`` suffix, the kernel stamps mtimes
+    from a coarse clock. Measured on this project's Linux/ext4 hosts: the
+    smallest nonzero delta between two back-to-back writes is 1ms, and ~58% of
+    same-size rewrite pairs land on an IDENTICAL ``st_mtime_ns``. Granularity is
+    a property of the host, not of this contract: Windows' system clock ticks at
+    ~15.6ms (and we ship a Windows installer), FAT/exFAT is 2s, ext3/HFS+ 1s,
+    and container bind-mount backends have historically been lossier still. So
+    two writes inside one tick that keep the file's size leave ``(mtime, size)``
+    unchanged, and a fingerprint captured between them compares equal FOREVER:
+    the second write is missed permanently, not merely late. Only content can
+    settle that, so an unchanged ``(mtime, size)`` is never taken as proof.
 
-    Recording and comparing are deliberately ONE operation returning two
-    values, because the fingerprint to store is not always the one just
-    compared. A racy file that later goes quiet must *downgrade* to a hashless
-    fingerprint so it stops being re-hashed forever; if that downgrade were
-    expressed as tuple inequality instead, every settled file would report a
-    change it never had. That matters more than it sounds: a false positive
-    re-embeds the entire installed skill pool, and writes an ``EXTERNAL_EDIT``
-    audit line claiming a store was edited on disk when it was not.
-    Manufacturing audit records is a worse failure than the missed edit this
-    helper exists to fix, so the downgrade rides the returned fingerprint and
-    never the ``changed`` flag.
+    WHAT IT COSTS. One read and one sha256 per tracked file per comparison.
+    Measured page-cache-warm on this host: 0.1ms for the single hooks file read
+    per turn, 0.7ms for the 15 bundled skills, 9ms for a 200-skill library, 26ms
+    for 1000 thread configs. Every one of those sweeps sits behind an LLM round
+    trip, so the read is bought deliberately. It would NOT be affordable over a
+    high-latency network mount; if the data dir ever lands on one, this is the
+    function to revisit.
+
+    An earlier version of this skipped the hash for files whose mtime was old
+    enough that a collision was impossible. It was deleted on purpose. The
+    saving was the milliseconds above, and the price was a mechanism that
+    silently degraded to the broken ``(mtime, size)`` behavior whenever the
+    filesystem clock ran behind this process, which is exactly the environment
+    class (network and virtualised mounts) where the coarse-timestamp bug is
+    worst. Do not reintroduce it without solving that.
+
+    Recording and comparing are ONE operation returning two values, because the
+    fingerprint to store is not always derivable from the verdict: an unreadable
+    file is "changed" but must not record a hash it does not have. Callers store
+    the returned fingerprint; the ``.sig`` sidecar audit comparisons discard it
+    and re-record separately, which is what makes an edit audited once rather
+    than once per reader.
 
     Returns ``(None, previous is not None)`` when ``path`` is gone, so callers
     see a deletion as a change exactly once.
 
-    TWO CALLER CONTRACTS, and getting them backwards is the easy mistake:
-
-    - In-memory caches STORE the returned fingerprint (via
-      :func:`settle_fingerprint` or :func:`scan_fingerprint_map`). They
-      re-capture continuously, so the downgrade is what stops a settled file
-      being re-hashed on every sweep. This is the contract the "same cost as
-      a bare stat in steady state" claim above describes.
-    - Cross-process ``.sig`` sidecar comparisons DISCARD it (``_, edited =
-      compare_fingerprint(path, read_store_fingerprint(path))``). Their
-      ``previous`` was captured at the manager's write, so an external edit in
-      that same tick stays racy against that record forever; writing a
-      downgraded fingerprint back would disarm the audit. Passing the sidecar
-      as ``previous`` is also what FORCES this side to hash when the sidecar
-      carries one, which is exactly the same-tick case the audit must catch.
-      The cost note above therefore does NOT apply here: a sidecar recorded at
-      a manager write is racy by construction and never settles, so an audit
-      comparison hashes the store file on every call, forever. That is bought
-      deliberately (it is what makes the audit exact) and is affordable only
-      because these store files are small; do not copy the pattern onto a
-      large or hot file without measuring.
+    KNOWN RESIDUAL. The fingerprint is taken before the caller parses, so a
+    record always describes content no NEWER than the value cached beside it,
+    and an ordinary interleaved write is caught by the next comparison. It is
+    not caught if the file is then reverted to exactly the bytes that were
+    fingerprinted: the hash matches the record while the cached value came from
+    the version in between, and the cache latches. Closing that needs one read
+    feeding both the hash and the parse, which is a change to every adopter's
+    load path; the window is a write landing between this hash and the caller's
+    read, followed by a byte-exact revert.
     """
-    stamp = time.time_ns() if now_ns is None else now_ns
     try:
         st = path.stat()
     except OSError:
         return None, previous is not None
 
     base = (st.st_mtime_ns, st.st_size)
-    quiet = st.st_mtime_ns < stamp - RACY_FINGERPRINT_MARGIN_NS
+    # Only a regular file gets read. A FIFO stats fine and blocks the reader
+    # FOREVER on open, and this runs on the turn and graph-build paths over a
+    # directory the agent can write, so `mkfifo data/hooks/<user>.json` would
+    # wedge every turn with no timeout and no error.
+    current = _content_hash(path) if stat.S_ISREG(st.st_mode) else None
 
-    if previous is not None and previous[:2] == base:
-        if not previous[2]:
-            # Recorded while already quiet, so mtime equality is proof.
-            return (base[0], base[1], ""), False
-        current = _content_hash(path)
-        if current is None:
-            # Unreadable right now (mid-rename, permissions): keep the old
-            # fingerprint and report no change, so a transient read error
-            # cannot fake an edit.
+    if current is None:
+        # Statted but not readable: fd exhaustion, a Windows share lock, a uid
+        # mismatch over a bind mount, EIO, or the non-regular case above.
+        if previous is not None:
+            # Keep the known-good record and report NO change. Every adopter
+            # answers "changed" by re-reading, and their read fails the same
+            # way this one did, which their catch-all then treats as
+            # corruption: a transient read error would quarantine a live
+            # store. Nothing is lost by waiting, because `previous` still
+            # describes the old bytes, so the next readable comparison sees
+            # the difference and reports it then.
             return previous, False
-        return (base[0], base[1], "" if quiet else current), current != previous[2]
+        # Nothing to preserve. Record the sentinel rather than "" (which means
+        # "compare on mtime and size", reintroducing the same-tick miss) or
+        # nothing at all (which makes a directory scan report the file REMOVED
+        # and evict a live definition).
+        return (base[0], base[1], UNREADABLE_FINGERPRINT_HASH), True
 
-    # New file, or (mtime, size) moved: changed either way, so the hash is
-    # needed only to keep FUTURE comparisons exact. A racy file we could not
-    # READ (stat needs only directory search) records the unreadable sentinel,
-    # never "": "" asserts that mtime is trustworthy, which would reintroduce
-    # the permanent same-tick miss this whole primitive exists to close.
-    if quiet:
-        digest = ""
-    else:
-        hashed = _content_hash(path)
-        digest = UNREADABLE_FINGERPRINT_HASH if hashed is None else hashed
-    return (base[0], base[1], digest), True
+    if previous is None:
+        return (base[0], base[1], current), True
 
+    if not previous[2]:
+        # A record written before the hash field existed: legacy ``.sig``
+        # sidecars on hosts that upgraded in place are the only source. Compare
+        # the way that record was written, on (mtime, size) alone, so the
+        # upgrade neither audits every store as edited nor goes quiet.
+        #
+        # The fingerprint returned carries the hash, so a caller that STORES it
+        # leaves this path after one comparison. The sidecar audit sites
+        # discard it, so they must call :func:`upgrade_legacy_store_fingerprint`
+        # or they stay on the degraded comparison indefinitely.
+        return (base[0], base[1], current), previous[:2] != base
 
-def settle_fingerprint(
-    stored: Optional[FileFingerprint], fresh: Optional[FileFingerprint]
-) -> Optional[FileFingerprint]:
-    """The fingerprint to write back over ``stored``, or ``None`` to leave it.
-
-    The companion to :func:`compare_fingerprint` for in-memory caches: after a
-    scan reports no change, the fresh fingerprint may have dropped its content
-    hash because the file went quiet, and storing it is what stops that file
-    being re-read on every subsequent sweep.
-
-    Returns ``None`` unless the write is a genuine DOWNGRADE (``fresh`` drops
-    the hash) of the same ``(mtime, size)`` ``stored`` describes. Both halves
-    matter, and the second is not redundant: a caller that snapshotted outside
-    its lock may be holding a fingerprint older than a concurrent scanner's,
-    and equal ``(mtime, size)`` does NOT prove equal content here (that is the
-    coarse-clock collision this module exists for), so writing back a stale
-    HASH could hide an edit a peer already saw. A hashless downgrade is safe
-    to write in that race because it only asserts what the mtime already
-    proves. Keeping the rule here also keeps the tuple layout inside the
-    module that owns the type, instead of every adopter hand-writing it.
-    """
-    if stored is None or fresh is None or fresh[2]:
-        return None
-    return fresh if stored[:2] == fresh[:2] else None
+    return (base[0], base[1], current), current != previous[2]
 
 
 def scan_fingerprint_map(
     entries: "Iterable[Tuple[str, Path]]",
     previous: Optional[Dict[str, FileFingerprint]],
-    *,
-    now_ns: Optional[int] = None,
 ) -> Tuple[Dict[str, FileFingerprint], List[str], List[str]]:
     """Fingerprint a directory of store files against ``previous``.
 
@@ -383,16 +362,13 @@ def scan_fingerprint_map(
     The shared shape behind every directory-scanning hot-load sweep, so the
     "compare per file, never by comparing the two maps" rule is enforced by
     this API rather than repeated as a comment at each call site. Comparing
-    maps would read a file that merely settled (hash dropped, bytes unchanged)
-    as an edit.
+    maps directly would read a legacy hashless record as an edit.
     """
     prior = previous or {}
     fresh: Dict[str, FileFingerprint] = {}
     changed: List[str] = []
     for key, path in entries:
-        fingerprint, entry_changed = compare_fingerprint(
-            path, prior.get(key), now_ns=now_ns
-        )
+        fingerprint, entry_changed = compare_fingerprint(path, prior.get(key))
         if fingerprint is None:
             continue  # vanished mid-scan; the removed list below catches it
         fresh[key] = fingerprint
@@ -433,7 +409,7 @@ def record_store_fingerprint(path: Path) -> Optional[FileFingerprint]:
     nothing was recorded.
     """
     sidecar = store_fingerprint_path(path)
-    fingerprint, _ = compare_fingerprint(path, None)
+    fingerprint = capture_fingerprint(path)
     if fingerprint is None:
         try:
             sidecar.unlink(missing_ok=True)
@@ -459,6 +435,26 @@ def record_store_fingerprint(path: Path) -> Optional[FileFingerprint]:
     return fingerprint
 
 
+def upgrade_legacy_store_fingerprint(
+    path: Path, expected: Optional[FileFingerprint]
+) -> None:
+    """Re-record a pre-hash ``.sig`` sidecar so it stops comparing degraded.
+
+    The audit sites discard the fingerprint :func:`compare_fingerprint` hands
+    back and re-read the sidecar every time, so a legacy two-field record never
+    upgrades itself the way an in-memory cache does. Left alone it survives
+    unlimited clean reads, which keeps the exact hole this module exists to
+    close (a same-tick same-size raw edit) open forever on any host that
+    upgraded in place and has not re-saved that store since.
+
+    Call it on the NOT-edited path: an edited one already re-records to
+    acknowledge the edit. No-op unless the record is legacy, so it costs one
+    tuple test per read. Never raises.
+    """
+    if expected is not None and not expected[2]:
+        record_store_fingerprint(path)
+
+
 def read_store_fingerprint(path: Path) -> Optional[FileFingerprint]:
     """Read the fingerprint recorded by :func:`record_store_fingerprint`.
 
@@ -466,9 +462,10 @@ def read_store_fingerprint(path: Path) -> Optional[FileFingerprint]:
     fingerprints carried a content hash: those still exist on deployed hosts,
     and rejecting them would silently disable the external-edit audit until
     each store's next save. They read back with an empty hash, which
-    :func:`compare_fingerprint` reads as "recorded while quiet", so an
-    unchanged ``(mtime, size)`` is taken as proof of unchanged bytes rather
-    than as a mismatch.
+    :func:`compare_fingerprint` reads as "no hash on record, so compare the way
+    this record was written": on ``(mtime, size)`` alone. That is the legacy
+    behavior, correct for a legacy record, and it lasts one comparison because
+    the fingerprint that comes back carries a hash.
 
     Forward/backward compatibility is one-way: an OLD process reading a NEW
     three-field sidecar fails to parse it and gets ``None``, i.e. "no manager

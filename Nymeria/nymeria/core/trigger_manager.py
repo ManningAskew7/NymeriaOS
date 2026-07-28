@@ -28,6 +28,7 @@ from .storage_paths import (
     quarantine_corrupt_file,
     read_store_fingerprint,
     record_store_fingerprint,
+    upgrade_legacy_store_fingerprint,
     safe_path_segment,
     write_text_atomic,
 )
@@ -252,6 +253,11 @@ class TriggerManager:
                                 "Failed to record triggers external-edit audit",
                                 exc_info=True,
                             )
+                    else:
+                        # A pre-hash sidecar compares on (mtime, size) alone,
+                        # so it must be upgraded even when nothing changed, or
+                        # this store stays on the degraded comparison forever.
+                        upgrade_legacy_store_fingerprint(path, expected)
                 data = json.loads(path.read_text(encoding="utf-8"))
                 store = TriggerStore.model_validate(data)
                 # Migrate: backfill thread_id for existing triggers
@@ -263,6 +269,16 @@ class TriggerManager:
                 if migrated:
                     self._save(store)
                 return store
+            except OSError as e:
+                # Unreadable, not corrupt: see the same split in
+                # hook_manager._load. Note this store's quarantine rationale
+                # below cuts the other way, since a caller that saves on exit
+                # would overwrite a file left in place with an empty store.
+                # Reading nothing is still the safer answer: an unreadable
+                # file usually becomes readable again, and quarantining it
+                # guarantees the loss the overwrite only risks.
+                logger.error("Could not read triggers for %s: %s", user_id, e)
+                return TriggerStore(user_id=user_id)
             except Exception as e:  # noqa: BLE001 - never let a bad file break a turn
                 # Quarantine, never leave in place: atomic_update saves on
                 # exit, so a corrupt file left here would be overwritten with
