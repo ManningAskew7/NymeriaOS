@@ -19,6 +19,9 @@ THEME_CONFIG_ENV = "NYMERIA_CLI_CONFIG"
 # it is the status-bar footer that tracks it (name(args) elapsed, no glyph).
 TOOL_ICON_KEY = "tool_icon"
 DEFAULT_TOOL_ICON = "❖"  # ❖
+# Hollow sibling of the completed-row diamond: an in-flight tool row shows
+# the outline (✧) and "fills in" to the configured icon when the call lands.
+DEFAULT_TOOL_RUNNING_ICON = "✧"  # ✧
 TOOL_ICON_SUGGESTIONS: tuple[str, ...] = (
     "❖",  # ❖
     "❈",  # ❈
