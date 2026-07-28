@@ -10,9 +10,10 @@ active thread it writes that thread's llm_config, an explicit trailing
 from the retired CLI ``triggers/cli/commands/provider.py`` module (minus the
 CLI-local credential file, which was retired with it: provider secrets live
 in backend settings/env and the credential vault). The chained ``/provider
-setup`` flow and the ``/provider cliproxy`` guidance live in the sibling
-``command_executor_provider_setup.py`` mixin. Handler methods are resolved
-by ``CommandService.execute`` via ``getattr(executor, "_cmd_<path>")``.
+setup`` flow lives in the sibling ``command_executor_provider_setup.py``
+mixin and the ``/provider cliproxy`` OAuth chain in
+``command_executor_cliproxy.py``. Handler methods are resolved by
+``CommandService.execute`` via ``getattr(executor, "_cmd_<path>")``.
 
 Nothing is imported from ``command_service`` here, so the module stays a
 runtime leaf with no import cycle (``command_service`` imports this module,
