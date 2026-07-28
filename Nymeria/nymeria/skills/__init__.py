@@ -36,7 +36,6 @@ from ..core.storage_paths import (
     FileFingerprint,
     compare_fingerprint,
     scan_fingerprint_map,
-    settle_fingerprint,
 )
 from ..core.time_utils import parse_tool_ttl
 
@@ -595,10 +594,9 @@ class SkillManager:
 
         Returns the fresh map plus the keys that changed (edited, added, or
         removed). The KEYS, not just a bool, because the audit must name the
-        same files this verdict was derived from: re-deriving them by
-        comparing the two maps cannot see an edit whose fingerprint dropped
-        its content hash in the meantime, which is precisely the same-tick
-        case this machinery exists to catch.
+        same files this verdict was derived from rather than re-deriving them
+        by comparing the two maps, which is a comparison the fingerprint type
+        does not support (see ``storage_paths.FileFingerprint``).
 
         Keyed by full path because skills live one directory deep under
         several scope roots, unlike the flat JSON stores that key by filename.
@@ -677,18 +675,8 @@ class SkillManager:
         with self._lock:
             previous = dict(self._scan_sigs)
         sigs, changed_keys = self._collect_scan_sigs(previous)
-        with self._lock:
-            if not changed_keys:
-                # Settle in place: a file that has gone quiet since its
-                # fingerprint was taken drops its content hash, so it stops
-                # being re-read every sweep. settle_fingerprint declines any
-                # entry whose (mtime, size) moved under us, so this cannot
-                # clobber a concurrent _fresh_skill or reload update.
-                for key, fingerprint in sigs.items():
-                    settled = settle_fingerprint(self._scan_sigs.get(key), fingerprint)
-                    if settled is not None:
-                        self._scan_sigs[key] = settled
-                return False
+        if not changed_keys:
+            return False
         logger.info("Skill store: external edit detected; rescanning")
         self._rescan_from_disk()
         self._schedule_embedding_rebuild()
@@ -698,11 +686,12 @@ class SkillManager:
     def _audit_external_change(self, changed: "Iterable[str]") -> None:
         """User-attributed audit line(s) for raw skill-file changes.
 
-        Takes the keys the scan itself judged changed. Deriving them here by
-        re-comparing fingerprints would silently drop any edit whose file had
-        gone quiet by scan time (its hash is dropped, so the two fingerprints
-        no longer prove a difference), losing the audit for exactly the
-        same-tick edits this machinery exists to detect.
+        Takes the keys the scan itself judged changed, rather than re-deriving
+        them. Seeing an edit and AUDITING it are separate contracts, and a
+        second derivation is a second chance to disagree with the first: an
+        earlier version did exactly that and silently dropped the audit line
+        for the same-tick edits this machinery exists to detect, while the
+        hot-load kept working and the tests kept passing.
         """
         changed = set(changed)
         if not changed:
@@ -844,12 +833,6 @@ class SkillManager:
             with self._lock:
                 return self._resolve_cached(skill.name, user_id)
         if not changed:
-            with self._lock:
-                # Settle the (possibly downgraded) fingerprint, guarding the
-                # same concurrent-update race as the refresh sweep.
-                settled = settle_fingerprint(self._scan_sigs.get(key), sig)
-                if settled is not None:
-                    self._scan_sigs[key] = settled
             return skill
 
         reloaded = load_skill_directory(

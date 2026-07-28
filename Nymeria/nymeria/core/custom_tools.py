@@ -41,9 +41,8 @@ from .secret_interpolation import (
 )
 from .storage_paths import (
     FileFingerprint,
-    compare_fingerprint,
+    capture_fingerprint,
     scan_fingerprint_map,
-    settle_fingerprint,
     write_text_atomic,
 )
 from .time_utils import utc_now
@@ -157,12 +156,6 @@ class CustomToolLoader:
                 return []
             current, stale, removed = scan_fingerprint_map(entries, self._disk_sigs)
             if not stale and not removed:
-                # Settle the possibly-downgraded fingerprints so quiet files
-                # stop being re-hashed on every sweep.
-                for name, fingerprint in current.items():
-                    settled = settle_fingerprint(self._disk_sigs.get(name), fingerprint)
-                    if settled is not None:
-                        self._disk_sigs[name] = settled
                 return []
 
             for name in removed:
@@ -221,7 +214,7 @@ class CustomToolLoader:
         Returns:
             LangChain tool or None if loading failed.
         """
-        fingerprint, _ = compare_fingerprint(file_path, None)
+        fingerprint = capture_fingerprint(file_path)
         if fingerprint is not None:
             self._disk_sigs[file_path.name] = fingerprint
         # Unreadable stat: the refresh sweep will retry the file.

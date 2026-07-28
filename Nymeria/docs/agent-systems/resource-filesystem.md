@@ -29,12 +29,9 @@ equally supported slow path. Design and owner decisions:
 
 ## Hot-load (raw edits land without a restart)
 
-Stores that already read through to disk keep doing so (thread configs,
-triggers, TODOs, profiles, workflow state, prompt overrides; thread configs
-additionally keep a scan-only cache of callable names, which is not
-fingerprinted and can miss a same-tick same-size edit from another process).
-The stores that cache in memory detect external edits with debounced
-fingerprint scans
+Stores that already read through to disk keep doing so (triggers, TODOs,
+profiles, workflow state, prompt overrides). The stores that cache in memory
+detect external edits with debounced fingerprint scans
 (`core/storage_paths.py::compare_fingerprint`) and reparse only what changed:
 
 - **Custom tools** (`core/custom_tools.py::refresh_if_stale`): per-file
@@ -52,6 +49,11 @@ fingerprint scans
   edit is live on the next turn. This is the cache with the least slack: no
   other path rescans it, so a missed edit would keep a stale hook (a standing
   prompt injection, a `pre_tool_use` guardrail, an approval gate) firing.
+- **Thread configs** (`core/thread_config.py::_load_scan_config_data`): the
+  callable-thread scan caches parsed config dicts behind a fingerprint. This
+  is the widest scan on the primitive, one file per configured thread on the
+  graph-build path, and the first place to look if the data dir ever lands on
+  a high-latency mount.
 - **Callable teams** (`core/team_manager.py`, `teams/<user>.json`): name and
   description reads go through a fingerprint-keyed cache, so raw edits are
   fresh on next read; the chokepoint's `poll_external_changes` additionally
@@ -65,22 +67,30 @@ the same registry re-registration + graph rebuild the authoring tools run, so
 a raw edit reaches the next graph build exactly like a `tool_create` edit.
 Limits: checks are debounced (about 2 s).
 
-A fingerprint is `(mtime_ns, size, content_hash)`. The hash is present only
-while a file is too recent for its mtime to be trusted, which is what makes a
-same-instant rewrite detectable: file timestamps come from a coarse kernel
-clock (about 1 ms on Linux/ext4, roughly 15 ms on Windows, 1 to 2 s on older
-filesystems), so two writes inside one tick that keep the byte count leave
-`(mtime, size)` identical. A fingerprint captured between them would then
-compare equal forever and the second write would be missed permanently, not
-just late. Once a file is older than the trust margin its hash is dropped
-again, so steady-state cost is the same single stat per file as before.
+A fingerprint is `(mtime_ns, size, content_hash)`, and the verdict is always
+the hash. Timestamps alone cannot answer the question: file mtimes come from a
+coarse kernel clock (about 1 ms on Linux/ext4, roughly 15 ms on Windows, 1 to
+2 s on older filesystems), so two writes inside one tick that keep the byte
+count leave `(mtime, size)` identical, and a fingerprint captured between them
+compares equal forever. The second write is missed permanently, not just late.
+Comparing content also fixes the opposite error for free: a metadata-only
+touch (`cp -p`, `rsync -a`, `tar -x`, a git checkout) is no longer reported as
+an edit, so it no longer fabricates an audit line or a full skill re-embed.
 
-That cost note applies to the in-memory caches. The `.sig` sidecar behind the
-external-edit audit is deliberately different: it is written right after a
-manager save, so it always carries a hash and never settles, which is exactly
-what makes the audit exact across processes. An audit comparison therefore
-hashes the store file every time. That is affordable because these files are
-small, not because it is free.
+A file that stats but cannot be read (fd exhaustion, a share lock, a uid
+mismatch over a bind mount) keeps its previous record and reports no change,
+because the loader's response to a change is to re-read and its response to a
+failed read is to quarantine: a transient error must not move a live store
+aside. Non-regular paths are never opened, so a FIFO planted on a store path
+cannot block a turn.
+
+The cost is one read and one sha256 per tracked file per comparison. Measured
+page-cache-warm on the reference host: 0.1 ms for the single hooks file read
+per turn, 0.7 ms for the 15 bundled skills, 9 ms for a 200-skill library, 26 ms
+for 1000 thread configs. Each of those sweeps sits behind an LLM round trip,
+so the read is bought deliberately. It would not be affordable over a
+high-latency network mount, which is the one deployment shape that would need
+this revisited.
 
 ## Fail-safe raw edits
 
@@ -92,21 +102,26 @@ small, not because it is free.
   Corrupt `SKILL.md` files are deliberately not quarantined: markdown skills
   fail soft (skipped at scan; the cached copy keeps serving on a bad edit)
   and no manager ever rewrites them.
-- **Atomic writes** (`core/storage_paths.py::write_text_atomic`): the hook,
-  trigger, custom-tool and thread-config savers, the `.sig` sidecars, and
-  `file_write` overwrites go through a same-directory temp file plus a rename,
-  so a crash mid-write leaves the old file rather than a torn one the loaders
-  would then quarantine. The temp name carries a random suffix, because a
-  fixed one lets two processes writing the same store publish each other's
-  half-written bytes. An existing file's permission bits are applied when the
-  temp is created, not after it is filled, so a 0600 file's new contents are
-  never briefly world-readable. A read-only file or a read-only directory
-  falls back to an in-place write, so `chmod 444` still refuses and a writable
-  file in a locked directory still works; a full disk does NOT fall back,
-  because the atomic attempt already failed with the target intact and an
-  in-place retry would truncate it. Appends are not atomic (read-modify-write
-  would corrupt concurrent appenders, not protect them). The remaining JSON
-  store savers still hand-roll a fixed-name temp; sweeping them is pending.
+- **Atomic writes** (`core/storage_paths.py::write_text_atomic`): every store
+  saver under the resource root, the `.sig` sidecars, and `file_write`
+  overwrites go through a same-directory temp file plus a rename, so a crash
+  mid-write leaves the old file rather than a torn one the loaders would then
+  quarantine. The temp name carries a random suffix, because a fixed one lets
+  two processes writing the same store publish each other's half-written
+  bytes; the cost of that choice is that a hard kill between write and rename
+  leaves a stray `.tmp` instead of one the next write reclaims, which is the
+  cheaper failure. Permission bits are applied when the temp is CREATED, not
+  after it is filled, so a 0600 file's new contents are never briefly
+  world-readable (an existing file's own mode always wins; `mode=` covers a
+  first write that must not exist at the umask default, as for the CLI
+  credentials file). A read-only file or a read-only directory falls back to
+  an in-place write, so `chmod 444` still refuses and a writable file in a
+  locked directory still works; a full disk does NOT fall back, because the
+  atomic attempt already failed with the target intact and an in-place retry
+  would truncate it. Appends are not atomic (read-modify-write would corrupt
+  concurrent appenders, not protect them). Outside the resource root, the
+  setup wizard's asset materialization writes bytes rather than text and is
+  deliberately not routed here.
 - **Secrets denylist** (`tools/filesystem.py::secrets_path_error`): the file
   tools refuse the sensitive stores under the data dir (the account vault
   and its SQLite sidecars, the OAuth token caches, and `mcp_servers/` since a
