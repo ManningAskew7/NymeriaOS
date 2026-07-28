@@ -44,6 +44,8 @@ function createCLIProxyStore() {
   let status = $state<CLIProxyStatus | null>(null);
   let authFiles = $state<CLIProxyAuthFile[]>([]);
   let knobs = $state<Record<string, unknown>>({});
+  let models = $state<{ id: string; owned_by: string }[]>([]);
+  let modelsLoading = $state(false);
   let oauth = $state<OAuthFlowState | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -103,6 +105,18 @@ function createCLIProxyStore() {
     }
   }
 
+  async function loadModels() {
+    // Live ids through the proxy (all logged-in subscriptions, no
+    // per-provider attribution); [] on failure keeps the model inputs
+    // free-text only, so this never blocks the panel.
+    modelsLoading = true;
+    try {
+      models = await api.listCLIProxyModels();
+    } finally {
+      modelsLoading = false;
+    }
+  }
+
   async function saveKnobs(update: Record<string, unknown>) {
     error = null;
     message = null;
@@ -144,7 +158,8 @@ function createCLIProxyStore() {
             detail: result.detail ? `Logged in as ${result.detail}.` : 'Login complete.'
           };
           message = `${providerLabel} login complete.`;
-          await refresh(true);
+          // Fresh auth files only (see deleteAuthFile on why not a probe).
+          await refresh();
         } else if (result.status === 'error') {
           stopOAuthPolling();
           // Prefer the backend's explanation (notably the confirmed-ok trap:
@@ -257,7 +272,10 @@ function createCLIProxyStore() {
     try {
       await api.deleteCLIProxyAuthFile(name);
       message = 'Login removed from the proxy.';
-      await refresh(true);
+      // Fresh auth files, not a fresh capability probe: a forced probe
+      // registers one dead pending OAuth session per catalog provider on
+      // the proxy, and the binary's capabilities did not change here.
+      await refresh();
     } catch (e) {
       fail(e, 'delete', 'the login');
     }
@@ -281,6 +299,11 @@ function createCLIProxyStore() {
         applied.scope === 'thread'
           ? `Thread routed through CLIProxy (${applied.model}).`
           : `Backend route set to ${applied.provider} via CLIProxy (${applied.model}).`;
+      if (applied.restart_required) {
+        // The five-surface restart idiom (ProviderSection etc.): today the
+        // apply-route fields all hot-reload, so this is future-proofing.
+        message += ' Restart the backend for every change to take effect.';
+      }
       return applied;
     } catch (e) {
       fail(e, 'save', 'the LLM route');
@@ -344,6 +367,12 @@ function createCLIProxyStore() {
     get knobs() {
       return knobs;
     },
+    get models() {
+      return models;
+    },
+    get modelsLoading() {
+      return modelsLoading;
+    },
     get oauth() {
       return oauth;
     },
@@ -374,6 +403,7 @@ function createCLIProxyStore() {
     },
     refresh,
     loadKnobs,
+    loadModels,
     saveKnobs,
     startOAuth,
     deliverCallback,

@@ -13,6 +13,12 @@ import { CommandsApi } from './commands';
  * management API (OAuth logins, auth files, key config knobs) and owns the
  * route-shape math via apply-route, so this client never computes base URLs
  * or key slots itself. Works identically in thin-client mode.
+ *
+ * Errors use the NON-toasting `_extractError`: every caller of these
+ * methods renders the failure inline (the desktop panel banner / OAuth box,
+ * mobile's CLIProxySection), so the toasting variant double-reported. A 401
+ * here no longer raises the global auth-invalid toast; any dead token trips
+ * it on the next non-CLIProxy call.
  */
 export class CLIProxyApi extends CommandsApi {
   async getCLIProxyCatalog(): Promise<CLIProxyProviderInfo[]> {
@@ -47,7 +53,7 @@ export class CLIProxyApi extends CommandsApi {
       body: JSON.stringify({ provider, project_id: projectId || null })
     });
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to start the login'));
+      throw new Error(await this._extractError(response, 'Failed to start the login'));
     }
     return response.json();
   }
@@ -63,7 +69,7 @@ export class CLIProxyApi extends CommandsApi {
       { headers: this.getHeaders() }
     );
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to check the login'));
+      throw new Error(await this._extractError(response, 'Failed to check the login'));
     }
     const payload = await response.json();
     // detail carries the account label on a confirmed ok, and the backend's
@@ -78,7 +84,7 @@ export class CLIProxyApi extends CommandsApi {
       body: JSON.stringify({ provider, redirect_url: redirectUrl })
     });
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'The proxy rejected the callback'));
+      throw new Error(await this._extractError(response, 'The proxy rejected the callback'));
     }
   }
 
@@ -88,7 +94,7 @@ export class CLIProxyApi extends CommandsApi {
       headers: this.getHeaders()
     });
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to list logins'));
+      throw new Error(await this._extractError(response, 'Failed to list logins'));
     }
     return response.json();
   }
@@ -106,7 +112,7 @@ export class CLIProxyApi extends CommandsApi {
       }
     );
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to update the login'));
+      throw new Error(await this._extractError(response, 'Failed to update the login'));
     }
   }
 
@@ -119,7 +125,7 @@ export class CLIProxyApi extends CommandsApi {
       }
     );
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to remove the login'));
+      throw new Error(await this._extractError(response, 'Failed to remove the login'));
     }
   }
 
@@ -128,7 +134,7 @@ export class CLIProxyApi extends CommandsApi {
       headers: this.getHeaders()
     });
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to load proxy settings'));
+      throw new Error(await this._extractError(response, 'Failed to load proxy settings'));
     }
     const payload = await response.json();
     return payload.knobs ?? {};
@@ -141,10 +147,29 @@ export class CLIProxyApi extends CommandsApi {
       body: JSON.stringify({ knobs })
     });
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to save proxy settings'));
+      throw new Error(await this._extractError(response, 'Failed to save proxy settings'));
     }
     const payload = await response.json();
     return payload.knobs ?? {};
+  }
+
+  /**
+   * Live model ids through the proxy's data plane (server-resolved
+   * gatekeeper). The list spans every logged-in subscription with no
+   * per-provider attribution, and degrades to [] (the model input keeps
+   * its free-text escape hatch), matching the catalog/status idiom.
+   */
+  async listCLIProxyModels(): Promise<{ id: string; owned_by: string }[]> {
+    try {
+      const response = await fetch(`${this.getBaseUrl()}/cliproxy/models`, {
+        headers: this.getHeaders()
+      });
+      if (!response.ok) return [];
+      const payload = await response.json();
+      return payload.models ?? [];
+    } catch {
+      return [];
+    }
   }
 
   async applyCLIProxyRoute(
@@ -156,7 +181,7 @@ export class CLIProxyApi extends CommandsApi {
       body: JSON.stringify(request)
     });
     if (!response.ok) {
-      throw new Error(await this._toastAndExtractError(response, 'Failed to apply the route'));
+      throw new Error(await this._extractError(response, 'Failed to apply the route'));
     }
     return response.json();
   }

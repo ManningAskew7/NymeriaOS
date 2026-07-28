@@ -112,6 +112,9 @@
     try {
       const applied = await api.applyCLIProxyRoute({ provider: provider.id });
       message = `Backend route set to ${applied.provider} via CLIProxy (${applied.model}).`;
+      if (applied.restart_required) {
+        message += ' Restart the backend for every change to take effect.';
+      }
     } catch (e) {
       error = humanizeErrorText(e, { action: 'save', resource: 'the LLM route' });
     }

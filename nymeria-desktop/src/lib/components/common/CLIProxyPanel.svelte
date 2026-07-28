@@ -16,14 +16,27 @@
   let requestRetry = $state<string>('');
   let routingStrategy = $state<string>('');
   let knobsLoaded = $state(false);
+  let knobsDirty = $state(false);
 
-  onMount(async () => {
+  // Shared by mount AND the Refresh button, so a proxy that comes up after
+  // mount still gets its settings block (mount-only loading left it hidden
+  // until the user left and re-entered the tab). Refresh deliberately does
+  // NOT force a capability re-probe: the backend caches probe results, and
+  // each forced probe registers a dead pending OAuth session per catalog
+  // provider on the proxy; the cache answers correctly for binary changes
+  // within its TTL.
+  async function loadPanel() {
     await cliproxyStore.refresh();
     if (cliproxyStore.reachable) {
-      await cliproxyStore.loadKnobs();
-      syncKnobInputs();
+      await Promise.all([cliproxyStore.loadKnobs(), cliproxyStore.loadModels()]);
+      // An explicit refresh must not eat typed-but-unsaved knob edits.
+      if (!knobsDirty) syncKnobInputs();
       knobsLoaded = true;
     }
+  }
+
+  onMount(() => {
+    void loadPanel();
   });
 
   onDestroy(() => {
@@ -66,6 +79,7 @@
     if (routingStrategy.trim()) update['routing/strategy'] = routingStrategy.trim();
     if (Object.keys(update).length === 0) return;
     await cliproxyStore.saveKnobs(update);
+    knobsDirty = false;
     syncKnobInputs();
   }
 </script>
@@ -92,7 +106,7 @@
       </span>
     </div>
     <div class="actions">
-      <Button variant="secondary" onclick={() => cliproxyStore.refresh(true)}>
+      <Button variant="secondary" onclick={() => loadPanel()}>
         <Icon name="refresh" size={14} />
         Refresh
       </Button>
@@ -185,9 +199,13 @@
           {/if}
 
           <div class="route-row">
+            <!-- Type-or-pick: the datalist offers the proxy's live model ids
+                 (all logged-in subscriptions, unfiltered by design), while
+                 free text stays the escape hatch. -->
             <input
               class="text-input"
               type="text"
+              list="cliproxy-model-ids"
               placeholder={provider.default_model}
               value={modelFor(provider)}
               oninput={(event) => {
@@ -220,6 +238,11 @@
         </section>
       {/each}
     </div>
+    <datalist id="cliproxy-model-ids">
+      {#each cliproxyStore.models as model (model.id)}
+        <option value={model.id}>{model.owned_by}</option>
+      {/each}
+    </datalist>
 
     {#if knobsLoaded}
       <div class="field">
@@ -227,11 +250,23 @@
         <div class="knob-row">
           <label class="knob">
             <span>Request retries</span>
-            <input class="text-input narrow" type="number" min="0" bind:value={requestRetry} />
+            <input
+              class="text-input narrow"
+              type="number"
+              min="0"
+              bind:value={requestRetry}
+              oninput={() => (knobsDirty = true)}
+            />
           </label>
           <label class="knob">
             <span>Routing strategy</span>
-            <input class="text-input" type="text" placeholder="round-robin" bind:value={routingStrategy} />
+            <input
+              class="text-input"
+              type="text"
+              placeholder="round-robin"
+              bind:value={routingStrategy}
+              oninput={() => (knobsDirty = true)}
+            />
           </label>
           <Button variant="secondary" onclick={saveKnobs}>Save proxy settings</Button>
         </div>
