@@ -1403,9 +1403,18 @@ def test_context_limit_curated_covers_claude_5_generation(monkeypatch):
         assert capabilities.get_context_limit(f"{model}(xhigh)") == 1000000
 
 
-# Context windows Anthropic publishes for its own hosted models (checked
-# 2026-07-28). 1M is the standard default for these generations, not a beta
-# tier; everything else, including all Haiku, is 200k.
+# Context windows Anthropic publishes for its own hosted models, transcribed
+# from the models-overview comparison tables at
+# https://platform.claude.com/docs/en/docs/about-claude/models/overview
+# (re-verified against the live page 2026-07-28; the legacy table is behind the
+# "Legacy models" accordion). 1M is the standard default for these generations,
+# not a beta tier; everything else, including all Haiku, is 200k.
+#
+# Worth knowing when this next disagrees with something: the CLIProxy gateway's
+# own management catalog reports claude-sonnet-4-6 as 200k/64k, which is simply
+# wrong. Anthropic publishes 1M/128k, and a live output-ceiling probe against
+# the gateway answered 128k, contradicting the gateway's own table. Third-party
+# catalogs are peers to be outranked here, not tie-breakers.
 #
 # FIRST-PARTY IDS ONLY. Gateway-hosted Claude (bedrock/, github_copilot/,
 # snowflake/, azure_ai/, ...) serves truncated windows that have nothing to do
