@@ -551,28 +551,31 @@ def test_check_wait_ok_and_error_paths() -> None:
     assert "Restart the login" in failed.markdown
 
 
-def test_check_stale_session_ok_without_callback_is_refused() -> None:
-    """The relogin trap: past the proxy's session TTL an ok with no pasted
-    callback is the unknown-session answer blessed by a PRE-EXISTING auth
-    file; the chain refuses it. A pasted callback (which errors on a dead
-    session) keeps an old ok trustworthy."""
+def test_check_renders_server_side_stale_session_refusal() -> None:
+    """The relogin trap is guarded SERVER-SIDE since the session ledger
+    moved into the management client (confirm_login_landed refuses an old,
+    paste-less ok); the chain has no local guard and renders the refusal
+    detail on the login rail like any other status error. The guard itself
+    is pinned in test_cliproxy_management_client.py."""
     api = FakeCliproxyApi()
     api.auth_files = [dict(LOGGED_IN_CLAUDE)]
-    api.status_results = [{"status": "ok", "detail": "alice@example.com"}]
+    api.status_results = [
+        {
+            "status": "error",
+            "detail": (
+                "The proxy answered ok, but this login session is old"
+                " enough to have expired and no callback was delivered,"
+                " so that is likely a stale-session answer blessing an"
+                " older login. Restart the login to be sure."
+            ),
+        }
+    ]
     _start_login(api)
-    provider_setup.update_cliproxy_login(
-        "alice", oauth_started_at=time.monotonic() - 600
-    )
 
     refused = _run(api, "/provider cliproxy check")
     assert "stale-session" in refused.markdown
+    assert "Restart the login" in refused.markdown
     assert _active_tab(_form(refused))["label"] == "Paste"
-
-    # Same age WITH a delivered callback: trusted.
-    provider_setup.update_cliproxy_login("alice", callback_delivered=True)
-    confirmed = _run(api, "/provider cliproxy check")
-    assert "alice@example.com" in confirmed.markdown
-    assert _active_tab(_form(confirmed))["label"] == "Model"
 
 
 def test_check_before_login_is_refused() -> None:

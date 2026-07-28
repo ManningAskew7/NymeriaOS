@@ -22,7 +22,9 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import time
 from typing import Any, Optional, Sequence
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -31,6 +33,84 @@ from .catalog import CLIPROXY_PROVIDERS, CLIProxyProviderSpec
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
+
+# Just under the proxy's ~10-minute OAuth session TTL: past this, a polled
+# ok with no callback delivered through this process is treated as the
+# stale-session trap (see confirm_login_landed).
+SESSION_OK_GUARD_SECONDS = 540.0
+
+# In-process OAuth session ledger: state -> (started_at_monotonic,
+# callback_delivered). Stamped inside start_oauth/oauth_callback so EVERY
+# surface that drives OAuth through this client (wizard, headless console,
+# REST route bodies, the command facade) records its sessions with no
+# caller cooperation. ADVISORY, not a security boundary: it exists to stop
+# a confusing false "login complete" (the relogin trap), so an unknown
+# state fails OPEN (no stamp = no guard; e.g. an API restart mid-login),
+# and nobody should "harden" it into persisted or authenticated state.
+_LEDGER_TTL_SECONDS = 1800.0
+_LEDGER_MAX_ENTRIES = 64
+_oauth_session_ledger: dict[str, tuple[float, bool]] = {}
+
+
+def _ledger_prune(now: float) -> None:
+    expired = [
+        state
+        for state, (started, _delivered) in _oauth_session_ledger.items()
+        if now - started > _LEDGER_TTL_SECONDS
+    ]
+    for state in expired:
+        _oauth_session_ledger.pop(state, None)
+    if len(_oauth_session_ledger) > _LEDGER_MAX_ENTRIES:
+        # Runaway bound (admin-only flows never approach this): crude
+        # clear, matching the router probe-cache idiom; the guard simply
+        # fails open for the dropped sessions.
+        _oauth_session_ledger.clear()
+
+
+def _ledger_stamp_start(state: str) -> None:
+    if not state:
+        return
+    now = time.monotonic()
+    _ledger_prune(now)
+    _oauth_session_ledger[state] = (now, False)
+
+
+def _ledger_mark_delivered(state: str) -> None:
+    """Record a successfully delivered callback for this session.
+
+    A callback the proxy ACCEPTED proves the session was alive, so a later
+    ok is trusted; an unknown state is added fresh (delivered) for the
+    same reason.
+    """
+    if not state:
+        return
+    now = time.monotonic()
+    _ledger_prune(now)
+    started, _delivered = _oauth_session_ledger.get(state, (now, False))
+    _oauth_session_ledger[state] = (started, True)
+
+
+def stale_session_refusal(state: str) -> str:
+    """A refusal detail when an ok cannot be trusted for this session.
+
+    "" when the ok may be trusted: unknown state (fail-open), callback
+    delivered, or the session is young enough that the proxy still knows
+    it (an unknown-session ok cannot happen inside the TTL).
+    """
+    entry = _oauth_session_ledger.get(state)
+    if entry is None:
+        return ""
+    started, delivered = entry
+    if delivered:
+        return ""
+    if time.monotonic() - started <= SESSION_OK_GUARD_SECONDS:
+        return ""
+    return (
+        "The proxy answered ok, but this login session is old enough to"
+        " have expired and no callback was delivered, so that is likely a"
+        " stale-session answer blessing an older login. Restart the login"
+        " to be sure."
+    )
 
 
 def mint_gatekeeper_key() -> str:
@@ -228,6 +308,7 @@ class CLIProxyManagementClient:
             raise CLIProxyManagementError(
                 f"{spec.id} auth-url returned no url/state"
             )
+        _ledger_stamp_start(state)
         return {"url": url, "state": state}
 
     async def oauth_callback(
@@ -245,14 +326,22 @@ class CLIProxyManagementClient:
                 "poll the login status instead of delivering a callback"
             )
         body: dict[str, str] = {"provider": spec.callback_provider}
+        session_state = (state or "").strip()
         if redirect_url:
             body["redirect_url"] = redirect_url.strip()
+            if not session_state:
+                try:
+                    query = parse_qs(urlparse(redirect_url).query)
+                except ValueError:
+                    query = {}
+                session_state = str((query.get("state") or [""])[0])
         elif code and state:
             body["code"] = code.strip()
-            body["state"] = state.strip()
+            body["state"] = session_state
         else:
             raise ValueError("oauth_callback needs redirect_url or code+state")
         await self._request("POST", "/oauth-callback", json_body=body)
+        _ledger_mark_delivered(session_state)
 
     async def auth_status(self, state: str) -> str:
         """Poll a pending login; returns 'wait', 'ok', or 'error'."""
@@ -426,11 +515,18 @@ async def confirm_login_landed(
     unknown or expired sessions, so a bare ok proves nothing. An ok is
     trusted only once an active auth file for the provider exists;
     confirmed ok carries the account label as detail, unconfirmed ok is
-    reported as an error explaining the trap. Callers own any post-login
-    side effects (e.g. the Claude tool_prefix_disabled fixup).
+    reported as an error explaining the trap. On a RE-login a prior auth
+    file exists and would bless an expired session's false ok (the relogin
+    trap), so the session ledger's age guard runs first: a paste-less ok
+    past SESSION_OK_GUARD_SECONDS is refused (fail-open for sessions this
+    process never stamped). Callers own any post-login side effects (e.g.
+    the Claude tool_prefix_disabled fixup).
     """
     status = await client.auth_status(state)
     if status == "ok":
+        refusal = stale_session_refusal(state)
+        if refusal:
+            return "error", refusal
         entry = active_login_entry(await client.list_auth_files(), spec)
         if entry is None:
             return (
@@ -485,10 +581,12 @@ __all__ = [
     "CLIProxyUnreachable",
     "CONFIG_KNOB_PATHS",
     "DEFAULT_TIMEOUT_SECONDS",
+    "SESSION_OK_GUARD_SECONDS",
     "active_login_entry",
     "configured_gatekeeper_keys",
     "confirm_login_landed",
     "login_account_label",
     "mint_gatekeeper_key",
     "resolve_or_mint_gatekeeper",
+    "stale_session_refusal",
 ]

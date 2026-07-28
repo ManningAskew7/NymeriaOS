@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
@@ -69,7 +68,11 @@ class CliproxyCommandsMixin:
     # proves nothing (it answers ok for unknown/expired sessions), so
     # every completion check goes through the server-side confirmed
     # status (``cliproxy_oauth_status``), which verifies an active auth
-    # file exists before reporting ok.
+    # file exists before reporting ok AND refuses a paste-less ok on a
+    # session old enough to have expired (the relogin trap; the session
+    # ledger + guard live in ``cliproxy/management_client.py``, stamped
+    # inside the client's start_oauth/oauth_callback, so every surface
+    # shares one predicate).
 
     _CLIPROXY_URL_SHAPES = {
         "root": "proxy root URL",
@@ -92,10 +95,6 @@ class CliproxyCommandsMixin:
         "[Error]: No CLIProxy login is in progress (or it expired). "
         "Start one with /provider cliproxy <target>."
     )
-    # Just under the proxy's ~10-minute OAuth session TTL: past this, a
-    # polled ok with no delivered callback is treated as the stale-session
-    # trap (see the check step).
-    _CLIPROXY_SESSION_OK_GUARD_SECONDS = 540.0
 
     async def _cmd_provider_cliproxy(
         self, args: list[str], rest: str
@@ -404,8 +403,6 @@ class CliproxyCommandsMixin:
             oauth_state=str(started.get("state") or ""),
             auth_url=str(started.get("url") or ""),
             flow=str(started.get("flow") or spec.flow),
-            oauth_started_at=time.monotonic(),
-            callback_delivered=False,
         )
         if updated is None:
             return self._CLIPROXY_GONE
@@ -576,10 +573,11 @@ class CliproxyCommandsMixin:
                     "Paste again, or restart the login.",
                 ],
             )
-        setup_store.update_cliproxy_login(self.user_id, callback_delivered=True)
-        # Delivered; give the proxy a moment to persist the auth file,
-        # then confirm (the status is server-confirmed against the
-        # auth-file list, never the bare poll).
+        # Delivered (the management client's session ledger records it, so
+        # the server-confirmed status keeps trusting this session); give
+        # the proxy a moment to persist the auth file, then confirm (the
+        # status is server-confirmed against the auth-file list, never the
+        # bare poll).
         for attempt in range(2):
             status, detail = await self._cliproxy_poll_once(pending, spec)
             if status == "ok":
@@ -624,28 +622,10 @@ class CliproxyCommandsMixin:
             return "[Error]: Start the login first: /provider cliproxy login"
         status, detail = await self._cliproxy_poll_once(pending, spec)
         if status == "ok":
-            session_age = time.monotonic() - (pending.oauth_started_at or 0.0)
-            if (
-                not pending.callback_delivered
-                and session_age > self._CLIPROXY_SESSION_OK_GUARD_SECONDS
-            ):
-                # The proxy answers ok for a session it no longer knows
-                # (expired), and confirm-on-ok would then bless a PRE-
-                # EXISTING auth file (the relogin trap). Within the
-                # session's lifetime an unknown-session ok cannot happen
-                # for our state, and a pasted callback that landed proves
-                # the session was alive, so only an OLD, paste-less ok is
-                # refused.
-                return self._cliproxy_login_rail(
-                    pending,
-                    spec,
-                    note_lines=[
-                        "The proxy answered ok, but this login session is"
-                        " old enough to have expired, so that is likely a"
-                        " stale-session answer against an older login."
-                        " Restart the login to be sure.",
-                    ],
-                )
+            # The stale-session guard (an old, paste-less ok is the proxy's
+            # unknown-session answer blessed by a pre-existing auth file)
+            # runs server-side in confirm_login_landed; a refusal arrives
+            # here as status "error" with the explanation as detail.
             return await self._cliproxy_confirmed(pending, spec, detail)
         if status == "wait":
             return self._cliproxy_login_rail(

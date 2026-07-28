@@ -137,18 +137,11 @@ class PendingCliproxyLogin:
     oauth_state: str = ""
     auth_url: str = ""
     flow: str = "browser"
-    # Monotonic stamp of the oauth start. The proxy answers ok for a
-    # session it no longer knows (expired, ~10 min), so an ok on an OLD
-    # session with no callback delivered through this chain is refused as
-    # the stale-session trap; within the session's lifetime an unknown-
-    # session ok cannot happen for our state, so ok is genuine (the local-
-    # browser flow delivers the callback straight to the proxy's port,
-    # nothing is ever pasted).
-    oauth_started_at: float = 0.0
-    # True once a callback was delivered (pasted) for THIS session; a
-    # delivery to a dead session errors, so a post-paste ok stays
-    # trustworthy even past the session-age guard.
-    callback_delivered: bool = False
+    # Session age and callback delivery are NOT tracked here: the
+    # stale-session guard (the relogin trap) lives in the management
+    # client's in-process session ledger
+    # (cliproxy/management_client.py), stamped inside start_oauth /
+    # oauth_callback and applied by confirm_login_landed server-side.
     account: str = ""
     model: str | None = None
     model_custom: bool = False
