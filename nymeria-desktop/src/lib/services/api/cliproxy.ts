@@ -99,6 +99,29 @@ export class CLIProxyApi extends CommandsApi {
     return response.json();
   }
 
+  /**
+   * Import an auths/*.json document (e.g. copied from another host).
+   * The backend confirms the proxy lists an ACTIVE login afterwards
+   * (confirm-on-ok trust rule); "inactive" means the proxy accepted the
+   * file but no active login is listed, which callers must render
+   * honestly, never as success.
+   */
+  async importCLIProxyAuthFile(
+    provider: string,
+    name: string,
+    content: string
+  ): Promise<{ status: 'ok' | 'inactive'; account: string; detail: string }> {
+    const response = await fetch(`${this.getBaseUrl()}/cliproxy/auth-files`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ provider, name, content })
+    });
+    if (!response.ok) {
+      throw new Error(await this._extractError(response, 'Failed to import the auth file'));
+    }
+    return response.json();
+  }
+
   async patchCLIProxyAuthFile(
     name: string,
     update: { disabled?: boolean; priority?: number }
