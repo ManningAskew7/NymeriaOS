@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any, Literal, Optional, Protocol, TYPE_CHECKING
 
 
-from .capabilities import TerminalCapabilities, detect_terminal_capabilities
+from .capabilities import (
+    TerminalCapabilities,
+    detect_terminal_capabilities,
+    resolve_atomic_repaint_support,
+)
 from .command_routing import (
     chat_stream_command_from_result as _chat_stream_command_from_result,
 )
@@ -259,11 +263,38 @@ class CLIApp:
 
         return asyncio.run(_run())
 
+    def _resolve_atomic_repaint(self, capabilities: TerminalCapabilities) -> bool:
+        """One-shot: does a burst of terminal writes paint as ONE frame?
+
+        Gates float-phase timer ticks (see `follow_footer.py`). Only the
+        STATIC conditions for a follow footer qualify a session for the
+        probe; terminal HEIGHT is deliberately not one of them, because the
+        verdict never re-resolves and a terminal that starts too short to
+        pin a footer can be resized into one.
+        """
+
+        if sys.platform == "win32":
+            return False
+        if capabilities.renderer != "rich" or not capabilities.is_interactive:
+            return False
+        if not bool(getattr(self.runtime_config, "rich_scroll_region", False)):
+            return False
+        try:
+            return resolve_atomic_repaint_support()
+        except Exception:  # noqa: BLE001 - a probe fault must not block startup.
+            return False
+
     def _run_repl(self, capabilities: TerminalCapabilities) -> None:
         """Run the prompt_toolkit REPL with reducer-backed rich/plain rendering."""
         from .transport.api import APITransportStartupError
 
         self._active_capabilities = capabilities
+        # FIRST, before any startup I/O: the probe reads the terminal's reply
+        # off stdin, and everything typed before that reply lands is consumed
+        # with it. Backend selection below can take seconds against a remote
+        # or sleeping backend, which is exactly when someone blind-types their
+        # first message.
+        atomic_repaint = self._resolve_atomic_repaint(capabilities)
         try:
             self._client = asyncio.run(self._select_agent_client())
         except APITransportStartupError as exc:
@@ -329,6 +360,7 @@ class CLIApp:
                         capabilities=capabilities,
                     )
                     runtime.install_resize_handler()
+                    runtime.note_atomic_repaint_support(atomic_repaint)
                     if is_disconnected_client(self._client):
                         runtime.set_status_notice(
                             _disconnected_notice_text(
@@ -1437,6 +1469,16 @@ class CLIApp:
             return False
         finally:
             runtime.set_busy(False)
+            if isinstance(renderer, RichReplRenderer):
+                # The turn is over, so no tool result can arrive to flip a
+                # still-registered live row. This sits on the single turn
+                # seam rather than on the submission chain, because
+                # chat_stream slash commands (/skill, /orchestrate, /resume,
+                # ...) run full agentic turns straight through here without
+                # a chain. Turn STATUS is not the signal either: a mid-turn
+                # `compacted` event reads as complete while results are
+                # still arriving.
+                renderer.drop_live_tool_rows()
 
         if self._client is self._local_client:
             self._maybe_auto_title(message)
