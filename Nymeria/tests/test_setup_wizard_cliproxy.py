@@ -316,7 +316,7 @@ def test_cliproxy_auth_file_rejects_unverified_upload(monkeypatch, tmp_path, cap
     )
     out = capsys.readouterr().out
     assert rc == 2
-    assert "lists no active" in out
+    assert "does not list a file under that name" in out
     assert not (root / "config.env").exists()
 
 

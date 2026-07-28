@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from cli_fixtures import run
-from nymeria.core import command_executor_provider_setup as chain_module
+from nymeria.core import command_executor_cliproxy as chain_module
 from nymeria.core import provider_setup
 from nymeria.core.command_service import CommandContext, CommandService
 
@@ -273,6 +273,23 @@ def test_target_shows_tos_warning() -> None:
     assert "policy" in result.markdown
 
 
+def test_bare_resume_keys_on_logged_in_not_the_account_label() -> None:
+    """A confirmed login whose auth-file entry carries no account/email
+    still resumes into the model chain: the resume gate reads the stored
+    logged_in flag, not the possibly-empty account label."""
+    api = FakeCliproxyApi()
+    api.auth_files = [
+        {"provider": "claude", "disabled": False, "unavailable": False},
+    ]
+    _run(api, "/provider cliproxy claude")
+
+    result = _run(api, "/provider cliproxy")
+
+    assert "Resuming" in result.markdown
+    form = _form(result)
+    assert [tab["label"] for tab in form["tabs"]][:2] == ["Target", "Model"]
+
+
 def test_target_management_unconfigured_degrades_to_guidance() -> None:
     class _UnconfiguredApi(FakeCliproxyApi):
         def __init__(self) -> None:
@@ -316,11 +333,24 @@ def test_login_renders_rail_with_url_and_tunnel_hint() -> None:
     assert "ssh -N -L 1455:127.0.0.1:1455" in result.markdown
     assert "Type: /provider cliproxy paste" in result.markdown
     form = _form(result)
-    assert [tab["label"] for tab in form["tabs"]] == ["Paste", "Status"]
+    # The Target tab rides the rail (relogin/cancel one arrow-left away);
+    # short step noun, the provider identity rides the form title.
+    assert "Claude (Max/Pro subscription)" in form["title"]
+    assert [tab["label"] for tab in form["tabs"]] == [
+        "Target",
+        "Paste",
+        "Status",
+    ]
     tab = _active_tab(form)
     assert tab["label"] == "Paste"
     assert tab["fields"][0]["kind"] == "text"
     assert tab["submit"] == {"command": "provider cliproxy paste {callback}"}
+    target_tab = form["tabs"][0]
+    assert target_tab["submit"] == {"command": "provider cliproxy {action}"}
+    assert [o["id"] for o in target_tab["fields"][0]["options"]] == [
+        "login",
+        "cancel",
+    ]
     pending = provider_setup.get_cliproxy_login("alice")
     assert pending is not None and pending.oauth_state == "st-1"
 
@@ -338,7 +368,10 @@ def test_device_flow_login_gets_status_tab_only() -> None:
     result = _run(api, "/provider cliproxy login")
 
     form = _form(result)
-    assert [tab["label"] for tab in form["tabs"]] == ["Status"]
+    assert [tab["label"] for tab in form["tabs"]] == [
+        "Target",
+        "Status",
+    ]
     tab = _active_tab(form)
     option_ids = [o["id"] for o in tab["fields"][0]["options"]]
     assert option_ids == ["check", "restart", "cancel"]
@@ -551,28 +584,31 @@ def test_check_wait_ok_and_error_paths() -> None:
     assert "Restart the login" in failed.markdown
 
 
-def test_check_stale_session_ok_without_callback_is_refused() -> None:
-    """The relogin trap: past the proxy's session TTL an ok with no pasted
-    callback is the unknown-session answer blessed by a PRE-EXISTING auth
-    file; the chain refuses it. A pasted callback (which errors on a dead
-    session) keeps an old ok trustworthy."""
+def test_check_renders_server_side_stale_session_refusal() -> None:
+    """The relogin trap is guarded SERVER-SIDE since the session ledger
+    moved into the management client (confirm_login_landed refuses an old,
+    paste-less ok); the chain has no local guard and renders the refusal
+    detail on the login rail like any other status error. The guard itself
+    is pinned in test_cliproxy_management_client.py."""
     api = FakeCliproxyApi()
     api.auth_files = [dict(LOGGED_IN_CLAUDE)]
-    api.status_results = [{"status": "ok", "detail": "alice@example.com"}]
+    api.status_results = [
+        {
+            "status": "error",
+            "detail": (
+                "The proxy answered ok, but this login session is old"
+                " enough to have expired and no callback was delivered,"
+                " so that is likely a stale-session answer blessing an"
+                " older login. Restart the login to be sure."
+            ),
+        }
+    ]
     _start_login(api)
-    provider_setup.update_cliproxy_login(
-        "alice", oauth_started_at=time.monotonic() - 600
-    )
 
     refused = _run(api, "/provider cliproxy check")
     assert "stale-session" in refused.markdown
+    assert "Restart the login" in refused.markdown
     assert _active_tab(_form(refused))["label"] == "Paste"
-
-    # Same age WITH a delivered callback: trusted.
-    provider_setup.update_cliproxy_login("alice", callback_delivered=True)
-    confirmed = _run(api, "/provider cliproxy check")
-    assert "alice@example.com" in confirmed.markdown
-    assert _active_tab(_form(confirmed))["label"] == "Model"
 
 
 def test_check_before_login_is_refused() -> None:
@@ -655,8 +691,18 @@ def test_model_pick_then_apply_routes_globally_and_clears() -> None:
 
     picked = _run(api, "/provider cliproxy model claude-opus-4-7")
     form = _form(picked)
-    assert [tab["label"] for tab in form["tabs"]] == ["Model", "Apply"]
+    assert [tab["label"] for tab in form["tabs"]] == [
+        "Target",
+        "Model",
+        "Apply",
+    ]
     assert _active_tab(form)["label"] == "Apply"
+    # The persistent Target tab offers the logged-in action set.
+    assert [o["id"] for o in form["tabs"][0]["fields"][0]["options"]] == [
+        "use",
+        "relogin",
+        "cancel",
+    ]
     assert "applies globally" in picked.markdown.lower()
 
     applied = _run(api, "/provider cliproxy apply")

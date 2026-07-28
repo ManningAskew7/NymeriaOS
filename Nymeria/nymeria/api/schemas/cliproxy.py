@@ -74,6 +74,31 @@ class CLIProxyAuthFilePatchRequest(BaseModel):
     priority: Optional[int] = None
 
 
+class CLIProxyAuthFileImportRequest(BaseModel):
+    """Import an existing auths/*.json document (e.g. from another host).
+
+    ``content`` is the file's JSON text (no multipart; auth files are a few
+    KB of JSON and every sibling route speaks JSON bodies).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    name: str
+    content: str
+
+
+class CLIProxyAuthFileImportResponse(BaseModel):
+    # "ok": the proxy lists an active login for the provider after the
+    # upload. "inactive": the upload was ACCEPTED but no active login is
+    # listed (disabled, expired, or a different provider's file); the same
+    # trust rule as confirm-on-ok, reported honestly instead of a false
+    # success.
+    status: Literal["ok", "inactive"]
+    account: str = ""
+    detail: str = ""
+
+
 class CLIProxyConfigPatchRequest(BaseModel):
     """Partial update of the surfaced knob subset, keyed by knob path."""
 

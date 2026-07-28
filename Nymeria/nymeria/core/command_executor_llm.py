@@ -10,9 +10,10 @@ active thread it writes that thread's llm_config, an explicit trailing
 from the retired CLI ``triggers/cli/commands/provider.py`` module (minus the
 CLI-local credential file, which was retired with it: provider secrets live
 in backend settings/env and the credential vault). The chained ``/provider
-setup`` flow and the ``/provider cliproxy`` guidance live in the sibling
-``command_executor_provider_setup.py`` mixin. Handler methods are resolved
-by ``CommandService.execute`` via ``getattr(executor, "_cmd_<path>")``.
+setup`` flow lives in the sibling ``command_executor_provider_setup.py``
+mixin and the ``/provider cliproxy`` OAuth chain in
+``command_executor_cliproxy.py``. Handler methods are resolved by
+``CommandService.execute`` via ``getattr(executor, "_cmd_<path>")``.
 
 Nothing is imported from ``command_service`` here, so the module stays a
 runtime leaf with no import cycle (``command_service`` imports this module,
@@ -36,6 +37,7 @@ from .command_forms import (
     form_tab,
     radio_field,
     search_field,
+    text_field,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,47 @@ _THINK_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _THINK_USAGE = (
     "[Error]: Usage: /think [off|on|low|medium|high|xhigh|max] [global|thread]"
 )
+
+
+def custom_model_tab(placeholder: str, submit_command: str) -> dict[str, Any]:
+    """The custom-model escape hatch tab shared by the chained model steps
+    (LLM-domain copy over the pure ``command_forms`` contract builders)."""
+
+    return form_tab(
+        "Model",
+        [text_field("model", label="Model id", placeholder=placeholder)],
+        submit_command=submit_command,
+    )
+
+
+def model_pick_tab(
+    options: list[dict[str, Any]],
+    preselect: str,
+    preselect_meta: str,
+    submit_command: str,
+) -> dict[str, Any]:
+    """The identical tail of the chained model steps (takes ownership of
+    ``options``): surface a held decision missing from the listed set as a
+    current row, append the custom escape hatch, build the filter + radio
+    tab. Everything upstream of this (data source, cache keying, option
+    metas, fallbacks) is deliberately per-chain: notably the setup chain's
+    model list doubles as its credential probe, so its cache is
+    fingerprint-keyed to the pending credentials, while the cliproxy list
+    is credential-free."""
+
+    if preselect and all(option["id"] != preselect for option in options):
+        options.insert(
+            0, form_option(preselect, meta=preselect_meta, current=True)
+        )
+    options.append(form_option("custom", label="Custom model id…"))
+    return form_tab(
+        "Model",
+        [
+            search_field("filter", placeholder="Filter models…"),
+            radio_field("model", options),
+        ],
+        submit_command=submit_command,
+    )
 
 
 class LLMCommandsMixin:
