@@ -296,6 +296,46 @@ def test_oauth_status_confirms_ok_against_auth_files():
     assert payload["status"] == "error"
 
 
+def test_oauth_status_refuses_stale_session_ok_via_the_ledger():
+    """The relogin trap through the REST route: an old, paste-less session
+    (per the management client's in-process ledger) answering ok with a
+    PRE-EXISTING auth file is refused; the fake client never stamps the
+    ledger, so this stamps it directly (real stamps happen inside
+    start_oauth/oauth_callback). Unknown states stay fail-open, which the
+    sibling confirm test above exercises implicitly."""
+    import time as time_module
+
+    from nymeria.cliproxy import management_client
+
+    FakeManagementClient.status_result = "ok"
+    FakeManagementClient.auth_files = [
+        {"name": "claude-a.json", "provider": "claude", "email": "max@x.io"},
+    ]
+    client, _, _ = make_app()
+    management_client._oauth_session_ledger["s1"] = (
+        time_module.monotonic() - management_client.SESSION_OK_GUARD_SECONDS - 60,
+        False,
+    )
+    try:
+        payload = client.get(
+            "/cliproxy/oauth/status", params={"state": "s1", "provider": "claude"}
+        ).json()
+        assert payload["status"] == "error"
+        assert "stale-session" in payload["detail"]
+
+        # The same old session WITH a delivered callback stays trusted.
+        management_client._oauth_session_ledger["s1"] = (
+            management_client._oauth_session_ledger["s1"][0],
+            True,
+        )
+        payload = client.get(
+            "/cliproxy/oauth/status", params={"state": "s1", "provider": "claude"}
+        ).json()
+        assert payload == {"status": "ok", "detail": "max@x.io"}
+    finally:
+        management_client._oauth_session_ledger.clear()
+
+
 def test_oauth_status_ok_for_codex_skips_fixup():
     FakeManagementClient.status_result = "ok"
     FakeManagementClient.auth_files = [

@@ -49,6 +49,12 @@ function createCLIProxyStore() {
   let error = $state<string | null>(null);
   let message = $state<string | null>(null);
   let oauthTimer: ReturnType<typeof setInterval> | null = null;
+  // Absolute polling deadline anchored at startOAuth: re-arming the poller
+  // (after a paste) must never quietly extend a login past its window with
+  // no new evidence. A SUCCESSFUL delivery is evidence (the proxy accepted
+  // the callback, so the session was alive) and buys a short finishing
+  // window; a FAILED delivery proves nothing and keeps the original clock.
+  let oauthDeadline = 0;
 
   // Local-sidecar fallback (Tauri only).
   let localRunning = $state(false);
@@ -115,16 +121,15 @@ function createCLIProxyStore() {
     }
   }
 
-  function startStatusPolling(providerId: string, providerLabel: string, oauthState: string, timeoutMs: number) {
+  function startStatusPolling(providerId: string, providerLabel: string, oauthState: string) {
     stopOAuthPolling();
-    const deadline = Date.now() + timeoutMs;
     oauthTimer = setInterval(async () => {
       const current = oauth;
       if (!current || current.state !== oauthState) {
         stopOAuthPolling();
         return;
       }
-      if (Date.now() > deadline) {
+      if (Date.now() > oauthDeadline) {
         stopOAuthPolling();
         oauth = { ...current, status: 'error', detail: 'The login session expired; start it again.' };
         return;
@@ -187,7 +192,8 @@ function createCLIProxyStore() {
             : 'Approve the login in the browser. If it ends on a dead localhost page, paste that page\'s full URL below.'
       };
       void openExternal(started.url);
-      startStatusPolling(provider.id, provider.label, started.state, LOGIN_TIMEOUT_MS);
+      oauthDeadline = Date.now() + LOGIN_TIMEOUT_MS;
+      startStatusPolling(provider.id, provider.label, started.state);
     } catch (e) {
       fail(e, 'start', 'the login');
     }
@@ -205,19 +211,28 @@ function createCLIProxyStore() {
       const latest = oauth;
       if (!latest || latest.state !== current.state || latest.status === 'ok') return;
       oauth = { ...latest, status: 'wait', detail: 'Callback delivered; finishing the login…' };
+      // An accepted callback proves the session was alive: extend the
+      // window enough to finish confirming, never shrinking it.
+      oauthDeadline = Math.max(oauthDeadline, Date.now() + 120_000);
       if (!oauthTimer) {
         const spec = status?.providers.find((entry) => entry.id === current.provider);
-        startStatusPolling(current.provider, spec?.label ?? current.provider, current.state, 120_000);
+        startStatusPolling(current.provider, spec?.label ?? current.provider, current.state);
       }
     } catch (e) {
       const latest = oauth;
       if (!latest || latest.state !== current.state || latest.status === 'ok') return;
+      // A failed delivery proves nothing about session liveness, so it may
+      // revive a dead poller (or the panel could never confirm a retry)
+      // only WITHIN the original window, never extending it.
+      if (Date.now() > oauthDeadline) {
+        stopOAuthPolling();
+        oauth = { ...latest, status: 'error', detail: 'The login session expired; start it again.' };
+        return;
+      }
       oauth = { ...latest, status: 'wait', detail: humanizeErrorText(e, { action: 'send', resource: 'the callback' }) };
-      // A failed delivery must also revive a dead poller (timeout/error
-      // before the paste), or the panel can never confirm a retry.
       if (!oauthTimer) {
         const spec = status?.providers.find((entry) => entry.id === current.provider);
-        startStatusPolling(current.provider, spec?.label ?? current.provider, current.state, 120_000);
+        startStatusPolling(current.provider, spec?.label ?? current.provider, current.state);
       }
     }
   }
