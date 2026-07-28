@@ -11,7 +11,7 @@ from urllib.parse import quote
 from rich.cells import cell_len
 
 from ..state import ToolCallStep, WorkspaceArtifact
-from ..theme import DEFAULT_TOOL_ICON
+from ..theme import DEFAULT_TOOL_ICON, DEFAULT_TOOL_RUNNING_ICON
 from .markdown import collapse_inline, coerce_width, truncate_cell_width
 
 DEFAULT_ARGS_LIMIT = 80
@@ -34,6 +34,7 @@ class ToolRowRenderOptions:
     include_artifacts: bool = True
     ascii_only: bool = True
     icon: str = DEFAULT_TOOL_ICON
+    running_icon: str = DEFAULT_TOOL_RUNNING_ICON
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +317,9 @@ def _status_marker(tool: ToolCallStep, *, options: ToolRowRenderOptions) -> str:
         return markers.get(tool.status, "-")
     if tool.status == "cancelled":
         return "!"
+    if tool.status in ("running", "pending"):
+        # Hollow marker while in flight; it "fills in" to ``icon`` on landing.
+        return options.running_icon
     return options.icon
 
 

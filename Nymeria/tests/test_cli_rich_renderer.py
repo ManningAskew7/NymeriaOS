@@ -2635,3 +2635,23 @@ def test_tool_row_result_preview_strips_terminal_control_codes() -> None:
     assert "\x1b" not in preview
     assert "\x9b" not in preview
     assert "ok" in preview and "done" in preview
+
+
+def test_rich_renderer_running_rows_use_hollow_marker_and_fill_on_completion() -> None:
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    plain = ANSI_RE.sub("", output.stdout_text)
+    assert "✧ slow_tool running" in plain  # hollow while in flight
+    before = output.stdout_text
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=2.0,
+    )
+    tail = ANSI_RE.sub("", output.stdout_text[len(before) :])
+    assert "❖ slow_tool" in tail  # fills in on landing
+    assert "✧" not in tail
