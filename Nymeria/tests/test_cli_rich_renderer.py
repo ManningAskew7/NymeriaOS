@@ -83,6 +83,7 @@ class FakePromptRenderer:
         self.output = output
         self.erase_count = 0
         self.reset_count = 0
+        self.render_count = 0
         self._min_available_height = 99
         self._last_screen = object()
         self.cpr_request_count = 0
@@ -94,6 +95,15 @@ class FakePromptRenderer:
     def reset(self, *, leave_alternate_screen: bool = True) -> None:
         self.reset_count += 1
         self.output.ops.append(("reset", leave_alternate_screen))
+
+    def render(self, app: Any, layout: Any, is_done: bool = False) -> None:
+        from prompt_toolkit.application.current import get_app
+
+        self.render_count += 1
+        self.output.ops.append(("layout_render", is_done))
+        # Layout containers resolve get_app() during the walk; record that
+        # the engine entered set_app around the synchronous render.
+        self.output.ops.append(("app_is_current", get_app() is app))
 
     def request_absolute_cursor_position(self) -> None:
         self.cpr_request_count += 1
@@ -183,6 +193,7 @@ def _make_scroll_region_runtime(
     application = SimpleNamespace(
         output=output,
         renderer=prompt_renderer,
+        layout=SimpleNamespace(),
         is_running=True,
         _on_resize=lambda: None,
     )
@@ -979,6 +990,7 @@ def test_rich_runtime_follow_footer_wraps_transcript_writes_without_terminal_run
         runtime.application = SimpleNamespace(
             output=output,
             renderer=prompt_renderer,
+            layout=SimpleNamespace(),
             is_running=True,
         )
         events: list[str] = []
@@ -1009,6 +1021,12 @@ def test_rich_runtime_follow_footer_wraps_transcript_writes_without_terminal_run
     # The set is flushed immediately: the Rich transcript rides a different
     # buffered stream, so an unflushed set could land after the content.
     assert ops[sync_set + 1] == ("flush", None)
+    # The pt layout repaints synchronously INSIDE the window (after the
+    # cursor save, before the reset), so the footer is never visible in its
+    # erased state: erase + transcript + repaint paint as one frame.
+    render_index = ops.index(("layout_render", False))
+    assert ops.index(("raw", "\x1b7")) < render_index < sync_reset
+    assert ("app_is_current", True) in ops  # set_app wrapped the render
 
 
 def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
@@ -1042,6 +1060,7 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
         runtime.application = SimpleNamespace(
             output=output,
             renderer=prompt_renderer,
+            layout=SimpleNamespace(),
             is_running=True,
         )
         events: list[str] = []
@@ -2470,7 +2489,6 @@ def test_tool_row_ticker_runs_while_live_rows_exist(monkeypatch: Any) -> None:
 
     async def exercise() -> None:
         runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
-        # Pinned: elapsed ticks render (the float phase skips them, below).
         runtime.footer._pinned_footer_active = True
         runtime.footer._pinned_scroll_bottom = 19
         live = {"rows": True}
@@ -2478,7 +2496,6 @@ def test_tool_row_ticker_runs_while_live_rows_exist(monkeypatch: Any) -> None:
         runtime.renderer = SimpleNamespace(
             has_live_tool_rows=lambda: live["rows"],
             render_running_tick=lambda now: ticks.append(now),
-            prune_live_tool_rows=lambda: None,
         )
 
         async def fake_render(callback: Any) -> None:
@@ -2499,23 +2516,22 @@ def test_tool_row_ticker_runs_while_live_rows_exist(monkeypatch: Any) -> None:
     asyncio.run(exercise())
 
 
-def test_tool_row_ticker_skips_float_phase(monkeypatch: Any) -> None:
-    # Pre-pin, a tick would erase and repaint the whole prompt_toolkit
-    # footer just to advance the elapsed counter (a once-per-second blink),
-    # so the ticker stays alive but renders nothing until the footer pins.
+def test_tool_row_ticker_ticks_while_floating(monkeypatch: Any) -> None:
+    # Float-phase ticks are safe again: the render window repaints the pt
+    # layout synchronously inside its synchronized-output bracket, so the
+    # elapsed timer counts from the very first pre-pin row.
     from nymeria.triggers.cli import repl_runtime as repl_runtime_module
 
     monkeypatch.setattr(repl_runtime_module, "_TOOL_ROW_TICK_SECONDS", 0.01)
 
     async def exercise() -> None:
         runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+        assert runtime.pinned_footer_active() is False  # floating
         live = {"rows": True}
         ticks: list[float] = []
-        prunes: list[bool] = []
         runtime.renderer = SimpleNamespace(
             has_live_tool_rows=lambda: live["rows"],
             render_running_tick=lambda now: ticks.append(now),
-            prune_live_tool_rows=lambda: prunes.append(True),
         )
 
         async def fake_render(callback: Any) -> None:
@@ -2525,14 +2541,6 @@ def test_tool_row_ticker_skips_float_phase(monkeypatch: Any) -> None:
         runtime._ensure_tool_row_ticker()
         assert runtime._tool_row_ticker_task is not None
         await asyncio.sleep(0.06)
-        assert ticks == []  # floating: skipped, but the loop stays alive
-        assert prunes  # dead slots still cleared so the loop can terminate
-        assert not runtime._tool_row_ticker_task.done()
-
-        # The footer pins mid-run: elapsed ticks resume on the same rows.
-        runtime.footer._pinned_footer_active = True
-        runtime.footer._pinned_scroll_bottom = 19
-        await asyncio.sleep(0.06)
         assert ticks
 
         live["rows"] = False
@@ -2540,24 +2548,6 @@ def test_tool_row_ticker_skips_float_phase(monkeypatch: Any) -> None:
         await runtime.stop_tool_row_ticker_async()
 
     asyncio.run(exercise())
-
-
-def test_rich_renderer_prune_live_tool_rows_drops_dead_slots() -> None:
-    # A stream that dies mid-tool leaves a registered slot with no running
-    # step; the liveness-only prune must clear it (no terminal writes) so
-    # the ticker's float-phase skip can still terminate the loop.
-    renderer, output, _context = _live_row_renderer()
-    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
-    renderer.render_event(
-        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
-        now=1.0,
-    )
-    assert renderer.has_live_tool_rows() is True
-    renderer.state.active_tool_calls.clear()  # stream died
-    before = output.stdout_text
-    renderer.prune_live_tool_rows()
-    assert renderer.has_live_tool_rows() is False
-    assert output.stdout_text == before  # liveness only, no writes
 
 
 def test_follow_footer_sync_output_reset_survives_callback_exception() -> None:
@@ -2589,6 +2579,82 @@ def test_follow_footer_sync_output_reset_survives_callback_exception() -> None:
         assert ops.count(("raw", "\x1b[?2026h")) == 1
         assert ops.count(("raw", "\x1b[?2026l")) == 1
         assert ops.index(("raw", "\x1b[?2026h")) < ops.index(("raw", "\x1b[?2026l"))
+
+
+def test_follow_footer_skips_in_window_repaint_during_run_in_terminal() -> None:
+    # Mirror of Application._redraw's guard: during run_in_terminal (raw
+    # input() prompts, e.g. /connect) the layout must NOT be painted over
+    # the user's half-typed line in cooked mode.
+    async def exercise() -> list[tuple[str, object]]:
+        runtime, output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+        runtime.application._running_in_terminal = True
+        await runtime.render_above_prompt(lambda: None)
+        return output.ops
+
+    ops = asyncio.run(exercise())
+    assert not any(op[0] == "layout_render" for op in ops)
+    # The synchronized window itself still brackets the transcript write.
+    assert ops.count(("raw", "\x1b[?2026h")) == 1
+    assert ops.count(("raw", "\x1b[?2026l")) == 1
+
+
+def test_follow_footer_repaint_fault_schedules_full_resync() -> None:
+    # A mid-render fault leaves pt's cursor belief behind the physical
+    # state; the fallback must be the engine's full redraw (clear + replay),
+    # never a bare invalidate that would repaint from a stale origin.
+    async def exercise() -> tuple[list[tuple[str, object]], Any]:
+        runtime, output, prompt_renderer, _controller = _make_scroll_region_runtime()
+
+        def broken_render(app: Any, layout: Any, is_done: bool = False) -> None:
+            raise RuntimeError("layout walk fault")
+
+        prompt_renderer.render = broken_render  # type: ignore[method-assign]
+        redraw_mock = AsyncMock()
+        runtime.footer.redraw = redraw_mock  # type: ignore[method-assign]
+        await runtime.render_above_prompt(lambda: None)  # must not raise
+        await asyncio.sleep(0)  # let the resync task run
+        return output.ops, redraw_mock
+
+    ops, redraw_mock = asyncio.run(exercise())
+    assert redraw_mock.await_count == 1
+    assert ops.count(("raw", "\x1b[?2026l")) == 1  # window still closed
+
+
+def test_follow_footer_activation_compensates_live_pt_scroll() -> None:
+    # With the in-window repaint, _last_screen is populated at pin time, so
+    # activation's pt_scroll compensation runs live: last_h=3 with
+    # rows_below=1 means pt already scrolled 2 of the desired 5 rows, and
+    # activation must add only the remaining 3.
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24, rows_below_cursor=99)
+    prompt_renderer = FakePromptRenderer(output)
+    prompt_renderer._min_available_height = 1  # CPR: 1 row below cursor
+    prompt_renderer._last_screen = SimpleNamespace(height=3)
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        layout=SimpleNamespace(),
+        is_running=True,
+    )
+    assert runtime.save_follow_footer_transcript_cursor() is True
+    runtime.footer._follow_footer_pin_probe_pending = True
+    runtime.prepare_follow_footer_render()
+    assert runtime.pinned_footer_active() is True
+    # desired_total_scroll = footer(5) - rb(1) + 1 = 5; pt_scroll = 3 - 1 = 2.
+    assert ("raw", "\r\n" * 3) in output.ops
+    assert ("raw", "\r\n" * 5) not in output.ops
 
 
 def test_rich_renderer_orphaned_running_steps_stay_invisible() -> None:

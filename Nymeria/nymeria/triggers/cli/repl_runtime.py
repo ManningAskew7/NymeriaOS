@@ -371,24 +371,19 @@ class _RichReplRuntime:
                 # Settle any debounced resize first, mirroring
                 # render_event_above_prompt: a tick must never rewrite rows
                 # against pre-resize geometry the redraw is about to
-                # rebuild. Settling can DEACTIVATE the pinned footer, so the
-                # float check must come after it, or a tick admitted as
-                # pinned could erase the pt layout while floating.
+                # rebuild.
                 await self.footer.settle_pending_resize()
-                if (
-                    self.footer.scroll_region_enabled()
-                    and not self.footer.pinned_footer_active()
-                ):
-                    # Float phase: a tick would erase and repaint the whole
-                    # prompt_toolkit footer just to advance an elapsed
-                    # counter, a once-per-second blink (dogfood-reported).
-                    # Skip: rows show NO ticking timer pre-pin; completion
-                    # flips still land, and the timer starts on the same
-                    # rows once the footer pins (registrations survive
-                    # activation). Still prune dead slots, or a stream that
-                    # died mid-tool would keep this loop awake forever.
-                    renderer.prune_live_tool_rows()
+                if self.footer.live_row_context() is None:
+                    # Nothing paintable (no cursor knowledge yet, or the
+                    # geometry gate is off): a dead-context tick writes
+                    # nothing, so run it OUTSIDE a render window to clear
+                    # stale slots without paying erase + CPR + repaint.
+                    renderer.render_running_tick(time.monotonic())
                     continue
+                # Float-phase ticks are safe again: the render window
+                # repaints the pt layout synchronously inside its
+                # synchronized-output bracket, so a tick no longer blinks
+                # the footer while it floats.
                 await self.footer.render_above_prompt(
                     partial(renderer.render_running_tick, time.monotonic())
                 )

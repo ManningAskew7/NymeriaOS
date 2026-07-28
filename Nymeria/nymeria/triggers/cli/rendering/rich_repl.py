@@ -639,20 +639,6 @@ class RichReplRenderer:
 
         return bool(self._live_tool_rows)
 
-    def prune_live_tool_rows(self) -> None:
-        """Drop live-row slots whose steps are no longer running.
-
-        Liveness-only companion to `render_running_tick` for callers that
-        must not write to the terminal (the ticker's float-phase skip):
-        without it, a stream that died mid-tool would leave a slot behind
-        and `has_live_tool_rows` would keep the ticker awake forever.
-        """
-
-        for tool_id in list(self._live_tool_rows):
-            step = self.state.active_tool_calls.get(tool_id)
-            if step is None or step.status != "running":
-                self._live_tool_rows.pop(tool_id, None)
-
     def render_running_tick(self, now: float | None = None) -> None:
         """Refresh elapsed timers on still-visible running tool rows."""
 

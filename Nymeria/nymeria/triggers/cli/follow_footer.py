@@ -723,6 +723,7 @@ class FollowFooterEngine:
                 output.flush()
                 self._request_follow_footer_pin_probe()
                 output.write_raw("\x1b7")
+                self._render_prompt_layout_in_window(app)
         finally:
             output.write_raw("\x1b[?2026l")
             output.flush()
@@ -731,6 +732,63 @@ class FollowFooterEngine:
             # received (the next \x1b8 would restore to a stale row).
             self._follow_footer_transcript_cursor_saved = True
             self._follow_footer_pin_probe_pending = True
+            # The frame is already painted; this invalidate exists for the
+            # BOOKKEEPING pass: the pin decision runs in before_render, so
+            # without it the just-requested CPR answer would wait for pt's
+            # 0.1s auto-refresh (a diff render of an up-to-date screen
+            # writes ~nothing).
+            with suppress(Exception):
+                self.invalidate()
+
+    def _render_prompt_layout_in_window(self, app: Any) -> None:
+        """Synchronously repaint the prompt_toolkit layout inside the window.
+
+        The float phase reaches the transcript by erasing the pt layout;
+        repainting it HERE, still inside the synchronized-output bracket,
+        makes erase + transcript write + footer repaint one painted frame
+        (previously the repaint came from an async invalidate a loop
+        iteration later, so the footer was visibly missing in between: the
+        float-phase blink, once per streamed event and once per elapsed
+        tick). Correctness rides the same contract the async repaint used:
+        after `renderer.erase()` prompt_toolkit resets to a fresh screen and
+        treats the CURRENT physical cursor as the layout origin, and the
+        cursor sits at the transcript tail we just saved with `\\x1b7` (pt
+        never touches the DECSC slot). `set_app` supplies the application
+        contextvar because layout containers resolve `get_app()` during the
+        walk. Any fault falls back to the pre-pass async invalidate.
+        """
+
+        try:
+            if not bool(getattr(app, "is_running", False)):
+                return
+            if bool(getattr(app, "_running_in_terminal", False)):
+                # Mirror Application._redraw's guard: during run_in_terminal
+                # (raw input() prompts, e.g. /connect) pt deliberately
+                # suppresses layout paints; rendering here would paint the
+                # footer over the user's half-typed line in cooked mode.
+                return
+            renderer = app.renderer
+            layout = app.layout
+            from prompt_toolkit.application.current import set_app
+
+            with set_app(app):
+                renderer.render(app, layout)
+        except Exception:  # noqa: BLE001 - repaint fault: hard resync below.
+            # A mid-render fault leaves pt's cursor/screen belief behind the
+            # physical state (the half-painted layout moved the cursor), so
+            # a bare invalidate would repaint from a stale origin and the
+            # NEXT window's erase could destroy transcript rows. Schedule
+            # the engine's full redraw (clear + reducer replay + repaint)
+            # to resync instead.
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self.redraw(),
+                    name="NymeriaCLIRichRepaintResync",
+                )
+            except Exception:  # noqa: BLE001 - last resort: async repaint.
+                with suppress(Exception):
+                    self.invalidate()
 
     def _render_in_pinned_footer(self, callback: Callable[[], Any]) -> Any:
         app = self.application
@@ -792,8 +850,9 @@ class FollowFooterEngine:
         await self.render_above_prompt(
             lambda: self.renderer.render_event(event, now=time.monotonic())
         )
-        if self.scroll_region_enabled() and not self._pinned_footer_active:
-            self.invalidate()
+        # No float-phase invalidate here anymore: the render window repaints
+        # the pt layout synchronously inside its synchronized-output bracket
+        # (and falls back to invalidate itself on a repaint fault).
 
     async def render_from_screen_top(self, callback: Callable[[], Any]) -> Any:
         if not self.scroll_region_enabled() or self.application is None:
