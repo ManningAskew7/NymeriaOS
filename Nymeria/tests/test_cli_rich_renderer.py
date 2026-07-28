@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from cli_fixtures import CapturedRenderOutput, FakeAgentClient, FakeTerminalCapabilities
 from rich.console import Console
 
@@ -999,6 +1000,15 @@ def test_rich_runtime_follow_footer_wraps_transcript_writes_without_terminal_run
     assert not any(op == ("raw", "\x1b[1;14r") for op in ops)
     assert not any(op == ("raw", "\x1b[r") for op in ops)
     assert erase_count == 1
+    # Synchronized-output window: set before any visible mutation, reset
+    # after the cursor save, so the write paints as one frame.
+    sync_set = ops.index(("raw", "\x1b[?2026h"))
+    sync_reset = ops.index(("raw", "\x1b[?2026l"))
+    assert sync_set < ops.index(("hide_cursor", None))
+    assert ops.index(("raw", "\x1b7")) < sync_reset
+    # The set is flushed immediately: the Rich transcript rides a different
+    # buffered stream, so an unflushed set could land after the content.
+    assert ops[sync_set + 1] == ("flush", None)
 
 
 def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
@@ -1069,6 +1079,12 @@ def test_rich_runtime_pins_footer_after_follow_footer_reaches_bottom() -> None:
     assert ("raw", "\x1b[r") in ops
     assert ("erase", False) not in ops
     assert erase_count == 1
+    # Synchronized-output window brackets the whole pinned write (margins,
+    # restore, callback, save, cursor restore) into one painted frame.
+    sync_set = ops.index(("raw", "\x1b[?2026h"))
+    sync_reset = ops.index(("raw", "\x1b[?2026l"))
+    assert sync_set < ops.index(("raw", "\x1b[1;19r"))
+    assert ops.index(("raw", "\x1b[r")) < sync_reset
 
 
 def test_rich_runtime_restores_input_cursor_after_pinned_transcript_write() -> None:
@@ -2454,11 +2470,15 @@ def test_tool_row_ticker_runs_while_live_rows_exist(monkeypatch: Any) -> None:
 
     async def exercise() -> None:
         runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+        # Pinned: elapsed ticks render (the float phase skips them, below).
+        runtime.footer._pinned_footer_active = True
+        runtime.footer._pinned_scroll_bottom = 19
         live = {"rows": True}
         ticks: list[float] = []
         runtime.renderer = SimpleNamespace(
             has_live_tool_rows=lambda: live["rows"],
             render_running_tick=lambda now: ticks.append(now),
+            prune_live_tool_rows=lambda: None,
         )
 
         async def fake_render(callback: Any) -> None:
@@ -2477,6 +2497,98 @@ def test_tool_row_ticker_runs_while_live_rows_exist(monkeypatch: Any) -> None:
         await runtime.stop_tool_row_ticker_async()
 
     asyncio.run(exercise())
+
+
+def test_tool_row_ticker_skips_float_phase(monkeypatch: Any) -> None:
+    # Pre-pin, a tick would erase and repaint the whole prompt_toolkit
+    # footer just to advance the elapsed counter (a once-per-second blink),
+    # so the ticker stays alive but renders nothing until the footer pins.
+    from nymeria.triggers.cli import repl_runtime as repl_runtime_module
+
+    monkeypatch.setattr(repl_runtime_module, "_TOOL_ROW_TICK_SECONDS", 0.01)
+
+    async def exercise() -> None:
+        runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+        live = {"rows": True}
+        ticks: list[float] = []
+        prunes: list[bool] = []
+        runtime.renderer = SimpleNamespace(
+            has_live_tool_rows=lambda: live["rows"],
+            render_running_tick=lambda now: ticks.append(now),
+            prune_live_tool_rows=lambda: prunes.append(True),
+        )
+
+        async def fake_render(callback: Any) -> None:
+            callback()
+
+        runtime.footer.render_above_prompt = fake_render  # type: ignore[method-assign]
+        runtime._ensure_tool_row_ticker()
+        assert runtime._tool_row_ticker_task is not None
+        await asyncio.sleep(0.06)
+        assert ticks == []  # floating: skipped, but the loop stays alive
+        assert prunes  # dead slots still cleared so the loop can terminate
+        assert not runtime._tool_row_ticker_task.done()
+
+        # The footer pins mid-run: elapsed ticks resume on the same rows.
+        runtime.footer._pinned_footer_active = True
+        runtime.footer._pinned_scroll_bottom = 19
+        await asyncio.sleep(0.06)
+        assert ticks
+
+        live["rows"] = False
+        await asyncio.sleep(0.06)
+        await runtime.stop_tool_row_ticker_async()
+
+    asyncio.run(exercise())
+
+
+def test_rich_renderer_prune_live_tool_rows_drops_dead_slots() -> None:
+    # A stream that dies mid-tool leaves a registered slot with no running
+    # step; the liveness-only prune must clear it (no terminal writes) so
+    # the ticker's float-phase skip can still terminate the loop.
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    assert renderer.has_live_tool_rows() is True
+    renderer.state.active_tool_calls.clear()  # stream died
+    before = output.stdout_text
+    renderer.prune_live_tool_rows()
+    assert renderer.has_live_tool_rows() is False
+    assert output.stdout_text == before  # liveness only, no writes
+
+
+def test_follow_footer_sync_output_reset_survives_callback_exception() -> None:
+    # The whole point of the try/finally: a raising transcript callback
+    # must still emit exactly one mode-2026 reset on both render windows,
+    # or the terminal stops painting.
+    async def exercise() -> tuple[list[tuple[str, object]], list[tuple[str, object]]]:
+        runtime, output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+
+        def boom() -> None:
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await runtime.render_above_prompt(boom)
+        float_ops = list(output.ops)
+        output.ops.clear()
+
+        runtime.footer._follow_footer_transcript_cursor_saved = True
+        runtime.footer._pinned_footer_active = True
+        runtime.footer._pinned_footer_height = 5
+        runtime.footer._pinned_scroll_bottom = 19
+        runtime.footer._pinned_terminal_size = (80, 24)
+        with pytest.raises(RuntimeError, match="boom"):
+            await runtime.render_above_prompt(boom)
+        return float_ops, list(output.ops)
+
+    float_ops, pinned_ops = asyncio.run(exercise())
+    for ops in (float_ops, pinned_ops):
+        assert ops.count(("raw", "\x1b[?2026h")) == 1
+        assert ops.count(("raw", "\x1b[?2026l")) == 1
+        assert ops.index(("raw", "\x1b[?2026h")) < ops.index(("raw", "\x1b[?2026l"))
 
 
 def test_rich_renderer_orphaned_running_steps_stay_invisible() -> None:
