@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Container, Iterable, NamedTuple, Optional
 
 from ..config import get_settings
+from .storage_paths import write_text_atomic
 from .time_utils import ensure_aware_utc, parse_usage_timestamp, utc_now
 
 logger = logging.getLogger(__name__)
@@ -98,9 +99,9 @@ class CapabilityUsageStore:
 
     def _write_locked(self, data: dict[str, Any]) -> None:
         try:
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-            tmp.replace(self.path)
+            write_text_atomic(
+                self.path, json.dumps(data, indent=2, sort_keys=True)
+            )
         except Exception:
             logger.warning("Failed to write capability usage store", exc_info=True)
 

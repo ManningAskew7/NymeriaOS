@@ -83,10 +83,10 @@ def _store_document(path: Path, document: dict, cap_bytes: int) -> None:
                 f"workflow state exceeds the {cap_bytes}-byte cap; store "
                 "less or delete unused keys"
             )
+    from ..storage_paths import write_text_atomic
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(payload, encoding="utf-8")
-    temp.replace(path)
+    write_text_atomic(path, payload)
 
 
 def _require_saved_workflow(ctx: VerbContext, verb: str) -> str:

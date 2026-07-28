@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import safe_path_segment, write_text_atomic
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -145,10 +145,10 @@ class ThreadMetadataManager:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             store.updated_at = utc_now()
-            temp_path = path.with_suffix(".tmp")
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(store.model_dump(mode="json"), f, indent=2, default=str)
-            temp_path.replace(path)
+            write_text_atomic(
+                path,
+                json.dumps(store.model_dump(mode="json"), indent=2, default=str),
+            )
             return True
         except Exception as e:
             logger.error(f"Failed to save thread metadata for {store.user_id}: {e}")

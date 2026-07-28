@@ -24,7 +24,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import safe_path_segment, write_text_atomic
 from .time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -144,10 +144,10 @@ class GoalManager:
         path = self._path_for(store.user_id)
         try:
             store.updated_at = utc_now()
-            tmp = path.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(store.model_dump(mode="json"), f, indent=2, default=str)
-            tmp.replace(path)
+            write_text_atomic(
+                path,
+                json.dumps(store.model_dump(mode="json"), indent=2, default=str),
+            )
             return True
         except Exception:
             logger.exception("GoalManager: failed to save store for %s", store.user_id)

@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .storage_paths import write_text_atomic
+
 DEFAULT_HEALTH_DIR = "/tmp/nymeria-health"
 DEFAULT_MAX_AGE_SECONDS = 90
 HEARTBEAT_INTERVAL_SECONDS = 15
@@ -69,9 +71,7 @@ def write_service_heartbeat(
     if details:
         payload["details"] = dict(details)
 
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp_path, path)
+    write_text_atomic(path, json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _read_heartbeat(service: str) -> tuple[dict[str, Any] | None, list[str]]:

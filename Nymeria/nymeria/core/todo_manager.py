@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import safe_path_segment, write_text_atomic
 from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -453,12 +453,10 @@ class TodoManager:
             # Update timestamp
             todo_list.updated_at = utc_now()
 
-            # Write atomically (write to temp file, then rename)
-            temp_path = todos_path.with_suffix(".tmp")
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(todo_list.model_dump(mode="json"), f, indent=2, default=str)
-
-            temp_path.replace(todos_path)
+            write_text_atomic(
+                todos_path,
+                json.dumps(todo_list.model_dump(mode="json"), indent=2, default=str),
+            )
             logger.debug(f"Saved TODO list for user: {todo_list.user_id}")
             return True
 

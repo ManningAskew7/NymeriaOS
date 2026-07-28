@@ -31,7 +31,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import safe_path_segment
+from .storage_paths import safe_path_segment, write_text_atomic
 from .time_utils import ensure_aware_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -334,14 +334,19 @@ class ActivityLog:
         try:
             activity_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Write atomically: deterministic temp path so a crash-orphaned temp
-            # is reclaimed on the next write rather than accumulating.
-            temp_path = activity_path.with_suffix(".tmp")
-            with open(temp_path, "w", encoding="utf-8") as f:
-                for entry in entries:
-                    f.write(json.dumps(entry.model_dump(mode="json"), default=str) + "\n")
-
-            temp_path.replace(activity_path)
+            # Shared atomic write. It uses a RANDOM temp suffix, trading the
+            # old deterministic name (which self-reclaimed a crash-orphaned
+            # temp on the next write) for the guarantee that two processes
+            # writing this file cannot publish each other's half-written
+            # bytes. Corrupting the store is worse than leaving a few stray
+            # KB behind after a hard kill.
+            write_text_atomic(
+                activity_path,
+                "".join(
+                    json.dumps(entry.model_dump(mode="json"), default=str) + "\n"
+                    for entry in entries
+                ),
+            )
             return True
         except Exception as e:  # noqa: BLE001 - degraded write is intentional
             logger.error(f"Failed to save activity for {user_id}: {e}")
