@@ -232,6 +232,11 @@ class RichReplRenderer:
         if not self._attach_line_counter(console):
             self._live_rows_supported = False
 
+    def transcript_line_count(self) -> int:
+        """Physical transcript lines written so far (engine float anchor)."""
+
+        return self._line_counter.count
+
     def set_theme(self, theme: CLITheme) -> None:
         """Update colors for future transcript output."""
 
@@ -528,7 +533,13 @@ class RichReplRenderer:
         self._turn_seen_tool = True
 
     def _live_context(self) -> tuple[int, int] | None:
-        """Return ``(scroll_bottom, generation)`` when in-place rows are safe."""
+        """Return ``(anchor_row, generation)`` when in-place rows are safe.
+
+        ``anchor_row`` is the engine's estimate of the transcript write-cursor
+        row (pinned scroll bottom, or the float-phase CPR snapshot estimate);
+        it only gates the still-on-screen check, while the rewrite itself uses
+        relative cursor moves.
+        """
 
         if not self._live_rows_supported:
             return None
@@ -565,7 +576,7 @@ class RichReplRenderer:
         context = self._live_context()
         if context is None:
             return False
-        _scroll_bottom, generation = context
+        _anchor_row, generation = context
         self._print_tool_row(state, tool)
         self._live_tool_rows[tool.id] = (self._line_counter.count, generation)
         return True
@@ -580,33 +591,35 @@ class RichReplRenderer:
         context = self._live_context()
         if context is None:
             return False
-        scroll_bottom, current_generation = context
+        anchor_row, current_generation = context
         if current_generation != generation:
             return False
-        row = scroll_bottom - 1 - (self._line_counter.count - lines_after_print)
-        if row < 1:
+        up_distance = self._line_counter.count - lines_after_print + 1
+        if up_distance >= anchor_row:
             return False
-        self._write_tool_row_at(row, tool, scroll_bottom)
+        self._write_tool_row_above(up_distance, tool)
         return True
 
-    def _write_tool_row_at(
+    def _write_tool_row_above(
         self,
-        row: int,
+        up_distance: int,
         tool: ToolCallStep,
-        scroll_bottom: int,
         *,
         now: float | None = None,
     ) -> None:
-        """Rewrite one still-visible tool row at an absolute terminal row.
+        """Rewrite one still-visible tool row ``up_distance`` rows above.
 
-        Runs inside the engine's render window (scroll margins set, write
-        cursor at ``scroll_bottom``). Addressing is absolute both ways and no
-        newline is emitted, so the engine's cursor bookkeeping and the shared
-        line counter are untouched.
+        Runs inside the engine's render window with the cursor at the
+        transcript write point. Addressing is fully relative (up, rewrite,
+        back down), so the cursor lands exactly where it started in both the
+        pinned and the floating-footer phases, and no newline is emitted, so
+        the engine's cursor bookkeeping and the shared line counter are
+        untouched. Callers must have validated ``up_distance`` against the
+        anchor row first (the target must still be on screen).
         """
 
         file = self.console.file
-        file.write(f"\x1b[{row};1H\x1b[2K")
+        file.write(f"\x1b[{up_distance}A\r\x1b[2K")
         self.console.print(
             render_tool_row(
                 tool,
@@ -618,7 +631,7 @@ class RichReplRenderer:
             ),
             end="",
         )
-        file.write(f"\x1b[{scroll_bottom};1H")
+        file.write(f"\r\x1b[{up_distance}B")
         self._flush_console_file()
 
     def has_live_tool_rows(self) -> bool:
@@ -638,7 +651,7 @@ class RichReplRenderer:
             # stops instead of spinning on dead rows.
             self._live_tool_rows.clear()
             return
-        scroll_bottom, generation = context
+        anchor_row, generation = context
         selected_now = time.monotonic() if now is None else now
         for tool_id, slot in list(self._live_tool_rows.items()):
             lines_after_print, slot_generation = slot
@@ -651,13 +664,13 @@ class RichReplRenderer:
                 # it): stop ticking; completion falls back to an append.
                 self._live_tool_rows.pop(tool_id, None)
                 continue
-            row = scroll_bottom - 1 - (self._line_counter.count - lines_after_print)
-            if row < 1:
+            up_distance = self._line_counter.count - lines_after_print + 1
+            if up_distance >= anchor_row:
                 # Scrolled out of the visible region: scrollback is
                 # immutable, so stop ticking; completion appends a fresh row.
                 self._live_tool_rows.pop(tool_id, None)
                 continue
-            self._write_tool_row_at(row, step, scroll_bottom, now=selected_now)
+            self._write_tool_row_above(up_distance, step, now=selected_now)
 
     def _render_new_system_messages(self, state: CLIUIState) -> bool:
         printed = False

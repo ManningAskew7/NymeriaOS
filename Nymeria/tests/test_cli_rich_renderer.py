@@ -2231,8 +2231,8 @@ def test_rich_renderer_live_tool_row_prints_at_call_time_and_flips_in_place() ->
     tail = output.stdout_text[len(before_flip) :]
     # In-place rewrite: jump to the row (one above the write cursor), clear,
     # reprint, jump back. No newline means nothing was appended.
-    assert tail.startswith("\x1b[19;1H\x1b[2K")
-    assert tail.endswith("\x1b[20;1H")
+    assert tail.startswith("\x1b[1A\r\x1b[2K")
+    assert tail.endswith("\r\x1b[1B")
     assert "Found 2 matching notes." in tail
     assert "running" not in ANSI_RE.sub("", tail)
     assert "\n" not in tail
@@ -2263,9 +2263,9 @@ def test_rich_renderer_live_parallel_tool_rows_flip_at_their_own_rows() -> None:
         now=3.0,
     )
     tail = output.stdout_text[len(before) :]
-    # beta printed last sits one above the cursor (19); alpha one higher (18).
-    assert "\x1b[19;1H\x1b[2K" in tail
-    assert "\x1b[18;1H\x1b[2K" in tail
+    # beta printed last sits one above the cursor; alpha one higher.
+    assert "\x1b[1A\r\x1b[2K" in tail
+    assert "\x1b[2A\r\x1b[2K" in tail
     assert "B done" in tail
     assert "A done" in tail
     assert "\n" not in tail
@@ -2292,8 +2292,8 @@ def test_rich_renderer_live_flip_accounts_for_interleaved_lines() -> None:
         now=3.0,
     )
     tail = output.stdout_text[len(before) :]
-    expected_row = 20 - 1 - lines_between
-    assert f"\x1b[{expected_row};1H\x1b[2K" in tail
+    expected_up = lines_between + 1
+    assert f"\x1b[{expected_up}A\r\x1b[2K" in tail
     assert "\n" not in tail
 
 
@@ -2392,8 +2392,8 @@ def test_rich_renderer_running_tick_updates_elapsed_in_place() -> None:
 
     renderer.render_running_tick(now=13.0)
     tail = output.stdout_text[len(before) :]
-    assert tail.startswith("\x1b[19;1H\x1b[2K")
-    assert tail.endswith("\x1b[20;1H")
+    assert tail.startswith("\x1b[1A\r\x1b[2K")
+    assert tail.endswith("\r\x1b[1B")
     assert "running 12s" in ANSI_RE.sub("", tail)
     assert "\n" not in tail
     assert renderer.has_live_tool_rows() is True
@@ -2529,8 +2529,8 @@ def test_rich_renderer_counts_attached_transcript_console_lines() -> None:
         now=2.0,
     )
     tail = output.stdout_text[len(before) :]
-    # Two counted foreign lines: the row moved from 19 up to 17.
-    assert tail.startswith("\x1b[17;1H\x1b[2K")
+    # Two counted foreign lines push the row two further above the cursor.
+    assert tail.startswith("\x1b[3A\r\x1b[2K")
     assert "\n" not in tail
 
 
@@ -2569,7 +2569,7 @@ def test_rich_renderer_uncounted_stderr_keeps_flip_rows_stable() -> None:
         now=2.0,
     )
     tail = output.stdout_text[len(before) :]
-    assert tail.startswith("\x1b[19;1H\x1b[2K")
+    assert tail.startswith("\x1b[1A\r\x1b[2K")
 
 
 def test_rich_renderer_running_tick_clears_slots_when_context_dies() -> None:
@@ -2655,3 +2655,113 @@ def test_rich_renderer_running_rows_use_hollow_marker_and_fill_on_completion() -
     tail = ANSI_RE.sub("", output.stdout_text[len(before) :])
     assert "❖ slow_tool" in tail  # fills in on landing
     assert "✧" not in tail
+
+
+def test_follow_footer_float_snapshot_supplies_live_row_context() -> None:
+    # Before the footer first pins, the pin-probe CPR responses give the
+    # engine cursor knowledge; live rows must work in that float phase too.
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24, rows_below_cursor=99)
+    prompt_renderer = FakePromptRenderer(output)
+    prompt_renderer._min_available_height = 10  # CPR answered: 10 rows below
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=True,
+    )
+    assert runtime.footer.live_row_context() is None  # no snapshot yet
+
+    assert runtime.save_follow_footer_transcript_cursor() is True
+    runtime.footer._follow_footer_pin_probe_pending = True
+    runtime.prepare_follow_footer_render()
+    # 10 rows below > footer height: still floating, but snapshot stashed.
+    assert runtime.pinned_footer_active() is False
+    context = runtime.footer.live_row_context()
+    assert context is not None
+    anchor, generation = context
+    # Deliberately one row ABOVE the true CPR cursor row (24 - 10 + 1): a
+    # conservative margin, so the guard only ever skips a flip, never
+    # mis-addresses one.
+    assert anchor == 24 - 10
+
+    # Printing transcript lines moves the anchor down with the cursor.
+    runtime.renderer._line_counter.count += 3
+    assert runtime.footer.live_row_context() == (24 - 10 + 3, generation)
+
+    # The anchor clamps at height - footer: prompt_toolkit scrolls the
+    # write point back to that boundary whenever its layout grows, and
+    # those scrolls are uncounted, so the estimate must never pass it.
+    runtime.renderer._line_counter.count += 50
+    clamped = runtime.footer.live_row_context()
+    assert clamped is not None
+    assert clamped[0] == 24 - 5  # 5 footer rows in this fixture
+
+    # A resize voids the snapshot (rows_below was measured against the old
+    # geometry); matching geometry brings it back.
+    output.rows = 30
+    assert runtime.footer.live_row_context() is None
+    output.rows = 24
+    assert runtime.footer.live_row_context() == clamped
+
+    # Destructive transitions drop the snapshot with the generation bump.
+    runtime.footer._deactivate_pinned_footer(reset_terminal=False)
+    assert runtime.footer.live_row_context() is None
+
+
+def test_follow_footer_live_rows_survive_float_to_pin_activation() -> None:
+    # A tool row registered during the float phase must stay flippable when
+    # the growing transcript pins the footer: activation lands the content
+    # tail one row above scroll_bottom (the same relative geometry the float
+    # phase maintained), so the generation deliberately does not bump.
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24, rows_below_cursor=99)
+    prompt_renderer = FakePromptRenderer(output)
+    prompt_renderer._min_available_height = 10  # float: 10 rows below > footer
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=True,
+    )
+    assert runtime.save_follow_footer_transcript_cursor() is True
+    runtime.footer._follow_footer_pin_probe_pending = True
+    runtime.prepare_follow_footer_render()
+    float_context = runtime.footer.live_row_context()
+    assert float_context is not None
+    assert runtime.pinned_footer_active() is False
+
+    # The transcript grows until the next probe reports the footer at the
+    # bottom (rows below == footer height); activation pins without
+    # invalidating live registrations.
+    assert runtime.save_follow_footer_transcript_cursor() is True
+    runtime.footer._follow_footer_pin_probe_pending = True
+    prompt_renderer._min_available_height = 5
+    runtime.prepare_follow_footer_render()
+    assert runtime.pinned_footer_active() is True
+    pinned_context = runtime.footer.live_row_context()
+    assert pinned_context is not None
+    assert pinned_context[0] == 19  # 24 rows - 5 footer rows
+    assert pinned_context[1] == float_context[1]  # same generation
