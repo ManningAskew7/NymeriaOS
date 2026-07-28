@@ -13,6 +13,7 @@ re-derive it.
 import logging
 import time
 from collections.abc import Callable
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
 import httpx
@@ -33,12 +34,15 @@ from ...cliproxy.management_client import (
     CLIProxyUnsupported,
     configured_gatekeeper_keys,
     confirm_login_landed,
+    import_auth_file,
     resolve_or_mint_gatekeeper,
 )
 from ...core.thread_config import ThreadConfig, ThreadLLMConfig
 from ..schemas.cliproxy import (
     CLIProxyApplyRouteRequest,
     CLIProxyApplyRouteResponse,
+    CLIProxyAuthFileImportRequest,
+    CLIProxyAuthFileImportResponse,
     CLIProxyAuthFilePatchRequest,
     CLIProxyConfigPatchRequest,
     CLIProxyOAuthCallbackRequest,
@@ -505,6 +509,44 @@ def create_cliproxy_router(
                 == spec.auth_file_provider
             ]
         return files
+
+    @router.post("/auth-files")
+    async def import_auth_file_route(
+        request: CLIProxyAuthFileImportRequest,
+        admin=Depends(require_admin_user),
+    ) -> CLIProxyAuthFileImportResponse:
+        """Import an auths/*.json document. Name hygiene is REST-only
+        (the headless twin takes a local Path); the trust ladder itself
+        (JSON validation, upload, confirm against the entry listed under
+        the UPLOADED name, Claude fixup) is the shared
+        management_client.import_auth_file, so an accepted-but-inactive
+        file reports "inactive", never a false success."""
+        spec = _require_spec(request.provider)
+        name = request.name.strip()
+        if (
+            not name
+            or len(name) > 128
+            or PurePosixPath(name).name != name
+            or PureWindowsPath(name).name != name
+            or name.startswith(".")
+            or not name.lower().endswith(".json")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Expected a bare *.json auth-file name",
+            )
+        client = _client_or_400()
+        try:
+            status, detail, account = await import_auth_file(
+                client, spec, name, request.content
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except CLIProxyManagementError as error:
+            raise _raise_for(error) from error
+        return CLIProxyAuthFileImportResponse(
+            status=status, account=account, detail=detail
+        )
 
     @router.patch("/auth-files/{name}")
     async def patch_auth_file(

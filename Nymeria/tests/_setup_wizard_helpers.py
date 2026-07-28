@@ -146,7 +146,14 @@ class _FakeCLIProxyClient:
         cls = type(self)
         cls.calls.append(("upload_auth_file", (name, content)))
         if cls.login_lands is not None:
-            cls.auth_files = [*cls.auth_files, dict(cls.login_lands)]
+            # An upload lands under the UPLOADED name (verified live:
+            # multipart filenames round-trip verbatim into the list); the
+            # OAuth path above keeps login_lands verbatim because the
+            # proxy names its own OAuth files.
+            cls.auth_files = [
+                *cls.auth_files,
+                {**cls.login_lands, "name": name},
+            ]
 
     async def ensure_tool_prefix_disabled(self, name):
         type(self).calls.append(("ensure_tool_prefix_disabled", name))

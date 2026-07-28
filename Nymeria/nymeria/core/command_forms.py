@@ -67,6 +67,7 @@ dispatch side effects that a pure text forwarder would drop.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -189,3 +190,69 @@ def command_data(
     if state:
         data["state"] = state
     return data or None
+
+
+# -- the chained-command step rail (shared by /provider setup + cliproxy) --
+
+
+def chain_footer(active_tab: dict[str, Any], tab_count: int) -> str:
+    """Word the Enter action for the active tab's field kind: a text tab
+    submits what was typed, a radio tab applies the selection."""
+
+    enter_word = (
+        "Enter submit"
+        if any(
+            field_def.get("kind") == "text"
+            for field_def in active_tab.get("fields") or []
+        )
+        else "Enter apply"
+    )
+    return (
+        f"←→ step · {enter_word} · Esc close"
+        if tab_count > 1
+        else f"{enter_word} · Esc close"
+    )
+
+
+def chain_form_output(
+    title: str,
+    tabs: list[dict[str, Any]],
+    active_tab: dict[str, Any],
+    lines: list[str],
+    *,
+    fallback_text: str,
+) -> CommandOutput:
+    """Render one chained-command response: tabs, one active, guidance
+    markdown (the step-rail idiom the module docstring describes)."""
+
+    active_tab["active"] = True
+    submit = active_tab.get("submit") or {}
+    form = form_payload(
+        title,
+        tabs,
+        submit_command=str(submit.get("command") or ""),
+        footer_hint=chain_footer(active_tab, len(tabs)),
+    )
+    text = "\n".join(line for line in lines if line) or fallback_text
+    return CommandOutput("[Info]: " + text, data=command_data(form=form))
+
+
+def rest_value(rest: str) -> str:
+    """Everything after a step token, whitespace-trimmed, case intact.
+
+    Derived from the handler's ``rest`` (not the shlex ``args``) so secrets
+    and URLs survive characters the arg splitter would mangle. One
+    exception: the form client shell-quotes a value containing whitespace,
+    so a value that arrives as exactly one quoted token is unquoted back.
+    """
+
+    parts = rest.split(None, 1)
+    value = parts[1].strip() if len(parts) > 1 else ""
+    if value[:1] in ("'", '"'):
+        try:
+            tokens = shlex.split(value)
+        except ValueError:
+            return value
+        if len(tokens) == 1:
+            return tokens[0]
+    return value

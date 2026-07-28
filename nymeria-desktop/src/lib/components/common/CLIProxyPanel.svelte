@@ -16,14 +16,27 @@
   let requestRetry = $state<string>('');
   let routingStrategy = $state<string>('');
   let knobsLoaded = $state(false);
+  let knobsDirty = $state(false);
 
-  onMount(async () => {
+  // Shared by mount AND the Refresh button, so a proxy that comes up after
+  // mount still gets its settings block (mount-only loading left it hidden
+  // until the user left and re-entered the tab). Refresh deliberately does
+  // NOT force a capability re-probe: each forced probe registers a dead
+  // pending OAuth session per catalog provider on the proxy. The trade:
+  // after a proxy binary swap, capability flags can lag by up to the
+  // backend probe-cache TTL (15 min); startLocal still probes fresh.
+  async function loadPanel() {
     await cliproxyStore.refresh();
     if (cliproxyStore.reachable) {
-      await cliproxyStore.loadKnobs();
-      syncKnobInputs();
+      await Promise.all([cliproxyStore.loadKnobs(), cliproxyStore.loadModels()]);
+      // An explicit refresh must not eat typed-but-unsaved knob edits.
+      if (!knobsDirty) syncKnobInputs();
       knobsLoaded = true;
     }
+  }
+
+  onMount(() => {
+    void loadPanel();
   });
 
   onDestroy(() => {
@@ -59,6 +72,26 @@
     await cliproxyStore.applyRoute(provider.id, { model: modelFor(provider).trim() });
   }
 
+  // Auth-file import (migrating a login from another host without shell
+  // access): one hidden file input shared by the per-provider Import
+  // buttons; the provider clicked last is the confirm target.
+  let importInput = $state<HTMLInputElement | null>(null);
+  let importProviderId = $state('');
+
+  function pickImportFile(provider: CLIProxyProviderInfo) {
+    importProviderId = provider.id;
+    importInput?.click();
+  }
+
+  async function importPickedFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || !importProviderId) return;
+    const content = await file.text();
+    await cliproxyStore.importAuthFile(importProviderId, file.name, content);
+  }
+
   async function saveKnobs() {
     const update: Record<string, unknown> = {};
     const retry = Number.parseInt(requestRetry, 10);
@@ -66,6 +99,7 @@
     if (routingStrategy.trim()) update['routing/strategy'] = routingStrategy.trim();
     if (Object.keys(update).length === 0) return;
     await cliproxyStore.saveKnobs(update);
+    knobsDirty = false;
     syncKnobInputs();
   }
 </script>
@@ -92,7 +126,7 @@
       </span>
     </div>
     <div class="actions">
-      <Button variant="secondary" onclick={() => cliproxyStore.refresh(true)}>
+      <Button variant="secondary" onclick={() => loadPanel()}>
         <Icon name="refresh" size={14} />
         Refresh
       </Button>
@@ -185,9 +219,13 @@
           {/if}
 
           <div class="route-row">
+            <!-- Type-or-pick: the datalist offers the proxy's live model ids
+                 (all logged-in subscriptions, unfiltered by design), while
+                 free text stays the escape hatch. -->
             <input
               class="text-input"
               type="text"
+              list="cliproxy-model-ids"
               placeholder={provider.default_model}
               value={modelFor(provider)}
               oninput={(event) => {
@@ -209,6 +247,14 @@
               {provider.logged_in ? 'Re-login' : 'Log in'}
             </Button>
             <Button
+              variant="secondary"
+              onclick={() => pickImportFile(provider)}
+              disabled={provider.supported === false || !tosAccepted}
+            >
+              <Icon name="upload" size={14} />
+              Import auth file
+            </Button>
+            <Button
               variant="primary"
               onclick={() => applyGlobal(provider)}
               disabled={provider.supported === false || !provider.logged_in}
@@ -220,6 +266,18 @@
         </section>
       {/each}
     </div>
+    <input
+      class="import-input"
+      type="file"
+      accept=".json,application/json"
+      bind:this={importInput}
+      onchange={importPickedFile}
+    />
+    <datalist id="cliproxy-model-ids">
+      {#each cliproxyStore.models as model (model.id)}
+        <option value={model.id}>{model.owned_by}</option>
+      {/each}
+    </datalist>
 
     {#if knobsLoaded}
       <div class="field">
@@ -227,11 +285,23 @@
         <div class="knob-row">
           <label class="knob">
             <span>Request retries</span>
-            <input class="text-input narrow" type="number" min="0" bind:value={requestRetry} />
+            <input
+              class="text-input narrow"
+              type="number"
+              min="0"
+              bind:value={requestRetry}
+              oninput={() => (knobsDirty = true)}
+            />
           </label>
           <label class="knob">
             <span>Routing strategy</span>
-            <input class="text-input" type="text" placeholder="round-robin" bind:value={routingStrategy} />
+            <input
+              class="text-input"
+              type="text"
+              placeholder="round-robin"
+              bind:value={routingStrategy}
+              oninput={() => (knobsDirty = true)}
+            />
           </label>
           <Button variant="secondary" onclick={saveKnobs}>Save proxy settings</Button>
         </div>
@@ -281,6 +351,10 @@
 <style>
   .tab-content {
     padding: 1rem 0;
+  }
+
+  .import-input {
+    display: none;
   }
 
   .field {

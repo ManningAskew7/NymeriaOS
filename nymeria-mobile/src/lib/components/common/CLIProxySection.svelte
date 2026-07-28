@@ -29,7 +29,10 @@
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let statusLoadFailed = $state(false);
 
-  const LOGIN_TIMEOUT_MS = 600_000;
+  // Matches the backend's SESSION_OK_GUARD_SECONDS (management_client.py):
+  // polling past the window where a paste-less "ok" is still trusted could
+  // only surface the stale-session refusal.
+  const LOGIN_TIMEOUT_MS = 540_000;
 
   onMount(refresh);
   onDestroy(stopPolling);
@@ -112,6 +115,9 @@
     try {
       const applied = await api.applyCLIProxyRoute({ provider: provider.id });
       message = `Backend route set to ${applied.provider} via CLIProxy (${applied.model}).`;
+      if (applied.restart_required) {
+        message += ' Restart the backend for every change to take effect.';
+      }
     } catch (e) {
       error = humanizeErrorText(e, { action: 'save', resource: 'the LLM route' });
     }

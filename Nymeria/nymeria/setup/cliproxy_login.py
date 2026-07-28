@@ -14,7 +14,6 @@ expired sessions, so a completed login must always be confirmed against
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import queue
 import sys
@@ -33,8 +32,10 @@ from ..cliproxy.management_client import (
     CLIProxyManagementError,
     CLIProxyUnreachable,
     CLIProxyUnsupported,
+    SESSION_OK_GUARD_SECONDS,
     active_login_entry,
     confirm_login_landed,
+    import_auth_file,
     login_account_label,
     resolve_or_mint_gatekeeper,
 )
@@ -44,7 +45,11 @@ from .state import WizardState
 logger = logging.getLogger(__name__)
 
 LOGIN_POLL_INTERVAL_SECONDS = 2.0
-LOGIN_TIMEOUT_SECONDS = 600.0
+# Poll no longer than the management client trusts a paste-less "ok"
+# (SESSION_OK_GUARD_SECONDS): past that the confirm can only answer a
+# relogin with the stale-session refusal, so the loop ends on the neutral
+# session-expired message instead of an accusatory error.
+LOGIN_TIMEOUT_SECONDS = SESSION_OK_GUARD_SECONDS
 
 
 def _browser_launch_blocked() -> bool:
@@ -165,7 +170,9 @@ async def _import_auth_file(
     console: Console,
     path: Path,
 ) -> bool:
-    """Upload an auth-file JSON and confirm the proxy registered it as active."""
+    """Upload an auth-file JSON and confirm the proxy registered it as an
+    active login (console adapter over the shared trust ladder,
+    management_client.import_auth_file)."""
     if path.suffix.lower() != ".json":
         console.print(
             f"[red]--cliproxy-auth-file expects a .json auth file, got "
@@ -178,28 +185,18 @@ async def _import_auth_file(
         console.print(f"[red]Cannot read {escape(str(path))}: {escape(str(exc))}[/red]")
         return False
     try:
-        json.loads(content.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        console.print(
-            f"[red]{escape(path.name)} is not valid JSON; auth files are the "
-            "proxy's auths/*.json documents.[/red]"
+        status, detail, account = await import_auth_file(
+            client, spec, path.name, content
         )
+    except ValueError as exc:
+        console.print(f"[red]{escape(path.name)}: {escape(str(exc))}.[/red]")
         return False
-    try:
-        await client.upload_auth_file(path.name, content)
-        files = await client.list_auth_files()
     except CLIProxyManagementError as exc:
         console.print(f"[red]Auth-file upload failed: {escape(str(exc))}[/red]")
         return False
-    entry = active_login_entry(files, spec)
-    if entry is None:
-        console.print(
-            f"[red]The proxy accepted {escape(path.name)} but lists no active "
-            f"{spec.label} login; the file may be disabled, expired, or for a "
-            "different provider.[/red]"
-        )
+    if status != "ok":
+        console.print(f"[red]{escape(detail)}[/red]")
         return False
-    account = login_account_label(entry)
     console.print(
         f"[green]Imported {escape(path.name)}:[/green] active {spec.label} "
         f"login{f' as {escape(account)}' if account else ''}."
@@ -325,7 +322,7 @@ async def _login_console(
             return False
         await asyncio.sleep(LOGIN_POLL_INTERVAL_SECONDS)
     console.print(
-        "[red]The login session expired (10 minutes); re-run --cliproxy-login "
+        "[red]The login session expired; re-run --cliproxy-login "
         "to restart it.[/red]"
     )
     return False

@@ -62,6 +62,7 @@ EXPECTED_ROUTES = [
     ('/cli-config/{command_id}/result', ('POST',)),
     ('/cliproxy/apply-route', ('POST',)),
     ('/cliproxy/auth-files', ('GET',)),
+    ('/cliproxy/auth-files', ('POST',)),
     ('/cliproxy/auth-files/{name}', ('DELETE',)),
     ('/cliproxy/auth-files/{name}', ('PATCH',)),
     ('/cliproxy/catalog', ('GET',)),
