@@ -1273,3 +1273,25 @@ def test_mcp_registry_same_tick_same_size_edit_hot_loads(tmp_path):
     registry.refresh_if_stale(force=True)
 
     assert registry.get_server("srv").url == "https://bbb.example.com"
+
+
+def test_thread_config_same_tick_same_size_edit_hot_loads(tmp_path):
+    """The callable scan is the WIDEST fingerprinted cache (one file per
+    configured thread, on the graph-build path), and before the content-exact
+    fingerprint it was the one adopter whose comment documented and accepted
+    this hole: the api and worker processes both save thread configs into one
+    Docker volume, so a save in one process racing a scan in the other is the
+    realistic same-tick shape."""
+    from nymeria.core.thread_config import ThreadConfigManager
+
+    manager = ThreadConfigManager(tmp_path)
+    path = manager.configs_dir / "t1.json"
+    config = json.dumps({"thread_id": "t1", "callable": True, "callable_name": "aaaa"})
+    path.write_text(config, encoding="utf-8")
+    assert [c.callable_name for c in manager.list_callable_threads()] == ["aaaa"]
+
+    before = os.stat(path).st_mtime_ns
+    path.write_text(config.replace('"aaaa"', '"bbbb"'), encoding="utf-8")
+    os.utime(path, ns=(before, before))
+
+    assert [c.callable_name for c in manager.list_callable_threads()] == ["bbbb"]
