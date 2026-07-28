@@ -19,10 +19,10 @@ All prompt_toolkit private-attribute pokes (the ``# noqa: SLF001`` sites) are
 confined to this module by design.
 
 One delegated exception to the raw-terminal-control charter: in-place tool-row
-rewrites (`RichReplRenderer._write_tool_row_at`) emit absolute cursor moves on
-the renderer's own console stream, inside the render window this engine opens
-and only while ``live_row_context()`` blesses the geometry. They ride the
-renderer's stream deliberately: the rewritten row is Rich-painted, and
+rewrites (`RichReplRenderer._write_tool_row_above`) emit relative cursor moves
+on the renderer's own console stream, inside the render window this engine
+opens and only while ``live_row_context()`` blesses the geometry. They ride
+the renderer's stream deliberately: the rewritten row is Rich-painted, and
 splitting the cursor moves onto ``app.output`` would interleave two buffered
 streams.
 """
@@ -84,10 +84,17 @@ class FollowFooterEngine:
         self._pinned_terminal_size: tuple[int, int] | None = None
         self._pinned_footer_needs_full_repaint = False
         self._pinned_input_cursor_position: tuple[int, int] | None = None
-        # Bumped on every pinned-geometry change (activate/resize/deactivate).
+        # Bumped when transcript geometry is rebuilt (resize/deactivate;
+        # activation deliberately does NOT bump, see _activate_pinned_footer).
         # Live tool-row registrations in the renderer are only valid while
         # the generation they were stamped with is still current.
         self._transcript_generation = 0
+        # Float-phase cursor knowledge: (rows_below_cursor, transcript line
+        # count when stashed, terminal height when stashed), refreshed from
+        # the pin-probe CPR responses so live tool rows also work before the
+        # footer first pins. The stashed height pins the snapshot to the
+        # geometry it was measured against; a resize voids it.
+        self._float_cursor_snapshot: tuple[int, int, int] | None = None
         self._terminal_size = self.terminal_size()
 
     @property
@@ -156,14 +163,17 @@ class FollowFooterEngine:
         return self._pinned_footer_active
 
     def live_row_context(self) -> tuple[int, int] | None:
-        """Return ``(scroll_bottom, generation)`` while pinned geometry holds.
+        """Return ``(anchor_row, generation)`` while in-place rewrites are safe.
 
-        In pinned scroll-region mode the transcript write cursor is
-        deterministically at row ``scroll_bottom``; a transcript row printed
-        N physical lines ago sits at ``scroll_bottom - 1 - N``. The renderer
-        uses this to rewrite still-visible tool rows in place. ``None`` means
-        in-place updates are unsafe right now (not pinned), and callers must
-        fall back to append-only rendering.
+        ``anchor_row`` is the terminal row the transcript write cursor sits
+        on: ``scroll_bottom`` while the footer is pinned, or a CPR-derived
+        estimate while the footer still floats (the pin-probe snapshot plus
+        transcript lines printed since). A transcript row printed N physical
+        lines ago sits N rows above the anchor; the renderer rewrites
+        still-visible tool rows in place with relative cursor moves.
+        ``None`` means in-place updates are unsafe right now (scroll-region
+        gate dynamically false, or no cursor knowledge yet), and callers
+        must fall back to append-only rendering.
         """
 
         if not self.scroll_region_enabled():
@@ -171,9 +181,39 @@ class FollowFooterEngine:
             # (e.g. the terminal shrank below the minimum rows), and writes
             # then leave the pinned window for the run_in_terminal path.
             return None
-        if not self._pinned_footer_active or self._pinned_scroll_bottom <= 0:
+        if self._pinned_footer_active:
+            if self._pinned_scroll_bottom <= 0:
+                return None
+            return (self._pinned_scroll_bottom, self._transcript_generation)
+        snapshot = self._float_cursor_snapshot
+        if snapshot is None:
             return None
-        return (self._pinned_scroll_bottom, self._transcript_generation)
+        rows_below, counter_then, height_then = snapshot
+        counter_now = self._transcript_line_count()
+        if counter_now is None:
+            return None
+        height = self.terminal_height()
+        if height != height_then:
+            # The snapshot's rows_below is meaningless against a resized
+            # terminal; the debounced resize redraw will rebuild everything.
+            return None
+        # ``height - rows_below`` is deliberately one row ABOVE the CPR
+        # cursor row (true row is ``height - rows_below + 1``): a free
+        # conservative margin. The counter delta accounts for every counted
+        # transcript line since; uncounted upward movement of the write
+        # point happens only when prompt_toolkit scrolls to FIT its layout,
+        # after which the write point sits at ``height - footer + 1``, so
+        # clamping the anchor to ``height - footer`` keeps the on-screen
+        # guard safe through those uncounted scrolls too. (Uniform scrolling
+        # preserves cursor-to-row relative distances, so a conservative
+        # anchor only ever skips a flip, never mis-addresses one.)
+        anchor = min(
+            height - rows_below + (counter_now - counter_then),
+            height - self._footer_height(),
+        )
+        if anchor <= 1:
+            return None
+        return (anchor, self._transcript_generation)
 
     def footer_height_is_known(self) -> bool:
         """Keep the Rich footer visible after prompt_toolkit has placed it once."""
@@ -260,8 +300,32 @@ class FollowFooterEngine:
             return
         self._follow_footer_pin_probe_pending = False
         if rows_below > self._footer_height():
+            # Still floating: remember where the write cursor sits so live
+            # tool rows can validate in-place rewrites before the first pin.
+            self._stash_float_cursor_snapshot(rows_below)
             return
         self._activate_pinned_footer(rows_below=rows_below)
+
+    def _stash_float_cursor_snapshot(self, rows_below: int) -> None:
+        counter = self._transcript_line_count()
+        if counter is None:
+            self._float_cursor_snapshot = None
+            return
+        self._float_cursor_snapshot = (
+            int(rows_below),
+            counter,
+            self.terminal_height(),
+        )
+
+    def _transcript_line_count(self) -> int | None:
+        count = getattr(self.renderer, "transcript_line_count", None)
+        if not callable(count):
+            return None
+        try:
+            value: Any = count()
+            return int(value)
+        except Exception:  # noqa: BLE001 - renderer stub without a counter.
+            return None
 
     def _known_rows_below_cursor(self) -> int | None:
         app = self.application
@@ -336,7 +400,16 @@ class FollowFooterEngine:
         self._pinned_scroll_bottom = scroll_bottom
         self._pinned_terminal_size = (size.columns, size.rows)
         self._pinned_footer_needs_full_repaint = True
-        self._transcript_generation += 1
+        # Deliberately NOT bumping _transcript_generation here: the scroll
+        # math above lands the content tail at scroll_bottom - 1 with the
+        # write cursor at scroll_bottom, exactly one row below the tail,
+        # the same relative geometry the float phase maintained. Live
+        # tool-row registrations therefore stay valid across the float->pin
+        # boundary (a tool running while the transcript first fills the
+        # screen still flips in place instead of appending a duplicate).
+        # This trusts the pt_scroll estimate above, the same estimate pinned
+        # placement itself already rests on.
+        self._float_cursor_snapshot = None
 
     def _prepare_pinned_footer_render(self) -> None:
         app = self.application
@@ -416,6 +489,7 @@ class FollowFooterEngine:
         self._pinned_terminal_size = (int(size.columns), int(size.rows))
         self._pinned_footer_needs_full_repaint = True
         self._transcript_generation += 1
+        self._float_cursor_snapshot = None
 
     def finish_follow_footer_render(self) -> None:
         if not self.scroll_region_enabled() or not self._pinned_footer_active:
@@ -477,6 +551,7 @@ class FollowFooterEngine:
         self._pinned_input_cursor_position = None
         self._follow_footer_pin_probe_pending = False
         self._transcript_generation += 1
+        self._float_cursor_snapshot = None
 
     # ----- resize handling ------------------------------------------------ #
 
@@ -666,6 +741,16 @@ class FollowFooterEngine:
             if callable(flush):
                 with suppress(Exception):
                     flush()
+
+    async def settle_pending_resize(self) -> None:
+        """Await any pending debounced resize redraw before transcript writes.
+
+        Mirrors the settle `render_event_above_prompt` performs, for callers
+        (the tool-row ticker) that write to the transcript region through
+        `render_above_prompt` directly.
+        """
+
+        await self._maybe_resize_redraw()
 
     async def render_event_above_prompt(self, event: Any) -> None:
         await self._maybe_resize_redraw()

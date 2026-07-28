@@ -368,9 +368,20 @@ class _RichReplRuntime:
                 renderer = self.renderer
                 if not renderer.has_live_tool_rows():
                     return
+                # Settle any debounced resize first, mirroring
+                # render_event_above_prompt: a tick must never rewrite rows
+                # against pre-resize geometry the redraw is about to rebuild.
+                await self.footer.settle_pending_resize()
                 await self.footer.render_above_prompt(
                     partial(renderer.render_running_tick, time.monotonic())
                 )
+                if (
+                    self.footer.scroll_region_enabled()
+                    and not self.footer.pinned_footer_active()
+                ):
+                    # Float phase: the render window erased the pt layout;
+                    # repaint it (mirrors render_event_above_prompt).
+                    self.footer.invalidate()
         finally:
             # Only release our own handle: a stop + immediate re-ensure can
             # have started a successor before this cancellation lands.
