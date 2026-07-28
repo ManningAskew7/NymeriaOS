@@ -18,7 +18,11 @@ from nymeria.core.workflows import (
     execute_workflow,
     register_verb,
 )
-from nymeria.core.workflows.registry import _REGISTRY, VerbError
+from nymeria.core.workflows.registry import (
+    _REGISTRY,
+    VerbError,
+    load_builtin_verbs,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -27,7 +31,19 @@ WALL = 30.0  # generous outer cap; individual tests finish far sooner
 
 @pytest.fixture(autouse=True)
 def _clean_test_verbs():
-    """Snapshot and restore the verb registry around every test."""
+    """Snapshot and restore the verb registry around every test.
+
+    The built-ins are force-loaded BEFORE the snapshot. They register lazily,
+    on the first import of the verb modules, which without this happens
+    part-way through the first test that runs a workflow. The snapshot would
+    then be taken while the registry was still empty, and the teardown would
+    restore that emptiness over the now-registered built-ins. Because the
+    modules are already in ``sys.modules`` they never re-register, so every
+    later workflow test in the same process would fail with "unknown verb
+    nym.<x> (known: none)" (it stayed hidden under ``-n`` sharding, which
+    tends to put the affected files on different workers).
+    """
+    load_builtin_verbs()
     before = dict(_REGISTRY)
     yield
     _REGISTRY.clear()
