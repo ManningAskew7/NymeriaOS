@@ -21,10 +21,10 @@
   // Shared by mount AND the Refresh button, so a proxy that comes up after
   // mount still gets its settings block (mount-only loading left it hidden
   // until the user left and re-entered the tab). Refresh deliberately does
-  // NOT force a capability re-probe: the backend caches probe results, and
-  // each forced probe registers a dead pending OAuth session per catalog
-  // provider on the proxy; the cache answers correctly for binary changes
-  // within its TTL.
+  // NOT force a capability re-probe: each forced probe registers a dead
+  // pending OAuth session per catalog provider on the proxy. The trade:
+  // after a proxy binary swap, capability flags can lag by up to the
+  // backend probe-cache TTL (15 min); startLocal still probes fresh.
   async function loadPanel() {
     await cliproxyStore.refresh();
     if (cliproxyStore.reachable) {

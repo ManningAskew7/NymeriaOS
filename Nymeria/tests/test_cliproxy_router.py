@@ -318,6 +318,7 @@ def test_oauth_status_refuses_stale_session_ok_via_the_ledger():
     management_client._oauth_session_ledger["s1"] = (
         time_module.monotonic() - management_client.SESSION_OK_GUARD_SECONDS - 60,
         False,
+        True,
     )
     try:
         payload = client.get(
@@ -329,6 +330,7 @@ def test_oauth_status_refuses_stale_session_ok_via_the_ledger():
         # The same old session WITH a delivered callback stays trusted.
         management_client._oauth_session_ledger["s1"] = (
             management_client._oauth_session_ledger["s1"][0],
+            True,
             True,
         )
         payload = client.get(
@@ -466,7 +468,47 @@ def test_import_auth_file_reports_inactive_honestly():
         json={"provider": "claude", "name": "claude-a.json", "content": "{}"},
     ).json()
     assert payload["status"] == "inactive"
-    assert "no active" in payload["detail"]
+    assert "not an active login" in payload["detail"]
+
+
+def test_import_confirm_cannot_borrow_a_preexisting_login():
+    """The confirm matches the entry listed under the UPLOADED name: a
+    pre-existing active login for the same provider must never bless a
+    dead/mismatched import (the auth-file twin of the relogin trap)."""
+    FakeManagementClient.auth_files = [
+        {"name": "claude-a.json", "provider": "claude", "email": "max@x.io"},
+        {"name": "claude-b.json", "provider": "claude", "disabled": True},
+    ]
+    client, _, _ = make_app()
+    payload = client.post(
+        "/cliproxy/auth-files",
+        json={"provider": "claude", "name": "claude-b.json", "content": "{}"},
+    ).json()
+    assert payload["status"] == "inactive"
+    assert "disabled" in payload["detail"]
+
+    # A wrong-provider pick reports what the proxy parsed, not success.
+    FakeManagementClient.auth_files = [
+        {"name": "claude-a.json", "provider": "claude", "email": "max@x.io"},
+        {"name": "codex-b.json", "provider": "codex"},
+    ]
+    payload = client.post(
+        "/cliproxy/auth-files",
+        json={"provider": "claude", "name": "codex-b.json", "content": "{}"},
+    ).json()
+    assert payload["status"] == "inactive"
+    assert "codex" in payload["detail"]
+
+    # An accepted upload the proxy does not list at all is inactive too.
+    FakeManagementClient.auth_files = [
+        {"name": "claude-a.json", "provider": "claude", "email": "max@x.io"},
+    ]
+    payload = client.post(
+        "/cliproxy/auth-files",
+        json={"provider": "claude", "name": "claude-c.json", "content": "{}"},
+    ).json()
+    assert payload["status"] == "inactive"
+    assert "does not list" in payload["detail"]
 
 
 def test_import_auth_file_rejects_bad_names_and_bad_json():
@@ -480,6 +522,20 @@ def test_import_auth_file_rejects_bad_names_and_bad_json():
     response = client.post(
         "/cliproxy/auth-files",
         json={"provider": "claude", "name": "a.json", "content": "not json"},
+    )
+    assert response.status_code == 400
+    # JSON-parseable but not UTF-8-encodable content (a lone surrogate)
+    # must be a 400, not an unhandled 500. Sent as a raw ASCII-escaped
+    # body because httpx's own json= encoder refuses surrogates.
+    import json as json_module
+
+    body = json_module.dumps(
+        {"provider": "claude", "name": "a.json", "content": '{"k": "\ud800"}'}
+    )
+    response = client.post(
+        "/cliproxy/auth-files",
+        content=body,
+        headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 400
     # Nothing reached the proxy on any refusal.
