@@ -286,6 +286,10 @@ class FollowFooterEngine:
 
         try:
             size = output.get_size()
+            # Belt and braces: clear a synchronized-output set a hard exit
+            # inside a render window may have leaked (terminals also carry
+            # their own timeout, but do not rely on it).
+            output.write_raw("\x1b[?2026l")
             output.write_raw("\x1b[r")
             output.write_raw(f"\x1b[{max(1, size.rows)};1H\r\n")
             output.flush()
@@ -695,18 +699,36 @@ class FollowFooterEngine:
             return self._render_in_pinned_footer(callback)
         output = app.output
         renderer = getattr(app, "renderer", None)
-        output.hide_cursor()
-        if renderer is not None:
-            with suppress(Exception):
-                renderer.erase(leave_alternate_screen=False)
+        # DEC synchronized output (private mode 2026): the terminal buffers
+        # everything between set and reset and paints it as one frame, so
+        # the footer erase + transcript write + cursor traffic below never
+        # show intermediate states (dogfood-reported flicker). Terminals
+        # without the mode ignore both sequences; the finally guarantees the
+        # reset so an exception cannot leave painting suspended.
+        output.write_raw("\x1b[?2026h")
+        # Flush the set immediately: the Rich transcript rides a DIFFERENT
+        # buffered stream, and bytes reach the tty in flush order, so an
+        # unflushed set would land after the content it brackets whenever
+        # the pt erase below is skipped or fails.
+        output.flush()
         try:
-            return callback()
+            output.hide_cursor()
+            if renderer is not None:
+                with suppress(Exception):
+                    renderer.erase(leave_alternate_screen=False)
+            try:
+                return callback()
+            finally:
+                self._flush_renderer_output()
+                output.flush()
+                self._request_follow_footer_pin_probe()
+                output.write_raw("\x1b7")
         finally:
-            self._flush_renderer_output()
+            output.write_raw("\x1b[?2026l")
             output.flush()
-            self._request_follow_footer_pin_probe()
-            output.write_raw("\x1b7")
-            output.flush()
+            # Only after the flush that carried \x1b7: a raising flush must
+            # not leave the flag claiming a cursor save the terminal never
+            # received (the next \x1b8 would restore to a stale row).
             self._follow_footer_transcript_cursor_saved = True
             self._follow_footer_pin_probe_pending = True
 
@@ -719,19 +741,32 @@ class FollowFooterEngine:
             self._deactivate_pinned_footer(reset_terminal=True)
             return self._render_in_follow_footer(callback)
 
-        output.hide_cursor()
-        output.write_raw(f"\x1b[1;{self._pinned_scroll_bottom}r")
-        output.write_raw("\x1b8")
-        output.flush()
+        # Synchronized-output window (see _render_in_follow_footer): the
+        # whole pinned write, including the row clear/reprint of live
+        # tool-row flips and the composer cursor hide/move/show, paints as
+        # one frame, so per-second elapsed ticks no longer flash the row or
+        # blink the typing cursor.
+        output.write_raw("\x1b[?2026h")
         try:
-            return callback()
-        finally:
-            self._flush_renderer_output()
-            output.write_raw("\x1b7")
-            output.write_raw("\x1b[r")
+            output.hide_cursor()
+            output.write_raw(f"\x1b[1;{self._pinned_scroll_bottom}r")
+            output.write_raw("\x1b8")
+            # This flush also carries the mode set, so it reaches the tty
+            # before any Rich content from the callback's own stream.
             output.flush()
+            try:
+                return callback()
+            finally:
+                self._flush_renderer_output()
+                output.write_raw("\x1b7")
+                output.write_raw("\x1b[r")
+                self._restore_pinned_input_cursor_position()
+        finally:
+            output.write_raw("\x1b[?2026l")
+            output.flush()
+            # Only after the flush that carried \x1b7 (see the follow-footer
+            # window): never claim a cursor save the terminal did not get.
             self._follow_footer_transcript_cursor_saved = True
-            self._restore_pinned_input_cursor_position()
 
     def _flush_renderer_output(self) -> None:
         for console_name in ("console", "error_console"):

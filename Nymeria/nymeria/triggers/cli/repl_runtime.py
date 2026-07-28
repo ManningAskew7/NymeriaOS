@@ -370,18 +370,28 @@ class _RichReplRuntime:
                     return
                 # Settle any debounced resize first, mirroring
                 # render_event_above_prompt: a tick must never rewrite rows
-                # against pre-resize geometry the redraw is about to rebuild.
+                # against pre-resize geometry the redraw is about to
+                # rebuild. Settling can DEACTIVATE the pinned footer, so the
+                # float check must come after it, or a tick admitted as
+                # pinned could erase the pt layout while floating.
                 await self.footer.settle_pending_resize()
-                await self.footer.render_above_prompt(
-                    partial(renderer.render_running_tick, time.monotonic())
-                )
                 if (
                     self.footer.scroll_region_enabled()
                     and not self.footer.pinned_footer_active()
                 ):
-                    # Float phase: the render window erased the pt layout;
-                    # repaint it (mirrors render_event_above_prompt).
-                    self.footer.invalidate()
+                    # Float phase: a tick would erase and repaint the whole
+                    # prompt_toolkit footer just to advance an elapsed
+                    # counter, a once-per-second blink (dogfood-reported).
+                    # Skip: rows show NO ticking timer pre-pin; completion
+                    # flips still land, and the timer starts on the same
+                    # rows once the footer pins (registrations survive
+                    # activation). Still prune dead slots, or a stream that
+                    # died mid-tool would keep this loop awake forever.
+                    renderer.prune_live_tool_rows()
+                    continue
+                await self.footer.render_above_prompt(
+                    partial(renderer.render_running_tick, time.monotonic())
+                )
         finally:
             # Only release our own handle: a stop + immediate re-ensure can
             # have started a successor before this cancellation lands.
