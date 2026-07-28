@@ -102,8 +102,10 @@ this revisited.
   Corrupt `SKILL.md` files are deliberately not quarantined: markdown skills
   fail soft (skipped at scan; the cached copy keeps serving on a bad edit)
   and no manager ever rewrites them.
-- **Atomic writes** (`core/storage_paths.py::write_text_atomic`): every store
-  saver under the resource root, the `.sig` sidecars, and `file_write`
+- **Atomic writes** (`core/storage_paths.py::write_text_atomic`): every
+  whole-store saver whose loader quarantines (hooks, triggers, custom tools,
+  MCP servers, thread configs, teams, the execution logs, and the smaller JSON
+  stores), the `.sig` sidecars, and `file_write`
   overwrites go through a same-directory temp file plus a rename, so a crash
   mid-write leaves the old file rather than a torn one the loaders would then
   quarantine. The temp name carries a random suffix, because a fixed one lets
@@ -119,7 +121,11 @@ this revisited.
   locked directory still works; a full disk does NOT fall back, because the
   atomic attempt already failed with the target intact and an in-place retry
   would truncate it. Appends are not atomic (read-modify-write would corrupt
-  concurrent appenders, not protect them). Outside the resource root, the
+  concurrent appenders, not protect them). Not yet routed here: the two
+  one-time migrations that rewrite MCP server definitions in place, the
+  HTTP-tool draft store, and the write-once record writers (run records,
+  source retention, attachment artifacts, thread notes), where a torn write
+  costs one record rather than a store. Outside the resource root, the
   setup wizard's asset materialization writes bytes rather than text and is
   deliberately not routed here.
 - **Secrets denylist** (`tools/filesystem.py::secrets_path_error`): the file
