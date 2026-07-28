@@ -107,6 +107,26 @@ def _load_bundled_snapshot() -> Dict[str, Dict[str, Any]]:
         return {}
 
 
+def _normalized_catalog(payload: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Lowercase catalog keys so every row is reachable by the lookup path.
+
+    Every lookup here lowercases the model id (``_candidate_keys`` is fed
+    ``model.strip().lower()``), but the upstream JSON keeps vendor casing on 285
+    of its ~2700 rows, so those rows were silently unreachable: a lookup for
+    ``together_ai/moonshotai/Kimi-K2.5`` missed its own 256k entry and fell
+    through to a coarser tier. Normalizing at ingest fixes the capability and
+    the pricing path together, and cannot break a lookup, since the keys it
+    already matched were lowercase to begin with.
+    """
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for key, entry in payload.items():
+        lowered = key.lower()
+        # Case-collisions are near-nonexistent (one in the shipped bundle) and
+        # the rows are duplicates; first spelling wins for determinism.
+        normalized.setdefault(lowered, entry)
+    return normalized
+
+
 def _ensure_bundle_loaded() -> None:
     """Populate ``_litellm_cache`` from the bundled snapshot once at startup."""
     global _last_fetch_ts, _loaded_from_bundle
@@ -117,7 +137,7 @@ def _ensure_bundle_loaded() -> None:
             return
         bundle = _load_bundled_snapshot()
         if bundle:
-            _litellm_cache.update(bundle)
+            _litellm_cache.update(_normalized_catalog(bundle))
             if _last_fetch_ts == 0.0:
                 _last_fetch_ts = time.monotonic()
         _loaded_from_bundle = True
@@ -161,7 +181,7 @@ def refresh_litellm_pricing(*, force: bool = False, timeout: float = 15.0) -> in
     payload.pop("sample_spec", None)
     with _cache_lock:
         _litellm_cache.clear()
-        _litellm_cache.update(payload)
+        _litellm_cache.update(_normalized_catalog(payload))
         _last_fetch_ts = time.monotonic()
         _last_failure_ts = 0.0
         size = len(_litellm_cache)

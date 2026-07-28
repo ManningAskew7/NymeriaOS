@@ -1507,6 +1507,73 @@ def test_real_modality_set_stays_authoritative_in_both_directions(monkeypatch):
     assert capabilities.supports_vision("visual-model-x") is True
 
 
+def test_learned_rejection_survives_a_hollow_re_registration(monkeypatch):
+    # Reading "empty means unknown" made the learned mark erasable: the mark
+    # lives in _live_model_cache, and register_model_metadata used to rebuild
+    # from _model_cache, so re-opening the model picker (which re-registers
+    # every listed model with no modality data) reset a model the provider had
+    # already refused, and the next turn re-sent the attachment.
+    _offline(monkeypatch)
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+
+    capabilities.register_model_metadata(model_id="gateway-model-y", context_length=200000)
+    capabilities.mark_model_input_unsupported("gateway-model-y", "image", "file")
+    assert capabilities.supports_vision("gateway-model-y") is False
+
+    capabilities.register_model_metadata(model_id="gateway-model-y", context_length=200000)
+
+    assert capabilities.supports_vision("gateway-model-y") is False
+    assert "gateway-model-y" in capabilities._input_unsupported_marks
+
+
+def test_explicit_modalities_supersede_the_mark_and_retire_it(monkeypatch):
+    # The other direction: a provider that DOES report modalities outranks the
+    # learned mark, and the mark must be retired with it. Left behind, its TTL
+    # would later fire and evict this freshly registered live entry.
+    _offline(monkeypatch)
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+
+    capabilities.register_model_metadata(model_id="gateway-model-z", context_length=200000)
+    capabilities.mark_model_input_unsupported("gateway-model-z", "image", "file")
+    assert capabilities.supports_vision("gateway-model-z") is False
+
+    capabilities.register_model_metadata(
+        model_id="gateway-model-z", input_modalities={"text", "image"}
+    )
+
+    assert capabilities.supports_vision("gateway-model-z") is True
+    assert "gateway-model-z" not in capabilities._input_unsupported_marks
+
+
+def test_marking_one_modality_on_a_hollow_entry_leaves_the_other(monkeypatch):
+    # A cached entry with no modality data is "unknown", not "supports
+    # nothing", so subtracting the named modality from an empty set would deny
+    # the unnamed one too. The absent-model branch already seeds optimistically
+    # for exactly this reason; a hollow cached entry must behave the same.
+    _offline(monkeypatch)
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+
+    capabilities.register_model_metadata(model_id="gateway-model-w", context_length=272000)
+    capabilities.mark_model_input_unsupported("gateway-model-w", "file")
+
+    assert capabilities.supports_vision("gateway-model-w") is True
+    assert capabilities.supports_documents("gateway-model-w") is False
+
+
+def test_registration_and_mark_share_one_cache_key(monkeypatch):
+    # A reasoning-suffixed id reaches the mark path (providers.py passes
+    # config.model verbatim) while listings register the clean id. Both key on
+    # the canonical form, so one model cannot end up with two entries.
+    _offline(monkeypatch)
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+
+    capabilities.register_model_metadata(model_id="gateway-model-v", context_length=200000)
+    capabilities.mark_model_input_unsupported("gateway-model-v(xhigh)", "image", "file")
+
+    assert capabilities.supports_vision("gateway-model-v") is False
+    assert list(capabilities._live_model_cache) == ["gateway-model-v"]
+
+
 @pytest.mark.parametrize(
     "model_id,minimum,expected",
     [
@@ -1599,6 +1666,100 @@ def test_context_limit_ground_truth_holds_against_the_real_bundle(monkeypatch):
 
     for model, expected in _CLAUDE_CONTEXT_GROUND_TRUTH.items():
         assert capabilities.get_context_limit(model) == expected, model
+
+
+def test_curated_claude_rows_agree_with_the_family_rule():
+    # The curated tier outranks the family rule, and 20 of the 23 Claude rows
+    # are also derivable from it, so those rows are a silent override: revise
+    # the rule's generation boundary and they keep answering the old number
+    # with no signal. They are kept deliberately (they answer vendor-prefixed
+    # spellings the rule abstains on, through their bare candidate), so this
+    # test is the thing that makes the duplication safe: change one, change
+    # both, or this fails and names the row.
+    for model_id, curated in capabilities.DEFAULT_CONTEXT_LIMITS.items():
+        if "claude" not in model_id:
+            continue
+        family = capabilities._anthropic_family_context_limit(model_id)
+        if family is None:
+            continue
+        assert family == curated, model_id
+
+
+def test_family_rule_never_over_claims_against_the_real_bundle():
+    # The property the audit in the code comments asserts, pinned as a test so
+    # a bundle refresh cannot quietly invalidate it. It matters more than a
+    # spot-check because the rule sits ABOVE the catalog for first-party ids:
+    # once the rule answers, no catalog update can ever correct that number, so
+    # an over-claim here is permanent until someone edits this file.
+    #
+    # Direction is deliberate. Over-claiming (rule > served window) lets a
+    # thread grow past the real limit and fail at the provider; under-claiming
+    # only compacts earlier than necessary. Only the first is an error.
+    catalog = _pricing_table._load_bundled_snapshot()
+    checked = 0
+    for model_id, row in catalog.items():
+        if "claude" not in model_id.lower() or not isinstance(row, dict):
+            continue
+        served = row.get("max_input_tokens")
+        if not isinstance(served, int) or served <= 0:
+            continue
+        family = capabilities._anthropic_family_context_limit(model_id)
+        if family is None:
+            continue
+        checked += 1
+        assert family <= served, f"{model_id}: rule {family} > catalog {served}"
+
+    # Guard against the loop silently checking nothing after a refactor.
+    assert checked >= 15
+
+
+def test_substring_pass_never_promotes_a_shorter_id_to_a_larger_sibling(monkeypatch):
+    # The substring pass used to match BOTH directions, so a requested id that
+    # was a fragment of a longer curated name inherited that name's window. That
+    # is the over-claim direction and the shorter name is a different, smaller
+    # model: `kimi-k2` (a real id on the live kimi channel) read `kimi-k2.5`'s
+    # 262144, and `grok-4` (256k) read `grok-4.3`'s 1M. Both now take the
+    # conservative default instead.
+    _offline(monkeypatch)
+
+    assert capabilities.get_context_limit("kimi-k2") == 128000
+    assert capabilities.get_context_limit("grok-4") == 128000
+
+    # The surviving direction (a known name inside a longer requested id) still
+    # resolves variant and dated spellings, which is what it is for.
+    assert capabilities.get_context_limit("grok-4.3-latest") == 1000000
+    assert capabilities.get_context_limit("grok-code-fast-1-0825") == 256000
+
+
+def test_cliproxy_subscription_defaults_resolve_a_real_window(monkeypatch):
+    # The five distinct default models behind the six CLIProxy OAuth channels
+    # (gemini-cli and antigravity share one). Two of them used to fall through
+    # every tier to the 128k "_default", because the bundled catalog carries
+    # moonshot and xai rows only under vendor prefixes that a bare id cannot
+    # reach, which then capped the compaction threshold far below the real
+    # window. Numbers are the vendors' published context lengths.
+    _offline(monkeypatch)
+
+    for model_id, expected in (
+        ("claude-opus-4-7", 1000000),
+        ("gemini-3-pro-preview", 1048576),
+        ("kimi-k2.5", 262144),
+        ("grok-4.3", 1000000),
+    ):
+        assert capabilities.get_context_limit(model_id) == expected, model_id
+
+    # gpt-5.5 is pinned separately because its number is DISPUTED, not verified:
+    # the public OpenAI model is 1,050,000 while the Codex subscription route
+    # reports 272,000 for the same id, and nothing here can tell which one this
+    # request will reach (see §1.1 of the capability-resolution plan). This
+    # asserts today's behavior so a change is deliberate, NOT that 1,050,000 is
+    # right; settling it needs route-aware resolution.
+    assert capabilities.get_context_limit("gpt-5.5") == 1050000
+
+    # A model NOT on a known channel still takes the conservative default: the
+    # fix is per-model knowledge, not a blanket assumption that every gateway
+    # model is large-context.
+    assert capabilities.get_context_limit("some-unlisted-model-q") == 128000
 
 
 def test_context_limit_family_rule_outranks_the_catalog(monkeypatch):

@@ -6,6 +6,7 @@ from nymeria.core.llm_provider_utils import (
     ANTHROPIC_API_VERSION,
     OPENROUTER_ATTRIBUTION_HEADERS,
     cliproxy_base_url_with_v1,
+    extract_model_metadata,
     provider_probe_headers,
 )
 from nymeria.vendor.react_agent.cliproxy import CLIPROXY_CLAUDE_USER_AGENT
@@ -61,3 +62,62 @@ def test_provider_probe_headers_does_not_mutate_shared_attribution_constant():
     headers = provider_probe_headers("openrouter", "or-test")
     headers["X-Title"] = "mutated"
     assert OPENROUTER_ATTRIBUTION_HEADERS == before
+
+
+# --- extract_model_metadata: the two axes are spelled differently per dialect ---
+
+
+def test_anthropic_listing_yields_both_window_and_output_cap():
+    # Anthropic's Models API: max_input_tokens IS the context window and
+    # max_tokens IS the output ceiling. There is no max_output_tokens field, so
+    # reading only that name returned a null ceiling for every Anthropic model.
+    metadata = extract_model_metadata(
+        {
+            "id": "claude-opus-4-8",
+            "display_name": "Claude Opus 4.8",
+            "max_input_tokens": 1000000,
+            "max_tokens": 128000,
+        }
+    )
+
+    assert metadata["context_length"] == 1000000
+    assert metadata["max_completion_tokens"] == 128000
+
+
+def test_max_tokens_meaning_the_window_is_not_read_as_an_output_cap():
+    # Some third-party catalogs spell the CONTEXT window max_tokens. Accepting
+    # the name unconditionally would hand the model an output ceiling the size
+    # of its whole window.
+    same_number = extract_model_metadata({"id": "x", "context_length": 200000, "max_tokens": 200000})
+    assert same_number["context_length"] == 200000
+    assert same_number["max_completion_tokens"] is None
+
+    window_only = extract_model_metadata({"id": "x", "max_tokens": 200000})
+    assert window_only["max_completion_tokens"] is None
+
+
+def test_explicit_output_keys_win_over_the_guarded_max_tokens_fallback():
+    metadata = extract_model_metadata(
+        {
+            "id": "x",
+            "context_length": 200000,
+            "max_output_tokens": 64000,
+            "max_tokens": 8192,
+        }
+    )
+    assert metadata["max_completion_tokens"] == 64000
+
+
+def test_camel_case_token_limits_are_read():
+    # Google's native model listing reports camelCase (as does CLIProxy's
+    # management plane); a snake_case-only reader saw no limits at all.
+    metadata = extract_model_metadata(
+        {
+            "id": "gemini-3-pro-preview",
+            "inputTokenLimit": 1048576,
+            "outputTokenLimit": 65536,
+        }
+    )
+
+    assert metadata["context_length"] == 1048576
+    assert metadata["max_completion_tokens"] == 65536

@@ -3007,20 +3007,26 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
     # Determine model family for API compatibility
     model_name = (config.model or "").lower()
     from nymeria.config.model_capabilities import (
+        ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION,
+        ANTHROPIC_NO_SAMPLING_PARAMS_MIN_VERSION,
         anthropic_generation_at_least,
-        anthropic_model_version,
     )
 
-    model_version = anthropic_model_version(model_name)
-    # Claude 4.7+ removes support for sampling params (temperature, top_p, top_k)
-    # and extended thinking budgets. Use adaptive thinking only. The 4.8 /
-    # fable / mythos generations share the 4.7 API surface, as do future
-    # version bumps (ordinal check, not a marker list). Shared with the image
-    # geometry tier and the CLI/thread-overview "adaptive" labels, all of which
-    # previously kept their own copy of this rule and went stale separately.
-    is_47_plus = anthropic_generation_at_least(model_name, (4, 7))
-    is_46_model = model_version == (4, 6)
-    uses_adaptive = is_47_plus or is_46_model
+    # Two INDEPENDENT wire rules, each named where the CLI header and thread
+    # overview also read it, so a boundary change lands on the wire and on the
+    # labels together. They must not be collapsed into one check: 4.6 takes
+    # adaptive thinking but still accepts sampling params, which is exactly the
+    # gap between the two constants.
+    #
+    # 4.7+ removes sampling params (temperature, top_p, top_k) and explicit
+    # thinking budgets. The 4.8 / fable / mythos generations share that surface,
+    # as do future version bumps (ordinal check, not a marker list).
+    is_47_plus = anthropic_generation_at_least(
+        model_name, ANTHROPIC_NO_SAMPLING_PARAMS_MIN_VERSION
+    )
+    uses_adaptive = anthropic_generation_at_least(
+        model_name, ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
+    )
     # fable/mythos cannot disable thinking; effort "off" degrades to "low".
     thinking_not_disableable = "fable" in model_name or "mythos" in model_name
 

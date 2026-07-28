@@ -438,7 +438,6 @@ def _llm_defaults(settings: Any, context: dict[str, Any]) -> dict[str, Any]:
         "api_mode": mode,
         "api_mode_label": _api_mode_label(provider, mode),
         "thinking_label": _thinking_label(
-            provider=provider,
             model=model,
             extended=extended,
             effort=effort_effective,
@@ -483,7 +482,6 @@ def _llm_section(
             "api_mode": mode,
             "api_mode_label": _api_mode_label(provider, mode),
             "thinking_label": _thinking_label(
-                provider=provider,
                 model=model,
                 extended=extended,
                 effort=effort_effective,
@@ -569,7 +567,6 @@ def _api_mode_label(provider: str, mode: Any) -> str:
 
 def _thinking_label(
     *,
-    provider: str,
     model: str,
     extended: bool,
     effort: Any = None,
@@ -580,20 +577,12 @@ def _thinking_label(
         return "off"
     if not extended and not effort_text:
         return "off"
-    model_text = model.casefold()
-    provider_text = provider.casefold()
-    adaptive = (
-        (
-            "anthropic" in provider_text
-            or "claude" in model_text
-            or "fable" in model_text
-            or "mythos" in model_text
-        )
-        # Ordinal, not a name list: the marker tuple this replaced had already
-        # gone stale on claude-opus-5 and claude-sonnet-5.
-        and anthropic_generation_at_least(
-            model_text, ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
-        )
+    # Ordinal, not a name list: the marker tuple this replaced had already gone
+    # stale on claude-opus-5 and claude-sonnet-5. No provider/name preamble is
+    # needed in front of it: the predicate answers True only for a parseable
+    # Claude id or fable/mythos, so a guard could exclude nothing it admits.
+    adaptive = anthropic_generation_at_least(
+        model.casefold(), ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
     )
     if adaptive:
         return f"adaptive ({effort_text})" if effort_text else "adaptive"
