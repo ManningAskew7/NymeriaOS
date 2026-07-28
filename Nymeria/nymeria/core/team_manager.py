@@ -48,10 +48,14 @@ from pydantic import BaseModel, Field, field_validator
 
 from .keyed_locks import KeyedRLockMap
 from .storage_paths import (
+    FileFingerprint,
+    compare_fingerprint,
     quarantine_corrupt_file,
     read_store_fingerprint,
     record_store_fingerprint,
     safe_path_segment,
+    scan_fingerprint_map,
+    settle_fingerprint,
     write_text_atomic,
 )
 from .time_utils import ensure_aware_utc, utc_now
@@ -192,14 +196,17 @@ class TeamManager:
         # tooling), degrading to empty scans.
         self.thread_config_manager = thread_config_manager
         self.accounts_repo = accounts_repo
-        # Fingerprint-keyed read cache: ((mtime_ns, size) or None, store).
-        # Size is part of the key because file-timestamp clocks are coarse.
-        self._read_cache: Dict[str, Tuple[Optional[Tuple[int, int]], TeamStore]] = {}
+        # Fingerprint-keyed read cache: (FileFingerprint or None, store).
+        # File-timestamp clocks are coarse, so the fingerprint carries a
+        # content hash while a file is too recent for mtime to be trusted
+        # (``storage_paths.compare_fingerprint``); without it an equal-length
+        # team rename landing in the same tick as the last write is invisible.
+        self._read_cache: Dict[str, Tuple[Optional[FileFingerprint], TeamStore]] = {}
         # Per-session migrated marker (file existence is the durable one).
         self._migrated: set[str] = set()
         # Hot-load chokepoint poll state (dir-wide (name -> fingerprint) map).
         self._poll_lock = threading.Lock()
-        self._poll_snapshot: Optional[Dict[str, Tuple[int, int]]] = None
+        self._poll_snapshot: Optional[Dict[str, FileFingerprint]] = None
         self._last_poll = 0.0
         logger.info("TeamManager initialized: %s", self.teams_dir)
 
@@ -387,7 +394,7 @@ class TeamManager:
     def get_store_cached(self, user_id: str) -> TeamStore:
         """The user's store, fingerprint-cached for hot read paths.
 
-        Reparses only when the backing file's (mtime_ns, size) changed; a
+        Reparses only when the backing file's fingerprint changed; a
         fingerprint differing from the recorded manager write is a raw
         on-disk edit and is audited once (mirrors ``get_hooks_cached``).
         Callers must treat the returned store as read-only; mutations go
@@ -395,17 +402,25 @@ class TeamManager:
         """
         self.ensure_migrated(user_id)
         path = self._path_for(user_id)
-        try:
-            st = path.stat() if path.exists() else None
-        except OSError:
-            st = None
-        sig = (st.st_mtime_ns, st.st_size) if st is not None else None
         with self._get_lock(user_id):
             cached = self._read_cache.get(user_id)
-            if cached is not None and cached[0] == sig:
+            previous = cached[0] if cached is not None else None
+        sig, changed = compare_fingerprint(path, previous)
+        with self._get_lock(user_id):
+            cached = self._read_cache.get(user_id)
+            if cached is not None and not changed:
+                # Settle the possibly-downgraded fingerprint so a quiet store
+                # stops being re-read, without disturbing the cached store.
+                settled = settle_fingerprint(cached[0], sig)
+                if settled is not None:
+                    self._read_cache[user_id] = (settled, cached[1])
                 return cached[1]
+            # Sidecar as the comparison baseline so a same-tick, same-size raw
+            # edit (an equal-length team rename is the realistic one) is still
+            # audited rather than mistaken for the manager's own write.
             expected = read_store_fingerprint(path)
-            if expected is not None and sig is not None and sig != expected:
+            _, edited_on_disk = compare_fingerprint(path, expected)
+            if expected is not None and sig is not None and edited_on_disk:
                 try:
                     from .activity_log import log_external_edit
 
@@ -608,18 +623,15 @@ class TeamManager:
             if now - self._last_poll < _POLL_MIN_INTERVAL:
                 return False
             self._last_poll = now
-            snapshot: Dict[str, Tuple[int, int]] = {}
             try:
-                for path in self.teams_dir.glob("*.json"):
-                    try:
-                        st = path.stat()
-                    except OSError:
-                        continue
-                    snapshot[path.name] = (st.st_mtime_ns, st.st_size)
+                entries = [(p.name, p) for p in self.teams_dir.glob("*.json")]
             except OSError:
                 return False
+            snapshot, edited, removed = scan_fingerprint_map(
+                entries, self._poll_snapshot
+            )
             first = self._poll_snapshot is None
-            changed = not first and snapshot != self._poll_snapshot
+            changed = not first and bool(edited or removed)
             self._poll_snapshot = snapshot
             return changed
 

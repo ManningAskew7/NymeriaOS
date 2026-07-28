@@ -30,9 +30,12 @@ equally supported slow path. Design and owner decisions:
 ## Hot-load (raw edits land without a restart)
 
 Stores that already read through to disk keep doing so (thread configs,
-triggers, hooks, TODOs, profiles, workflow state, prompt overrides). The
-three stores that cached in memory now detect external edits with debounced
-(mtime_ns, size) stat scans and reparse only what changed:
+triggers, TODOs, profiles, workflow state, prompt overrides; thread configs
+additionally keep a scan-only cache of callable names, which is not
+fingerprinted and can miss a same-tick same-size edit from another process).
+The stores that cache in memory detect external edits with debounced
+fingerprint scans
+(`core/storage_paths.py::compare_fingerprint`) and reparse only what changed:
 
 - **Custom tools** (`core/custom_tools.py::refresh_if_stale`): per-file
   fingerprints, checked on every definition read; changed/removed ids queue
@@ -44,6 +47,11 @@ three stores that cached in memory now detect external edits with debounced
   `list_installed`/`list_for_thread` run a debounced scan for adds/removals;
   a detected change schedules a background embedding-index rebuild, never an
   inline embed on the turn path.
+- **Hooks** (`core/hook_manager.py::get_hooks_cached`, `hooks/<user>.json`):
+  the per-turn registry reads through a fingerprint-keyed cache, so a raw
+  edit is live on the next turn. This is the cache with the least slack: no
+  other path rescans it, so a missed edit would keep a stale hook (a standing
+  prompt injection, a `pre_tool_use` guardrail, an approval gate) firing.
 - **Callable teams** (`core/team_manager.py`, `teams/<user>.json`): name and
   description reads go through a fingerprint-keyed cache, so raw edits are
   fresh on next read; the chokepoint's `poll_external_changes` additionally
@@ -55,8 +63,24 @@ The agent-side chokepoint (`core/agent_tools.py::sync_external_resource_edits`,
 called at the top of every graph lookup) drains the pending state and re-runs
 the same registry re-registration + graph rebuild the authoring tools run, so
 a raw edit reaches the next graph build exactly like a `tool_create` edit.
-Limits: checks are debounced (about 2 s), and a same-instant rewrite with an
-identical byte size can be missed (touch the file again).
+Limits: checks are debounced (about 2 s).
+
+A fingerprint is `(mtime_ns, size, content_hash)`. The hash is present only
+while a file is too recent for its mtime to be trusted, which is what makes a
+same-instant rewrite detectable: file timestamps come from a coarse kernel
+clock (about 1 ms on Linux/ext4, roughly 15 ms on Windows, 1 to 2 s on older
+filesystems), so two writes inside one tick that keep the byte count leave
+`(mtime, size)` identical. A fingerprint captured between them would then
+compare equal forever and the second write would be missed permanently, not
+just late. Once a file is older than the trust margin its hash is dropped
+again, so steady-state cost is the same single stat per file as before.
+
+That cost note applies to the in-memory caches. The `.sig` sidecar behind the
+external-edit audit is deliberately different: it is written right after a
+manager save, so it always carries a hash and never settles, which is exactly
+what makes the audit exact across processes. An audit comparison therefore
+hashes the store file every time. That is affordable because these files are
+small, not because it is free.
 
 ## Fail-safe raw edits
 
@@ -68,6 +92,21 @@ identical byte size can be missed (touch the file again).
   Corrupt `SKILL.md` files are deliberately not quarantined: markdown skills
   fail soft (skipped at scan; the cached copy keeps serving on a bad edit)
   and no manager ever rewrites them.
+- **Atomic writes** (`core/storage_paths.py::write_text_atomic`): the hook,
+  trigger, custom-tool and thread-config savers, the `.sig` sidecars, and
+  `file_write` overwrites go through a same-directory temp file plus a rename,
+  so a crash mid-write leaves the old file rather than a torn one the loaders
+  would then quarantine. The temp name carries a random suffix, because a
+  fixed one lets two processes writing the same store publish each other's
+  half-written bytes. An existing file's permission bits are applied when the
+  temp is created, not after it is filled, so a 0600 file's new contents are
+  never briefly world-readable. A read-only file or a read-only directory
+  falls back to an in-place write, so `chmod 444` still refuses and a writable
+  file in a locked directory still works; a full disk does NOT fall back,
+  because the atomic attempt already failed with the target intact and an
+  in-place retry would truncate it. Appends are not atomic (read-modify-write
+  would corrupt concurrent appenders, not protect them). The remaining JSON
+  store savers still hand-roll a fixed-name temp; sweeping them is pending.
 - **Secrets denylist** (`tools/filesystem.py::secrets_path_error`): the file
   tools refuse the sensitive stores under the data dir (the account vault
   and its SQLite sidecars, the OAuth token caches, and `mcp_servers/` since a

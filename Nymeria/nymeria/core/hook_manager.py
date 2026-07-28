@@ -41,10 +41,14 @@ from .hook_spec import (
 from .keyed_locks import KeyedRLockMap
 from .prompts import DEFAULT_TURN_METADATA_TEMPLATE, TURN_METADATA_TEMPLATE_PATTERN
 from .storage_paths import (
+    FileFingerprint,
+    compare_fingerprint,
     quarantine_corrupt_file,
     read_store_fingerprint,
     record_store_fingerprint,
     safe_path_segment,
+    settle_fingerprint,
+    write_text_atomic,
 )
 from .time_utils import ensure_aware_utc, utc_now
 
@@ -798,12 +802,15 @@ class HookManager:
         self.hooks_dir = Path(data_dir) / "hooks"
         self.hooks_dir.mkdir(parents=True, exist_ok=True)
         # Fingerprint-keyed read cache for the hot per-turn path:
-        # ((mtime_ns, size) or None, hooks). Size is part of the key because
-        # the kernel's file-timestamp clock is coarse: a write landing in the
-        # same granule as the previous one would be invisible to an
-        # mtime-only key.
+        # (FileFingerprint or None, hooks). The kernel's file-timestamp clock
+        # is coarse (~1ms), so a write landing in the same granule as the
+        # previous one is invisible to an mtime-only key; adding size narrows
+        # that but does nothing for the same-size rewrite this store sees most
+        # (an equal-length timeout, priority, or name edit). The fingerprint
+        # therefore carries a content hash while a file is too recent for
+        # mtime to be trusted: see ``storage_paths.compare_fingerprint``.
         self._read_cache: Dict[
-            str, Tuple[Optional[Tuple[int, int]], List[HookDefinition]]
+            str, Tuple[Optional[FileFingerprint], List[HookDefinition]]
         ] = {}
         # Write-behind execution-log buffer (drained by the shared log executor).
         self._pending_executions: Dict[str, List[HookExecution]] = {}
@@ -901,12 +908,10 @@ class HookManager:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             store.updated_at = utc_now()
-            temp = path.with_suffix(".tmp")
-            temp.write_text(
+            write_text_atomic(
+                path,
                 json.dumps(store.model_dump(mode="json"), indent=2, default=str),
-                encoding="utf-8",
             )
-            temp.replace(path)
             # Record the write in the shared .sig sidecar so loaders (in any
             # instance or process) can tell manager writes from raw on-disk
             # edits (resource-filesystem-layout plan, slice 4).
@@ -1131,20 +1136,31 @@ class HookManager:
     def get_hooks_cached(self, user_id: str) -> List[HookDefinition]:
         """All hooks for a user, fingerprint-cached for the hot per-turn path.
 
-        Reparses only when the backing file's (mtime_ns, size) fingerprint
-        changed, so a turn that resolves the registry several times (and
-        cross-instance writes from the tool/REST layers) both stay correct
-        without a disk read every turn.
+        Reparses only when the backing file's fingerprint changed, so a turn
+        that resolves the registry several times (and cross-instance writes
+        from the tool/REST layers) both stay correct without a disk read every
+        turn.
+
+        This cache has no other rescan path, so a missed change is permanent
+        and keeps a stale hook firing (a standing prompt injection, a
+        pre_tool_use guardrail, or an approval gate) after the store said
+        otherwise. That is why the fingerprint is content-exact for recently
+        written files rather than plain (mtime, size): see
+        ``storage_paths.compare_fingerprint``.
         """
         path = self._path_for(user_id)
-        try:
-            st = path.stat() if path.exists() else None
-        except OSError:
-            st = None
-        sig = (st.st_mtime_ns, st.st_size) if st is not None else None
         with self._get_lock(user_id):
             cached = self._read_cache.get(user_id)
-            if cached is not None and cached[0] == sig:
+            previous = cached[0] if cached is not None else None
+        sig, changed = compare_fingerprint(path, previous)
+        with self._get_lock(user_id):
+            cached = self._read_cache.get(user_id)
+            if cached is not None and not changed:
+                # Settle the possibly-downgraded fingerprint so a quiet store
+                # stops being re-read, without disturbing the cached hooks.
+                settled = settle_fingerprint(cached[0], sig)
+                if settled is not None:
+                    self._read_cache[user_id] = (settled, cached[1])
                 return cached[1]
             # A file fingerprint differing from the recorded manager write is
             # a raw on-disk edit: audit it (a written hook is a standing
@@ -1155,8 +1171,13 @@ class HookManager:
             # re-recording it here acknowledges the edit so it is audited
             # once, not once per reader. An absent sidecar (no manager write
             # on record) means no audit: fail-safe, never false-positive.
+            # Compared against the sidecar as the baseline, not with a bare
+            # differ: when the sidecar carries a content hash, that forces this
+            # side to hash too, so an edit that reused the manager write's
+            # coarse mtime and byte count is still caught.
             expected = read_store_fingerprint(path)
-            if expected is not None and sig is not None and sig != expected:
+            _, edited_on_disk = compare_fingerprint(path, expected)
+            if expected is not None and sig is not None and edited_on_disk:
                 try:
                     from .activity_log import log_external_edit
 
@@ -1217,9 +1238,7 @@ class HookManager:
             entries.extend(e.model_dump(mode="json") for e in pending)
             if len(entries) > MAX_HOOK_EXECUTION_LOG:
                 entries = entries[-MAX_HOOK_EXECUTION_LOG:]
-            temp = path.with_suffix(".tmp")
-            temp.write_text(json.dumps(entries, default=str), encoding="utf-8")
-            temp.replace(path)
+            write_text_atomic(path, json.dumps(entries, default=str))
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to flush hook executions for %s: %s", user_id, e)
 
@@ -1295,7 +1314,5 @@ class HookManager:
         ]
         removed = len(loaded) - len(kept)
         if removed:
-            temp = path.with_suffix(".tmp")
-            temp.write_text(json.dumps(kept, default=str), encoding="utf-8")
-            temp.replace(path)
+            write_text_atomic(path, json.dumps(kept, default=str))
         return removed

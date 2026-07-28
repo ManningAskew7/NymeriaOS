@@ -19,7 +19,11 @@ from typing import Any, Dict, Iterator, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .keyed_locks import KeyedRLockMap
-from .storage_paths import quarantine_corrupt_file, safe_path_segment
+from .storage_paths import (
+    quarantine_corrupt_file,
+    safe_path_segment,
+    write_text_atomic,
+)
 from .time_utils import ensure_aware_utc, utc_now
 from .user_profile import migrate_tool_names
 
@@ -451,10 +455,13 @@ class ThreadConfigManager:
         with lock:
             try:
                 config.updated_at = utc_now()
-                temp_path = config_path.with_suffix(".tmp")
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    json.dump(config.model_dump(mode="json"), f, indent=2, default=str)
-                temp_path.replace(config_path)
+                # Shared atomic write: the fixed `<stem>.tmp` this replaced
+                # collides across processes, and in the Docker shape the api
+                # and worker both save thread configs to one volume.
+                write_text_atomic(
+                    config_path,
+                    json.dumps(config.model_dump(mode="json"), indent=2, default=str),
+                )
                 # Drop this file's callable-scan cache entry so the next scan
                 # re-reads. The mtime/size cache key is the source of truth for
                 # freshness; this pop is a fast-path invalidation (fully
@@ -510,6 +517,29 @@ class ThreadConfigManager:
         is picked up on the next read. ``save_config`` / ``delete_config`` also
         pop the entry as a fast-path invalidation (fully serialized with the
         scan when a thread_id equals its sanitized stem, the common case).
+
+        This deliberately keeps the plain ``(mtime, size)`` key rather than the
+        content-exact ``storage_paths.compare_fingerprint`` the hot-load caches
+        use. File timestamps come from a coarse clock, so a same-size raw edit
+        landing in the same tick as the previous write is invisible here too,
+        but this cache is not authoritative (``get_config``, the read-modify-
+        write accessor, is uncached) and manager writes POP the entry outright
+        rather than re-fingerprinting it, so a manager can never miss its OWN
+        write. That last part is same-process only: in the Docker shape the api
+        and worker are separate processes over a shared volume, so a same-tick
+        same-size write from the other one is still invisible to this cache
+        until something else moves the file. Accepted because the cache is not
+        authoritative, so the hole costs a stale name in one scan rather than
+        a wrong config anywhere.
+
+        Note what this rationale is NOT: "hashing every config on the
+        graph-build path would be too slow". That objection is against
+        always-hashing, and ``compare_fingerprint`` does not always hash: it
+        hashes only files written in the last few seconds, which on a scan of
+        hundreds of thread configs is approximately none, and none at all on
+        the common path since saves pop the entry. Converting this site is
+        therefore close to free and is the obvious follow-up; it was left out
+        of the pass that introduced the primitive to keep that change scoped.
         """
         config_path = self._get_config_path(stem)
         cache_key = config_path.name

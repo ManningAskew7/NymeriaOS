@@ -378,7 +378,8 @@ def sync_external_resource_edits(agent: "NymeriaAgent") -> None:
 
     Slice 2 of the resource-filesystem-layout plan: the custom-tool loader
     and MCP registry detect external file edits themselves (debounced
-    mtime+size scans in ``refresh_if_stale``); this chokepoint, called on
+    fingerprint scans in ``refresh_if_stale``, see
+    ``storage_paths.compare_fingerprint``); this chokepoint, called on
     every graph lookup, drains their pending-sync state and re-runs the same
     registry re-registration + graph rebuild the authoring tools run, so a
     raw edit reaches the next graph build exactly like a ``tool_create``
