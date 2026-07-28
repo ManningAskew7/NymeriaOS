@@ -383,3 +383,108 @@ def test_rich_stop_race_stream_closes_before_stop_rpc_resolves(tmp_path: Path) -
     assert [request.message for request in client.chat_requests] == ["slow"]
     assert buffer.text == "queued while busy"
     assert runtime.queued_count == 0
+
+
+class ToolCallOnlyClient(FakeAgentClient):
+    """Streams a tool CALL and then dies, the shape that orphans a live row."""
+
+    async def stream_chat(
+        self,
+        message: str,
+        thread_id: str,
+        user_id: str = "default",
+        attachments: Sequence[Mapping[str, Any]] | None = None,
+        **options: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        self.chat_requests.append(
+            ChatRequest(
+                message=message,
+                thread_id=thread_id,
+                user_id=user_id,
+                attachments=tuple(attachments or ()),
+                options=options,
+            )
+        )
+        yield {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}}
+        raise RuntimeError("stream dropped mid-tool")
+
+
+def test_rich_turn_end_drops_orphaned_live_tool_rows() -> None:
+    """A dropped stream must not leave a row ticking a timer all session.
+
+    The reducer keeps the step `running` when a stream dies (only an explicit
+    cancel updates running tools), so the turn seam is what has to clear it.
+    It sits on `_send_message_async`, not on the submission chain, because
+    chat_stream slash commands run full agentic turns without a chain.
+    """
+
+    async def exercise() -> tuple[RichReplRenderer, _RichReplRuntime]:
+        client = ToolCallOnlyClient()
+        app, renderer, runtime = make_rich_harness(client)
+        # Pretend the footer is pinned so the row registers as live.
+        renderer.live_row_context = lambda: (20, 1)
+
+        await app._send_message_async("use a tool", renderer, runtime=runtime)
+        return renderer, runtime
+
+    renderer, runtime = run(exercise())
+
+    assert renderer.state.active_tool_calls["call-1"].status == "running"
+    assert renderer.has_live_tool_rows() is False
+    assert runtime.busy is False
+
+
+def test_atomic_repaint_gate_requires_the_static_follow_footer_conditions() -> None:
+    """The verdict is resolved once, so its gate must not read live state.
+
+    Terminal HEIGHT is deliberately absent: a terminal that starts too short
+    to pin a footer can be resized into one, and the probe never re-runs.
+    """
+
+    def make_app(*, scroll_region: bool) -> CLIApp:
+        return CLIApp(
+            DummyAgent(),
+            thread_id="thread-1",
+            runtime_config=CLIRuntimeConfig(
+                renderer="rich",
+                transport="local",
+                rich_scroll_region=scroll_region,
+            ),
+        )
+
+    app = make_app(scroll_region=True)
+    rich_caps = FakeTerminalCapabilities(supports_color=False)
+    calls: list[bool] = []
+
+    import nymeria.triggers.cli.app as app_module
+
+    original = app_module.resolve_atomic_repaint_support
+    try:
+        app_module.resolve_atomic_repaint_support = lambda: (
+            calls.append(True) or True
+        )
+        assert app._resolve_atomic_repaint(rich_caps) is True
+        assert len(calls) == 1
+
+        # A tiny terminal still gets a verdict (no height in the gate).
+        assert app._resolve_atomic_repaint(FakeTerminalCapabilities(height=4)) is True
+
+        # Anything that rules out a follow footer must not touch the tty.
+        assert (
+            make_app(scroll_region=False)._resolve_atomic_repaint(rich_caps) is False
+        )
+        assert app._resolve_atomic_repaint(FakeTerminalCapabilities(renderer="plain")) is False
+        assert (
+            app._resolve_atomic_repaint(FakeTerminalCapabilities(stdin_isatty=False))
+            is False
+        )
+        assert len(calls) == 2
+
+        # A probe fault resolves conservatively instead of killing startup.
+        def boom() -> bool:
+            raise OSError("no tty for you")
+
+        app_module.resolve_atomic_repaint_support = boom
+        assert app._resolve_atomic_repaint(rich_caps) is False
+    finally:
+        app_module.resolve_atomic_repaint_support = original

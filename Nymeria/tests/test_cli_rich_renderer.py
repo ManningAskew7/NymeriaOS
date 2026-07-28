@@ -2517,9 +2517,9 @@ def test_tool_row_ticker_runs_while_live_rows_exist(monkeypatch: Any) -> None:
 
 
 def test_tool_row_ticker_ticks_while_floating(monkeypatch: Any) -> None:
-    # Float-phase ticks are safe again: the render window repaints the pt
-    # layout synchronously inside its synchronized-output bracket, so the
-    # elapsed timer counts from the very first pre-pin row.
+    # Float-phase ticks are safe on a terminal with synchronized output: the
+    # render window repaints the pt layout inside the same atomic frame, so
+    # the elapsed timer counts from the very first pre-pin row.
     from nymeria.triggers.cli import repl_runtime as repl_runtime_module
 
     monkeypatch.setattr(repl_runtime_module, "_TOOL_ROW_TICK_SECONDS", 0.01)
@@ -2527,11 +2527,13 @@ def test_tool_row_ticker_ticks_while_floating(monkeypatch: Any) -> None:
     async def exercise() -> None:
         runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
         assert runtime.pinned_footer_active() is False  # floating
+        runtime.footer.note_atomic_repaint_support(True)
         live = {"rows": True}
         ticks: list[float] = []
         runtime.renderer = SimpleNamespace(
             has_live_tool_rows=lambda: live["rows"],
             render_running_tick=lambda now: ticks.append(now),
+            prune_live_tool_rows=lambda: None,
         )
 
         async def fake_render(callback: Any) -> None:
@@ -2548,6 +2550,133 @@ def test_tool_row_ticker_ticks_while_floating(monkeypatch: Any) -> None:
         await runtime.stop_tool_row_ticker_async()
 
     asyncio.run(exercise())
+
+
+def test_tool_row_ticker_skips_float_without_synchronized_output(
+    monkeypatch: Any,
+) -> None:
+    # No mode 2026: a float tick's erase + full layout repaint can straddle
+    # a terminal refresh, so the pre-pin timer waits for the pin. The loop
+    # still prunes (liveness only) so a dead stream cannot keep it awake.
+    from nymeria.triggers.cli import repl_runtime as repl_runtime_module
+
+    monkeypatch.setattr(repl_runtime_module, "_TOOL_ROW_TICK_SECONDS", 0.01)
+
+    async def exercise() -> None:
+        runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+        runtime.footer.note_atomic_repaint_support(False)
+        live = {"rows": True}
+        ticks: list[float] = []
+        prunes: list[bool] = []
+        runtime.renderer = SimpleNamespace(
+            has_live_tool_rows=lambda: live["rows"],
+            render_running_tick=lambda now: ticks.append(now),
+            prune_live_tool_rows=lambda: prunes.append(True),
+        )
+
+        async def fake_render(callback: Any) -> None:
+            callback()
+
+        runtime.footer.render_above_prompt = fake_render  # type: ignore[method-assign]
+        runtime._ensure_tool_row_ticker()
+        assert runtime._tool_row_ticker_task is not None
+        await asyncio.sleep(0.06)
+        assert ticks == []
+        assert prunes
+        assert not runtime._tool_row_ticker_task.done()
+
+        # Pinned rewrites are a single-row write, so they tick regardless.
+        runtime.footer._pinned_footer_active = True
+        runtime.footer._pinned_scroll_bottom = 19
+        await asyncio.sleep(0.06)
+        assert ticks
+
+        live["rows"] = False
+        await asyncio.sleep(0.06)
+        await runtime.stop_tool_row_ticker_async()
+
+    asyncio.run(exercise())
+
+
+def test_follow_footer_float_tick_gate_tracks_probe_verdict() -> None:
+    runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+    # Unprobed default is conservative: floating ticks stay off.
+    assert runtime.footer.atomic_repaint_supported() is False
+    assert runtime.footer.float_tick_would_blink() is True
+
+    runtime.footer.note_atomic_repaint_support(None)  # undetermined
+    assert runtime.footer.float_tick_would_blink() is True
+
+    runtime.footer.note_atomic_repaint_support(True)
+    assert runtime.footer.float_tick_would_blink() is False
+
+    # Pinned rewrites never take the blink-prone path.
+    runtime.footer.note_atomic_repaint_support(False)
+    runtime.footer._pinned_footer_active = True
+    assert runtime.footer.float_tick_would_blink() is False
+
+
+def test_rich_renderer_prune_live_tool_rows_drops_dead_slots() -> None:
+    # A stream that dies mid-tool leaves a registered slot with no running
+    # step; the liveness-only prune must clear it (no terminal writes) so
+    # the ticker's blink-avoidance skip can still terminate the loop.
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    assert renderer.has_live_tool_rows() is True
+    renderer.state.active_tool_calls.clear()  # stream died
+    before = output.stdout_text
+    renderer.prune_live_tool_rows()
+    assert renderer.has_live_tool_rows() is False
+    assert output.stdout_text == before  # liveness only, no writes
+
+
+def test_rich_renderer_prune_live_tool_rows_clears_on_a_dead_context() -> None:
+    # The pruner and the renderer share one pass on purpose: a pruner that
+    # kept a slot the renderer would have dropped (here: the geometry gate
+    # gone, so no row can ever flip again) leaves the ticker awake forever.
+    renderer, output, context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    assert renderer.has_live_tool_rows() is True
+    context["value"] = None  # unpinned, or the scroll region went away
+    before = output.stdout_text
+    renderer.prune_live_tool_rows()
+    assert renderer.has_live_tool_rows() is False
+    assert output.stdout_text == before
+
+
+def test_rich_renderer_drops_orphan_live_rows_at_chain_end() -> None:
+    # A dropped stream leaves its step `running` in the live index forever,
+    # so the end of the submission chain is the honest "nothing can flip
+    # this" signal; without it the row ticks a growing timer all session.
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    assert renderer.has_live_tool_rows() is True
+    assert renderer.state.active_tool_calls["call-1"].status == "running"
+
+    renderer.drop_live_tool_rows()
+
+    assert renderer.has_live_tool_rows() is False
+    # A late result still renders, as an appended row rather than a flip.
+    before = output.stdout_text
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=2.0,
+    )
+    tail = output.stdout_text[len(before) :]
+    assert "slow_tool" in ANSI_RE.sub("", tail)
+    assert "\x1b[2K" not in tail
 
 
 def test_follow_footer_sync_output_reset_survives_callback_exception() -> None:

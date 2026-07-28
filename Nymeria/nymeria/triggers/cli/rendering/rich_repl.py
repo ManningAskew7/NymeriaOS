@@ -639,20 +639,49 @@ class RichReplRenderer:
 
         return bool(self._live_tool_rows)
 
-    def render_running_tick(self, now: float | None = None) -> None:
-        """Refresh elapsed timers on still-visible running tool rows."""
+    def drop_live_tool_rows(self) -> None:
+        """Forget every registered row: nothing can flip them any more.
+
+        Called when a submission chain ends. A completion flip unregisters
+        its own slot, so whatever is left belongs to a tool whose result
+        never arrived, and a dropped or errored stream leaves that step
+        `running` in the live index forever: without this the row would tick
+        a growing elapsed timer for the rest of the session.
+        """
+
+        self._live_tool_rows = {}
+
+    def prune_live_tool_rows(self) -> None:
+        """Drop live-row slots that can never flip again, writing nothing.
+
+        Liveness-only entry point for callers that must not touch the
+        terminal (the ticker's blink-avoidance skip). It shares
+        `_prune_live_tool_rows` with `render_running_tick` rather than
+        re-deriving the rules, because a pruner that keeps a slot the
+        renderer would have dropped leaves the ticker awake forever.
+        """
+
+        self._prune_live_tool_rows()
+
+    def _prune_live_tool_rows(self) -> list[tuple[ToolCallStep, int]]:
+        """Drop dead slots; return ``(step, up_distance)`` for the survivors.
+
+        The one place that decides whether a registered row is still live:
+        its generation still current, its step still running, and its row
+        still inside the mutable region above the anchor.
+        """
 
         if not self._live_tool_rows:
-            return
+            return []
         context = self._live_context()
         if context is None:
             # Unpinned or the geometry gate went false: the generation moved
             # on, so no slot can ever flip again. Clear them so the ticker
             # stops instead of spinning on dead rows.
             self._live_tool_rows.clear()
-            return
+            return []
         anchor_row, generation = context
-        selected_now = time.monotonic() if now is None else now
+        survivors: list[tuple[ToolCallStep, int]] = []
         for tool_id, slot in list(self._live_tool_rows.items()):
             lines_after_print, slot_generation = slot
             if slot_generation != generation:
@@ -670,6 +699,17 @@ class RichReplRenderer:
                 # immutable, so stop ticking; completion appends a fresh row.
                 self._live_tool_rows.pop(tool_id, None)
                 continue
+            survivors.append((step, up_distance))
+        return survivors
+
+    def render_running_tick(self, now: float | None = None) -> None:
+        """Refresh elapsed timers on still-visible running tool rows."""
+
+        survivors = self._prune_live_tool_rows()
+        if not survivors:
+            return
+        selected_now = time.monotonic() if now is None else now
+        for step, up_distance in survivors:
             self._write_tool_row_above(up_distance, step, now=selected_now)
 
     def _render_new_system_messages(self, state: CLIUIState) -> bool:

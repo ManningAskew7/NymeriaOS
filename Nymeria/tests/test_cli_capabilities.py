@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import replace
 
 from nymeria.triggers.cli.app import CLIRuntimeConfig
-from nymeria.triggers.cli.capabilities import detect_terminal_capabilities
+from nymeria.triggers.cli.capabilities import (
+    detect_terminal_capabilities,
+    inside_terminal_multiplexer,
+    probe_synchronized_output,
+    resolve_atomic_repaint_support,
+    synchronized_output_override,
+)
 
 
 class FakeStream:
@@ -213,3 +219,215 @@ def test_nymeria_cli_animation_env_disables_animation():
 
     assert caps.supports_animation is False
     assert caps.animation_enabled is False
+
+
+def _probe_against_pty(
+    *replies: bytes,
+    timeout: float = 1.0,
+    gap: float = 0.0,
+) -> tuple[bool | None, bytes]:
+    """Run the real DECRQM probe against a pty answering with ``replies``.
+
+    Returns the verdict AND whatever the probe left unread in the terminal's
+    input queue, because leftovers are not a detail here: prompt_toolkit
+    would read them as keystrokes and type them into the first prompt.
+    ``gap`` splits the replies in time, the shape a real terminal produces
+    when the mode reply and the DA1 fence arrive in separate packets.
+    """
+
+    import os
+    import select
+    import threading
+    import time as time_module
+    import tty
+
+    master, slave = os.openpty()
+    # cbreak up front so the leftover drain below reads byte-wise: the probe
+    # restores whatever mode it found, and a canonical-mode tty would hand us
+    # nothing until a newline arrives.
+    tty.setcbreak(slave)
+
+    class PtyStream:
+        """Minimal stdin/stdout stand-in over one pty slave fd."""
+
+        def isatty(self) -> bool:
+            return True
+
+        def fileno(self) -> int:
+            return slave
+
+        def write(self, text: str) -> int:
+            return os.write(slave, text.encode("utf-8"))
+
+        def flush(self) -> None:
+            return None
+
+    stream = PtyStream()
+
+    def responder() -> None:
+        deadline = time_module.monotonic() + timeout + 1.0
+        seen = b""
+        while time_module.monotonic() < deadline:
+            if not select.select([master], [], [], 0.02)[0]:
+                continue
+            seen += os.read(master, 1024)
+            if b"$p" not in seen:
+                continue
+            for index, reply in enumerate(replies):
+                if index and gap:
+                    time_module.sleep(gap)
+                os.write(master, reply)
+            return
+
+    thread = threading.Thread(target=responder, daemon=True)
+    thread.start()
+    try:
+        verdict = probe_synchronized_output(
+            stdin=stream,
+            stdout=stream,
+            timeout=timeout,
+        )
+        leftover = b""
+        # The first wait has to outlast ``gap``: a fence left queued by a
+        # probe that stopped at the verdict arrives late by construction, and
+        # a drain window shorter than the split would call the leak clean.
+        wait = max(0.3, gap * 3)
+        while select.select([slave], [], [], wait)[0]:
+            chunk = os.read(slave, 1024)
+            if not chunk:
+                break
+            leftover += chunk
+            wait = 0.02
+        return verdict, leftover
+    finally:
+        thread.join(timeout=2)
+        os.close(slave)
+        os.close(master)
+
+
+def test_probe_synchronized_output_reads_decrpm_support():
+    # DECRPM value 2 = mode recognized and currently reset: supported.
+    assert _probe_against_pty(b"\x1b[?2026;2$y\x1b[?62;1;6c") == (True, b"")
+    # 1 (set) and 3 (permanently set) also mean the terminal implements it.
+    assert _probe_against_pty(b"\x1b[?2026;1$y\x1b[?62;1;6c") == (True, b"")
+
+
+def test_probe_synchronized_output_reads_decrpm_rejection():
+    # 0 = not recognized, 4 = permanently reset (cannot be enabled).
+    assert _probe_against_pty(b"\x1b[?2026;0$y\x1b[?62;1;6c") == (False, b"")
+    assert _probe_against_pty(b"\x1b[?2026;4$y\x1b[?62;1;6c") == (False, b"")
+
+
+def test_probe_synchronized_output_uses_device_attributes_fence():
+    # A terminal that ignores the mode query still answers DA1; that reply
+    # is the definitive "not implemented" signal, without waiting out the
+    # whole timeout.
+    assert _probe_against_pty(b"\x1b[?62;1;6c") == (False, b"")
+
+
+def test_probe_synchronized_output_drains_a_fence_that_arrives_late():
+    # The shape that matters: a real terminal answers in two packets. The
+    # read must run to the FENCE, not stop at the verdict, or the DA1 bytes
+    # stay queued and prompt_toolkit types `Escape` + `[?62;1;6c` into the
+    # user's first prompt.
+    assert _probe_against_pty(
+        b"\x1b[?2026;2$y",
+        b"\x1b[?62;1;6c",
+        gap=0.06,
+    ) == (True, b"")
+
+
+def test_probe_synchronized_output_keeps_a_verdict_when_the_fence_never_lands():
+    # A definitive mode reply stays definitive if the fence goes missing, and
+    # the budget bounds the wait rather than hanging startup. (The deadline
+    # path also flushes, but that only clears what is queued at that instant:
+    # a reply arriving later still reaches prompt_toolkit, which is why the
+    # budget, not the flush, is the defense.)
+    assert _probe_against_pty(b"\x1b[?2026;2$y", timeout=0.1) == (True, b"")
+
+
+def test_probe_synchronized_output_undetermined_without_reply():
+    # Silent terminal: undetermined, which callers treat as unsupported.
+    assert _probe_against_pty(timeout=0.05) == (None, b"")
+
+
+def test_probe_synchronized_output_requires_a_tty():
+    assert (
+        probe_synchronized_output(
+            stdin=FakeStream(isatty=False),
+            stdout=FakeStream(isatty=True),
+        )
+        is None
+    )
+
+
+def test_synchronized_output_override_reads_env():
+    assert synchronized_output_override({}) is None
+    assert synchronized_output_override({"NYMERIA_CLI_SYNC_OUTPUT": "auto"}) is None
+    assert synchronized_output_override({"NYMERIA_CLI_SYNC_OUTPUT": "on"}) is True
+    assert synchronized_output_override({"NYMERIA_CLI_SYNC_OUTPUT": "1"}) is True
+    assert synchronized_output_override({"NYMERIA_CLI_SYNC_OUTPUT": "off"}) is False
+    assert synchronized_output_override({"NYMERIA_CLI_SYNC_OUTPUT": "false"}) is False
+    # A typo must fall back to auto, never to a silent "on" that would enable
+    # float repaints on a terminal that flashes.
+    assert synchronized_output_override({"NYMERIA_CLI_SYNC_OUTPUT": "of"}) is None
+    assert synchronized_output_override({"NYMERIA_CLI_SYNC_OUTPUT": "enabled"}) is None
+
+
+def test_resolve_atomic_repaint_support_skips_probe_when_forced():
+    # The override must not touch the terminal at all: a non-tty stdin would
+    # otherwise short-circuit to unsupported.
+    assert (
+        resolve_atomic_repaint_support(
+            stdin=FakeStream(isatty=False),
+            stdout=FakeStream(isatty=False),
+            environ={"NYMERIA_CLI_SYNC_OUTPUT": "on"},
+        )
+        is True
+    )
+    assert (
+        resolve_atomic_repaint_support(
+            stdin=FakeStream(isatty=False),
+            stdout=FakeStream(isatty=False),
+            environ={"NYMERIA_CLI_SYNC_OUTPUT": "off", "TMUX": "/tmp/tmux-1000/default"},
+        )
+        is False
+    )
+
+
+def test_inside_terminal_multiplexer_detects_tmux_and_screen():
+    assert inside_terminal_multiplexer({}) is False
+    assert inside_terminal_multiplexer({"TERM": "xterm-256color"}) is False
+    assert inside_terminal_multiplexer({"TMUX": "/tmp/tmux-1000/default,123,0"}) is True
+    assert inside_terminal_multiplexer({"STY": "1234.pts-0.host"}) is True
+    assert inside_terminal_multiplexer({"ZELLIJ": "0"}) is True
+    assert inside_terminal_multiplexer({"ZELLIJ_SESSION_NAME": "main"}) is True
+    # TERM alone is not evidence: emulators that are not multiplexers ship
+    # these entries, and trusting them would skip the probe (and a real DEC
+    # 2026 answer) for a terminal that does implement it.
+    assert inside_terminal_multiplexer({"TERM": "tmux-256color"}) is False
+    assert inside_terminal_multiplexer({"TERM": "screen.xterm-256color"}) is False
+
+
+def test_resolve_atomic_repaint_support_trusts_multiplexer_batching():
+    # Measured 2026-07-28: tmux 3.4 answers DA1 but no DECRPM for mode 2026,
+    # so the probe alone would say "no". A multiplexer renders from its own
+    # buffer and flushes on its own redraw cycle, which coalesces a burst of
+    # writes into one outer-terminal update, so it never reaches the probe.
+    assert (
+        resolve_atomic_repaint_support(
+            stdin=FakeStream(isatty=False),
+            stdout=FakeStream(isatty=False),
+            environ={"TERM": "tmux-256color", "TMUX": "/tmp/tmux-1000/default"},
+        )
+        is True
+    )
+    # A bare terminal that cannot confirm resolves False (conservative).
+    assert (
+        resolve_atomic_repaint_support(
+            stdin=FakeStream(isatty=False),
+            stdout=FakeStream(isatty=False),
+            environ={"TERM": "xterm-256color"},
+        )
+        is False
+    )

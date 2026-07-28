@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import locale
 import os
+import re
 import shutil
 import sys
+import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -14,6 +17,25 @@ from typing import Any, Literal, Protocol
 RendererMode = Literal["rich", "plain", "auto"]
 ResolvedRendererMode = Literal["rich", "plain"]
 ColorMode = Literal["auto", "always", "never"]
+
+# Forces the DEC synchronized-output verdict: auto (default) probes the
+# terminal, on/off skip the probe.
+SYNCHRONIZED_OUTPUT_ENV = "NYMERIA_CLI_SYNC_OUTPUT"
+# Two-sided: the reply crosses the same link as the session, so an
+# intercontinental ssh round trip (~200-300ms) has to fit with margin, but a
+# terminal that answers nothing at all (mosh, script(1), some embedded
+# terminals) pays the whole budget as a startup stall. The DA1 fence means a
+# healthy terminal returns in one round trip and never approaches this.
+_SYNCHRONIZED_OUTPUT_PROBE_TIMEOUT_SECONDS = 0.5
+_DECRQM_SYNCHRONIZED_OUTPUT = "\x1b[?2026$p"
+_PRIMARY_DEVICE_ATTRIBUTES = "\x1b[c"
+_DECRPM_SYNCHRONIZED_OUTPUT_RE = re.compile(rb"\x1b\[\?2026;(\d+)\$y")
+_PRIMARY_DEVICE_ATTRIBUTES_RE = re.compile(rb"\x1b\[\?[0-9;]*c")
+# DECRPM report values: 0 = not recognized, 1 = set, 2 = reset,
+# 3 = permanently set, 4 = permanently reset (exists but cannot be enabled).
+_DECRPM_SUPPORTED_VALUES = {b"1", b"2", b"3"}
+_TRUTHY_OVERRIDES = {"1", "true", "yes", "on"}
+_FALSY_OVERRIDES = {"0", "false", "no", "off"}
 
 
 class CLIRuntimeOverrides(Protocol):
@@ -213,6 +235,183 @@ def resolve_renderer_mode(
     return "rich", "auto-interactive"
 
 
+def synchronized_output_override(
+    environ: Mapping[str, str] | None = None,
+) -> bool | None:
+    """Read the forced `NYMERIA_CLI_SYNC_OUTPUT` policy (None means ``auto``).
+
+    ``on``/``off`` skip the terminal probe entirely, for terminals whose
+    answer is wrong or whose owner wants the quieter behavior anyway.
+    Anything unrecognized reads as ``auto`` rather than as a silent ``on``,
+    so a typo cannot enable float-phase repaints on a terminal that flashes.
+    """
+
+    env = os.environ if environ is None else environ
+    raw = env.get(SYNCHRONIZED_OUTPUT_ENV, "").strip().lower()
+    if raw in _TRUTHY_OVERRIDES:
+        return True
+    if raw in _FALSY_OVERRIDES:
+        return False
+    return None
+
+
+def inside_terminal_multiplexer(environ: Mapping[str, str] | None = None) -> bool:
+    """True when a multiplexer sits between us and the real terminal.
+
+    Only the env vars the multiplexer itself exports for its children count
+    (tmux, GNU screen, zellij). `TERM=screen-256color` is set by plenty of
+    emulators that are nothing of the sort, and treating it as evidence would
+    skip the probe (and with it a real DEC 2026 answer) for them. Bare
+    attach wrappers like dtach pass bytes straight through and are correctly
+    absent: there the real terminal answers for itself.
+    """
+
+    env = os.environ if environ is None else environ
+    return any(
+        env.get(name, "").strip()
+        for name in ("TMUX", "STY", "ZELLIJ", "ZELLIJ_SESSION_NAME")
+    )
+
+
+def resolve_atomic_repaint_support(
+    *,
+    stdin: Any | None = None,
+    stdout: Any | None = None,
+    environ: Mapping[str, str] | None = None,
+    timeout: float = _SYNCHRONIZED_OUTPUT_PROBE_TIMEOUT_SECONDS,
+) -> bool:
+    """Whether a burst of terminal writes reaches the screen as ONE frame.
+
+    Two mechanisms qualify, which is why this is a policy question and not
+    just `probe_synchronized_output`:
+
+    * The terminal implements DEC mode 2026, so our explicit brackets hold.
+    * A multiplexer sits in between. tmux and screen render from their own
+      buffer and flush on their own redraw cycle, so writes issued
+      microseconds apart coalesce into a single outer-terminal update.
+      (Measured 2026-07-28: tmux 3.4 answers DA1 but no DECRPM for 2026, so
+      our brackets are swallowed there and the coalescing IS the mechanism.)
+
+    An undetermined probe resolves False: callers use this to decide whether
+    a repaint with nothing new to show is worth the risk of a visible flash.
+    """
+
+    override = synchronized_output_override(environ)
+    if override is not None:
+        return override
+    if inside_terminal_multiplexer(environ):
+        return True
+    return bool(probe_synchronized_output(stdin=stdin, stdout=stdout, timeout=timeout))
+
+
+def probe_synchronized_output(
+    *,
+    stdin: Any | None = None,
+    stdout: Any | None = None,
+    timeout: float = _SYNCHRONIZED_OUTPUT_PROBE_TIMEOUT_SECONDS,
+) -> bool | None:
+    """Ask the terminal whether it implements DEC mode 2026 (DECRQM).
+
+    Unlike `detect_terminal_capabilities`, this TALKS TO THE TERMINAL: it
+    briefly puts stdin in cbreak mode, writes a mode query, and reads the
+    reply, so it must be called explicitly and only while nothing else owns
+    the tty (the Rich REPL calls it once, before prompt_toolkit starts).
+
+    A primary-device-attributes query rides along as a FENCE, and the fence,
+    not the answer, is what ends the read: every VT-style terminal answers
+    DA1, and it answers IN ORDER, so DA1 arriving proves the mode reply is
+    either already in hand or never coming. Returning at the mode reply
+    instead would leave the DA1 bytes in the tty queue for prompt_toolkit to
+    read as keystrokes, which is how `Escape` plus a literal `[?62;1;6c`
+    lands in the user's first prompt.
+
+    Returns True/False when the terminal answers, and None when undetermined
+    (no tty, no reply, or an unsupported platform); callers treat None as
+    unsupported.
+
+    Accepted costs: bytes typed between the call and the fence are consumed
+    with the reply, so the caller runs this as early in startup as it can
+    (the CLI does it before it even connects to the backend, making the
+    window one terminal round trip); and a terminal slower than the budget
+    both loses its verdict and gets its late reply typed into the first
+    prompt, which is why the budget is sized for a bad link rather than a
+    good one.
+    """
+
+    if sys.platform == "win32":
+        return None
+    try:
+        import select
+        import termios
+        import tty
+    except ImportError:  # pragma: no cover - POSIX-only import guard.
+        return None
+
+    # sys.__stdin__/__stdout__, not sys.stdin/stdout: by the time a caller
+    # reaches us the latter may be prompt_toolkit's StdoutProxy, which buffers
+    # for the renderer and has no fileno of its own.
+    stdin = sys.__stdin__ if stdin is None else stdin
+    stdout = sys.__stdout__ if stdout is None else stdout
+    # Both are None in an embedded/detached interpreter, where there is no
+    # terminal to ask in the first place.
+    if stdin is None or stdout is None:
+        return None
+    if not _is_tty(stdin) or not _is_tty(stdout):
+        return None
+    try:
+        fd = stdin.fileno()
+        # A query written to one tty is answered on that tty. If the streams
+        # are different devices the reply would never reach our reader.
+        if os.fstat(fd).st_rdev != os.fstat(stdout.fileno()).st_rdev:
+            return None
+        saved = termios.tcgetattr(fd)
+    except Exception:  # noqa: BLE001 - unusual stream: stay undetermined.
+        return None
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    received = b""
+    verdict: bool | None = None
+    try:
+        # TCSANOW, not the tty helpers' default TCSAFLUSH: flushing would
+        # discard whatever the user typed ahead before the probe started.
+        # Not TCSADRAIN either, which waits for the output queue to drain and
+        # would hang startup behind a stopped (XOFF'd) terminal; TCSANOW
+        # preserves pending input just the same.
+        tty.setcbreak(fd, termios.TCSANOW)
+        stdout.write(_DECRQM_SYNCHRONIZED_OUTPUT + _PRIMARY_DEVICE_ATTRIBUTES)
+        stdout.flush()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                # Out of budget with the fence still outstanding. Clear what
+                # is queued right now; a reply that arrives AFTER we return
+                # still reaches prompt_toolkit and types itself into the
+                # first prompt, which no flush here can prevent. Sizing the
+                # budget past a plausible round trip is the actual defense.
+                with suppress(Exception):
+                    termios.tcflush(fd, termios.TCIFLUSH)
+                return verdict
+            chunk = os.read(fd, 1024)
+            if not chunk:  # EOF: no fence is coming, and none can leak.
+                return verdict
+            received += chunk
+            if verdict is None:
+                answer = _DECRPM_SYNCHRONIZED_OUTPUT_RE.search(received)
+                if answer is not None:
+                    verdict = answer.group(1) in _DECRPM_SUPPORTED_VALUES
+            if _PRIMARY_DEVICE_ATTRIBUTES_RE.search(received) is not None:
+                # Fence reached. No mode reply ahead of it means the terminal
+                # does not implement 2026.
+                return False if verdict is None else verdict
+    except Exception:  # noqa: BLE001 - probing is best effort, never fatal.
+        return None
+    finally:
+        # TCSANOW again: restoring must not block on the output queue, and
+        # must not discard input we have not read.
+        with suppress(Exception):
+            termios.tcsetattr(fd, termios.TCSANOW, saved)
+
+
 def _is_tty(stream: Any) -> bool:
     isatty = getattr(stream, "isatty", None)
     if not callable(isatty):
@@ -356,7 +555,12 @@ __all__ = [
     "ColorMode",
     "RendererMode",
     "ResolvedRendererMode",
+    "SYNCHRONIZED_OUTPUT_ENV",
     "TerminalCapabilities",
     "detect_terminal_capabilities",
+    "inside_terminal_multiplexer",
+    "probe_synchronized_output",
+    "resolve_atomic_repaint_support",
     "resolve_renderer_mode",
+    "synchronized_output_override",
 ]

@@ -95,6 +95,11 @@ class FollowFooterEngine:
         # footer first pins. The stashed height pins the snapshot to the
         # geometry it was measured against; a resize voids it.
         self._float_cursor_snapshot: tuple[int, int, int] | None = None
+        # Whether a burst of writes reaches the screen as one frame (mode
+        # 2026 or a multiplexer's own batching), resolved once at Rich REPL
+        # startup. Conservative default: unresolved means no, so the
+        # blink-prone float timer ticks stay off until proven safe.
+        self._atomic_repaint_supported = False
         self._terminal_size = self.terminal_size()
 
     @property
@@ -161,6 +166,33 @@ class FollowFooterEngine:
 
     def pinned_footer_active(self) -> bool:
         return self._pinned_footer_active
+
+    def note_atomic_repaint_support(self, supported: bool | None) -> None:
+        """Record whether bursts of writes paint as one frame here."""
+
+        self._atomic_repaint_supported = bool(supported)
+
+    def atomic_repaint_supported(self) -> bool:
+        return self._atomic_repaint_supported
+
+    def float_tick_would_blink(self) -> bool:
+        """True while an elapsed-timer tick must be skipped to avoid a blink.
+
+        Only the FLOAT phase erases and repaints the whole prompt_toolkit
+        layout to reach the transcript. That is one frame wherever writes
+        coalesce (mode 2026, or a multiplexer's redraw cycle) but a possible
+        flash where they do not, and a timer tick is the one write with
+        nothing new to show for it. So on a bare terminal that cannot
+        confirm atomic painting the pre-pin elapsed timer waits for the pin;
+        rows still print on call and flip on completion, since those ride
+        writes the transcript was making anyway.
+        """
+
+        return (
+            not self._atomic_repaint_supported
+            and self.scroll_region_enabled()
+            and not self._pinned_footer_active
+        )
 
     def live_row_context(self) -> tuple[int, int] | None:
         """Return ``(anchor_row, generation)`` while in-place rewrites are safe.
@@ -799,11 +831,14 @@ class FollowFooterEngine:
             self._deactivate_pinned_footer(reset_terminal=True)
             return self._render_in_follow_footer(callback)
 
-        # Synchronized-output window (see _render_in_follow_footer): the
-        # whole pinned write, including the row clear/reprint of live
-        # tool-row flips and the composer cursor hide/move/show, paints as
-        # one frame, so per-second elapsed ticks no longer flash the row or
-        # blink the typing cursor.
+        # Synchronized-output window (see _render_in_follow_footer). Where
+        # the terminal implements the mode, the whole pinned write (the row
+        # clear/reprint of a live tool-row flip, the composer cursor
+        # hide/move/show) paints as one frame instead of flashing. Where it
+        # does not, this is a no-op and the residual flicker stands, which is
+        # why only the FLOAT phase gates its timer ticks on the capability:
+        # here the exposure is one cleared row, not the erase-and-repaint of
+        # the entire prompt layout.
         output.write_raw("\x1b[?2026h")
         try:
             output.hide_cursor()

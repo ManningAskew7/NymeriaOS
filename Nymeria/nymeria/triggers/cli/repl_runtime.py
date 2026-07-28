@@ -267,6 +267,18 @@ class _RichReplRuntime:
         self.composer_controller = composer_controller
         self.footer.bind_application(application)
 
+    def note_atomic_repaint_support(self, supported: bool | None) -> None:
+        """Record whether a burst of terminal writes paints as one frame.
+
+        Resolved once by CLI startup (`app.py::_resolve_atomic_repaint`),
+        before any startup I/O, because the probe behind it reads the
+        terminal's reply off stdin and would otherwise swallow whatever the
+        user typed while the backend connected. The verdict gates
+        float-phase timer ticks (`FollowFooterEngine.float_tick_would_blink`).
+        """
+
+        self.footer.note_atomic_repaint_support(supported)
+
     # ----- follow-footer engine delegation (see follow_footer.py) ------- #
     # The engine owns the prompt_toolkit Application handle, the render
     # lock, and all scroll-region/pinned-footer/resize state. These thin
@@ -373,6 +385,13 @@ class _RichReplRuntime:
                 # against pre-resize geometry the redraw is about to
                 # rebuild.
                 await self.footer.settle_pending_resize()
+                if self.footer.float_tick_would_blink():
+                    # Terminal without synchronized output, footer still
+                    # floating: skip the tick (prune only, no writes) so the
+                    # pre-pin timer never blinks the footer. Completion
+                    # flips still land; the timer starts at the pin.
+                    renderer.prune_live_tool_rows()
+                    continue
                 if self.footer.live_row_context() is None:
                     # Nothing paintable (no cursor knowledge yet, or the
                     # geometry gate is off): a dead-context tick writes
