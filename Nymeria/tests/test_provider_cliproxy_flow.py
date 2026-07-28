@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from cli_fixtures import run
-from nymeria.core import command_executor_provider_setup as chain_module
+from nymeria.core import command_executor_cliproxy as chain_module
 from nymeria.core import provider_setup
 from nymeria.core.command_service import CommandContext, CommandService
 

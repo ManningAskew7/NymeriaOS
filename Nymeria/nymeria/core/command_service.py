@@ -23,6 +23,7 @@ from urllib.parse import quote
 import httpx
 
 from ..config import get_settings
+from .command_executor_cliproxy import CliproxyCommandsMixin
 from .command_executor_context import ContextCommandsMixin
 from .command_executor_llm import LLMCommandsMixin
 from .command_executor_provider_setup import ProviderSetupCommandsMixin
@@ -2811,6 +2812,7 @@ class _CommandExecutor(
     ThreadCommandsMixin,
     LLMCommandsMixin,
     ProviderSetupCommandsMixin,
+    CliproxyCommandsMixin,
 ):
     """Per-request command executor with the migrated command bodies."""
 
