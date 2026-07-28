@@ -410,8 +410,13 @@ _OPENAI_O_SERIES_RE = re.compile(r"^o\d")
 _GROK_4_MINOR_RE = re.compile(r"grok-4(?:\.(\d+))?")
 
 
+# The minor group is bounded to one or two digits AND may not be followed by a
+# further digit, so it can never swallow an 8-digit snapshot date. Handling the
+# date inside the pattern is the only robust option: an anchored pre-strip is
+# defeated by any trailing decoration (":beta", "-v1:0", "(xhigh)"), and those
+# forms reach this helper raw because providers.py passes config.model verbatim.
 _ANTHROPIC_MODEL_VERSION_RE = re.compile(
-    r"claude-(?:opus|sonnet|haiku)-(\d+)(?:[-.](\d+))?"
+    r"claude-(?:opus|sonnet|haiku)-(\d+)(?:[-.](\d{1,2})(?!\d))?"
 )
 
 
@@ -423,11 +428,48 @@ def anthropic_model_version(model_text: str) -> Optional[tuple]:
     (claude-3-5-sonnet) return None and take the legacy budget path. A
     missing minor parses as 0 so future major bumps land on the newest API
     shape instead of the legacy one.
+
+    Dated snapshot ids are handled inside the pattern rather than by stripping,
+    so arbitrary trailing decoration cannot defeat it. On a bare-major id the
+    date used to be eaten by the minor group: ``claude-opus-4-20250514`` parsed
+    as ``(4, 20250514)``, which compares ``>= (4, 7)`` and made
+    ``_create_anthropic_llm`` treat the original Opus 4 / Sonnet 4 as the 4.7+
+    API shape, suppressing ``temperature`` and selecting adaptive thinking
+    instead of the budget-token path those models actually take. Dated ids with
+    an explicit minor (``claude-sonnet-4-5-20250929``) were always fine, which
+    is why this hid for so long.
     """
-    match = _ANTHROPIC_MODEL_VERSION_RE.search(model_text or "")
+    match = _ANTHROPIC_MODEL_VERSION_RE.search((model_text or "").lower())
     if not match:
         return None
     return (int(match.group(1)), int(match.group(2) or 0))
+
+
+# First generation using adaptive thinking instead of explicit budget tokens.
+# Shared so the wire-shape gate in providers.py and the "adaptive" labels in the
+# CLI header and thread overview cannot drift apart.
+ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION = (4, 6)
+
+
+def anthropic_generation_at_least(model_text: str, minimum: tuple) -> bool:
+    """True when a Claude id is at or above ``minimum`` (major, minor).
+
+    The one predicate behind every "is this the newer Claude wire/behavior
+    generation" question: the 4.7+ API shape in ``providers.py``, the hi-res
+    image geometry below, and the adaptive-thinking labels in the CLI header and
+    thread overview. Each of those was its own hardcoded name list, and all of
+    them had already gone stale on claude-opus-5.
+
+    fable and mythos always qualify: they postdate the ordinal scheme and share
+    the newest surface, matching how ``_anthropic_reasoning_efforts`` treats
+    them. An unparseable id is False, so legacy version-first names keep the
+    older behavior.
+    """
+    text = (model_text or "").lower()
+    if "fable" in text or "mythos" in text:
+        return True
+    version = anthropic_model_version(text)
+    return version is not None and version >= minimum
 
 
 def _anthropic_reasoning_efforts(model_text: str) -> tuple:
@@ -1246,6 +1288,16 @@ def _check_modality(model_id: str, modality: str) -> Optional[bool]:
     info = _lookup_model(model_id)
     if info is None:
         return None  # Unknown model
+    if not info.input_modalities:
+        # Cached entry carrying no modality data at all. This is "unknown", not
+        # "supports nothing": ModelInfo defaults the field to an empty set, so
+        # ANY registration that omits modalities (a bare gateway /v1/models
+        # listing, a context-length-only probe) minted an entry that answered a
+        # definite False for every modality. Because the live cache outranks the
+        # curated tables and the optimistic fallback, opening the model picker
+        # was enough to disable image and file input for every CLIProxy model
+        # for the life of the process. Returning None lets the fallbacks answer.
+        return None
 
     return modality in info.input_modalities
 
@@ -1669,8 +1721,21 @@ def register_model_metadata(
         "max_completion_tokens": (
             max_completion_tokens if (max_completion_tokens and max_completion_tokens > 0) else None
         ),
-        "input_modalities": input_modalities,
-        "supported_parameters": supported_parameters,
+        # EMPTY SETS ARE "NOT PROVIDED", not "provided and empty". A bare
+        # gateway listing (CLIProxy's /v1/models is {id, object, created,
+        # owned_by} and nothing else) yields [] here, and an empty set is falsy
+        # but not None, so it used to survive this filter and land in
+        # _live_model_cache, the tier that outranks the curated tables AND the
+        # optimistic fallback. Effect: merely opening the model picker
+        # (GET /models/available registers every listed model) permanently
+        # marked every CLIProxy model as accepting no image or file input, for
+        # the life of the process. A provider that genuinely serves a
+        # modality-free model has no way to say so through this API, which is
+        # the correct trade: the deny direction here silently disables
+        # attachments, while the allow direction is self-correcting through
+        # mark_model_input_unsupported on the first real rejection.
+        "input_modalities": input_modalities or None,
+        "supported_parameters": supported_parameters or None,
         "reasoning_efforts": reasoning_efforts,
         "default_temperature": default_temperature,
         "default_top_p": default_top_p,
@@ -1760,6 +1825,127 @@ def mark_model_input_unsupported(model_id: str, *modalities: str) -> None:
     )
 
 
+# Context windows for FIRST-PARTY Anthropic model ids, as a family rule instead
+# of a name list. This is the last resort before the global "_default", and it
+# fires only where every metadata tier missed.
+#
+# Ordinal matching mirrors _anthropic_reasoning_efforts ("newly released models
+# land on the right shape without a table edit"). A curated name list
+# demonstrably does not hold: the 5-generation rows added for fable/mythos/
+# sonnet-5 did not cover claude-opus-5, which then silently clamped a configured
+# 400k compaction threshold to 128k (slim-dogfood backlog #101).
+#
+# SCOPE IS THE WHOLE DESIGN. Of the 242 Claude-family rows in the bundled
+# catalog carrying a real window, 192 are at 200k or 1M and 50 are not: 39 at
+# 100k (legacy Bedrock claude-v1/v2/instant), 5 at 128k, 4 at 409600, one at 80k
+# (github_copilot/claude-opus-41) and one at 18k (snowflake/claude-3-5-sonnet).
+# Gateway operators resize the window, in both directions.
+#
+# An ungated version of this rule answers 148 of those rows and over-claims on
+# 9, worst 12.5x on copilot's Opus 4.1. All 9 carry a gateway prefix, which is
+# the only thing distinguishing them, so the prefix is checked rather than
+# stripped: a first-party id tells us Anthropic's window, a gateway id tells us
+# nothing about what that gateway chose to serve.
+#
+# Legacy version-first ids are abstained on separately (see below), which is why
+# the 39 Bedrock rows are not in the 9.
+_ANTHROPIC_STANDARD_CONTEXT = 200000
+_ANTHROPIC_LONG_CONTEXT = 1000000
+# First family-first version shipping the 1M window (opus/sonnet 4.6 and up).
+_ANTHROPIC_LONG_CONTEXT_MIN_VERSION = (4, 6)
+# Bare-id prefixes Anthropic itself ships. CLIProxy spells the research models
+# claude-fable-5 / claude-mythos-5, but accept the unprefixed forms too.
+_ANTHROPIC_FIRST_PARTY_PREFIXES = ("claude-", "fable-", "mythos-")
+
+# Model ids already warned about in _warn_unknown_context_limit. Model ids are
+# free text settable per thread by the agent itself (/model,
+# nym.threads.configure), so this is capped rather than trusted to stay small.
+_context_default_warned: Set[str] = set()
+_CONTEXT_WARN_CACHE_MAX = 512
+
+
+def _is_first_party_anthropic_id(model_id: str) -> bool:
+    """True only for ids naming Anthropic's own hosted model.
+
+    Accepts a bare id and the ``anthropic/`` vendor namespace. Rejects every
+    gateway form, including the slash kind (``bedrock/...``, ``snowflake/...``,
+    ``github_copilot/...``, ``azure_ai/...``, ``openrouter/anthropic/...``) and
+    the Bedrock dotted kind (``anthropic.claude-v2``, ``us.anthropic....``),
+    because those serve windows the vendor does not set.
+    """
+    text = (model_id or "").strip().lower()
+    if "/" in text:
+        vendor, _, rest = text.rpartition("/")
+        if vendor != "anthropic":
+            return False
+        text = rest
+    return text.startswith(_ANTHROPIC_FIRST_PARTY_PREFIXES)
+
+
+def _anthropic_family_context_limit(model_id: str) -> Optional[int]:
+    """Context window for a first-party Claude id, else None.
+
+    None means "no opinion": the caller falls through to the tiers below, which
+    is the correct answer for gateway-hosted variants and for the legacy
+    version-first generation this rule deliberately does not model.
+    """
+    if not _is_first_party_anthropic_id(model_id):
+        return None
+    bare = _without_provider_prefix((model_id or "").strip().lower())
+
+    if "haiku" in bare:
+        # Every Haiku to date is 200k, including the 4.5 generation that shipped
+        # alongside 1M Opus/Sonnet, so the ordinal rule below must not claim it.
+        # The asymmetry is mild but real: under-claiming just compacts early,
+        # while over-claiming defers compaction until the provider rejects the
+        # turn, which agent.py recovers from (is_context_overflow_error ->
+        # rewind_and_compact) at the cost of a wasted round trip. The same
+        # asymmetry applies to the >= (4, 6) rule below if a future opus or
+        # sonnet ever ships at 200k.
+        return _ANTHROPIC_STANDARD_CONTEXT
+    if "fable" in bare or "mythos" in bare:
+        return _ANTHROPIC_LONG_CONTEXT
+
+    version = anthropic_model_version(bare)
+    if version is None:
+        # Legacy version-first ids (claude-3-5-sonnet at 200k, but claude-2 and
+        # claude-instant at 100k). The rule models the modern family-first
+        # naming only; guessing across that split would over-claim by 2x on the
+        # older half, so say nothing and let the catalog answer.
+        return None
+    if version >= _ANTHROPIC_LONG_CONTEXT_MIN_VERSION:
+        return _ANTHROPIC_LONG_CONTEXT
+    return _ANTHROPIC_STANDARD_CONTEXT
+
+
+def _warn_unknown_context_limit(model_id: str) -> None:
+    """Warn once per model when every context tier missed.
+
+    Mirrors the ``[LLM] No output ceiling known ...`` warning in
+    ``providers.py``: a silently wrong context window is not cosmetic, because
+    ``agent_compaction.compact_trigger_tokens`` takes ``min(setting, limit)``,
+    so the guess also caps the operator's configured compaction threshold and
+    misreports occupancy in the status bar. Warn-once because this sits on the
+    per-turn compaction path.
+    """
+    key = (model_id or "").strip().lower()
+    if not key or key in _context_default_warned:
+        return
+    if len(_context_default_warned) >= _CONTEXT_WARN_CACHE_MAX:
+        # Agent-settable free text cannot be allowed to grow this without
+        # bound. Clearing rather than refusing keeps the warning alive for
+        # whatever the deployment is actually running now.
+        _context_default_warned.clear()
+    _context_default_warned.add(key)
+    logger.warning(
+        "[CAPABILITIES] No context window known for %s: no live provider "
+        "metadata, no curated entry, no catalog entry. Assuming %d tokens, "
+        "which also caps this model's compaction threshold.",
+        model_id,
+        DEFAULT_CONTEXT_LIMITS["_default"],
+    )
+
+
 def get_context_limit(model_id: str) -> int:
     """Get context window size (in tokens) for a model."""
     if not model_id:
@@ -1778,17 +1964,53 @@ def get_context_limit(model_id: str) -> int:
         if limit:
             return limit
 
+    # First-party family knowledge, ABOVE the catalog for the same reason the
+    # curated table is: it is maintained here against the vendor's published
+    # windows, while the bundled snapshot records whatever tier a third party
+    # wrote down. Measured on the shipped bundle, the two disagree on exactly
+    # one first-party row out of 22, claude-sonnet-4-20250514, where the
+    # catalog carries Sonnet 4's 1M beta tier as if it were the default and the
+    # family rule's 200k is correct. Trusting the catalog there yields
+    # min(400000, 1000000) = 400000 against a real 200k window, which is the
+    # overflow direction.
+    #
+    # This placement is also what makes _is_first_party_anthropic_id do any
+    # work. Below the catalog the rule was unreachable: all 242 Claude-family
+    # rows in the bundle are answered by the curated or catalog tier first, so
+    # the gate guarded nothing. Above it, the gate is what keeps first-party
+    # windows off the 9 gateway rows an ungated rule would over-claim (worst:
+    # github_copilot/claude-opus-41, 80k served, 1M claimed).
+    #
+    # It does NOT make gateway ids safe in general, and this rule should not be
+    # read as claiming that. The curated tier above still answers a
+    # gateway-qualified id from its BARE candidate, so "azure_ai/claude-opus-4-6"
+    # takes claude-opus-4-6's 1M even though the catalog knows it serves 200k,
+    # and the substring pass below leaks the same way. Both predate this change
+    # and both need the provider-aware resolution pass to fix properly; the gate
+    # only guarantees this rule is not a third source of the same error.
+    family_limit = _anthropic_family_context_limit(model_id)
+    if family_limit:
+        return family_limit
+
     # Catalog tier: exact-candidate catalog data beats the fuzzy substring
     # guess and the 128k default below.
     catalog = _catalog_capabilities(model_id)
     if catalog is not None and catalog.max_input_tokens:
         return catalog.max_input_tokens
 
+    # Substring pass. NOT a metadata tier: it is the curated name list matched
+    # by prefix, so an unlisted sibling gets the nearest listed relative
+    # ("claude-opus-4-9" would take the bare "claude-opus-4" row's 200k). It
+    # also matches against the FULL id, so it re-applies first-party names to
+    # gateway ids the family rule deliberately abstained on. Left in place as
+    # pre-existing behavior, but it is why abstaining is not by itself enough
+    # to keep first-party numbers off a gateway model.
     model_lower = model_id.lower()
     for known_model, limit in _DEFAULT_CONTEXT_LIMITS_BY_LEN:
         if known_model.lower() in model_lower or model_lower in known_model.lower():
             return limit
 
+    _warn_unknown_context_limit(model_id)
     return DEFAULT_CONTEXT_LIMITS["_default"]
 
 
@@ -2066,14 +2288,40 @@ def get_attachment_limits(model_id: str) -> Dict[str, Optional[int]]:
 
 # Anthropic tiles an image into 28x28-pixel patches (one patch per visual
 # token) after clamping the long edge to a per-model ceiling. Most models cap at
-# 1568 tokens / 1568px; Opus 4.7/4.8, Fable 5, and Mythos 5 raise that to
-# 4784 tokens / 2576px.
-_ANTHROPIC_HIRES_MODELS = (
-    "opus-4-7", "opus-4.7",
-    "opus-4-8", "opus-4.8",
-    "fable-5", "fable5",
-    "mythos-5", "mythos5",
-)
+# 1568 tokens / 1568px; the 4.7-and-up generations raise that to 4784 tokens /
+# 2576px.
+#
+# This was a hardcoded name list (opus-4-7/4-8, fable-5, mythos-5) standing in
+# for what is really the same ordinal set providers.py calls is_47_plus. It had
+# already gone stale: claude-opus-5 and claude-sonnet-5 missed it, so a large
+# image on the current default model was estimated at 1568 tokens instead of
+# 4784, a 3x under-count feeding image-aware compaction sizing. Same defect
+# class as the context table two functions up, fixed the same way.
+_ANTHROPIC_HIRES_MIN_VERSION = (4, 7)
+
+
+def _is_anthropic_hires_image_model(model_id: str) -> bool:
+    """True for Claude generations using the 2576px / 4784-token image ceiling.
+
+    Deliberately NOT gated on _is_first_party_anthropic_id: patch geometry is a
+    property of the model, so it travels with a gateway-hosted copy, unlike the
+    context window a gateway may truncate.
+
+    Note this does NOT carve out haiku, unlike the context rule above: haiku is
+    a distinct context tier but not a distinct image tier, so a hypothetical
+    4.7+ haiku would correctly read as hi-res here while still resolving 200k
+    there.
+
+    Known imprecision: github_copilot spells Opus 4.1 "claude-opus-41", which
+    parses as major 41 and reads as hi-res. The error direction is safe (an
+    over-estimated image over-counts context and compacts early), and the
+    alternative, bounding the major to one digit, would make a future major-10
+    model parse as None and fall back to the LEGACY wire shape in providers.py,
+    which is a far worse failure.
+    """
+    return anthropic_generation_at_least(model_id, _ANTHROPIC_HIRES_MIN_VERSION)
+
+
 _ANTHROPIC_PATCH_PX = 28
 _ANTHROPIC_TOKENS_STD = 1568
 _ANTHROPIC_LONG_EDGE_STD = 1568
@@ -2126,7 +2374,7 @@ def estimate_image_tokens(
         return _DEFAULT_IMAGE_TOKENS
 
     if family == "anthropic":
-        hires = any(p in model_id.lower() for p in _ANTHROPIC_HIRES_MODELS)
+        hires = _is_anthropic_hires_image_model(model_id)
         long_edge = _ANTHROPIC_LONG_EDGE_HIRES if hires else _ANTHROPIC_LONG_EDGE_STD
         token_cap = _ANTHROPIC_TOKENS_HIRES if hires else _ANTHROPIC_TOKENS_STD
         w, h = float(width), float(height)

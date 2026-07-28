@@ -8,7 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..config.model_capabilities import clamp_reasoning_effort
+from ..config.model_capabilities import (
+    ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION,
+    anthropic_generation_at_least,
+    clamp_reasoning_effort,
+)
 from ..core.accounts import AuthenticatedUser
 from ..core.checkpoint_status import (
     get_graph_state_revision,
@@ -585,18 +589,10 @@ def _thinking_label(
             or "fable" in model_text
             or "mythos" in model_text
         )
-        and any(
-            marker in model_text
-            for marker in (
-                "opus-4-6",
-                "sonnet-4-6",
-                "opus-4-7",
-                "sonnet-4-7",
-                "opus-4-8",
-                "sonnet-4-8",
-                "fable",
-                "mythos",
-            )
+        # Ordinal, not a name list: the marker tuple this replaced had already
+        # gone stale on claude-opus-5 and claude-sonnet-5.
+        and anthropic_generation_at_least(
+            model_text, ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
         )
     )
     if adaptive:

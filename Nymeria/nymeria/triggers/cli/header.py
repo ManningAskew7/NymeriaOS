@@ -786,18 +786,15 @@ def _uses_adaptive_thinking(*, provider: str, model: str) -> bool:
         and "mythos" not in model_text
     ):
         return False
-    return any(
-        marker in model_text
-        for marker in (
-            "opus-4-6",
-            "sonnet-4-6",
-            "opus-4-7",
-            "sonnet-4-7",
-            "opus-4-8",
-            "sonnet-4-8",
-            "fable",
-            "mythos",
-        )
+    # Ordinal, not a name list: the marker tuple this replaced had already gone
+    # stale on claude-opus-5 and claude-sonnet-5, labelling them non-adaptive.
+    from ...config.model_capabilities import (
+        ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION,
+        anthropic_generation_at_least,
+    )
+
+    return anthropic_generation_at_least(
+        model_text, ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
     )
 
 
