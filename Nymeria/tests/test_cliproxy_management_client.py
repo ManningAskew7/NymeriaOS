@@ -61,8 +61,11 @@ def make_client(respond) -> tuple[CLIProxyManagementClient, Recorder]:
 @pytest.mark.asyncio
 async def test_start_oauth_returns_url_and_state_and_sends_bearer():
     def respond(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v0/management/anthropic-auth-url"
         assert request.headers["Authorization"] == "Bearer cpm-test-secret"
+        if request.url.path == "/v0/management/auth-files":
+            # The pre-existing-login snapshot for the session ledger.
+            return httpx.Response(200, json=[])
+        assert request.url.path == "/v0/management/anthropic-auth-url"
         return httpx.Response(
             200, json={"status": "ok", "url": "https://claude.ai/x", "state": "s1"}
         )
@@ -331,10 +334,13 @@ def _confirm_responder(status: str = "ok"):
 
 
 def _backdate_session(state: str, age_seconds: float) -> None:
-    started, delivered = management_client._oauth_session_ledger[state]
+    started, delivered, preexisting = management_client._oauth_session_ledger[
+        state
+    ]
     management_client._oauth_session_ledger[state] = (
         time.monotonic() - age_seconds,
         delivered,
+        preexisting,
     )
 
 
@@ -350,7 +356,9 @@ async def test_confirm_ok_trusted_within_the_session_window():
 
 
 @pytest.mark.asyncio
-async def test_confirm_ok_refused_for_old_pasteless_session():
+async def test_confirm_ok_refused_for_old_pasteless_relogin_session():
+    """The responder lists an active Claude login at start_oauth time, so
+    this is a RELOGIN: the pre-existing file could bless a stale ok."""
     client, _ = make_client(_confirm_responder())
     spec = get_cliproxy_provider("claude")
     assert spec is not None
@@ -360,7 +368,37 @@ async def test_confirm_ok_refused_for_old_pasteless_session():
     status, detail = await confirm_login_landed(client, "s1", spec)
     assert status == "error"
     assert "stale-session" in detail
-    assert "Restart the login" in detail
+    assert "restart the login" in detail
+
+
+@pytest.mark.asyncio
+async def test_confirm_ok_trusted_for_old_first_login_with_no_prior_file():
+    """The relogin trap NEEDS a pre-existing active login to bless the
+    stale ok; with none at start (a slow first login, e.g. a device flow
+    approved late), the auth-file confirm alone is decisive and the guard
+    must not refuse it."""
+    landed = {"value": False}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v0/management/get-auth-status":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v0/management/auth-files":
+            files = [dict(CLAUDE_AUTH_FILE)] if landed["value"] else []
+            return httpx.Response(200, json=files)
+        if request.url.path.endswith("-auth-url"):
+            return httpx.Response(200, json={"url": "https://x", "state": "s1"})
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    client, _ = make_client(respond)
+    spec = get_cliproxy_provider("claude")
+    assert spec is not None
+    await client.start_oauth(spec)
+    landed["value"] = True
+    _backdate_session("s1", management_client.SESSION_OK_GUARD_SECONDS + 60)
+
+    status, detail = await confirm_login_landed(client, "s1", spec)
+    assert status == "ok"
+    assert detail == "alice@example.com"
 
 
 @pytest.mark.asyncio
@@ -412,6 +450,7 @@ async def test_ledger_prunes_expired_sessions_on_stamp():
     assert spec is not None
     management_client._oauth_session_ledger["old"] = (
         time.monotonic() - management_client._LEDGER_TTL_SECONDS - 1,
+        False,
         False,
     )
     await client.start_oauth(spec)

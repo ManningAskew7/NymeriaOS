@@ -27,16 +27,19 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..config.llm_providers import LLMProviderSpec
 
-from .command_executor_llm import OPENAI_API_MODES, _TIER_BADGES
+from .command_executor_llm import (
+    OPENAI_API_MODES,
+    _TIER_BADGES,
+    custom_model_tab,
+    model_pick_tab,
+)
 from .command_forms import (
     CommandOutput,
     chain_form_output,
     command_data,
-    custom_model_tab,
     form_option,
     form_payload,
     form_tab,
-    model_pick_tab,
     radio_field,
     rest_value,
     text_field,

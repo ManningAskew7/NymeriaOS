@@ -38,14 +38,17 @@ export interface OAuthFlowState {
 }
 
 const POLL_INTERVAL_MS = 2000;
-const LOGIN_TIMEOUT_MS = 600_000;
+// Matches the backend's SESSION_OK_GUARD_SECONDS (management_client.py):
+// polling past the window where a paste-less "ok" is still trusted could
+// only surface the stale-session refusal, so the poller stops at the
+// neutral expiry message instead.
+const LOGIN_TIMEOUT_MS = 540_000;
 
 function createCLIProxyStore() {
   let status = $state<CLIProxyStatus | null>(null);
   let authFiles = $state<CLIProxyAuthFile[]>([]);
   let knobs = $state<Record<string, unknown>>({});
   let models = $state<{ id: string; owned_by: string }[]>([]);
-  let modelsLoading = $state(false);
   let oauth = $state<OAuthFlowState | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -109,12 +112,7 @@ function createCLIProxyStore() {
     // Live ids through the proxy (all logged-in subscriptions, no
     // per-provider attribution); [] on failure keeps the model inputs
     // free-text only, so this never blocks the panel.
-    modelsLoading = true;
-    try {
-      models = await api.listCLIProxyModels();
-    } finally {
-      modelsLoading = false;
-    }
+    models = await api.listCLIProxyModels();
   }
 
   async function saveKnobs(update: Record<string, unknown>) {
@@ -272,6 +270,10 @@ function createCLIProxyStore() {
     message = null;
     try {
       const result = await api.importCLIProxyAuthFile(provider, name, content);
+      // Refresh FIRST: it clears `error` as its opening move, so the
+      // outcome message must be assigned after it or the inactive detail
+      // would be silently wiped (silence after a click reads as success).
+      await refresh();
       if (result.status === 'ok') {
         message = result.account
           ? `Imported ${name}: active login as ${result.account}.`
@@ -281,7 +283,6 @@ function createCLIProxyStore() {
         // honest explanation inline.
         error = result.detail || `The proxy accepted ${name} but lists no active login.`;
       }
-      await refresh();
       return result.status === 'ok';
     } catch (e) {
       fail(e, 'save', 'the auth file');
@@ -391,9 +392,6 @@ function createCLIProxyStore() {
     },
     get models() {
       return models;
-    },
-    get modelsLoading() {
-      return modelsLoading;
     },
     get oauth() {
       return oauth;

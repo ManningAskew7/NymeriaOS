@@ -29,13 +29,12 @@ if TYPE_CHECKING:
     from ..cliproxy.catalog import CLIProxyProviderSpec
     from .provider_setup import PendingCliproxyLogin
 
+from .command_executor_llm import custom_model_tab, model_pick_tab
 from .command_forms import (
     CommandOutput,
     chain_form_output,
-    custom_model_tab,
     form_option,
     form_tab,
-    model_pick_tab,
     radio_field,
     rest_value,
     text_field,
@@ -119,7 +118,7 @@ class CliproxyCommandsMixin:
                     f"Resuming the in-flight {spec.label} login"
                     " (/provider cliproxy cancel to abandon it)."
                 ]
-                if pending.account or pending.model is not None:
+                if pending.logged_in:
                     return await self._cliproxy_model_chain(
                         pending, spec, note_lines=note
                     )
@@ -322,8 +321,10 @@ class CliproxyCommandsMixin:
                 form_option("login", label="Log in with OAuth", current=True)
             )
         options.append(form_option("cancel", label="Cancel"))
+        # Short step noun like every rail sibling (the provider identity
+        # rides the form title, "CLIProxy: <label>").
         return form_tab(
-            spec.label,
+            "Target",
             [radio_field("action", options)],
             submit_command="provider cliproxy {action}",
         )
@@ -897,11 +898,9 @@ class CliproxyCommandsMixin:
     @staticmethod
     def _cliproxy_pasted_state(redirect_url: str) -> str:
         """The state parameter inside a pasted redirect URL ("" when absent)."""
-        try:
-            query = parse_qs(urlparse(redirect_url).query)
-        except ValueError:
-            return ""
-        return str((query.get("state") or [""])[0])
+        from ..cliproxy.management_client import oauth_state_from_redirect_url
+
+        return oauth_state_from_redirect_url(redirect_url)
 
     @staticmethod
     def _cliproxy_tunnel_hint(auth_url: str) -> str:

@@ -273,6 +273,23 @@ def test_target_shows_tos_warning() -> None:
     assert "policy" in result.markdown
 
 
+def test_bare_resume_keys_on_logged_in_not_the_account_label() -> None:
+    """A confirmed login whose auth-file entry carries no account/email
+    still resumes into the model chain: the resume gate reads the stored
+    logged_in flag, not the possibly-empty account label."""
+    api = FakeCliproxyApi()
+    api.auth_files = [
+        {"provider": "claude", "disabled": False, "unavailable": False},
+    ]
+    _run(api, "/provider cliproxy claude")
+
+    result = _run(api, "/provider cliproxy")
+
+    assert "Resuming" in result.markdown
+    form = _form(result)
+    assert [tab["label"] for tab in form["tabs"]][:2] == ["Target", "Model"]
+
+
 def test_target_management_unconfigured_degrades_to_guidance() -> None:
     class _UnconfiguredApi(FakeCliproxyApi):
         def __init__(self) -> None:
@@ -316,9 +333,11 @@ def test_login_renders_rail_with_url_and_tunnel_hint() -> None:
     assert "ssh -N -L 1455:127.0.0.1:1455" in result.markdown
     assert "Type: /provider cliproxy paste" in result.markdown
     form = _form(result)
-    # The Target tab rides the rail (relogin/cancel one arrow-left away).
+    # The Target tab rides the rail (relogin/cancel one arrow-left away);
+    # short step noun, the provider identity rides the form title.
+    assert "Claude (Max/Pro subscription)" in form["title"]
     assert [tab["label"] for tab in form["tabs"]] == [
-        "Claude (Max/Pro subscription)",
+        "Target",
         "Paste",
         "Status",
     ]
@@ -350,7 +369,7 @@ def test_device_flow_login_gets_status_tab_only() -> None:
 
     form = _form(result)
     assert [tab["label"] for tab in form["tabs"]] == [
-        "Kimi (Moonshot subscription)",
+        "Target",
         "Status",
     ]
     tab = _active_tab(form)
@@ -673,7 +692,7 @@ def test_model_pick_then_apply_routes_globally_and_clears() -> None:
     picked = _run(api, "/provider cliproxy model claude-opus-4-7")
     form = _form(picked)
     assert [tab["label"] for tab in form["tabs"]] == [
-        "Claude (Max/Pro subscription)",
+        "Target",
         "Model",
         "Apply",
     ]

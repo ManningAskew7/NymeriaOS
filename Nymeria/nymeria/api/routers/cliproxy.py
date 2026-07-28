@@ -10,7 +10,6 @@ that turns a catalog entry into Nymeria LLM settings, so frontends never
 re-derive it.
 """
 
-import json
 import logging
 import time
 from collections.abc import Callable
@@ -33,10 +32,9 @@ from ...cliproxy.management_client import (
     CLIProxyManagementError,
     CLIProxyNotFound,
     CLIProxyUnsupported,
-    active_login_entry,
     configured_gatekeeper_keys,
     confirm_login_landed,
-    login_account_label,
+    import_auth_file,
     resolve_or_mint_gatekeeper,
 )
 from ...core.thread_config import ThreadConfig, ThreadLLMConfig
@@ -513,16 +511,16 @@ def create_cliproxy_router(
         return files
 
     @router.post("/auth-files")
-    async def import_auth_file(
+    async def import_auth_file_route(
         request: CLIProxyAuthFileImportRequest,
         admin=Depends(require_admin_user),
     ) -> CLIProxyAuthFileImportResponse:
-        """Import an auths/*.json document (REST port of the headless
-        --cliproxy-auth-file ladder): validate the name and JSON, upload,
-        then CONFIRM the proxy lists an active login for the provider (the
-        same trust rule as confirm-on-ok; a file the proxy accepted but
-        does not list as active reports status "inactive", never a false
-        success)."""
+        """Import an auths/*.json document. Name hygiene is REST-only
+        (the headless twin takes a local Path); the trust ladder itself
+        (JSON validation, upload, confirm against the entry listed under
+        the UPLOADED name, Claude fixup) is the shared
+        management_client.import_auth_file, so an accepted-but-inactive
+        file reports "inactive", never a false success."""
         spec = _require_spec(request.provider)
         name = request.name.strip()
         if (
@@ -537,38 +535,17 @@ def create_cliproxy_router(
                 status_code=400,
                 detail="Expected a bare *.json auth-file name",
             )
-        try:
-            json.loads(request.content)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "The file is not valid JSON; auth files are the proxy's"
-                    " auths/*.json documents"
-                ),
-            ) from None
         client = _client_or_400()
         try:
-            await client.upload_auth_file(
-                name, request.content.encode("utf-8")
+            status, detail, account = await import_auth_file(
+                client, spec, name, request.content
             )
-            files = await client.list_auth_files()
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
         except CLIProxyManagementError as error:
             raise _raise_for(error) from error
-        entry = active_login_entry(files, spec)
-        if entry is None:
-            return CLIProxyAuthFileImportResponse(
-                status="inactive",
-                detail=(
-                    f"The proxy accepted {name} but lists no active"
-                    f" {spec.label} login; the file may be disabled,"
-                    " expired, or for a different provider."
-                ),
-            )
-        if spec.id == "claude":
-            await _fixup_claude_auth_files(client)
         return CLIProxyAuthFileImportResponse(
-            status="ok", account=login_account_label(entry)
+            status=status, account=account, detail=detail
         )
 
     @router.patch("/auth-files/{name}")

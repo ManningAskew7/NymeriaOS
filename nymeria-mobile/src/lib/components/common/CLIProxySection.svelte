@@ -29,7 +29,10 @@
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let statusLoadFailed = $state(false);
 
-  const LOGIN_TIMEOUT_MS = 600_000;
+  // Matches the backend's SESSION_OK_GUARD_SECONDS (management_client.py):
+  // polling past the window where a paste-less "ok" is still trusted could
+  // only surface the stale-session refusal.
+  const LOGIN_TIMEOUT_MS = 540_000;
 
   onMount(refresh);
   onDestroy(stopPolling);

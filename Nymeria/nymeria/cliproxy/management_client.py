@@ -23,7 +23,7 @@ import json
 import logging
 import secrets
 import time
-from typing import Any, Optional, Sequence
+from typing import Any, Literal, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -40,22 +40,26 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 SESSION_OK_GUARD_SECONDS = 540.0
 
 # In-process OAuth session ledger: state -> (started_at_monotonic,
-# callback_delivered). Stamped inside start_oauth/oauth_callback so EVERY
-# surface that drives OAuth through this client (wizard, headless console,
-# REST route bodies, the command facade) records its sessions with no
-# caller cooperation. ADVISORY, not a security boundary: it exists to stop
-# a confusing false "login complete" (the relogin trap), so an unknown
-# state fails OPEN (no stamp = no guard; e.g. an API restart mid-login),
-# and nobody should "harden" it into persisted or authenticated state.
+# callback_delivered, preexisting_active_login). Stamped inside
+# start_oauth/oauth_callback so EVERY surface that drives OAuth through
+# this client (wizard, headless console, REST route bodies, the command
+# facade) records its sessions with no caller cooperation. ADVISORY, not a
+# security boundary: it exists to stop a confusing false "login complete"
+# (the relogin trap), so an unknown state fails OPEN (no stamp = no guard;
+# e.g. an API restart mid-login), and nobody should "harden" it into
+# persisted or authenticated state. The preexisting flag scopes the guard
+# to relogins: the trap NEEDS a pre-existing active auth file to bless the
+# stale ok, so a first login on a clean host is never refused however slow
+# (matters most for device flows, which have no callback to deliver).
 _LEDGER_TTL_SECONDS = 1800.0
 _LEDGER_MAX_ENTRIES = 64
-_oauth_session_ledger: dict[str, tuple[float, bool]] = {}
+_oauth_session_ledger: dict[str, tuple[float, bool, bool]] = {}
 
 
 def _ledger_prune(now: float) -> None:
     expired = [
         state
-        for state, (started, _delivered) in _oauth_session_ledger.items()
+        for state, (started, _delivered, _preexisting) in _oauth_session_ledger.items()
         if now - started > _LEDGER_TTL_SECONDS
     ]
     for state in expired:
@@ -67,12 +71,12 @@ def _ledger_prune(now: float) -> None:
         _oauth_session_ledger.clear()
 
 
-def _ledger_stamp_start(state: str) -> None:
+def _ledger_stamp_start(state: str, *, preexisting_active: bool) -> None:
     if not state:
         return
     now = time.monotonic()
     _ledger_prune(now)
-    _oauth_session_ledger[state] = (now, False)
+    _oauth_session_ledger[state] = (now, False, preexisting_active)
 
 
 def _ledger_mark_delivered(state: str) -> None:
@@ -86,30 +90,38 @@ def _ledger_mark_delivered(state: str) -> None:
         return
     now = time.monotonic()
     _ledger_prune(now)
-    started, _delivered = _oauth_session_ledger.get(state, (now, False))
-    _oauth_session_ledger[state] = (started, True)
+    started, _delivered, preexisting = _oauth_session_ledger.get(
+        state, (now, False, False)
+    )
+    _oauth_session_ledger[state] = (started, True, preexisting)
 
 
 def stale_session_refusal(state: str) -> str:
     """A refusal detail when an ok cannot be trusted for this session.
 
     "" when the ok may be trusted: unknown state (fail-open), callback
-    delivered, or the session is young enough that the proxy still knows
-    it (an unknown-session ok cannot happen inside the TTL).
+    delivered, the session is young enough that the proxy still knows it
+    (an unknown-session ok cannot happen inside the TTL), or no active
+    login pre-existed for the provider when the session started (with no
+    prior auth file there is nothing to bless a stale ok, so the
+    auth-file confirm alone is decisive; refusing here would fail slow
+    first logins, notably paste-less device flows).
     """
     entry = _oauth_session_ledger.get(state)
     if entry is None:
         return ""
-    started, delivered = entry
-    if delivered:
+    started, delivered, preexisting = entry
+    if delivered or not preexisting:
         return ""
     if time.monotonic() - started <= SESSION_OK_GUARD_SECONDS:
         return ""
     return (
         "The proxy answered ok, but this login session is old enough to"
-        " have expired and no callback was delivered, so that is likely a"
-        " stale-session answer blessing an older login. Restart the login"
-        " to be sure."
+        " have expired, no callback was delivered, and an earlier login"
+        " already exists for this provider, so the ok cannot be told apart"
+        " from a stale-session answer blessing that earlier login. If you"
+        " did just approve the login, check the provider's login list;"
+        " otherwise restart the login."
     )
 
 
@@ -140,6 +152,16 @@ def active_login_entry(
 def login_account_label(entry: dict[str, Any]) -> str:
     """Best-effort account identity from an auth-file entry ("" when unknown)."""
     return str(entry.get("account") or entry.get("email") or "")
+
+
+def oauth_state_from_redirect_url(redirect_url: str) -> str:
+    """The state parameter inside a pasted redirect URL ("" when absent)."""
+    try:
+        query = parse_qs(urlparse(redirect_url).query)
+    except ValueError:
+        return ""
+    return str((query.get("state") or [""])[0])
+
 
 # Knobs surfaced through GET/PATCH /cliproxy/config. Path -> JSON kind.
 CONFIG_KNOB_PATHS: dict[str, str] = {
@@ -308,7 +330,21 @@ class CLIProxyManagementClient:
             raise CLIProxyManagementError(
                 f"{spec.id} auth-url returned no url/state"
             )
-        _ledger_stamp_start(state)
+        # Snapshot whether an active login already exists for this provider:
+        # taken at start because by confirm time a genuinely landed login is
+        # indistinguishable from a pre-existing one. Best-effort (the guard
+        # fails open when the list cannot be read).
+        preexisting_active = False
+        try:
+            preexisting_active = (
+                active_login_entry(await self.list_auth_files(), spec)
+                is not None
+            )
+        except CLIProxyManagementError:
+            # Snapshot unavailable: leave False so the guard fails open
+            # (never refuse a login over a failed advisory read).
+            pass
+        _ledger_stamp_start(state, preexisting_active=preexisting_active)
         return {"url": url, "state": state}
 
     async def oauth_callback(
@@ -330,11 +366,7 @@ class CLIProxyManagementClient:
         if redirect_url:
             body["redirect_url"] = redirect_url.strip()
             if not session_state:
-                try:
-                    query = parse_qs(urlparse(redirect_url).query)
-                except ValueError:
-                    query = {}
-                session_state = str((query.get("state") or [""])[0])
+                session_state = oauth_state_from_redirect_url(redirect_url)
         elif code and state:
             body["code"] = code.strip()
             body["state"] = session_state
@@ -541,6 +573,91 @@ async def confirm_login_landed(
     return status, ""
 
 
+async def import_auth_file(
+    client: CLIProxyManagementClient,
+    spec: CLIProxyProviderSpec,
+    name: str,
+    content: str | bytes,
+) -> tuple[Literal["ok", "inactive"], str, str]:
+    """Upload an auths/*.json document and confirm it landed as an active
+    login: (status, detail, account) with status "ok" or "inactive".
+
+    THE one implementation of the import trust ladder (shared by the REST
+    route and the headless --cliproxy-auth-file branch; callers own name
+    hygiene and user-facing rendering). The confirm matches the entry the
+    proxy lists under the UPLOADED name (upload filenames round-trip
+    verbatim into the list), never merely an active login for the
+    provider, so an accepted-but-dead file or a wrong-provider pick can
+    never borrow a pre-existing login's success. Raises ValueError for
+    content that is not UTF-8-encodable JSON and CLIProxyManagementError
+    for transport/proxy failures.
+    """
+    not_json = (
+        "The file is not valid JSON; auth files are the proxy's"
+        " auths/*.json documents"
+    )
+    if isinstance(content, bytes):
+        raw = content
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(not_json) from None
+    else:
+        text = content
+        try:
+            raw = content.encode("utf-8")
+        except UnicodeEncodeError:
+            # json.loads accepts lone surrogates that cannot encode.
+            raise ValueError(not_json) from None
+    try:
+        json.loads(text)
+    except ValueError:
+        raise ValueError(not_json) from None
+    await client.upload_auth_file(name, raw)
+    files = await client.list_auth_files()
+    entry = next(
+        (item for item in files if str(item.get("name") or "") == name), None
+    )
+    if entry is None:
+        return (
+            "inactive",
+            f"The proxy accepted {name} but does not list a file under"
+            " that name; check the proxy's own management panel.",
+            "",
+        )
+    listed_provider = str(entry.get("provider") or "").lower()
+    if listed_provider != spec.auth_file_provider:
+        return (
+            "inactive",
+            f"The proxy accepted {name} but parsed it as"
+            f" a {listed_provider or 'unknown'} auth file, not"
+            f" {spec.label}; pick the matching provider or a different"
+            " file.",
+            "",
+        )
+    if entry.get("disabled") or entry.get("unavailable"):
+        state_word = "disabled" if entry.get("disabled") else "unavailable"
+        return (
+            "inactive",
+            f"The proxy accepted {name} but lists it as {state_word},"
+            " not an active login; the file may be expired or revoked.",
+            "",
+        )
+    if spec.id == "claude":
+        # Keep tool_prefix_disabled on the imported file (inert on v7
+        # binaries, required on a v6.9.36 rollback). Best-effort: a
+        # failure must not fail a confirmed import.
+        try:
+            await client.ensure_tool_prefix_disabled(name)
+        except CLIProxyManagementError as error:
+            logger.warning(
+                "Claude tool_prefix_disabled fixup failed for %s: %s",
+                name,
+                error,
+            )
+    return "ok", "", login_account_label(entry)
+
+
 def _error_message(response: httpx.Response) -> str:
     try:
         payload = response.json()
@@ -585,8 +702,10 @@ __all__ = [
     "active_login_entry",
     "configured_gatekeeper_keys",
     "confirm_login_landed",
+    "import_auth_file",
     "login_account_label",
     "mint_gatekeeper_key",
+    "oauth_state_from_redirect_url",
     "resolve_or_mint_gatekeeper",
     "stale_session_refusal",
 ]
