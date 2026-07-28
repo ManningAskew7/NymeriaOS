@@ -32,12 +32,13 @@ from .command_forms import (
     CommandOutput,
     chain_form_output,
     command_data,
+    custom_model_tab,
     form_option,
     form_payload,
     form_tab,
+    model_pick_tab,
     radio_field,
     rest_value,
-    search_field,
     text_field,
 )
 
@@ -577,16 +578,9 @@ class ProviderSetupCommandsMixin:
         from . import provider_setup as setup_store
 
         if pending.model_custom:
-            tab = form_tab(
-                "Model",
-                [
-                    text_field(
-                        "model",
-                        label="Model id",
-                        placeholder=spec.default_model or "model-id",
-                    )
-                ],
-                submit_command="provider setup model {model}",
+            tab = custom_model_tab(
+                spec.default_model or "model-id",
+                "provider setup model {model}",
             )
             return tab, False, [
                 "Type the model id to use.",
@@ -693,28 +687,15 @@ class ProviderSetupCommandsMixin:
                         current=fallback_id == preselect,
                     )
                 )
-        if preselect and all(option["id"] != preselect for option in options):
-            # Not in the listed set (a custom model typed earlier, or the
-            # current/default model missing from the live list): surface it
-            # as a row so the tab renders the decision it holds.
-            insert_meta = (
-                "current model"
-                if preselect == current_model
-                else "spec default"
-                if preselect == str(spec.default_model or "")
-                else "custom"
-            )
-            options.insert(
-                0, form_option(preselect, meta=insert_meta, current=True)
-            )
-        options.append(form_option("custom", label="Custom model id…"))
-        tab = form_tab(
-            "Model",
-            [
-                search_field("filter", placeholder="Filter models…"),
-                radio_field("model", options),
-            ],
-            submit_command="provider setup model {model}",
+        insert_meta = (
+            "current model"
+            if preselect == current_model
+            else "spec default"
+            if preselect == str(spec.default_model or "")
+            else "custom"
+        )
+        tab = model_pick_tab(
+            options, preselect, insert_meta, "provider setup model {model}"
         )
         return tab, pending.model is not None, [
             str(pending.models_note or ""),
