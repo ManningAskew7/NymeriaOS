@@ -17,6 +17,14 @@ production call sites are unchanged.
 
 All prompt_toolkit private-attribute pokes (the ``# noqa: SLF001`` sites) are
 confined to this module by design.
+
+One delegated exception to the raw-terminal-control charter: in-place tool-row
+rewrites (`RichReplRenderer._write_tool_row_at`) emit absolute cursor moves on
+the renderer's own console stream, inside the render window this engine opens
+and only while ``live_row_context()`` blesses the geometry. They ride the
+renderer's stream deliberately: the rewritten row is Rich-painted, and
+splitting the cursor moves onto ``app.output`` would interleave two buffered
+streams.
 """
 
 from __future__ import annotations
@@ -76,6 +84,10 @@ class FollowFooterEngine:
         self._pinned_terminal_size: tuple[int, int] | None = None
         self._pinned_footer_needs_full_repaint = False
         self._pinned_input_cursor_position: tuple[int, int] | None = None
+        # Bumped on every pinned-geometry change (activate/resize/deactivate).
+        # Live tool-row registrations in the renderer are only valid while
+        # the generation they were stamped with is still current.
+        self._transcript_generation = 0
         self._terminal_size = self.terminal_size()
 
     @property
@@ -142,6 +154,26 @@ class FollowFooterEngine:
 
     def pinned_footer_active(self) -> bool:
         return self._pinned_footer_active
+
+    def live_row_context(self) -> tuple[int, int] | None:
+        """Return ``(scroll_bottom, generation)`` while pinned geometry holds.
+
+        In pinned scroll-region mode the transcript write cursor is
+        deterministically at row ``scroll_bottom``; a transcript row printed
+        N physical lines ago sits at ``scroll_bottom - 1 - N``. The renderer
+        uses this to rewrite still-visible tool rows in place. ``None`` means
+        in-place updates are unsafe right now (not pinned), and callers must
+        fall back to append-only rendering.
+        """
+
+        if not self.scroll_region_enabled():
+            # Dynamic gate: the region flag can go false while still pinned
+            # (e.g. the terminal shrank below the minimum rows), and writes
+            # then leave the pinned window for the run_in_terminal path.
+            return None
+        if not self._pinned_footer_active or self._pinned_scroll_bottom <= 0:
+            return None
+        return (self._pinned_scroll_bottom, self._transcript_generation)
 
     def footer_height_is_known(self) -> bool:
         """Keep the Rich footer visible after prompt_toolkit has placed it once."""
@@ -304,6 +336,7 @@ class FollowFooterEngine:
         self._pinned_scroll_bottom = scroll_bottom
         self._pinned_terminal_size = (size.columns, size.rows)
         self._pinned_footer_needs_full_repaint = True
+        self._transcript_generation += 1
 
     def _prepare_pinned_footer_render(self) -> None:
         app = self.application
@@ -382,6 +415,7 @@ class FollowFooterEngine:
         self._pinned_scroll_bottom = scroll_bottom
         self._pinned_terminal_size = (int(size.columns), int(size.rows))
         self._pinned_footer_needs_full_repaint = True
+        self._transcript_generation += 1
 
     def finish_follow_footer_render(self) -> None:
         if not self.scroll_region_enabled() or not self._pinned_footer_active:
@@ -442,6 +476,7 @@ class FollowFooterEngine:
         self._pinned_footer_needs_full_repaint = False
         self._pinned_input_cursor_position = None
         self._follow_footer_pin_probe_pending = False
+        self._transcript_generation += 1
 
     # ----- resize handling ------------------------------------------------ #
 
