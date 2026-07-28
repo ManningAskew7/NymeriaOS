@@ -3006,18 +3006,19 @@ def _create_anthropic_llm(config: LLMConfig) -> BaseChatModel:
 
     # Determine model family for API compatibility
     model_name = (config.model or "").lower()
-    from nymeria.config.model_capabilities import anthropic_model_version
+    from nymeria.config.model_capabilities import (
+        anthropic_generation_at_least,
+        anthropic_model_version,
+    )
 
     model_version = anthropic_model_version(model_name)
     # Claude 4.7+ removes support for sampling params (temperature, top_p, top_k)
     # and extended thinking budgets. Use adaptive thinking only. The 4.8 /
     # fable / mythos generations share the 4.7 API surface, as do future
-    # version bumps (ordinal check, not a marker list).
-    is_47_plus = (
-        (model_version is not None and model_version >= (4, 7))
-        or "fable" in model_name
-        or "mythos" in model_name
-    )
+    # version bumps (ordinal check, not a marker list). Shared with the image
+    # geometry tier and the CLI/thread-overview "adaptive" labels, all of which
+    # previously kept their own copy of this rule and went stale separately.
+    is_47_plus = anthropic_generation_at_least(model_name, (4, 7))
     is_46_model = model_version == (4, 6)
     uses_adaptive = is_47_plus or is_46_model
     # fable/mythos cannot disable thinking; effort "off" degrades to "low".

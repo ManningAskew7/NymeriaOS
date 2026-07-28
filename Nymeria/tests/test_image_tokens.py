@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 
+import pytest
+
 from nymeria.config.model_capabilities import estimate_image_tokens
 from nymeria.tools.image_read import read_image_dimensions
 
@@ -32,6 +34,36 @@ def test_anthropic_hires_model_caps_higher():
     hires = estimate_image_tokens("claude-opus-4-8", 8000, 8000)
     assert hires == 4784
     assert hires > std
+
+
+@pytest.mark.parametrize(
+    "model_id,expected_hires",
+    [
+        # The 4.7 boundary, pinned on both sides.
+        ("claude-opus-4-6", False),
+        ("claude-sonnet-4-6", False),
+        ("claude-opus-4-7", True),
+        ("claude-opus-4-8", True),
+        ("claude-opus-4.8", True),
+        # The generations a hardcoded name list missed. claude-opus-5 is a
+        # shipped default model, and it was being estimated at 1568 instead of
+        # 4784, a 3x under-count feeding image-aware compaction sizing.
+        ("claude-opus-5", True),
+        ("claude-sonnet-5", True),
+        ("claude-fable-5", True),
+        ("claude-mythos-5", True),
+        # Below the boundary.
+        ("claude-haiku-4-5-20251001", False),
+        ("claude-opus-4-20250514", False),
+        # Patch geometry belongs to the model, so a gateway-hosted copy keeps
+        # it. This is the one axis where the provider prefix must NOT gate.
+        ("bedrock/anthropic.claude-opus-4-8", True),
+        ("openrouter/anthropic/claude-opus-4.7", True),
+    ],
+)
+def test_anthropic_hires_boundary_is_ordinal_not_a_name_list(model_id, expected_hires):
+    tokens = estimate_image_tokens(model_id, 8000, 8000)
+    assert tokens == (4784 if expected_hires else 1568), model_id
 
 
 def test_openai_tile_formula_base_plus_tiles():

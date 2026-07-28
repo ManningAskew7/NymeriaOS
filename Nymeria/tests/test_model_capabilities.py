@@ -1403,6 +1403,332 @@ def test_context_limit_curated_covers_claude_5_generation(monkeypatch):
         assert capabilities.get_context_limit(f"{model}(xhigh)") == 1000000
 
 
+# Context windows Anthropic publishes for its own hosted models (checked
+# 2026-07-28). 1M is the standard default for these generations, not a beta
+# tier; everything else, including all Haiku, is 200k.
+#
+# FIRST-PARTY IDS ONLY. Gateway-hosted Claude (bedrock/, github_copilot/,
+# snowflake/, azure_ai/, ...) serves truncated windows that have nothing to do
+# with these numbers, and the family rule deliberately abstains on them. See
+# test_family_rule_abstains_on_gateway_and_legacy_ids.
+_CLAUDE_CONTEXT_GROUND_TRUTH = {
+    "claude-opus-5": 1000000,
+    "claude-opus-5-fast": 1000000,
+    "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000,
+    "claude-mythos-5": 1000000,
+    "claude-opus-4-8": 1000000,
+    "claude-opus-4-7": 1000000,
+    "claude-opus-4-6": 1000000,
+    "claude-sonnet-4-6": 1000000,
+    "claude-opus-4-5-20251101": 200000,
+    "claude-sonnet-4-5-20250929": 200000,
+    "claude-opus-4-1-20250805": 200000,
+    "claude-opus-4-20250514": 200000,
+    "claude-sonnet-4-20250514": 200000,
+    "claude-haiku-4-5-20251001": 200000,
+    # Unreleased siblings of curated families. These are the shape that matters:
+    # the substring pass matches the bare "claude-opus-4" / "claude-sonnet-4"
+    # rows by prefix and answers 200k for them, so if the family rule is ordered
+    # below that pass it is never consulted and the clamp bug reproduces on the
+    # next point release. Not speculative padding: claude-opus-5 only escaped
+    # because no curated row happens to be a prefix of it.
+    "claude-opus-4-9": 1000000,
+    "claude-sonnet-4-7": 1000000,
+}
+
+
+def test_context_limit_family_rule_covers_every_claude_generation(monkeypatch):
+    # With no live metadata and no catalog, family knowledge is the only tier
+    # left. It must be ordinal, not a name list: the curated 5-generation rows
+    # added for fable/mythos/sonnet-5 did NOT cover claude-opus-5, which then
+    # clamped a configured 400k compaction threshold to the 128k "_default"
+    # (slim-dogfood backlog #101, reported again 2026-07-28 after a model
+    # switch).
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+
+    for model, expected in _CLAUDE_CONTEXT_GROUND_TRUTH.items():
+        assert capabilities.get_context_limit(model) == expected, model
+        assert capabilities.get_context_limit(f"anthropic/{model}") == expected, model
+        # Reasoning-suffix form resolves through the same normalization.
+        assert capabilities.get_context_limit(f"{model}(xhigh)") == expected, model
+
+
+def test_empty_modality_set_is_unknown_not_a_denial(monkeypatch):
+    # A bare gateway listing (CLIProxy's /v1/models is {id, object, created,
+    # owned_by}) carries no modality data, so registering a listed model wrote
+    # an EMPTY input_modalities set into _live_model_cache, the tier that
+    # outranks the curated tables and the optimistic fallback. _check_modality
+    # then read "not in the empty set" as a definite False, so merely opening
+    # the model picker (GET /models/available registers every listed model)
+    # disabled image and file input for every CLIProxy model for the life of
+    # the process.
+    _offline(monkeypatch)
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+
+    assert capabilities.supports_vision("claude-opus-5") is True
+    assert capabilities.supports_documents("claude-opus-5") is True
+
+    capabilities.register_model_metadata(
+        model_id="claude-opus-5",
+        name="claude-opus-5",
+        input_modalities=set(),
+        supported_parameters=set(),
+    )
+
+    assert capabilities.supports_vision("claude-opus-5") is True
+    assert capabilities.supports_documents("claude-opus-5") is True
+
+
+def test_real_modality_set_stays_authoritative_in_both_directions(monkeypatch):
+    # The fix must not turn the live cache into a one-way optimism: a provider
+    # that actually reports its modalities is still believed when it says no.
+    _offline(monkeypatch)
+    monkeypatch.setattr(capabilities, "_model_cache", {})
+
+    capabilities.register_model_metadata(
+        model_id="text-only-model-x", name="x", input_modalities={"text"}
+    )
+    assert capabilities.supports_vision("text-only-model-x") is False
+
+    capabilities.register_model_metadata(
+        model_id="visual-model-x", name="x", input_modalities={"text", "image"}
+    )
+    assert capabilities.supports_vision("visual-model-x") is True
+
+
+@pytest.mark.parametrize(
+    "model_id,minimum,expected",
+    [
+        ("claude-opus-5", (4, 7), True),
+        ("claude-sonnet-5", (4, 7), True),
+        ("claude-opus-4-8", (4, 7), True),
+        ("claude-opus-4-7", (4, 7), True),
+        ("claude-opus-4-6", (4, 7), False),
+        ("claude-opus-4-6", (4, 6), True),
+        ("claude-sonnet-4-6", (4, 6), True),
+        # Research models postdate the ordinal scheme and share the newest
+        # surface, so they qualify at any minimum.
+        ("claude-fable-5", (4, 7), True),
+        ("claude-mythos-5", (4, 6), True),
+        # Dated bare-major ids must not read as a newer generation.
+        ("claude-opus-4-20250514", (4, 6), False),
+        ("claude-opus-4-20250514(xhigh)", (4, 7), False),
+        # Legacy version-first ids keep the older behavior.
+        ("claude-3-5-sonnet", (4, 6), False),
+        ("", (4, 6), False),
+    ],
+)
+def test_anthropic_generation_at_least(model_id, minimum, expected):
+    # One predicate behind the 4.7+ wire shape in providers.py, the hi-res
+    # image geometry, and the "adaptive" labels in the CLI header and thread
+    # overview. Each used to keep its own name list and all had gone stale on
+    # claude-opus-5.
+    assert capabilities.anthropic_generation_at_least(model_id, minimum) is expected
+
+
+def test_family_rule_abstains_on_gateway_and_legacy_ids():
+    # The rule models what ANTHROPIC serves. A gateway prefix means some other
+    # operator chose the window, and an audit of the bundled catalog's 242
+    # Claude-family rows found 50 of them truncated well below both first-party
+    # sizes (100k legacy Bedrock, 128k copilot-fast, 80k copilot Opus 4.1, 18k
+    # snowflake). An earlier cut stripped the prefix and applied first-party
+    # knowledge anyway, over-claiming 12.5x on the worst row. Abstaining hands
+    # those ids back to the catalog, which does know them.
+    for model_id in (
+        "github_copilot/claude-opus-41",
+        "github_copilot/claude-opus-4.6-fast",
+        "snowflake/claude-3-5-sonnet",
+        "azure_ai/claude-opus-4-6",
+        "bedrock/us-west-2/anthropic.claude-opus-4-20250514-v1:0",
+        "openrouter/anthropic/claude-opus-4.7",
+        "anthropic.claude-instant-v1",
+        "us.anthropic.claude-opus-4-7",
+    ):
+        assert capabilities._anthropic_family_context_limit(model_id) is None, model_id
+
+    # Legacy version-first ids straddle a 2x split (claude-3.5 at 200k,
+    # claude-2 and claude-instant at 100k), so the rule says nothing rather
+    # than guessing across it.
+    for model_id in ("claude-2", "claude-2.1", "claude-instant-1.2"):
+        assert capabilities._anthropic_family_context_limit(model_id) is None, model_id
+
+    # The vendor namespace is not a gateway: it names Anthropic's own model.
+    assert capabilities._anthropic_family_context_limit("anthropic/claude-opus-5") == 1000000
+
+
+def test_context_limit_family_rule_outranks_the_substring_pass(monkeypatch):
+    # The substring pass is not a metadata tier: it is the curated name list
+    # matched by prefix, so for an unlisted sibling it answers with the nearest
+    # listed relative. Pinned separately from the table above because this is
+    # the ordering that was wrong on the first cut.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+
+    # Both bare rows exist and are 200k, and both are prefixes of the ids below.
+    assert capabilities.DEFAULT_CONTEXT_LIMITS["claude-opus-4"] == 200000
+    assert capabilities.DEFAULT_CONTEXT_LIMITS["claude-sonnet-4"] == 200000
+
+    assert capabilities.get_context_limit("claude-opus-4-9") == 1000000
+    assert capabilities.get_context_limit("claude-sonnet-4-7") == 1000000
+    # A non-Claude id still reaches the substring pass, which the family rule
+    # must not have displaced.
+    assert capabilities.get_context_limit("gpt-5.5-custom") == 1050000
+
+
+def test_context_limit_ground_truth_holds_against_the_real_bundle(monkeypatch):
+    # The table test above mocks the catalog away to isolate the family rule.
+    # This one runs the shipped tier stack (real bundled LiteLLM catalog, no
+    # live metadata) so the numbers are pinned as users actually get them.
+    #
+    # Every row, no exceptions. claude-sonnet-4-20250514 used to need an escape
+    # hatch here because the catalog carries Sonnet 4's 1M beta tier as if it
+    # were the default; placing the family rule above the catalog corrected it,
+    # which is the concrete payoff of that ordering.
+    _offline(monkeypatch)
+
+    for model, expected in _CLAUDE_CONTEXT_GROUND_TRUTH.items():
+        assert capabilities.get_context_limit(model) == expected, model
+
+
+def test_context_limit_family_rule_outranks_the_catalog(monkeypatch):
+    # Family knowledge is maintained here against the vendor's published
+    # windows; the bundled snapshot records whatever tier a third party wrote
+    # down. On the shipped bundle they disagree on exactly one first-party row
+    # (claude-sonnet-4-20250514, where the catalog carries Sonnet 4's 1M beta
+    # tier as the default) and the family rule is the correct one.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {"claude-opus-5": {"max_input_tokens": 424242}})
+    assert capabilities.get_context_limit("claude-opus-5") == 1000000
+
+    # A gateway id is abstained on, so the catalog still answers it.
+    _set_catalog(
+        monkeypatch, {"azure_ai/claude-opus-4-9": {"max_input_tokens": 424242}}
+    )
+    assert capabilities.get_context_limit("azure_ai/claude-opus-4-9") == 424242
+
+
+def test_context_limit_live_and_curated_still_outrank_the_family_rule(monkeypatch):
+    # The rule sits below REAL metadata, only above the third-party catalog.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+
+    # Curated exact wins (claude-opus-4 is curated at 200k, and the rule would
+    # also say 200k, so use a row where they would differ if consulted).
+    assert capabilities.get_context_limit("claude-sonnet-4-6") == 1000000
+
+    # Live provider metadata wins outright.
+    _set_model_cache(
+        monkeypatch,
+        {"claude-opus-5": ModelInfo(id="claude-opus-5", name="x", context_length=333333)},
+    )
+    assert capabilities.get_context_limit("claude-opus-5") == 333333
+
+
+def test_context_limit_family_rule_ignores_non_anthropic(monkeypatch):
+    # Other providers keep the global default; the rule is Claude-specific
+    # family knowledge, not a general optimism.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+    assert (
+        capabilities.get_context_limit("some-unknown-model-v9")
+        == capabilities.DEFAULT_CONTEXT_LIMITS["_default"]
+    )
+
+
+def test_unknown_context_limit_warns_once(monkeypatch, caplog):
+    # A silently wrong context window is not cosmetic: compact_trigger_tokens
+    # takes min(setting, limit), so the guess also caps the operator's
+    # configured compaction threshold. Mirror the "[LLM] No output ceiling
+    # known" precedent and say so, once, not on every turn.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+    monkeypatch.setattr(capabilities, "_context_default_warned", set())
+
+    with caplog.at_level("WARNING", logger=capabilities.logger.name):
+        for _ in range(3):
+            capabilities.get_context_limit("some-unknown-model-v9")
+
+    warnings = [
+        r for r in caplog.records if "No context window known" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "some-unknown-model-v9" in warnings[0].getMessage()
+
+
+def test_unknown_context_limit_does_not_warn_for_resolved_models(monkeypatch):
+    # A model the family rule answers is not a degradation, so it must stay
+    # silent or the warning becomes noise operators learn to ignore.
+    _offline(monkeypatch)
+    _set_catalog(monkeypatch, {})
+    monkeypatch.setattr(capabilities, "_context_default_warned", set())
+
+    capabilities.get_context_limit("claude-opus-5")
+    assert capabilities._context_default_warned == set()
+
+
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        # Bare-major dated ids: the date used to be eaten by the minor group,
+        # parsing claude-opus-4-20250514 as (4, 20250514). That compares
+        # >= (4, 7), so _create_anthropic_llm treated the original Opus 4 and
+        # Sonnet 4 as the 4.7+ API shape: it suppressed temperature and picked
+        # adaptive thinking over the budget-token path those models take.
+        ("claude-opus-4-20250514", (4, 0)),
+        ("claude-sonnet-4-20250514", (4, 0)),
+        # providers.py passes config.model verbatim, so decorated shapes reach
+        # the helper raw and must parse without any caller-side normalization.
+        ("claude-opus-4-20250514(xhigh)", (4, 0)),
+        ("claude-sonnet-4-20250514(max)", (4, 0)),
+        ("  Claude-Opus-4-20250514  ", (4, 0)),
+        # Arbitrary trailing decoration. An end-anchored pre-strip could not
+        # handle these, which is why the date is matched inside the pattern.
+        ("claude-opus-4-20250514:beta", (4, 0)),
+        ("us.anthropic.claude-opus-4-20250514-v1:0", (4, 0)),
+        ("bedrock/us-west-2/anthropic.claude-opus-4-20250514-v1:0", (4, 0)),
+        # Dated ids carrying an explicit minor were always parsed correctly,
+        # which is why the bug hid.
+        ("claude-opus-4-1-20250805", (4, 1)),
+        ("claude-sonnet-4-5-20250929", (4, 5)),
+        ("claude-haiku-4-5-20251001", (4, 5)),
+        # Undated modern ids, hyphen and dot separated.
+        ("claude-opus-4-8", (4, 8)),
+        ("claude-sonnet-4.6", (4, 6)),
+        ("claude-opus-5", (5, 0)),
+        # Legacy version-first ids take the legacy path.
+        ("claude-3-7-sonnet-20250219", None),
+        ("claude-3-5-sonnet", None),
+        ("", None),
+    ],
+)
+def test_anthropic_model_version_ignores_dated_snapshot(model_id, expected):
+    assert capabilities.anthropic_model_version(model_id) == expected
+
+
+def test_original_opus_4_is_not_treated_as_47_plus():
+    # Pins the consequence rather than the parse: providers.py gates the 4.7+
+    # wire shape (no sampling params, adaptive thinking) on this comparison.
+    for model_id in (
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-20250514",
+        "claude-opus-4-20250514(xhigh)",
+        "claude-opus-4-20250514:beta",
+        "us.anthropic.claude-opus-4-20250514-v1:0",
+    ):
+        version = capabilities.anthropic_model_version(model_id)
+        assert version is not None
+        assert version < (4, 7), model_id
+
+    # ...and the models that genuinely are 4.7+ must still read as such, or the
+    # fix would have swung the wire shape the other way.
+    for model_id in ("claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"):
+        version = capabilities.anthropic_model_version(model_id)
+        assert version is not None
+        assert version >= (4, 7), model_id
+
+
 def test_supports_vision_from_catalog_for_uncurated_model(monkeypatch):
     _offline(monkeypatch)
     _set_catalog(
