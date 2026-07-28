@@ -125,6 +125,43 @@ def first_float(source: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
+def _unambiguous_max_tokens_as_output(
+    model: dict[str, Any], context_length: int | None
+) -> int | None:
+    """Read ``max_tokens`` as the OUTPUT cap, but only where it can mean nothing else.
+
+    Anthropic's Models API spells the output ceiling ``max_tokens`` and the
+    context window ``max_input_tokens``; it has no ``max_output_tokens`` field
+    at all, so every Anthropic model registered from a live listing used to come
+    back with a null output ceiling.
+
+    The name cannot simply be added to the output key list, because it is not
+    self-describing: some third-party catalogs use ``max_tokens`` for the
+    CONTEXT window, and reading one of those as an output cap would hand a model
+    a ceiling the size of its whole window. So accept it only on the shape where
+    that misreading is not possible: a row that also carries a context window,
+    with ``max_tokens`` strictly below it. A source that conflates the two axes
+    repeats the same number (the context == output fingerprint recorded in
+    docs/private/plans/model-capability-resolution.md), which this refuses along
+    with rows that carry no context at all.
+
+    Two residual ambiguities this does NOT resolve, both shared with the
+    explicit output keys above rather than introduced here. A mixed-convention
+    row (window bumped, stale ``max_tokens`` still holding the OLD window) still
+    passes, since the stale value is genuinely smaller. And no field name
+    distinguishes a hard ceiling from a default request budget: xai documents
+    128000 as its ``max_completion_tokens`` DEFAULT, and a source echoing that
+    into a listing reads here as a cap. Both need a provider that states which
+    quantity it means; see the capability-resolution plan.
+    """
+    if not context_length or context_length <= 0:
+        return None
+    value = first_int(model, "max_tokens")
+    if value is None or value >= context_length:
+        return None
+    return value
+
+
 def extract_model_metadata(model: dict[str, Any]) -> dict[str, Any]:
     """Normalize common metadata fields returned by provider /models APIs."""
     architecture = model.get("architecture") or {}
@@ -140,6 +177,14 @@ def extract_model_metadata(model: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(pricing, dict):
         pricing = {}
 
+    # Both axes are spelled differently by every dialect, and camelCase is not
+    # cosmetic: Google's native model listing reports
+    # inputTokenLimit/outputTokenLimit, so a snake_case-only reader sees a
+    # listing with no limits at all rather than a wrong number. No caller feeds
+    # that endpoint here TODAY (the wizard probes Gemini through its
+    # OpenAI-compat shim), but ~130 providers reach this function with an
+    # operator-supplied base URL, and CLIProxy's management plane serves the
+    # same camelCase shape.
     context_length = (
         first_int(
             model,
@@ -149,6 +194,7 @@ def extract_model_metadata(model: dict[str, Any]) -> dict[str, Any]:
             "max_context_length",
             "max_context_tokens",
             "input_token_limit",
+            "inputTokenLimit",
             "max_input_tokens",
         )
         or first_int(top_provider, "context_length", "max_context_tokens")
@@ -159,8 +205,11 @@ def extract_model_metadata(model: dict[str, Any]) -> dict[str, Any]:
             "max_completion_tokens",
             "max_output_tokens",
             "output_token_limit",
+            "outputTokenLimit",
         )
         or first_int(top_provider, "max_completion_tokens", "max_output_tokens")
+        # Last, and guarded: Anthropic's output ceiling is named max_tokens.
+        or _unambiguous_max_tokens_as_output(model, context_length)
     )
 
     raw_supported = model.get("supported_parameters") or model.get("supported_params") or []

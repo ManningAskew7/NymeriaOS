@@ -97,6 +97,15 @@ _input_unsupported_marks: Dict[str, float] = {}
 _INPUT_UNSUPPORTED_MARK_TTL_SECONDS = 3600.0  # re-probe a marked model hourly
 
 # Default context limits for common models (fallback when API unavailable)
+# NOTE on the Claude rows below: 20 of the 23 are also derivable from
+# _anthropic_family_context_limit, and this tier outranks it, so they are a
+# deliberate override rather than dead weight. They are kept because the rule
+# abstains on vendor-prefixed spellings (bedrock/anthropic.claude-opus-4-8,
+# openrouter/anthropic/claude-opus-4-8) that these rows still answer through
+# their bare candidate; deleting them drops those ids to the 128k default.
+# The cost is that the rule alone cannot move a first-party window, so
+# test_curated_claude_rows_agree_with_the_family_rule pins the two together and
+# fails if a boundary change lands in only one of them.
 DEFAULT_CONTEXT_LIMITS = {
     "anthropic/claude-3-opus": 200000,
     "anthropic/claude-3-sonnet": 200000,
@@ -175,6 +184,54 @@ DEFAULT_CONTEXT_LIMITS = {
     "google/gemini-1.5-flash": 1000000,
     "google/gemini-2.0-flash": 1000000,
     "google/gemini-2.5-pro": 1000000,
+    # BARE spellings of the vendor-prefixed rows above. Not redundant: candidate
+    # generation synthesizes a vendor prefix for OpenAI-looking ids only, so a
+    # bare `claude-3-opus` or `gemini-1.5-pro` never reaches its `anthropic/` or
+    # `google/` row, and the family rule abstains on legacy version-first Claude
+    # names. They used to be answered by the substring pass's reverse direction,
+    # which was removed below because it is an over-claim mechanism; naming them
+    # here is the honest way to keep the answer. Same values as their prefixed
+    # twins, no new numbers.
+    "claude-3-opus": 200000,
+    "claude-3-sonnet": 200000,
+    "claude-3.5-sonnet": 200000,
+    "gemini-1.5-pro": 1000000,
+    "gemini-1.5-flash": 1000000,
+    "gemini-2.0-flash": 1000000,
+    "gemini-2.5-pro": 1000000,
+    # CLIProxy subscription defaults that no other tier answers. The bundled
+    # LiteLLM catalog does carry moonshot and xai rows, but only under vendor
+    # prefixes (moonshot/kimi-k2.5, xai/grok-4.3), and candidate generation
+    # synthesizes a prefix for OpenAI-looking ids only, so the BARE ids these
+    # subscriptions actually serve can never reach them (gap G3 in
+    # docs/private/plans/model-capability-resolution.md, where the general fix
+    # lives). Until then they fell through to the 128k "_default", which capped
+    # the compaction threshold at a HALF to a TWENTIETH of the real window.
+    # These rows are that stopgap, named rather than derived. Each number is the
+    # vendor's own
+    # published context length (platform.kimi.ai, docs.x.ai), independently
+    # matched by the proxy's channel definition; where the two disagreed we
+    # trusted neither (see docs/private/plans/model-capability-resolution.md).
+    # Context windows only: xai documents 128000 as the max_completion_tokens
+    # DEFAULT rather than a ceiling, and Moonshot publishes no output cap for
+    # K2.5, so neither belongs in an output table.
+    # Caveat carried deliberately: Moonshot states its coding-plan API is a
+    # separate service and publishes no limits for it, so a subscription route
+    # could serve less than 256k. The exposure is bounded because the
+    # compaction trigger is min(operator threshold, this limit).
+    "kimi-k2.5": 262144,
+    "moonshot/kimi-k2.5": 262144,
+    "grok-4.3": 1000000,
+    "xai/grok-4.3": 1000000,
+    "grok-build-0.1": 256000,
+    "xai/grok-build-0.1": 256000,
+    # Same model under its published aliases. The SHORTEST alias is the key on
+    # purpose: the substring pass matches a known name inside a longer requested
+    # id, so this one row also answers grok-code-fast-1 and
+    # grok-code-fast-1-0825, while a "-1" key would answer neither of the other
+    # two.
+    "grok-code-fast": 256000,
+    "xai/grok-code-fast": 256000,
     "_default": 128000,
 }
 
@@ -263,6 +320,20 @@ def _without_provider_prefix(model_id: str) -> str:
     return model_id
 
 
+def _runtime_cache_key(model_id: str) -> str:
+    """Canonical key for the runtime model caches.
+
+    The first lookup candidate (lowercased, reasoning suffix stripped), so the
+    two writers into ``_live_model_cache`` agree: ``register_model_metadata``
+    stores what a provider listing said, ``mark_model_input_unsupported`` stores
+    what the provider actually rejected, and a mark must be able to find and be
+    found by the registration for the same model. Falls back to a plain
+    lowercase for ids that reduce to nothing.
+    """
+    candidates = _model_id_candidates(model_id)
+    return candidates[0] if candidates else model_id.strip().lower()
+
+
 def _capability_id_candidates(model_id: str) -> List[str]:
     """Return fallback capability candidates for provider-qualified and bare IDs."""
     candidates = _model_id_candidates(model_id)
@@ -323,24 +394,13 @@ _DEFAULT_ATTACHMENT_LIMITS: Dict[str, Optional[int]] = {
 }
 
 _ATTACHMENT_LIMITS_BY_FAMILY: List[tuple[tuple[str, ...], Dict[str, Optional[int]]]] = [
-    # Modern Anthropic 4.x models with the 200K-context profile.
-    (
-        (
-            "claude-opus-4-7", "claude-opus-4.7",
-            "claude-sonnet-4-6", "claude-sonnet-4.6",
-            "claude-haiku-4-5", "claude-haiku-4.5",
-            "claude-opus-4-6", "claude-opus-4.6",
-            "claude-opus-4-5", "claude-opus-4.5",
-            "claude-sonnet-4-5", "claude-sonnet-4.5",
-        ),
-        {
-            "max_images_per_request": 100,
-            "max_image_bytes": 5 * 1024 * 1024,
-            "max_pdf_pages": 100,
-            "max_total_bytes": 32 * 1024 * 1024,
-        },
-    ),
-    # Generic Claude fallback (legacy 3.x, etc.).
+    # All Claude models, modern and legacy. A 12-name 4.x tuple used to sit
+    # above this row carrying byte-identical limits, so it never changed an
+    # answer while reading as if it did, and every model released after it was
+    # written (claude-opus-5, fable, mythos) was already served by this row.
+    # Same stale-marker-list shape the version ordinal replaced elsewhere in
+    # this file: if the 4.x profile ever genuinely diverges, add it back with
+    # the numbers that differ.
     (
         ("claude-", "anthropic/"),
         {
@@ -447,8 +507,17 @@ def anthropic_model_version(model_text: str) -> Optional[tuple]:
 
 # First generation using adaptive thinking instead of explicit budget tokens.
 # Shared so the wire-shape gate in providers.py and the "adaptive" labels in the
-# CLI header and thread overview cannot drift apart.
+# CLI header and thread overview cannot drift apart. Every one of those three
+# sites reads THIS name: an inline (4, 6) at any of them re-opens the drift this
+# constant exists to close.
 ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION = (4, 6)
+
+# First generation that rejects sampling parameters (temperature, top_p, top_k)
+# and explicit thinking budgets. A SEPARATE axis from adaptive thinking above and
+# from the hi-res image tier below, which share this value today by coincidence:
+# 4.6 takes adaptive thinking while still accepting sampling params, so folding
+# these into one constant would silently couple two independent wire rules.
+ANTHROPIC_NO_SAMPLING_PARAMS_MIN_VERSION = (4, 7)
 
 
 def anthropic_generation_at_least(model_text: str, minimum: tuple) -> bool:
@@ -1272,8 +1341,10 @@ def _lookup_model(model_id: str) -> Optional[ModelInfo]:
         if candidate in cache:
             return cache[candidate]
 
-    # Prefix matching (e.g., "anthropic/claude-3-sonnet" matches "anthropic/claude-3-sonnet:beta")
-    for cached_id, info in cache.items():
+    # Prefix matching (e.g., "anthropic/claude-3-sonnet" matches "anthropic/claude-3-sonnet:beta").
+    # Snapshotted for the same reason as the live cache above: register_model_metadata
+    # inserts new keys here from other threads, and this walk holds no lock.
+    for cached_id, info in list(cache.items()):
         if any(_is_safe_cache_variant_match(candidate, cached_id) for candidate in candidates):
             return info
 
@@ -1750,22 +1821,55 @@ def register_model_metadata(
     }
     updates = {field_name: value for field_name, value in provided.items() if value is not None}
 
-    key = model_id.lower()
+    key = _runtime_cache_key(model_id)
     with _cache_lock:
-        # A fresh entry defaults name to model_id (ModelInfo's own default is "").
-        base = _model_cache.get(key) or ModelInfo(id=model_id, name=model_id)
+        # Merge onto the LIVE entry when there is one. The live cache is the tier
+        # every read path consults first, so it is the authoritative base, and it
+        # is the only place mark_model_input_unsupported writes: rebuilding from
+        # _model_cache instead let a hollow re-registration silently erase a
+        # learned provider rejection (open the model picker, which re-registers
+        # every listed model with no modality data, and the next turn re-sent the
+        # attachment the provider had already refused). A fresh entry defaults
+        # name to model_id (ModelInfo's own default is "").
+        base = (
+            _live_model_cache.get(key)
+            or _model_cache.get(key)
+            or ModelInfo(id=model_id, name=model_id)
+        )
         # Always own independent copies of the mutable set fields so a later
         # mutation of the cached entry never aliases a prior cache generation or
         # the caller's set.
         info = replace(
             base,
-            id=model_id,
+            # Keep the canonical id an existing entry already published: a
+            # reasoning-suffixed spelling ("gpt-5.5(xhigh)") canonicalizes onto
+            # the same key, and it should not rewrite the id that /models shows.
+            id=base.id or model_id,
             input_modalities=set(updates.pop("input_modalities", base.input_modalities)),
             supported_parameters=set(updates.pop("supported_parameters", base.supported_parameters)),
             **updates,
         )
         _live_model_cache[key] = info
-        _model_cache[key] = info
+        if input_modalities:
+            # Explicit provider metadata supersedes the learned mark, so retire
+            # the mark with it. Left behind, its TTL would later fire and evict
+            # this freshly registered live entry (see _prune_expired_input_marks).
+            _input_unsupported_marks.pop(key, None)
+        if key in _input_unsupported_marks:
+            # A learned rejection is live-cache-only BY DESIGN (see
+            # mark_model_input_unsupported), and this mirror is what would leak
+            # it into the base cache: the TTL sweep evicts the live entry and
+            # the mark, so a narrowed set copied down here would survive the
+            # expiry and pin the model text-only for the process lifetime, with
+            # no mark left to expire. Mirror everything else, keep the base
+            # cache's own modality view.
+            previous = _model_cache.get(key)
+            _model_cache[key] = replace(
+                info,
+                input_modalities=set(previous.input_modalities) if previous else set(),
+            )
+        else:
+            _model_cache[key] = info
 
 
 def mark_model_input_unsupported(model_id: str, *modalities: str) -> None:
@@ -1793,15 +1897,21 @@ def mark_model_input_unsupported(model_id: str, *modalities: str) -> None:
     # stripped, lowercased): keying on a bare ``model_id.lower()`` would land the
     # mark under an id the ``supports_vision`` lookup never resolves, so the model
     # would re-hit the provider rejection and re-mark every turn forever.
-    candidates = _model_id_candidates(model_id)
-    if not candidates:
-        return
-    key = candidates[0]
+    # register_model_metadata keys the same way, so a listing and a rejection for
+    # one model always land on one entry.
+    key = _runtime_cache_key(model_id)
     with _cache_lock:
         base = _live_model_cache.get(key) or _model_cache.get(key)
         if base is not None:
-            remaining = set(base.input_modalities) - drop
-            remaining.add("text")
+            known = set(base.input_modalities)
+            if not known:
+                # Cached but modality-free: "unknown", not "supports nothing"
+                # (the same reading _check_modality takes). Seed from the
+                # optimistic default so marking only "file" does not silently
+                # also deny image on a model that never rejected one, which is
+                # exactly what the absent-model branch below exists to avoid.
+                known = {"text", "image", "file"}
+            remaining = (known - drop) | {"text"}
             if remaining == base.input_modalities:
                 return
             info = replace(base, id=base.id, input_modalities=remaining)
@@ -1835,20 +1945,17 @@ def mark_model_input_unsupported(model_id: str, *modalities: str) -> None:
 # sonnet-5 did not cover claude-opus-5, which then silently clamped a configured
 # 400k compaction threshold to 128k (slim-dogfood backlog #101).
 #
-# SCOPE IS THE WHOLE DESIGN. Of the 242 Claude-family rows in the bundled
-# catalog carrying a real window, 192 are at 200k or 1M and 50 are not: 39 at
-# 100k (legacy Bedrock claude-v1/v2/instant), 5 at 128k, 4 at 409600, one at 80k
-# (github_copilot/claude-opus-41) and one at 18k (snowflake/claude-3-5-sonnet).
-# Gateway operators resize the window, in both directions.
+# SCOPE IS THE WHOLE DESIGN. Gateway operators resize the window in both
+# directions, so a first-party id tells us Anthropic's window while a gateway id
+# tells us nothing about what that gateway chose to serve. Hence the prefix is
+# CHECKED rather than stripped: an ungated version of this rule over-claims on
+# real rows in the bundled catalog, every one of them gateway-prefixed. Legacy
+# version-first ids are abstained on separately (see below).
 #
-# An ungated version of this rule answers 148 of those rows and over-claims on
-# 9, worst 12.5x on copilot's Opus 4.1. All 9 carry a gateway prefix, which is
-# the only thing distinguishing them, so the prefix is checked rather than
-# stripped: a first-party id tells us Anthropic's window, a gateway id tells us
-# nothing about what that gateway chose to serve.
-#
-# Legacy version-first ids are abstained on separately (see below), which is why
-# the 39 Bedrock rows are not in the 9.
+# The measured audit behind those two sentences (row counts, the distribution,
+# the worst over-claim) lives in docs/private/plans/shipped/
+# 07-config-providers-and-vendor.md and is enforced, not just recorded, by
+# test_family_rule_never_over_claims_against_the_real_bundle.
 _ANTHROPIC_STANDARD_CONTEXT = 200000
 _ANTHROPIC_LONG_CONTEXT = 1000000
 # First family-first version shipping the 1M window (opus/sonnet 4.6 and up).
@@ -1967,19 +2074,17 @@ def get_context_limit(model_id: str) -> int:
     # First-party family knowledge, ABOVE the catalog for the same reason the
     # curated table is: it is maintained here against the vendor's published
     # windows, while the bundled snapshot records whatever tier a third party
-    # wrote down. Measured on the shipped bundle, the two disagree on exactly
-    # one first-party row out of 22, claude-sonnet-4-20250514, where the
-    # catalog carries Sonnet 4's 1M beta tier as if it were the default and the
-    # family rule's 200k is correct. Trusting the catalog there yields
-    # min(400000, 1000000) = 400000 against a real 200k window, which is the
-    # overflow direction.
+    # wrote down. On the shipped bundle the two disagree on exactly one
+    # first-party row, claude-sonnet-4-20250514, where the catalog carries
+    # Sonnet 4's 1M beta tier as if it were the default and the family rule's
+    # 200k is correct. Trusting the catalog there yields min(400000, 1000000) =
+    # 400000 against a real 200k window, which is the overflow direction.
     #
     # This placement is also what makes _is_first_party_anthropic_id do any
-    # work. Below the catalog the rule was unreachable: all 242 Claude-family
-    # rows in the bundle are answered by the curated or catalog tier first, so
-    # the gate guarded nothing. Above it, the gate is what keeps first-party
-    # windows off the 9 gateway rows an ungated rule would over-claim (worst:
-    # github_copilot/claude-opus-41, 80k served, 1M claimed).
+    # work: below the catalog the rule was unreachable, because the curated or
+    # catalog tier answers every Claude row in the bundle first, so the gate
+    # guarded nothing. Above it, the gate is what keeps first-party windows off
+    # the gateway rows an ungated rule would over-claim.
     #
     # It does NOT make gateway ids safe in general, and this rule should not be
     # read as claiming that. The curated tier above still answers a
@@ -2005,9 +2110,28 @@ def get_context_limit(model_id: str) -> int:
     # gateway ids the family rule deliberately abstained on. Left in place as
     # pre-existing behavior, but it is why abstaining is not by itself enough
     # to keep first-party numbers off a gateway model.
+    #
+    # ONE DIRECTION ONLY: a known name inside the requested id. The reverse (a
+    # requested id inside a longer known name) meant a SHORTER real model
+    # inherited a LARGER sibling's window, which is the over-claim direction and
+    # is never what the shorter name denotes: "kimi-k2" (131072 on the live
+    # channel) was reading "kimi-k2.5"'s 262144, and "grok-4" (256k) read
+    # "grok-4.3"'s 1M.
+    #
+    # That direction WAS load-bearing for one thing, and it is worth knowing
+    # why: it is how a bare id reached a vendor-prefixed curated row, so
+    # dropping it also cost "claude-3-opus", "gemini-1.5-pro" and their
+    # siblings their windows. Those are named as bare rows above instead, which
+    # is the honest fix, since the reverse match was answering them by accident.
+    # Measured over 5503 ids (the bundled catalog, every prefix-stripped bare
+    # form of those keys, and every id the six CLIProxy channels serve), what
+    # remains lost is "codex-mini" and the degenerate fragment "nano", both of
+    # which were inheriting an unrelated 400k row and are better at the default.
+    # Variant and dated spellings ("grok-4.3-latest", "claude-3-opus@20240229")
+    # keep resolving, because those are the requested-id-is-longer case.
     model_lower = model_id.lower()
     for known_model, limit in _DEFAULT_CONTEXT_LIMITS_BY_LEN:
-        if known_model.lower() in model_lower or model_lower in known_model.lower():
+        if known_model.lower() in model_lower:
             return limit
 
     _warn_unknown_context_limit(model_id)

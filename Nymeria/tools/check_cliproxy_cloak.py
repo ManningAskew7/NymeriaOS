@@ -437,13 +437,22 @@ def probe(
 
 
 def _uses_adaptive_thinking(model: str) -> bool:
-    model_name = (model or "").lower()
-    return (
-        "opus-4-6" in model_name
-        or "sonnet-4-6" in model_name
-        or "opus-4-7" in model_name
-        or "sonnet-4-7" in model_name
+    """Ask the SAME predicate the production wire path asks.
+
+    This probe exists to reproduce what providers.py sends, so a local copy of
+    the rule defeats the point: the name list this replaced covered only 4.6 and
+    4.7, which meant claude-opus-4-8, claude-opus-5, claude-sonnet-5 and the
+    fable/mythos models were probed with `budget_tokens` and `temperature` on a
+    wire shape that rejects both, and the probe's verdict described a request
+    Nymeria never makes. Imported rather than duplicated for that reason; the
+    script is repo-local (run from Nymeria/) so the import is available.
+    """
+    from nymeria.config.model_capabilities import (
+        ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION,
+        anthropic_generation_at_least,
     )
+
+    return anthropic_generation_at_least(model or "", ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION)
 
 
 def _thinking_probe_body(model: str) -> dict:

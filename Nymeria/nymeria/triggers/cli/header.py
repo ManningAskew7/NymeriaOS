@@ -771,30 +771,24 @@ def thinking_mode(
     enabled = bool(extended) or bool(effort_text)
     if not enabled:
         return "off"
-    if _uses_adaptive_thinking(provider=provider, model=model):
+    if _uses_adaptive_thinking(model=model):
         return f"adaptive ({effort_text})" if effort_text else "adaptive"
     return effort_text or "medium"
 
 
-def _uses_adaptive_thinking(*, provider: str, model: str) -> bool:
-    provider_text = provider.casefold()
-    model_text = model.casefold()
-    if (
-        "anthropic" not in provider_text
-        and "claude" not in model_text
-        and "fable" not in model_text
-        and "mythos" not in model_text
-    ):
-        return False
+def _uses_adaptive_thinking(*, model: str) -> bool:
     # Ordinal, not a name list: the marker tuple this replaced had already gone
     # stale on claude-opus-5 and claude-sonnet-5, labelling them non-adaptive.
+    # The predicate needs no provider/name preamble: it answers True only for a
+    # parseable Claude id or fable/mythos, so any guard in front of it can
+    # exclude nothing it would have admitted.
     from ...config.model_capabilities import (
         ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION,
         anthropic_generation_at_least,
     )
 
     return anthropic_generation_at_least(
-        model_text, ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
+        model.casefold(), ANTHROPIC_ADAPTIVE_THINKING_MIN_VERSION
     )
 
 
