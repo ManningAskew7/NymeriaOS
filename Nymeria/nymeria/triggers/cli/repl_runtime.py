@@ -26,6 +26,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
+from functools import partial
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -99,6 +100,8 @@ def _turn_rewound_prompt(event: Any) -> str:
 
 
 _RICH_REPL_COMPOSER_MAX_HEIGHT = 6
+# Cadence of the in-transcript elapsed timer on live (running) tool rows.
+_TOOL_ROW_TICK_SECONDS = 1.0
 # How often the Rich REPL re-probes a saved-but-unreachable backend so it can
 # auto-reconnect once the backend comes up (e.g. CLI started before the API).
 _RECONNECT_POLL_INTERVAL_SECONDS = 3.0
@@ -137,6 +140,14 @@ class _RichReplRuntime:
             rebuild_header=app._render_current_header,
             console_getter=lambda: app.state.console,
         )
+        # Live tool rows: the renderer needs the engine's pinned geometry to
+        # rewrite still-visible running rows in place (print-on-call + flip),
+        # and EVERY console that prints into the transcript region must feed
+        # the shared line counter (the app console carries slash-command,
+        # form, and header output) or flips would target the wrong row.
+        renderer.live_row_context = self.footer.live_row_context
+        renderer.attach_transcript_console(app.state.console)
+        self._tool_row_ticker_task: asyncio.Task[None] | None = None
         self.composer_controller: Any | None = None
         self._busy = False
         self._status_notice: StatusNotice | None = None
@@ -324,6 +335,7 @@ class _RichReplRuntime:
 
     async def render_event_above_prompt(self, event: Any) -> None:
         await self.footer.render_event_above_prompt(event)
+        self._ensure_tool_row_ticker()
         # A refusal rewind (backlog #105) removed the refused exchange
         # server-side; the reducer trims the local transcript and the refused
         # prompt is handed back to the composer so the user can edit and
@@ -332,6 +344,51 @@ class _RichReplRuntime:
         prompt = _turn_rewound_prompt(event)
         if prompt:
             self.restore_texts_to_composer([prompt])
+
+    def _ensure_tool_row_ticker(self) -> None:
+        """Start the elapsed-timer tick while live running tool rows exist."""
+
+        task = self._tool_row_ticker_task
+        if task is not None and not task.done():
+            return
+        if not self.renderer.has_live_tool_rows():
+            return
+        try:
+            self._tool_row_ticker_task = asyncio.create_task(
+                self._tool_row_ticker_loop(),
+                name="NymeriaCLIToolRowTicker",
+            )
+        except RuntimeError:
+            self._tool_row_ticker_task = None
+
+    async def _tool_row_ticker_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_TOOL_ROW_TICK_SECONDS)
+                renderer = self.renderer
+                if not renderer.has_live_tool_rows():
+                    return
+                await self.footer.render_above_prompt(
+                    partial(renderer.render_running_tick, time.monotonic())
+                )
+        finally:
+            # Only release our own handle: a stop + immediate re-ensure can
+            # have started a successor before this cancellation lands.
+            if self._tool_row_ticker_task is asyncio.current_task():
+                self._tool_row_ticker_task = None
+
+    def stop_tool_row_ticker(self) -> None:
+        task = self._tool_row_ticker_task
+        self._tool_row_ticker_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def stop_tool_row_ticker_async(self) -> None:
+        task = self._tool_row_ticker_task
+        self.stop_tool_row_ticker()
+        if task is not None and not task.done():
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def render_from_screen_top(self, callback: Callable[[], Any]) -> Any:
         return await self.footer.render_from_screen_top(callback)
@@ -1586,6 +1643,7 @@ class _RichReplPromptToolkitShell:
         finally:
             await self.runtime.stop_autonomous_listener_async()
             await self.runtime.stop_reconnect_watcher_async()
+            await self.runtime.stop_tool_row_ticker_async()
             task = self.runtime.current_turn_task
             if task is not None and not task.done():
                 task.cancel()

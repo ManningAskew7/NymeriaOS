@@ -17,6 +17,12 @@ from .markdown import collapse_inline, coerce_width, truncate_cell_width
 DEFAULT_ARGS_LIMIT = 80
 DEFAULT_RESULT_LIMIT = 120
 
+# C0 controls (minus the whitespace collapse_inline already folds), DEL, and
+# the C1 CSI byte. A tool result carrying escape sequences must not be able
+# to move the terminal cursor from inside a one-line row preview (that would
+# also desync the live tool-row line accounting).
+_TERMINAL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x9b]")
+
 
 @dataclass(frozen=True, slots=True)
 class ToolRowRenderOptions:
@@ -48,6 +54,7 @@ def format_tool_row_segments(
     *,
     width: int | None = None,
     options: ToolRowRenderOptions | None = None,
+    now: float | None = None,
 ) -> tuple[ToolRowSegment, ...]:
     """Return one tool row as styleable segments.
 
@@ -85,6 +92,10 @@ def format_tool_row_segments(
             duration = format_duration_from_ms(tool.duration_ms)
         else:
             duration = format_duration(tool.started_at, tool.ended_at)
+    elif selected_options.show_duration and now is not None:
+        # Live elapsed time for an in-flight row (the transcript ticker
+        # passes ``now``); snapshot renders pass nothing and show no timer.
+        duration = format_duration(tool.started_at, now)
 
     artifacts = ""
     if selected_options.include_artifacts:
@@ -151,13 +162,19 @@ def format_tool_row(
     *,
     width: int | None = None,
     options: ToolRowRenderOptions | None = None,
+    now: float | None = None,
 ) -> str:
     """Return a single bounded row summarizing one tool call."""
 
     selected_width = coerce_width(width)
     row = "".join(
         segment.text
-        for segment in format_tool_row_segments(tool, width=width, options=options)
+        for segment in format_tool_row_segments(
+            tool,
+            width=width,
+            options=options,
+            now=now,
+        )
     )
     return truncate_cell_width(row, selected_width)
 
@@ -313,11 +330,11 @@ def _stringify_argument(value: Any) -> str:
 
 def _stringify(value: Any) -> str:
     if isinstance(value, str):
-        return collapse_inline(value)
+        return _TERMINAL_CONTROL_RE.sub("", collapse_inline(value))
     try:
         return json.dumps(value, ensure_ascii=True, sort_keys=True)
     except TypeError:
-        return collapse_inline(value)
+        return _TERMINAL_CONTROL_RE.sub("", collapse_inline(value))
 
 
 __all__ = [

@@ -2179,3 +2179,459 @@ def test_turn_end_summary_failure_never_breaks_the_render() -> None:
     renderer.render_event({"type": "response", "content": "Fine."}, now=2.0)
     renderer.render_event({"type": "done"}, now=3.0)
     assert "Fine." in output.getvalue()
+
+
+# ---- live tool rows: print-on-call + in-place completion flip -------------- #
+
+
+def _live_row_renderer(
+    *,
+    scroll_bottom: int = 20,
+    generation: int = 1,
+    width: int = 100,
+) -> tuple[RichReplRenderer, CapturedRenderOutput, dict[str, Any]]:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=width,
+    )
+    context: dict[str, Any] = {"value": (scroll_bottom, generation)}
+    renderer.live_row_context = lambda: context["value"]
+    return renderer, output, context
+
+
+def test_rich_renderer_live_tool_row_prints_at_call_time_and_flips_in_place() -> None:
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("use a tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {
+            "type": "tool_call",
+            "id": "call-1",
+            "name": "search_memory",
+            "args": {"query": "project status"},
+        },
+        now=1.0,
+    )
+    plain = ANSI_RE.sub("", output.stdout_text)
+    assert 'search_memory(query="project status") running' in plain
+    assert renderer.has_live_tool_rows() is True
+    before_flip = output.stdout_text
+
+    renderer.render_event(
+        {
+            "type": "tool_result",
+            "id": "call-1",
+            "name": "search_memory",
+            "result": "Found 2 matching notes.",
+        },
+        now=2.0,
+    )
+    tail = output.stdout_text[len(before_flip) :]
+    # In-place rewrite: jump to the row (one above the write cursor), clear,
+    # reprint, jump back. No newline means nothing was appended.
+    assert tail.startswith("\x1b[19;1H\x1b[2K")
+    assert tail.endswith("\x1b[20;1H")
+    assert "Found 2 matching notes." in tail
+    assert "running" not in ANSI_RE.sub("", tail)
+    assert "\n" not in tail
+    assert renderer.has_live_tool_rows() is False
+
+
+def test_rich_renderer_live_parallel_tool_rows_flip_at_their_own_rows() -> None:
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("two tools", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "a", "name": "alpha_tool", "args": {}},
+        now=1.0,
+    )
+    renderer.render_event(
+        {"type": "tool_call", "id": "b", "name": "beta_tool", "args": {}},
+        now=1.0,
+    )
+    plain = ANSI_RE.sub("", output.stdout_text)
+    assert plain.index("alpha_tool") < plain.index("beta_tool")
+    before = output.stdout_text
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "b", "name": "beta_tool", "result": "B done"},
+        now=2.0,
+    )
+    renderer.render_event(
+        {"type": "tool_result", "id": "a", "name": "alpha_tool", "result": "A done"},
+        now=3.0,
+    )
+    tail = output.stdout_text[len(before) :]
+    # beta printed last sits one above the cursor (19); alpha one higher (18).
+    assert "\x1b[19;1H\x1b[2K" in tail
+    assert "\x1b[18;1H\x1b[2K" in tail
+    assert "B done" in tail
+    assert "A done" in tail
+    assert "\n" not in tail
+
+
+def test_rich_renderer_live_flip_accounts_for_interleaved_lines() -> None:
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("tool with chatter", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    counter_after_call = renderer._line_counter.count
+    renderer.render_event(
+        {"type": "compacted", "context_summary": "trimmed", "messages_removed": 2},
+        now=2.0,
+    )
+    lines_between = renderer._line_counter.count - counter_after_call
+    assert lines_between > 0
+    before = output.stdout_text
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=3.0,
+    )
+    tail = output.stdout_text[len(before) :]
+    expected_row = 20 - 1 - lines_between
+    assert f"\x1b[{expected_row};1H\x1b[2K" in tail
+    assert "\n" not in tail
+
+
+def test_rich_renderer_live_flip_falls_back_after_generation_change() -> None:
+    renderer, output, context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    context["value"] = (20, 2)  # resize/redraw invalidated the geometry
+    before = output.stdout_text
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=2.0,
+    )
+    tail = output.stdout_text[len(before) :]
+    assert "\x1b[2K" not in tail
+    assert "slow_tool" in ANSI_RE.sub("", tail)
+    assert "\n" in tail  # appended as a fresh completed row
+    assert renderer.has_live_tool_rows() is False
+
+
+def test_rich_renderer_live_flip_falls_back_when_row_scrolled_off() -> None:
+    renderer, output, _context = _live_row_renderer(scroll_bottom=3)
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    renderer._line_counter.count += 10  # a screenful printed since
+    before = output.stdout_text
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=2.0,
+    )
+    tail = output.stdout_text[len(before) :]
+    assert "\x1b[2K" not in tail
+    assert "slow_tool" in ANSI_RE.sub("", tail)
+    assert "\n" in tail
+
+
+def test_rich_renderer_live_rows_skip_verbose_mode() -> None:
+    renderer, output, _context = _live_row_renderer()
+    renderer.transcript_verbose = True
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    before_call = output.stdout_text
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    assert output.stdout_text == before_call
+    assert renderer.has_live_tool_rows() is False
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=2.0,
+    )
+    assert "slow_tool" in ANSI_RE.sub("", output.stdout_text)
+
+
+def test_rich_renderer_without_live_context_keeps_completion_only_rows() -> None:
+    output = CapturedRenderOutput()
+    renderer = RichReplRenderer(
+        capabilities=FakeTerminalCapabilities(no_color=True),
+        stdout=output.stdout,
+        stderr=output.stderr,
+        width=100,
+    )
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    assert "slow_tool" not in output.stdout_text
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=2.0,
+    )
+    plain = ANSI_RE.sub("", output.stdout_text)
+    assert plain.count("slow_tool") == 1
+    assert "\x1b[2K" not in output.stdout_text
+
+
+def test_rich_renderer_running_tick_updates_elapsed_in_place() -> None:
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    before = output.stdout_text
+
+    renderer.render_running_tick(now=13.0)
+    tail = output.stdout_text[len(before) :]
+    assert tail.startswith("\x1b[19;1H\x1b[2K")
+    assert tail.endswith("\x1b[20;1H")
+    assert "running 12s" in ANSI_RE.sub("", tail)
+    assert "\n" not in tail
+    assert renderer.has_live_tool_rows() is True
+
+
+def test_follow_footer_live_row_context_tracks_pin_generation() -> None:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24, rows_below_cursor=1)
+    prompt_renderer = FakePromptRenderer(output)
+    prompt_renderer._min_available_height = 0
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=True,
+    )
+    assert runtime.footer.live_row_context() is None
+
+    assert runtime.save_follow_footer_transcript_cursor() is True
+    runtime.footer._follow_footer_pin_probe_pending = True
+    runtime.prepare_follow_footer_render()
+    first = runtime.footer.live_row_context()
+    assert first is not None
+    assert first[0] == 19  # 24 rows - 5 footer rows
+
+    runtime.footer._deactivate_pinned_footer(reset_terminal=False)
+    assert runtime.footer.live_row_context() is None
+
+    assert runtime.save_follow_footer_transcript_cursor() is True
+    runtime.footer._follow_footer_pin_probe_pending = True
+    prompt_renderer._min_available_height = 0
+    runtime.prepare_follow_footer_render()
+    second = runtime.footer.live_row_context()
+    assert second is not None
+    assert second[1] > first[1]
+
+
+def test_runtime_wires_live_row_context_into_renderer() -> None:
+    runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+    assert runtime.renderer.live_row_context == runtime.footer.live_row_context
+
+
+def test_tool_row_ticker_runs_while_live_rows_exist(monkeypatch: Any) -> None:
+    from nymeria.triggers.cli import repl_runtime as repl_runtime_module
+
+    monkeypatch.setattr(repl_runtime_module, "_TOOL_ROW_TICK_SECONDS", 0.01)
+
+    async def exercise() -> None:
+        runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+        live = {"rows": True}
+        ticks: list[float] = []
+        runtime.renderer = SimpleNamespace(
+            has_live_tool_rows=lambda: live["rows"],
+            render_running_tick=lambda now: ticks.append(now),
+        )
+
+        async def fake_render(callback: Any) -> None:
+            callback()
+
+        runtime.footer.render_above_prompt = fake_render  # type: ignore[method-assign]
+        runtime._ensure_tool_row_ticker()
+        task = runtime._tool_row_ticker_task
+        assert task is not None
+        await asyncio.sleep(0.06)
+        assert ticks
+
+        live["rows"] = False
+        await asyncio.sleep(0.06)
+        assert runtime._tool_row_ticker_task is None or runtime._tool_row_ticker_task.done()
+        await runtime.stop_tool_row_ticker_async()
+
+    asyncio.run(exercise())
+
+
+def test_rich_renderer_orphaned_running_steps_stay_invisible() -> None:
+    # A dead stream (e.g. turn_lost) leaves running steps in history with no
+    # entry in active_tool_calls; later turns must not re-print stale rows.
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("first", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    renderer.render_event(
+        {"type": "error", "code": "turn_lost", "content": "stream lost"},
+        now=2.0,
+    )
+
+    renderer.start_turn("second", thread_id="thread-1", now=3.0)
+    assert renderer.has_live_tool_rows() is False
+    before = output.stdout_text
+    renderer.render_event({"type": "response", "content": "Hello again."}, now=4.0)
+    renderer.render_event({"type": "done"}, now=5.0)
+    tail = ANSI_RE.sub("", output.stdout_text[len(before) :])
+    assert "slow_tool" not in tail
+    assert renderer.has_live_tool_rows() is False
+
+
+def test_rich_renderer_counts_attached_transcript_console_lines() -> None:
+    # Slash-command/form/header output rides the app's own console into the
+    # same transcript region; those lines must shift later flips down.
+    renderer, output, _context = _live_row_renderer()
+    extra = Console(
+        file=output.stdout,
+        force_terminal=False,
+        no_color=True,
+        width=100,
+        highlight=False,
+    )
+    renderer.attach_transcript_console(extra)
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    extra.print("command output line")
+    extra.print("second line")
+    before = output.stdout_text
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=2.0,
+    )
+    tail = output.stdout_text[len(before) :]
+    # Two counted foreign lines: the row moved from 19 up to 17.
+    assert tail.startswith("\x1b[17;1H\x1b[2K")
+    assert "\n" not in tail
+
+
+def test_rich_renderer_attach_transcript_console_failure_disables_live_rows() -> None:
+    renderer, output, _context = _live_row_renderer()
+
+    class NoFileConsole:
+        @property
+        def file(self) -> Any:
+            raise RuntimeError("no file")
+
+    renderer.attach_transcript_console(NoFileConsole())  # type: ignore[arg-type]
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    before = output.stdout_text
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    assert output.stdout_text == before  # dormant: completion-only again
+
+
+def test_rich_renderer_uncounted_stderr_keeps_flip_rows_stable() -> None:
+    # StringIO stderr is not a tty, so its lines do not scroll the terminal
+    # and must not move the row arithmetic.
+    renderer, output, _context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    renderer.error_console.print("Error: boom")
+    before = output.stdout_text
+
+    renderer.render_event(
+        {"type": "tool_result", "id": "call-1", "name": "slow_tool", "result": "ok"},
+        now=2.0,
+    )
+    tail = output.stdout_text[len(before) :]
+    assert tail.startswith("\x1b[19;1H\x1b[2K")
+
+
+def test_rich_renderer_running_tick_clears_slots_when_context_dies() -> None:
+    renderer, output, context = _live_row_renderer()
+    renderer.start_turn("tool", thread_id="thread-1", now=0.0)
+    renderer.render_event(
+        {"type": "tool_call", "id": "call-1", "name": "slow_tool", "args": {}},
+        now=1.0,
+    )
+    assert renderer.has_live_tool_rows() is True
+    context["value"] = None  # unpinned / geometry gate went false
+    before = output.stdout_text
+
+    renderer.render_running_tick(now=5.0)
+    assert output.stdout_text == before
+    assert renderer.has_live_tool_rows() is False
+
+
+def test_follow_footer_live_row_context_respects_dynamic_region_gate() -> None:
+    app = CLIApp(
+        agent=None,
+        thread_id="thread-1",
+        runtime_config=CLIRuntimeConfig(renderer="rich", rich_scroll_region=True),
+    )
+    output = FakePromptOutput(columns=80, rows=24, rows_below_cursor=1)
+    prompt_renderer = FakePromptRenderer(output)
+    prompt_renderer._min_available_height = 0
+    runtime = _RichReplRuntime(
+        app=app,
+        renderer=RichReplRenderer(
+            capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+            width=80,
+        ),
+        capabilities=FakeTerminalCapabilities(width=80, height=24, renderer="rich"),
+    )
+    runtime.application = SimpleNamespace(
+        output=output,
+        renderer=prompt_renderer,
+        is_running=True,
+    )
+    assert runtime.save_follow_footer_transcript_cursor() is True
+    runtime.footer._follow_footer_pin_probe_pending = True
+    runtime.prepare_follow_footer_render()
+    assert runtime.footer.live_row_context() is not None
+
+    output.rows = 8  # shrank below the scroll-region minimum while pinned
+    assert runtime.footer.live_row_context() is None
+
+
+def test_runtime_attaches_app_console_to_line_counter() -> None:
+    runtime, _output, _prompt_renderer, _controller = _make_scroll_region_runtime()
+    from nymeria.triggers.cli.rendering.rich_repl import _NewlineCountingWriter
+
+    app_file = runtime.app.state.console.file
+    assert isinstance(app_file, _NewlineCountingWriter)
+    assert app_file._counter is runtime.renderer._line_counter
+
+
+def test_tool_row_result_preview_strips_terminal_control_codes() -> None:
+    from nymeria.triggers.cli.rendering.tool_rows import format_result_preview
+
+    preview = format_result_preview("ok\x1b[5A\x1b[2Kdone\x9bxyz")
+    assert "\x1b" not in preview
+    assert "\x9b" not in preview
+    assert "ok" in preview and "done" in preview

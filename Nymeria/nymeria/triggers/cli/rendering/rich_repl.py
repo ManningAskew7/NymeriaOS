@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any, TextIO
+from typing import IO, Any, TextIO, cast
 
 from rich.console import Console
 from rich.cells import cell_len
@@ -64,6 +65,64 @@ _RICH_NATIVE_TRAILING_BLANK_KINDS = {"hr"}
 _INLINE_MARKDOWN_MARKERS = ("**", "__", "~~", "](", "`")
 
 
+class _TranscriptLineCounter:
+    """Shared count of physical transcript lines written to the terminal."""
+
+    __slots__ = ("count",)
+
+    def __init__(self) -> None:
+        self.count = 0
+
+
+class _NewlineCountingWriter:
+    """File proxy counting newlines written through a transcript console.
+
+    Every renderer print is hard-wrapped to console width before writing, so
+    newlines written == physical terminal rows scrolled. The live tool-row
+    registry uses the shared counter to address still-visible rows for
+    in-place rewrites.
+    """
+
+    def __init__(
+        self,
+        file: IO[str],
+        counter: _TranscriptLineCounter,
+        *,
+        count: bool = True,
+    ) -> None:
+        self._file = file
+        self._counter = counter
+        # False for a console whose file does not scroll the terminal (a
+        # redirected stderr): its newlines must not move the row arithmetic.
+        self._count = count
+
+    def write(self, text: str) -> int:
+        if self._count:
+            self._counter.count += text.count("\n")
+        return self._file.write(text)
+
+    def writelines(self, lines: Iterable[str]) -> None:
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        flush = getattr(self._file, "flush", None)
+        if callable(flush):
+            flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._file, name)
+
+
+def _console_file_is_tty(console: Console) -> bool:
+    """True when a console writes to the terminal itself (its lines scroll)."""
+
+    try:
+        return bool(console.file.isatty())
+    except Exception:  # noqa: BLE001 - unknowable file: assume it is not the tty.
+        return False
+
+
 class RichReplRenderer:
     """Render reducer state for the legacy prompt_toolkit/Rich REPL path."""
 
@@ -100,6 +159,22 @@ class RichReplRenderer:
             width=self.width,
             stderr=True,
         )
+        # Live tool rows (print-on-call + in-place completion flip). Dormant
+        # unless the runtime wires ``live_row_context`` (pinned scroll-region
+        # mode only); every other path keeps append-on-completion untouched.
+        self._line_counter = _TranscriptLineCounter()
+        supported = self._attach_line_counter(self.console)
+        supported = (
+            self._attach_line_counter(
+                self.error_console,
+                count=_console_file_is_tty(self.error_console),
+            )
+            and supported
+        )
+        self._live_rows_supported = supported
+        self.live_row_context: Callable[[], tuple[int, int] | None] | None = None
+        # tool_id -> (line counter after the running row printed, generation)
+        self._live_tool_rows: dict[str, tuple[int, int]] = {}
         self._response_buffer = ""
         self._response_lengths = _assistant_response_lengths(self.state)
         self._thinking_lengths = _assistant_thinking_lengths(self.state)
@@ -123,6 +198,39 @@ class RichReplRenderer:
         # the Rich REPL runtime from the configured "turn" status-bar layout.
         # Empty/None output means no line; the bare separator blank remains.
         self.turn_summary_source: Callable[[CLIUIState], str] | None = None
+
+    def _attach_line_counter(self, console: Console, *, count: bool = True) -> bool:
+        """Route a console's writes through the shared newline counter."""
+
+        try:
+            file = console.file
+            if (
+                isinstance(file, _NewlineCountingWriter)
+                and file._counter is self._line_counter
+            ):
+                return True
+            # A foreign counter's wrapper is wrapped again: nested proxies
+            # each count once for their own counter.
+            console.file = cast(
+                "IO[str]",
+                _NewlineCountingWriter(file, self._line_counter, count=count),
+            )
+            return True
+        except Exception:  # noqa: BLE001 - exotic console: live rows disable.
+            return False
+
+    def attach_transcript_console(self, console: Console) -> None:
+        """Count transcript lines printed through an additional console.
+
+        Every writer that prints into the transcript region while a turn is
+        live (e.g. the app's slash-command/form/header console) must feed the
+        shared counter, or in-place row flips would target the wrong terminal
+        row. Attach failure disables live rows entirely (fail closed to the
+        append-on-completion path).
+        """
+
+        if not self._attach_line_counter(console):
+            self._live_rows_supported = False
 
     def set_theme(self, theme: CLITheme) -> None:
         """Update colors for future transcript output."""
@@ -149,6 +257,7 @@ class RichReplRenderer:
         """Reset transcript state after a thread/user switch or clear."""
 
         self.state = state or create_initial_state()
+        self._live_tool_rows = {}
         self._response_buffer = ""
         self._response_lengths = _assistant_response_lengths(self.state)
         self._thinking_lengths = _assistant_thinking_lengths(self.state)
@@ -193,6 +302,7 @@ class RichReplRenderer:
             for key in self._thinking_preview_rendered
             if key[0] != self.state.messages[-1].id
         }
+        self._live_tool_rows = {}
         self._last_rendered_block = None
         self._last_markdown_block = None
         self._response_stream_active = False
@@ -383,28 +493,171 @@ class RichReplRenderer:
     ) -> bool:
         printed = False
         for tool in _tool_steps(current):
-            if tool.status == "running":
-                continue
             if tool.id in self._rendered_tool_results:
                 continue
-            self.flush_response()
-            message = _message_for_tool(current, tool.id)
-            if message is not None:
-                self._ensure_assistant_header(current, message)
-            self._begin_assistant_block("tool")
-            self.console.print(
-                render_tool_row(
-                    tool,
-                    width=self.width,
-                    ascii_only=self._ascii_only(),
-                    theme=self.theme,
-                    icon=self.tool_icon,
-                )
-            )
+            if tool.status == "running":
+                printed |= self._maybe_print_running_tool_row(current, tool)
+                continue
+            if self._try_flip_live_tool_row(tool):
+                # Rewrote the already-printed running row in place: nothing
+                # was appended, so block/flush bookkeeping is untouched.
+                self._rendered_tool_results.add(tool.id)
+                continue
+            self._print_tool_row(current, tool)
             self._rendered_tool_results.add(tool.id)
-            self._turn_seen_tool = True
             printed = True
         return printed
+
+    def _print_tool_row(self, state: CLIUIState, tool: ToolCallStep) -> None:
+        """Append one tool row with the shared flush/header/block discipline."""
+
+        self.flush_response()
+        message = _message_for_tool(state, tool.id)
+        if message is not None:
+            self._ensure_assistant_header(state, message)
+        self._begin_assistant_block("tool")
+        self.console.print(
+            render_tool_row(
+                tool,
+                width=self.width,
+                ascii_only=self._ascii_only(),
+                theme=self.theme,
+                icon=self.tool_icon,
+            )
+        )
+        self._turn_seen_tool = True
+
+    def _live_context(self) -> tuple[int, int] | None:
+        """Return ``(scroll_bottom, generation)`` when in-place rows are safe."""
+
+        if not self._live_rows_supported:
+            return None
+        source = self.live_row_context
+        if source is None:
+            return None
+        try:
+            return source()
+        except Exception:  # noqa: BLE001 - engine fault: fall back to appends.
+            return None
+
+    def _maybe_print_running_tool_row(
+        self,
+        state: CLIUIState,
+        tool: ToolCallStep,
+    ) -> bool:
+        """Print an in-flight tool row at call time when it can be flipped later.
+
+        Verbose mode keeps completion-only appends (payload lines cannot be
+        inserted in place), and without a live context the row would duplicate
+        on completion, so both cases defer to the append path.
+        """
+
+        if tool.id in self._live_tool_rows:
+            return False
+        if tool.id not in state.active_tool_calls:
+            # Not part of the live turn: e.g. an orphaned running step left
+            # in history by a dead stream (turn_lost). Keep the old
+            # completion-only invisibility instead of re-printing a stale
+            # running row on every later turn.
+            return False
+        if self.transcript_verbose:
+            return False
+        context = self._live_context()
+        if context is None:
+            return False
+        _scroll_bottom, generation = context
+        self._print_tool_row(state, tool)
+        self._live_tool_rows[tool.id] = (self._line_counter.count, generation)
+        return True
+
+    def _try_flip_live_tool_row(self, tool: ToolCallStep) -> bool:
+        """Rewrite a registered running row in place with its final state."""
+
+        slot = self._live_tool_rows.pop(tool.id, None)
+        if slot is None:
+            return False
+        lines_after_print, generation = slot
+        context = self._live_context()
+        if context is None:
+            return False
+        scroll_bottom, current_generation = context
+        if current_generation != generation:
+            return False
+        row = scroll_bottom - 1 - (self._line_counter.count - lines_after_print)
+        if row < 1:
+            return False
+        self._write_tool_row_at(row, tool, scroll_bottom)
+        return True
+
+    def _write_tool_row_at(
+        self,
+        row: int,
+        tool: ToolCallStep,
+        scroll_bottom: int,
+        *,
+        now: float | None = None,
+    ) -> None:
+        """Rewrite one still-visible tool row at an absolute terminal row.
+
+        Runs inside the engine's render window (scroll margins set, write
+        cursor at ``scroll_bottom``). Addressing is absolute both ways and no
+        newline is emitted, so the engine's cursor bookkeeping and the shared
+        line counter are untouched.
+        """
+
+        file = self.console.file
+        file.write(f"\x1b[{row};1H\x1b[2K")
+        self.console.print(
+            render_tool_row(
+                tool,
+                width=self.width,
+                ascii_only=self._ascii_only(),
+                theme=self.theme,
+                icon=self.tool_icon,
+                now=now,
+            ),
+            end="",
+        )
+        file.write(f"\x1b[{scroll_bottom};1H")
+        self._flush_console_file()
+
+    def has_live_tool_rows(self) -> bool:
+        """True while any registered in-flight row may need a timer tick."""
+
+        return bool(self._live_tool_rows)
+
+    def render_running_tick(self, now: float | None = None) -> None:
+        """Refresh elapsed timers on still-visible running tool rows."""
+
+        if not self._live_tool_rows:
+            return
+        context = self._live_context()
+        if context is None:
+            # Unpinned or the geometry gate went false: the generation moved
+            # on, so no slot can ever flip again. Clear them so the ticker
+            # stops instead of spinning on dead rows.
+            self._live_tool_rows.clear()
+            return
+        scroll_bottom, generation = context
+        selected_now = time.monotonic() if now is None else now
+        for tool_id, slot in list(self._live_tool_rows.items()):
+            lines_after_print, slot_generation = slot
+            if slot_generation != generation:
+                self._live_tool_rows.pop(tool_id, None)
+                continue
+            step = self.state.active_tool_calls.get(tool_id)
+            if step is None or step.status != "running":
+                # Left the live-turn index (e.g. mid-turn compaction cleared
+                # it): stop ticking; completion falls back to an append.
+                self._live_tool_rows.pop(tool_id, None)
+                continue
+            row = scroll_bottom - 1 - (self._line_counter.count - lines_after_print)
+            if row < 1:
+                # Scrolled out of the visible region: scrollback is
+                # immutable, so stop ticking; completion appends a fresh row.
+                self._live_tool_rows.pop(tool_id, None)
+                continue
+            self._write_tool_row_at(row, step, scroll_bottom, now=selected_now)
 
     def _render_new_system_messages(self, state: CLIUIState) -> bool:
         printed = False
@@ -925,6 +1178,7 @@ class RichReplRenderer:
     def _mark_state_rendered(self, state: CLIUIState) -> None:
         """Synchronize incremental render bookkeeping after a replay."""
 
+        self._live_tool_rows = {}
         self._response_buffer = ""
         self._response_lengths = _assistant_response_lengths(state)
         self._thinking_lengths = _assistant_thinking_lengths(state)
@@ -1026,11 +1280,13 @@ def render_tool_row(
     ascii_only: bool = False,
     theme: CLITheme | None = None,
     icon: str = DEFAULT_TOOL_ICON,
+    now: float | None = None,
 ) -> Text:
     """Return a Rich compact tool row styled per segment.
 
     Desktop ToolCallCard header shape: bright icon + name, dim args,
     duration, and result preview; error turns the icon and name red.
+    ``now`` renders a live elapsed duration on a running row (timer ticks).
     """
 
     selected_theme = theme or DEFAULT_CLI_THEME
@@ -1043,6 +1299,7 @@ def render_tool_row(
             ascii_only=ascii_only,
             icon=icon,
         ),
+        now=now,
     )
     row = Text("  ")
     for segment in segments:
