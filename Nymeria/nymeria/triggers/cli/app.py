@@ -47,11 +47,11 @@ from .statusbar_config import StatusBarLayout
 from .theme import CLITheme, DEFAULT_TOOL_ICON, load_cli_theme, load_tool_icon
 from .transport.base import AgentClient, Attachment
 from .transport.disconnected import is_disconnected_client
-from .transport.in_process import InProcessAgentClient
 
 if TYPE_CHECKING:
     from ...core.agent import NymeriaAgent
     from .commands import CommandResult
+    from .transport.in_process import InProcessAgentClient
 
 
 logger = logging.getLogger(__name__)
@@ -414,6 +414,14 @@ class CLIApp:
                     code="local_transport_unavailable",
                     api_url=DEFAULT_API_URL,
                 )
+            # Imported here, not at module scope. This is cheap today (~12ms)
+            # only because `core/__init__.py` is lazy; it reaches into
+            # `nymeria.core`, which is one careless eager re-export away from
+            # dragging the agent runtime back in. Only the fat CLI reaches
+            # this branch, so the thin client should never load it at all.
+            # Pinned by `tests/test_cli_startup_imports.py`.
+            from .transport.in_process import InProcessAgentClient
+
             self._local_client = InProcessAgentClient(
                 self.state.agent,
                 default_user_id=self.state.user_id,
