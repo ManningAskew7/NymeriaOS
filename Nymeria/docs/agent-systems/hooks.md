@@ -63,7 +63,13 @@ tool-call card** itself, `GET /hooks/approvals` + `POST /hooks/approvals/{record
 (owner-or-admin; 404 for a record the caller may not resolve, 409 when no longer pending),
 the `/hook approvals` / `/hook approve <id> [note]` / `/hook deny <id> [note]` commands
 (`agent_allowed=False`: the agent can never approve its own calls), Telegram/Discord inline
-buttons, and a Rich-CLI decision form. Params: `prompt` (templated, default
+buttons, and a Rich-CLI decision form. The chat-platform buttons carry **opaque, short-TTL
+callback tokens**, and the **backend authorizes the clicker**, not the token: a click resolves
+through act-as REST as the clicking account (owner-or-admin, same as every other surface), so
+possession of a button is never authority. Their `hook_approval` / `hook_approval_resolved`
+pair also routes to Telegram/Discord **BEFORE the autonomous delivery-mode gates**, so a
+delivery setting of "off" cannot silently withhold the prompt and thereby force
+deny-on-timeout. Params: `prompt` (templated, default
 `"Approve tool call {tool_name}?"`), `conditions`, and the author-side `timeout_seconds`
 window (10..600, default 180; the author picks it, never the agent). Outcomes: approved →
 allow (logged as `allow: approved by <user>`); denied → deny, with the resolver's note and a
@@ -84,10 +90,11 @@ raised. `notify` delivers an in-app + push notification (bypassing the autonomou
 gate, since a user-authored hook should always deliver); `create_todo` adds a user TODO;
 `webhook` POSTs `{"text", "thread_id", "user_id"}` to a `{placeholder}`-templated URL through
 the **SSRF-safe** `http_policy` egress helper (private/loopback/metadata targets are refused).
-On graceful API shutdown a bounded drain (`triggers/api.py::_drain_observe_hooks`, 5s per
-barrier: loop tasks via `adrain_observe`, pool futures via `drain_observe` off-loop) flushes
-observe work the turn already accepted, so a restart does not silently drop a queued side
-effect; a hung hook cannot stall shutdown past the bound.
+On graceful API shutdown a bounded drain (`triggers/api.py::_drain_observe_hooks`: loop tasks
+via `adrain_observe`, then pool futures via `drain_observe` off-loop, each barrier bounded by
+`OBSERVE_DRAIN_TIMEOUT_SECONDS`, 5.0s, a monkeypatchable module constant and not an env var)
+flushes observe work the turn already accepted, so a restart does not silently drop a queued
+side effect; a hung hook cannot stall shutdown past the bound.
 
 **`run_command`** runs a shell command and is the **one action whose plane flips per event**:
 mutate on `prompt_submit`/`pre_tool_use` (its output can steer the turn), observe on
@@ -113,8 +120,9 @@ is a script bug and allows WITH a diagnostic note (visible in `/hook log` as
 `allow: guardrail exited N...` and as an activity line, instead of an indistinguishable bare
 no-op), and a spawn failure or timeout is a **fail-closed deny**; on `post_tool_use`/`done`
 it is observe (output ignored). Output is read-capped (50 KB retained per stream, 10 KB
-injected) by an incremental bounded pump: one stdin-writer thread plus one capped
-reader-drainer per pipe, so parent memory never scales with the child's output volume and a
+injected) by an incremental bounded pump (`actions.py::_execute_command`): one stdin-writer
+thread plus one capped reader-drainer per pipe, so parent memory never scales with the
+child's output volume and a
 two-pipe flood cannot deadlock; the wall clock still bounds pipe EOF, so a backgrounded
 grandchild holding the pipes open past the deadline is a timeout (group-killed), exactly as
 before.
@@ -128,8 +136,9 @@ exists, current revision admin-approved, bound `params` all declared, required p
 covered), and every fire re-gates through `run_workflow_by_id` (revoking a workflow's
 approval neuters every hook bound to it, immediately, with no hook edit). Params:
 `workflow_id`, static `params` bound at authoring, `timeout_seconds` (5..600, default 60:
-the engine wall clock, which the dispatcher budget rides via the shared
-`logic.timeout_seconds` seam), and `on_fault` (`allow`|`deny`, default `allow`,
+the engine wall clock, passed to `run_workflow_by_id` as its `wall_clock_cap`, which the
+dispatcher budget rides via the shared `logic.timeout_seconds` seam), and `on_fault`
+(`allow`|`deny`, default `allow`,
 `pre_tool_use` only). Per-fire dynamics arrive through the workflow's optional `event`
 parameter: when the signature declares `event`, the fire passes the full hook context as
 a JSON-safe dict (event, tool name/args/result, prompt or final text capped at 16 KB,
@@ -180,7 +189,8 @@ per user, `HookManager` in `core/hook_manager.py`, capped at 50 hooks/user):
   bundled skill front-loads these. Like every surface, `scope` is create-only
   (a re-scope is a delete + create: an update cannot supply the access-gated
   thread binding).
-- **Slash command** `/hook` (`core/command_service.py`, catalog in `core/registry_defaults.py`):
+- **Slash command** `/hook` (the `_cmd_hook*` handlers in `core/command_service.py`, catalog in
+  `core/registry_defaults.py`):
   `list` / `show` / `create` / `edit` / `enable` / `disable` / `delete` / `test` / `log` /
   `templates` / `install <template_id> [--scope thread|global] [--text ..] [--disabled]`, plus the
   resolve surface `approvals` / `approve <record_id> [note]` / `deny <record_id> [note]`
@@ -316,7 +326,11 @@ part of that logic's semantics.
   scratch before the other writes the sentinel). Both directions are benign:
   the worst case is one duplicate fire; re-arm is unaffected. An action that
   raises (or returns an illegal outcome type) does not consume the shot; the
-  hook re-fires on the next matching event.
+  hook re-fires on the next matching event. On the observe plane the sentinel
+  can be written at all only because the off-turn dispatchers apply a legal
+  outcome's `scratch_patch` (`dispatch.py::_apply_observe_patch`); they
+  originally discarded observe outcomes wholesale, which left `once` unable to
+  arm on an observe hook.
 - Malformed `fire_conditions` make the hook a no-op (never a fail-closed block),
   the same posture as the guardrail actions. A gate that does not fire records a
   `no_op` in the execution log; a heavily-gated global tool hook therefore churns
@@ -329,17 +343,19 @@ The context-usage signal also feeds `{placeholder}` templating: `inject_context`
 (empty string when unknown). Signal sources per event: `prompt_submit`/`done`
 read the token tracker (`agent_compaction.hook_context_stats`); `pre`/
 `post_tool_use` read the freshest mid-turn occupancy from the running state's
-last AI message (the same source as sub-turn compaction), falling back to the
-turn-entry stamp in `graph_run_config`. Stats are stamped only when the turn has
-enabled hooks, so the zero-hook hot path is unchanged.
+last AI message (`SafeToolNode._fresh_context_tokens`, the same source as
+sub-turn compaction), falling back to the turn-entry stamp in
+`graph_run_config`. Stats are stamped only when the turn has enabled hooks, so
+the zero-hook hot path is unchanged.
 
 ### Single-use hooks (lifecycle)
 
 `HookDefinition.single_use` makes a hook delete itself after its first
 successful run: when the execution recorder logs an `ok` status for a
-single-use registration, the definition is removed synchronously (log entries
-are kept, so `/hook log` still shows the fire). Distinct from `once`, which
-silences a persistent hook per gate crossing via an in-memory sentinel:
+single-use registration, the definition is removed synchronously via
+`delete_hook(purge_log=False)` (log entries are kept, so `/hook log` still
+shows the fire). Distinct from `once`, which silences a persistent hook per
+gate crossing via an in-memory sentinel:
 `once` re-arms on restart (the sentinel is lost), while `single_use` cannot
 re-fire because the definition itself is gone. One-shot hooks (e.g. `/done`,
 the `turn-end-prompt` template) set both, belt and braces: `once` suppresses a
@@ -448,7 +464,8 @@ stored copy (copy-on-write, exempt from the per-user cap); **delete = reset**: i
 removes the stored copy and the built-in default reappears (the hook is never
 truly deletable; log entries survive a reset). With no stored copy the turn takes
 a byte-identical built-in fast path (no engine dispatch at all), so the pristine
-default is exactly the pre-#66 behavior.
+default is exactly the pre-#66 behavior; a stored override instead dispatches
+through the dedicated seam `core/agent_turn_metadata.py`.
 
 What you can change: `text` (the template), `enabled`, `name`, `fire_conditions`,
 and `once`. What is locked: `event`, `scope`, `action`, and `single_use` (and the
@@ -457,7 +474,7 @@ fixed two-line frame, `[Time: <interior>]` newline `[Trigger: <interior>]`, with
 non-empty interiors containing no `]` and no newlines; interiors may use
 `{time}` (the wall clock in the user's timezone), `{trigger}` (the resolved
 trigger label), and the standard hook vars. The frame guarantees the
-history-strip regex (`core/agent_history.py`) keeps matching, so customized
+history-strip regex (`agent_history.CONTEXT_PREFIX_PATTERN`) keeps matching, so customized
 metadata never leaks into compaction; the seam also re-validates the RENDERED
 block against the strip pattern and, on any mismatch, dispatch fault, or
 unbindable definition, **falls back to the built-in block** with a visible entry
@@ -607,7 +624,8 @@ produce a single continuation with their reasons joined.
 ### /done: a one-shot DONE prompt (backlog #70)
 
 `/done <prompt>` is the user-facing packaging of that machinery: a chat_stream slash
-command (like `/quick`, intercepted in the chat router, not the command registry) that
+command (like `/quick`, intercepted in the chat router by
+`api/routers/chat.py::_try_arm_done_hook`, not the command registry) that
 arms a one-shot follow-up on the current thread while a turn is running. Busy thread:
 it creates a thread-scoped `done` + `inject_context` hook carrying the prompt (`once` +
 `single_use`, `created_by="user"`) and acks without running a turn; the running turn's
@@ -719,7 +737,10 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `run_command_authoring_error(action, *, is_admin)` (checks `HOOKS_RUN_COMMAND_ENABLED`
   then admin) at create AND on any behavior update of a gated hook (the shared
   `gated_update_action` rule; enabled/name-only edits are exempt), on all three
-  authoring surfaces; execution re-checks the deployment flag (not role).
+  authoring surfaces; execution re-checks BOTH halves, the deployment flag and the
+  hook owner's admin role via `is_admin(ctx.user_id)`, so a store-file-planted or
+  later-demoted `run_command` hook neuters on its next fire (see the double-gate
+  paragraph above for why the owner re-check is the unforgeable half).
 - `core/hook_approvals.py`: the `require_approval` hold machinery: durable pending
   records under `data_dir/hooks/approvals/` (mint/list/load/delete, 20-per-user cap,
   stale sweep on an hourly API heartbeat), the `HookApprovalCoordinator`
@@ -740,7 +761,10 @@ the SSE event is app-agnostic and unknown-event-tolerant on the other clients.
   `hook_overrides`, `core/agent_safety.py::get_effective_hook_enabled`.
 
 The per-turn wiring lives in `core/agent.py::_hook_registry_for_turn` (loads a user's
-enabled hooks, mtime-cached, and builds the registry) and
+enabled hooks, mtime-cached, and builds the registry; it EXCLUDES system hook ids, so the
+general `PROMPT_SUBMIT` dispatch can never double-emit the turn-metadata block through the
+`<hook_context>` sentinel path, and a user whose only record is the system one gets no
+registry at all) and
 `core/agent_safety.py::graph_run_config` (stamps `configurable["hook_registry"]` plus the
 turn source `hook_is_autonomous`/`hook_holder_kind`/`hook_trigger_label`, which
 `nodes.py::_build_tool_hook_ctx` surfaces so a tool hook can scope by autonomous-vs-interactive);

@@ -115,6 +115,8 @@ Mechanics (`core/agent_compaction.py`): both turn paths stamp `CompactionManager
 
 Every drop path defers to a later turn end (which re-stamps), and stamps are in-memory only: a restart loses pending candidates, which is acceptable for an economics feature. The compaction itself is the **manual shape** (`compact_now`): no auto-resume, the thread is left on the retained tail and the user's next message continues naturally. Success publishes a best-effort `compacted` autonomous event with `proactive: true` so open clients refresh. Settings are exposed via `PATCH /settings`, per-thread via `ThreadLLMConfig` (`PATCH /threads/{id}/config`), and in the desktop GUI (global Agent tab + the per-thread Model/Context tab).
 
+Tests for this path live in `tests/test_proactive_compaction.py`: the turn-end stamp bookkeeping, per-thread config resolution and its bounds, the occupancy floor (including the re-check under the thread lock), each of the sweep's drop decisions (not `auto_compact`, disabled for the thread, not yet idle, thread busy, below the occupancy floor, lock race) and the one case that compacts, the `compacted` event payload shape, and the API-side lifecycle registration and clean shutdown.
+
 ### Overflow rewind recovery
 
 If a provider rejects a turn because the request is already over the context window, normal compaction may also be impossible: the summary call would see the same oversized state. Nymeria now treats context overflow as a recoverable `auto_compact` condition:

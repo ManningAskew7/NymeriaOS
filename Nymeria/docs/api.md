@@ -1905,6 +1905,13 @@ list doubles as a credential probe). All fields are optional: an omitted
 settings), and an omitted `api_key` falls back to the stored credential for
 the effective provider.
 
+Both routes, and the in-process command facade that slash commands use, run
+the same single implementation: the module-scope `_available_models` in
+`nymeria/api/routers/settings.py`. Keep it that way. The in-process path once
+had a hand-copied twin, and the copy drifted (it was missing the CLIProxy
+`/v1` normalization and the probe headers), so the same command returned
+different model lists depending on which runtime shape served it.
+
 ---
 
 ### Update Settings

@@ -193,9 +193,12 @@ vault read. Consumers: the `auth_test` tool; the auth axis on tool_search
 results (agent text plus `auth_status`/`auth_provider` fields on the search,
 `/tools/defaults`, and unified-tools REST payloads, surfaced as badges in the
 desktop and mobile tool menus); the enable-time credential nudge in
-`tool_manage`; and the `[Auth check]` guidance block appended to auth-shaped
-tool failures in the agent runtime. Note the status reflects the vault only: a
-provider satisfied purely by a settings/env fallback still reports
+`tool_manage` (`tools/tool_search.py::_credential_nudges`, which runs over the
+tools an enable actually newly bound or un-disabled); and the `[Auth check]`
+guidance block appended to auth-shaped tool failures in the agent runtime
+(`vendor/react_agent/nodes.py::_augment_auth_failure`, applied after post-tool
+hooks so hooks always match the raw tool result). Note the status reflects the
+vault only: a provider satisfied purely by a settings/env fallback still reports
 `needs_setup`.
 
 Cross-provider alias overlap is legitimate data and tolerated (aws and s3
@@ -214,6 +217,20 @@ the module's config helpers and source the helper arguments from it (see
 `productivity_service_integrations.py` for the reference shape). Registering
 the same provider twice with different content is an import-time error; share
 one spec object across modules instead.
+
+**Authoring rule for a new integration tool with a credential:** declare its
+provider's `ProviderCredentialSpec` in the tool's own module, or reuse the
+existing spec if the provider already has one, and source the tool's
+`_credential_value` and `_setup_hint` arguments from that spec rather than
+passing literals. In practice that means `provider=_SPEC.provider`,
+`provider_aliases=_SPEC.aliases`, and `field_names=_SPEC.group("<role>")`
+instead of a hand-typed provider string and field tuple. Because the call site
+reads its arguments out of the spec, the registry cannot drift from the
+behavior it advertises: a field renamed or reordered in the spec changes the
+runtime lookup in the same edit, and `spec.group()` raises loudly on a typo
+instead of silently resolving nothing. `tests/test_credential_registry.py` pins
+this integrity, so a spec that stops matching its call sites fails the suite
+rather than quietly reporting the wrong credential status.
 
 ### Path 2: Custom HTTP Tools
 
