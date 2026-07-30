@@ -197,21 +197,22 @@ def command_data(
 
 def chain_footer(active_tab: dict[str, Any], tab_count: int) -> str:
     """Word the Enter action for the active tab's field kind: a text tab
-    submits what was typed, a radio tab applies the selection."""
+    submits what was typed, a radio tab applies the selection.
 
-    enter_word = (
-        "Enter submit"
-        if any(
-            field_def.get("kind") == "text"
-            for field_def in active_tab.get("fields") or []
-        )
-        else "Enter apply"
+    The navigation segment differs by kind too. On a text step the arrows edit
+    the value and only cross to a neighbouring step from the ends, so Tab is
+    advertised as the reliable step key; on a list step the arrows step
+    directly."""
+
+    is_text = any(
+        field_def.get("kind") == "text"
+        for field_def in active_tab.get("fields") or []
     )
-    return (
-        f"←→ step · {enter_word} · Esc close"
-        if tab_count > 1
-        else f"{enter_word} · Esc close"
-    )
+    enter_word = "Enter submit" if is_text else "Enter apply"
+    if tab_count <= 1:
+        return f"{enter_word} · Esc close"
+    nav_word = "←→ move · Tab step" if is_text else "←→ step"
+    return f"{nav_word} · {enter_word} · Esc close"
 
 
 def chain_form_output(

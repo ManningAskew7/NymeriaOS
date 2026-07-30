@@ -1494,7 +1494,14 @@ secret state lives server-side, e.g. `core/provider_setup.py`). A tab may
 carry `active: true`, asking the client to open the form on that tab:
 chained multi-step commands use it as a step rail, re-sending the reached
 steps as tabs with the next undecided one active so arrowing between tabs
-is back/forward navigation. `data.state` is a dict of
+is back/forward navigation. How a client binds that navigation is its own
+business, but a client whose typed value comes from one shared input (the
+Rich CLI's composer) must not let step navigation swallow text editing: there,
+Left/Right cross steps only from the value's start/end boundary, Tab/Shift-Tab
+always cross, and each step keeps its own draft so navigating the rail cannot
+destroy a typed value. `footer_hint` is advisory copy for exactly this reason:
+the server words it for the active step's field kind, and the client owns the
+actual key map. `data.state` is a dict of
 client-state sync hints (for example `{"model": ...}` after a model change,
 `{"reasoning": {"enabled": ..., "effort": ...}}` after `/think` or its
 `/reasoning`/`/thinking` aliases change thinking mode, carrying the level the
@@ -4497,6 +4504,7 @@ route shapes; frontends never derive base URLs or key slots themselves.
 | DELETE | `/cliproxy/auth-files/{name}` | Remove a login from the proxy |
 | GET / PATCH | `/cliproxy/config` | The surfaced knob subset (`api-keys`, `request-retry`, `max-retry-interval`, `routing/strategy`, `oauth-model-alias`, `oauth-excluded-models`, `quota-exceeded/*`) |
 | GET | `/cliproxy/models` | Live `{models: [{id, owned_by}]}` from the proxy's `/v1/models`, authenticated with the first configured gatekeeper key READ through the management API (a key-less proxy has an open data plane, so the request then goes out unauthenticated; a read never mints); lists every logged-in provider's models |
+| POST | `/cliproxy/verify` | `{provider, model?}` (model defaults to the provider spec's). Prove a logged-in subscription actually serves traffic: one real data-plane completion through the same probe as `/settings/llm/test`, using the gatekeeper read through the management API (never minted, never returned). `{verdict, detail}` where verdict is `ok` (reached the upstream; `detail` is the probed model), `auth_failed` (401/403, the upstream rejected the credential whatever the auth-file list says), or `inconclusive` (proxy down, model unknown, 5xx, timeout: NOT a failure, since a transient fault must not invalidate a good login). A 429 counts as `ok`, because it proves the request reached the upstream and this probe carries no OAuth billing fingerprint. Complements `/cliproxy/oauth/status`, which only confirms the proxy LISTS an enabled auth file |
 | POST | `/cliproxy/apply-route` | `{provider, model?, scope: global\|thread, thread_id?, gatekeeper_key?}`: turn a catalog entry into LLM settings. Global scope hot-reloads through the settings applier; thread scope writes the per-thread LLM config. Gatekeeper resolution order: request `gatekeeper_key` -> the settings key IF it is `cpx-`-shaped or matches the proxy's `api-keys` list (a real provider key, e.g. an `sk-` OPENAI_API_KEY on a codex route, is never adopted as the gatekeeper when the proxy has its own keys) -> the proxy's first configured key, or mint-and-write a `cpx-nymeria-*` key via the management API -> only then 422 |
 
 Status codes: 400 (management not configured / bad request), 404 (unknown

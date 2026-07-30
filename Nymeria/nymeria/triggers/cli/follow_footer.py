@@ -458,15 +458,11 @@ class FollowFooterEngine:
             return
         footer_height = self._reserved_footer_height(size)
         if self._pinned_footer_height != footer_height:
-            if footer_height < self._pinned_footer_height:
-                # DECSTBM scroll-down would lose the topmost transcript
-                # rows, so replay the transcript onto the larger area.
-                # Clear scrollback too — otherwise the previously-visible
-                # rows (already pushed up by the scroll region) stay in
-                # scrollback and we end up stacking duplicate transcripts.
-                self._redraw_follow_footer(rebuild_scrollback=True)
-                self._follow_footer_pin_probe_pending = True
-                return
+            # Both directions are pure geometry, handled in place. A shrink used
+            # to erase the screen and replay instead, which silently DESTROYED
+            # every console-direct write (slash-command output, form panels, the
+            # header): those are not in reducer state, so a replay cannot bring
+            # them back. Never rebuild for a footer resize.
             self._resize_pinned_footer(footer_height=footer_height, size=size)
             if not self._pinned_footer_active:
                 return
@@ -515,9 +511,29 @@ class FollowFooterEngine:
 
         footer_top = scroll_bottom + 1
         clear_top = min(old_footer_top, footer_top)
-        output.write_raw(f"\x1b[{scroll_bottom};1H")
-        output.write_raw("\x1b7")
-        output.write_raw(f"\x1b[{clear_top};1H\x1b[J")
+        if footer_height < old_footer_height:
+            # SHRINK: the region grows DOWNWARD. Clear the vacated footer rows
+            # FIRST (they sit inside the enlarged region), then scroll the region
+            # down by the delta so content slides to sit directly above the new
+            # footer top. That preserves the invariant exactly (tail at
+            # scroll_bottom - 1, write cursor at scroll_bottom) instead of
+            # stranding the cursor below a gap, and loses nothing: the rows that
+            # fall off the bottom are the footer rows just cleared. Blank rows
+            # appear at the TOP of the region and scroll away as output arrives.
+            # Content and anchor move in lockstep, so the geometry stays
+            # self-consistent; the generation bump below is belt-and-braces and
+            # only costs one appended tool row instead of an in-place flip.
+            # No clear afterwards: it would erase what we just scrolled in.
+            output.write_raw(f"\x1b[{clear_top};1H\x1b[J")
+            output.write_raw(f"\x1b[1;{scroll_bottom}r")
+            output.write_raw(f"\x1b[{old_footer_height - footer_height}T")
+            output.write_raw("\x1b[r")
+            output.write_raw(f"\x1b[{scroll_bottom};1H")
+            output.write_raw("\x1b7")
+        else:
+            output.write_raw(f"\x1b[{scroll_bottom};1H")
+            output.write_raw("\x1b7")
+            output.write_raw(f"\x1b[{clear_top};1H\x1b[J")
         output.flush()
         self._follow_footer_transcript_cursor_saved = True
         self._pinned_footer_height = footer_height

@@ -748,6 +748,18 @@ class _RichReplRuntime:
             return False
         return form_panel.active_field_is_checkbox(self._active_form, self._form_state)
 
+    def form_has_navigable_list(self) -> bool:
+        """True while the active step has an option list for Up/Down to drive."""
+
+        if self._active_form is None or self._form_state is None:
+            return False
+        return form_panel.has_navigable_list(self._active_form, self._form_state)
+
+    def active_field_label(self) -> str:
+        """Label of the open form's composer-fed text field, or ""."""
+
+        return form_panel.active_input_label(self._active_form, self._form_state)
+
     def active_field_is_secret(self) -> bool:
         """True while the open form's composer-fed field is a secret text
         field; the composer masks its display for the duration."""
@@ -777,11 +789,14 @@ class _RichReplRuntime:
         form_panel.sync_filter(self._active_form, self._form_state, self._composer_text())
 
     def _reset_composer_buffer(self) -> None:
+        self._set_composer_text("")
+
+    def _set_composer_text(self, text: str) -> None:
         controller = self.composer_controller
         buffer = getattr(getattr(controller, "text_area", None), "buffer", None)
         if buffer is not None:
-            buffer.text = ""
-            buffer.cursor_position = 0
+            buffer.text = text
+            buffer.cursor_position = len(text)
 
     def open_form(self, spec: form_panel.FormSpec) -> None:
         self._active_form = spec
@@ -804,13 +819,21 @@ class _RichReplRuntime:
         return moved
 
     def move_form_tab(self, delta: int) -> bool:
+        # The composer is the live value (filter_text only tracks it as of the
+        # last render), so hand it in and take the incoming step's draft back.
         if self._active_form is None or self._form_state is None:
             return False
-        moved = form_panel.move_tab(self._active_form, self._form_state, delta)
-        if moved:
-            self._reset_composer_buffer()
-            self.invalidate()
-        return moved
+        incoming = form_panel.move_tab(
+            self._active_form,
+            self._form_state,
+            delta,
+            typed=self._composer_text(),
+        )
+        if incoming is None:
+            return False
+        self._set_composer_text(incoming)
+        self.invalidate()
+        return True
 
     def toggle_form_option(self) -> bool:
         if self._active_form is None or self._form_state is None:
@@ -1493,6 +1516,8 @@ class _RichReplPromptToolkitShell:
             on_slash_panel_accept=self.runtime.accept_slash_panel_selection,
             form_is_active=self.runtime.form_is_active,
             form_tab_enabled=self.runtime.form_tab_enabled,
+            form_has_navigable_list=self.runtime.form_has_navigable_list,
+            active_field_label=self.runtime.active_field_label,
             active_field_is_checkbox=self.runtime.active_field_is_checkbox,
             active_field_is_secret=self.runtime.active_field_is_secret,
             on_form_move=self.runtime.move_form_selection,
@@ -1859,6 +1884,7 @@ def _repl_prompt_style_dict(theme: CLITheme) -> dict[str, str]:
         "composer.busy": ptk_style(theme, "prompt_busy", bold=True),
         "composer.error": ptk_style(theme, "prompt_error", bold=True),
         "composer.queued": ptk_style(theme, "prompt_busy", bold=True),
+        "composer.form": ptk_style(theme, "status_accent", bold=True),
         "input-border": ptk_style(theme, "input_border"),
         "input-area": "",
         "text-area": "",

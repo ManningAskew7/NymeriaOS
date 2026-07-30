@@ -1,8 +1,15 @@
 """CLIProxy management API schemas (admin-only /cliproxy routes)."""
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# The one spelling of the verification verdicts, shared by the route, both
+# TurnExecutor facade twins and the CLI login chain, so the three cannot drift.
+CLIProxyVerifyVerdict = Literal["ok", "auth_failed", "inconclusive"]
+# The same set at runtime, for validating a verdict that arrived over the wire
+# (an older backend can answer with anything).
+VERIFY_VERDICTS: frozenset[str] = frozenset(get_args(CLIProxyVerifyVerdict))
 
 
 class CLIProxyProviderInfo(BaseModel):
@@ -105,6 +112,28 @@ class CLIProxyConfigPatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     knobs: dict[str, Any]
+
+
+class CLIProxyVerifyRequest(BaseModel):
+    """Ask whether a logged-in subscription actually serves traffic."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    # Omitted = the provider spec's default model.
+    model: str = ""
+
+
+class CLIProxyVerifyResponse(BaseModel):
+    """``auth_failed`` is the only verdict that means the login is no good.
+
+    ``inconclusive`` covers every transient fault (proxy down, unknown model,
+    timeout) and must not be read as failure: a flaky probe cannot be allowed
+    to block a good login.
+    """
+
+    verdict: CLIProxyVerifyVerdict
+    detail: str = ""
 
 
 class CLIProxyApplyRouteRequest(BaseModel):

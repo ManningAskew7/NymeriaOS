@@ -1171,14 +1171,19 @@ def test_rich_runtime_resizes_pinned_footer_when_composer_grows() -> None:
     assert prompt_renderer._last_screen is None
 
 
-def test_rich_runtime_rebuilds_transcript_when_pinned_footer_shrinks() -> None:
-    """A shrinking footer rebuilds the transcript onto the larger scroll area.
+def test_rich_runtime_slides_transcript_down_when_pinned_footer_shrinks() -> None:
+    """A shrinking footer is pure geometry and must NEVER erase or replay.
 
-    Within a DECSTBM region, scrolling content downward would push the
-    topmost transcript rows out of the region (and lose them — they do
-    not enter terminal scrollback).  Replaying the reducer state onto
-    the freshly enlarged area is the only way to avoid a visible gap
-    between the last transcript line and the now-smaller footer.
+    This test was deliberately inverted (it previously asserted the erase +
+    ``\\x1b[3J`` rebuild). That rebuild replayed reducer state only, so it
+    silently destroyed every console-direct write: slash-command output, form
+    panels and the header are printed straight to the Rich console and are not
+    in reducer state, which is how submitting a form ate an entire transcript.
+
+    The region grows downward instead, and the enlarged region is scrolled down
+    by the delta so the transcript tail lands directly above the new footer top.
+    Nothing falls off the bottom but the footer rows just cleared, so no output
+    can be lost. Do not restore the rebuild here.
     """
 
     runtime, output, prompt_renderer, controller = _make_scroll_region_runtime(
@@ -1194,19 +1199,30 @@ def test_rich_runtime_rebuilds_transcript_when_pinned_footer_shrinks() -> None:
 
     runtime.footer._prepare_pinned_footer_render()
 
-    # Shrink path deactivates the pinned footer and triggers a transcript
-    # replay; the next render cycle's probe re-activates the pin.
-    assert runtime.pinned_footer_active() is False
-    assert runtime.footer._pinned_footer_height == 0
-    assert runtime.footer._pinned_scroll_bottom == 0
-    assert runtime.footer._follow_footer_pin_probe_pending is True
+    # The pin survives: geometry is adjusted in place, no deactivate/replay.
+    assert runtime.pinned_footer_active() is True
+    # height 24 - footer 4 (1 composer + 3 chrome) = 20.
+    new_footer_height = runtime.footer._pinned_footer_height
+    assert new_footer_height < 7
+    assert runtime.footer._pinned_scroll_bottom == 24 - new_footer_height
     assert runtime.footer._follow_footer_transcript_cursor_saved is True
-    assert ("raw", "\x1b[r") in output.ops  # scroll region reset
-    assert ("erase_screen", None) in output.ops
-    # Scrollback must be cleared as well — otherwise the previously-visible
-    # transcript stays in scrollback and the replay stacks a duplicate copy.
-    assert ("raw", "\x1b[3J") in output.ops
-    assert ("raw", "\x1b7") in output.ops  # transcript cursor save
+
+    # Nothing destructive. These are the two ops that ate the transcript.
+    assert ("erase_screen", None) not in output.ops
+    assert ("raw", "\x1b[3J") not in output.ops
+
+    scroll_bottom = runtime.footer._pinned_scroll_bottom
+    delta = 7 - new_footer_height
+    ops = output.ops
+    # Vacated footer rows cleared, then the enlarged region scrolled down.
+    assert ("raw", "\x1b[18;1H\x1b[J") in ops
+    assert ("raw", f"\x1b[1;{scroll_bottom}r") in ops
+    assert ("raw", f"\x1b[{delta}T") in ops
+    assert ("raw", "\x1b7") in ops  # transcript cursor re-saved
+    # Ordering matters: clear before the slide, or the slide re-fills cleared
+    # rows; and the cursor park lands after it.
+    assert ops.index(("raw", "\x1b[18;1H\x1b[J")) < ops.index(("raw", f"\x1b[{delta}T"))
+    assert ops.index(("raw", f"\x1b[{delta}T")) < ops.index(("raw", "\x1b7"))
 
 
 def test_rich_runtime_streams_through_resized_pinned_scroll_region() -> None:

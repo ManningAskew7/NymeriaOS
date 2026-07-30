@@ -67,6 +67,11 @@ class FakeCliproxyApi:
         # Consumed left to right by successive status polls (last repeats).
         self.status_results: list[dict[str, Any]] = [{"status": "wait"}]
         self.models: list[dict[str, Any]] = []
+        # The post-confirm credential probe (one real data-plane call in prod).
+        self.verify_result: dict[str, Any] = {
+            "verdict": "ok",
+            "detail": "claude-opus-4-7",
+        }
         self.apply_result: dict[str, Any] = {
             "scope": "global",
             "provider": "anthropic",
@@ -137,6 +142,16 @@ class FakeCliproxyApi:
     ) -> list[dict[str, Any]]:
         self.calls.append(("models", {}))
         return [dict(entry) for entry in self.models]
+
+    async def cliproxy_verify_credential(
+        self,
+        provider: str,
+        *,
+        model: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(("verify", {"provider": provider, "model": model}))
+        return dict(self.verify_result)
 
     async def cliproxy_apply_route(
         self,
@@ -344,7 +359,14 @@ def test_login_renders_rail_with_url_and_tunnel_hint() -> None:
     tab = _active_tab(form)
     assert tab["label"] == "Paste"
     assert tab["fields"][0]["kind"] == "text"
+    # The pasted value carries a single-use authorization code, so the field must
+    # stay masked. Nothing pinned this before, so a regression that dropped the
+    # flag would have shipped a plaintext code on screen.
+    assert tab["fields"][0]["secret"] is True
     assert tab["submit"] == {"command": "provider cliproxy paste {callback}"}
+    # On a text step the arrows edit the value and only cross steps from the
+    # ends, so the rail advertises Tab as the reliable step key.
+    assert form["footer_hint"] == "←→ move · Tab step · Enter submit · Esc close"
     target_tab = form["tabs"][0]
     assert target_tab["submit"] == {"command": "provider cliproxy {action}"}
     assert [o["id"] for o in target_tab["fields"][0]["options"]] == [
@@ -540,6 +562,188 @@ def test_paste_delivery_failure_rearms_the_rail() -> None:
     assert "Callback delivery failed" in result.markdown
     assert "proxy rejected the callback" in result.markdown
     # The rail form survives so the user can paste again.
+    assert _active_tab(_form(result))["label"] == "Paste"
+
+
+def test_confirmed_login_verifies_the_credential_and_says_so() -> None:
+    """A login confirm proves an auth file is listed, not that it serves traffic.
+
+    confirm_login_landed only checks the proxy's auth-file list, so a revoked or
+    expired refresh token passes it. Submitting the paste therefore ends with one
+    real data-plane call, and the outcome is stated plainly.
+    """
+
+    api = FakeCliproxyApi()
+    api.status_results = [{"status": "ok", "detail": "alice@example.com"}]
+    api.verify_result = {"verdict": "ok", "detail": "claude-opus-4-7"}
+    _start_login(api)
+
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert result.success is True
+    assert "Logged in to" in result.markdown
+    assert "Credential verified against claude-opus-4-7" in result.markdown
+    assert _calls(api, "verify") == [{"provider": "claude", "model": None}]
+
+
+def test_rejected_credential_keeps_the_login_rail() -> None:
+    """An upstream rejection must not advance to the model picker."""
+
+    api = FakeCliproxyApi()
+    api.status_results = [{"status": "ok", "detail": "alice@example.com"}]
+    api.verify_result = {
+        "verdict": "auth_failed",
+        "detail": "401 invalid_grant",
+    }
+    _start_login(api)
+
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert "rejected upstream" in result.markdown
+    assert "401 invalid_grant" in result.markdown
+    # Still the login rail, not the route chain.
+    assert "CLIProxy login" in _form(result)["title"]
+    assert _calls(api, "apply_route") == []
+
+
+def test_inconclusive_verification_does_not_block_the_login() -> None:
+    """A flaky probe must not fail a login that the auth-file check confirmed."""
+
+    api = FakeCliproxyApi()
+    api.status_results = [{"status": "ok", "detail": "alice@example.com"}]
+    api.verify_result = {"verdict": "inconclusive", "detail": "proxy timeout"}
+    _start_login(api)
+
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert "Logged in to" in result.markdown
+    assert "Could not verify the credential yet" in result.markdown
+    assert "proxy timeout" in result.markdown
+    # Advanced to the route chain regardless.
+    assert "CLIProxy route" in _form(result)["title"]
+
+
+def test_verification_failure_degrades_to_inconclusive() -> None:
+    """A probe that raises is inconclusive, never a failed login."""
+
+    class _BrokenVerifyApi(FakeCliproxyApi):
+        async def cliproxy_verify_credential(self, provider: str, **kwargs: Any):
+            raise _http_error(502, "verify endpoint exploded")
+
+    api = _BrokenVerifyApi()
+    api.status_results = [{"status": "ok", "detail": "alice@example.com"}]
+    _start_login(api)
+
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert "Logged in to" in result.markdown
+    assert "Could not verify the credential yet" in result.markdown
+    assert "CLIProxy route" in _form(result)["title"]
+
+
+def test_paste_404_confirms_instead_of_reporting_failure() -> None:
+    """A 404 on delivery can mean the login already landed, so confirm first.
+
+    The proxy deletes an OAuth session when the login SUCCEEDS (and wipes
+    sibling sessions for the same provider), so a second delivery of the same
+    callback answers 404 "unknown or expired state". Reporting that as a
+    delivery failure dead-ended the rail on a login that had actually worked,
+    which is exactly what happened in the field: the auth file was written and
+    the models registered, and the user was told delivery failed.
+    """
+
+    class _GoneSessionApi(FakeCliproxyApi):
+        async def cliproxy_oauth_callback(self, provider: str, **kwargs: Any):
+            raise _http_error(404, "unknown or expired state")
+
+    api = _GoneSessionApi()
+    # The proxy answers ok for a session it no longer knows, and the auth-file
+    # confirm behind this is what makes the ok trustworthy.
+    api.status_results = [{"status": "ok", "detail": "alice@example.com"}]
+    _start_login(api)
+
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert result.success is True
+    assert "Callback delivery failed" not in result.markdown
+    # Confirmed against the auth-file list, so the rail advances to the route.
+    assert "Logged in to" in result.markdown
+    assert "alice@example.com" in result.markdown
+    assert len(_calls(api, "oauth_status")) == 1
+
+
+def test_paste_404_on_a_relogin_still_gets_the_stale_session_refusal() -> None:
+    """The fall-through does NOT disarm the relogin guard, by design.
+
+    A 404 cannot tell "the login landed and the proxy dropped the session" from
+    "the session expired", so delivery is deliberately left unmarked in the
+    ledger. On a RE-login (an auth file already existed) past the guard window
+    that keeps the server-side refusal armed, and the user gets a conservative
+    "restart the login" instead of a false "logged in". That is the intended
+    trade: the recoverable outcome over the unrecoverable one. Pinned here
+    because the happy-path 404 tests stub the status poll and cannot see it.
+    """
+
+    class _GoneSessionApi(FakeCliproxyApi):
+        async def cliproxy_oauth_callback(self, provider: str, **kwargs: Any):
+            raise _http_error(404, "unknown or expired state")
+
+    api = _GoneSessionApi()
+    api.auth_files = [dict(LOGGED_IN_CLAUDE)]
+    # What confirm_login_landed returns once stale_session_refusal fires.
+    api.status_results = [
+        {
+            "status": "error",
+            "detail": (
+                "The proxy answered ok, but this login session is old"
+                " enough to have expired and no callback was delivered,"
+                " so that is likely a stale-session answer blessing an"
+                " older login. Restart the login to be sure."
+            ),
+        }
+    ]
+    _start_login(api)
+
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert "Callback delivery failed" not in result.markdown
+    assert "stale-session" in result.markdown
+    assert "Restart the login" in result.markdown
+    # Still on the login rail, never advanced to the model picker.
+    assert _active_tab(_form(result))["label"] == "Paste"
+
+
+def test_paste_409_also_confirms_instead_of_reporting_failure() -> None:
+    class _NotPendingApi(FakeCliproxyApi):
+        async def cliproxy_oauth_callback(self, provider: str, **kwargs: Any):
+            raise _http_error(409, "oauth flow is not pending")
+
+    api = _NotPendingApi()
+    api.status_results = [{"status": "ok", "detail": ""}]
+    _start_login(api)
+
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert "Callback delivery failed" not in result.markdown
+    assert "Logged in to" in result.markdown
+
+
+def test_paste_404_still_reports_failure_when_no_login_landed() -> None:
+    """The fall-through defers to the confirm; it does not invent a success."""
+
+    class _GoneSessionNoAuthApi(FakeCliproxyApi):
+        async def cliproxy_oauth_callback(self, provider: str, **kwargs: Any):
+            raise _http_error(404, "unknown or expired state")
+
+        async def cliproxy_oauth_status(self, *args: Any, **kwargs: Any):
+            return {"status": "error", "detail": "no active auth file"}
+
+    api = _GoneSessionNoAuthApi()
+    _start_login(api)
+
+    result = _run(api, "/provider cliproxy paste abc-code")
+
+    assert "Login failed" in result.markdown
     assert _active_tab(_form(result))["label"] == "Paste"
 
 

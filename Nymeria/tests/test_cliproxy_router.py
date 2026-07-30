@@ -111,6 +111,7 @@ class FakeThreadConfigManager:
 class FakeAgent:
     def __init__(self):
         self.thread_config_manager = FakeThreadConfigManager()
+        self.credential_vault = SimpleNamespace(name="fake-vault")
         self.invalidated: list[str] = []
 
     def invalidate_thread_config_cache(self, thread_id: str) -> None:
@@ -143,7 +144,10 @@ def make_app(*, settings=None, agent=None, admin: bool = True, thread_access=Non
     def require_admin_user():
         if not admin:
             raise HTTPException(status_code=403, detail="Admin role required")
-        return SimpleNamespace(user_id="admin", role="admin")
+        # Mirrors the real ``AuthenticatedUser`` dataclass, whose identity field
+        # is ``id``. A fake carrying ``user_id`` instead would let a route read
+        # a non-existent attribute and silently pass None in production.
+        return SimpleNamespace(id="admin", role="admin")
 
     app = FastAPI()
     app.include_router(
@@ -1066,3 +1070,268 @@ def test_apply_route_global_helper_propagates_restart_required():
     assert resp.restart_required is True
     assert captured["updates"].openai_api_key == "cpx-gate"
     assert captured["updates"].openai_api_mode == "responses"
+
+
+# --- credential verification (verify_cliproxy_credential) ------------------
+# A login confirm only proves the proxy LISTS an enabled auth file, so the
+# chain follows it with one real data-plane completion. These pin the verdict
+# classification, which is the part carrying judgement calls.
+
+
+def _verify(spec_id: str, probe_response: Any, *, knobs: dict | None = None):
+    import asyncio
+    import unittest.mock as mock
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    FakeManagementClient.knobs = knobs if knobs is not None else {"api-keys": ["cpx-key"]}
+    client = FakeManagementClient("http://proxy.test:8317", "secret")
+    captured: dict[str, Any] = {}
+
+    async def fake_probe(request, *, settings=None, vault=None, owner_user_id=None):
+        captured["request"] = request
+        if isinstance(probe_response, Exception):
+            raise probe_response
+        return probe_response
+
+    with mock.patch.object(
+        settings_router_module, "_test_llm_provider_config", fake_probe
+    ):
+        verdict, detail = asyncio.run(
+            cliproxy_router_module.verify_cliproxy_credential(
+                client,
+                "http://proxy.test:8317",
+                _spec(spec_id),
+            )
+        )
+    return verdict, detail, captured
+
+
+def test_verify_credential_ok_reports_the_probed_model():
+    verdict, detail, captured = _verify(
+        "claude", SimpleNamespace(ok=True, message="")
+    )
+
+    assert verdict == "ok"
+    assert detail == "claude-opus-4-7"
+    request = captured["request"]
+    # Probes the data plane, as the native provider, with the server-resolved
+    # gatekeeper. Claude uses the proxy ROOT (the SDK appends /v1/messages).
+    assert request.llm_provider == "anthropic"
+    assert request.llm_base_url == "http://proxy.test:8317"
+    # SecretStr: the schema keeps the gatekeeper out of reprs and logs.
+    assert request.api_key.get_secret_value() == "cpx-key"
+
+
+def test_verify_credential_uses_v1_and_api_mode_for_openai_shaped_specs():
+    _verdict, _detail, captured = _verify(
+        "codex", SimpleNamespace(ok=True, message="")
+    )
+
+    request = captured["request"]
+    assert request.llm_provider == "openai"
+    assert request.llm_base_url == "http://proxy.test:8317/v1"
+    assert request.openai_api_mode == "responses"
+
+
+# The next three pin the MESSAGE fallback, which is what runs when the probe
+# reports no status at all (transport error, timeout, missing key). The
+# structured-status path is pinned separately below; a real HTTP failure always
+# carries a status and takes that path instead.
+
+
+def test_verify_credential_message_fallback_treats_rate_limit_as_proof_of_reach():
+    """429 means the request REACHED the upstream, so the credential is good.
+
+    This probe carries no OAuth billing fingerprint (that lives in
+    vendor/react_agent/nodes.py), so a subscription path can answer 429 on a
+    premium model with a perfectly valid token. Calling that a failure would
+    tell users a working login is broken.
+    """
+
+    verdict, _detail, _captured = _verify(
+        "claude",
+        SimpleNamespace(ok=False, message="429 rate_limit_error: quota"),
+    )
+
+    assert verdict == "ok"
+
+
+def test_verify_credential_message_fallback_flags_a_rejected_credential():
+    verdict, detail, _captured = _verify(
+        "claude",
+        SimpleNamespace(ok=False, message="401 invalid_grant"),
+    )
+
+    assert verdict == "auth_failed"
+    assert "401" in detail
+
+
+def test_verify_credential_message_fallback_is_inconclusive_for_anything_else():
+    verdict, detail, _captured = _verify(
+        "claude",
+        SimpleNamespace(ok=False, message="503 upstream unavailable"),
+    )
+
+    assert verdict == "inconclusive"
+    assert "503" in detail
+
+
+def test_verify_credential_reads_the_status_field_not_the_response_body():
+    """A body carrying "401" must not be read as a rejected credential.
+
+    ``_test_llm_provider_config`` reports the upstream status as a FIELD and
+    embeds the response BODY in the message, so classifying on the message
+    would let a request id, quota name or port turn a transient 500 into
+    "your login failed" and send the user back through a browser OAuth flow
+    they do not need. The structured status wins whenever it is present.
+    """
+
+    verdict, _detail, _captured = _verify(
+        "claude",
+        SimpleNamespace(
+            ok=False,
+            status_code=500,
+            message="Provider returned HTTP 500: {'request_id': 'req_401_x'}",
+        ),
+    )
+
+    assert verdict == "inconclusive"
+
+
+def test_verify_credential_classifies_a_structured_401_as_auth_failed():
+    verdict, _detail, _captured = _verify(
+        "claude",
+        SimpleNamespace(
+            ok=False, status_code=401, message="Provider returned HTTP 401: nope"
+        ),
+    )
+
+    assert verdict == "auth_failed"
+
+
+def test_verify_credential_classifies_a_structured_429_as_reach():
+    verdict, detail, _captured = _verify(
+        "claude",
+        SimpleNamespace(
+            ok=False, status_code=429, message="Provider returned HTTP 429: slow down"
+        ),
+    )
+
+    assert verdict == "ok"
+    assert detail == "claude-opus-4-7"
+
+
+def test_verify_credential_probes_unauthenticated_when_no_gatekeeper():
+    """A key-less proxy has an OPEN data plane, and a read must never mint.
+
+    The sentinel matters: passing None instead would hand the choice to the
+    probe's credential chain, which resolves the operator's REAL vendor key
+    from the vault or settings and sends it to the proxy, and which hard-fails
+    with "missing_api_key" whenever the proxy URL is not loopback-shaped (a
+    Docker service name is not), making every verification inconclusive on the
+    reference deployment.
+    """
+
+    _verdict, _detail, captured = _verify(
+        "claude", SimpleNamespace(ok=True, message=""), knobs={"api-keys": []}
+    )
+
+    assert captured["request"].api_key.get_secret_value() == "not-needed"
+    client = FakeManagementClient.instances[-1]
+    assert [name for name, _ in client.calls if name == "set_config_knob"] == []
+
+
+def test_verify_credential_never_reaches_the_probes_credential_fallback():
+    """Pin the consequence, not just the value: the vault is never consulted.
+
+    ``_test_llm_provider_config`` only walks vault -> settings -> env when it
+    receives no key at all, so a truthy api_key is what keeps the operator's
+    own Anthropic/OpenAI credential out of a proxy-verification request.
+    """
+
+    import asyncio
+    import unittest.mock as mock
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    FakeManagementClient.knobs = {"api-keys": []}
+    client = FakeManagementClient("http://proxy.test:8317", "secret")
+    seen: dict[str, Any] = {}
+
+    async def fake_probe(request, *, settings=None, vault=None, owner_user_id=None):
+        seen["api_key"] = request.api_key
+        return SimpleNamespace(ok=True, message="")
+
+    with mock.patch.object(
+        settings_router_module, "_test_llm_provider_config", fake_probe
+    ):
+        asyncio.run(
+            cliproxy_router_module.verify_cliproxy_credential(
+                client,
+                # A non-loopback base URL: the shape that used to fail closed.
+                "http://cli-proxy-api:8317",
+                _spec("claude"),
+            )
+        )
+
+    assert seen["api_key"] is not None
+    assert seen["api_key"].get_secret_value() == "not-needed"
+
+
+def test_verify_credential_without_a_known_model_is_inconclusive():
+    import asyncio
+    import unittest.mock as mock
+
+    from nymeria.api.routers import settings as settings_router_module
+
+    FakeManagementClient.knobs = {"api-keys": ["cpx-key"]}
+    client = FakeManagementClient("http://proxy.test:8317", "secret")
+    spec = _spec("claude")
+    stripped = type(spec)(**{**spec.__dict__, "default_model": ""})
+    called = False
+
+    async def fake_probe(*args: Any, **kwargs: Any):
+        nonlocal called
+        called = True
+        return SimpleNamespace(ok=True, message="")
+
+    with mock.patch.object(
+        settings_router_module, "_test_llm_provider_config", fake_probe
+    ):
+        verdict, detail = asyncio.run(
+            cliproxy_router_module.verify_cliproxy_credential(
+                client, "http://proxy.test:8317", stripped
+            )
+        )
+
+    assert verdict == "inconclusive"
+    assert "no model is known" in detail
+    assert called is False
+
+
+def test_verify_route_passes_the_callers_identity_and_the_agent_vault():
+    """The probe resolves stored credentials, so it needs the real caller.
+
+    ``AuthenticatedUser`` carries ``id``; reading a ``user_id`` that does not
+    exist would silently pass None here and quietly change which credentials
+    the probe can resolve. Pin both halves of the plumbing.
+    """
+    import unittest.mock as mock
+
+    client, _settings, agent = make_app()
+    captured: dict[str, Any] = {}
+
+    async def fake_verify(*args: Any, **kwargs: Any):
+        captured.update(kwargs)
+        return "ok", "claude-opus-4-7"
+
+    with mock.patch.object(
+        cliproxy_router_module, "verify_cliproxy_credential", fake_verify
+    ):
+        resp = client.post("/cliproxy/verify", json={"provider": "claude"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"verdict": "ok", "detail": "claude-opus-4-7"}
+    assert captured["owner_user_id"] == "admin"
+    assert captured["vault"] is agent.credential_vault

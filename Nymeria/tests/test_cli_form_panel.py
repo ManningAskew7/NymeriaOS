@@ -3,6 +3,8 @@ from __future__ import annotations
 from nymeria.triggers.cli.commands.base import CommandResult
 from nymeria.triggers.cli.rendering.form_panel import (
     FORM_PANEL_MAX_ROWS,
+    _TEXT_FOOTER,
+    _TEXT_FOOTER_SINGLE_TAB,
     FormField,
     FormOption,
     FormResult,
@@ -10,6 +12,7 @@ from nymeria.triggers.cli.rendering.form_panel import (
     FormTab,
     active_input_is_secret,
     build_result,
+    draft_for,
     filter_options,
     form_panel_fragments,
     form_panel_height,
@@ -122,19 +125,39 @@ def test_text_only_tab_renders_input_line_and_text_footer() -> None:
     assert "sk-..." in rendered  # placeholder while empty
     assert "Enter submit" in rendered
 
+    # A text step's value is NOT echoed here. The composer owns the caret and is
+    # the single surface that shows it; the panel reports its shape, so the two
+    # do not read as two separate input boxes.
     sync_filter(spec, state, "sk-test-123")
     rendered = _rendered(form_panel_fragments(spec, state, width=40))
-    assert "sk-test-123" in rendered
+    assert "sk-test-123" not in rendered
+    assert "11 chars entered" in rendered
 
 
-def test_secret_text_renders_mask_bullets_never_the_value() -> None:
+def test_search_field_keeps_its_inline_filter_text() -> None:
+    """The dedupe is text-field only: a filter sits above the list it filters."""
+
+    spec = _radio_spec(["sonnet-4-6", "opus-4-8"])
+    state = init_state(spec)
+    sync_filter(spec, state, "sonnet")
+
+    rendered = _rendered(form_panel_fragments(spec, state, width=48))
+    assert "Filter: sonnet" in rendered
+
+
+def test_secret_text_reports_length_and_never_the_value_or_a_bullet_run() -> None:
     spec = _text_spec(secret=True)
     state = init_state(spec)
     sync_filter(spec, state, "sk-secret-value")
 
     rendered = _rendered(form_panel_fragments(spec, state, width=40))
     assert "sk-secret-value" not in rendered
-    assert "•" * len("sk-secret-value") in rendered
+    # Deliberately no mask run either: a truncated bullet stream is identical
+    # whether 40 or 400 characters landed, which is what made a long paste
+    # impossible to verify. Masking is the composer's job (see the getter below,
+    # which drives its PasswordProcessor).
+    assert "•" not in rendered
+    assert "15 chars entered" in rendered
 
     # The composer-masking getter tracks the active tab's field.
     assert active_input_is_secret(spec, state) is True
@@ -240,15 +263,76 @@ def test_move_selection_wraps() -> None:
     assert build_result(spec, state).radio_value == "one"
 
 
+def test_server_and_client_text_footers_agree() -> None:
+    """These two spellings are duplicated on purpose and must not drift.
+
+    The backend ships a `footer_hint` with each form spec
+    (`core.command_forms.chain_footer`), and this renderer carries its own
+    fallback for specs that omit one. They cannot share a constant: the thin
+    CLI must never import `nymeria.core` (one module-level import there cost
+    14.9s of a 16.4s launch), so this test is the only thing holding them
+    together.
+    """
+
+    from nymeria.core.command_forms import chain_footer
+
+    text_tab = {"fields": [{"kind": "text"}]}
+    assert chain_footer(text_tab, 3) == _TEXT_FOOTER
+    assert chain_footer(text_tab, 1) == _TEXT_FOOTER_SINGLE_TAB
+
+
 def test_move_tab_switches_and_is_noop_for_single_tab() -> None:
     multi = _multi_tab_spec()
     multi_state = init_state(multi)
-    assert move_tab(multi, multi_state, 1) is True
+    assert move_tab(multi, multi_state, 1, typed="") == ""
     assert build_result(multi, multi_state).tab_label == "Tools"
 
     single = _radio_spec(["one", "two"])
     single_state = init_state(single)
-    assert move_tab(single, single_state, 1) is False
+    assert move_tab(single, single_state, 1, typed="") is None
+
+
+def test_move_tab_stashes_and_restores_each_steps_typed_value() -> None:
+    """Navigating the rail must never destroy a typed value.
+
+    Regression: the runtime used to clear the composer on every step change, so
+    a single stray Left/Right threw away a pasted OAuth callback (~330 chars,
+    single-use, unrecoverable). Each step now keeps its own draft, exchanged
+    through the call itself so no caller can get the ordering wrong.
+    """
+
+    spec = _multi_tab_spec()
+    state = init_state(spec)
+
+    # The incoming step starts empty rather than inheriting the neighbour's text.
+    assert move_tab(spec, state, 1, typed="first-step-value") == ""
+    assert state.filter_text == ""
+
+    assert move_tab(spec, state, -1, typed="second-step-value") == (
+        "first-step-value"
+    )
+    assert state.filter_text == "first-step-value"
+    assert draft_for(state) == "first-step-value"
+
+    assert move_tab(spec, state, 1, typed="first-step-value") == (
+        "second-step-value"
+    )
+    assert state.filter_text == "second-step-value"
+
+
+def test_move_tab_takes_the_live_value_over_the_last_rendered_one() -> None:
+    """The composer is the source of truth, not filter_text.
+
+    filter_text only tracks the composer as of the last render, so a value typed
+    and immediately arrowed away from would otherwise stash stale text.
+    """
+
+    spec = _multi_tab_spec()
+    state = init_state(spec)
+    sync_filter(spec, state, "stale-from-last-render")
+
+    move_tab(spec, state, 1, typed="what-the-user-actually-typed")
+    assert move_tab(spec, state, -1, typed="") == "what-the-user-actually-typed"
 
 
 def test_toggle_current_flips_checkbox_membership() -> None:
