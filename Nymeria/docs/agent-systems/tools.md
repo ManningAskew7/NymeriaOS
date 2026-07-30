@@ -192,7 +192,20 @@ At runtime, Nymeria detects the backend platform, available shells, container st
 
 **Environment scrubbing:** commands run under a minimal allowlisted environment (`PATH, HOME, LANG, LC_ALL, TMPDIR`), the same deny-by-default convention as the workflow runner and the hooks `run_command` action, so backend secrets (DB/Redis passwords, provider keys, the service token) never leak into command output or LLM context. Extra variable names can be opted back in with the `BASH_ENV_PASSTHROUGH` setting (comma-separated names).
 
+That allowlist is not local to bash. It lives in one shared module, `nymeria/subprocess_env.py::scrubbed_subprocess_env`, which sits at the package root rather than under `tools/` because it is not a tool concern: it is a property of every place Nymeria launches a child process. All six exec surfaces route through it:
+
+- `bash_execute` (`tools/bash.py`)
+- the nym workflow runner (`core/workflows/executor.py`)
+- the `run_command` lifecycle hook (`core/hooks/actions.py`)
+- Python custom tools (`core/python_custom_tools.py`)
+- MCP stdio server launch (`core/mcp_manager.py::_build_stdio_env`)
+- MCP install commands (`core/mcp_runtime.py::_run`)
+
+The three surfaces that fetch or execute third-party packages (Python custom tools and both MCP paths) additionally opt the non-secret network, CA, and runtime variables back in via the shared `NETWORK_RUNTIME_PASSTHROUGH` list, so an `npx`/`uvx`/`pip` step behind a proxy or a custom CA keeps working without inheriting any secret. A new surface that spawns a process should call the shared helper rather than build its own environment dict.
+
 When `run_in_background=True` is called from an agent thread, stdout and stderr are captured to secure temp files and the return value includes `job_id`, `pid`, and both file paths. When the process exits, Nymeria submits a completion prompt to the same thread with the exit code and the last 4KB of stdout/stderr. If that thread is busy, the prompt is queued and absorbed at the next sub-turn boundary. If the thread is idle, the prompt runs as an autonomous turn and streams through the normal autonomous event path. Temp files are age-swept (7 days) opportunistically when new background jobs start. The watcher is process-local; if the backend restarts before the process exits, no completion notification is sent. Calls without agent thread/user context keep the legacy PID-only fire-and-forget behavior. Background processes also run detached in their own session with the scrubbed environment.
+
+The job registry, the per-job exit watcher, and the 7-day temp-file sweep live in `tools/bash_background.py`; `tools/bash_job.py` is the companion tool module that reads and controls them.
 
 **Security:** MODERATE  -  runs commands without an in-process sandbox. Use deployment-level containment for untrusted workloads.
 
@@ -2518,6 +2531,8 @@ The agent connects Google Calendar by calling `request_credential(provider="goog
 
 The Google Docs, Drive, Sheets, Tasks, Contacts, Slides, and Chat tools share one OAuth connection. The agent connects it via `request_credential(provider="google_docs", kind="oauth")`. Tokens land in the vault as `kind=oauth_token` with the union of Workspace scopes. Workspace API calls read the vault first and fall back to the legacy file cache at `data/auth_tokens/<user_id>/google_docs.json` while older accounts are still being migrated.
 
+**Code layout:** the Google Docs tools are split across two modules. `tools/google_docs.py` holds the tool surface (auth, API calls, IO), while the pure markdown-to-Docs translation engine and the read-side Docs-JSON walkers live in the leaf module `tools/google_docs_markdown.py`, which touches no Google API, credential, or LangChain code and is unit-testable on plain dicts and strings. `google_docs.py` imports those names back and re-exports them, so its attribute surface is unchanged: when changing conversion or extraction behavior, edit the leaf module rather than the facade.
+
 ### Google Workspace Service Tools (34)
 
 These optional tools reuse the same Workspace OAuth connection. Existing Google accounts authenticated before Tasks/Contacts/Slides/Chat support may need to reconnect via `request_credential` so the stored token includes the broader Workspace scopes.
@@ -2596,7 +2611,7 @@ Optional tools are NOT loaded by default. They're available for per-thread enabl
 - Utility tools: `claude_code`, `tool_search`, `tool_manage`, `manage_mcp`, `skill_manage`, `http_request`, `api_discover`, `tool_create`, `skill_write`, `skill_edit` plus the admin-only diagnostic `hello_test` used for dynamic-load validation
 
 **How it works:**
-1. `CATALOG_TOOLS` in `tools/__init__.py` maps tool names to tool objects. It is assembled by auto-discovery: each tool family self-registers a `ToolGroup` on import via `register_tool_group` (`tools/registry.py`, mirroring how `triggers/sources` derives `AVAILABLE_SOURCES` from `register_source`). `CATALOG_TOOLS`, `__all__`, the tool count, and the `ADMIN_ONLY_TOOL_NAMES` / `DEVELOPER_ONLY_TOOL_NAMES` role-gate sets all derive from `all_tool_groups()` (the group `admin_only` / `developer_only` flags for the gates), not a hand-maintained list. Category and security metadata still live in `tools/metadata.py`.
+1. `CATALOG_TOOLS` in `tools/__init__.py` maps tool names to tool objects. It is assembled by auto-discovery: each tool family self-registers a `ToolGroup` on import via `register_tool_group` (`tools/registry.py`, mirroring how `triggers/sources` derives `AVAILABLE_SOURCES` from `register_source`). `CATALOG_TOOLS`, `__all__`, the tool count, and the `ADMIN_ONLY_TOOL_NAMES` / `DEVELOPER_ONLY_TOOL_NAMES` role-gate sets all derive from `all_tool_groups()` (the group `admin_only` / `developer_only` flags for the gates), not a hand-maintained list. Category and security metadata still live in `tools/metadata.py`. Two canonical helpers in the same module save callers from re-deriving any of this inline: `resolve_default_tool_names(default_thread_tools)` returns the profile's saved defaults, falling back to the seed names for an uninitialized profile, and `static_tool_catalog()` returns the name-to-tool merge of `SEED_TOOLS` and `CATALOG_TOOLS` used to bind a tool object by name at graph-build time (statically defined tools only; callable-thread, custom, and MCP tools resolve separately). Prefer both over open-coding the merge or the `if default_thread_tools is not None` fallback.
 2. Per-thread config has an `enabled_tools` list (tool names)
 3. The profile-level `default_thread_tools` list is the default-bound core set for each thread; an empty list means no core tools
 4. During `_build_graph_with_prompt()`, enabled optional tools are added to the thread's tool set

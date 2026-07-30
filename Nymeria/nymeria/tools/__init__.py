@@ -20,6 +20,11 @@ Tool classification (read this before reasoning about "core" vs "optional"):
   ``(default_thread_tools or SEED_TOOLS) | enabled_tools | temporary_tools``
   minus ``disabled_tools`` and role gates. ``default_thread_tools`` is the
   runtime authority; these two lists are the code-level defaults/catalog behind it.
+  Two thread kinds SHORT-CIRCUIT before that formula ever applies, so do not
+  reason about their tool sets from it: a dream shadow thread
+  (``shadow_parent_id``) returns ``_select_dream_tools_for_graph``, and a
+  callable thread (``callable`` + ``callable_name``) uses
+  ``_get_callable_thread_tools`` and ignores ``default_thread_tools`` entirely.
 - Use ``resolve_default_tool_names(default_thread_tools)`` for the default-name
   fallback and ``static_tool_catalog()`` for the merged name->tool lookup, rather
   than re-deriving either inline.

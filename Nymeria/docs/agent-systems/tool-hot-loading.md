@@ -96,6 +96,16 @@ cache-safe.
   instructions plus its tools' argument schemas and binds nothing, for use via
   `tool_invoke`. `ttl` (bind) and `defer` are mutually exclusive.
 
+Those compact schemas are all rendered in one place, `tools/schema_render.py`.
+It reads the tool's `tool_call_schema` (so runtime-injected arguments such as
+the config or the user id are excluded, leaving only what the model actually has
+to supply) and serves four consumers: `tool_search(include_schemas=true)`, the
+`tool_invoke` validation-error echo, `Skill(defer=true)`, and
+`workflow_info(action="show")`. The `react` tool's guidance block renders a
+target schema the same way. A new surface that has to show the model how to call
+a tool it has not bound should render through that module rather than dump the
+raw JSON schema.
+
 Frontends attribute a `tool_invoke` call to the TARGET tool (the tool-call card
 title is the target name with a small "deferred" marker), so a deferred call
 reads like a real call to that tool rather than an opaque meta-call.
@@ -180,6 +190,21 @@ thread; portable names such as `Read`, `Write`, and `Bash(...)` stay quiet.
 reloads the custom-tool registry, and enables the new tool on the publishing
 thread. HTTP tools are declarative definitions; Python tools are validated and
 then executed through a subprocess wrapper.
+
+The declarative models behind those definitions, and behind managed MCP
+servers, live in `nymeria/tools/definitions/`:
+
+| File | Models |
+| --- | --- |
+| `custom_tool_schema.py` | `CustomToolDefinition`, `HTTPToolConfig`, `ToolParameter` |
+| `mcp_schema.py` | `MCPServerDefinition`, `MCPToolConfig`, `MCPTransport`, `MCPDiscoveredTool`, `MCPInstallStatus` |
+| `schema.py` | Compatibility shim: re-exports both sets for older persisted imports and external callers. New code should import from the two modules above. |
+
+The package `__init__.py` re-exports the same names, so
+`from nymeria.tools.definitions import CustomToolDefinition` works. These models
+are the shapes an on-disk definition under `data/custom_tools/` or
+`data/mcp_servers/` is validated against, so they are the reference for what a
+hand-written or agent-written definition file may contain.
 
 Python tools additionally carry an **execution-time approval gate** (backlog
 #75 Gap 1). Authoring a Python tool is admin-only, but the generic file tools
