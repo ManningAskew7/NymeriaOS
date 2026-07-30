@@ -2863,6 +2863,8 @@ def test_http_client_cliproxy_facade_hits_the_admin_routes(
 
     async def fake_post(path, json=None, params=None, act_as=None):
         calls.append(("POST", path, json))
+        if path == "/cliproxy/verify":
+            return {"verdict": "ok", "detail": "claude-opus-4-7"}
         return {"status": "ok"}
 
     monkeypatch.setattr(client, "_get", fake_get)
@@ -2874,6 +2876,7 @@ def test_http_client_cliproxy_facade_hits_the_admin_routes(
     run(client.cliproxy_oauth_status("st-1", "claude"))
     models = run(client.cliproxy_models())
     run(client.cliproxy_apply_route("claude", "claude-opus-4-7"))
+    verdict = run(client.cliproxy_verify_credential("claude", model="opus"))
     run(client.close())
 
     assert calls == [
@@ -2891,9 +2894,12 @@ def test_http_client_cliproxy_facade_hits_the_admin_routes(
             "/cliproxy/apply-route",
             {"provider": "claude", "model": "claude-opus-4-7", "scope": "global"},
         ),
+        ("POST", "/cliproxy/verify", {"provider": "claude", "model": "opus"}),
     ]
     # The models payload is unwrapped to the bare list.
     assert [m["id"] for m in models] == ["m-1"]
+    # The twins hand back the raw envelope; the executor unwraps it.
+    assert verdict == {"verdict": "ok", "detail": "claude-opus-4-7"}
 
 
 def test_in_process_cliproxy_requires_admin() -> None:
@@ -2909,6 +2915,7 @@ def test_in_process_cliproxy_requires_admin() -> None:
         client.cliproxy_oauth_status("st", "claude"),
         client.cliproxy_models(),
         client.cliproxy_apply_route("claude", "m"),
+        client.cliproxy_verify_credential("claude"),
     ):
         with pytest.raises(httpx.HTTPStatusError) as excinfo:
             run(call)

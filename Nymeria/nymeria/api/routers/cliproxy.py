@@ -51,8 +51,11 @@ from ..schemas.cliproxy import (
     CLIProxyOAuthStatusResponse,
     CLIProxyProviderInfo,
     CLIProxyStatusResponse,
+    CLIProxyVerifyRequest,
+    CLIProxyVerifyResponse,
+    CLIProxyVerifyVerdict,
 )
-from ..schemas.settings import ServerSettingsUpdate
+from ..schemas.settings import LLMProviderTestRequest, ServerSettingsUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -154,9 +157,12 @@ def _apply_route_global(
     get_settings_fn: Callable[[], Any],
 ) -> CLIProxyApplyRouteResponse:
     """Apply a resolved route to the global server LLM settings (scope global)."""
-    # Function-local to avoid a settings <-> cliproxy import cycle AND to keep
-    # the call-time attribute-resolution seam the global apply-route tests patch
-    # (`mock.patch.object(settings_router_module, "apply_server_settings_update")`).
+    # Function-local for the call-time attribute-resolution seam the global
+    # apply-route tests patch
+    # (`mock.patch.object(settings_router_module, "apply_server_settings_update")`);
+    # a module-scope import would bind the original and ignore the patch.
+    # NOT for an import cycle: these two routers have no import edge in either
+    # direction, so do not "restore" one in the reasoning here.
     from .settings import apply_server_settings_update
 
     updates = ServerSettingsUpdate(
@@ -256,6 +262,106 @@ async def confirmed_oauth_status(
     if status == "ok" and spec.id == "claude":
         await _fixup_claude_auth_files(client)
     return status, detail
+
+
+async def verify_cliproxy_credential(
+    client: CLIProxyManagementClient,
+    management_url: str,
+    spec: CLIProxyProviderSpec,
+    *,
+    model: str = "",
+    settings: Any | None = None,
+    vault: Any | None = None,
+    owner_user_id: str | None = None,
+) -> tuple[CLIProxyVerifyVerdict, str]:
+    """Prove a freshly logged-in subscription actually serves traffic.
+
+    ``confirm_login_landed`` only establishes that the proxy LISTS an enabled
+    auth file for the provider; a revoked or expired refresh token passes it. So
+    a login confirm is not evidence the credential works, and this closes that
+    gap with one real data-plane completion through the same probe ``/provider
+    test`` uses.
+
+    Returns ``(verdict, detail)`` where verdict is:
+
+    - ``"ok"``: the credential reached the upstream and answered.
+    - ``"auth_failed"``: the upstream rejected the credential (401/403). The
+      login did not really succeed, whatever the auth-file list says.
+    - ``"inconclusive"``: everything else (proxy down, model not found, 5xx,
+      timeout). NOT a failure: the caller should proceed and say so, because a
+      transient fault must not block a good login.
+
+    Reads the gatekeeper the same way ``list_cliproxy_models`` does and NEVER
+    mints one: minting would flip an open data plane to key-required, which is
+    apply-route's job alone.
+    """
+
+    # Call-time import for the MONKEYPATCH SEAM, not for a cycle: there is no
+    # import edge between these two routers in either direction (verified), so
+    # module scope would load fine. But the tests patch
+    # ``settings._test_llm_provider_config`` on the settings module, and only a
+    # call-time lookup sees that patch; a module-scope ``from ... import`` would
+    # bind the original function once and silently ignore it. Keeping the probe
+    # out of this module's import graph is a secondary benefit.
+    from .settings import _test_llm_provider_config
+
+    probe_model = (model or spec.default_model or "").strip()
+    if not probe_model:
+        return "inconclusive", (
+            f"no model is known for {spec.label}, so the credential could not "
+            "be exercised"
+        )
+    keys = await configured_gatekeeper_keys(client)
+    request = LLMProviderTestRequest(
+        llm_provider=spec.nymeria_provider,
+        llm_model=probe_model,
+        llm_base_url=cliproxy_data_plane_url(management_url, spec),
+        # "not-needed" is the probe's own sentinel for an open data plane, and
+        # passing it is what makes this match list_cliproxy_models (which sends
+        # no Authorization header when the proxy is keyless). Passing None
+        # instead would hand the decision to the probe's credential chain, which
+        # would resolve the operator's REAL vendor key from the vault or
+        # settings and send it to the proxy, and would hard-fail with
+        # "missing_api_key" whenever the proxy URL is not loopback-shaped (the
+        # Docker service name is not), making every verification inconclusive on
+        # the reference deployment.
+        api_key=keys[0] if keys else "not-needed",
+        openai_api_mode=spec.api_mode or None,
+    )
+    response = await _test_llm_provider_config(
+        request,
+        settings=settings,
+        vault=vault,
+        owner_user_id=owner_user_id,
+    )
+    if bool(getattr(response, "ok", False)):
+        return "ok", probe_model
+    message = str(getattr(response, "message", "") or "").strip()
+    # A 429 means the request REACHED the upstream and was rate limited, so the
+    # credential is good. Treat it as proof, not failure: this probe carries no
+    # OAuth billing fingerprint (that lives in vendor/react_agent/nodes.py), so
+    # a subscription path can answer 429 on a premium model with a valid token.
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int) and status > 0:
+        # The probe reports the upstream status as a FIELD, so trust it and do
+        # not read the message. The message embeds the upstream response body,
+        # and a 500 whose body happens to carry "401" (a request id, a quota
+        # name, a port) would otherwise be reported to the user as a rejected
+        # credential, which is the one verdict that sends them back through a
+        # browser OAuth flow they do not need.
+        if status == 429:
+            return "ok", probe_model
+        if status in (401, 403):
+            return "auth_failed", message or "the upstream rejected the credential"
+        return "inconclusive", message or "the probe did not complete"
+    # No status field: a transport error, a timeout, or a missing key, where the
+    # message is the only signal there is.
+    lowered = message.casefold()
+    if "429" in lowered or "rate limit" in lowered or "rate_limit" in lowered:
+        return "ok", probe_model
+    if "401" in lowered or "403" in lowered or "unauthor" in lowered:
+        return "auth_failed", message or "the upstream rejected the credential"
+    return "inconclusive", message or "the probe did not complete"
 
 
 async def list_cliproxy_models(
@@ -489,6 +595,45 @@ def create_cliproxy_router(
                 detail=f"CLIProxy model list failed: {error}",
             ) from error
         return {"models": models}
+
+    @router.post("/verify", response_model=CLIProxyVerifyResponse)
+    async def verify_credential(
+        request: CLIProxyVerifyRequest,
+        admin=Depends(require_admin_user),
+    ) -> CLIProxyVerifyResponse:
+        """Exercise a logged-in subscription with one real data-plane call.
+
+        The login confirm only proves the proxy lists an enabled auth file; this
+        proves the credential serves traffic. The gatekeeper never leaves the
+        backend, and is never minted.
+        """
+        spec = _require_spec(request.provider)
+        settings = get_settings_fn()
+        client = _client_or_400()
+        management_url = (
+            getattr(settings, "cliproxy_management_url", None) or ""
+        ).strip()
+        try:
+            verdict, detail = await verify_cliproxy_credential(
+                client,
+                management_url,
+                spec,
+                model=request.model,
+                settings=settings,
+                vault=getattr(get_agent_fn(), "credential_vault", None),
+                owner_user_id=admin.id,
+            )
+        except CLIProxyManagementError as error:
+            raise _raise_for(error) from error
+        except httpx.HTTPError as error:
+            # Reaching the proxy failed, which says nothing about the
+            # credential; report it as inconclusive rather than a 502 so the
+            # login chain can proceed with an honest note.
+            return CLIProxyVerifyResponse(
+                verdict="inconclusive",
+                detail=f"CLIProxy verification could not run: {error}",
+            )
+        return CLIProxyVerifyResponse(verdict=verdict, detail=detail)
 
     @router.get("/auth-files")
     async def list_auth_files(

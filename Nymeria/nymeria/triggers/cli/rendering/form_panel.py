@@ -39,8 +39,8 @@ FieldKind = Literal["search", "text", "radio", "checkbox"]
 
 _DEFAULT_FOOTER = "↑↓ move · Space toggle · Enter set · Esc close"
 _RADIO_FOOTER = "↑↓ move · Enter set · Esc close"
-_TEXT_FOOTER = "Enter submit · Esc close"
-_SECRET_MASK = "•"
+_TEXT_FOOTER = "←→ move · Tab step · Enter submit · Esc close"
+_TEXT_FOOTER_SINGLE_TAB = "Enter submit · Esc close"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +128,11 @@ class FormState:
     selected_index: dict[str, int] = field(default_factory=dict)
     toggled: dict[str, set[str]] = field(default_factory=dict)
     filter_text: str = ""
+    # Per-step typed values, keyed by tab index. The composer feeds exactly one
+    # step at a time, so leaving a step stashes its text here and returning
+    # restores it: navigating the rail must never destroy a typed value (a
+    # pasted OAuth callback is unrecoverable once dropped).
+    drafts: dict[int, str] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -202,6 +207,22 @@ def has_navigable_list(spec: FormSpec, state: FormState) -> bool:
 def active_field_is_checkbox(spec: FormSpec, state: FormState) -> bool:
     field_obj = list_field(active_tab(spec, state))
     return field_obj is not None and field_obj.kind == "checkbox"
+
+
+def active_input_label(spec: FormSpec | None, state: FormState | None) -> str:
+    """The active step's composer-fed field label, or "" when there is none.
+
+    The composer prompt renders this so the one visible input surface names the
+    field it is feeding. Search fields deliberately return "": their inline text
+    stays in the panel, next to the list it filters.
+    """
+
+    if spec is None or state is None:
+        return ""
+    field_obj = input_field(active_tab(spec, state))
+    if field_obj is None or field_obj.kind != "text":
+        return ""
+    return field_obj.label or "Input"
 
 
 def active_input_is_secret(spec: FormSpec | None, state: FormState | None) -> bool:
@@ -295,12 +316,32 @@ def move_selection(spec: FormSpec, state: FormState, delta: int) -> bool:
     return True
 
 
-def move_tab(spec: FormSpec, state: FormState, delta: int) -> bool:
+def move_tab(
+    spec: FormSpec, state: FormState, delta: int, *, typed: str
+) -> str | None:
+    """Move to another step, swapping the outgoing typed value for the incoming.
+
+    The composer is the only real text input, and the runtime owns it, so the
+    exchange is expressed in the signature rather than in prose: pass what the
+    user has typed on the CURRENT step, and take back what they had typed on the
+    step being moved to (``None`` when nothing moved). That leaves no ordering
+    for a caller to get wrong, and no way to stash a stale value.
+    """
+
     if len(spec.tabs) <= 1:
-        return False
+        return None
+    state.filter_text = typed
+    state.drafts[state.active_tab] = typed
     state.active_tab = (state.active_tab + delta) % len(spec.tabs)
+    state.filter_text = state.drafts.get(state.active_tab, "")
     clamp_selection(spec, state)
-    return True
+    return state.filter_text
+
+
+def draft_for(state: FormState) -> str:
+    """The typed value stashed for the active step, or ""."""
+
+    return state.drafts.get(state.active_tab, "")
 
 
 def toggle_current(spec: FormSpec, state: FormState) -> bool:
@@ -348,6 +389,10 @@ def _footer_hint(spec: FormSpec, state: FormState) -> str:
     if spec.footer_hint:
         return spec.footer_hint
     if not has_navigable_list(spec, state):
+        # Mirror chain_footer: a one-step form has nothing to step BETWEEN, so
+        # advertising the step keys there would name a control that does nothing.
+        if len(spec.tabs) <= 1:
+            return _TEXT_FOOTER_SINGLE_TAB
         return _TEXT_FOOTER
     return _DEFAULT_FOOTER if active_field_is_checkbox(spec, state) else _RADIO_FOOTER
 
@@ -453,6 +498,20 @@ def _tab_bar_fragments(
     return parts
 
 
+def _value_summary(text: str) -> str:
+    """Describe a text field's value without reproducing it.
+
+    The value itself lives in the composer (masked there when the field is
+    secret), so this reports only its length. That is what makes a long paste
+    verifiable: a truncated bullet run looks identical whether 40 or 400
+    characters landed.
+    """
+
+    count = len(text)
+    unit = "char" if count == 1 else "chars"
+    return f"{count} {unit} entered"
+
+
 def _input_fragments(
     field_obj: FormField,
     state: FormState,
@@ -460,30 +519,38 @@ def _input_fragments(
 ) -> list[tuple[str, str]]:
     """Render the composer-fed line: the search filter or a text value.
 
-    Secret text renders as one mask bullet per character, never the value.
+    A text field reports its SHAPE (a character count), never its value: the
+    composer already draws the value, and drawing it twice reads as two input
+    boxes. A search field keeps its filter inline, because that one has no
+    composer-side rendering of its own.
     """
 
-    if field_obj.kind == "text":
-        prefix = f"{field_obj.label or 'Input'}: "
-        default_placeholder = "type, then Enter"
-    else:
-        prefix = "Filter: "
-        default_placeholder = "type to filter"
+    is_text = field_obj.kind == "text"
+    prefix = f"{field_obj.label or 'Input'}: " if is_text else "Filter: "
     text = state.filter_text
-    if text:
-        shown = _SECRET_MASK * len(text) if field_obj.secret else text
-        body = _fit_cell(shown, max(1, panel_width - cell_len(prefix)))
-        return [
-            ("class:form-panel.search", prefix),
-            ("class:form-panel.search", body),
-            ("class:form-panel.search", " " * max(0, panel_width - cell_len(prefix) - cell_len(body))),
-        ]
-    placeholder = field_obj.placeholder or default_placeholder
-    body = _fit_cell(placeholder, max(1, panel_width - cell_len(prefix)))
+    if not text:
+        body_text = field_obj.placeholder or (
+            "type, then Enter" if is_text else "type to filter"
+        )
+        body_style = "class:form-panel.placeholder"
+    elif is_text:
+        # A text step's value is drawn by the composer, which is where the caret
+        # actually is; echoing it here too is what read as two separate input
+        # boxes. Report its shape instead, so a long masked paste (an OAuth
+        # callback runs ~330 chars of bullets) is still verifiable at a glance.
+        body_text = _value_summary(text)
+        body_style = "class:form-panel.placeholder"
+    else:
+        # A search field keeps its inline text: it is short, unmasked, and sits
+        # directly above the list it filters, where it reads as context.
+        body_text = text
+        body_style = "class:form-panel.search"
+    body = _fit_cell(body_text, max(1, panel_width - cell_len(prefix)))
+    padding = " " * max(0, panel_width - cell_len(prefix) - cell_len(body))
     return [
         ("class:form-panel.search", prefix),
-        ("class:form-panel.placeholder", body),
-        ("class:form-panel.placeholder", " " * max(0, panel_width - cell_len(prefix) - cell_len(body))),
+        (body_style, body),
+        (body_style, padding),
     ]
 
 
@@ -600,9 +667,11 @@ __all__ = [
     "FormTab",
     "active_field_is_checkbox",
     "active_input_is_secret",
+    "active_input_label",
     "active_tab",
     "build_result",
     "clamp_selection",
+    "draft_for",
     "filter_options",
     "form_panel_fragments",
     "form_panel_height",

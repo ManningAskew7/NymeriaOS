@@ -46,6 +46,7 @@ ErrorHandler = Callable[[str], None]
 StopHandler = Callable[[], bool | None]
 StateGetter = Callable[[], bool]
 CountGetter = Callable[[], int]
+LabelGetter = Callable[[], str]
 SlashPanelMoveHandler = Callable[[int], bool | None]
 SlashPanelAcceptHandler = Callable[["Buffer"], bool | None]
 FormMoveHandler = Callable[[int], bool | None]
@@ -221,6 +222,8 @@ class ComposerController:
         on_slash_panel_accept: SlashPanelAcceptHandler | None = None,
         form_is_active: StateGetter | None = None,
         form_tab_enabled: StateGetter | None = None,
+        form_has_navigable_list: StateGetter | None = None,
+        active_field_label: LabelGetter | None = None,
         active_field_is_checkbox: StateGetter | None = None,
         active_field_is_secret: StateGetter | None = None,
         on_form_move: FormMoveHandler | None = None,
@@ -244,6 +247,8 @@ class ComposerController:
         self.on_slash_panel_accept = on_slash_panel_accept
         self.form_is_active = form_is_active or (lambda: False)
         self.form_tab_enabled = form_tab_enabled or (lambda: False)
+        self.form_has_navigable_list = form_has_navigable_list or (lambda: False)
+        self.active_field_label = active_field_label or (lambda: "")
         self.active_field_is_checkbox = active_field_is_checkbox or (lambda: False)
         self.active_field_is_secret = active_field_is_secret or (lambda: False)
         self.on_form_move = on_form_move
@@ -307,6 +312,16 @@ class ComposerController:
             return [("class:composer.error", "› ")]
         if self.show_queued_prompt and state.queued_count:
             return [("class:composer.queued", f"› {state.queued_count}: ")]
+        # While a form step feeds off this buffer, name the field here. The
+        # composer is the ONLY surface that shows the value (the panel reports
+        # its length), so the prompt has to say what is being edited. Busy is
+        # not dropped for it, just merged: a chained step submits and waits for
+        # the next one, so the label and the in-flight turn are both true at
+        # once and the label carries the busy STYLE rather than losing to it.
+        field_label = str(self.active_field_label() or "").strip()
+        if field_label:
+            style = "class:composer.busy" if state.busy else "class:composer.form"
+            return [(style, f"{field_label} › ")]
         if state.busy:
             return [("class:composer.busy", "› ")]
         return [("class:composer", "› ")]
@@ -393,10 +408,65 @@ class ComposerController:
         return bool(self.form_is_active())
 
     def form_move_enabled(self) -> bool:
-        return self.on_form_move is not None and self.form_active()
+        """Up/Down drive the option list, and only when the active step HAS one.
+
+        A text-only step (the OAuth paste rail) has no list, so without this gate
+        the arrows are swallowed by a no-op handler. Such a step routes them to
+        :meth:`form_caret_move_enabled` instead, NOT to the editor default.
+        """
+
+        return (
+            self.on_form_move is not None
+            and self.form_active()
+            and bool(self.form_has_navigable_list())
+        )
+
+    def form_caret_move_enabled(self) -> bool:
+        """Up/Down move the caret on a text step, and must never reach history.
+
+        prompt_toolkit's default Up/Down are ``auto_up``/``auto_down``, which
+        recall shell history whenever the cursor sits on the first LOGICAL line
+        (wrapping does not save it: a 330-char value on one logical line still
+        counts). The composer is backed by a real ``FileHistory``, so simply
+        leaving these keys unbound on a text step replaces a pasted single-use
+        OAuth code with a previous prompt: the same value destruction the
+        per-step draft stash exists to prevent, arriving through a different
+        door. Bind plain caret movement instead, which is a harmless no-op on a
+        single-line value and still walks a multi-line one.
+        """
+
+        return self.form_active() and not bool(self.form_has_navigable_list())
 
     def form_tab_nav_enabled(self) -> bool:
         return self.on_form_tab is not None and bool(self.form_tab_enabled())
+
+    # Left/Right have to serve two masters: navigating the step rail, and moving
+    # the caret through a typed value (a pasted OAuth callback is ~330 chars).
+    # They cross to the neighbouring step only FROM the respective boundary, so
+    # editing wins wherever there is text under the caret and an empty field
+    # still steps on the first press.
+
+    def _composer_buffer(self) -> "Buffer | None":
+        return getattr(getattr(self, "text_area", None), "buffer", None)
+
+    def composer_cursor_at_start(self) -> bool:
+        buffer = self._composer_buffer()
+        if buffer is None:
+            return True
+        return int(getattr(buffer, "cursor_position", 0) or 0) <= 0
+
+    def composer_cursor_at_end(self) -> bool:
+        buffer = self._composer_buffer()
+        if buffer is None:
+            return True
+        text = str(getattr(buffer, "text", "") or "")
+        return int(getattr(buffer, "cursor_position", 0) or 0) >= len(text)
+
+    def form_tab_prev_enabled(self) -> bool:
+        return self.form_tab_nav_enabled() and self.composer_cursor_at_start()
+
+    def form_tab_next_enabled(self) -> bool:
+        return self.form_tab_nav_enabled() and self.composer_cursor_at_end()
 
     def form_toggle_enabled(self) -> bool:
         return (
@@ -500,10 +570,29 @@ class ComposerController:
         def _form_down(event):
             self.move_form_selection(1)
 
+        # A text step has no list, so these keep Up/Down away from the composer's
+        # shell history. See form_caret_move_enabled: the default binding would
+        # eat a pasted OAuth code.
+        @bindings.add(
+            "up",
+            eager=True,
+            filter=Condition(self.form_caret_move_enabled),
+        )
+        def _form_caret_up(event):
+            event.current_buffer.cursor_up(count=event.arg)
+
+        @bindings.add(
+            "down",
+            eager=True,
+            filter=Condition(self.form_caret_move_enabled),
+        )
+        def _form_caret_down(event):
+            event.current_buffer.cursor_down(count=event.arg)
+
         @bindings.add(
             "left",
             eager=True,
-            filter=Condition(self.form_tab_nav_enabled),
+            filter=Condition(self.form_tab_prev_enabled),
         )
         def _form_tab_prev(event):
             self.move_form_tab(-1)
@@ -511,10 +600,30 @@ class ComposerController:
         @bindings.add(
             "right",
             eager=True,
-            filter=Condition(self.form_tab_nav_enabled),
+            filter=Condition(self.form_tab_next_enabled),
         )
         def _form_tab_next(event):
             self.move_form_tab(1)
+
+        # Tab/Shift-Tab always step, whatever the caret is doing, so rail
+        # navigation stays reachable mid-value. Safe to bind unconditionally
+        # against the slash panel: a form suppresses it (slash_panel_visible
+        # returns False while a form is open), so the two filters never overlap.
+        @bindings.add(
+            "tab",
+            eager=True,
+            filter=Condition(self.form_tab_nav_enabled),
+        )
+        def _form_tab_next_explicit(event):
+            self.move_form_tab(1)
+
+        @bindings.add(
+            "s-tab",
+            eager=True,
+            filter=Condition(self.form_tab_nav_enabled),
+        )
+        def _form_tab_prev_explicit(event):
+            self.move_form_tab(-1)
 
         @bindings.add(
             " ",
@@ -606,6 +715,8 @@ def create_rich_repl_composer(
     on_slash_panel_accept: SlashPanelAcceptHandler | None = None,
     form_is_active: StateGetter | None = None,
     form_tab_enabled: StateGetter | None = None,
+    form_has_navigable_list: StateGetter | None = None,
+    active_field_label: LabelGetter | None = None,
     active_field_is_checkbox: StateGetter | None = None,
     active_field_is_secret: StateGetter | None = None,
     on_form_move: FormMoveHandler | None = None,
@@ -630,6 +741,8 @@ def create_rich_repl_composer(
         on_slash_panel_accept=on_slash_panel_accept,
         form_is_active=form_is_active,
         form_tab_enabled=form_tab_enabled,
+        form_has_navigable_list=form_has_navigable_list,
+        active_field_label=active_field_label,
         active_field_is_checkbox=active_field_is_checkbox,
         active_field_is_secret=active_field_is_secret,
         on_form_move=on_form_move,

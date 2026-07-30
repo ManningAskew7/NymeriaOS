@@ -39,6 +39,14 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 # stale-session trap (see confirm_login_landed).
 SESSION_OK_GUARD_SECONDS = 540.0
 
+# Statuses the proxy answers on /oauth-callback once it has STOPPED waiting on a
+# state: 404 "unknown or expired state", 409 "oauth flow is not pending". A
+# successful login is one of the ways that happens (the proxy deletes the
+# session, and wipes sibling sessions for the provider), so neither can be read
+# as a delivery failure without checking the auth files first. Proxy-domain
+# knowledge, kept here rather than in the callers that react to it.
+DELIVERY_SETTLED_STATUSES: tuple[int, ...] = (404, 409)
+
 # In-process OAuth session ledger: state -> (started_at_monotonic,
 # callback_delivered, preexisting_active_login). Stamped inside
 # start_oauth/oauth_callback so EVERY surface that drives OAuth through
@@ -372,6 +380,17 @@ class CLIProxyManagementClient:
             body["state"] = session_state
         else:
             raise ValueError("oauth_callback needs redirect_url or code+state")
+        # A 404/409 here does NOT mark the session delivered, deliberately. The
+        # proxy stops knowing a state both when the login SUCCEEDED (it deletes
+        # the session, and wipes sibling sessions for the provider) and when the
+        # session simply EXPIRED, and the two are indistinguishable from the
+        # status alone. Marking delivered would satisfy stale_session_refusal and
+        # reopen the relogin trap: an expired relogin session would then let an
+        # unknown-state ok bless the PRE-EXISTING auth file and report a login
+        # that never happened. Leaving it undelivered keeps that guard armed; the
+        # cost is that a relogin past SESSION_OK_GUARD_SECONDS gets a
+        # conservative refusal telling the user to check the login list, which is
+        # recoverable, whereas a false "logged in" is not.
         await self._request("POST", "/oauth-callback", json_body=body)
         _ledger_mark_delivered(session_state)
 

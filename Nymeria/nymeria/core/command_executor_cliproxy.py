@@ -20,12 +20,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 if TYPE_CHECKING:
+    from ..api.schemas.cliproxy import CLIProxyVerifyVerdict
     from ..cliproxy.catalog import CLIProxyProviderSpec
     from .provider_setup import PendingCliproxyLogin
 
@@ -584,16 +585,23 @@ class CliproxyCommandsMixin:
                 user_id=self.user_id,
             )
         except httpx.HTTPError as error:
-            return self._cliproxy_login_rail(
-                pending,
-                spec,
-                note_lines=notes
-                + [
-                    "Callback delivery failed: "
-                    + self._cliproxy_error_detail(error),
-                    "Paste again, or restart the login.",
-                ],
-            )
+            # 404/409 mean the proxy is not waiting on this state anymore, which
+            # includes "the login already succeeded" (it deletes the session on
+            # success, and wipes sibling sessions for the provider). Reporting a
+            # delivery failure there dead-ends the rail on a login that WORKED,
+            # so fall through to the confirm poll and let the auth-file check
+            # decide. Only a genuine transport or server fault is a failure.
+            if not self._cliproxy_delivery_may_have_landed(error):
+                return self._cliproxy_login_rail(
+                    pending,
+                    spec,
+                    note_lines=notes
+                    + [
+                        "Callback delivery failed: "
+                        + self._cliproxy_error_detail(error),
+                        "Paste again, or restart the login.",
+                    ],
+                )
         # Delivered (the management client's session ledger records it, so
         # the server-confirmed status keeps trusting this session); give
         # the proxy a moment to persist the auth file, then confirm (the
@@ -708,9 +716,58 @@ class CliproxyCommandsMixin:
         note = f"Logged in to {spec.label}" + (
             f" as {account}." if account else "."
         )
+        # The confirm above only proves the proxy LISTS an enabled auth file, so
+        # exercise the credential for real before telling the user they are in.
+        verdict, detail = await self._cliproxy_verify_credential(spec)
+        if verdict == "auth_failed":
+            # The auth file exists but the upstream rejects it, so advancing to
+            # a model picker would hand over a route that cannot serve a turn.
+            return self._cliproxy_login_rail(
+                updated,
+                spec,
+                note_lines=[
+                    note,
+                    f"But the credential was rejected upstream: {detail}",
+                    "Restart the login; the stored auth file will not serve"
+                    " traffic.",
+                ],
+            )
+        if verdict == "ok":
+            note += f" Credential verified against {detail}."
+        else:
+            note += (
+                f" Could not verify the credential yet ({detail});"
+                " usually a slow or unreachable upstream rather than a bad"
+                " login. Continuing, and /provider test will retest after apply."
+            )
         return await self._cliproxy_model_chain(
             updated, spec, note_lines=[note]
         )
+
+    async def _cliproxy_verify_credential(
+        self, spec: "CLIProxyProviderSpec"
+    ) -> tuple["CLIProxyVerifyVerdict", str]:
+        """One real data-plane call, returning ``(verdict, detail)``.
+
+        Never fatal to the login chain: any transport or facade fault degrades to
+        "inconclusive" so a flaky probe cannot block a good login. An unknown
+        verdict string degrades the same way, since this is the far side of a
+        wire and an older backend can answer with anything.
+        """
+
+        from ..api.schemas.cliproxy import VERIFY_VERDICTS
+
+        try:
+            payload = await self.api.cliproxy_verify_credential(
+                spec.id, user_id=self.user_id
+            )
+        except Exception as error:  # noqa: BLE001 - a probe must not break the rail.
+            return "inconclusive", self._cliproxy_error_detail(error)
+        verdict = str((payload or {}).get("verdict") or "").strip()
+        detail = str((payload or {}).get("detail") or "").strip()
+        if verdict not in VERIFY_VERDICTS:
+            return "inconclusive", detail or "the probe returned no verdict"
+        return cast("CLIProxyVerifyVerdict", verdict), detail
 
     async def _cliproxy_model_chain(
         self,
@@ -880,6 +937,29 @@ class CliproxyCommandsMixin:
             message += " Restart required for some changes."
         message += " Verify with /provider test."
         return f"[Success]: {message}"
+
+    @staticmethod
+    def _cliproxy_delivery_may_have_landed(error: Exception) -> bool:
+        """True when a failed callback delivery might mean "already logged in".
+
+        The proxy answers 404 ("unknown or expired state") or 409 ("oauth flow is
+        not pending") once it has stopped waiting on a state, and a SUCCESSFUL
+        login is one of the ways that happens. Neither status can be read as a
+        failure without checking the auth files first.
+
+        This reads the FACADE's status, which also covers Nymeria's own 404s (an
+        unknown provider, or a remote backend too old to have the route). That
+        conflation is deliberate and safe: both still route to the confirm poll,
+        which reports honestly that nothing landed, and mistaking a real failure
+        for "go check" costs one poll, while the reverse costs a user their
+        single-use OAuth code.
+        """
+
+        from ..cliproxy.management_client import DELIVERY_SETTLED_STATUSES
+
+        response = getattr(error, "response", None)
+        status = int(getattr(response, "status_code", 0) or 0)
+        return status in DELIVERY_SETTLED_STATUSES
 
     @staticmethod
     def _cliproxy_error_detail(error: Exception) -> str:

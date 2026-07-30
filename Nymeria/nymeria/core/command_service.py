@@ -954,6 +954,19 @@ class CommandHttpClient:
         payload = await self._get("/cliproxy/models", act_as=user_id)
         return list((payload or {}).get("models") or [])
 
+    async def cliproxy_verify_credential(
+        self,
+        provider: str,
+        *,
+        model: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        return await self._post(
+            "/cliproxy/verify",
+            json={"provider": provider, "model": model or ""},
+            act_as=user_id,
+        )
+
     async def cliproxy_apply_route(
         self, provider: str, model: str, *, user_id: Optional[str] = None
     ) -> dict:
@@ -1788,6 +1801,43 @@ class CommandBackendClient:
             self._cliproxy_raise(error)
         except httpx.HTTPError as error:
             _raise_http_status(502, f"CLIProxy model list failed: {error}")
+
+    async def cliproxy_verify_credential(
+        self,
+        provider: str,
+        *,
+        model: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict:
+        self._require_admin()
+        from ..api.routers.cliproxy import verify_cliproxy_credential
+        from ..cliproxy.management_client import CLIProxyManagementError
+
+        spec = self._cliproxy_spec_or_404(provider)
+        client = self._cliproxy_client_or_400()
+        settings = self._settings()
+        management_url = (
+            getattr(settings, "cliproxy_management_url", None) or ""
+        ).strip()
+        try:
+            verdict, detail = await verify_cliproxy_credential(
+                client,
+                management_url,
+                spec,
+                model=str(model or ""),
+                settings=settings,
+                vault=getattr(self.agent, "credential_vault", None),
+                owner_user_id=self.user.id,
+            )
+        except CLIProxyManagementError as error:
+            self._cliproxy_raise(error)
+        except httpx.HTTPError as error:
+            # Not reaching the proxy says nothing about the credential.
+            return {
+                "verdict": "inconclusive",
+                "detail": f"CLIProxy verification could not run: {error}",
+            }
+        return {"verdict": verdict, "detail": detail}
 
     async def cliproxy_apply_route(
         self, provider: str, model: str, *, user_id: Optional[str] = None
