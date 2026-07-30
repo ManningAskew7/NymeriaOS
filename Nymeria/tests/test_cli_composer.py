@@ -788,3 +788,46 @@ def test_rich_repl_queued_panel_tracks_queue_and_footer_height() -> None:
     assert runtime.next_queued_submission().message == "second queued"
     assert runtime.queued_panel_visible() is False
     assert runtime.footer_height() == empty_footer
+
+
+def test_secret_field_masks_the_value_but_never_the_prompt() -> None:
+    """The field label must not be inside the maskable render chain.
+
+    `TextArea(prompt=...)` becomes a BeforeInput processor, and TextArea places
+    it AHEAD of caller-supplied input_processors, so the secret-field
+    PasswordProcessor masked the prompt along with the value: a form's field
+    label rendered as a run of bullets with no visible caret, which reads as
+    text that cannot be deleted (reported from a real login: 23 bullets, the
+    exact width of "Redirect URL or code > "). The prompt therefore renders via
+    get_line_prefix, outside the processor chain.
+
+    This asserts the composed render, not the fragments in isolation: the
+    fragment-level tests could not see the ordering bug that caused it.
+    """
+
+    controller = ComposerController(
+        form_is_active=lambda: True,
+        form_has_navigable_list=lambda: False,
+        active_field_label=lambda: "Redirect URL or code",
+        active_field_is_secret=lambda: True,
+    )
+    controller.text_area.buffer.text = "4/0AXsecret"
+
+    async def _render() -> str:
+        # create_content applies the processor chain (and needs a running loop
+        # for the buffer's history load).
+        content = controller.text_area.control.create_content(80, 5)
+        return "".join(text for _style, text in content.get_line(0))
+
+    rendered = asyncio.run(_render())
+    prefix = "".join(text for _style, text in controller._line_prefix(0, 0))
+
+    # The value is masked in the processor-transformed content, and ONLY the
+    # value: an exact count also catches a prompt rendered twice (once through
+    # each path), which would mask 23 extra characters here.
+    assert rendered.count("•") == len("4/0AXsecret")
+    assert "4/0AXsecret" not in rendered
+    # ...and the label is readable, outside that content, where no mask reaches.
+    assert prefix == "Redirect URL or code › "
+    assert "Redirect" not in rendered
+    assert "•" not in prefix
