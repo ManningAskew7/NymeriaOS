@@ -282,7 +282,11 @@ class ComposerController:
         self.text_area = TextArea(
             height=input_height,
             dont_extend_height=multiline,
-            prompt=self.prompt_fragments,
+            # NB: no prompt= here. TextArea turns that into a BeforeInput
+            # processor and places it AHEAD of caller-supplied
+            # input_processors, so the mask below would mask the prompt too.
+            # The prompt renders through get_line_prefix instead; see
+            # _line_prefix.
             multiline=multiline,
             wrap_lines=True,
             get_line_prefix=self._line_prefix,
@@ -330,7 +334,14 @@ class ComposerController:
         if wrap_count > 0 or line_number > 0:
             prompt_width = sum(len(text) for _, text in self.prompt_fragments())
             return [("", " " * prompt_width)]
-        return []
+        # The prompt renders HERE rather than through ``TextArea(prompt=...)``.
+        # That argument becomes a BeforeInput processor which TextArea puts
+        # BEFORE any caller-supplied input_processors, so the secret-field
+        # PasswordProcessor masked the prompt along with the value: a form's
+        # field label came out as a run of bullets with no caret, which reads as
+        # text that cannot be deleted. get_line_prefix is applied at render
+        # time, outside the processor chain, so a mask can never reach it.
+        return self.prompt_fragments()
 
     def submit_buffer(self, buffer: "Buffer") -> bool:
         submission = parse_composer_submission(buffer.text, cwd=self.cwd)
