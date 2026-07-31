@@ -41,7 +41,13 @@ def repo(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def alice_oauth_cache(repo):
-    """An unscoped, user-owned record shaped like a migrated OAuth cache."""
+    """An unscoped, user-owned record shaped like a migrated OAuth cache.
+
+    ``["*"]`` rather than ``[]``: this module is about the ACTOR check, so the
+    target gate is deliberately opened to keep the two independent. An empty
+    list now denies on its own, which would make every test here pass without
+    the owner check doing anything.
+    """
     return repo.create_credential(
         owner_type="user",
         owner_user_id="alice",
@@ -49,7 +55,7 @@ def alice_oauth_cache(repo):
         provider="google",
         kind="oauth_cache",
         secret_fields={"refresh_token": "alice-refresh-token"},
-        allowed_targets=[],
+        allowed_targets=["*"],
         credential_id="cred_lcache_alice_google",
     )
 
@@ -69,19 +75,59 @@ def test_the_owner_still_reads_their_own_secret(repo, alice_oauth_cache):
     )
 
 
-def test_empty_allowed_targets_does_not_narrow_the_record(repo, alice_oauth_cache):
-    """Why the actor check has to carry this on its own.
+def test_empty_allowed_targets_now_denies(repo):
+    """The flip this test was written to anticipate has happened.
 
-    An empty ``allowed_targets`` currently means "no target restriction", so
-    target scoping contributes nothing here and the owner check is the only
-    thing standing between a caller and the refresh token. If this assertion
-    ever flips (empty meaning deny), that is a deliberate hardening and this
-    test should be updated to match, not deleted.
+    It used to assert the opposite: an empty ``allowed_targets`` meant "no
+    target restriction", so the owner check was the only thing between a caller
+    and the refresh token. Empty now denies, so the two controls are
+    independent and either one alone refuses this read.
+
+    Kept rather than deleted, per the note the old version carried, because the
+    pairing is the point: the owner check still has to hold on its own for any
+    record that legitimately carries ``"*"``.
     """
-    assert alice_oauth_cache.allowed_targets == []
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Locked",
+        provider="google",
+        kind="oauth_cache",
+        secret_fields={"refresh_token": "alice-refresh-token"},
+        allowed_targets=[],
+        credential_id="cred_lcache_alice_locked",
+    )
+    assert record.allowed_targets == []
+    with pytest.raises(CredentialAccessDenied):
+        repo.get_secret_field(
+            record.id,
+            "refresh_token",
+            actor="alice",
+            target_type="native_tool",
+            target_id="anything_at_all",
+        )
+
+
+def test_the_owner_check_still_holds_on_an_unrestricted_record(repo):
+    """The half the flip must not be allowed to mask.
+
+    With ``"*"`` the target gate passes, so a regression in the owner check
+    would be invisible in the test above. This is the record shape that keeps
+    it honest.
+    """
+    record = repo.create_credential(
+        owner_type="user",
+        owner_user_id="alice",
+        name="Unrestricted",
+        provider="google",
+        kind="oauth_cache",
+        secret_fields={"refresh_token": "alice-refresh-token"},
+        allowed_targets=["*"],
+        credential_id="cred_lcache_alice_wildcard",
+    )
     assert (
         repo.get_secret_field(
-            alice_oauth_cache.id,
+            record.id,
             "refresh_token",
             actor="alice",
             target_type="native_tool",
@@ -89,6 +135,10 @@ def test_empty_allowed_targets_does_not_narrow_the_record(repo, alice_oauth_cach
         )
         == "alice-refresh-token"
     )
+    with pytest.raises(CredentialAccessDenied):
+        repo.get_secret_field(
+            record.id, "refresh_token", actor="mallory", target_type="native_tool"
+        )
 
 
 @pytest.mark.parametrize(

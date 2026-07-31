@@ -28,7 +28,21 @@ def test_make_vault_repo_seeds_alice_and_returns_working_repo(tmp_path, monkeypa
         secret_fields={"token": "alice-token"},
         created_by_user_id="alice",
     )
-    assert repo.get_secret_field(record.id, "token", actor="alice") == "alice-token"
+    # A target is required, not optional garnish: a read that names no target
+    # is refused unless the record is explicitly ``["*"]``. That has always
+    # been true for a scoped record; it reaches this helper now only because an
+    # unspecified ``allowed_targets`` gets the kind's reader set rather than
+    # the old empty-means-anything.
+    assert (
+        repo.get_secret_field(
+            record.id,
+            "token",
+            actor="alice",
+            target_type="native_tool",
+            target_id="example_tool",
+        )
+        == "alice-token"
+    )
 
 
 def test_bind_vault_repo_routes_global_resolver(tmp_path, monkeypatch):

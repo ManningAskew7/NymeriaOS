@@ -1096,6 +1096,24 @@ def _binding_ref(
         binding_name=field,
         actor_user_id=user_id,
     )
+    # The bindings row records the CHOICE; the grant has to be written where the
+    # gate actually reads, or this whole surface is dead: MCP resolves as
+    # SYSTEM_ACTOR, so `allowed_targets` is the only check on the spawn path,
+    # and a bound-but-ungranted credential raises `CredentialAccessDenied` out
+    # of `_start_server` with nothing pointing back to the bind.
+    #
+    # Widening on bind is right HERE and wrong in the agent-facing bind tools,
+    # which deliberately do not: this surface is an admin saying "use this
+    # credential for this server", which is the entire point of the action,
+    # whereas there scope belongs to whoever created the credential rather than
+    # to whoever references it later. `add_allowed_target` is owner-checked,
+    # and `actor_is_admin` is what carries the admin-only fact above into it.
+    repo.add_allowed_target(
+        credential_id,
+        target=f"mcp_server:{defn.id}",
+        actor_user_id=user_id,
+        actor_is_admin=True,
+    )
     return f"${{credential:{credential_id}.{field_name}}}"
 
 

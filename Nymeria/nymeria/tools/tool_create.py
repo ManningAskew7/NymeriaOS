@@ -441,7 +441,18 @@ async def test_draft(
     if draft.implementation_type == "http":
         if draft.http_config is None:
             raise ValueError("Draft is missing http_config")
-        response = await execute_http_tool(draft.http_config, params, actor=user_id)
+        # Same target string the tool will resolve under once published:
+        # ``publish`` sets ``definition.id = draft.tool_id``. Testing a draft is
+        # a real execution with real credentials, so it has to sit behind the
+        # same vault gate as the published tool, or "draft it and test it"
+        # becomes a way to reach a credential the published tool could not.
+        response = await execute_http_tool(
+            draft.http_config,
+            params,
+            actor=user_id,
+            target_type="custom_tool",
+            target_id=draft.tool_id,
+        )
         ok = not response.startswith("[Error]:")
     elif draft.implementation_type == "python":
         if draft.python_config is None:

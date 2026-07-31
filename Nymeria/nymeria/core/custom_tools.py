@@ -588,13 +588,23 @@ async def execute_http_tool(
     params: Dict[str, Any],
     *,
     actor: Actor,
-    target_type: str = "custom_http_tool",
-    target_id: Optional[str] = None,
+    target_type: str,
+    target_id: Optional[str],
 ) -> str:
     """Execute an HTTP tool with the given parameters.
 
     Async wrapper that offloads the synchronous core to a worker thread, mirroring
     the Python-tool path (``execute_python_tool`` -> ``_sync_execute_python_tool``).
+
+    ``target_type``/``target_id`` are REQUIRED, and deliberately have no
+    defaults. They are the credential vault's gate: it matches ``target_type``
+    as a literal string against a row's ``allowed_targets``, so a caller that
+    omits or misspells it does not fail loudly, it silently resolves under the
+    wrong gate. These three entry points used to default to
+    ``custom_http_tool`` while every real caller passed ``custom_tool``, and
+    nothing caught it because an empty ``allowed_targets`` then meant "any
+    target may read". A default cannot be tested (no caller exercises it) and
+    cannot fail closed, so there isn't one. Pass ``custom_tool`` and the tool id.
 
     Args:
         config: HTTP tool configuration.
@@ -618,8 +628,8 @@ def _sync_http_request(
     params: Dict[str, Any],
     *,
     actor: Actor,
-    target_type: str = "custom_http_tool",
-    target_id: Optional[str] = None,
+    target_type: str,
+    target_id: Optional[str],
 ) -> str:
     """Synchronous core for HTTP tool execution.
 
@@ -739,8 +749,8 @@ def _sync_execute_http(
     params: Dict[str, Any],
     *,
     actor: Actor,
-    target_type: str = "custom_http_tool",
-    target_id: Optional[str] = None,
+    target_type: str,
+    target_id: Optional[str],
 ) -> str:
     """Synchronous entry point for HTTP tool execution (StructuredTool ``func``).
 
