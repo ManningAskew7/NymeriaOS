@@ -1489,3 +1489,25 @@ async def test_end_to_end_llm_schema_wire_path(monkeypatch):
     assert result.envelope.status == "ok"
     assert result.envelope.output == {"got": 42}
     assert received["schema"] == {"type": "object", "required": ["answer"]}
+
+
+@pytest.mark.asyncio
+async def test_sub_turn_dispatch_carries_the_calling_context():
+    """``nym.thread`` runs its blocking sub-turn on a dedicated pool thread.
+
+    ``loop.run_in_executor`` does not carry ContextVars, so without an explicit
+    copy the sub-turn starts from an empty context. That is not cosmetic: the
+    lifecycle-hook engine bounds hook -> workflow -> tool -> hook recursion with
+    a ContextVar depth counter, and a dispatch that resets it to zero on every
+    hop means the guard never trips however deep the chain goes.
+
+    Asserted against the real counter rather than a local ContextVar, so this
+    breaks if either side of the arrangement moves.
+    """
+    from nymeria.core.hooks.dispatch import _fire_depth
+
+    token = _fire_depth.set(2)
+    try:
+        assert await verbs_thread._run_dispatch(_fire_depth.get) == 2
+    finally:
+        _fire_depth.reset(token)

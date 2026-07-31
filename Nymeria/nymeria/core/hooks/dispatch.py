@@ -25,14 +25,15 @@ skipped. A hook can never crash a turn.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 import os
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from concurrent.futures import wait as futures_wait
 from dataclasses import replace
@@ -191,6 +192,39 @@ def _legal(event: HookEvent, outcome: HookOutcome) -> bool:
     return isinstance(outcome, EVENT_OUTCOME_TYPES[event])
 
 
+@contextlib.contextmanager
+def _entered_fire_depth() -> Iterator[Optional[int]]:
+    """Enter one hook-fire level, or report that the budget is spent.
+
+    Yields ``None`` when the level was entered (and releases it on the way
+    out), or the depth that would have been reached when it was not, which the
+    caller turns into its plane's refusal.
+
+    All four dispatchers use this, which is the point: the guard was written
+    twice by hand for the mutate plane and the observe plane was simply left
+    without one, so a hook whose ACTION runs a workflow could cycle unbounded
+    as long as it was registered to observe. Nothing about "observe hooks
+    cannot change the turn" bounds what their side effects do.
+    """
+    depth = _fire_depth.get()
+    if depth >= MAX_HOOK_FIRE_DEPTH:
+        yield depth + 1
+        return
+    token = _fire_depth.set(depth + 1)
+    try:
+        yield None
+    finally:
+        _fire_depth.reset(token)
+
+
+def _log_reentrance(event: HookEvent, depth: int) -> None:
+    logger.error(
+        "hook dispatch refused on %s: fire depth %d exceeds max %d "
+        "(a hook is re-entering itself, most likely hook -> workflow -> tool)",
+        event.value, depth, MAX_HOOK_FIRE_DEPTH,
+    )
+
+
 def _reentrance_outcome(event: HookEvent, depth: int) -> Optional[HookOutcome]:
     """Depth policy, deliberately identical to the fault policy above.
 
@@ -205,13 +239,10 @@ def _reentrance_outcome(event: HookEvent, depth: int) -> Optional[HookOutcome]:
     once a chain got deep enough, then driving the chain deep would be a way to
     walk straight through the gate. So PRE denies here, for the same reason it
     denies on a saturated pool: a guardrail that was not evaluated must not
-    pass. The observe and post planes gate nothing, so they simply stop.
+    pass. The post plane gates nothing, so it simply stops, and the observe
+    plane discards outcomes entirely, so it stops too.
     """
-    logger.error(
-        "hook dispatch refused on %s: fire depth %d exceeds max %d "
-        "(a hook is re-entering itself, most likely hook -> workflow -> tool)",
-        event.value, depth, MAX_HOOK_FIRE_DEPTH,
-    )
+    _log_reentrance(event, depth)
     if event is HookEvent.PRE_TOOL_USE:
         return PreToolOutcome(
             decision="deny",
@@ -461,10 +492,17 @@ async def _arun_hook(
         return cast(Optional[HookOutcome], reg.fn(ctx))
 
     # Use our own pool (not asyncio.to_thread's default executor) so a timed-out
-    # sync hook's still-running thread cannot block event-loop shutdown.
+    # sync hook's still-running thread cannot block event-loop shutdown. The
+    # context copy is what asyncio.to_thread would have done for us, and is
+    # load-bearing: the re-entrance depth below is a ContextVar, and a pool
+    # thread with a fresh context reads it back as zero, so a sync hook action
+    # that re-enters dispatch would escape the guard entirely.
     loop = asyncio.get_running_loop()
+    context = copy_context()
     try:
-        result = await asyncio.wait_for(loop.run_in_executor(pool, _runner), timeout=timeout)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(pool, context.run, _runner), timeout=timeout
+        )
     except (asyncio.TimeoutError, FuturesTimeoutError):
         raise _HookTimeout(reg.name, started=started.is_set()) from None
     return cast(Optional[HookOutcome], result)
@@ -492,7 +530,9 @@ def _run_hook_sync(
         started.set()
         return cast(Optional[HookOutcome], reg.fn(ctx))
 
-    future = pool.submit(_runner)
+    # Same context copy as the async twin, for the same reason: the depth
+    # counter is a ContextVar and pool.submit starts from an empty context.
+    future = pool.submit(copy_context().run, _runner)
     try:
         return cast(Optional[HookOutcome], future.result(timeout=timeout))
     except FuturesTimeoutError:
@@ -599,13 +639,11 @@ async def adispatch(
     regs = registry.matching(event, ctx, observe=False)
     if not regs:
         return None
-    depth = _fire_depth.get()
-    if depth >= MAX_HOOK_FIRE_DEPTH:
-        return _reentrance_outcome(event, depth + 1)
-    ctx = _with_scratch(ctx, scratch)
-    outcomes: List[HookOutcome] = []
-    token = _fire_depth.set(depth + 1)
-    try:
+    with _entered_fire_depth() as refused_at:
+        if refused_at is not None:
+            return _reentrance_outcome(event, refused_at)
+        ctx = _with_scratch(ctx, scratch)
+        outcomes: List[HookOutcome] = []
         for reg in regs:
             # _accept runs inside the try so a malformed scratch_patch (or any
             # other post-run failure) is isolated per hook rather than crashing
@@ -627,8 +665,6 @@ async def adispatch(
                 status=status, duration=time.monotonic() - started_at,
                 outcome=outcome, error=error, emit=emit,
             )
-    finally:
-        _fire_depth.reset(token)
     return _reduce_safe(event, outcomes)
 
 
@@ -647,13 +683,11 @@ def dispatch(
     regs = registry.matching(event, ctx, observe=False)
     if not regs:
         return None
-    depth = _fire_depth.get()
-    if depth >= MAX_HOOK_FIRE_DEPTH:
-        return _reentrance_outcome(event, depth + 1)
-    ctx = _with_scratch(ctx, scratch)
-    outcomes: List[HookOutcome] = []
-    token = _fire_depth.set(depth + 1)
-    try:
+    with _entered_fire_depth() as refused_at:
+        if refused_at is not None:
+            return _reentrance_outcome(event, refused_at)
+        ctx = _with_scratch(ctx, scratch)
+        outcomes: List[HookOutcome] = []
         for reg in regs:
             # _accept runs inside the try so a malformed scratch_patch (or any
             # other post-run failure) is isolated per hook rather than crashing
@@ -675,8 +709,6 @@ def dispatch(
                 status=status, duration=time.monotonic() - started_at,
                 outcome=outcome, error=error, emit=emit,
             )
-    finally:
-        _fire_depth.reset(token)
     return _reduce_safe(event, outcomes)
 
 
@@ -698,21 +730,28 @@ async def adispatch_observe(
     regs = registry.matching(event, ctx, observe=True)
     if not regs:
         return
-    ctx = _with_scratch(ctx, scratch)
-    for reg in regs:
-        started_at = time.monotonic()
-        status = "ok"
-        error: Optional[BaseException] = None
-        try:
-            outcome = await _arun_hook(reg, ctx, reg.timeout or timeout, _observe_pool)
-            _apply_observe_patch(event, reg, outcome, ctx, scratch)
-        except Exception as exc:  # noqa: BLE001 - observe never affects the turn
-            logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
-            error, status = exc, _fault_status(exc)
-        _record(
-            registry, reg, ctx,
-            status=status, duration=time.monotonic() - started_at, error=error,
-        )
+    with _entered_fire_depth() as refused_at:
+        if refused_at is not None:
+            # Nothing to return on this plane, but the cycle is just as real:
+            # an observe hook's action can run a workflow, which calls tools,
+            # which fire hooks.
+            _log_reentrance(event, refused_at)
+            return
+        ctx = _with_scratch(ctx, scratch)
+        for reg in regs:
+            started_at = time.monotonic()
+            status = "ok"
+            error: Optional[BaseException] = None
+            try:
+                outcome = await _arun_hook(reg, ctx, reg.timeout or timeout, _observe_pool)
+                _apply_observe_patch(event, reg, outcome, ctx, scratch)
+            except Exception as exc:  # noqa: BLE001 - observe never affects the turn
+                logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
+                error, status = exc, _fault_status(exc)
+            _record(
+                registry, reg, ctx,
+                status=status, duration=time.monotonic() - started_at, error=error,
+            )
 
 
 def dispatch_observe(
@@ -729,21 +768,25 @@ def dispatch_observe(
     regs = registry.matching(event, ctx, observe=True)
     if not regs:
         return
-    ctx = _with_scratch(ctx, scratch)
-    for reg in regs:
-        started_at = time.monotonic()
-        status = "ok"
-        error: Optional[BaseException] = None
-        try:
-            outcome = _run_hook_sync(reg, ctx, reg.timeout or timeout, _observe_pool)
-            _apply_observe_patch(event, reg, outcome, ctx, scratch)
-        except Exception as exc:  # noqa: BLE001 - observe never affects the turn
-            logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
-            error, status = exc, _fault_status(exc)
-        _record(
-            registry, reg, ctx,
-            status=status, duration=time.monotonic() - started_at, error=error,
-        )
+    with _entered_fire_depth() as refused_at:
+        if refused_at is not None:
+            _log_reentrance(event, refused_at)
+            return
+        ctx = _with_scratch(ctx, scratch)
+        for reg in regs:
+            started_at = time.monotonic()
+            status = "ok"
+            error: Optional[BaseException] = None
+            try:
+                outcome = _run_hook_sync(reg, ctx, reg.timeout or timeout, _observe_pool)
+                _apply_observe_patch(event, reg, outcome, ctx, scratch)
+            except Exception as exc:  # noqa: BLE001 - observe never affects the turn
+                logger.warning("observe hook %r raised on %s", reg.name, event.value, exc_info=True)
+                error, status = exc, _fault_status(exc)
+            _record(
+                registry, reg, ctx,
+                status=status, duration=time.monotonic() - started_at, error=error,
+            )
 
 
 # --------------------------------------------------------------------------- #
