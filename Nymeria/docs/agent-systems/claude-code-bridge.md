@@ -94,14 +94,22 @@ Claude Code sessions are cwd-scoped on the host. The tool persists a
 ## Auth
 
 Default: Claude Code's own OAuth / keychain auth on the host (zero added cost when
-backed by a subscription). The bridge strips any `ANTHROPIC_API_KEY` /
-`ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` the Nymeria process carries (e.g. a
-CLIProxy `cpx-` key) before invoking `claude`, so it falls back to that host auth.
+backed by a subscription). The child's environment is an **allowlist**
+(`build_subprocess_env`), not the parent's environment with a few names removed, so
+`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` are simply never
+present on this path (no CLIProxy `cpx-` key leaks in) and Claude Code falls back to host
+auth. The allowlist is network/TLS settings, a short list of runtime names (`SHELL`,
+`TERM`, `SSH_AUTH_SOCK`, `GIT_CONFIG_GLOBAL`, and similar), and everything matching the
+`CLAUDE_` prefix. If Claude Code misbehaves in a way that tracks a host setting, add the
+name to `_CLAUDE_CODE_RUNTIME_PASSTHROUGH` rather than restoring a full copy: the child
+is itself an agent that reads its own environment, and it used to receive Nymeria's
+master encryption key, service token and database credentials.
 
 Alternative: set `NYMERIA_CLAUDE_CODE_BARE=true` with a real Console
-`ANTHROPIC_API_KEY` for an isolated, metered run (`--bare` also skips host hooks
-and `CLAUDE.md` auto-discovery; it forces API-key auth, OAuth/keychain are never
-read).
+`ANTHROPIC_API_KEY` for an isolated, metered run. Bare mode is the only path that ADDS
+the three `ANTHROPIC_*` names to the allowlist, because Claude Code needs a key there
+(`--bare` also skips host hooks and `CLAUDE.md` auto-discovery; it forces API-key auth,
+OAuth/keychain are never read).
 
 ## Configuration
 

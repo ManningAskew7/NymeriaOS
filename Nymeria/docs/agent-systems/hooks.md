@@ -162,10 +162,20 @@ call is itself a fire point, so hook dispatch is a cycle. The workflow engine's 
 `max_depth` does not close it: that depth rides a runnable configurable which a
 hook-dispatched run does not inherit, so each hop through a hook restarts the count at
 zero. Dispatch therefore carries its own bound, `MAX_HOOK_FIRE_DEPTH` (2), tracked in a
-`ContextVar` so it is per-task rather than shared across concurrent turns. Breaching it
-**denies on `pre_tool_use`** and is a silent no-op on the observe planes, matching the
-saturated-pool policy: a guardrail that was not evaluated must not pass, or driving a
-chain deep would become a way through an approval gate.
+`ContextVar` so it is per-task rather than shared across concurrent turns. All four
+dispatchers apply it (async and sync, mutate and observe): an observe hook cannot change
+the turn, but its action can still run a workflow that calls tools, so the cycle is just
+as real there. Breaching the bound **denies on `pre_tool_use`** and is a silent no-op on
+the planes that gate nothing, matching the saturated-pool policy: a guardrail that was
+not evaluated must not pass, or driving a chain deep would become a way through an
+approval gate.
+
+Because the counter is a `ContextVar`, any thread hop on the path has to carry the
+context explicitly or the count silently restarts. Two do: sync hooks run in a
+`ThreadPoolExecutor`, and `nym.thread` dispatches its blocking sub-turn on the workflow
+engine's own pool. Both copy the context across (`contextvars.copy_context`), and both
+have a regression test, because the failure is invisible: nothing errors, the guard just
+never trips.
 
 Note that every suspending
 fire still mints a durable pending-approval record (7-day expiry, hourly sweep), so a

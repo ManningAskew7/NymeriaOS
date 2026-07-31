@@ -758,6 +758,12 @@ def test_depth_is_released_so_later_turns_still_fire(reg, scratch):
     A ContextVar that was set but never reset would let one deep turn
     permanently disable hooks for everything after it, which is a far worse
     failure than the recursion it guards against.
+
+    All three turns run inside ONE ``asyncio.run``, and that is the whole test.
+    ``asyncio.run`` executes its coroutine in a COPY of the current context, so
+    three separate ``run(...)`` calls are isolated from each other no matter
+    what the dispatcher does with the var: the release would go untested and
+    deleting it would leave this green.
     """
     fires: list[int] = []
 
@@ -772,17 +778,73 @@ def test_depth_is_released_so_later_turns_still_fire(reg, scratch):
         return PreToolOutcome(decision="allow")
 
     reg.register(HookEvent.PRE_TOOL_USE, recursive)
-    for _ in range(3):
-        run(
-            dmod.adispatch(
+
+    async def three_turns_in_one_context():
+        for _ in range(3):
+            await dmod.adispatch(
                 HookEvent.PRE_TOOL_USE,
                 ctx(HookEvent.PRE_TOOL_USE),
                 registry=reg,
                 scratch=scratch,
             )
-        )
+        return dmod._fire_depth.get()
+
+    depth_after = run(three_turns_in_one_context())
 
     # Every outer dispatch got its full budget back, none was starved by the
     # previous one.
     assert len(fires) == 3 * dmod.MAX_HOOK_FIRE_DEPTH
-    assert dmod._fire_depth.get() == 0
+    assert depth_after == 0
+
+
+def test_the_observe_plane_is_bounded_too(reg, scratch):
+    """An observe hook cannot change the turn, which does not make it harmless.
+
+    Its ACTION can run a command or a workflow, the workflow calls tools, and a
+    tool call is a fire point. The guard was originally added to the mutate
+    plane only, so that cycle ran unbounded as long as the hook was registered
+    to observe.
+    """
+    fires: list[int] = []
+
+    async def recursive(c: HookContext):
+        fires.append(1)
+        await dmod.adispatch_observe(
+            HookEvent.DONE, ctx(HookEvent.DONE), registry=reg, scratch=scratch
+        )
+
+    reg.register(HookEvent.DONE, recursive, observe=True)
+    run(
+        dmod.adispatch_observe(
+            HookEvent.DONE, ctx(HookEvent.DONE), registry=reg, scratch=scratch
+        )
+    )
+
+    assert len(fires) == dmod.MAX_HOOK_FIRE_DEPTH
+
+
+def test_the_depth_survives_the_pool_hop_into_a_sync_hook(reg, scratch):
+    """Sync hooks run in a ThreadPoolExecutor, which does not carry ContextVars.
+
+    Without an explicit context copy the hook body starts from an empty
+    context, reads the depth back as zero, and re-enters as if it were the
+    first fire. The counter would then never reach its limit no matter how deep
+    the chain went.
+    """
+    seen: list[int] = []
+
+    def sync_hook(c: HookContext):
+        seen.append(dmod._fire_depth.get())
+        return PreToolOutcome(decision="allow")
+
+    reg.register(HookEvent.PRE_TOOL_USE, sync_hook)
+    run(
+        dmod.adispatch(
+            HookEvent.PRE_TOOL_USE,
+            ctx(HookEvent.PRE_TOOL_USE),
+            registry=reg,
+            scratch=scratch,
+        )
+    )
+
+    assert seen == [1], "the sync hook body ran outside the dispatch's context"

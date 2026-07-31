@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import logging
 import re
@@ -90,8 +91,25 @@ def _dispatch_pool() -> ThreadPoolExecutor:
 
 
 async def _run_dispatch(fn, /, *args) -> Any:
+    """Run a blocking sub-turn dispatch on the bounded pool, in THIS context.
+
+    ``loop.run_in_executor`` does not carry ContextVars: the pool thread starts
+    from an empty context and every var reads back its default.
+    ``asyncio.to_thread`` copies the context for exactly this reason, and the
+    dedicated pool above means we cannot just use it, so we do the same thing
+    by hand.
+
+    Load-bearing, not tidiness. This verb runs a sub-agent turn, which fires
+    lifecycle hooks, which can run a workflow, which can call this verb again.
+    The hook engine bounds that cycle with a ContextVar depth counter, so a
+    dispatch that starts from a fresh context resets the count to zero on every
+    hop and the guard never trips no matter how deep the recursion goes.
+    """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_dispatch_pool(), functools.partial(fn, *args))
+    context = contextvars.copy_context()
+    return await loop.run_in_executor(
+        _dispatch_pool(), functools.partial(context.run, fn, *args)
+    )
 
 
 def _current_agent() -> Optional[Any]:
