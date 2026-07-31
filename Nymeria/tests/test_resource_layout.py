@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -659,6 +660,405 @@ def test_workflow_gate_refusal_explains_raw_edits_and_next_step():
     assert "changed since its approval" in refusal  # pinned substring
     assert "raw on-disk edits" in refusal
     assert "Next:" in refusal
+
+
+# ---------------------------------------------------------------------------
+# The control register: every store declares which control governs it
+# ---------------------------------------------------------------------------
+#
+# `_STORE_ROWS` carries the security classification alongside the doc columns
+# (see StoreControl and docs/private/security/control-store-matrix.md). These
+# tests exist so the classification is an enforced claim rather than a comment:
+# each declared gate is handed something it should refuse, each declared
+# denylist entry is handed a write it should block, and the uncontrolled set is
+# pinned so it can only shrink.
+
+
+# Data-dir children that exist but are not resource stores, each with the
+# reason. The discovery gate below refuses any child that is in neither
+# `_STORE_ROWS`, `_OPERATIONAL_DIRS`, nor here, which is what makes "a new
+# store cannot ship unclassified" a property of the tree rather than of
+# `_STORE_ROWS` (a list you only edit if you already remembered to).
+#
+# Entries reading "not yet classified" are debt, not a verdict: they are
+# children the audit's sweep never covered, recorded so they are visible and
+# so a NEW one still fails the build.
+_NON_STORE_DATA_DIR_CHILDREN = {
+    ".doctor-write-test": "transient probe file nymeria doctor writes and removes",
+    "accounts.db": "credential store, denylisted; read-side, drives nothing",
+    # The token files. All read-side: possessing one is authority, but writing
+    # one grants nothing (the server compares against its own record), so they
+    # want denylist coverage rather than a control. Surfaced only once the gate
+    # followed a module constant, which is why that hop was worth adding.
+    "fcm_tokens.json": "push token to user mapping, read-side (E8-02)",
+    "SLIM_SERVICE_TOKEN.txt": "live admin service token, read-side (A1-01)",
+    "BOOTSTRAP_TOKEN.txt": "first-run bootstrap token, read-side (A1-04)",
+    # Data stores, not config. A write to either DOES reach a rule 1 surface
+    # (checkpoints are the prompt; a schedule row picks the thread an
+    # autonomous turn runs in), so these are out of the register's scope as
+    # management stores, NOT because writing them is inert.
+    "nymeria.db": "every user's checkpoints: transcript data, not config (D10-01)",
+    "todo_schedule.db": "ticker schedule rows, polled not hand-authored (D10-01)",
+    "snapshots": "encrypted backup archives; restore is its own trust path (F3)",
+    "capability_usage.json": (
+        "ranks capabilities that already exist and are separately gated; it "
+        "cannot introduce one, so a planted record changes ordering only"
+    ),
+    "tool_search_embeddings.db": (
+        "same as capability_usage.json: influences which existing tool is "
+        "surfaced, never which one may run (that is the role gate's job)"
+    ),
+    "scheduler_state.json": "not yet classified: scheduler lifecycle state",
+    "claude_code_sessions.json": (
+        "not yet classified: maps (thread, cwd) to a host Claude Code session "
+        "id and is read automatically on resume, so it resolves a destination "
+        "under rule 1 and likely wants a row"
+    ),
+}
+
+# Non-literal children, pinned by expression text rather than path:line (which
+# rots on any edit above the site). The gate does not resolve these; it refuses
+# to be silently blind to them, so a new indirection needs a human note.
+_INDIRECT_DATA_DIR_CHILDREN = {
+    "safe_user_id": "per-user RAG dir, name is the sanitized user id",
+    "safe_user_id(user_id)": "per-user auth cache dir, sanitized user id",
+    "auth_utils.safe_user_id(user_id)": "per-user MCP auth bridge dir",
+    "trace.workflow_id": "per-workflow trace dir",
+    "workflow_id": "per-workflow trace dir",
+    "SLIM_SERVICE_TOKEN_FILENAME": "imported constant, resolved at its own site",
+    "BOOTSTRAP_TOKEN_FILENAME": "imported constant, resolved at its own site",
+    "entry.name": "snapshot restore, iterating archive members",
+    "f'.pre-restore-{stamp}'": "snapshot restore, pre-restore safety copy",
+    "f'.snapshot-restore-{stamp}'": "snapshot restore, staging dir",
+    "folder": "thread deletion, per-thread subdirectories",
+    "self._subdir": "ApprovalRecordStore, subdir chosen by the caller",
+}
+
+# The grandfathered set: stores that drive execution or behavior and have
+# neither control. Every entry traces to a filed finding (see each row's
+# control_note). This is a ratchet, not a list to append to. Shrinking it means
+# a control landed; growing it means a store shipped unclassified, which is the
+# thing this register exists to prevent.
+# An audit segment (P4, C11) or a finding within one (P4-01). Anchored to the
+# prefixes the audit actually uses, because the loose form was satisfied by
+# ordinary prose ("Reviewed in Q3", "uses S3"). It still cannot tell a real id
+# from a plausible one: nothing here reads the checklist, deliberately, since
+# docs/private is stripped from the public mirror and a test that read it would
+# fail there.
+_AUDIT_REF = r"\b(?:P4|[A-H]\d{1,2})(?:-\d{2})?\b"
+# A NUMBERED finding (P4-01), not a bare segment (C10). The audit's own
+# vocabulary: a finding records a defect against the store, while a segment id
+# may equally be exculpatory. workflows/state/ cites C10 precisely BECAUSE that
+# segment established nothing decides from it.
+_NUMBERED_FINDING = r"\b(?:P4|[A-H]\d{1,2})-\d{2}\b"
+
+_UNCONTROLLED_STORES = frozenset(
+    {
+        "custom_tools/<id>.json",
+        "hooks/<user>.json",
+        "triggers/<user>.json",
+        "skills/global/<name>/SKILL.md; skills/users/<id>/<name>/SKILL.md",
+        "thread_configs/<thread_id>.json",
+        "teams/<user>.json",
+        "dream_prompt.md, dream_kickoff.md",
+        "system_prompt.md",
+    }
+)
+
+
+def _probe_path(data_dir: Path, row) -> Path:
+    """A concrete writable path under ``data_dir`` for a store row's pattern.
+
+    Rows describe patterns, sometimes several per row ("a.md, b.md"), with
+    ``<placeholder>`` segments. Take the first alternative and fill it in.
+    """
+    pattern = re.split(r"[;,]", row.path)[0].strip()
+    pattern = re.sub(r"<[^>]+>", "probe", pattern)
+    if pattern.endswith("/"):
+        pattern += "probe.json"
+    return data_dir / pattern
+
+
+def test_control_verdicts_match_the_controls_that_are_declared():
+    from nymeria.core.resource_map import _STORE_ROWS, StoreControl
+
+    # Pinned like the uncontrolled set, and for the same reason: without it,
+    # deleting the denylist entry and the column together leaves a row that
+    # still reads PROTECTED, still claims in prose that the file tools refuse
+    # the path, and passes every test because its gate alone satisfies the
+    # coherence check below.
+    assert {row.path for row in _STORE_ROWS if row.denylisted} == {
+        "mcp_servers/<id>.json"
+    }, "The denylisted set changed. That is a boundary move, not a refactor."
+
+    for row in _STORE_ROWS:
+        # A verdict is only as good as the reason beside it, and an empty
+        # reason passed everything until this check existed.
+        assert len(row.control_note) >= 60, f"{row.path}: control_note is not a reason"
+        has_control = row.denylisted or bool(row.gates)
+        if row.control is StoreControl.PROTECTED:
+            assert has_control, f"{row.path} claims protection with no control"
+        if row.control is StoreControl.EXEMPT:
+            # Exempt means no control is needed. A store that has one is
+            # protected by it, and saying otherwise understates the tree.
+            assert not has_control, f"{row.path} is exempt but declares a control"
+
+
+def test_uncontrolled_stores_cite_a_finding_and_only_shrink():
+    from nymeria.core.resource_map import _STORE_ROWS, StoreControl
+
+    uncontrolled = {
+        row.path for row in _STORE_ROWS if row.control is StoreControl.UNCONTROLLED
+    }
+
+    # The register's one independent source of truth about which stores drive
+    # execution. A cited finding IS the record that somebody established it, so
+    # a row cannot both cite one and claim rule 1 does not apply to it.
+    #
+    # This exists because the cheap way to shrink the uncontrolled list is not
+    # to land a control, it is to assert the store never needed one. Deriving
+    # the verdict (see _StoreRow.control) made that assertion conspicuous;
+    # this makes it self-contradicting. What no test can do is decide whether a
+    # classification is honest. What it can do is ensure that getting it wrong
+    # takes several deliberate edits, each of which reads as a false statement
+    # in a security file rather than as a change of opinion.
+    for row in _STORE_ROWS:
+        if re.search(_NUMBERED_FINDING, row.control_note):
+            assert row.drives_execution, (
+                f"{row.path} cites an audit finding and then claims Nymeria "
+                "does not consume it. One of those two is wrong."
+            )
+
+    assert uncontrolled == _UNCONTROLLED_STORES, (
+        "The uncontrolled set changed. If a control landed, update this pin "
+        "(that is the ratchet working) AND the remediation table in "
+        "docs/private/security/control-store-matrix.md, which counts these. "
+        "If a store was ADDED here, classify it instead: see StoreControl, new "
+        "stores may not be uncontrolled. If a row's display path was merely "
+        "reworded, re-pin it. Note the pin lives here and the verdict lives in "
+        "resource_map.py, so this is a deliberate two-file edit."
+    )
+    for row in _STORE_ROWS:
+        if row.control is not StoreControl.UNCONTROLLED:
+            continue
+        # An audit segment (P4, C11) or a finding within one (P4-01). Anchored
+        # to the segment prefixes the audit actually uses, because the loose
+        # form was satisfied by ordinary prose ("Reviewed in Q3", "uses S3").
+        # It still cannot tell a real id from a plausible one: nothing here
+        # reads the checklist, deliberately, since docs/private is stripped
+        # from the public mirror and a test that reads it would fail there.
+        assert re.search(_AUDIT_REF, row.control_note), (
+            f"{row.path}: an uncontrolled store cites the segment or finding "
+            "that established it drives execution"
+        )
+
+
+def test_every_declared_gate_resolves_to_a_callable():
+    """The ``gates`` column names real functions.
+
+    Deliberately not a behavior test: each of these gates already has one
+    (``test_python_gate_refusal_...`` and ``test_workflow_gate_refusal_...``
+    above, ``test_mcp_execution_gate.py`` for the third), and re-driving them
+    here would look like store coverage while proving only that a function
+    refuses something. What is unique to the register is that the names can rot
+    silently, since nothing else imports them by string.
+    """
+    import importlib
+
+    from nymeria.core.resource_map import _STORE_ROWS
+
+    for name in sorted({gate for row in _STORE_ROWS for gate in row.gates}):
+        module_path, _, attr = name.rpartition(".")
+        gate = getattr(importlib.import_module(module_path), attr, None)
+        assert callable(gate), f"{name} does not resolve to a callable"
+
+
+def test_no_data_dir_child_escapes_classification():
+    """Every ``data_dir / "<name>"`` in the package is accounted for somewhere.
+
+    Without this, the register only covers stores somebody remembered to add to
+    ``_STORE_ROWS``, which is the developer who was never going to forget. This
+    walks the package instead, so a new store fails the build until it is
+    classified as a resource store, operational state, or a non-store with a
+    stated reason.
+
+    It recognizes four spellings of the root (``x.data_dir``, a bare
+    ``data_dir`` parameter, ``Path(...)`` wrapped around either, and
+    ``.joinpath``), and follows a chain of literal segments so a child nested
+    under a known directory is judged on its full path rather than on its head.
+
+    What it still cannot see, stated so the coverage is not overread: a
+    filename held in a variable or module constant (those are pinned separately
+    below, by expression text rather than path:line, which rots), a child
+    reached through a helper that takes the root under another parameter name,
+    and anything assembled at runtime from a setting. The gate is syntactic on
+    purpose. The lesson from the subprocess env gate is that a hand-rolled
+    analyzer chasing indirection ends up worse than a narrow rule that says
+    plainly what it misses.
+    """
+    import ast
+
+    from nymeria.core.resource_map import (
+        _OPERATIONAL_DIRS,
+        _STORE_ROWS,
+    )
+
+    def _is_data_dir(node) -> bool:
+        if isinstance(node, ast.Attribute) and node.attr == "data_dir":
+            return True
+        if isinstance(node, ast.Name) and node.id == "data_dir":
+            return True
+        # Path(settings.data_dir) / "x" hides thirteen live sites, including
+        # two the audit names as uncovered, so the wrapper is not optional.
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Path"
+            and len(node.args) == 1
+        ):
+            return _is_data_dir(node.args[0])
+        return False
+
+    def _segments(node):
+        """Peel a chain of `/` and `.joinpath()` into (root_is_data_dir, parts).
+
+        ``parts`` is the literal segments read left to right, stopping at the
+        first non-literal so the caller can see there was one.
+        """
+        parts: list = []
+        current = node
+        while True:
+            if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Div):
+                parts.insert(0, current.right)
+                current = current.left
+                continue
+            if (
+                isinstance(current, ast.Call)
+                and isinstance(current.func, ast.Attribute)
+                and current.func.attr == "joinpath"
+                and current.args
+            ):
+                for arg in reversed(current.args):
+                    parts.insert(0, arg)
+                current = current.func.value
+                continue
+            return _is_data_dir(current), parts
+
+    known = {d.strip("/") for d in _OPERATIONAL_DIRS}
+    known |= {d.strip("/").split("/")[0] for d in _OPERATIONAL_DIRS}
+    known |= set(_NON_STORE_DATA_DIR_CHILDREN)
+    for row in _STORE_ROWS:
+        for alternative in re.split(r"[;,]", row.path):
+            alternative = alternative.strip()
+            if not alternative:
+                continue
+            # Both the head and every literal prefix, so "workflows/state/"
+            # admits `data_dir / "workflows" / "state"` without admitting a
+            # sibling `data_dir / "workflows" / "anything_new"`.
+            segments = [s for s in alternative.split("/") if "<" not in s]
+            for depth in range(1, len(segments) + 1):
+                known.add("/".join(segments[:depth]))
+
+    package = Path(__file__).resolve().parents[1] / "nymeria"
+    literals: dict[str, str] = {}
+    indirect: dict[str, str] = {}
+    for source in sorted(package.rglob("*.py")):
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        # Module-level `NAME = "literal"`, resolved one hop. Filenames live in
+        # constants often enough that not following this hop left four children
+        # invisible, two of which the audit names by hand as uncovered.
+        constants = {
+            target.id: statement.value.value
+            for statement in tree.body
+            if isinstance(statement, ast.Assign)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+            for target in statement.targets
+            if isinstance(target, ast.Name)
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                parent_is_chain = True  # only report the outermost of a chain
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "joinpath"
+            ):
+                parent_is_chain = True
+            else:
+                continue
+            if not parent_is_chain:
+                continue
+            rooted, parts = _segments(node)
+            if not rooted or not parts:
+                continue
+            where = f"{source.relative_to(package.parent)}:{node.lineno}"
+            names: list[str] = []
+            for part in parts:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    names.append(part.value)
+                elif isinstance(part, ast.Name) and part.id in constants:
+                    names.append(constants[part.id])
+                else:
+                    indirect.setdefault(ast.unparse(part), where)
+                    break
+            for depth in range(len(names), 0, -1):
+                candidate = "/".join(names[:depth])
+                if candidate in known:
+                    break
+            else:
+                if names:
+                    literals.setdefault("/".join(names), where)
+
+    unclassified = {name: at for name, at in literals.items() if name not in known}
+    assert not unclassified, (
+        f"Unclassified data-dir children: {unclassified}. Add a row to "
+        "_STORE_ROWS (with its control), an entry to _OPERATIONAL_DIRS, or an "
+        "entry to _NON_STORE_DATA_DIR_CHILDREN in this file saying why it is "
+        "neither."
+    )
+    new_indirection = {
+        expr: at for expr, at in indirect.items() if expr not in _INDIRECT_DATA_DIR_CHILDREN
+    }
+    assert not new_indirection, (
+        f"data_dir joined to a non-literal: {new_indirection}. The gate cannot "
+        "see what this resolves to, so record it in "
+        "_INDIRECT_DATA_DIR_CHILDREN with what it builds."
+    )
+
+
+def test_denylist_flags_match_what_the_file_tools_actually_refuse(
+    tmp_path, monkeypatch
+):
+    """The register's ``denylisted`` column against live ``file_write``.
+
+    Both directions: a row claiming the denylist must really be refused, and a
+    row not claiming it must really be writable. The second half is what
+    catches the register going stale when a store gets denylisted later.
+    """
+    from nymeria.core.resource_map import _STORE_ROWS
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    _patch_data_dir(monkeypatch, data_dir)
+
+    for row in _STORE_ROWS:
+        target = _probe_path(data_dir, row)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = file_write.func(str(target), "probe")
+        if row.denylisted:
+            assert result.startswith("[Error]"), (
+                f"{row.path} is marked denylisted but the write succeeded"
+            )
+            assert not target.exists(), f"{row.path} was written despite the denylist"
+        else:
+            assert result.startswith("[Success]"), (
+                f"{row.path} is not marked denylisted but the write was refused "
+                f"({result[:120]})"
+            )
 
 
 class _AuditRecorder:

@@ -8,17 +8,70 @@ boots do not churn mtimes; the artifacts are Nymeria-owned, so manual edits
 to them are regenerated (every other file under the root is live state and
 is never touched here). The durable generic knowledge lives in the bundled
 ``nymeria-resources`` skill, which points at these artifacts for live paths.
+
+``_STORE_ROWS`` doubles as the security register for those stores: every row
+declares which control governs writes that did not come through an authoring
+surface (see ``StoreControl``). Co-located with the doc columns on purpose, so
+that adding a store without classifying it is a ``TypeError`` rather than an
+omission nobody notices.
+
+That alone would only bind a developer already editing this list, which is the
+one who was never going to forget. So ``tests/test_resource_layout.py`` walks
+the package for every ``data_dir / "<name>"`` and fails on any child that is in
+neither this list, ``_OPERATIONAL_DIRS``, nor its own reasoned non-store set.
+It also reconciles the denylist column against live ``file_write`` behavior and
+ratchets the uncontrolled set so it can only shrink. The reasoning behind each
+verdict, and what a gate is and is not worth, is in
+``docs/private/security/control-store-matrix.md``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
+
+
+class StoreControl(str, Enum):
+    """Verdict on how a store is protected from writes that bypass authoring.
+
+    The data dir is deliberately a management surface (backlog #75), so its
+    stores are editable by hand on purpose. That makes some of them *inputs to
+    execution*, reachable by ``file_write``/``file_edit``, which are seed tools.
+    The question each row answers is which of three answers applies, and the
+    choice is made by one rule rather than per store:
+
+    1. Does Nymeria itself consume this file without the agent choosing to look
+       at it (loaded into a prompt, dispatched as a tool, launched as a process,
+       or used to resolve a destination or a credential)? If not, the file is
+       data and the general untrusted-content posture covers it: ``EXEMPT``.
+    2. If it is consumed that way, is there a legitimate hand-editing workflow?
+       If there is none, the file tools refuse the path outright (``denylisted``)
+       because nothing is lost by refusing. This is the rare case.
+    3. Otherwise the write is allowed to land and the *artifact* is made inert
+       until it is re-approved through the sanctioned surface (``gates``). This
+       is the default, because it preserves the management surface: it stops a
+       bad artifact rather than stopping the agent from acting.
+
+    ``UNCONTROLLED`` is not a fourth answer. It records a store that rule 2 or 3
+    should cover and where no control covers the whole store yet, with the
+    finding or sweep that established it. Note "whole": two of the eight do
+    carry a gate, over part of their content only, and are classified at their
+    weakest variant. New stores may not land here; the test pins the set.
+
+    None of these three is declared. Each is derived from ``_StoreRow`` (see
+    its ``control`` property) so that a verdict cannot be asserted independently
+    of the facts that decide it.
+    """
+
+    PROTECTED = "protected"
+    EXEMPT = "exempt"
+    UNCONTROLLED = "uncontrolled"
 
 
 @dataclass(frozen=True)
@@ -28,6 +81,44 @@ class _StoreRow:
     scope: str
     hot_load: str
     posture: str
+    _: KW_ONLY
+    # Keyword-only, and the two below have no default at all: a new store
+    # cannot be added without answering rule 1 and saying why. The optional
+    # fields default to the safe reading, "no control here".
+    # Rule 1, and the only judgement call on the row: does Nymeria itself
+    # consume this file without the agent choosing to look at it?
+    drives_execution: bool
+    control_note: str
+    # Does a control cover the WHOLE store? False on a store where one variant
+    # is gated and another is not, which is the weakest-variant convention.
+    covered: bool = False
+    # Declared, not derived from tools/filesystem.py's denylist. Deriving would
+    # make this column a mirror, and a mirror cannot notice that somebody
+    # removed the entry: it would simply report the new reality as intended.
+    # Declaring it makes it a claim, which the test then reconciles against
+    # live file_write behavior in both directions.
+    denylisted: bool = False
+    # Dotted paths, resolved by the test rather than imported here: the gate
+    # modules pull in heavy dependencies and some import back into core, which
+    # is why every store import in this module is function-local.
+    gates: tuple[str, ...] = ()
+
+    @property
+    def control(self) -> StoreControl:
+        """The verdict, DERIVED rather than declared.
+
+        Declaring it was a mistake worth recording: it let the verdict be
+        asserted independently of the facts that decide it, so the cheapest way
+        to shrink the list of unprotected stores was to relabel one EXEMPT and
+        edit the pin, which costs exactly one line and lands no control. Derived,
+        that move does not exist. Reclassifying a store now means writing
+        ``drives_execution=False`` next to a note explaining what it drives,
+        which is a conspicuous, checkable, factual lie rather than a quiet
+        change of opinion.
+        """
+        if not self.drives_execution:
+            return StoreControl.EXEMPT
+        return StoreControl.PROTECTED if self.covered else StoreControl.UNCONTROLLED
 
 
 _STORE_ROWS: tuple[_StoreRow, ...] = (
@@ -36,7 +127,20 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "Custom tool and workflow definitions (http, mcp, python, workflow types)",
         "global",
         "yes",
-        "files-as-truth; python/workflow source is approval-gated (see below)",
+        "publish via tool_create; python and workflow edits are inert until "
+        "re-approval (see below)",
+        gates=(
+            "nymeria.core.python_custom_tools.python_execution_gate",
+            "nymeria.core.workflows.authoring.workflow_execution_gate",
+        ),
+        drives_execution=True,
+        control_note=(
+            "P4-01. The python and workflow variants recompute their approval "
+            "hash on every call; the http and mcp variants reach execution with "
+            "no gate at all, and an http definition can carry a "
+            "${credential:...} header to a caller-named URL. Classified at the "
+            "weakest variant, which is the convention for a mixed store."
+        ),
     ),
     _StoreRow(
         "custom_tools/revisions/<tool_id>/<hash>.py",
@@ -44,6 +148,18 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "global",
         "n/a",
         "publish via tool_create; raw edits are inert until re-approval",
+        drives_execution=False,
+        control_note=(
+            "Archive kept for diffing, and exempt for exactly one reason: "
+            "nothing reads it back. Execution and the admin review view both "
+            "take source_code off the definition JSON. Worth knowing how thin "
+            "that is: retain_source_revision is not the only writer (snapshot "
+            "restore walks this subtree), it skips a path that already exists "
+            "so a file pre-planted at a valid hash name survives under an "
+            "approved name, and the prune sorts by mtime so planted files can "
+            "evict real ones. All harmless while nothing reads it, and all live "
+            "the day the diffing this exists for is actually implemented."
+        ),
     ),
     _StoreRow(
         "hooks/<user>.json",
@@ -51,6 +167,18 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "per user",
         "yes",
         "files-as-truth",
+        drives_execution=True,
+        control_note=(
+            "D3-01 (re-scoped to file-tool confinement, so the remediation is "
+            "not hook-shaped). Hook logic fires on Nymeria's own dispatch path "
+            "with no approval hash. Not nothing, though: run_workflow and "
+            "run_command re-gate at fire time, and hooks/approvals/ is "
+            "deliberately not files-as-truth, so a planted approval cannot "
+            "forge consent (the waiter is an in-process Future). External "
+            "edits are audited, but only against a .sig sidecar a sanctioned "
+            "write left behind, so a store planted where the user never "
+            "authored one is silent (D3-02)."
+        ),
     ),
     _StoreRow(
         "triggers/<user>.json",
@@ -58,6 +186,19 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "per user",
         "yes",
         "files-as-truth",
+        gates=("nymeria.core.workflows.authoring.workflow_execution_gate",),
+        drives_execution=True,
+        control_note=(
+            "D7-01, re-scoped to persistence: a planted trigger is scheduled "
+            "autonomous re-execution that outlives the turn and the process. "
+            "Of four action types, run_workflow re-gates its payload at every "
+            "fire (the one store that inherits a trust gate), notify cannot "
+            "execute, and two reach autonomous execution ungated, the second "
+            "being create_todo with scheduled_for (D7-06). Structural fields "
+            "are constrained by closed Literal allowlists and MAX_TRIGGERS, "
+            "and external edits are audited: shape and volume limits and "
+            "detection, none of which stop a well-formed planted trigger."
+        ),
     ),
     _StoreRow(
         "skills/global/<name>/SKILL.md; skills/users/<id>/<name>/SKILL.md",
@@ -66,6 +207,16 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "global + per user",
         "yes",
         "files-as-truth",
+        drives_execution=True,
+        control_note=(
+            "C11-01. A planted SKILL.md is injected instruction plus a tool "
+            "grant (a kit binds tools with a TTL and can declare "
+            "thread_templates). It has to be selected to take effect, which is "
+            "why it rates below hooks and triggers, but the planter writes the "
+            "description, so the agent's own semantic search can surface it "
+            "unprompted. Global scope, and a same-name skill shadows a bundled "
+            "one. Skill-bound tools do still pass the role gate."
+        ),
     ),
     _StoreRow(
         "mcp_servers/<id>.json",
@@ -73,6 +224,22 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "global",
         "yes",
         "files-as-truth",
+        denylisted=True,
+        gates=("nymeria.core.mcp_execution_gate.mcp_execution_gate",),
+        drives_execution=True,
+        covered=True,
+        control_note=(
+            "The only store carrying both controls, and the model the others "
+            "are measured against. There is no legitimate hand-editing workflow "
+            "(the sanctioned surface is manage_mcp), so rule 2 applies and the "
+            "file tools refuse the path; the launch-surface hash then makes a "
+            "write that arrived some other way inert. The hash deliberately "
+            "excludes env_vars and headers, so an env-based launch hijack that "
+            "leaves the command alone is caught by the denylist, not the gate "
+            "(C7-02), and the gate's guarantee starts at the backfill marker "
+            "rather than at install (C7-03). Both residuals need a writer the "
+            "denylist does not reach, which is the point of holding both."
+        ),
     ),
     _StoreRow(
         "thread_configs/<thread_id>.json",
@@ -81,6 +248,14 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "per thread",
         "yes",
         "files-as-truth",
+        drives_execution=True,
+        control_note=(
+            "P4-03. Carries base_url, so a write redirects the model call to a "
+            "caller-named host: provider key, full prompt, and the model's "
+            "replies (E10-01). Validating the PATCH route's schema does not "
+            "reach this path; the check has to live where the config is "
+            "consumed. Also selects tools and skills for the thread."
+        ),
     ),
     _StoreRow(
         "teams/<user>.json",
@@ -90,6 +265,14 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "per user",
         "yes",
         "files-as-truth",
+        drives_execution=True,
+        control_note=(
+            "P4. Team memory is seeded into every member thread's context "
+            "(agent_memory_seed.read_team_memory), so a write is injected prose "
+            "the agent never chose to read: the system_prompt.md shape, scoped "
+            "to one team. Membership itself lives on thread configs, and "
+            "cross-team reach is enforced at graph build, not here."
+        ),
     ),
     _StoreRow(
         "dream_prompt.md, dream_kickoff.md",
@@ -97,6 +280,13 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "global",
         "yes",
         "files-as-truth",
+        drives_execution=True,
+        control_note=(
+            "P4-02, and unlike system_prompt.md these hot-load. They drive "
+            "dream turns, which run unattended on a strict tool allowlist that "
+            "nonetheless includes authoring memory, the parent's instructions, "
+            "skills, triggers and tools."
+        ),
     ),
     _StoreRow(
         "system_prompt.md",
@@ -104,6 +294,14 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "global",
         "no (read at startup; apply via settings update or restart)",
         "files-as-truth",
+        drives_execution=True,
+        control_note=(
+            "P4-02. Replaces the whole system prompt, for every user of the "
+            "deployment. The startup-only read is a delay and not a control: "
+            "restarts happen, and POST /restart exists. The highest-leverage "
+            "persistence primitive here, because it survives compaction, "
+            "pruning and thread deletion by not being in the conversation."
+        ),
     ),
     _StoreRow(
         "workflows/state/",
@@ -111,6 +309,16 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "per workflow + user",
         "yes",
         "treat as read-only: workflows do not expect concurrent external edits",
+        drives_execution=False,
+        control_note=(
+            "C10 walked all fourteen nym.* verbs and found none that decides "
+            "anything from state content. It parameterizes a run the workflow "
+            "gate already approved. Not quite the way that run's arguments do, "
+            "though: state is keyed only by (workflow_id, user_id), outlives "
+            "approval and is not purged on delete, so a value planted before "
+            "approval is read by the approved revision afterwards. Arguments "
+            "come from the caller per call; this comes from the last writer."
+        ),
     ),
     _StoreRow(
         "hooks/<user>_executions.json, triggers/<user>_executions.json",
@@ -118,6 +326,15 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "per user",
         "n/a",
         "generated, read-only",
+        drives_execution=False,
+        control_note=(
+            "Nymeria does read these back unbidden, on every fire, but only to "
+            "append and re-cap them. Nothing decides from them: cooldowns and "
+            "fire counts live on the definition store, the reaction debounce is "
+            "process-local, and the hook recursion bound is a turn-loop local. "
+            "So a planted entry is content someone had to go and fetch, which "
+            "is the untrusted-content posture rather than a store control."
+        ),
     ),
     _StoreRow(
         "service_token_warnings.json",
@@ -125,6 +342,15 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "global",
         "n/a",
         "generated; safe to delete (worst case: one duplicate warning)",
+        drives_execution=False,
+        control_note=(
+            "Dedupe bookkeeping for the expiry sweep. Understating it would be "
+            "easy: phases descend toward expiry and the sweep re-persists what "
+            "it reads, so a planted terminal phase suppresses EVERY remaining "
+            "notification for that token, permanently, not one. Still exempt "
+            "because it cannot extend the token and the per-pass log warning is "
+            "unconditional, but this is the closest an exempt row comes."
+        ),
     ),
     _StoreRow(
         "README.md, schema/",
@@ -132,6 +358,12 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "global",
         "n/a",
         "generated, manual edits are overwritten",
+        drives_execution=False,
+        control_note=(
+            "Nymeria-owned output, rewritten at startup whenever it differs "
+            "from what this module renders. Nothing consumes it; it exists to "
+            "be read."
+        ),
     ),
 )
 
