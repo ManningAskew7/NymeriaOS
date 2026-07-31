@@ -727,6 +727,108 @@ def test_available_models_post_uses_ephemeral_key_and_never_echoes_it(
     assert "sk-ephemeral-test" not in response.text
 
 
+def test_available_models_get_never_sends_a_stored_key_to_a_named_host(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A non-admin can name a destination, but no stored key follows it there.
+
+    Written as a DIFFERENTIAL test, and deliberately not as "the request to
+    attacker.invalid does not happen". The request does still happen: loopback
+    is a legitimate destination for the local-LLM flows, so this route cannot
+    just refuse caller-supplied addresses. What must not happen is the server's
+    configured provider credential riding along to one.
+
+    The first leg is the control. Without it, a green result would prove
+    nothing: if the fixture happened to resolve no key at all, an
+    egress-free-of-keys assertion passes while defending nothing. The control
+    establishes that this exact request DOES carry ``anthropic-token`` when the
+    destination comes from configuration, so the second leg's absence is caused
+    by the gate rather than by an empty environment.
+    """
+    stored_key = "anthropic-token"  # FakeSettings.anthropic_api_key
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, agent, _admin_token, _provider = _client(monkeypatch, tmp_path)
+    agent.accounts_repo.create_user("mallory", "mallory@example.com", "Mallory")
+    user_token = agent.accounts_repo.issue_token("mallory")
+
+    # Control: configured destination, so the stored key is expected to ride.
+    configured = client.get(
+        "/models/available?provider=anthropic", headers=_auth(user_token)
+    )
+    assert configured.status_code == 200
+    control_call = FakeAsyncClient.calls[-1]
+    assert "api.anthropic.com" in control_call["url"]
+    assert stored_key in control_call["headers"].values(), (
+        "control leg did not carry the stored key, so this test cannot prove "
+        f"the gate does anything: {control_call['headers']}"
+    )
+
+    # The gate: same user, same provider, caller-named destination.
+    before = len(FakeAsyncClient.calls)
+    attacked = client.get(
+        "/models/available"
+        "?provider=anthropic&base_url=http://attacker.invalid/v1",
+        headers=_auth(user_token),
+    )
+    assert attacked.status_code == 200
+    new_calls = FakeAsyncClient.calls[before:]
+    # Whether a request happens at all is provider-shaped, so that is not the
+    # invariant. Anthropic declares it requires a key, so with the stored one
+    # withheld the route short-circuits and never dials out. A keyless-capable
+    # provider (see the lmstudio leg below) does dial out. What must hold in
+    # both cases is that nothing carrying the stored key leaves the process.
+    assert all(
+        stored_key not in call["headers"].values() for call in new_calls
+    ), f"stored provider key leaked to a caller-named host: {new_calls}"
+
+    # The capability this route exists for still works: a keyless local
+    # endpoint lists models against the address the user is still typing.
+    FakeAsyncClient.response_body = {"data": [{"id": "local-1"}]}
+    local = client.get(
+        "/models/available?provider=lmstudio&base_url=http://localhost:1234/v1",
+        headers=_auth(user_token),
+    )
+    assert local.status_code == 200
+    assert [entry["id"] for entry in local.json()] == ["local-1"]
+    local_call = FakeAsyncClient.calls[-1]
+    assert local_call["url"] == "http://localhost:1234/v1/models"
+    assert stored_key not in local_call["headers"].values()
+
+
+def test_available_models_get_still_serves_admins_a_custom_base_url(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The admin exemption, pinned so it stays a choice rather than a leak.
+
+    An admin naming a destination DOES get the stored key attached, because
+    they already reach that combination through the admin-gated POST twin and
+    already hold the environment the key lives in. If this ever needs to
+    tighten, the sibling non-admin test above is the one that must keep
+    passing; this one is the deliberate concession and may be revised.
+    """
+    stored_key = "anthropic-token"  # FakeSettings.anthropic_api_key
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client, _agent, admin_token, _provider = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/models/available?provider=anthropic&base_url=https://gateway.example/v1",
+        headers=_auth(admin_token),
+    )
+
+    assert response.status_code == 200
+    call = FakeAsyncClient.calls[-1]
+    assert call["url"] == "https://gateway.example/v1/models"
+    assert stored_key in call["headers"].values()
+
+
 def test_available_models_post_is_admin_only(
     tmp_path: Path,
     monkeypatch,

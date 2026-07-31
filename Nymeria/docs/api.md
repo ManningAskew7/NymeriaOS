@@ -1884,7 +1884,18 @@ Authorization: Bearer <token>
 Fetches models from the selected provider's live `/models` endpoint. `provider`
 defaults to the server's `LLM_PROVIDER`; `base_url` is optional and lets the UI
 test unsaved OpenAI-compatible endpoint overrides. The endpoint resolves auth
-from the credential vault first, then settings/env vars. Returned model objects
+from the credential vault first, then settings/env vars.
+
+**Stored credentials do not follow a caller-supplied `base_url`.** When a
+non-admin passes `base_url`, the vault and settings key resolution is skipped
+for that request, so the named endpoint receives an unauthenticated probe. A
+keyless endpoint (Ollama, LM Studio, a local gateway) still lists normally; a
+provider that requires a key returns `[]` rather than sending the server's key
+to an address chosen by the request. Admins are exempt, since they already
+reach the same combination through the POST variant below. This is why
+listing models against an unsaved *authenticated* endpoint belongs on POST.
+
+Returned model objects
 include `id`, `name`, `owned_by`, `created`, and any normalized metadata the
 provider exposes, such as `context_length`, `max_completion_tokens`,
 `supported_parameters`, and `input_modalities`.
