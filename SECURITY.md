@@ -138,20 +138,35 @@ not on the other. State both when reasoning about it.
   prompt-injected model cannot read a stored key out of its own context.
 - **Execution channel (not protected today).** The master key lives in the agent
   process environment. Any subprocess the agent spawns runs as the same user and
-  can read `/proc/1/environ` (the key) and the encrypted stores off disk, then
-  decrypt them. Three separate channels, in different states:
-  environment *inheritance* is scrubbed on every agent-reachable spawn in the
-  API process, and a repo gate now fails the build if a new spawn lands without
-  a deliberate environment or a written exemption; several spawns in the setup
-  wizard and CLI still inherit, which matters because those processes load the
-  whole deployment `.env`. `/proc/<pid>/environ` reads are closed on the API and
-  slim entry points, which set `PR_SET_DUMPABLE(0)` at startup so a same-UID
-  process cannot read this process's `/proc` entries or ptrace it (root and
-  `CAP_SYS_PTRACE` are unaffected, and `NYMERIA_DISABLE_PROCESS_HARDENING=1`
-  turns it off for debugging, at the cost of reopening the channel). Off-disk
-  reads of the encrypted stores remain open, which is what the Landlock work
-  (Section 2.4) targets. **The vault protects secrets from the model, not from
-  a shell.**
+  can, by default, recover the key and then decrypt the stores off disk. Three
+  separate channels, in different states:
+  - Environment *inheritance* is scrubbed on every agent-reachable spawn in the
+    API process, and a repo gate now fails the build if a new spawn lands
+    without a deliberate environment or a written exemption. Several spawns in
+    the setup wizard and CLI still inherit, which matters because those
+    processes load the whole deployment `.env`.
+  - `/proc/<pid>/environ` and ptrace reads of *the agent process* are closed by
+    `PR_SET_DUMPABLE(0)`, set at startup in `run.py`, which makes that process's
+    `/proc` entries root-owned. Root and `CAP_SYS_PTRACE` are unaffected, and
+    `NYMERIA_DISABLE_PROCESS_HARDENING=1` turns it off for debugging at the cost
+    of reopening the channel.
+  - **In the Docker shape this channel is only partly closed, and you should
+    assume it is open.** The compose services run with `init: true`, so PID 1 is
+    the container runtime's init shim (tini), not Python, and it holds a
+    byte-identical copy of the container environment: every provider API key,
+    the service token, and the vault master key. It runs as the same
+    unprivileged user, and a process cannot make *another* process undumpable,
+    so nothing inside the container can close it. Verified on a reference
+    deployment: `/proc/1/environ` is world-of-that-uid readable and complete
+    while `/proc/<python>/environ` is not. Closing this properly means keeping
+    secrets out of the container environment entirely (a mounted secrets file
+    read at startup) rather than hardening a process; until that ships, treat
+    the Docker shape as conceding the whole environment to any in-container
+    shell. The slim shape has no init shim and is not affected.
+
+  Off-disk reads of the encrypted stores remain open in both shapes, which is
+  what the Landlock work (Section 2.4) targets. **The vault protects secrets
+  from the model, not from a shell.**
 
   The gate is syntactic, so treat a green build as "no new bare spawn was
   introduced" rather than "nothing inherits". It cannot see a spawn dispatched
