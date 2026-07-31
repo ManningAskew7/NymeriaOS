@@ -817,7 +817,15 @@ async def test_memory_verbs_wrap_tools_with_explicit_config(monkeypatch):
     assert result == "Saved."
     tool_args, config = calls[0]
     assert tool_args == {"scope": "global", "content": "likes ramen", "key": "food"}
-    assert config["configurable"] == {"user_id": "tester", "thread_id": "t1"}
+    # The memory verbs now build their config through the shared by-name helper,
+    # so it carries workflow_depth alongside the identity keys. Nothing else may
+    # leak in: an unexpected key here means the helper started inheriting
+    # something from an ambient config that a workflow verb should not see.
+    assert config["configurable"] == {
+        "user_id": "tester",
+        "thread_id": "t1",
+        "workflow_depth": 0,
+    }
 
     result = await verbs_effects._memory_read_verb(
         _ctx(), "memory.read", {"scope": "thread"}

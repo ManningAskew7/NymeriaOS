@@ -17,9 +17,10 @@ emulation of Anthropic's deferred tool loading.
 It enforces the SAME gates as binding (management denylist, admin/developer
 role gates, and the thread's authoritative ``disabled_tools``), resolving
 credentials as the CALLING user, so the deferred path is never a gate bypass.
-It shares the workflow dispatcher's invocation envelope
-(``core/workflows/verbs_tools.py::invoke_resolved_tool``): one call path, one
-policy.
+Both the gate and the execution envelope live in ``core/tool_execution.py`` and
+are shared with every other by-name spelling, so lifecycle hooks fire here
+exactly as they do for a bound call: a hook matching ``bash_execute`` sees
+``tool_invoke(name="bash_execute")`` under the target's real name, once.
 """
 
 from __future__ import annotations
@@ -31,25 +32,18 @@ from typing import Annotated, Any, Dict, Optional, Union
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, InjectedToolCallId, tool
 
+from ..core.tool_execution import ToolDenied, by_name_gate_reason, resolve_by_name
 from .schema_render import render_tool_args_schema
 from .utils import caller_role, current_agent, get_thread_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
 
-# Tools that cannot travel the deferred path, and why. The deferred path runs a
-# tool ONCE without binding it, so it excludes tools that are not real
-# dispatchable targets AND tools whose whole job is to mutate the thread's tool
-# set (binding, not a one-off invoke, is the surface for those: they return a
-# graph-control Command that a nested invoke cannot apply).
-_DEFERRED_EXCLUDED_REASONS: dict[str, str] = {
-    "tool_invoke": "tool_invoke cannot call itself; that would recurse with no added capability.",
-    "Skill": "Skill has its own resident tool; load skills through it, not the deferred path.",
-    "run_tools_in_order": "run_tools_in_order is an in-turn ordering marker, meaningless when invoked alone.",
-    "install_skill": "install_skill binds a skill's tools and reloads the tool set; bind it first-class instead of deferring it.",
-    "install_mcp_server": "install_mcp_server binds an MCP server's tools and reloads the tool set; bind it first-class instead of deferring it.",
-}
-DEFERRED_EXCLUDED_TOOL_NAMES = frozenset(_DEFERRED_EXCLUDED_REASONS)
+# The exclusion set moved to core/tool_execution.py as BY_NAME_EXCLUDED_REASONS
+# when the gate became shared: a workflow calling nym.tools.tool_invoke used to
+# slip past it entirely. The old ``DEFERRED_EXCLUDED_TOOL_NAMES`` alias that
+# stood here is gone rather than re-exported, because it had zero consumers
+# before this change too.
 
 
 def _normalize_arguments(arguments: Any) -> tuple[Optional[dict], Optional[str]]:
@@ -78,61 +72,29 @@ def _normalize_arguments(arguments: Any) -> tuple[Optional[dict], Optional[str]]
 
 
 def _resolve_bindable_tool(agent: Any, user_id: str, thread_id: str, name: str) -> Optional[Any]:
-    """Locate ``name`` in the caller's dispatch SUPERSET (what could be bound).
+    """Locate ``name`` in the caller's dispatch superset.
 
-    The superset (``compute_tool_superset``) is every tool the executor could
-    dispatch: SEED + CATALOG + registry (MCP / custom / workflow) + callable
-    threads. Resolving here keeps "what tool_invoke can run" equal to "what the
-    thread could bind and then call", one source of truth. It applies no gates,
-    so the caller must (see ``_gate_reason`` + disabled_tools below).
+    Core owns the resolution (``tool_execution.resolve_by_name``) so every
+    superset-scoped by-name spelling answers the same question. Kept as a named
+    local alias only so the deferred path reads in its own vocabulary.
     """
-    try:
-        tools, _names = agent._compute_tool_superset(user_id, thread_id)
-    except Exception:  # noqa: BLE001 - resolution failure falls through to not-found
-        logger.debug("compute_tool_superset failed during tool_invoke resolve", exc_info=True)
-        return None
-    for tool_obj in tools:
-        if getattr(tool_obj, "name", None) == name:
-            return tool_obj
-    return None
-
-
-def _thread_disabled_tools(agent: Any, thread_id: str) -> set[str]:
-    """Return the thread's authoritative ``disabled_tools`` set (best-effort)."""
-    try:
-        tc = agent.thread_config_manager.get_config(thread_id)
-    except Exception:  # noqa: BLE001
-        return set()
-    if tc is None:
-        return set()
-    return set(getattr(tc, "disabled_tools", None) or [])
+    return resolve_by_name(agent, user_id, thread_id, name)
 
 
 def deferred_gate_reason(
     agent: Any, name: str, user_id: str, thread_id: str, role: str
 ) -> Optional[str]:
-    """The single deferred-path gate: return a refusal reason, or None to allow.
+    """The deferred path's name for the shared by-name gate.
 
-    Shared by ``tool_invoke`` and the permissive unbound-call dispatch path
-    (``allow_unbound_tool_calls``) so both enforce ONE policy: the deferred
-    exclusion set, the shared management denylist + admin/developer role gates,
-    and the thread's authoritative ``disabled_tools``. Credentials still resolve
-    as the calling user at invoke time; this only decides admissibility.
+    Kept as a named entry point because three callers reason in deferred-path
+    terms: this tool, the permissive unbound-call dispatch path
+    (``allow_unbound_tool_calls`` in the graph tool node), and
+    ``react.reaction_guidance_block``, which asks the gate whether advertising a
+    ``tool_invoke`` recipe would only be refused. The policy itself lives in
+    ``core/tool_execution.by_name_gate_reason`` so every by-name spelling
+    enforces one set of rules.
     """
-    from ..core.workflows.verbs_tools import _gate_reason
-
-    excluded = _DEFERRED_EXCLUDED_REASONS.get(name)
-    if excluded is not None:
-        return f"{name!r} cannot be called through the deferred path. {excluded}"
-    reason = _gate_reason(name, role)
-    if reason:
-        return reason
-    if name in _thread_disabled_tools(agent, thread_id):
-        return (
-            f"{name!r} is disabled on this thread (disabled_tools is "
-            "authoritative). Ask the user to re-enable it, or use a different tool."
-        )
-    return None
+    return by_name_gate_reason(agent, name, user_id, thread_id, role)
 
 
 async def _tool_invoke_impl(
@@ -197,7 +159,17 @@ async def _tool_invoke_impl(
             args=args,
             tool_call_id=tool_call_id,
             workflow_depth=0,
+            # The turn's own config, so the envelope inside fires THIS thread's
+            # hooks against the effective tool. The graph tool node suppresses
+            # its outer fire for tool_invoke (TRANSPORT_TOOL_NAMES), so the call
+            # is seen once, under the target's real name, instead of once as
+            # "tool_invoke" and never as what it actually ran.
+            base_config=config,
         )
+    except ToolDenied as denied:
+        # A PRE hook vetoed the effective tool. Structured refusal, not an
+        # exception the model never sees: the turn continues and it can react.
+        return f"[tool_invoke error] {name!r} was blocked: {denied.reason}"
     except Exception as exc:  # noqa: BLE001 - normalize target failures for the model
         logger.info("tool_invoke: target %r failed: %s", name, exc)
         return f"[tool_invoke error] {name!r} failed: {exc}"
@@ -247,7 +219,7 @@ def _describe_non_str_result(name: str, result: Any) -> str:
     A tool that returns a LangGraph ``Command`` (a graph-control directive such
     as a tool-list reload) cannot be delivered through the deferred path: the
     directive does not survive a nested invoke. The mutating tools that do this
-    are already in ``_DEFERRED_EXCLUDED_REASONS``; this is a defensive backstop
+    are already in ``BY_NAME_EXCLUDED_REASONS``; this is a defensive backstop
     for any future one, refusing clearly and pointing at binding. Anything else
     is stringified.
     """

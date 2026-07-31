@@ -474,16 +474,22 @@ def select_tools_for_graph(agent: "NymeriaAgent", user_id: str, thread_id: str):
         all_tools_dict = static_tool_catalog()
 
         core_names = resolve_default_tool_names(default_tools)
-        if default_tools is not None:
-            owner_role = _resolve_owner_role(agent, user_id)
-            allowed_core, blocked_core = _apply_role_gates(core_names, owner_role)
-            if blocked_core:
-                logger.warning(
-                    "Graph build for thread=%s user=%s: stripped "
-                    "role-gated default tools %s",
-                    thread_id, user_id, sorted(blocked_core),
-                )
-            core_names = [name for name in core_names if name in allowed_core]
+        # Gated unconditionally. This used to run only when the user had
+        # CUSTOMISED default_thread_tools, so a user who never touched the
+        # setting took the built-in defaults with no role gate applied at all.
+        # Inert today, because no SEED_TOOLS member is role-gated, and exactly
+        # the kind of latent condition that turns into a hole the moment one is:
+        # the gate would be skipped for the majority of accounts, which are the
+        # ones that never customised anything.
+        owner_role = _resolve_owner_role(agent, user_id)
+        allowed_core, blocked_core = _apply_role_gates(core_names, owner_role)
+        if blocked_core:
+            logger.warning(
+                "Graph build for thread=%s user=%s: stripped "
+                "role-gated default tools %s",
+                thread_id, user_id, sorted(blocked_core),
+            )
+        core_names = [name for name in core_names if name in allowed_core]
         tools = [all_tools_dict[name] for name in core_names if name in all_tools_dict]
 
         # Per-user callable thread tools. Built fresh from the caller's

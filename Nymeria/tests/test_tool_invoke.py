@@ -173,7 +173,9 @@ async def test_excluded_tools_refused(monkeypatch, name):
     agent = _FakeAgent([ti_stub_add])
     _wire(monkeypatch, agent)
     result = await _invoke(name, {})
-    assert "cannot be called through the deferred path" in result
+    # The copy is "by name", not "deferred path": the exclusion set moved to the
+    # shared gate, so it now also refuses the workflow and self-invoke spellings.
+    assert "cannot be dispatched by name" in result
 
 
 async def test_unknown_tool_reports_not_available(monkeypatch):

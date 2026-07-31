@@ -277,14 +277,17 @@ a control.
 Two limits matter more than the opt-in status, because an authored hook can read
 as stronger than it is:
 
-- **Hooks fire on one dispatch path, not both.** `pre_tool_use` and
-  `post_tool_use` fire in the graph's tool node, which covers tool calls the
-  model emits normally. They do **not** fire on the by-name invocation paths
-  (`tool_invoke`, the workflow SDK's tool verbs, `self_invoke_tool`), which
-  reach the same tools through a different dispatcher. An approval or
-  `block_if_matches` hook authored against a tool therefore does not constrain
-  that tool when it is invoked by name. Treat an authored hook as covering
-  ordinary model tool calls only, until this is unified.
+- **Hooks fire once per call, under the tool's own name, on every dispatch
+  path.** `pre_tool_use` and `post_tool_use` fire in one shared execution
+  envelope (`core/tool_execution.py`) that the graph's tool node and the by-name
+  paths (`tool_invoke`, the workflow SDK's tool verbs, `self_invoke_tool`) all
+  pass through, so a hook authored against a tool constrains that tool however
+  it was reached. `tool_invoke` and `self_invoke_tool` are treated as transport:
+  the hook sees the tool they dispatched, not the meta-tool, which also means a
+  hook authored against either literal transport name does not fire. A call
+  refused by the gate before
+  the envelope (role, denylist, `disabled_tools`) fires no hook at all, because
+  it never ran.
 - **The action layer is not uniformly fail-closed.** Hook *dispatch* fails
   closed on the pre-tool path, but two actions invert that at the action layer:
   a `run_command` exit that is nonzero but not exactly 2, and `run_workflow`'s

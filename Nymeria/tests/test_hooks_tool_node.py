@@ -17,6 +17,7 @@ from langchain_core.tools import tool
 from langgraph.runtime import DEFAULT_RUNTIME
 from langgraph._internal._constants import CONFIG_KEY_RUNTIME
 
+from nymeria.core import tool_execution
 from nymeria.core.hooks import HookEvent, PostToolOutcome, PreToolOutcome
 from nymeria.vendor.react_agent.nodes import SafeToolNode
 
@@ -236,12 +237,12 @@ def test_async_pre_deny():
 
 def test_pre_deny_emits_hook_activity(monkeypatch):
     """The sync tool path forwards meaningful mutate runs as hook_activity events."""
-    import nymeria.vendor.react_agent.nodes as nmod
+    import nymeria.core.tool_execution as nmod
 
     dmod.reset()
     captured: list = []
     monkeypatch.setattr(
-        nmod, "_dispatch_provider_event",
+        nmod, "dispatch_provider_event",
         lambda name, payload, cfg: captured.append((name, payload)),
     )
     try:
@@ -265,7 +266,7 @@ def test_pre_deny_emits_hook_activity(monkeypatch):
 
 def test_async_post_rewrite_emits_hook_activity(monkeypatch):
     """The async tool path forwards a post_tool_use rewrite as hook_activity."""
-    import nymeria.vendor.react_agent.nodes as nmod
+    import nymeria.core.tool_execution as nmod
 
     dmod.reset()
     captured: list = []
@@ -273,7 +274,7 @@ def test_async_post_rewrite_emits_hook_activity(monkeypatch):
     async def _fake_emit(name, payload, cfg):
         captured.append((name, payload))
 
-    monkeypatch.setattr(nmod, "_adispatch_provider_event", _fake_emit)
+    monkeypatch.setattr(nmod, "adispatch_provider_event", _fake_emit)
     try:
         dmod.register(
             HookEvent.POST_TOOL_USE,
@@ -293,12 +294,12 @@ def test_async_post_rewrite_emits_hook_activity(monkeypatch):
 
 def test_pre_allow_emits_no_hook_activity(monkeypatch):
     """A bare allow is inert and must not put a line on every guarded call."""
-    import nymeria.vendor.react_agent.nodes as nmod
+    import nymeria.core.tool_execution as nmod
 
     dmod.reset()
     captured: list = []
     monkeypatch.setattr(
-        nmod, "_dispatch_provider_event",
+        nmod, "dispatch_provider_event",
         lambda name, payload, cfg: captured.append((name, payload)),
     )
     try:
@@ -340,7 +341,7 @@ def test_post_rewrite_preserves_multimodal_blocks():
         name="echo",
         tool_call_id="c1",
     )
-    out = SafeToolNode._apply_post_tool_outcome(msg, PostToolOutcome(updated_result_text="REDACTED"))
+    out = tool_execution.apply_post_tool_outcome(msg, PostToolOutcome(updated_result_text="REDACTED"))
     types = [b.get("type") for b in out.content if isinstance(b, dict)]
     assert "image_url" in types  # image block preserved
     texts = [b["text"] for b in out.content if isinstance(b, dict) and b.get("type") == "text"]
@@ -350,7 +351,7 @@ def test_post_rewrite_preserves_multimodal_blocks():
 def test_post_rewrite_returns_copy_not_mutation():
     """The rewrite returns a fresh ToolMessage; the original is untouched."""
     msg = ToolMessage(content="orig", name="echo", tool_call_id="c1")
-    out = SafeToolNode._apply_post_tool_outcome(msg, PostToolOutcome(updated_result_text="new"))
+    out = tool_execution.apply_post_tool_outcome(msg, PostToolOutcome(updated_result_text="new"))
     assert out.content == "new"
     assert msg.content == "orig"  # original not mutated in place
 
