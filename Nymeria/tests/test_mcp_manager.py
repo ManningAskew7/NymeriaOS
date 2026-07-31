@@ -475,7 +475,7 @@ class _RecordingVault:
         self,
         value,
         *,
-        actor_user_id=None,
+        actor,
         target_type=None,
         target_id=None,
         used_credentials=None,

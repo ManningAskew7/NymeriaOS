@@ -259,8 +259,12 @@ def _load_vault_oauth_cache(user_id: str, provider: str) -> dict:
         # Vault credentials are gated by ``allowed_targets`` (e.g. ``native_tool:*``).
         # The resolver is the canonical native-tool reader; identify as such so
         # the access check matches the policy stored on the row.
+        # The actor is the REQUESTING user, not `cred.owner_user_id`: comparing
+        # a record's owner against itself is a check that can never fail. The
+        # list above is already scoped by owner, so this is defence in depth,
+        # which is only worth anything if it can actually fire.
         secret_kwargs = {
-            "actor_user_id": cred.owner_user_id,
+            "actor": user_id,
             "target_type": "native_tool",
             "target_id": provider,
         }

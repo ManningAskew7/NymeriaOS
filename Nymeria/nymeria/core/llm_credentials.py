@@ -15,6 +15,7 @@ from typing import Any, Iterable, Optional
 from ..config.llm_providers import get_llm_provider_spec, normalize_llm_provider
 from .credential_vault import (
     CREDENTIAL_REF_PATTERN,
+    SYSTEM_ACTOR,
     CredentialAccessDenied,
     CredentialSecretUnavailable,
 )
@@ -122,7 +123,7 @@ def _read_first_secret(
                 value = repo.get_secret_field(
                     record.id,
                     field_name,
-                    actor_user_id=owner_user_id,
+                    actor=owner_user_id or SYSTEM_ACTOR,
                     target_type=target_type,
                     target_id=target_id,
                 )
@@ -237,7 +238,7 @@ def resolve_credential_references(
         try:
             return vault.resolve_references(
                 value,
-                actor_user_id=owner_user_id,
+                actor=owner_user_id or SYSTEM_ACTOR,
                 target_type=target_type,
                 target_id=target_id,
             )

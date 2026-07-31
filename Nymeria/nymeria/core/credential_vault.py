@@ -19,13 +19,51 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Union
 
 from cryptography.fernet import InvalidToken
 
 from . import secrets as nymeria_secrets
 
 logger = logging.getLogger(__name__)
+
+
+class _SystemActor:
+    """Sentinel: a credential read with no user principal behind it.
+
+    Exists so that "nobody is asking for this, the platform is" has to be
+    written down. The vault's read path takes an actor with no default, so the
+    alternative to naming a user is naming this, which `rg SYSTEM_ACTOR` finds
+    in one command. That is the entire design goal: the previous shape made an
+    unauthorized read the consequence of forgetting a keyword argument, which
+    is invisible in review and in diffs.
+
+    Passing this skips the owner check, so every use is a deliberate assertion
+    that the caller has already established authority some other way.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "SYSTEM_ACTOR"
+
+
+SYSTEM_ACTOR = _SystemActor()
+
+# What SYSTEM_ACTOR is written as in the audit trail. A distinct marker rather
+# than NULL: "the platform read this" and "nobody recorded who read this" were
+# previously the same row, and only one of them is acceptable.
+SYSTEM_ACTOR_AUDIT_ID = "__system__"
+
+# The actor for a plaintext read: a user id, or an explicit "no principal".
+# Deliberately NOT Optional[str] -- `None` must not be spellable, or the old
+# fail-open returns as a one-character diff.
+Actor = Union[str, _SystemActor]
+
+
+def _audit_actor_id(actor: Actor) -> str:
+    """Render an actor for the audit trail."""
+    return SYSTEM_ACTOR_AUDIT_ID if isinstance(actor, _SystemActor) else actor
 
 
 OwnerType = str
@@ -870,6 +908,14 @@ class CredentialVaultRepo:
         actor_user_id: Optional[str],
         actor_is_admin: bool = False,
     ) -> None:
+        """Owner check for credential MUTATIONS (delete/disable/retarget).
+
+        ``actor_user_id=None`` still means "skip", which is safe here only
+        because every production mutation path performs an equivalent or
+        stricter check before calling. Reads do NOT use this: they go through
+        ``_require_actor_can_read``, where an absent actor denies. Keeping the
+        two apart is deliberate; see that method for why.
+        """
         if actor_user_id is None or actor_is_admin or record.owner_type != "user":
             return
         if record.owner_user_id == actor_user_id:
@@ -878,12 +924,35 @@ class CredentialVaultRepo:
             f"Credential {record.id} is not owned by actor {actor_user_id}"
         )
 
+    def _require_actor_can_read(
+        self,
+        record: CredentialRecord,
+        *,
+        actor: Actor,
+        actor_is_admin: bool = False,
+    ) -> None:
+        """Owner check for reading credential PLAINTEXT. Fails closed.
+
+        The difference from the mutation twin is the whole point: there is no
+        "no actor supplied, so allow" branch. Every caller that decrypts a
+        secret must say on whose behalf, and the only way to opt out is to pass
+        ``SYSTEM_ACTOR`` explicitly, which is greppable and reviewable in a way
+        that an omitted keyword argument is not.
+        """
+        if actor is SYSTEM_ACTOR or actor_is_admin or record.owner_type != "user":
+            return
+        if record.owner_user_id == actor:
+            return
+        raise CredentialAccessDenied(
+            f"Credential {record.id} is not owned by actor {actor!r}"
+        )
+
     def get_secret_field(
         self,
         credential_id: str,
         field_name: str,
         *,
-        actor_user_id: Optional[str] = None,
+        actor: Actor,
         actor_is_admin: bool = False,
         target_type: Optional[str] = None,
         target_id: Optional[str] = None,
@@ -892,9 +961,9 @@ class CredentialVaultRepo:
             record = self._record_locked(conn, credential_id)
             if record is None:
                 raise CredentialNotFound(credential_id)
-            self._require_actor_can_access(
+            self._require_actor_can_read(
                 record,
-                actor_user_id=actor_user_id,
+                actor=actor,
                 actor_is_admin=actor_is_admin,
             )
             if record.status == "disabled":
@@ -920,7 +989,7 @@ class CredentialVaultRepo:
                 self._audit_locked(
                     conn,
                     credential_id=credential_id,
-                    actor_user_id=actor_user_id,
+                    actor_user_id=_audit_actor_id(actor),
                     event_type="decrypt_failed",
                     target_type=target_type,
                     target_id=target_id,
@@ -936,7 +1005,7 @@ class CredentialVaultRepo:
             self._audit_locked(
                 conn,
                 credential_id=credential_id,
-                actor_user_id=actor_user_id,
+                actor_user_id=_audit_actor_id(actor),
                 event_type="used",
                 target_type=target_type,
                 target_id=target_id,
@@ -949,21 +1018,24 @@ class CredentialVaultRepo:
         self,
         credential_id: str,
         *,
-        actor_user_id: Optional[str] = None,
+        actor: Actor,
         actor_is_admin: bool = False,
     ) -> dict[str, str]:
         """Return all secret fields for a credential owner/admin test probe.
 
         Credential tests validate the credential itself, not a runtime target,
         so this performs owner/admin checks without applying allowed_targets.
+        Because the target check is deliberately skipped here, the owner check
+        is the ONLY thing standing between a caller and every secret field on
+        the record, which is why the actor is required.
         """
         with self._lock, self._connect() as conn:
             record = self._record_locked(conn, credential_id)
             if record is None:
                 raise CredentialNotFound(credential_id)
-            self._require_actor_can_access(
+            self._require_actor_can_read(
                 record,
-                actor_user_id=actor_user_id,
+                actor=actor,
                 actor_is_admin=actor_is_admin,
             )
             if record.status == "disabled":
@@ -987,7 +1059,7 @@ class CredentialVaultRepo:
                     self._audit_locked(
                         conn,
                         credential_id=credential_id,
-                        actor_user_id=actor_user_id,
+                        actor_user_id=_audit_actor_id(actor),
                         event_type="decrypt_failed",
                         target_type="credential_test",
                         target_id=credential_id,
@@ -1004,7 +1076,7 @@ class CredentialVaultRepo:
         self,
         value: str,
         *,
-        actor_user_id: Optional[str] = None,
+        actor: Actor,
         target_type: Optional[str] = None,
         target_id: Optional[str] = None,
         used_credentials: Optional[set[str]] = None,
@@ -1016,7 +1088,7 @@ class CredentialVaultRepo:
             plaintext = self.get_secret_field(
                 credential_id,
                 field_name,
-                actor_user_id=actor_user_id,
+                actor=actor,
                 target_type=target_type,
                 target_id=target_id,
             )
@@ -1080,7 +1152,7 @@ class CredentialVaultRepo:
         raw = self.get_secret_field(
             credential_id,
             "cache_json",
-            actor_user_id=user_id,
+            actor=user_id,
             target_type="native_auth_cache",
             target_id=cache_filename,
         )

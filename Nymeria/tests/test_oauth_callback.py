@@ -305,7 +305,7 @@ def test_happy_path_promotes_vault_credential(env, monkeypatch):
     # Secret fields are encrypted at rest; decrypt and confirm presence via
     # the owner-test accessor (no allowed_targets check on this path).
     secret_fields = repo.get_secret_fields_for_test(
-        active.id, actor_user_id="default"
+        active.id, actor="default"
     )
     assert set(secret_fields) >= {"access_token", "refresh_token"}
     assert secret_fields["access_token"] == "ya29.a0_test"

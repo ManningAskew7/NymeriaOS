@@ -22,7 +22,12 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
+
+if TYPE_CHECKING:
+    # Type-only: a runtime import would make this module import the vault and
+    # break the leaf property the docstring above depends on.
+    from .credential_vault import Actor
 
 # Canonical env-reference grammar. Identifier var names (upper, lower, digits,
 # underscore), resolved anywhere in the value so embedded references work.
@@ -64,16 +69,22 @@ def interpolate_env_vars_with_names(
 def resolve_credential_refs(
     value: str,
     *,
+    actor: Actor,
     target_type: Optional[str] = None,
     target_id: Optional[str] = None,
     used_credentials: Optional[set[str]] = None,
-    actor_user_id: Optional[str] = None,
     redact_values: Optional[set[str]] = None,
 ) -> str:
     """Resolve ``${credential:ID.FIELD}`` references via the credential vault.
 
     A guarded no-op when the value contains no credential reference, so callers
     do not pay for a vault lookup on plain values.
+
+    ``actor`` is required and has no default. This function is a plumbing layer
+    between a caller that knows who is asking and a vault that must be told, and
+    a default here would silently reintroduce the fail-open the vault just
+    closed: the omission would be invisible at every layer above. Pass
+    ``SYSTEM_ACTOR`` to assert deliberately that no user principal applies.
     """
     if CREDENTIAL_REF_MARKER not in value:
         return value
@@ -81,7 +92,7 @@ def resolve_credential_refs(
 
     return get_credential_vault_repo().resolve_references(
         value,
-        actor_user_id=actor_user_id,
+        actor=actor,
         target_type=target_type,
         target_id=target_id,
         used_credentials=used_credentials,
@@ -92,11 +103,11 @@ def resolve_credential_refs(
 def resolve_env_and_credential_refs(
     value: str,
     *,
+    actor: Actor,
     target_type: Optional[str] = None,
     target_id: Optional[str] = None,
     used_credentials: Optional[set[str]] = None,
     used_env_names: Optional[set[str]] = None,
-    actor_user_id: Optional[str] = None,
     redact_values: Optional[set[str]] = None,
     missing_env: MissingEnvPolicy = "raise",
 ) -> str:
@@ -111,9 +122,9 @@ def resolve_env_and_credential_refs(
         used_env_names.update(env_used)
     return resolve_credential_refs(
         resolved,
+        actor=actor,
         target_type=target_type,
         target_id=target_id,
         used_credentials=used_credentials,
-        actor_user_id=actor_user_id,
         redact_values=redact_values,
     )

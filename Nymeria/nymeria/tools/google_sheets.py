@@ -95,9 +95,18 @@ def _load_service_account_json(credential_id: str) -> Optional[dict]:
 
     repo = get_credential_vault_repo()
     try:
+        # SYSTEM_ACTOR, deliberately: the only callers are background data
+        # fetchers in the _prv_a plugins, which run with no user principal at all,
+        # so threading an actor up to them would just relocate this same
+        # decision three frames higher. Access is still bounded by the record's
+        # allowed_targets (native_tool:google_sheets below). If this helper ever
+        # gains a user-facing caller, that caller should pass its own user id.
+        from ..core.credential_vault import SYSTEM_ACTOR
+
         raw = repo.get_secret_field(
             credential_id,
             "service_account_json",
+            actor=SYSTEM_ACTOR,
             target_type="native_tool",
             target_id="google_sheets",
         )

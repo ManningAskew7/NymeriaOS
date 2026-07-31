@@ -10,6 +10,7 @@ from nymeria.core.http_policy import HTTPPolicyConfig
 from nymeria.core.accounts import AccountsRepo
 from nymeria.core import credential_vault as vault_module
 from nymeria.core.credential_vault import (
+    SYSTEM_ACTOR,
     CredentialAccessDenied,
     CredentialVaultRepo,
     get_credential_vault_repo,
@@ -72,7 +73,7 @@ def test_secret_fields_are_not_exposed_and_resolve_by_reference(tmp_path, monkey
 
     resolved = repo.resolve_references(
         "Bearer ${credential:%s.value}" % record.id,
-        actor_user_id="alice",
+        actor="alice",
         target_type="custom_tool",
         target_id="example_search",
     )
@@ -81,7 +82,7 @@ def test_secret_fields_are_not_exposed_and_resolve_by_reference(tmp_path, monkey
     with pytest.raises(CredentialAccessDenied):
         repo.resolve_references(
             "Bearer ${credential:%s.value}" % record.id,
-            actor_user_id="alice",
+            actor="alice",
             target_type="custom_tool",
             target_id="wrong_tool",
         )
@@ -100,9 +101,9 @@ def test_secret_field_access_is_owner_scoped_in_repo(tmp_path, monkeypatch):
         created_by_user_id="alice",
     )
 
-    assert repo.get_secret_field(record.id, "value", actor_user_id="alice") == "alice-secret"
+    assert repo.get_secret_field(record.id, "value", actor="alice") == "alice-secret"
     with pytest.raises(CredentialAccessDenied):
-        repo.get_secret_field(record.id, "value", actor_user_id="bob")
+        repo.get_secret_field(record.id, "value", actor="bob")
 
 
 def test_delete_and_disable_are_owner_scoped_in_repo(tmp_path, monkeypatch):
@@ -177,8 +178,11 @@ def test_mcp_encrypted_env_var_migration_creates_system_credential(tmp_path, mon
     assert updated["encrypted_env_vars"] == {}
     ref = updated["env_vars"]["LINEAR_API_KEY"]
     assert ref.startswith("${credential:cred_mcp_")
+    # SYSTEM_ACTOR: the migration mints an owner_type="system" credential, so
+    # there is no user principal to name on the read back.
     assert repo.resolve_references(
         ref,
+        actor=SYSTEM_ACTOR,
         target_type="mcp_server",
         target_id="linear",
     ) == "token-value"

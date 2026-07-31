@@ -288,7 +288,7 @@ def test_persist_routes_refreshed_vault_account_back_to_vault(vault_setup):
     new_token = repo.get_secret_field(
         cred.id,
         "access_token",
-        actor_user_id="alice",
+        actor="alice",
         target_type="native_tool",
         target_id="google_calendar",
     )
@@ -368,7 +368,7 @@ def test_persist_separates_vault_and_legacy_when_both_present(vault_setup):
     new_vault_token = repo.get_secret_field(
         cred.id,
         "access_token",
-        actor_user_id="alice",
+        actor="alice",
         target_type="native_tool",
         target_id="outlook",
     )

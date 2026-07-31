@@ -28,7 +28,7 @@ def test_make_vault_repo_seeds_alice_and_returns_working_repo(tmp_path, monkeypa
         secret_fields={"token": "alice-token"},
         created_by_user_id="alice",
     )
-    assert repo.get_secret_field(record.id, "token", actor_user_id="alice") == "alice-token"
+    assert repo.get_secret_field(record.id, "token", actor="alice") == "alice-token"
 
 
 def test_bind_vault_repo_routes_global_resolver(tmp_path, monkeypatch):

@@ -331,7 +331,7 @@ def create_credentials_router(
         try:
             secret_fields = repo.get_secret_fields_for_test(
                 credential_id,
-                actor_user_id=user.id,
+                actor=user.id,
                 actor_is_admin=user.role == "admin",
             )
         except (
