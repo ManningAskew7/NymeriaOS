@@ -163,6 +163,11 @@ class ScriptSegmentRunner:
         kwargs: dict[str, Any] = {}
         if sys.platform != "win32":
             kwargs["start_new_session"] = True  # own group for group-kill
+        # env-gate: inherit - a statusline script the user wrote themselves, in
+        # their own ~/.nymeria/cli.json, running on their own machine under
+        # their own account, where the .env is already readable by them.
+        # Scrubbing buys nothing here and would break scripts that legitimately
+        # read the environment to decide what to print.
         process = await asyncio.create_subprocess_shell(
             command,
             stdin=asyncio.subprocess.PIPE,

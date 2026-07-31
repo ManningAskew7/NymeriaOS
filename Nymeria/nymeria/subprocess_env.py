@@ -74,6 +74,21 @@ NETWORK_RUNTIME_PASSTHROUGH: tuple[str, ...] = (
 )
 
 
+# What the `docker` CLI needs to reach the daemon the operator actually uses.
+# Without these a scrubbed probe silently answers about the WRONG docker (or no
+# docker) on a rootless, remote, or multi-context host, which in the setup
+# wizard means telling someone Docker is unavailable when it is running fine.
+# None are Nymeria secrets; DOCKER_CERT_PATH names a directory of client certs
+# the operator already owns.
+DOCKER_CLI_PASSTHROUGH: tuple[str, ...] = (
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY",
+)
+
+
 def scrubbed_subprocess_env(extra_names: Iterable[str] = ()) -> dict[str, str]:
     """Return an allowlisted copy of ``os.environ`` for a child process.
 
@@ -89,6 +104,7 @@ def scrubbed_subprocess_env(extra_names: Iterable[str] = ()) -> dict[str, str]:
 
 __all__ = [
     "BASE_SUBPROCESS_ENV_PASSTHROUGH",
+    "DOCKER_CLI_PASSTHROUGH",
     "NETWORK_RUNTIME_PASSTHROUGH",
     "WINDOWS_RUNTIME_PASSTHROUGH",
     "scrubbed_subprocess_env",

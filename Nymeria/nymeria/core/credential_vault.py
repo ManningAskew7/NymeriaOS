@@ -974,12 +974,23 @@ class CredentialVaultRepo:
         secret must say on whose behalf, and the only way to opt out is to pass
         ``SYSTEM_ACTOR`` explicitly, which is greppable and reviewable in a way
         that an omitted keyword argument is not.
+
+        What it does NOT do: narrow a ``system``-owned record. That is the
+        deployment-wide pool (the operator's global LLM key and friends),
+        admin-only to create and deliberately readable by every identified
+        principal, because resolving it is what makes an ordinary user's turn
+        work. The router agrees (``credentials.py::_can_read``). So this gate
+        answers "may this principal read a record owned by someone else", not
+        "should this credential be reachable from here": scoping a shared
+        credential to particular call sites is ``allowed_targets``' job, and
+        keeping a caller-supplied string from naming one at all belongs at the
+        surface that accepts the string.
         """
         if actor is UNATTRIBUTED_ACTOR:
-            # Explicit, ahead of the admin and non-user-owned escapes. Falling
-            # through would also deny (a sentinel never equals an owner id),
-            # but only by accident of comparison, and "we could not identify
-            # the caller" must be a stated refusal rather than a near miss.
+            # Explicit, ahead of the admin and system escapes. Falling through
+            # would also deny (a sentinel never equals an owner id), but only
+            # by accident of comparison, and "we could not identify the caller"
+            # must be a stated refusal rather than a near miss.
             raise CredentialAccessDenied(
                 f"Credential {record.id} read with no identifiable principal"
             )

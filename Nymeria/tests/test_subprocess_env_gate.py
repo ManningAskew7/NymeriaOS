@@ -9,19 +9,26 @@ found fifteen such sites, including one that fed the whole environment to
 Point fixes do not hold this. A new ``subprocess.run`` is one line and reads as
 completely ordinary, so the leak returns the next time somebody shells out.
 Hence a gate rather than a set of per-site regressions: a new spawn either
-passes an environment or is named in the exemption table below with a reason.
+passes an environment or carries a marker comment with a reason.
 
 Two assertions, because they catch different mistakes:
 
-1. Every spawn passes ``env=``. Catches the bare inherit.
-2. No spawn passes ``os.environ.copy()`` or ``dict(os.environ)``. Catches the
-   denylist shape, which looks careful and is not: it protects against the
-   names its author thought of on the day, and every variable added later
-   leaks by default. Four sites were in this shape when the gate was written.
+1. Every spawn passes a real ``env=``. Catches the bare inherit, and ``env=None``,
+   which means the same thing to ``subprocess``.
+2. No spawn builds its environment from ``os.environ``. Catches the denylist
+   shape, which looks careful and is not: it protects against the names its
+   author thought of on the day, and every variable added later leaks by
+   default.
 
 Implemented over the AST rather than by matching lines, deliberately. Several
 correct call sites build their kwargs dict earlier and unpack it, so a
 line-oriented check reports them as violations while missing the real ones.
+
+Both assertions track local variables, which is the difference between a gate
+and a formality. Almost nobody writes the leaky shape inline; the real code is
+``env = os.environ.copy()`` three lines above the spawn, and the real
+``**kwargs`` is a dict literal assembled just above the call. Checking only the
+call's own arguments misses every genuine instance of both.
 
 Follows the tree-walk idiom of ``test_exception_logging.py``, with the ``ast``
 technique of ``test_import_hygiene.py``.
@@ -58,47 +65,32 @@ SPAWN_ATTRS_BY_MODULE: dict[str, frozenset[str]] = {
 #    Chromium from tools/browser.py (and its launch() accepts an env= that the
 #    call site does not pass), and webbrowser.open() spawns a browser at three
 #    setup sites.
-#  - The copy check only sees an inline os.environ.copy() at the call site. An
-#    environment built in a helper and passed in reads as clean here; the
-#    helpers are reviewed by hand instead.
+#  - Variable tracking is per module. An environment or kwargs dict built in a
+#    HELPER and returned is opaque here (bash.py's _background_popen_kwargs is
+#    the deliberate example); those helpers are reviewed by hand instead.
 # Passing this gate means "no NEW bare spawn was introduced", not "no process
 # inherits secrets".
 
-# path:line -> why this spawn may inherit the parent environment.
-# Adding an entry is a security decision. Write the reason for the next reader,
-# not for yourself today.
-EXEMPT_BARE_ENV: dict[str, str] = {
-    "triggers/cli/script_segments.py:166":
-        "User-authored statusline script from the local ~/.nymeria/cli.json. "
-        "Runs on the user's own machine, under their own account, where the "
-        ".env is already readable by them, so scrubbing buys little and would "
-        "break scripts that legitimately read the environment.",
-    # Remaining known gaps from the 2026-07-31 inventory. Listed rather than
-    # silently passing, so the count is visible and shrinking. All are in the
-    # wizard/CLI process, which run.py loads the full deployment .env into, so
-    # they are real, just lower value than the API-process sites already fixed.
-    "setup/environment.py:221": "docker info probe. Not yet scrubbed.",
-    "setup/environment.py:237": "docker compose version probe. Not yet scrubbed.",
-    "setup/environment.py:253": "docker ps probe. Not yet scrubbed.",
-    "setup/environment.py:286": "ss -tlnp port probe. Not yet scrubbed.",
-    "setup/environment.py:307": "lsof port probe. Not yet scrubbed.",
-    "setup/external_access.py:137": "tailscale status. Not yet scrubbed.",
-    "setup/external_access.py:187": "tailscale up. Not yet scrubbed.",
-    "setup/external_access.py:275": "tailscale serve/funnel. Not yet scrubbed.",
-    "setup/cliproxy_deploy.py:207": "docker compose up. Not yet scrubbed.",
-}
-
-# path:line -> why this spawn may build its environment from a full copy.
-# Separate table from the one above: these sites DO pass env=, they just build
-# it the leaky way, so they fail a different assertion and deserve their own
-# reasons.
-EXEMPT_ENVIRON_COPY: dict[str, str] = {
-    "api/routers/system.py:167":
-        "Re-exec of the API process itself during a self-restart. The child IS "
-        "this service and must come up with identical configuration; the code "
-        "re-merges dotenv over the copy precisely so a restart picks up config "
-        "edits. A scrubbed env here is a broken backend, not a hardened one.",
-}
+# Exemptions live at the call site as a marker comment, not in a table here.
+#
+#     # env-gate: inherit - <reason>
+#     subprocess.run([...])
+#
+#     # env-gate: full-copy - <reason>
+#     subprocess.Popen([...], env=child_env)
+#
+# The marker goes in the comment block immediately above the spawn (blank lines
+# between are fine). Adding one is a security decision: write the reason for
+# the next reader, not for yourself today.
+#
+# This started as a path:line table and moved here after the keying broke twice
+# in a single pass, both times because an unrelated import was added above a
+# spawn. A key that a two-line edit can invalidate trains people to re-point
+# entries mechanically, which is the opposite of what an exemption is for. At
+# the call site the reason is also where the reader already is, and it cannot
+# go stale: delete the call and the marker goes with it.
+INHERIT_MARKER = "env-gate: inherit"
+FULL_COPY_MARKER = "env-gate: full-copy"
 
 
 def _spawn_name(node: ast.Call) -> str | None:
@@ -120,53 +112,215 @@ def _spawn_name(node: ast.Call) -> str | None:
     return None
 
 
-def _passes_env(node: ast.Call) -> bool:
-    """True if the call supplies env=, including via **kwargs unpacking.
+def _env_argument(node: ast.Call) -> ast.expr | None:
+    """The expression passed as ``env=``, or None if the call passes none.
 
-    ``**kwargs`` counts as passing. The gate cannot see inside the dict, and
-    the sites that build kwargs earlier are the ones already doing this right;
-    treating them as violations would train people to ignore the gate.
+    ``env=None`` counts as passing none, because that is exactly what it means
+    to ``subprocess``: the child inherits. Reading it as "an environment was
+    supplied" would let a spawn opt out of the gate by writing the default.
     """
-    return any(kw.arg == "env" or kw.arg is None for kw in node.keywords)
+    for kw in node.keywords:
+        if kw.arg == "env":
+            if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                return None
+            return kw.value
+    return None
 
 
-def _env_copy_source(node: ast.Call) -> bool:
-    """True if any argument is os.environ.copy() or dict(os.environ)."""
-    for sub in ast.walk(node):
-        if not isinstance(sub, ast.Call):
+def _locally_built_dicts_without_env(tree: ast.AST) -> set[str]:
+    """Names in this module provably bound to a dict that has no ``env`` key.
+
+    Narrows the ``**kwargs`` escape below. The escape has to exist, because a
+    kwargs dict assembled in a helper and returned (``bash.py``'s
+    ``_background_popen_kwargs``) is genuinely opaque here. But the local shape
+
+        kwargs = {}
+        kwargs["start_new_session"] = True
+        await asyncio.create_subprocess_shell(cmd, **kwargs)
+
+    is not opaque at all, and it was passing the gate while demonstrably
+    supplying no environment.
+
+    "Provably" is the operative word, and this errs hard toward NOT proving it:
+    a name is dropped from the result the moment anything about it is unclear,
+    including an assignment from a call, a ``{**other}`` splat, a subscript
+    write with a non-literal key, an ``.update()``, or being handed to a
+    function that could mutate it (``with_tool_oom_score(kwargs)`` does exactly
+    that). A false positive here would be a maintainer arguing with a test
+    about code that is already correct, which is how gates lose their
+    credibility.
+    """
+    bound: set[str] = set()
+    unclear: set[str] = set()
+
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            targets, value = list(node.targets), node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, value = [node.target], node.value
+
+        for target in targets:
+            if isinstance(target, ast.Name):
+                bound.add(target.id)
+                if not isinstance(value, ast.Dict):
+                    unclear.add(target.id)  # assigned from something opaque
+                elif any(
+                    key is None
+                    or not isinstance(key, ast.Constant)
+                    or key.value == "env"
+                    for key in value.keys
+                ):
+                    unclear.add(target.id)  # splat, computed key, or env itself
+            elif isinstance(target, ast.Subscript) and isinstance(
+                target.value, ast.Name
+            ):
+                literal_other_key = (
+                    isinstance(target.slice, ast.Constant)
+                    and target.slice.value != "env"
+                )
+                if not literal_other_key:
+                    unclear.add(target.value.id)
+
+        if isinstance(node, ast.Call):
+            # Mutating method on the name, or the name handed to a function
+            # that may add to it.
+            if isinstance(node.func, ast.Attribute) and isinstance(
+                node.func.value, ast.Name
+            ):
+                if node.func.attr not in {"get", "keys", "values", "items"}:
+                    unclear.add(node.func.value.id)
+            unclear.update(arg.id for arg in node.args if isinstance(arg, ast.Name))
+
+    return bound - unclear
+
+
+def _passes_env(node: ast.Call, dicts_without_env: set[str] = frozenset()) -> bool:
+    """True if the call supplies a real env=, including via **kwargs unpacking.
+
+    ``**kwargs`` counts as passing unless the dict was built in this module and
+    provably never gains an ``env`` key. The escape exists because a kwargs
+    dict assembled in a helper is opaque here, and treating those as violations
+    would train people to ignore the gate.
+    """
+    for kw in node.keywords:
+        if kw.arg is not None:
             continue
-        func = sub.func
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "copy"
-            and isinstance(func.value, ast.Attribute)
-            and func.value.attr == "environ"
-        ):
-            return True
-        if isinstance(func, ast.Name) and func.id == "dict":
-            for arg in sub.args:
-                if isinstance(arg, ast.Attribute) and arg.attr == "environ":
-                    return True
+        if isinstance(kw.value, ast.Name) and kw.value.id in dicts_without_env:
+            continue
+        return True
+    return _env_argument(node) is not None
+
+
+def _is_environ_copy(node: ast.expr) -> bool:
+    """True for os.environ.copy(), dict(os.environ), {**os.environ}."""
+    if isinstance(node, ast.Dict):
+        return any(
+            key is None and isinstance(value, ast.Attribute) and value.attr == "environ"
+            for key, value in zip(node.keys, node.values)
+        )
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "copy"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "environ"
+    ):
+        return True
+    if isinstance(func, ast.Name) and func.id == "dict":
+        return any(
+            isinstance(arg, ast.Attribute) and arg.attr == "environ" for arg in node.args
+        )
     return False
 
 
+def _environ_copy_names(tree: ast.AST) -> set[str]:
+    """Local names in this module bound to a full copy of the environment.
+
+    The reason this exists: almost nobody writes the leaky shape inline. The
+    real code is
+
+        env = os.environ.copy()
+        env["EXTRA"] = "..."
+        subprocess.run(..., env=env)
+
+    which an at-the-call-site check reads as clean. Every genuine instance in
+    this tree is that shape, so before this the second assertion could not fire
+    and its exemption table was decoration.
+
+    Module-scoped and order-insensitive on purpose. A gate should err toward
+    flagging: a false positive costs one exemption line with a reason, a false
+    negative costs a silent leak.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _is_environ_copy(node.value):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            if _is_environ_copy(node.value) and isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+    return names
+
+
+def _builds_env_from_full_copy(node: ast.Call, copy_names: set[str]) -> bool:
+    env = _env_argument(node)
+    if env is None:
+        return False
+    if _is_environ_copy(env):
+        return True
+    return isinstance(env, ast.Name) and env.id in copy_names
+
+
+def _markers_above(lines: list[str], lineno: int) -> str:
+    """Text of the contiguous comment block immediately above ``lineno``.
+
+    Scans upward from the line before the call, through comments and blank
+    lines, and stops at the first line of code. That covers the marker sitting
+    directly above the call and the marker heading a longer explanatory
+    comment, which is the shape these reasons usually want.
+    """
+    collected: list[str] = []
+    index = lineno - 2  # 0-based, one line above the call
+    while index >= 0:
+        stripped = lines[index].strip()
+        if stripped.startswith("#"):
+            collected.append(stripped)
+        elif stripped:
+            break
+        index -= 1
+    return "\n".join(collected)
+
+
 def _walk_spawns():
-    """Yield (key, node) for every process-spawning call under nymeria/."""
+    """Yield a record per process-spawning call under ``nymeria/``."""
     for path in sorted(NYMERIA_ROOT.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
         except (SyntaxError, UnicodeDecodeError):  # pragma: no cover
             continue
         rel = path.relative_to(NYMERIA_ROOT).as_posix()
+        lines = source.splitlines()
+        copy_names = _environ_copy_names(tree)
+        empty_kwargs = _locally_built_dicts_without_env(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _spawn_name(node):
-                yield f"{rel}:{node.lineno}", node
+                yield (
+                    f"{rel}:{node.lineno}",
+                    node,
+                    copy_names,
+                    _markers_above(lines, node.lineno),
+                    empty_kwargs,
+                )
 
 
 def test_every_spawn_supplies_an_environment():
     violations = [
-        key for key, node in _walk_spawns()
-        if not _passes_env(node) and key not in EXEMPT_BARE_ENV
+        key for key, node, _, markers, empty_kwargs in _walk_spawns()
+        if not _passes_env(node, empty_kwargs) and INHERIT_MARKER not in markers
     ]
     assert not violations, (
         "These spawns inherit the parent environment, which includes the vault "
@@ -174,15 +328,16 @@ def test_every_spawn_supplies_an_environment():
         + "\n  ".join(violations)
         + "\n\nPass env=scrubbed_subprocess_env(...) from nymeria.subprocess_env, "
         "adding only the non-secret names the child genuinely needs. If the "
-        "child must inherit (it is Nymeria itself, re-executing), add it to "
-        "EXEMPT_BARE_ENV in this file with a reason."
+        f"child must inherit (it is Nymeria itself, re-executing), put a "
+        f"'# {INHERIT_MARKER} - <reason>' comment above the call."
     )
 
 
 def test_no_spawn_builds_its_environment_from_a_full_copy():
     violations = [
-        key for key, node in _walk_spawns()
-        if _env_copy_source(node) and key not in EXEMPT_ENVIRON_COPY
+        key for key, node, copy_names, markers, _ in _walk_spawns()
+        if _builds_env_from_full_copy(node, copy_names)
+        and FULL_COPY_MARKER not in markers
     ]
     assert not violations, (
         "These spawns build a child environment from os.environ.copy() or "
@@ -190,21 +345,27 @@ def test_no_spawn_builds_its_environment_from_a_full_copy():
         + "\n\nThat is a denylist. It protects against the variable names its "
         "author thought of, and every name added to the deployment afterwards "
         "leaks by default. Start from scrubbed_subprocess_env() and add what "
-        "the child needs."
+        f"the child needs, or justify it with '# {FULL_COPY_MARKER} - <reason>'."
     )
 
 
-def test_the_exemption_table_has_no_stale_entries():
-    """An exemption for a line that no longer spawns is a lie in a security file.
+def test_every_exemption_marker_carries_a_reason():
+    """A bare marker is an opt-out with nothing to review.
 
-    Without this, refactors leave entries behind that read as reviewed
-    decisions about code that has moved or gone, and the next reader trusts
-    them.
+    The point of moving exemptions to the call site was that the next reader
+    finds the justification there. A marker with no text after it is the same
+    silent pass the gate exists to prevent, just spelled differently.
     """
-    live = {key for key, _ in _walk_spawns()}
-    stale = sorted((set(EXEMPT_BARE_ENV) | set(EXEMPT_ENVIRON_COPY)) - live)
-    assert not stale, (
-        "These exemptions no longer point at a spawn (the line moved or the "
-        "call was deleted):\n  " + "\n  ".join(stale)
-        + "\n\nRe-point them at the current line or delete them."
+    unexplained = []
+    for key, _node, _copy_names, markers, _ in _walk_spawns():
+        for line in markers.splitlines():
+            for marker in (INHERIT_MARKER, FULL_COPY_MARKER):
+                if marker not in line:
+                    continue
+                reason = line.split(marker, 1)[1].lstrip("#- ").strip()
+                if len(reason) < 20:
+                    unexplained.append(f"{key} ({marker})")
+    assert not unexplained, (
+        "These exemption markers have no usable reason:\n  "
+        + "\n  ".join(unexplained)
     )

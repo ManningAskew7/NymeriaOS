@@ -32,6 +32,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
+
 # Env keys finalize writes and hydrate reads back. NYMERIA_EXTERNAL_ACCESS is
 # the wizard's own round-trip marker (the runtime does not read it); the other
 # two are real backend settings (config/settings.py).
@@ -57,6 +59,20 @@ _AUTH_URL_FIELD_RE = re.compile(r'"AuthURL"\s*:\s*"([^"]+)"')
 # gap). Quotes and punctuation excluded so a JSON-quoted URL is not mangled.
 _LOGIN_URL_RE = re.compile(r"https://login\.tailscale\.com/[^\s\"'<>,)]+")
 _SUBPROCESS_TIMEOUT = 15.0
+
+
+def _tailscale_env() -> dict[str, str]:
+    """Allowlisted environment for the `tailscale` CLI.
+
+    The wizard has the whole deployment `.env` loaded, and tailscale talks to
+    a coordination server, so an inherited environment is both unnecessary and
+    outbound-facing. It needs the socket path (which the local daemon may have
+    moved) and network/TLS settings on a proxied or custom-CA host, nothing
+    else.
+    """
+    return scrubbed_subprocess_env(
+        (*NETWORK_RUNTIME_PASSTHROUGH, "TS_SOCKET", "TAILSCALE_USE_WIP_CODE")
+    )
 
 # Minimum first-to-last event spread that counts as incremental delivery in
 # check_public_sse. Must stay well under the /health/stream emission window
@@ -139,6 +155,7 @@ def tailscale_status(binary: str) -> TailscaleStatus | None:
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT,
+            env=_tailscale_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -190,6 +207,7 @@ class TailscaleLoginFlow:
             "--json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=_tailscale_env(),
         )
         return cls(process)
 
@@ -277,6 +295,7 @@ def enable_tailscale_serve(
             capture_output=True,
             text=True,
             timeout=60.0,
+            env=_tailscale_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"could not run tailscale {subcommand}: {exc}"
@@ -530,7 +549,14 @@ def start_cloudflared_connector(
     live = _read_live_pid(pid_path)
     if live is not None:
         return True, f"cloudflared connector already running (pid {live})"
-    env = dict(os.environ)
+    # cloudflared is a long-lived third-party binary with outbound network
+    # reach, so it gets an allowlist rather than the wizard's environment. The
+    # wizard process has the whole deployment .env loaded, which is why this is
+    # worth doing here even though the connector is the operator's own choice.
+    # Network extras are opted back in because the connector's entire job is
+    # making an outbound TLS connection, which a proxied or custom-CA
+    # deployment needs those variables for.
+    env = scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH)
     env["TUNNEL_TOKEN"] = tunnel_token
     creationflags = 0
     if sys.platform == "win32":

@@ -177,6 +177,37 @@ def test_an_unidentifiable_caller_is_denied_not_treated_as_the_owner(
         )
 
 
+def test_an_unidentifiable_llm_lookup_does_not_fall_back_to_system(
+    repo, alice_oauth_cache
+):
+    """The fail-open this pass removed, re-entering through the back door.
+
+    ``llm_credentials`` resolved secrets as ``owner_user_id or SYSTEM_ACTOR``,
+    so a thread with no owner AND no acting user (an unclaimed synthetic
+    thread) read as the platform. The second site is the sharper one: the
+    credential id there is parsed out of a caller-supplied string rather than
+    pre-filtered, so it could name any record in the vault.
+
+    Both must degrade to "no credential found", not to a system-level read.
+    """
+    from nymeria.core.llm_credentials import resolve_credential_references
+
+    reference = f"${{credential:{alice_oauth_cache.id}.refresh_token}}"
+    unresolved = resolve_credential_references(
+        reference, vault=repo, owner_user_id=None, provider="openai"
+    )
+    assert unresolved == reference, "an unattributed caller resolved a secret"
+
+    # The control: the owner still resolves their own, so the guard is not
+    # simply breaking the feature.
+    assert (
+        resolve_credential_references(
+            reference, vault=repo, owner_user_id="alice", provider="openai"
+        )
+        == "alice-refresh-token"
+    )
+
+
 def test_the_reserved_audit_string_is_not_a_usable_principal(repo):
     """The collision the sentinel closes, stated as a test.
 

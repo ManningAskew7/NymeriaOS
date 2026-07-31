@@ -19,6 +19,11 @@ from pathlib import Path
 # lives with the management client so the REST apply-route fallback can use
 # it without importing setup.
 from ..cliproxy.management_client import mint_gatekeeper_key
+from ..subprocess_env import (
+    DOCKER_CLI_PASSTHROUGH,
+    NETWORK_RUNTIME_PASSTHROUGH,
+    scrubbed_subprocess_env,
+)
 from .environment import docker_available
 
 # Digest-pinned: floating tags can be reassigned upstream and the cloak gate
@@ -210,6 +215,13 @@ def compose_up(directory: Path, *, timeout: float = 300.0) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=timeout,
+            # The compose file this writes carries literal values rather than
+            # ${VAR} substitutions, so compose needs no deployment variables:
+            # just the daemon coordinates and, since it pulls an image, the
+            # host's proxy and CA settings.
+            env=scrubbed_subprocess_env(
+                (*DOCKER_CLI_PASSTHROUGH, *NETWORK_RUNTIME_PASSTHROUGH)
+            ),
         )
     except FileNotFoundError:
         return False, "docker is not installed or not on PATH"
