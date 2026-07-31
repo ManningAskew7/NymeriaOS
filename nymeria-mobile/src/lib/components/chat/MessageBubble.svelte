@@ -367,15 +367,19 @@
   </div>
 </div>
 {:else if message.kind === 'fallback_notice'}
-<!-- Model-switch note from history (llm-fallback-consent Phase 2): a swap
-     was applied, or a hold ended, and the runtime left a persisted note in
-     the conversation; history re-emits it as this typed entry. -->
+<!-- Note from history (llm-fallback-consent Phase 2): the runtime left a
+     persisted note in the conversation saying the EFFECTIVE config differed
+     from the requested one, and history re-emits it as this typed entry.
+     `noteKind` says which: a model swap, or a per-thread endpoint the server
+     refused to send its credential to (E10-01). -->
 <div class="compaction-notice fallback-notice">
   <div class="compaction-icon">
-    <Icon name="refresh" size={18} />
+    <Icon name={message.noteKind === 'destination' ? 'info' : 'refresh'} size={18} />
   </div>
   <div class="compaction-body">
-    <div class="compaction-title">Model switch</div>
+    <div class="compaction-title">
+      {message.noteKind === 'destination' ? 'Endpoint not used' : 'Model switch'}
+    </div>
     <div class="compaction-meta">{message.content}</div>
   </div>
 </div>

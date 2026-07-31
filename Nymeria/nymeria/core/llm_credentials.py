@@ -18,6 +18,7 @@ from .credential_vault import (
     SYSTEM_ACTOR,
     UNATTRIBUTED_ACTOR,
     CredentialAccessDenied,
+    CredentialNotFound,
     CredentialSecretUnavailable,
 )
 
@@ -57,6 +58,21 @@ class LLMProviderCredential:
     credential_id: str
     api_key_field: Optional[str] = None
     base_url_field: Optional[str] = None
+    # "user" or "system". Load-bearing, not bookkeeping: `_list_visible_records`
+    # passes `include_system=True`, so this lookup can hand a NON-ADMIN's thread
+    # the OPERATOR's credential. The destination gate in `agent_llm_config` has
+    # to tell "the caller is spending their own key" from "the caller is
+    # spending the operator's", and the record is the only place that is known.
+    #
+    # Defaulted to NEITHER real value, because the two consumers want opposite
+    # defaults and no single one of "user"/"system" is safe at both. One asks
+    # "is this the caller's own key" (where "user" opens the gate) and the
+    # other asks "is this the operator's own configuration" (where "system"
+    # exempts the address from being gated at all). Whichever real value were
+    # the default, a construction site that forgot the field would wave one of
+    # them through. Empty is unknown provenance, which both sites are written
+    # to refuse. Every real site sets it explicitly.
+    owner_type: str = ""
 
 
 def _target_candidates(provider: str, thread_id: str | None) -> list[tuple[str, str]]:
@@ -221,6 +237,11 @@ def get_llm_provider_credential(
                 credential_id=record.id,
                 api_key_field=api_key_field,
                 base_url_field=base_url_field,
+                # Unknown stays unknown rather than being invented. The column
+                # is NOT NULL and both writers validate membership, so this is
+                # unreachable; if it ever is reached, the two consumers refuse
+                # rather than pick a provenance for the record.
+                owner_type=str(record.owner_type or ""),
             )
     except Exception:
         logger.debug(
@@ -261,9 +282,71 @@ def resolve_credential_references(
                 target_type=target_type,
                 target_id=target_id,
             )
-        except (CredentialAccessDenied, CredentialSecretUnavailable):
+        except (CredentialNotFound, CredentialAccessDenied, CredentialSecretUnavailable):
+            # CredentialNotFound is in the tuple because it is a LookupError,
+            # not a PermissionError, so it used to escape this loop and take
+            # down every caller of the resolver: one per-thread field naming a
+            # deleted credential id crashed config resolution, and config
+            # resolution runs on read paths (thread overview, `file_read`) as
+            # well as turns. An id nobody can find is the same outcome as one
+            # nobody may read: the reference stays unresolved.
             continue
     return value
+
+
+def contains_credential_reference(value: str | None) -> bool:
+    """True when *value* would be interpolated from the vault before use.
+
+    Callers use this to decide whether a resolved value may be REPORTED, not
+    whether it may be used: a field that interpolates can resolve to plaintext
+    that must never reach a log, a persisted field or the model's context.
+    """
+    return bool(value and CREDENTIAL_REF_PATTERN.search(value))
+
+
+def secret_is_caller_owned(
+    value: str | None,
+    *,
+    vault: Any | None,
+    owner_user_id: str | None,
+) -> bool:
+    """True when *value* is a secret the caller brought, not the operator's.
+
+    Provenance, not presence, and the difference is the whole point. A
+    per-thread ``api_key`` may be a literal or a ``${credential:id.field}``
+    reference, and the reference resolves against records the caller can READ
+    but does not OWN: the vault deliberately lets every identified principal
+    read a system-owned record, because resolving the deployment-wide LLM key
+    is what makes an ordinary user's turn work
+    (``credential_vault._require_actor_can_read``). So a caller can point at
+    the operator's credential without ever holding it, and a check that only
+    asked "is there a key here?" would read that as the caller supplying their
+    own.
+
+    A literal counts as the caller's own: writing a secret into a config field
+    means already possessing it, so there is nothing left to disclose. A
+    reference counts only when every record it names is owned by this caller.
+    Anything unresolvable, unreadable or unowned answers False, which is the
+    fail-closed direction for every caller of this predicate.
+    """
+    if not value:
+        return False
+    references = CREDENTIAL_REF_PATTERN.findall(value)
+    if not references:
+        return True
+    if vault is None or not owner_user_id:
+        return False
+    for credential_id, _field in references:
+        try:
+            record = vault.get_credential(credential_id)
+        except Exception:  # noqa: BLE001 - an unreadable record is not the caller's
+            logger.debug("Ownership lookup failed for %s", credential_id, exc_info=True)
+            return False
+        if record is None:
+            return False
+        if record.owner_type != "user" or record.owner_user_id != owner_user_id:
+            return False
+    return True
 
 
 def credential_setup_hint(provider: str | None) -> str:

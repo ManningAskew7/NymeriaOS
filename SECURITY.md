@@ -209,6 +209,64 @@ AES-encrypted, but the master key itself is a plaintext environment variable
 passphrase. Protect the key material, the `.env` file, the data directory, and
 snapshot passphrases accordingly.
 
+**Where those credentials are allowed to go.**
+
+A user-writable field must not decide where the server sends the server's own
+credentials. Two settings surfaces let a caller name an LLM endpoint: the
+admin-only global config, and the deliberately non-admin per-thread
+`llm_config.base_url`. For the second, the destination may come from the
+request but the stored credential may not.
+
+A per-thread address the deployment is already configured for (it matches
+`LLM_BASE_URL`, `LLM_BACKGROUND_BASE_URL`, or the provider's own configured
+base URL) is not a redirection and behaves exactly as before, which is what
+keeps per-thread CLIProxy routing working. A proxy that fronts several
+providers on one host counts as configuration naming a destination for each of
+them, so routing a thread to a different provider on the operator's own proxy
+is not a redirection either. The three interchangeable spellings of the local
+machine (`localhost`, `127.0.0.1`, `::1`) are compared as one host, since they
+are one host; the rest of `127.0.0.0/8` deliberately is not, because a spare
+loopback address is something a local process can bind and a canonical one is
+not.
+
+The provider's canonical vendor host counts only when configuration names no
+destination for that provider, because on a proxied deployment the provider key
+is a proxy-local secret and sending it to the vendor would be the disclosure
+this control exists to prevent. "For that provider" rather than "at all": one
+global base URL must not suppress the canonical host of a different provider
+whose key really is that vendor's.
+
+Any other address is refused unless the credential that would ride to it is
+the caller's own rather than the deployment's, in which case there is nothing
+to protect. Whose it is follows the key precedence exactly (per-thread
+override, then a vault record, then the environment), and is judged by
+provenance rather than presence: a literal counts, a `${credential:...}`
+reference counts only when it names a record the caller owns, and an
+environment key never counts. That distinction is load-bearing, because the
+vault deliberately lets any identified principal read the deployment-wide
+record, so a caller can point at the operator's key without holding it. The
+same test is applied to every source a destination can come from, including a
+vault record the caller wrote, not only to the obvious per-thread field.
+
+A refused address is ignored rather than fatal: the turn runs on the
+configured provider and the thread is told once. The check sits where the
+value is consumed, not on the route, because the per-thread config file is
+reachable by `file_write`. There is no role exemption, at either consumption
+point, for the same reason: a planted config file's author is not the thread's
+owner, and on a single-user deployment the only account is an admin.
+
+Known residuals. A caller supplying their own key may still name any address,
+including a loopback one, so this is not an SSRF control. The gate keys on the
+address, so a per-thread `provider` switch with no address of its own is not a
+redirection and is not gated; on a deployment that sets the generic `LLM_API_KEY`
+rather than per-provider keys, that sends the generic key to the newly chosen
+provider's own canonical host. A thread pointed at a
+keyless local model server has to set some per-thread `api_key` as well, since
+otherwise the refusal would send its prompts to the configured provider
+instead. Service integrations resolve a destination and a credential from the
+vault as two independent lookups, so a record holding only a base URL can still
+steer a credential resolved elsewhere; that is a separate, tracked gap.
+
 ### 2.6 In-process heuristics (useful, not boundaries)
 
 These components screen or gate behavior. They are worth having. None is a

@@ -799,17 +799,23 @@ def test_available_models_get_never_sends_a_stored_key_to_a_named_host(
     assert stored_key not in local_call["headers"].values()
 
 
-def test_available_models_get_still_serves_admins_a_custom_base_url(
+def test_available_models_get_does_not_exempt_admins(
     tmp_path: Path,
     monkeypatch,
 ):
-    """The admin exemption, pinned so it stays a choice rather than a leak.
+    """The admin exemption is gone, and its removal is the point of this test.
 
-    An admin naming a destination DOES get the stored key attached, because
-    they already reach that combination through the admin-gated POST twin and
-    already hold the environment the key lives in. If this ever needs to
-    tighten, the sibling non-admin test above is the one that must keep
-    passing; this one is the deliberate concession and may be revised.
+    It used to be pinned here as a deliberate concession ("an admin already
+    reaches destination-plus-key through the admin-gated POST twin"). That
+    reasoning does not survive the deployment shape this ships as by default:
+    a single-user install's only account IS an admin, so the exemption
+    switched the control off in exactly the case it was written for. The
+    sibling non-admin test above is unchanged; this one now asserts the same
+    outcome for the other role.
+
+    The request still happens, and it must: whether a keyless probe is useful
+    is provider-shaped. What must not happen is the stored key riding to an
+    address configuration never named.
     """
     stored_key = "anthropic-token"  # FakeSettings.anthropic_api_key
     FakeAsyncClient.response_status = 200
@@ -821,6 +827,42 @@ def test_available_models_get_still_serves_admins_a_custom_base_url(
     response = client.get(
         "/models/available?provider=anthropic&base_url=https://gateway.example/v1",
         headers=_auth(admin_token),
+    )
+
+    assert response.status_code == 200
+    assert all(
+        stored_key not in call["headers"].values() for call in FakeAsyncClient.calls
+    ), f"stored provider key leaked to an admin-named host: {FakeAsyncClient.calls}"
+
+
+def test_available_models_get_serves_a_destination_the_deployment_configured(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Naming the deployment's OWN address is not a redirection.
+
+    The earlier gate tested ``bool(base_url)``, so listing models against the
+    very host the deployment is configured for suppressed stored credentials
+    and returned an empty list, for no security benefit. This is the leg that
+    keeps the shared predicate honest in the permissive direction: without it,
+    tightening the gate to refuse everything would still pass the suite.
+    """
+    stored_key = "anthropic-token"  # FakeSettings.anthropic_api_key
+    FakeAsyncClient.response_status = 200
+    FakeAsyncClient.response_body = {"data": []}
+    FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    settings = FakeSettings(project_root=tmp_path, data_dir=tmp_path)
+    settings.llm_base_url = "https://gateway.example/v1"
+    client, agent, _admin_token, _provider = _client(
+        monkeypatch, tmp_path, settings=settings
+    )
+    agent.accounts_repo.create_user("mallory", "mallory@example.com", "Mallory")
+    user_token = agent.accounts_repo.issue_token("mallory")
+
+    response = client.get(
+        "/models/available?provider=anthropic&base_url=https://gateway.example/v1",
+        headers=_auth(user_token),
     )
 
     assert response.status_code == 200

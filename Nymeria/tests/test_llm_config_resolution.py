@@ -417,6 +417,10 @@ def test_acting_user_is_credential_owner_fallback_for_unclaimed_thread():
         api_key="vault-user-key",
         base_url="https://vault.example",
         credential_id="cred-1",
+        # Explicit because the field now defaults to the restrictive "system":
+        # this test is about a USER-owned record, and its own address riding
+        # its own key is the bring-your-own-endpoint path.
+        owner_type="user",
     )
 
     with patch(

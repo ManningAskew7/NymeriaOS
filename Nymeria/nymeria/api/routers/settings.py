@@ -40,6 +40,8 @@ from ...core.llm_provider_test_suite import (
 from ...core.llm_provider_utils import (
     base_url_allows_no_api_key,
     cliproxy_base_url_with_v1,
+    configured_llm_destinations,
+    destination_redirects_away_from_config,
     extract_model_metadata,
     http_error_detail,
     provider_probe_headers,
@@ -940,7 +942,6 @@ async def _available_models(
     vault: Any,
     owner_user_id: Optional[str],
     settings: Any,
-    actor_role: str,
 ) -> list[dict]:
     """Fetch available models from the configured LLM provider or CLIProxy.
 
@@ -953,15 +954,6 @@ async def _available_models(
     over the vault/settings resolution so the /provider setup flow can list
     models with a just-pasted key before saving it.
 
-    ``actor_role`` is REQUIRED and drives the credential-egress gate below. It
-    is a role rather than a pre-computed boolean, and it lives here rather than
-    at each route, because a shared helper with a permissive default is how
-    this kind of gate gets forgotten: this function has three callers (both
-    routes and ``command_service`` for the in-process TurnExecutor shape), and
-    the whole reason it is module-scope is that those shapes must not drift.
-    A flag one caller can omit re-creates the drift the docstring above warns
-    about. Required and derived here, they cannot.
-
     The gate: when the DESTINATION came from the request rather than from
     configuration, every STORED credential source is suppressed (vault, then
     the per-provider settings fallbacks further down), so an address the caller
@@ -972,13 +964,33 @@ async def _available_models(
     defended is that the key never reaches the wire, not that the request never
     happens.
 
-    Admins are exempt: they already reach destination-plus-key through the
-    admin-gated POST route and hold the environment the key lives in. The
-    ephemeral ``api_key`` argument is unaffected either way, since a caller
-    supplying both address and key is spending only their own credential.
+    "Came from the request" is asked with the SHARED predicate, the same one
+    the per-thread resolver uses (``core/llm_provider_utils``), and that
+    sharing is the point: these are the two consumption points of one
+    invariant, and the audit's fix map calls them one fix. Two consequences,
+    both corrections to an earlier shape that tested ``bool(base_url)`` and
+    exempted admins.
+
+    Naming a destination configuration ALREADY uses is not a redirection, so
+    listing models against the deployment's own CLIProxy host keeps working
+    instead of returning an empty list for no security benefit.
+
+    And there is no role exemption, which is why this function takes no role.
+    The earlier reasoning (an admin already reaches destination-plus-key
+    through the admin-gated POST route) does not survive the single-user
+    deployment this ships as by default, where the only account IS an admin and
+    the exemption therefore switches the control off everywhere. A per-role
+    policy, if one is ever wanted, re-adds the argument in the same three lines
+    it was removed from; keeping a parameter nothing reads would only invite a
+    reader to believe a role still decides something here. The ephemeral
+    ``api_key`` argument is unaffected either way, since a caller supplying
+    both address and key is spending only their own credential.
     """
     effective_provider = normalize_llm_provider(provider or settings.llm_provider)
-    use_stored_credentials = not (bool(base_url) and actor_role != "admin")
+    use_stored_credentials = not destination_redirects_away_from_config(
+        base_url,
+        configured=configured_llm_destinations(effective_provider, settings=settings),
+    )
     credential = (
         get_llm_provider_credential(
             effective_provider,
@@ -1659,34 +1671,29 @@ def create_settings_router(
         deliberately not admin-gated.
 
         What it must NOT do is name a destination that a server-held credential
-        is then mailed to. ``caller_supplied_base_url`` is that gate: when the
-        address comes from the request rather than from configuration, the vault
-        and settings key resolution is skipped entirely, so an arbitrary host
-        gets an unauthenticated probe or nothing. Keyless endpoints keep
-        working; naming someone else's server just stops paying for the
-        privilege. The admin-gated POST twin below is where a caller-supplied
+        is then mailed to. ``destination_redirects_away_from_config``, shared
+        with the per-thread resolver, is that gate: when the address is one the
+        deployment is NOT configured for, vault and settings key resolution is
+        skipped entirely, so that host gets an unauthenticated probe or
+        nothing. Naming an address configuration already uses is not a
+        redirection and keeps its credential, so listing models against the
+        deployment's own CLIProxy host still works. Keyless endpoints work
+        either way. The admin-gated POST twin below is where a caller-supplied
         destination may carry a caller-supplied key.
 
-        Admins are exempt, which is a deliberate scope choice rather than an
-        oversight. The boundary being defended is privilege, not egress: an
-        admin already reaches the same destination-plus-key combination through
-        the POST twin, and already holds the provider configuration and the
-        environment the key lives in, so withholding it here would buy nothing
-        and would silently empty the model dropdown for the one role whose job
-        is configuring custom endpoints. Bearer tokens live in local storage
-        rather than cookies, so there is no ambient authority for another
-        origin to ride an admin's session into this route.
+        No role is exempt. See ``_available_models`` for why the earlier admin
+        exemption was removed rather than widened.
 
-        A residual remains and is accepted for now: a non-admin can still make
-        the server issue a credential-free GET to an address of their choosing.
-        Closing that needs the destination allowlist, which cannot simply be
-        ``validate_http_egress_url`` here because loopback is a legitimate
-        target for exactly the local-LLM flows above.
+        A residual remains and is accepted: any authenticated caller can still
+        make the server issue a credential-free GET to an address of their
+        choosing. This is a credential-egress gate, not an SSRF control, and
+        ``validate_http_egress_url`` would not serve here because loopback is a
+        legitimate target for exactly the local-LLM flows above. ``SECURITY.md``
+        2.5 records it.
         """
         return await _available_models(
             provider=provider,
             base_url=base_url,
-            actor_role=user.role,
             api_key=None,
             vault=getattr(get_agent_fn(), "credential_vault", None),
             owner_user_id=user.id,
@@ -1714,7 +1721,6 @@ def create_settings_router(
             vault=getattr(get_agent_fn(), "credential_vault", None),
             owner_user_id=user.id,
             settings=settings,
-            actor_role=user.role,
         )
 
     return router

@@ -233,6 +233,11 @@ class ThreadConfig(BaseModel):
     # turn-input build (agent_streaming_input). Shape = the
     # additional_kwargs["fallback_note"] stamp (nodes.fallback_note_stamp).
     pending_fallback_note: Optional[Dict[str, Any]] = None
+    # The last `llm_config.base_url` the destination gate refused, so the user
+    # is told ONCE rather than on every turn of a persistently bad config (the
+    # locked precedent is a persisted note, never a per-turn injection). Written
+    # by agent_llm_config only when the refused host CHANGES.
+    rejected_llm_base_url: Optional[str] = None
     # Full system prompt replacement (overrides soul.md entirely)
     system_prompt: Optional[str] = Field(default=None, max_length=50000)
     # Callable thread fields — any thread can become callable by Nymeria
@@ -357,6 +362,8 @@ class ThreadConfig(BaseModel):
         if self.active_llm_fallback:
             return True
         if self.pending_fallback_note:
+            return True
+        if self.rejected_llm_base_url:
             return True
         if self.system_prompt:
             return True

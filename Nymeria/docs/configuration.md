@@ -1773,7 +1773,23 @@ login.
 
 CLIProxy and OpenAI-compatible providers configure via standard base-URL/API-key settings; see the provider-specific docs.
 
-**Provider-aware base URL**: When `LLM_BASE_URL` is set globally, it applies to all threads using the global provider. Threads with a per-thread provider override to a *different* provider (e.g., `openrouter`) ignore the global base URL and use the provider's standard endpoint. This allows callable threads to route through OpenRouter while the main thread uses the proxy.
+**Provider-aware base URL**: When `LLM_BASE_URL` is set globally, it applies to all threads using the global provider. Threads with a per-thread provider override to a *different* provider (e.g., `openrouter`) ignore the global base URL and use the provider's standard endpoint. This allows callable threads to route through OpenRouter while the main thread uses the proxy. When the global base URL points at a CLIProxy sidecar, an `anthropic` or `openai` override is derived from it instead, since one container fronts both.
+
+**Per-thread base URLs and the server's credential**: a thread may set its own
+`llm_config.base_url`, but the server only attaches its own provider credential
+to a destination the deployment is configured for: `LLM_BASE_URL`,
+`LLM_BACKGROUND_BASE_URL`, or the provider's own configured base URL. The
+provider's canonical vendor host also counts when configuration names no
+destination *for that provider*, which is what keeps a thread pointed at, say,
+OpenRouter or a local Ollama working on a deployment whose global base URL is a
+proxy. Any other address is ignored, the turn runs on the configured provider,
+and the thread is told once. To use another address, set that thread's
+`llm_config.api_key` as well, which makes it the caller's own credential rather
+than the deployment's; a `${credential:...}` reference only counts as yours if
+it names a record you own. This applies to every account, admins included,
+because the per-thread config file is reachable by `file_write` and a planted
+file's author is not the thread's owner. `GET /models/available` enforces the
+same rule for the same reason. See `SECURITY.md` section 2.5.
 
 The global LLM settings are intentionally not account-scoped. Two users on the same Nymeria server cannot have different "global" providers; the last admin save wins for the deployment. To give one user's thread a different provider, configure that thread's LLM override instead.
 

@@ -24,7 +24,9 @@ import logging
 from datetime import timedelta
 from typing import Any, Protocol, runtime_checkable
 
+
 from ..config.llm_providers import (
+    cliproxy_base_url_for_provider,
     normalize_llm_provider,
     resolve_provider_route,
     resolve_provider_api_key,
@@ -44,8 +46,15 @@ from ..config.model_capabilities import (
 )
 from ..vendor.react_agent import LLMConfig, LLMFallbackConfig
 from .llm_credentials import (
+    contains_credential_reference,
     get_llm_provider_credential,
     resolve_credential_references,
+    secret_is_caller_owned,
+)
+from .llm_provider_utils import (
+    base_url_destination_key,
+    configured_llm_destinations,
+    destination_redirects_away_from_config,
 )
 from .thread_config import ActiveLLMFallback, ThreadConfig
 from .time_utils import ensure_aware_utc, utc_now
@@ -209,6 +218,153 @@ def fallback_end_note_stamp(active: ActiveLLMFallback, *, reason: str) -> dict[s
         },
         kind="refusal" if active.reason == "refusal" else "transport",
         phase="end",
+    )
+
+
+def _reportable_destination(raw: str | None, resolved: str | None) -> str:
+    """What may be named in a log, a persisted field and the model's context.
+
+    Everything downstream of a refusal is a disclosure channel: a WARNING log,
+    a field persisted to disk, a ``GET /threads/{id}/config`` response, and
+    note text folded into the next turn's message. Two reductions get it there
+    safely.
+
+    The KEY, never the URL. Scheme, host and port carry no userinfo, path or
+    query, and the key is also the exact granularity the decision was made at.
+
+    And nothing at all when the field INTERPOLATED, because ``base_url``
+    accepts ``${credential:...}`` like every other explicit LLM field, so the
+    resolved value can BE a decrypted secret. Keying is not enough on its own:
+    a hostname needs no dots, so a bare secret keys to ``http://<the secret>``.
+    The cost is that two different references read as the same destination, so
+    swapping one for another does not re-note; a credential reference in a
+    base URL is pathological enough that losing that precision is fine.
+    """
+    if contains_credential_reference(raw):
+        return "a credential reference"
+    return base_url_destination_key(resolved) or "an unparseable address"
+
+
+def _latch_rejected_destination_note(
+    host: LLMConfigHost,
+    thread_id: str,
+    thread_config: Any,
+    rejected: str,
+) -> None:
+    """Tell the user once that their base_url was ignored, not once per turn.
+
+    ``rejected`` is a destination KEY (scheme, host and port), never a raw
+    base URL: see the assignment site for why that distinction is load-bearing.
+
+    Guarded on the REFUSED DESTINATION, not on the note itself: the latch is
+    consumed at the start of the next turn, so without this a persistently bad
+    config would re-latch on every turn, which is exactly the per-turn
+    injection the fallback-note precedent forbids. A changed destination is a
+    new fact, so it re-notes. That same guard is what bounds the write: config
+    resolution runs on read paths too (thread overview, ``file_read``), and
+    without it every one of them would persist a file.
+
+    Best-effort by design. This runs inside per-turn config resolution, so a
+    failure to persist the notice must not fail the turn: the security decision
+    has already been made and logged at WARNING above, and the note is how the
+    user is told, not how the credential is protected.
+    """
+    # The PARENT ThreadConfig, not its `llm_config` child: the latch fields
+    # live on the parent, and pydantic rejects an unknown attribute silently
+    # enough (a ValueError into the swallow below) to look like nothing
+    # happened.
+    if thread_config is None or not thread_id:
+        return
+    if getattr(thread_config, "rejected_llm_base_url", None) == rejected:
+        return
+    # One pending note, one slot. A fallback note already waiting is the end of
+    # an episode the model is mid-way through and has not been told about yet;
+    # overwriting it would drop that fact entirely. Deferring costs nothing:
+    # nothing is written, so the guard above still misses next turn and the
+    # notice re-latches once the slot is free.
+    if getattr(thread_config, "pending_fallback_note", None):
+        logger.debug(
+            "Deferring the rejected-destination note for thread %s; a "
+            "fallback note is already pending", thread_id,
+        )
+        return
+    try:
+        thread_config.rejected_llm_base_url = rejected
+        thread_config.pending_fallback_note = rejected_destination_note_stamp(rejected)
+        if host.thread_config_manager.save_config(thread_config):
+            host.invalidate_thread_config_cache(thread_id)
+        else:
+            logger.warning(
+                "Could not persist the rejected-base_url notice for thread %s; "
+                "the destination was still refused", thread_id,
+            )
+    except Exception:  # noqa: BLE001 - the notice is not the control
+        # WARNING, not debug. This swallow exists so a notice failure cannot
+        # fail a turn, but it once hid a plain programming error (the wrong
+        # config object was passed) for a full test run. A control that cannot
+        # fail the turn still has to be able to complain.
+        logger.warning(
+            "Failed to latch rejected-destination note for thread %s; the "
+            "destination was still refused", thread_id, exc_info=True,
+        )
+
+
+def _clear_rejected_destination(
+    host: LLMConfigHost,
+    thread_id: str,
+    thread_config: Any,
+) -> None:
+    """Forget a past refusal once the thread names an accepted destination.
+
+    Without this the field means "ever refused" and never stops meaning it: it
+    would pin ``has_customizations()`` true forever, so the config file could
+    never be deleted again, and a bad-then-fixed-then-same-bad sequence would
+    be silent, because the latch guard above would still match. Clearing here
+    makes it mean "currently refused", which is the only reading either of
+    those behaviours is correct under.
+    """
+    if thread_config is None or not thread_id:
+        return
+    if getattr(thread_config, "rejected_llm_base_url", None) is None:
+        return
+    try:
+        thread_config.rejected_llm_base_url = None
+        if host.thread_config_manager.save_config(thread_config):
+            host.invalidate_thread_config_cache(thread_id)
+    except Exception:  # noqa: BLE001 - bookkeeping, not the control
+        logger.warning(
+            "Failed to clear the rejected-destination marker for thread %s",
+            thread_id, exc_info=True,
+        )
+
+
+def rejected_destination_note_stamp(rejected: str) -> dict[str, Any]:
+    """The once-only note for a per-thread base_url the gate refused.
+
+    Reuses the fallback-note stamp rather than inventing a second notice path:
+    the shape is the same (a persisted, once-only explanation that the
+    EFFECTIVE config differs from the REQUESTED one) and, more importantly, the
+    stamped ``text`` is the exact-suffix strip contract every reader already
+    honours, so history strips it from the rendered bubble and re-emits it as a
+    typed notice for free. ``kind="destination"`` is what stops it rendering as
+    a model switch (``agent_history._fallback_notice_summary``).
+    """
+    from ..vendor.react_agent.nodes import fallback_note_stamp
+
+    return fallback_note_stamp(
+        {"reason": "unconfigured_destination"},
+        kind="destination",
+        phase="rejected",
+        text=(
+            "[System info]: This thread is configured with a custom model "
+            f"endpoint ({rejected}) that this deployment is not set up to use, "
+            "so it was ignored and the configured provider answered instead. "
+            "The server's provider credential is deliberately never sent to an "
+            "address the deployment has not been configured for. To use this "
+            "endpoint, set an api_key on this thread as well, or ask an "
+            "administrator to configure it. Tell the user this if it is "
+            "relevant to what they asked."
+        ),
     )
 
 
@@ -507,30 +663,152 @@ def get_llm_config_for_thread(
         not active_fallback or provider == configured_provider
     )
 
-    if tc and tc.base_url is not None and active_uses_configured_provider:
-        base_url = resolve_explicit_secret(tc.base_url or None, provider)
-    elif provider != global_provider:
-        # Per-thread provider differs from global. CLIProxy hosts both the
-        # anthropic OAuth path (port 8317 root) and the openai-compat path
-        # (port 8317 + /v1) on the same container, so derive the matching
-        # URL from the global one when it points at CLIProxy. Without this,
-        # the "Anthropic (Subscription)" per-thread option silently falls
-        # through to api.anthropic.com direct + ANTHROPIC_DIRECT_API_KEY,
-        # billing per-token instead of using the subscription.
-        global_url = (host.settings.llm_base_url or "").rstrip("/")
-        if (
-            provider == "anthropic"
-            and global_url
-            and ("cli-proxy" in global_url or "cliproxy" in global_url)
-        ):
-            base_url = global_url[:-3] if global_url.endswith("/v1") else global_url
-        else:
-            base_url = None
+    # SECURITY GATE (E10-01). The per-thread `base_url` is caller-supplied and
+    # the route that sets it is deliberately NOT admin-gated, so without this a
+    # non-admin names an address and the server mails the OPERATOR's provider
+    # key to it, on every turn, along with the global system prompt. The check
+    # lives HERE rather than on the route because `thread_configs/<id>.json` is
+    # reachable by `file_write`, a seed tool (P4-03): a validated PATCH schema
+    # is bypassed by one file write.
+    #
+    # A redirection is refused only when the OPERATOR's credential would ride
+    # to it. A caller spending their OWN key at their own address is the
+    # existing bring-your-own-endpoint capability and is left alone. There is
+    # deliberately NO role exemption: the threat this placement was chosen for
+    # is a config file planted by `file_write`, whose author is not the thread
+    # owner, and on the documented solo deployment the default user IS the
+    # admin, so an admin exemption would disable the control exactly where the
+    # planted-file threat lives.
+    #
+    # Ask about the key that will ACTUALLY SHIP, not about whether the caller
+    # owns one somewhere. The two are different questions because the key
+    # precedence below is thread override > vault record > environment: a
+    # caller who owns any user-owned record for this provider owns "a"
+    # credential, but if their thread also names the operator's record as an
+    # explicit override then the operator's key is what leaves. So this
+    # mirrors that precedence exactly, arm for arm.
+    thread_api_key_raw = resolve("api_key", None) if active_uses_configured_provider else None
+    thread_api_key = (
+        resolve_explicit_secret(thread_api_key_raw, provider)
+        if thread_api_key_raw is not None
+        else None
+    )
+    # ONE question, asked once and reused by the assignment far below. The
+    # RESOLVED key decides, because a falsy one is not "no key": the provider
+    # factory backfills the operator's env key whenever `config.api_key` is
+    # empty, so an empty secret field would otherwise buy a caller the operator
+    # credential at an address of their choosing while looking like they had
+    # brought their own. An empty override therefore falls through to the arms
+    # below, on BOTH sites.
+    #
+    # They have to stay one variable rather than two equivalent-looking tests.
+    # When this asked about the resolved value and the assignment asked about
+    # raw presence, a `${credential:<own-record>.<empty-field>}` override was a
+    # complete bypass: provenance skipped to the vault arm and answered "the
+    # caller's own key", while the empty string shipped and the factory
+    # backfilled the operator's. One record satisfied both halves.
+    thread_supplies_key = bool(thread_api_key)
+    if thread_supplies_key:
+        key_is_callers_own = secret_is_caller_owned(
+            thread_api_key_raw, vault=credential_vault, owner_user_id=owner_user_id
+        )
+    elif provider_credential and provider_credential.api_key:
+        # The vault lookup already narrows to records this caller may read, so
+        # a user-owned one here is the caller's own.
+        key_is_callers_own = provider_credential.owner_type == "user"
     else:
-        base_url = resolve_explicit_secret(host.settings.llm_base_url, provider)
+        # Environment or settings, i.e. the deployment's.
+        key_is_callers_own = False
+
+    rejected_destination: str | None = None
+
+    def refuse_destination(
+        candidate: str | None, *, raw: str | None, reported: str | None = None
+    ) -> bool:
+        """True when *candidate* may not carry the key resolved above.
+
+        Applied at EVERY caller-provenance destination source, not just the
+        per-thread field. A vault record the caller wrote carries a base_url
+        too, and it is consulted even by a thread that names no destination of
+        its own, so gating only the obvious field left the same theft one
+        indirection away.
+        """
+        nonlocal rejected_destination
+        if not candidate or key_is_callers_own:
+            return False
+        if not destination_redirects_away_from_config(
+            candidate,
+            configured=configured_llm_destinations(
+                provider, provider_route=provider_route, settings=host.settings
+            ),
+        ):
+            return False
+        # Fall through to the configured destination rather than refusing the
+        # turn: the operator's rule is to make the bad artifact inert, not to
+        # stop the agent acting. The user is told once, via the note latched
+        # below. First refusal wins the notice; they name the same problem.
+        if rejected_destination is None:
+            rejected_destination = reported or _reportable_destination(raw, candidate)
+        logger.warning(
+            "Thread %s names LLM destination %s, which is not one this "
+            "deployment is configured for; ignoring it and using the "
+            "configured provider so the operator credential is not sent "
+            "there. Set the thread's own api_key to use this address.",
+            thread_id,
+            rejected_destination,
+        )
+        return True
+
+    base_url: str | None = None
+    thread_named_destination = bool(
+        tc and tc.base_url is not None and active_uses_configured_provider
+    )
+    if thread_named_destination and tc is not None:
+        candidate = resolve_explicit_secret(tc.base_url or None, provider)
+        if refuse_destination(candidate, raw=tc.base_url):
+            thread_named_destination = False
+        else:
+            base_url = candidate
+
+    if not thread_named_destination:
+        if provider != global_provider:
+            # Per-thread provider differs from global. CLIProxy fronts both
+            # providers on one host, so derive the matching URL from the
+            # global one. Without this, the "Anthropic (Subscription)"
+            # per-thread option silently falls through to api.anthropic.com
+            # direct + ANTHROPIC_DIRECT_API_KEY, billing per-token instead of
+            # using the subscription, and the openai arm lands on
+            # api.openai.com holding a proxy-local key that will not
+            # authenticate there. Derived from settings, so this arm is CONFIG
+            # provenance by construction and the gate above must never see it.
+            base_url = cliproxy_base_url_for_provider(provider, host.settings.llm_base_url)
+        else:
+            base_url = resolve_explicit_secret(host.settings.llm_base_url, provider)
 
     if not base_url and provider_credential and provider_credential.base_url:
-        base_url = provider_credential.base_url
+        # The second caller-provenance destination source. A SYSTEM-owned
+        # record is the operator's own configuration and is not gated; a
+        # user-owned one is a caller-supplied address like any other, and
+        # `auth_write` lets an agent create those.
+        #
+        # Tested as "is it explicitly the operator's", NOT as "is it not the
+        # caller's". The two spellings agree on the two real values and differ
+        # on everything else, and the difference decides whether an UNKNOWN
+        # provenance is gated or waved through. This site and the
+        # `key_is_callers_own` one above want opposite defaults, so neither
+        # value of the field is safe at both: the only arrangement that fails
+        # closed at both is for each to name the value it is willing to act on.
+        if provider_credential.owner_type == "system" or not refuse_destination(
+            provider_credential.base_url,
+            raw=provider_credential.base_url,
+            # Named by provenance rather than keyed. The value is a decrypted
+            # vault field, so it gets the treatment an interpolated one gets:
+            # a base URL that arrived as a secret must not be keyed into a
+            # WARNING log, a persisted field and the model's next turn just
+            # because it happens not to spell `${credential:...}` itself.
+            reported="an address from a stored credential",
+        ):
+            base_url = provider_credential.base_url
     if not base_url:
         base_url = resolve_provider_base_url(
             provider,
@@ -539,14 +817,21 @@ def get_llm_config_for_thread(
             include_default=False,
         )
 
-    # Resolve API key: per-thread override → per-provider env key →
-    # generic proxy-mode key (global provider). Lets a thread point at a
-    # different CLIProxy sidecar with its own auth without touching
-    # global settings, while preserving today's behavior when no override
-    # is set.
-    api_key_override = resolve("api_key", None) if active_uses_configured_provider else None
-    if api_key_override is not None:
-        api_key = resolve_explicit_secret(api_key_override, provider)
+    if rejected_destination is not None:
+        _latch_rejected_destination_note(host, thread_id, tc_obj, rejected_destination)
+    else:
+        # Unconditional, not just when a destination was accepted: removing the
+        # offending base_url is the natural fix and has to clear the marker too,
+        # or it would stay set forever. Cheap, because the clear early-returns
+        # when there is nothing to forget.
+        _clear_rejected_destination(host, thread_id, tc_obj)
+
+    # Resolve API key along the precedence `key_is_callers_own` mirrors above:
+    # per-thread override → vault record → per-provider env key → generic
+    # proxy-mode key. Lets a thread point at a different CLIProxy sidecar with
+    # its own auth without touching global settings.
+    if thread_supplies_key:
+        api_key = thread_api_key
     elif provider_credential and provider_credential.api_key:
         api_key = provider_credential.api_key
     else:
@@ -607,7 +892,6 @@ def get_llm_config_for_thread(
     def base_url_for_provider(fallback_provider: str) -> str | None:
         if fallback_provider == provider:
             return base_url
-        global_url = (host.settings.llm_base_url or "").rstrip("/")
         fallback_credential = vault_credential_for(fallback_provider)
         if fallback_provider == global_provider:
             resolved_global_base = resolve_explicit_secret(
@@ -616,11 +900,12 @@ def get_llm_config_for_thread(
             )
             if resolved_global_base:
                 return resolved_global_base
-        if global_url and ("cli-proxy" in global_url or "cliproxy" in global_url):
-            if fallback_provider == "anthropic":
-                return global_url[:-3] if global_url.endswith("/v1") else global_url
-            if fallback_provider == "openai":
-                return global_url if global_url.endswith("/v1") else f"{global_url}/v1"
+        # Never reads the per-thread base_url, so a refused destination cannot
+        # reappear on a fallback candidate: this chain is settings, vault and
+        # registry only.
+        derived = cliproxy_base_url_for_provider(fallback_provider, host.settings.llm_base_url)
+        if derived:
+            return derived
         if fallback_credential and fallback_credential.base_url:
             return fallback_credential.base_url
         env_base_url = resolve_provider_base_url(
@@ -640,8 +925,11 @@ def get_llm_config_for_thread(
         fallback_provider: str,
         fallback_base_url: str | None,
     ) -> str | None:
-        if fallback_provider == provider and api_key_override is not None:
-            return resolve_explicit_secret(api_key_override, fallback_provider)
+        if fallback_provider == provider and thread_supplies_key:
+            # The guard makes the two providers the same string, so this is
+            # exactly the key resolved above (see `thread_supplies_key`); it
+            # used to re-resolve, decrypting the same secret a second time.
+            return thread_api_key
         fallback_credential = vault_credential_for(fallback_provider)
         if fallback_credential and fallback_credential.api_key:
             return fallback_credential.api_key
