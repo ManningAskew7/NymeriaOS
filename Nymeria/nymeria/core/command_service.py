@@ -2273,6 +2273,44 @@ class CommandService:
         lines.append("Values with spaces can be quoted, for example `/memory save color \"deep blue\"`.")
         return "\n".join(lines).strip()
 
+    def _expand_alias_prefix(self, tokens: tuple[str, ...]) -> tuple[tuple[str, ...], int, int]:
+        """Rewrite a leading alias into the command path it stands for.
+
+        This runs BEFORE longest-prefix matching, and it is a security control,
+        not a convenience. Aliases are registered against whole paths, so
+        ``("hooks",)`` existed as an alias of ``("hook",)`` while
+        ``("hooks", "disable")`` existed as nothing at all. Longest-prefix
+        matching therefore resolved ``/hooks disable X`` to the PARENT
+        definition, which is ``agent_allowed=True`` because listing hooks is
+        fine, and left ``disable`` sitting in ``args`` for the parent handler to
+        re-dispatch internally. The ``agent_allowed=False`` on
+        ``hook.disable`` was never consulted. Same for the other five mutating
+        hook subcommands, and for any future family that pairs an alias with
+        restricted subcommands.
+
+        Expanding first makes an alias a true synonym: the tokens that reach
+        matching are the canonical ones, so the subcommand definition and its
+        flags are what the gate sees.
+
+        Returns the canonical tokens plus how many raw tokens the alias
+        consumed and how many canonical tokens it produced, because those can
+        differ (``/hook_disable`` is one raw token standing for two) and the
+        caller still has to slice the RAW input to recover arguments.
+        """
+        max_alias_len = max((len(alias) for alias in self._aliases), default=0)
+        for alias_len in range(min(len(tokens), max_alias_len), 0, -1):
+            candidate = tokens[:alias_len]
+            if candidate in self._path_index:
+                # A real path always wins over an alias, so stop here rather
+                # than letting a shorter alias rewrite a genuine command.
+                break
+            command_id = self._aliases.get(candidate)
+            if command_id is None:
+                continue
+            path = self._commands[command_id].path
+            return path + tokens[alias_len:], alias_len, len(path)
+        return tokens, 0, 0
+
     def _parse_for_registry(self, raw: str) -> ParsedCommand:
         command_text = raw.strip()
         if command_text.startswith("/"):
@@ -2288,21 +2326,28 @@ class CommandService:
         if not tokens:
             return ParsedCommand((), (), [], "", None)
 
-        max_len = min(len(tokens), max((len(path) for path in self._path_index), default=1))
+        canonical, alias_len, path_len = self._expand_alias_prefix(tokens)
+        max_len = min(len(canonical), max((len(path) for path in self._path_index), default=1))
         for prefix_len in range(max_len, 0, -1):
-            candidate = tokens[:prefix_len]
+            candidate = canonical[:prefix_len]
             command_id = self._path_index.get(candidate) or self._aliases.get(candidate)
             if command_id is None:
                 continue
             definition = self._commands[command_id]
-            rest = _split_rest_after_tokens(command_text, prefix_len)
+            # Back-translate the canonical match into raw tokens. An alias is
+            # consumed whole or not at all, so anything matched beyond the
+            # substituted path came from the raw tail one for one.
+            raw_consumed = alias_len + max(0, prefix_len - path_len) if alias_len else prefix_len
+            rest = _split_rest_after_tokens(command_text, raw_consumed)
             return ParsedCommand(
+                # Deliberately the tokens the user typed, not the canonical
+                # ones, so "unknown subcommand for /hooks" names what they wrote.
                 tokens=tokens,
                 path=definition.path,
                 args=_split_args(rest),
                 rest=rest,
                 definition=definition,
-                matched_input_len=prefix_len,
+                matched_input_len=raw_consumed,
             )
 
         rest = _split_rest_after_tokens(command_text, 1)
@@ -3526,11 +3571,32 @@ class _CommandExecutor(
             return None, f"[Error]: '{prefix}' matches multiple hooks: {ids}. Use a longer id."
         return matches[0], None
 
+    def _subcommand_denied_for_actor(self, family: str, sub: str) -> str | None:
+        """Fail-closed backstop for a parent handler that re-dispatches itself.
+
+        The parser resolves ``/x <sub>`` to the registered ``x.sub`` definition
+        and gates on its flags, so a parent handler should only ever see
+        subcommands that are NOT registered paths. If one slips through anyway
+        (a new alias shape, a registration that lands late, a caller that
+        invokes the handler directly), this catches it.
+
+        Derived from the registry rather than a hand-written name list on
+        purpose: a list is a second copy of the flags and drifts the moment a
+        subcommand is added. This cannot.
+        """
+        if self.actor != "agent":
+            return None
+        definition = get_command_service()._commands.get(f"{family}.{sub}")
+        if definition is None or definition.agent_allowed:
+            return None
+        return f"[Error]: Command `/{family} {sub}` is not available to the agent."
+
     async def _cmd_hook(self, args: list[str], rest: str) -> str:
-        # Direct ``/hook <sub>`` resolves to the registered subcommand path; this
-        # bare handler catches ``/hook`` (list) and the ``/hooks <sub>`` plural
-        # alias (which resolves to the single-token ``hook`` path with the
-        # subcommand still in args), so it re-dispatches those.
+        # Direct ``/hook <sub>`` and the ``/hooks <sub>`` plural alias both
+        # resolve to the registered subcommand path, so this bare handler
+        # normally catches only ``/hook`` (list), the unregistered ``detail``
+        # synonym, and garbage. The re-dispatch table stays because a
+        # subcommand does not have to be registered to be handled.
         if not args or args[0] == "list":
             return await self._cmd_hook_list(args[1:] if args else [], rest)
         sub_handlers = {
@@ -3551,13 +3617,9 @@ class _CommandExecutor(
         }
         handler = sub_handlers.get(args[0])
         if handler is not None:
-            # The registry gate (agent_allowed=False on hook approvals/approve/
-            # deny) only fires when the parser resolves the SUBCOMMAND path.
-            # The plural "/hooks <sub>" alias resolves to this parent handler
-            # (agent_allowed=True), so the agent-actor gate must be re-checked
-            # here or the agent could approve its own held tool calls.
-            if self.actor == "agent" and args[0] in ("approvals", "approve", "deny"):
-                return f"[Error]: Command `/hook {args[0]}` is not available to the agent."
+            denied = self._subcommand_denied_for_actor("hook", args[0])
+            if denied:
+                return denied
             return await handler(args[1:], rest)
         return (
             "[Error]: Usage: /hook list|create|show|edit|enable|disable|delete"

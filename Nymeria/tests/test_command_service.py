@@ -2248,6 +2248,92 @@ def test_default_catalog_extracted_to_registry_defaults() -> None:
     assert fresh._commands == service._commands
 
 
+def _restricted_subcommands_behind_an_alias(
+    service: CommandService,
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Every ``(alias token, restricted subcommand path)`` pair in the registry.
+
+    Built from the live registry rather than a fixed list so a newly aliased
+    family, or a new restricted subcommand under an existing one, is covered the
+    day it lands instead of the day someone remembers to extend this test.
+    """
+    pairs: list[tuple[str, tuple[str, ...]]] = []
+    for alias_path, command_id in service._aliases.items():
+        if len(alias_path) != 1:
+            continue
+        parent = service._commands[command_id]
+        if len(parent.path) != 1:
+            continue
+        for path, sub_id in service._path_index.items():
+            if len(path) != 2 or path[0] != parent.path[0]:
+                continue
+            sub = service._commands[sub_id]
+            if not sub.agent_allowed or sub.requires_admin:
+                pairs.append((alias_path[0], path))
+    return pairs
+
+
+def test_an_alias_cannot_weaken_a_subcommands_flags() -> None:
+    """An alias is a synonym, so it must resolve to the same definition.
+
+    The bug this pins: aliases are registered against whole paths, so
+    ``("hooks",)`` existed while ``("hooks", "disable")`` did not. Longest-prefix
+    matching therefore resolved ``/hooks disable X`` to the PARENT ``hook``
+    definition, which is ``agent_allowed=True`` because listing hooks is
+    harmless, and the ``agent_allowed=False`` on ``hook.disable`` was never
+    consulted. The plural spelling was a complete bypass of the flag, and the
+    same held for ``/t`` and ``/threads`` over ``thread delete``.
+
+    Asserting on the resolved definition rather than on an error string keeps
+    this honest: it is the definition the dispatch gate reads.
+    """
+    service = CommandService()
+    pairs = _restricted_subcommands_behind_an_alias(service)
+    assert pairs, "registry has no aliased families left, so this proves nothing"
+
+    for alias, path in pairs:
+        canonical = service._parse_for_registry(f"/{' '.join(path)} someargument")
+        via_alias = service._parse_for_registry(f"/{alias} {path[1]} someargument")
+        assert via_alias.definition is not None, f"/{alias} {path[1]} resolved to nothing"
+        assert via_alias.definition.id == canonical.definition.id, (
+            f"/{alias} {path[1]} resolves to {via_alias.definition.id}, "
+            f"not {canonical.definition.id}"
+        )
+        # Arguments must survive the rewrite, or the fix would break the
+        # commands it is protecting.
+        assert via_alias.args == canonical.args == ["someargument"]
+
+
+def test_an_alias_that_stands_for_a_multi_token_path_keeps_its_arguments() -> None:
+    """The other arity: one raw token expanding into two canonical ones.
+
+    ``/hook_disable X`` is a single token standing for ``("hook", "disable")``,
+    so recovering ``X`` means slicing one token off the RAW input while the
+    match happened at length two. Getting that back-translation wrong silently
+    eats the argument.
+    """
+    service = CommandService()
+    parsed = service._parse_for_registry("/hook_disable abc123")
+    assert parsed.definition is not None
+    assert parsed.definition.id == "hook.disable"
+    assert parsed.args == ["abc123"]
+
+
+def test_an_unregistered_subcommand_still_reaches_the_parent_handler() -> None:
+    """Alias expansion must not turn a parent's own grammar into an error.
+
+    Families re-dispatch subcommands they never registered (``/hook detail`` is
+    a synonym of ``show``), and the parent is also what renders the "unknown
+    subcommand" message. Both rely on falling through to the single-token path.
+    """
+    service = CommandService()
+    for raw in ("/hooks detail abc", "/hooks frobnicate abc"):
+        parsed = service._parse_for_registry(raw)
+        assert parsed.definition is not None
+        assert parsed.definition.id == "hook"
+        assert parsed.args == [raw.split()[1], "abc"]
+
+
 class _ModelCatalogCommandApi(FakeCommandApi):
     async def list_available_models(self) -> list[dict[str, Any]]:
         self.calls.append(("list_available_models", (), {}))
