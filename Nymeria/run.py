@@ -514,6 +514,13 @@ def run_api(args: argparse.Namespace) -> None:
     """Run the REST API server."""
     from nymeria.triggers.api import run_api as start_api
     from nymeria.config import get_settings
+    from nymeria.process_hardening import restrict_proc_access
+
+    # Before anything can spawn a child. This process is about to hold the
+    # vault master key and the service token, and a same-user tool shell can
+    # otherwise read them straight out of /proc/<pid>/environ, which would
+    # undo the environment scrubbing the spawn sites do.
+    restrict_proc_access()
 
     settings = get_settings()
     host = args.host or settings.api_host
@@ -647,6 +654,12 @@ def _resolve_slim_port(args: argparse.Namespace) -> int:
 
 def run_slim(args: argparse.Namespace) -> None:
     """Run the single-process slim launcher (API + ticker + MCP)."""
+    from nymeria.process_hardening import restrict_proc_access
+
+    # Slim runs the agent in this same process, so it needs this at least as
+    # much as the Docker API path. See run_api for why it comes first.
+    restrict_proc_access()
+
     host = getattr(args, "host", None) or "127.0.0.1"
     port = _resolve_slim_port(args)
     data_dir = getattr(args, "data_dir", None)
