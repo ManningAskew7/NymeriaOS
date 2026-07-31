@@ -60,11 +60,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOOK_TIMEOUT = 5.0
 
 # How many hook fires may be nested inside one another before dispatch refuses.
-# 2 leaves room for the one legitimate shape (a hook runs a workflow, that
-# workflow calls a tool, that tool call fires its own hooks) while stopping the
-# cycle from running away. Raising this widens a denial-of-service surface, not
-# a feature.
-MAX_HOOK_FIRE_DEPTH = 2
+# Leaves room for the legitimate shape (a hook runs a workflow, that workflow
+# calls a tool, that tool call fires its own hooks) while stopping the cycle
+# from running away. Raising this widens a denial-of-service surface, not a
+# feature.
+#
+# 3, not 2, because this counts DISPATCHES and not mutate hops. It was 2 when
+# only the two mutate dispatchers incremented it; extending the guard to the
+# observe plane (which it had to cover, since an observe hook's action can run
+# a workflow just as well) meant an observe fire spends a level too, so a
+# mixed-plane chain exhausted the budget in half as many mutate hops as before
+# and a previously-working three-level chain started being denied. One level
+# back restores the mutate budget the number was chosen for.
+MAX_HOOK_FIRE_DEPTH = 3
 
 # ContextVar, not a plain global: hook fires are concurrent across threads and
 # turns, so a shared counter would let one turn's depth deny another's hooks.
@@ -218,8 +226,16 @@ def _entered_fire_depth() -> Iterator[Optional[int]]:
         _fire_depth.reset(token)
 
 
-def _log_reentrance(event: HookEvent, depth: int) -> None:
-    logger.error(
+def _log_reentrance(event: HookEvent, depth: int, *, level: int = logging.ERROR) -> None:
+    """Log a refused dispatch at the severity that plane's faults already use.
+
+    ERROR on the mutate planes, where a refusal changes the turn (PRE denies).
+    WARNING on observe, matching its own fault handling: nothing about the turn
+    changes, and at depth this fires once per hook per tool call, so ERROR
+    would bury the refusals that do mean something.
+    """
+    logger.log(
+        level,
         "hook dispatch refused on %s: fire depth %d exceeds max %d "
         "(a hook is re-entering itself, most likely hook -> workflow -> tool)",
         event.value, depth, MAX_HOOK_FIRE_DEPTH,
@@ -736,7 +752,7 @@ async def adispatch_observe(
             # Nothing to return on this plane, but the cycle is just as real:
             # an observe hook's action can run a workflow, which calls tools,
             # which fire hooks.
-            _log_reentrance(event, refused_at)
+            _log_reentrance(event, refused_at, level=logging.WARNING)
             return
         ctx = _with_scratch(ctx, scratch)
         for reg in regs:
@@ -771,7 +787,7 @@ def dispatch_observe(
         return
     with _entered_fire_depth() as refused_at:
         if refused_at is not None:
-            _log_reentrance(event, refused_at)
+            _log_reentrance(event, refused_at, level=logging.WARNING)
             return
         ctx = _with_scratch(ctx, scratch)
         for reg in regs:
