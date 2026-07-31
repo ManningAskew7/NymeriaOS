@@ -71,6 +71,7 @@ from .voice_catalog import (
     voice_drop_env,
     voice_env_for_state,
 )
+from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
 from .state import WizardState
 from .tool_seed import (
     default_thread_tools_for_state,
@@ -1645,7 +1646,16 @@ def _maybe_install_local_rag(
 
     console.print("\nInstalling the local-rag extra (this can take a few minutes)...")
     try:
-        result = subprocess.run(command)
+        # The installer runs arbitrary build and post-install code from a
+        # package index, which makes this the one wizard spawn where remote
+        # content meets local secrets. run.py loads the whole deployment .env
+        # at import (master key, DB and Redis credentials, provider keys), so
+        # a bare inherit would put all of it inside a third party's setup.py.
+        # The network passthrough keeps proxies, custom CA bundles and the XDG
+        # cache dirs working, which is everything uv/pip legitimately needs.
+        result = subprocess.run(
+            command, env=scrubbed_subprocess_env(NETWORK_RUNTIME_PASSTHROUGH)
+        )
     except OSError as exc:
         console.print(
             f"[yellow]Could not run the installer ({exc}). Install it yourself, "

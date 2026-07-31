@@ -139,12 +139,20 @@ not on the other. State both when reasoning about it.
 - **Execution channel (not protected today).** The master key lives in the agent
   process environment. Any subprocess the agent spawns runs as the same user and
   can read `/proc/1/environ` (the key) and the encrypted stores off disk, then
-  decrypt them. Three separate leaks, none of them fully closed today:
-  environment *inheritance* is scrubbed on most spawn paths but not all, so some
-  children still receive the secret-bearing environment directly; `/proc` reads
-  by a same-user process are open; and off-disk reads of the encrypted stores
-  are open. Closing the last two is what the Landlock work (Section 2.4)
-  targets. **The vault protects secrets from the model, not from a shell.**
+  decrypt them. Three separate leaks:
+  environment *inheritance* is scrubbed on every agent-reachable spawn in the
+  API process, and a repo gate now fails the build if a new spawn lands without
+  a deliberate environment or a written exemption; several spawns in the setup
+  wizard and CLI still inherit, which matters because those processes load the
+  whole deployment `.env`. `/proc` reads by a same-user process are open, and so
+  are off-disk reads of the encrypted stores; closing those is what the Landlock
+  work (Section 2.4) targets. **The vault protects secrets from the model, not
+  from a shell.**
+
+  The gate is syntactic, so treat a green build as "no new bare spawn was
+  introduced" rather than "nothing inherits". It cannot see a spawn dispatched
+  through an indirection, nor a library that shells out internally (pydub
+  invoking ffmpeg, Playwright launching its node driver, `webbrowser.open`).
 
 Secrets at rest: the vault's secret columns and encrypted snapshots are
 AES-encrypted, but the master key itself is a plaintext environment variable

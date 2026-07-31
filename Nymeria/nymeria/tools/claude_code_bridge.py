@@ -47,6 +47,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
+
 from ..oom import oom_score_preexec
 
 logger = logging.getLogger(__name__)
@@ -481,6 +483,12 @@ def _git(args: list[str], cwd: str) -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=15,
+            # git needs PATH to find its helpers and HOME to read .gitconfig,
+            # both already in the base allowlist, and nothing else this process
+            # holds. The sibling claude spawn below has always controlled its
+            # environment; this one being bare was an oversight, not a
+            # requirement.
+            env=scrubbed_subprocess_env(),
         )
     except Exception as exc:  # noqa: BLE001 - git summary is best-effort.
         logger.debug("git %s failed in %s: %s", args, cwd, exc)
@@ -543,19 +551,52 @@ def git_diff_summary(
 # --------------------------------------------------------------------------- #
 
 
-def build_subprocess_env(bare: bool) -> dict[str, str]:
-    """Environment for a local Claude Code subprocess.
+# Host-runtime variables Claude Code needs that the shared base does not carry:
+# it shells out, resolves git over SSH, and formats terminal output.
+_CLAUDE_CODE_RUNTIME_PASSTHROUGH: tuple[str, ...] = (
+    "SHELL", "USER", "LOGNAME",
+    "TERM", "COLORTERM",
+    "SSH_AUTH_SOCK",
+    "NODE_OPTIONS",
+    "GIT_CONFIG_GLOBAL",
+)
 
-    In the default (non-bare) path, strip the Anthropic auth env vars the parent
-    process may carry (e.g. a CLIProxy ``cpx-`` ``ANTHROPIC_API_KEY``) so Claude
-    Code falls back to its own OAuth / keychain auth. In bare mode Claude Code
-    requires ``ANTHROPIC_API_KEY``, so the env is passed through unchanged.
+_ANTHROPIC_AUTH_NAMES: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+)
+
+
+def build_subprocess_env(bare: bool) -> dict[str, str]:
+    """Environment for a local Claude Code subprocess. Allowlist, not denylist.
+
+    This used to copy the whole environment and pop three ``ANTHROPIC_*`` names,
+    which made it the widest credential handoff in the runtime: the master
+    encryption key, service token, database and Redis credentials, and every
+    provider key all reached the child. The child is Claude Code, which is
+    itself an agent that reads its own environment, so "it is a trusted tool"
+    is not an answer. Being handed the host is the point of this bridge; being
+    handed Nymeria's key material is not.
+
+    The bare/non-bare distinction is preserved and reads better inverted. Bare
+    mode ADDS the Anthropic auth variables because Claude Code requires a key
+    there; the default path simply never includes them, so Claude Code falls
+    back to its own OAuth or keychain rather than picking up a CLIProxy
+    ``cpx-`` key from the parent.
+
+    The ``CLAUDE_`` family is matched by PREFIX rather than enumerated, so a
+    knob added by a future Claude Code version keeps working. If a genuine
+    need is missing, the symptom is Claude Code misbehaving in a way that
+    tracks a host setting (a proxy, a CA bundle, a custom config dir): add the
+    name to ``_CLAUDE_CODE_RUNTIME_PASSTHROUGH``, do not reintroduce the copy.
     """
-    env = os.environ.copy()
-    if not bare:
-        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
-            env.pop(key, None)
-    return env
+    passthrough: list[str] = [
+        *NETWORK_RUNTIME_PASSTHROUGH,
+        *_CLAUDE_CODE_RUNTIME_PASSTHROUGH,
+        *(name for name in os.environ if name.startswith("CLAUDE_")),
+    ]
+    if bare:
+        passthrough.extend(_ANTHROPIC_AUTH_NAMES)
+    return scrubbed_subprocess_env(passthrough)
 
 
 GROUP_KILL_GRACE_SECONDS = 5.0
@@ -602,12 +643,18 @@ def run_local_blocking(
     request: ClaudeCodeRequest,
     config: ClaudeCodeRunConfig,
     timeout: float,
-    env: Optional[dict[str, str]] = None,
+    env: dict[str, str],
     *,
     cancel_check: Optional[Callable[[], bool]] = None,
     poll_interval: float = 0.25,
 ) -> ClaudeCodeResult:
     """Run Claude Code as a local subprocess and parse the result.
+
+    ``env`` is REQUIRED and has no default. It used to default to ``None``,
+    which ``Popen`` reads as "inherit the parent environment", so a caller who
+    simply omitted it handed Claude Code the API process's secrets. Both
+    existing callers pass ``build_subprocess_env(...)``; the missing default
+    means a third one cannot regress silently.
 
     ``timeout`` bounds the wait. When ``cancel_check`` is given it is polled
     every ``poll_interval`` seconds; once it returns True the process group is

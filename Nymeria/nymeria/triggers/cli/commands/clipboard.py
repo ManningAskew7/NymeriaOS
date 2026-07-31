@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from ....subprocess_env import scrubbed_subprocess_env
 
 from . import Command, CommandContext, CommandMessage, CommandRegistry, CommandResult
 from ..state.model import AssistantMessage, CLIUIState, ResponseStep
@@ -60,6 +61,11 @@ def _copy_to_clipboard(text: str) -> str | None:
             input=text.encode("utf-8"),
             check=True,
             timeout=5,
+            # The X11/Wayland handles are what pbcopy/xclip/wl-copy need to
+            # reach the display server; nothing else here is theirs.
+            env=scrubbed_subprocess_env(
+                ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR")
+            ),
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         return f"Clipboard copy failed: {exc}"
