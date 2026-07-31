@@ -55,6 +55,27 @@ def oom_score_preexec(
     payload = str(int(score)).encode("ascii")
 
     def _preexec() -> None:
+        # Restore dumpability in the CHILD before touching /proc/self.
+        #
+        # The parent (API/slim) sets PR_SET_DUMPABLE(0) at startup so a
+        # same-user process cannot read its environment. That flag is inherited
+        # across fork, and it reassigns the child's own /proc/self entries to
+        # root, so this write fails with EACCES and the OOM biasing silently
+        # stops working: measured, the child ends up at 0 instead of 700, and
+        # the kernel goes back to evicting the largest-RSS process, which is
+        # the API itself. Exactly what this module exists to prevent.
+        #
+        # Undoing it here is safe and is not a hole. execve resets dumpable to
+        # 1 for an ordinary binary moments later anyway, so this only closes a
+        # window that was never going to persist, and the child's environment
+        # has already been scrubbed by the caller (see subprocess_env.py), so
+        # there is nothing in it worth protecting from the child itself.
+        try:
+            import ctypes
+
+            ctypes.CDLL("libc.so.6", use_errno=True).prctl(4, 1, 0, 0, 0)
+        except (OSError, AttributeError):
+            pass
         try:
             fd = os.open(_OOM_SCORE_PATH, os.O_WRONLY)
             try:

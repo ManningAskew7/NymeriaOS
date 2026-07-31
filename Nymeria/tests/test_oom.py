@@ -2,13 +2,20 @@
 
 The helper biases the Linux OOM killer toward tool subprocesses so a memory
 spike evicts the offending tool, not the API server. The unit tests cover the
-platform gating and the kwargs merge; one Linux-gated integration test spawns a
-real child and confirms it reports the raised oom_score_adj.
+platform gating and the kwargs merge; two Linux-gated integration tests spawn a
+real child and confirm it reports the raised oom_score_adj, one from an ordinary
+parent and one from a parent that has applied ``restrict_proc_access``.
+
+That second test exists because the first cannot see the interaction: pytest
+runs undumpable-free, so a regression that only shows up under process
+hardening (which every real spawn runs under, since the API applies it at
+startup) passes the ordinary test cleanly.
 """
 
 import os
 import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -82,6 +89,65 @@ def test_child_reports_raised_oom_score():
 
     assert tagged == str(score)
     assert control != str(score) or int(control) >= score
+
+
+# The regression this pins: process hardening sets PR_SET_DUMPABLE(0) on the
+# agent runtime, that flag is inherited across fork, and an undumpable process
+# has its own /proc/self entries owned by root. So the preexec's write to
+# /proc/self/oom_score_adj returned EACCES, the deliberately-silent handler
+# swallowed it, and every tool subprocess in production sat at 0 instead of 700
+# while the ordinary test above (spawned from a dumpable pytest) stayed green.
+_HARDENED_PARENT_PROBE = textwrap.dedent(
+    """
+    import os, subprocess, sys
+    sys.path.insert(0, os.environ["NYMERIA_TEST_ROOT"])
+    from nymeria import oom
+    from nymeria.process_hardening import restrict_proc_access
+
+    print("APPLIED", restrict_proc_access())
+    out = subprocess.run(
+        ["sh", "-c", "cat /proc/self/oom_score_adj"],
+        capture_output=True,
+        text=True,
+        preexec_fn=oom.oom_score_preexec(int(os.environ["NYMERIA_TEST_SCORE"])),
+    )
+    print("SCORE", out.stdout.strip())
+    """
+)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or not os.path.exists("/proc/self/oom_score_adj"),
+    reason="oom_score_adj only adjustable on Linux with /proc",
+)
+def test_the_score_still_applies_when_the_parent_is_hardened():
+    """The two protections must not cancel each other out.
+
+    Both are always on together in production, so a spawn from an undumpable
+    parent is the ONLY shape that actually ships. Testing the ordinary shape
+    alone tests a configuration that never runs.
+    """
+    score = 654
+    root = str(__import__("pathlib").Path(__file__).resolve().parent.parent)
+    env = dict(os.environ)
+    env["NYMERIA_TEST_ROOT"] = root
+    env["NYMERIA_TEST_SCORE"] = str(score)
+    proc = subprocess.run(
+        [sys.executable, "-c", _HARDENED_PARENT_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    reported = dict(
+        line.split(" ", 1) for line in proc.stdout.strip().splitlines() if " " in line
+    )
+    assert reported["APPLIED"] == "True", (
+        "the parent did not actually become undumpable, so this test is not "
+        "exercising the interaction it claims to"
+    )
+    assert reported["SCORE"] == str(score)
 
 
 # --- spawn-site wiring -------------------------------------------------------
