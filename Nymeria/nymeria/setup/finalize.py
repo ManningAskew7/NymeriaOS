@@ -2117,6 +2117,11 @@ def _start_now_local(
         else None
     )
     try:
+        # env-gate: full-copy - same shape as the API self-restart, one layer
+        # out: the wizard launching `<entry point> slim`, which is Nymeria
+        # itself. It adds NYMERIA_PROJECT_ROOT and otherwise hands over the
+        # environment the operator just finished configuring, because the child
+        # is the backend they asked to start.
         result = subprocess.run(command, cwd=str(root), env=env)
     except KeyboardInterrupt:
         return 0

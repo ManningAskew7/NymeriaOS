@@ -164,6 +164,11 @@ def restart_api_process(agent: Any, settings: Any) -> None:
                 if key and value is not None:
                     child_env[key] = value
 
+        # env-gate: full-copy - re-exec of the API process itself during a
+        # self-restart. The child IS this service and must come up with
+        # identical configuration; the loop above re-merges dotenv over the
+        # copy precisely so a restart picks up config edits. A scrubbed
+        # environment here is a broken backend, not a hardened one.
         subprocess.Popen(
             [sys.executable] + sys.argv,
             env=child_env,

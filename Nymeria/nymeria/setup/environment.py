@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..onboarding import DockerStack, HostingOption
+from ..subprocess_env import DOCKER_CLI_PASSTHROUGH, scrubbed_subprocess_env
 
 # Subprocess probes are best-effort: a hung docker daemon answers `docker info`
 # slowly, so every probe carries its own deadline and failure degrades to
@@ -213,6 +214,17 @@ def suggest_free_port(start: int, *, tries: int = 20) -> int | None:
     return None
 
 
+def _docker_probe_env() -> dict[str, str]:
+    """Allowlisted environment for the read-only `docker` probes below.
+
+    The wizard process has the whole deployment `.env` loaded, so an inherited
+    environment hands the vault master key and every provider key to the docker
+    CLI (and, through it, to whatever a plugin or credential helper does with
+    them). These probes need nothing from it except the daemon coordinates.
+    """
+    return scrubbed_subprocess_env(DOCKER_CLI_PASSTHROUGH)
+
+
 def docker_daemon_running(*, timeout: float = PROBE_TIMEOUT_SECONDS) -> bool | None:
     """Whether `docker info` answers; None when docker is absent or the probe broke."""
     if shutil.which("docker") is None:
@@ -223,6 +235,7 @@ def docker_daemon_running(*, timeout: float = PROBE_TIMEOUT_SECONDS) -> bool | N
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_docker_probe_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -239,6 +252,7 @@ def docker_compose_available(*, timeout: float = PROBE_TIMEOUT_SECONDS) -> bool 
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_docker_probe_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -255,6 +269,7 @@ def list_nymeria_containers(*, timeout: float = PROBE_TIMEOUT_SECONDS) -> tuple[
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_docker_probe_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return ()
@@ -284,7 +299,11 @@ def _port_owner_from_ss(port: int, *, timeout: float) -> str:
         return ""
     try:
         proc = subprocess.run(
-            ["ss", "-tlnp"], capture_output=True, text=True, timeout=timeout
+            ["ss", "-tlnp"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=scrubbed_subprocess_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -309,6 +328,7 @@ def _port_owner_from_lsof(port: int, *, timeout: float) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=scrubbed_subprocess_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""

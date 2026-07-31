@@ -140,11 +140,13 @@ not on the other. State both when reasoning about it.
   process environment. Any subprocess the agent spawns runs as the same user and
   can, by default, recover the key and then decrypt the stores off disk. Three
   separate channels, in different states:
-  - Environment *inheritance* is scrubbed on every agent-reachable spawn in the
-    API process, and a repo gate now fails the build if a new spawn lands
-    without a deliberate environment or a written exemption. Several spawns in
-    the setup wizard and CLI still inherit, which matters because those
-    processes load the whole deployment `.env`.
+  - Environment *inheritance* is scrubbed on every spawn Nymeria makes, in the
+    API process and now in the setup wizard and CLI too (those load the whole
+    deployment `.env`, so they mattered as much). A repo gate fails the build
+    if a new spawn lands without a deliberate environment or a marker comment
+    justifying the inherit; the two standing exemptions are Nymeria
+    re-executing itself, where a scrubbed environment would be a broken
+    backend.
   - `/proc/<pid>/environ` and ptrace reads of *the agent process* are closed by
     `PR_SET_DUMPABLE(0)`, set at startup in `run.py`, which makes that process's
     `/proc` entries root-owned. Root and `CAP_SYS_PTRACE` are unaffected, and

@@ -15,7 +15,7 @@ from typing import Any, Iterable, Optional
 from ..config.llm_providers import get_llm_provider_spec, normalize_llm_provider
 from .credential_vault import (
     CREDENTIAL_REF_PATTERN,
-    SYSTEM_ACTOR,
+    UNATTRIBUTED_ACTOR,
     CredentialAccessDenied,
     CredentialSecretUnavailable,
 )
@@ -123,7 +123,14 @@ def _read_first_secret(
                 value = repo.get_secret_field(
                     record.id,
                     field_name,
-                    actor=owner_user_id or SYSTEM_ACTOR,
+                    # UNATTRIBUTED, not SYSTEM. "We could not work out who is
+                    # asking" is not a licence to read as the platform: an
+                    # unclaimed thread with no acting user would otherwise
+                    # decrypt any user's provider key. The vault denies this
+                    # actor, and the caller treats a denial as "no credential
+                    # here", so the degradation is a missing key rather than a
+                    # crash.
+                    actor=owner_user_id or UNATTRIBUTED_ACTOR,
                     target_type=target_type,
                     target_id=target_id,
                 )
@@ -238,7 +245,13 @@ def resolve_credential_references(
         try:
             return vault.resolve_references(
                 value,
-                actor=owner_user_id or SYSTEM_ACTOR,
+                # The sharper of the two sites. The reference is parsed out of
+                # a caller-supplied string, so the credential id is arbitrary
+                # rather than pre-filtered: reading as SYSTEM here meant any
+                # ${credential:...} written into a per-thread base_url or key
+                # resolved against the whole vault whenever the thread had no
+                # identifiable owner.
+                actor=owner_user_id or UNATTRIBUTED_ACTOR,
                 target_type=target_type,
                 target_id=target_id,
             )
