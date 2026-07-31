@@ -287,6 +287,13 @@ class NymeriaAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning("MCP execution-gate backfill failed (non-fatal): %s", e)
         try:
+            from .custom_tool_gate import backfill_custom_tool_gate_approvals
+
+            for line in backfill_custom_tool_gate_approvals(self.settings.custom_tools_dir):
+                logger.info(line)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Custom-tool execution-gate backfill failed (non-fatal): %s", e)
+        try:
             from .mcp_servers import reslug_legacy_mcp_server_ids
 
             for line in reslug_legacy_mcp_server_ids():

@@ -332,3 +332,127 @@ def test_custom_tool_import_stamps_python_approval(
     assert saved.python_config is not None
     assert saved.python_config.approved_by is not None
     assert python_execution_gate(saved.python_config, saved.parameters) is None
+
+
+def test_custom_tool_import_stamps_http_and_mcp_approval(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    # Same trap as the python case above: an imported http/mcp tool with no
+    # approval reports success and then silently fails its execution gate. The
+    # importing admin is the approver, and any `approved_by` in the payload is
+    # a client claim rather than a fact, so the stamp overwrites it.
+    from nymeria.core.custom_tool_gate import custom_tool_execution_gate
+
+    loader = FakeCustomToolLoader()
+    client, _agent, token = _authenticated_client(
+        tmp_path,
+        api_client_builder,
+        monkeypatch,
+        loader=loader,
+    )
+    headers = api_client_builder.auth(token)
+
+    import_response = client.post(
+        "/tools/custom/import",
+        headers=headers,
+        json={
+            "tools": [
+                {
+                    "id": "imported_http",
+                    "name": "Imported HTTP",
+                    "description": "Imported without approval",
+                    "parameters": {},
+                    "implementation_type": "http",
+                    "http_config": {"method": "GET", "url": "https://api.example.test/v1"},
+                    "approved_by": "a-name-the-payload-chose",
+                },
+                {
+                    "id": "imported_mcp",
+                    "name": "Imported MCP",
+                    "description": "Imported without approval",
+                    "parameters": {},
+                    "implementation_type": "mcp",
+                    "mcp_config": {
+                        "server_command": "npx",
+                        "server_args": ["-y", "@example/demo"],
+                        "tool_name": "do_thing",
+                    },
+                },
+            ]
+        },
+    )
+
+    assert import_response.status_code == 200
+    assert import_response.json()["imported"] == 2
+    for tool_id in ("imported_http", "imported_mcp"):
+        saved = loader.definitions[tool_id]
+        assert custom_tool_execution_gate(saved) is None
+        assert saved.approved_by == "caller"
+
+
+def test_custom_tool_test_route_refuses_an_unapproved_record(
+    tmp_path: Path,
+    api_client_builder,
+    monkeypatch,
+):
+    # The test route reaches execute_http_tool / mcp_manager.call_tool /
+    # execute_python_tool directly off the STORED definition, bypassing the
+    # StructuredTool wrappers where the gates live. Without a check here a
+    # record planted in data/custom_tools/ is one admin "Test" click from a
+    # subprocess spawn, and it is listed in the admin tools UI, which is what
+    # invites the click.
+    from nymeria.tools.definitions.custom_tool_schema import (
+        CustomToolDefinition,
+        HTTPToolConfig,
+        PythonToolConfig,
+    )
+    from nymeria.tools.definitions.mcp_schema import MCPToolConfig
+
+    loader = FakeCustomToolLoader()
+    planted = {
+        "planted_http": CustomToolDefinition(
+            id="planted_http",
+            name="Planted",
+            description="never came through an authoring path",
+            implementation_type="http",
+            http_config=HTTPToolConfig(method="GET", url="https://attacker.example.test/x"),
+        ),
+        "planted_mcp": CustomToolDefinition(
+            id="planted_mcp",
+            name="Planted",
+            description="never came through an authoring path",
+            implementation_type="mcp",
+            mcp_config=MCPToolConfig(
+                server_command="npx",
+                server_args=["-y", "@attacker/payload"],
+                tool_name="do_thing",
+            ),
+        ),
+        "planted_python": CustomToolDefinition(
+            id="planted_python",
+            name="Planted",
+            description="never came through an authoring path",
+            implementation_type="python",
+            python_config=PythonToolConfig(source_code="def run():\n    return 1\n"),
+        ),
+    }
+    loader.definitions.update(planted)
+
+    client, _agent, token = _authenticated_client(
+        tmp_path,
+        api_client_builder,
+        monkeypatch,
+        loader=loader,
+    )
+    headers = api_client_builder.auth(token)
+
+    for tool_id in planted:
+        response = client.post(
+            f"/tools/custom/{tool_id}/test",
+            headers=headers,
+            json={"params": {}},
+        )
+        assert response.status_code == 409, tool_id
+        assert "approval_required" in response.json()["detail"], tool_id

@@ -125,6 +125,16 @@ def create_custom_tools_router(
                             definition.parameters,
                             approved_by=user.id,
                         )
+                elif definition.implementation_type in ("http", "mcp"):
+                    from ...core.custom_tool_gate import stamp_custom_tool_approval
+
+                    # Same reasoning as the python branch, one difference: the
+                    # stamp is applied unconditionally rather than only when the
+                    # payload's own approval fails to verify. The payload is
+                    # client JSON, so `approved_by` in it is a claim, not a
+                    # fact; the admin performing the import is the real
+                    # approver and the hash is recomputed from content anyway.
+                    stamp_custom_tool_approval(definition, approved_by=user.id)
                 loader.save_definition(definition)
                 imported += 1
             except Exception as e:
@@ -220,6 +230,21 @@ def create_custom_tools_router(
                 status_code=404,
                 detail=f"Tool '{tool_id}' not found",
             )
+
+        # This route is a live invocation surface, not a dry run: the branches
+        # below reach execute_http_tool, mcp_manager.call_tool and
+        # execute_python_tool directly off the STORED definition, bypassing the
+        # StructuredTool wrappers where the execution gates live. Without this
+        # check a record planted in data/custom_tools/ is one admin "Test" click
+        # from a subprocess spawn, and it is listed in the admin tools UI, which
+        # is what invites the click. Admin auth is not the answer here: the
+        # admin who clicks Test is not the person who wrote the record, and
+        # telling those two apart is the whole job of these gates.
+        from ...core.custom_tool_gate import definition_execution_gate_error
+
+        gate_error = definition_execution_gate_error(definition)
+        if gate_error:
+            raise HTTPException(status_code=409, detail=f"approval_required: {gate_error}")
 
         try:
             if definition.implementation_type == "http":

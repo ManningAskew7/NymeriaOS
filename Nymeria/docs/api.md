@@ -2861,6 +2861,14 @@ Authorization: Bearer <token>
 }
 ```
 
+This route is a live invocation, not a dry run: it reaches the executors
+directly off the stored definition. It therefore enforces the same
+execution-trust gate the agent-facing tools do, for all four implementation
+types, and returns **409** with an `approval_required` detail for a definition
+that no authoring path approved (typically one written straight into
+`data/custom_tools/`). Re-save it through `tool_create` or the tools admin UI to
+approve the current revision. See `agent-systems/tool-hot-loading.md`.
+
 ---
 
 ### Export/Import Custom Tools

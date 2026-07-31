@@ -139,14 +139,20 @@ this revisited.
 
 ## Approval gates and audit
 
-- Python custom tools, workflow definitions, and MCP servers stay content-hash
-  gated at execution time: a raw edit leaves them inert until re-approved
-  through the sanctioned path. The refusal text says so and names the next step
-  (`python_execution_gate` / `workflow_execution_gate` / `mcp_execution_gate`).
-  The MCP gate hashes the launch surface (transport/command/args/url/workdir,
-  not credentials) and is stamped on every `save_server`, so any definition
-  persisted through Nymeria's code is approved while a hot-loaded raw edit is
-  not.
+- Custom tools of every implementation type, plus MCP server definitions, stay
+  content-hash gated at execution time: a raw edit leaves them inert until
+  re-approved through the sanctioned path. The refusal text says so and names
+  the next step (`python_execution_gate` / `workflow_execution_gate` /
+  `custom_tool_execution_gate` for the `http` and `mcp` types /
+  `mcp_execution_gate` for server definitions). `custom_tool_gate.py` also
+  exports `definition_execution_gate_error`, the one whole-definition answer
+  across all four types, which is what the admin test route asks.
+  The four custom-tool gates stamp at the AUTHORING layer with the acting user,
+  never at save time: the persist path cannot tell a config that came from the
+  request from one it just read off disk, so stamping there would let a
+  name-only update approve a planted record. The MCP SERVER gate is the
+  exception and can stamp in `save_server`, because that store is denylisted for
+  the file tools, so `save_server` is the only way in.
 - Raw (non-manager) edits are recorded user-attributed in the activity log
   (`ActivityType.EXTERNAL_EDIT`, `core/activity_log.py::log_external_edit`):
   refresh detections for custom tools / MCP / skills, hook, trigger, and

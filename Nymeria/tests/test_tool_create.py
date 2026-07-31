@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from nymeria.core.custom_tool_gate import stamp_custom_tool_approval
 from nymeria.core.custom_tools import CustomToolLoader
 from nymeria.core.python_custom_tools import (
     approve_python_revision,
@@ -187,6 +188,58 @@ def test_tool_create_publish_requires_successful_test(tmp_path):
     payload = json.loads(result)
     assert payload["ok"] is False
     assert payload["error"]["type"] == "untested_draft"
+
+
+def test_http_tool_publish_stamps_its_own_execution_approval(tmp_path, monkeypatch):
+    """The agent's own authoring path must produce an EXECUTABLE tool.
+
+    http custom tools carry a content-hash execution gate (P4-01), and the
+    stamp is applied at the authoring layer rather than at save time. If
+    publish forgets it, the tool is written, listed and then refuses every
+    call, which is a silent capability regression rather than a loud failure.
+    """
+    from nymeria.core.custom_tool_gate import (
+        compute_custom_tool_revision_hash,
+        custom_tool_execution_gate,
+    )
+
+    loader = CustomToolLoader(tmp_path / "custom_tools")
+    tool_create_module = importlib.import_module("nymeria.tools.tool_create")
+    monkeypatch.setattr(tool_create_module, "get_custom_tool_loader", lambda: loader)
+    monkeypatch.setattr("nymeria.core.agent.get_current_agent", lambda: None)
+
+    store = ToolDraftStore(tmp_path / "drafts")
+    draft = create_draft_definition(
+        user_id="user-1",
+        tool_id="http_publish_price",
+        name="HTTP Publish Price",
+        description="Fetch a price",
+        parameters={
+            "symbol": {"type": "string", "description": "Ticker", "required": True}
+        },
+        http_config=_http_config(),
+    )
+    # Publish refuses an untested draft; the network round trip is not what is
+    # under test here.
+    draft.last_test_ok = True
+    store.save("user-1", draft)
+
+    result = _publish_draft(
+        store=store,
+        user_id="user-1",
+        draft_id="http_publish_price",
+        thread_id="thread-1",
+        ttl="2h",
+        tool_call_id="call-1",
+    )
+
+    payload = json.loads(result)
+    assert payload["ok"] is True, payload
+    published = loader.get_definition("http_publish_price")
+    assert published is not None
+    assert published.approved_revision == compute_custom_tool_revision_hash(published)
+    assert published.approved_by == "user-1"
+    assert custom_tool_execution_gate(published) is None
 
 
 def test_python_tool_publish_can_validate_with_sample_params(tmp_path, monkeypatch):
@@ -597,19 +650,25 @@ def test_draft_test_resolves_credentials_under_the_published_target(tmp_path, mo
     # here is a divergence between the two spellings, not between two tools.
     vault.calls.clear()
     loader = CustomToolLoader(tmp_path / "custom_tools")
+    # Stamped the way ``_publish_draft`` stamps: the execution gate refuses an
+    # http record that no authoring path approved, and save_definition
+    # deliberately does not stamp (core/custom_tool_gate.py).
     loader.save_definition(
-        CustomToolDefinition(
-            id="priced",
-            name="Priced",
-            description="Fetch a price behind an authenticated endpoint",
-            parameters={},
-            implementation_type="http",
-            http_config=HTTPToolConfig(
-                method="GET",
-                url="https://api.example.com/prices",
-                headers={"X-Token": "${credential:cred1.token}"},
+        stamp_custom_tool_approval(
+            CustomToolDefinition(
+                id="priced",
+                name="Priced",
+                description="Fetch a price behind an authenticated endpoint",
+                parameters={},
+                implementation_type="http",
+                http_config=HTTPToolConfig(
+                    method="GET",
+                    url="https://api.example.com/prices",
+                    headers={"X-Token": "${credential:cred1.token}"},
+                ),
+                enabled=True,
             ),
-            enabled=True,
+            approved_by="user-1",
         )
     )
     tool_obj = loader.get_tool("priced")

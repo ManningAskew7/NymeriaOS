@@ -243,6 +243,76 @@ writer who reads the (open) hash code could forge a matching approval, so the
 hard multi-user boundary (write confinement + subprocess env scrub) is tracked
 as a separate #75 slice.
 
+**`http` and `mcp` tools carry the same execution-time gate**
+(`core/custom_tool_gate.py`), so all four implementation types are now covered.
+It exists mostly for `mcp`: that config carries `server_command`, `server_args`
+and `working_directory` directly, so an invocation on a planted record spawns a
+process, and the same launch surface under `data/mcp_servers/` had been gated
+since #75 while this one was not.
+
+The hash covers where the call goes, what rides along, and what the caller may
+leave unset:
+
+- **`parameters`, for both types.** Not padding: an optional parameter's
+  `default` is installed into the generated args schema, LangChain supplies it
+  whenever the model omits the argument, and `interpolate_params` substitutes it
+  into an HTTP tool's URL, headers, query params and body. So an edit to a
+  default redirects an approved, credential-bearing tool, and flipping
+  `required` to false lets a planted default apply where the model used to be
+  asked. Both sibling gates hash parameters for the same reason.
+- **`http`:** method, URL, headers, query params, body template.
+- **`mcp`:** transport, command, args, URL, headers, working directory, tool
+  name, `server_id` (the credential-vault target key, so an edit re-points which
+  vault rows the tool satisfies) and `env_vars`/`encrypted_env_vars`.
+
+Deliberately outside the hash, so the omissions are choices rather than
+oversights: the http `timeout_seconds`/`response_path`/`response_format` and the
+mcp `idle_timeout_seconds`/`startup_timeout_seconds`/`call_timeout_seconds`.
+These shape how long a call waits and how much of an answer comes back, not
+where it goes or what rides along.
+
+Note that `env_vars` **is** covered here while the MCP SERVER gate excludes it.
+That difference is load-bearing rather than an inconsistency: the startup
+`migrate_mcp_encrypted_env_vars` pass rewrites `data/mcp_servers/` after save, so
+covering the field there would invalidate stamps behind the author's back.
+Nothing rewrites `data/custom_tools/`, so the field is stable and the launch
+hijack it enables (`LD_PRELOAD`, `NODE_OPTIONS`, `BASH_ENV` injected without
+touching the command) is closed on this side.
+
+**Where the stamp is applied.** At the AUTHORING layer with the acting user, the
+same as the other three gates: `build_custom_tool_definition` and
+`apply_custom_tool_update` for the REST routes, the import route, and
+`tool_create` publish for the agent's own `http` authoring. Never in
+`CustomToolLoader.save_definition`. Stamping at the storage chokepoint looks
+safer because it cannot be forgotten, and it was the first shape of this gate,
+but a name-only `PUT /tools/custom/{id}` reads the record off disk, changes a
+label and re-persists, so a stamp at that depth would approve a launch command
+nobody authored. An update re-stamps only when the request actually carried a
+config or `parameters`; a name, description, `enabled` or `tags` edit never
+touches an approval, for any of the four types.
+
+`POST /tools/custom/{tool_id}/test` is gated too, and returns `409` with
+`approval_required` for an unapproved record of any type. That route reaches the
+executors directly off the stored definition rather than through the
+loader-bound tool, so without the check a planted record was one admin "Test"
+click from running, and it appears in the admin tools list, which is what
+invites the click.
+
+Authoring is unchanged in reach. `tool_create` accepts `http` and the author
+self-approves, so an agent that could publish an HTTP tool before still can.
+`mcp` custom tools have always been admin-only to author (`tool_create` rejects
+the type and every REST route that creates one requires an admin), so for that
+type the stamp records a real admin decision, exactly as the Python gate's does.
+
+**Pre-existing tools are grandfathered once**, on first start after upgrade,
+rather than needing a manual re-publish. A marker file makes that a one-shot: a
+definition appearing on disk after the backfill stays unapproved, where an
+every-startup stamp would quietly approve planted files forever. If the marker
+cannot be written the pass aborts rather than proceeding, because proceeding
+without one re-arms the grandfathering on every subsequent start. The Python
+gate cannot grandfather at all, because its stamp asserts an admin decision that
+cannot be invented on load.
+
 With dynamic binding enabled, publishing does not use the old graph
 rebuild/resume loop. The publish result includes the thread-binding result, the
 next model step sees the updated schema list from the live resolver, and

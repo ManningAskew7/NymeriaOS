@@ -307,6 +307,35 @@ class CustomToolDefinition(BaseModel):
         description="Last update timestamp",
     )
 
+    # Execution-trust stamp for the ``http`` and ``mcp`` types ONLY. It lives at
+    # definition scope, not on the two configs, for two reasons. The hash covers
+    # ``parameters``, which lives here (an optional parameter's ``default`` is
+    # interpolated into an HTTP tool's url/headers/query/body, so it selects the
+    # request destination as surely as the url template does). And MCPToolConfig
+    # is DUAL-USE: core/mcp_servers.py builds one transiently from an
+    # MCPServerDefinition for every managed-server launch, where these fields
+    # would be permanently unset and a different gate (mcp_execution_gate, on
+    # the server definition) is the one that governs.
+    #
+    # ``python`` and ``workflow`` records carry their own approval on their own
+    # config, because those hashes cover source code this scope cannot see; a
+    # stray value here is ignored for them. See core/custom_tool_gate.py.
+    approved_revision: Optional[str] = Field(
+        default=None,
+        description=(
+            "Execution-surface hash stamped at authoring; execution of an "
+            "http/mcp tool requires a match (see core/custom_tool_gate.py)"
+        ),
+    )
+    approved_by: Optional[str] = Field(
+        default=None,
+        description="User id that approved this revision",
+    )
+    approved_at: Optional[datetime] = Field(
+        default=None,
+        description="Approval timestamp",
+    )
+
     @field_validator("http_config", "mcp_config")
     @classmethod
     def validate_config_matches_type(cls, v, info):

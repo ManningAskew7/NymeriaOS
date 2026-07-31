@@ -418,7 +418,8 @@ security boundary, and several say so in their own code.
   naively injected destructive command at near-zero false-positive cost. It is a
   blocklist over a Turing-complete shell; a determined caller bypasses it
   trivially.
-- **Content-hash execution gates** (MCP servers, Python custom tools, workflows).
+- **Content-hash execution gates** (MCP servers, Python custom tools, workflows,
+  and HTTP/MCP custom tools).
   Each recomputes a hash of a definition's live on-disk content at execution and
   fails closed on mismatch, so a definition planted on disk or hot-loaded outside
   the sanctioned admin path stays inert. These are provenance checks, not
