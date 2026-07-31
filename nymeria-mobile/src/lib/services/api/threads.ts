@@ -181,6 +181,7 @@ export class ThreadsApi extends ChatApi {
         id: (m.id as string) || crypto.randomUUID(),
         role: m.role as 'user' | 'assistant' | 'system',
         kind: m.kind as Message['kind'],
+        noteKind: m.note_kind as Message['noteKind'],
         content: m.content as string,
         steps,
         timestamp: new Date((m.timestamp as string) || Date.now()),

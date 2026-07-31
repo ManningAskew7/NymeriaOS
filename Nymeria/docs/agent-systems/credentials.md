@@ -243,6 +243,20 @@ field `Y` from credential `X`, and substitutes the plaintext inline. It also
 tracks resolved values so tool output can be **redacted** (secrets scrubbed
 from responses).
 
+### Path 2b: Per-thread LLM overrides
+
+`llm_config.base_url` and `llm_config.api_key` resolve the same
+`${credential:id.field}` references. Two consequences worth knowing:
+
+- Setting a thread's own `api_key` is the documented way to point that thread
+  at an endpoint the deployment is not configured for. Without it the server
+  refuses to send its own provider credential there, ignores the address, and
+  runs the turn on the configured provider (`SECURITY.md` 2.5).
+- A reference only counts as "your own key" for that purpose when it names a
+  record you own. The vault deliberately lets any identified principal READ a
+  system-owned record, so pointing at the deployment-wide LLM credential is
+  reading the operator's key, not supplying yours.
+
 ### Path 3: MCP Server Environment and Headers
 
 Same `${credential:id.field}` pattern. When an MCP server starts, the MCP

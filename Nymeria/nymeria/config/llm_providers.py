@@ -1393,12 +1393,29 @@ def cliproxy_base_url_for_provider(
     OpenAI-compatible path at ``/v1`` on the same host, so a cross-provider
     reference must derive the matching URL from the global base URL rather than
     falling through to the provider's public default (which would bill direct
-    and reject the proxy key). Mirrors the derivation in
-    ``core/agent_llm_config.base_url_for_provider``. Returns ``None`` when the
-    global base URL is unset or is not a CLIProxy URL.
+    and reject the proxy key). Returns ``None`` when the global base URL is
+    unset or is not a CLIProxy URL.
+
+    THE derivation, and the reason it is worth one shared function: three
+    callers need the same answer for different purposes and a disagreement
+    between them is silent. ``agent_llm_config`` uses it on both its primary and
+    its fallback path, and ``core/llm_provider_utils`` uses it to decide whether
+    configuration already names an address for a provider. If the gate and the
+    resolver derived this separately, the gate could refuse the resolver's own
+    answer, which reads to a user as the per-thread provider option simply not
+    working.
     """
-    url = (main_base_url or "").rstrip("/")
-    if not url or ("cli-proxy" not in url and "cliproxy" not in url):
+    url = (main_base_url or "").strip().rstrip("/")
+    if not url:
+        return None
+    # Function-local: importing the vendored package at module scope would pull
+    # it into every config import. `cliproxy.py` itself is stdlib-only, which is
+    # what lets its several callers all reach it this way, and it is the single
+    # authority on what a CLIProxy URL looks like (hostname substring OR the
+    # well-known ports) so detection cannot drift between them.
+    from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+    if not looks_like_cliproxy_url(url):
         return None
     p = normalize_llm_provider(provider)
     if p == "anthropic":

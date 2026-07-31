@@ -203,6 +203,11 @@ export interface Message {
   id: string;
   role: MessageRole;
   kind?: 'compaction_notice' | 'command_result' | 'turn_rewound' | 'fallback_notice';
+  // Sub-taxonomy of a `fallback_notice`: 'transport'/'refusal' are model
+  // swaps, 'destination' is a per-thread endpoint the server refused to
+  // send its credential to. Same channel, different event, so the
+  // renderer must not label them all as a model switch.
+  noteKind?: 'transport' | 'refusal' | 'destination';
   content: string;
   steps?: MessageStep[];          // Ordered list of thinking/tool_call steps
   intermediateContent?: string;   // Legacy: concatenated thinking (computed from steps)

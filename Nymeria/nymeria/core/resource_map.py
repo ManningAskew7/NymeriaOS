@@ -248,13 +248,25 @@ _STORE_ROWS: tuple[_StoreRow, ...] = (
         "per thread",
         "yes",
         "files-as-truth",
+        gates=("nymeria.core.llm_provider_utils.destination_redirects_away_from_config",),
         drives_execution=True,
         control_note=(
             "P4-03. Carries base_url, so a write redirects the model call to a "
             "caller-named host: provider key, full prompt, and the model's "
             "replies (E10-01). Validating the PATCH route's schema does not "
-            "reach this path; the check has to live where the config is "
-            "consumed. Also selects tools and skills for the thread."
+            "reach this path, which is why the check lives where the config is "
+            "CONSUMED: llm_provider_utils.destination_redirects_away_from_config "
+            "refuses a base_url the deployment is not configured for, falls "
+            "back to the configured destination and latches a one-shot notice, "
+            "so a planted file cannot walk off with the operator credential "
+            "unless it also supplies a key of its own. "
+            "No role exemption, precisely because a planted file's author is "
+            "not the thread's owner. Residual: a caller who supplies their OWN "
+            "api_key may still name any address (deliberate, it is the "
+            "bring-your-own-endpoint capability, and ownership of that key is "
+            "checked by provenance, not presence, along the same precedence "
+            "the key resolution itself uses), and this file still selects "
+            "tools and skills."
         ),
     ),
     _StoreRow(

@@ -1994,7 +1994,6 @@ class CommandBackendClient:
             vault=getattr(self.agent, "credential_vault", None),
             owner_user_id=self.user.id,
             settings=self._settings(),
-            actor_role=getattr(self.user, "role", "") or "",
         )
 
 
@@ -4429,7 +4428,14 @@ class _CommandExecutor(
         model = settings.get("llm_model", "?")
         provider = settings.get("llm_provider", "?")
         base_url = settings.get("llm_base_url")
-        if base_url and "cli-proxy" in base_url:
+        # Function-local: this module must not pull the vendored package at
+        # import time. `cliproxy.py` is the single authority on what a CLIProxy
+        # URL looks like, so the "(via CLIProxy)" label cannot disagree with the
+        # code that actually routes to it (the open-coded substring test this
+        # replaces missed a proxy addressed by IP, which matches on port).
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+        if base_url and looks_like_cliproxy_url(base_url):
             provider = f"{provider} (via CLIProxy)"
         thinking = settings.get("llm_extended_thinking", False)
         effort = settings.get("llm_reasoning_effort")
@@ -4515,7 +4521,14 @@ class _CommandExecutor(
         effective_model = ctx.get("model") or settings.get("llm_model", "?")
         provider = settings.get("llm_provider", "?")
         base_url = settings.get("llm_base_url")
-        if base_url and "cli-proxy" in base_url:
+        # Function-local: this module must not pull the vendored package at
+        # import time. `cliproxy.py` is the single authority on what a CLIProxy
+        # URL looks like, so the "(via CLIProxy)" label cannot disagree with the
+        # code that actually routes to it (the open-coded substring test this
+        # replaces missed a proxy addressed by IP, which matches on port).
+        from ..vendor.react_agent.cliproxy import looks_like_cliproxy_url
+
+        if base_url and looks_like_cliproxy_url(base_url):
             provider = f"{provider} (via CLIProxy)"
 
         lines = ["Context Breakdown", "", "Model", f"  {effective_model} | {provider}"]

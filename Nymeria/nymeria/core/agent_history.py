@@ -505,6 +505,15 @@ def _fallback_notice_summary(note: Dict[str, Any]) -> str:
         return f"Fallback hold {how}; this thread is back on {to_model}."
     if note.get("kind") == "refusal":
         return f"{from_model} refused this turn; switched to {to_model}."
+    if note.get("kind") == "destination":
+        # Not a model switch. Reuses this notice channel because the shape is
+        # the same (a persisted, once-only explanation that the effective
+        # config differs from the requested one), but the model-name copy above
+        # would be actively wrong here.
+        return (
+            "This thread's custom model endpoint was not used; the configured "
+            "provider answered instead."
+        )
     return f"{from_model} was failing; switched to {to_model}."
 
 
