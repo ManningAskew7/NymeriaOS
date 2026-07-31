@@ -120,6 +120,24 @@ async def test_denylist_blocks_management_tool(monkeypatch):
     assert "protected management tool" in result
 
 
+async def test_denylist_blocks_hook_config_but_not_hook_info(monkeypatch):
+    """The hook store is the policy plane, so editing it is not a deferred call.
+
+    `require_approval` / `block_if_matches` are what a user authors when they
+    specifically do not trust the agent with an action. Reaching the tool that
+    edits them by name, without it ever being bound to the thread, is a
+    disable-then-act route. Reading them is not, so `hook_info` stays callable.
+    """
+    agent = _FakeAgent([ti_stub_add])
+    _wire(monkeypatch, agent, role="admin")
+
+    blocked = await _invoke("hook_config", {})
+    assert "tool_invoke error" in blocked
+    assert "protected management tool" in blocked
+
+    assert "protected management tool" not in await _invoke("hook_info", {})
+
+
 async def test_admin_only_blocked_for_user(monkeypatch):
     from nymeria.tools import ADMIN_ONLY_TOOL_NAMES
 
