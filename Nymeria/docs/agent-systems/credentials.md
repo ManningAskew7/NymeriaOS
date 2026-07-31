@@ -163,6 +163,29 @@ The resolver (`native_credentials.py`):
 There is no longer a fallback to "unscoped credentials with no targets". A
 credential with no targets is not a lenient one, it is a locked one.
 
+**Address fields are answered by only one record.** A base URL, host fragment
+or OAuth token endpoint is a separate lookup from the credential that rides to
+it, so on a deployment with several records for one provider the two could
+otherwise come from different records: one record steering a request another
+record authenticates. Step 6 therefore has an extra condition for address
+fields. They are served only by the first record holding any of that provider's
+own credential fields, and only when that record holds every such field any
+other visible record holds. Which fields count as an address and which count as
+a credential is declared per provider in `credential_registry.py`.
+
+In practice this is invisible: a record saved the way the setup hint describes,
+with the provider's required fields together, is unaffected. Nor does it change
+anything when no record exists at all, which still falls back to the
+`*_BASE_URL` setting or the vendor default as before.
+
+It bites when one provider's address and credential are SPLIT: across two
+records, or with the address in a record and the credential in an environment
+variable. That call fails with an error naming the field, rather than quietly
+using a different address, because the fallback for many providers ends at the
+vendor's public API and sending a self-hosted instance's token there would be
+worse than failing. Put the credential in the same record, or remove the
+address from the record and set the provider's `*_BASE_URL` instead.
+
 If no credential matches, the tool returns a human-readable setup hint:
 
 > No Todoist credential found. Save one in Settings > Connections with

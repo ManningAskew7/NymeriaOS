@@ -220,8 +220,7 @@ much freedom the destination legitimately needs:
 - **(b) Compared against configured destinations**, when the set is enumerable
   and letting a caller name one is a feature. LLM base URLs work this way.
 - **(c) Joined to the credential's own record**, when the host is inherently
-  arbitrary. Service integrations need this and do not have it yet; see the
-  residuals below.
+  arbitrary. Service integrations work this way.
 
 *OAuth token endpoints.* The endpoint a refresh or code exchange POSTs to
 receives whatever proves the grant: the operator's OAuth `client_secret` where
@@ -277,6 +276,59 @@ reachable by `file_write`. There is no role exemption, at either consumption
 point, for the same reason: a planted config file's author is not the thread's
 owner, and on a single-user deployment the only account is an admin.
 
+*Service integration destinations.* A third-party integration takes both its
+address and its credential from the vault, as separate lookups that used to
+resolve independently: one record could supply the base URL, host fragment or
+OAuth token endpoint while a different record supplied the secret that rode to
+it. Any identified caller can create a record, and any caller's lookup can see
+the deployment-wide one, so that split was reachable over the REST API.
+
+The address is now served only by the first record holding any of the
+provider's own credential fields, and only when that record holds every such
+field any other visible record holds. Both halves matter: a provider with two
+independent secrets (a delivery token and a preview token, an API key and a
+session token) would otherwise let a record prove possession with one and steer
+a request authenticated by the other, and a credential explicitly bound to a
+tool outranks an unbound one, so position has to be checked as well as content.
+Which fields count as an address and which count as possession is a declared
+register rather than a name heuristic, and a build gate fails when a field the
+integrations ask for is in neither half.
+
+A refusal stops the call rather than redirecting it. That is deliberate and it
+is the opposite of how the sibling LLM check behaves, for a reason specific to
+this surface: an integration resolves its address as "the vault, or the
+deployment's setting, or a hard-coded vendor host", and the last of those is a
+third party. Treating a refusal as "nothing saved" would therefore not prevent
+the request, it would send a self-hosted instance's credential to the vendor's
+public API, which is the disclosure this rule exists to prevent. So a record
+that holds an address it may not serve raises, naming the field and the two
+ways to resolve it, and only a genuine absence falls through to the default.
+
+The cost is that a deployment which deliberately splits one provider's address
+and credential across two vault records, or keeps the address in the vault and
+the credential in the environment, has to put them together or move the address
+into settings. That split is precisely the shape being closed, and it cannot be
+told apart from the planted version from inside the vault. Because the refusal
+raises rather than returning nothing, it also pre-empts the deployment's own
+`*_BASE_URL` setting on that call: an operator with both a stray record and a
+configured address gets the error rather than the configured address. The
+message names the field and both remedies.
+
+A record's provider name is part of the check, not cosmetic. Two integrations
+resolve their address under a provider's full alias list but each of their two
+credentials under one alias, so a record saved under the other alias is visible
+to the address lookup and invisible to the credential lookup. It could satisfy
+the join by naming a credential field it would never be asked for. Where the
+visible records disagree on the provider name, the join cannot tell which of
+them a later lookup will reach, so it declines.
+
+What this does not do is verify that a record's fields hold what they claim.
+Field names are caller-chosen, so a record can satisfy the join by naming every
+credential field with junk values. It then also wins those secret lookups, so
+what reaches the address it chose is its own junk rather than anyone else's
+secret. The exact guarantee (this address came from the same record as this
+credential, checked where the request is built) is tracked separately.
+
 Known residuals. A caller supplying their own key may still name any address,
 including a loopback one, so this is not an SSRF control. The gate keys on the
 address, so a per-thread `provider` switch with no address of its own is not a
@@ -285,14 +337,14 @@ rather than per-provider keys, that sends the generic key to the newly chosen
 provider's own canonical host. A thread pointed at a
 keyless local model server has to set some per-thread `api_key` as well, since
 otherwise the refusal would send its prompts to the configured provider
-instead. Service integrations are the third shape above and still resolve a
-destination and a credential from the vault as two independent lookups, so a
-record holding only a base URL, or only a TLS-verification flag, can still
-steer or downgrade a request authenticated by a credential resolved elsewhere;
-that is a separate, tracked gap, and it covers a small number of service
-integrations whose OAuth token endpoint comes from a vault field rather than
-from the registry shape (a) uses. Embedding and voice base URLs have no such
-check at all.
+instead. On the service-integration side the join covers addresses only: a
+record holding a TLS-verification flag, a header set, or an API-key header name
+can still weaken a request another record authenticates, since those are not
+addresses and the join does not look at them. The join also compares vault
+records to each other, so it cannot see a credential that comes from the
+environment: for a provider configured by env var, a planted record naming one
+address field and one credential field is unopposed, and the credential it names
+is the one that rides. Embedding and voice base URLs have no such check at all.
 
 ### 2.6 In-process heuristics (useful, not boundaries)
 

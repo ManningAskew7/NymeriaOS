@@ -9,6 +9,11 @@ from typing import Any, Iterable, Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from .credential_registry import (
+    credential_anchor_fields,
+    destination_fields_for,
+    get_provider_spec,
+)
 from .utils import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -21,6 +26,24 @@ class NativeCredentialValue:
     value: str
     credential_id: str
     field_name: str
+
+
+class CredentialDestinationRefused(ValueError):
+    """A saved record supplies an address it cannot prove it also authenticates.
+
+    Raised instead of returning ``None`` so the refusal cannot be mistaken for
+    "nothing saved". Every integration spells its fallback
+    ``_credential_value(...) or _settings_value(...) or VENDOR_DEFAULT``, and 95
+    of those chains end in a hard-coded vendor host, so a silent None would not
+    stop the request: it would send the credential to the vendor's public API
+    instead. For a self-hosted provider (Baserow, NocoDB, Grist, Sentry and the
+    rest) that is a disclosure to a third party, produced by the control meant to
+    prevent one.
+
+    ``ValueError`` because that is already what a bad address raises here
+    (``service_integration_base.base_url``), so tool bodies and the tool node
+    surface it the same way, with no new error plumbing.
+    """
 
 
 def provider_candidates(provider: str, aliases: Iterable[str]) -> set[str]:
@@ -50,6 +73,95 @@ def _target_score(record: Any, tool_name: str, bound_ids: set[str]) -> int:
     return 100
 
 
+def _destination_anchor_fields(provider: str, field_names: list[str]) -> Optional[frozenset[str]]:
+    """Fields a record must carry to be trusted with this DESTINATION lookup.
+
+    ``None`` means "not a destination lookup, or nothing to protect", and the
+    caller gates nothing. A non-empty set means the lookup decides where a
+    request goes, so only a record that also proves it holds this provider's own
+    credential may answer it.
+
+    A lookup is a destination lookup when ANY requested name belongs to a
+    destination group of THIS provider's spec. Per-spec membership is what makes
+    that exact: keying on the requested primary alone left the gate disarmed for
+    a tuple spelled ``("api_key", "base_url")``, and keying on a global name set
+    would gate secret lookups, since ``value`` is a base-URL alias for searxng
+    and a secret alias for 27 roles elsewhere.
+
+    Fails OPEN for a provider with no registered spec, because without the spec
+    there is no way to know what possession looks like and denying would break
+    the integration. ``tests/test_credential_destination_gate.py`` asserts that
+    arm is unreachable for every provider the tool modules actually name.
+    """
+    spec = get_provider_spec(provider)
+    if spec is None:
+        return None
+    if not (set(field_names) & destination_fields_for(spec)):
+        return None
+    # Empty (searxng, which is a bare instance URL) is returned as-is rather
+    # than collapsed to None: both are falsy so callers behave identically, and
+    # keeping them apart means a caller can still tell "nothing to protect"
+    # from "not a destination lookup".
+    return credential_anchor_fields(spec)
+
+
+def _destination_record_id(
+    records: list[Any], anchor_fields: frozenset[str]
+) -> tuple[Optional[str], frozenset[str]]:
+    """The one record allowed to answer a destination lookup, and the anchor union.
+
+    The union comes back with it so a refusal can say something TRUE about why.
+
+    The first record holding any anchor field wins, and only if it holds EVERY
+    anchor field held by any other candidate. Both halves are load-bearing, and
+    each was a working bypass of the weaker rule they replace ("holds at least
+    one anchor"):
+
+    - Completeness. Contentful declares two independent tokens. A record naming
+      only ``preview_token`` proved possession under the weaker rule, so it could
+      steer the request that another record's ``delivery_token`` authenticated.
+      36 of 187 providers have that multi-secret shape. Requiring the whole union
+      means a record can only steer a secret it also supplies, and a planted
+      record that names every anchor to satisfy this also wins those lookups, so
+      it sends its own junk to its own address.
+    - First. A system credential explicitly bound to the tool outranks an
+      unbound user record, so without this a later user record could supply the
+      address while the bound system record still supplied the key.
+
+    Returning ``None`` here does NOT mean the caller may carry on. When a record
+    that holds the requested address is refused, the caller raises rather than
+    resolving, because its fallback chain ends in a hard-coded vendor host: see
+    ``CredentialDestinationRefused``.
+
+    Accepted behaviour change: an operator who deliberately SPLITS a provider's
+    address and credential across two vault records must merge them. That split
+    is precisely the attack shape, and ``native_credential_setup_hint`` already
+    tells users to save one record carrying the required fields.
+    """
+    held = [
+        (record, anchor_fields & set(record.secret_fields or ())) for record in records
+    ]
+    union = frozenset().union(*(names for _, names in held))
+    holders = [(record, names) for record, names in held if names]
+    if not holders:
+        return None, union
+    first, first_names = holders[0]
+    if first_names != union:
+        return None, union
+    if any(record.provider != first.provider for record, _ in holders[1:]):
+        # Different spellings of the provider are different CANDIDATE SETS, not
+        # cosmetic. Ghost and PagerDuty resolve their address with the spec's
+        # full alias list but each credential with one branch alias, so a record
+        # saved under the other branch is visible to the address lookup and
+        # invisible to the credential lookup. It could then satisfy this join by
+        # merely NAMING a credential field it would never be asked for, and the
+        # operator's record still answered. That was a working bypass. Whenever
+        # the visible records disagree about the provider name, the join cannot
+        # tell which of them a later lookup will reach, so it declines.
+        return None, union
+    return first.id, union
+
+
 def get_native_credential_value(
     *,
     provider: str,
@@ -68,10 +180,31 @@ def get_native_credential_value(
     last but still win when nothing else matched, back when an empty list meant
     "any consumer may decrypt this". Empty now denies, so ranking it would only
     pick a credential the vault is about to refuse.
+
+    A DESTINATION lookup (a base URL, host fragment or token endpoint) is only
+    answered by the single record ``_destination_record_id`` picks. That is the
+    whole of E10-02 slice B: the loop below re-runs per call and takes the first
+    record holding any requested name, so without the join one record could
+    supply the address while a different one supplied the secret that rides to
+    it.
+
+    Refusing RAISES ``CredentialDestinationRefused`` rather than returning None,
+    and the difference is the whole point. Call sites spell their fallback
+    ``_credential_value(...) or _settings_value(...) or VENDOR_DEFAULT``, so a
+    silent None does not stop the request; it retargets it at the vendor's public
+    API. For a self-hosted provider that means the operator's instance token
+    goes to the vendor, which is the disclosure this control exists to prevent,
+    caused by the control. Only a record that actually HELD one of the requested
+    names raises; nothing saved is still a plain None, so the ordinary
+    "no credential yet, use the default" path is untouched.
     """
     user_id = get_user_id(config)
     provider_names = _provider_candidates(provider, provider_aliases)
     field_list = list(dict.fromkeys(field_names))
+    anchor_fields = _destination_anchor_fields(provider, field_list)
+    refused_field = ""
+    refused_partial = False
+    anchor_union: frozenset[str] = frozenset()
 
     try:
         from ..core.credential_vault import (
@@ -100,8 +233,30 @@ def get_native_credential_value(
                 record.updated_at,
             )
         )
-        for record in records:
-            if _target_score(record, tool_name, bound_ids) >= 100:
+        eligible = [
+            record for record in records if _target_score(record, tool_name, bound_ids) < 100
+        ]
+        destination_id, anchor_union = (
+            _destination_record_id(eligible, anchor_fields)
+            if anchor_fields
+            else (None, frozenset())
+        )
+        for record in eligible:
+            if anchor_fields and record.id != destination_id:
+                # Would steer a request this record cannot prove it also
+                # authenticates. Skip rather than abort: the record that carries
+                # both may rank lower, which is the ordinary saved shape. Note
+                # which field it held, so a refusal can be told apart from
+                # nothing-saved once the search is exhausted.
+                held = [name for name in field_list if name in (record.secret_fields or ())]
+                if held and not refused_field:
+                    refused_field = held[0]
+                    refused_partial = bool(anchor_fields & set(record.secret_fields or ()))
+                logger.debug(
+                    "Credential %s may not supply a destination for %s; skipping",
+                    record.id,
+                    provider,
+                )
                 continue
             for field_name in field_list:
                 if field_name not in record.secret_fields:
@@ -130,6 +285,25 @@ def get_native_credential_value(
                     )
     except Exception:
         logger.debug("Native credential lookup failed for provider %s", provider, exc_info=True)
+
+    if refused_field:
+        if refused_partial:
+            detail = (
+                f"another saved {provider} credential holds fields it does not "
+                f"({', '.join(sorted(anchor_union))}), so which record would authenticate "
+                "the request is ambiguous. Keep one record per account, spelling the same "
+                "field names in each"
+            )
+        else:
+            detail = (
+                f"it does not hold the {provider} credential itself, so it would steer a "
+                "request something else authenticates. Add the credential to that same "
+                "record"
+            )
+        raise CredentialDestinationRefused(
+            f'A saved "{provider}" credential supplies "{refused_field}" but {detail}, or '
+            f'remove "{refused_field}" from it and configure the address in settings instead.'
+        )
     return None
 
 
@@ -152,13 +326,21 @@ def resolve_native_credential(
     URL). Replaces the per-provider ``_get_<provider>_api_key`` resolvers that each
     hand-rolled this vault -> settings -> env fallback.
     """
-    cred = get_native_credential_value(
-        provider=provider,
-        provider_aliases=aliases,
-        field_names=field_names,
-        tool_name=tool_name,
-        config=config,
-    )
+    try:
+        cred = get_native_credential_value(
+            provider=provider,
+            provider_aliases=aliases,
+            field_names=field_names,
+            tool_name=tool_name,
+            config=config,
+        )
+    except CredentialDestinationRefused:
+        # Unlike the inline call-site chains, this resolver's remaining legs are
+        # BOTH operator configuration (a Settings attribute, then env vars) with
+        # no vendor constant at the end, so a refused vault address can safely
+        # fall through to them instead of failing the call.
+        logger.debug("Refused a vault-supplied destination for %s; using settings", provider)
+        cred = None
     if cred and cred.value:
         return cred.value
 
