@@ -408,7 +408,10 @@ def test_google_account_display_validation_refreshes_and_prunes(monkeypatch):
         },
     }
 
-    def fake_refresh(account, scopes):
+    seen_providers = []
+
+    def fake_refresh(account, scopes, *, provider):
+        seen_providers.append(provider)
         if account["email"] == "expired@example.com":
             account["expires_at"] = now + 3600
             return "refreshed", ""
@@ -416,7 +419,13 @@ def test_google_account_display_validation_refreshes_and_prunes(monkeypatch):
 
     monkeypatch.setattr(auth_cache_utils, "refresh_google_account", fake_refresh)
 
-    rows, changed = auth_cache_utils.validate_google_accounts_for_display(accounts, ["scope-a"])
+    rows, changed = auth_cache_utils.validate_google_accounts_for_display(
+        accounts, ["scope-a"], provider="google_calendar"
+    )
+
+    # The provider has to reach the refresh: it is what selects the token
+    # endpoint from the OAuth registry.
+    assert set(seen_providers) == {"google_calendar"}
 
     assert changed is True
     assert "invalid" not in accounts
@@ -451,8 +460,8 @@ def test_google_credentials_helper_loads_provider_cache_and_refreshes(monkeypatc
     def fake_save(user_id, cache_filename, saved_cache):
         calls["save"] = (user_id, cache_filename, saved_cache)
 
-    def fake_refresh(account, scopes):
-        calls["refresh"] = (account["email"], scopes)
+    def fake_refresh(account, scopes, *, provider):
+        calls["refresh"] = (account["email"], scopes, provider)
         account["access_token"] = "new-token"
         account["expires_at"] = now + 3600
         return "refreshed", ""
@@ -471,7 +480,7 @@ def test_google_credentials_helper_loads_provider_cache_and_refreshes(monkeypatc
 
     assert creds.token == "new-token"
     assert calls["load"] == ("docs-user", "google_docs.json")
-    assert calls["refresh"] == ("docs@example.com", ["scope-a"])
+    assert calls["refresh"] == ("docs@example.com", ["scope-a"], "google_docs")
     assert calls["save"][0:2] == ("docs-user", "google_docs.json")
 
 

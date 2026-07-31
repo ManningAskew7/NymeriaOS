@@ -93,14 +93,18 @@ def _write_google_auth_library_credentials(account: dict, path: Path) -> None:
             logger.debug("Failed to chmod Gmail MCP credentials file %s", path)
 
 
-def _refresh_if_needed(account: dict) -> tuple[bool, str]:
+def _refresh_if_needed(account: dict, provider: str = "google") -> tuple[bool, str]:
     if not account.get("refresh_token"):
         return False, "no refresh token stored"
     if not _account_has_scopes(account, GMAIL_MCP_SCOPES):
         return False, "missing Gmail scopes"
     if time.time() < float(account.get("expires_at", 0)) - 60:
         return True, ""
-    status, reason = auth_utils.refresh_google_account(account, GMAIL_MCP_SCOPES)
+    # `provider` selects the token endpoint from the OAuth registry, so forward
+    # the one this cache file belongs to rather than leaning on the default.
+    status, reason = auth_utils.refresh_google_account(
+        account, GMAIL_MCP_SCOPES, provider=provider
+    )
     if status == "refreshed":
         return True, ""
     return False, reason or status
@@ -149,7 +153,7 @@ def export_google_account_for_gmail_mcp(
                 continue
             before_access_token = account.get("access_token")
             before_expires_at = account.get("expires_at")
-            usable, reason = _refresh_if_needed(account)
+            usable, reason = _refresh_if_needed(account, provider or "google")
             if not usable:
                 logs.append(
                     "Google account "

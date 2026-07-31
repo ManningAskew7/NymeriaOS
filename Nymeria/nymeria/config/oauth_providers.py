@@ -30,11 +30,12 @@ OAuthFlow = Literal["auth_code", "device_code"]
 
 _GOOGLE_USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo"
 _GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
-_GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+# Public, unlike its `_GOOGLE_*` siblings: see the note beside `__all__`.
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 _MICROSOFT_AUTHORITY = "https://login.microsoftonline.com/common"
 _MICROSOFT_AUTH_URI = f"{_MICROSOFT_AUTHORITY}/oauth2/v2.0/authorize"
-_MICROSOFT_TOKEN_URI = f"{_MICROSOFT_AUTHORITY}/oauth2/v2.0/token"
+MICROSOFT_TOKEN_URI = f"{_MICROSOFT_AUTHORITY}/oauth2/v2.0/token"
 _MICROSOFT_DEVICE_CODE_URI = f"{_MICROSOFT_AUTHORITY}/oauth2/v2.0/devicecode"
 _MICROSOFT_USERINFO_URI = "https://graph.microsoft.com/v1.0/me"
 
@@ -188,7 +189,7 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         provider_id="google_calendar",
         display_name="Google Calendar",
         auth_uri=_GOOGLE_AUTH_URI,
-        token_uri=_GOOGLE_TOKEN_URI,
+        token_uri=GOOGLE_TOKEN_URI,
         userinfo_uri=_GOOGLE_USERINFO_URI,
         scopes=GOOGLE_CALENDAR_SCOPES,
         supported_flows=_AUTH_CODE_ONLY,
@@ -202,7 +203,7 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         provider_id="google_gmail",
         display_name="Google Gmail",
         auth_uri=_GOOGLE_AUTH_URI,
-        token_uri=_GOOGLE_TOKEN_URI,
+        token_uri=GOOGLE_TOKEN_URI,
         userinfo_uri=_GOOGLE_USERINFO_URI,
         scopes=GOOGLE_GMAIL_SCOPES,
         supported_flows=_AUTH_CODE_ONLY,
@@ -218,7 +219,7 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         provider_id="google_docs",
         display_name="Google Workspace",
         auth_uri=_GOOGLE_AUTH_URI,
-        token_uri=_GOOGLE_TOKEN_URI,
+        token_uri=GOOGLE_TOKEN_URI,
         userinfo_uri=_GOOGLE_USERINFO_URI,
         scopes=GOOGLE_DOCS_SCOPES,
         supported_flows=_AUTH_CODE_ONLY,
@@ -232,7 +233,7 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         provider_id="google_analytics",
         display_name="Google Analytics",
         auth_uri=_GOOGLE_AUTH_URI,
-        token_uri=_GOOGLE_TOKEN_URI,
+        token_uri=GOOGLE_TOKEN_URI,
         userinfo_uri=_GOOGLE_USERINFO_URI,
         scopes=GOOGLE_ANALYTICS_SCOPES,
         supported_flows=_AUTH_CODE_ONLY,
@@ -246,7 +247,7 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         provider_id="google_business_profile",
         display_name="Google Business Profile",
         auth_uri=_GOOGLE_AUTH_URI,
-        token_uri=_GOOGLE_TOKEN_URI,
+        token_uri=GOOGLE_TOKEN_URI,
         userinfo_uri=_GOOGLE_USERINFO_URI,
         scopes=GOOGLE_BUSINESS_PROFILE_SCOPES,
         supported_flows=_AUTH_CODE_ONLY,
@@ -260,7 +261,7 @@ OAUTH_PROVIDERS: dict[str, OAuthProviderDescriptor] = {
         provider_id="outlook",
         display_name="Microsoft Outlook",
         auth_uri=_MICROSOFT_AUTH_URI,
-        token_uri=_MICROSOFT_TOKEN_URI,
+        token_uri=MICROSOFT_TOKEN_URI,
         userinfo_uri=_MICROSOFT_USERINFO_URI,
         scopes=OUTLOOK_SCOPES,
         supported_flows=_BOTH_FLOWS,
@@ -310,6 +311,14 @@ __all__ = [
     "GOOGLE_ANALYTICS_SCOPES",
     "GOOGLE_BUSINESS_PROFILE_SCOPES",
     "OUTLOOK_SCOPES",
+    # The token endpoints are exported because they are a SECURITY boundary,
+    # not a convenience: a token endpoint receives whatever proves the grant,
+    # which is the operator's `client_secret` for Google and the user's refresh
+    # token for Microsoft (a public client here, with no `client_secret_env`).
+    # So every consumer must take the registry's value rather than one carried
+    # alongside an account. Copies of these literals are how that goes wrong.
+    "GOOGLE_TOKEN_URI",
+    "MICROSOFT_TOKEN_URI",
     "get_oauth_provider",
     "list_oauth_providers",
     "is_known_oauth_provider",

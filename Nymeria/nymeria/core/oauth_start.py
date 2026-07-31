@@ -101,11 +101,18 @@ def _load_google_oauth_client_config(env_var: str) -> dict[str, Any]:
 def _resolve_client_config(
     descriptor: OAuthProviderDescriptor,
 ) -> dict[str, str] | OAuthStartError:
-    """Return ``{client_id, client_secret, auth_uri, token_uri}`` or an error.
+    """Return ``{client_id, client_secret, auth_uri}`` or an error.
 
     For Google: read the installed-app JSON pointed to by
     ``GOOGLE_OAUTH_CREDENTIALS``. For Microsoft (and other env-driven
     providers): read ``client_id_env`` / ``client_secret_env`` directly.
+
+    Deliberately no ``token_uri``. The token endpoint decides where the grant
+    proof is POSTed, so it comes from the descriptor at the point of use
+    (``oauth_callback_handler``, ``oauth_device_flow``) and is never carried
+    alongside the client secret. Honouring the client JSON's own ``token_uri``
+    here, the way ``auth_uri`` above is honoured, was already dead code; it is
+    removed rather than left as a seam a future refactor could re-wire.
     """
     if descriptor.client_config_file_env:
         creds = _load_google_oauth_client_config(descriptor.client_config_file_env)
@@ -123,7 +130,6 @@ def _resolve_client_config(
             "client_id": str(creds["client_id"]),
             "client_secret": str(creds.get("client_secret") or ""),
             "auth_uri": str(creds.get("auth_uri") or descriptor.auth_uri),
-            "token_uri": str(creds.get("token_uri") or descriptor.token_uri),
         }
 
     if descriptor.client_id_env:
@@ -149,7 +155,6 @@ def _resolve_client_config(
             "client_id": client_id,
             "client_secret": client_secret,
             "auth_uri": descriptor.auth_uri,
-            "token_uri": descriptor.token_uri,
         }
 
     return OAuthStartError(
@@ -400,7 +405,6 @@ def _build_auth_code_result(
         "redirect_uri": redirect_uri,
         "client_id": client_config["client_id"],
         "client_secret": client_config.get("client_secret", ""),
-        "token_uri": client_config["token_uri"],
         "code_verifier": code_verifier,
         "scopes": list(descriptor.scopes),
         "state_token_hash": state_hash,
@@ -498,7 +502,6 @@ async def _build_device_code_result(
         "flow": "device_code",
         "client_id": client_config["client_id"],
         "client_secret": client_config.get("client_secret", ""),
-        "token_uri": client_config["token_uri"],
         "device_code": device_code,
         "interval": interval,
         "expires_in": expires_in,
