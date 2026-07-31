@@ -139,10 +139,12 @@ not on the other. State both when reasoning about it.
 - **Execution channel (not protected today).** The master key lives in the agent
   process environment. Any subprocess the agent spawns runs as the same user and
   can read `/proc/1/environ` (the key) and the encrypted stores off disk, then
-  decrypt them. Environment *inheritance* has been closed (spawned children no
-  longer inherit the secret-bearing environment), but `/proc` and off-disk reads
-  are not; closing those is exactly what the Landlock work (Section 2.4) targets.
-  **The vault protects secrets from the model, not from a shell.**
+  decrypt them. Three separate leaks, none of them fully closed today:
+  environment *inheritance* is scrubbed on most spawn paths but not all, so some
+  children still receive the secret-bearing environment directly; `/proc` reads
+  by a same-user process are open; and off-disk reads of the encrypted stores
+  are open. Closing the last two is what the Landlock work (Section 2.4)
+  targets. **The vault protects secrets from the model, not from a shell.**
 
 Secrets at rest: the vault's secret columns and encrypted snapshots are
 AES-encrypted, but the master key itself is a plaintext environment variable
@@ -232,13 +234,31 @@ the OS boundary (Section 2.2), not *prevented* in the process.
 Nymeria offers an opt-in, user-authored human-approval gate (the
 `require_approval` lifecycle hook: an in-band hold that denies on timeout, abort,
 or failure) and pre-tool guardrails (`block_if_matches`, `rewrite_arg`) for
-irreversible or outbound actions. When authored, these are real, fail-closed
-enforcement points. They are **not on by default and are not a platform-wide
-injection defense**: there is currently no mandatory approval on any tool, and
-the system prompt does not rely on in-prompt provenance framing as a control. If
-you expose the agent to untrusted input and care about a specific
-irreversible/outbound action, author a hook for it, and still treat the OS
-boundary as the real containment.
+irreversible or outbound actions. They are **not on by default and are not a
+platform-wide injection defense**: there is currently no mandatory approval on
+any tool, and the system prompt does not rely on in-prompt provenance framing as
+a control.
+
+Two limits matter more than the opt-in status, because an authored hook can read
+as stronger than it is:
+
+- **Hooks fire on one dispatch path, not both.** `pre_tool_use` and
+  `post_tool_use` fire in the graph's tool node, which covers tool calls the
+  model emits normally. They do **not** fire on the by-name invocation paths
+  (`tool_invoke`, the workflow SDK's tool verbs, `self_invoke_tool`), which
+  reach the same tools through a different dispatcher. An approval or
+  `block_if_matches` hook authored against a tool therefore does not constrain
+  that tool when it is invoked by name. Treat an authored hook as covering
+  ordinary model tool calls only, until this is unified.
+- **The action layer is not uniformly fail-closed.** Hook *dispatch* fails
+  closed on the pre-tool path, but two actions invert that at the action layer:
+  a `run_command` exit that is nonzero but not exactly 2, and `run_workflow`'s
+  author-selected `on_fault`, both default to allow-with-note. Only exit 2
+  denies. A hook that errors in those shapes lets the call through.
+
+If you expose the agent to untrusted input and care about a specific
+irreversible/outbound action, author a hook for it, know which dispatch path it
+covers, and still treat the OS boundary as the real containment.
 
 ---
 
