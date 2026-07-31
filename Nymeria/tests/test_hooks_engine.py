@@ -648,3 +648,141 @@ def test_dispatch_routes_to_scoped_pools(reg, scratch, monkeypatch):
     )
     assert dmod._mutate_pool in captured   # mutate dispatch -> mutate pool
     assert dmod._observe_pool in captured  # observe dispatch -> observe pool
+
+
+# --------------------------------------------------------------------------- #
+# Re-entrance / recursion bound
+# --------------------------------------------------------------------------- #
+
+def test_reentrant_hook_chain_is_bounded(reg, scratch):
+    """The hook -> workflow -> tool -> hook cycle terminates.
+
+    Driven as an actual cycle rather than by poking the depth counter, because
+    the counter is not the thing under test: the claim is that a hook whose
+    body reaches a fire point again cannot recurse forever. In production the
+    middle of that loop is a run_workflow action calling a tool, which is a
+    fire point; here the hook re-enters dispatch directly, which is the same
+    shape with the workflow engine's machinery removed.
+    """
+    fires: list[int] = []
+
+    async def recursive(c: HookContext):
+        fires.append(len(fires))
+        await dmod.adispatch(
+            HookEvent.PRE_TOOL_USE,
+            ctx(HookEvent.PRE_TOOL_USE),
+            registry=reg,
+            scratch=scratch,
+        )
+        return PreToolOutcome(decision="allow")
+
+    reg.register(HookEvent.PRE_TOOL_USE, recursive)
+    run(
+        dmod.adispatch(
+            HookEvent.PRE_TOOL_USE,
+            ctx(HookEvent.PRE_TOOL_USE),
+            registry=reg,
+            scratch=scratch,
+        )
+    )
+
+    assert len(fires) == dmod.MAX_HOOK_FIRE_DEPTH
+
+
+def test_reentrance_limit_denies_on_pre_rather_than_passing(reg, scratch):
+    """Hitting the limit must not read as approval.
+
+    If a depth stop silently allowed, then driving a chain deep would be a way
+    to walk through a require_approval or block_if_matches gate. Same reasoning
+    as the saturated-pool deny.
+    """
+    inner: list[object] = []
+
+    async def recursive(c: HookContext):
+        inner.append(
+            await dmod.adispatch(
+                HookEvent.PRE_TOOL_USE,
+                ctx(HookEvent.PRE_TOOL_USE),
+                registry=reg,
+                scratch=scratch,
+            )
+        )
+        return PreToolOutcome(decision="allow")
+
+    reg.register(HookEvent.PRE_TOOL_USE, recursive)
+    run(
+        dmod.adispatch(
+            HookEvent.PRE_TOOL_USE,
+            ctx(HookEvent.PRE_TOOL_USE),
+            registry=reg,
+            scratch=scratch,
+        )
+    )
+
+    # Ordering: the DEEPEST dispatch is the one that gets refused, and it is
+    # also the first to return, so the refusal is inner[0]. The later entry is
+    # the outer frame observing its child's reduced (allowed) outcome, which is
+    # correct: only the call that breached the limit is denied, not the whole
+    # chain retroactively.
+    refused = inner[0]
+    assert isinstance(refused, PreToolOutcome)
+    assert refused.decision == "deny"
+    assert "recursion" in (refused.reason or "")
+
+
+def test_reentrance_limit_is_silent_on_planes_that_gate_nothing(reg, scratch):
+    """DONE has no deny to express, so the stop is a no-op there."""
+    depth: list[int] = []
+
+    async def recursive(c: HookContext):
+        depth.append(1)
+        await dmod.adispatch(
+            HookEvent.DONE, ctx(HookEvent.DONE), registry=reg, scratch=scratch
+        )
+        return DoneOutcome()
+
+    reg.register(HookEvent.DONE, recursive)
+    out = run(
+        dmod.adispatch(
+            HookEvent.DONE, ctx(HookEvent.DONE), registry=reg, scratch=scratch
+        )
+    )
+
+    assert len(depth) == dmod.MAX_HOOK_FIRE_DEPTH
+    assert out is None or isinstance(out, DoneOutcome)
+
+
+def test_depth_is_released_so_later_turns_still_fire(reg, scratch):
+    """The counter must not leak across dispatches.
+
+    A ContextVar that was set but never reset would let one deep turn
+    permanently disable hooks for everything after it, which is a far worse
+    failure than the recursion it guards against.
+    """
+    fires: list[int] = []
+
+    async def recursive(c: HookContext):
+        fires.append(1)
+        await dmod.adispatch(
+            HookEvent.PRE_TOOL_USE,
+            ctx(HookEvent.PRE_TOOL_USE),
+            registry=reg,
+            scratch=scratch,
+        )
+        return PreToolOutcome(decision="allow")
+
+    reg.register(HookEvent.PRE_TOOL_USE, recursive)
+    for _ in range(3):
+        run(
+            dmod.adispatch(
+                HookEvent.PRE_TOOL_USE,
+                ctx(HookEvent.PRE_TOOL_USE),
+                registry=reg,
+                scratch=scratch,
+            )
+        )
+
+    # Every outer dispatch got its full budget back, none was starved by the
+    # previous one.
+    assert len(fires) == 3 * dmod.MAX_HOOK_FIRE_DEPTH
+    assert dmod._fire_depth.get() == 0

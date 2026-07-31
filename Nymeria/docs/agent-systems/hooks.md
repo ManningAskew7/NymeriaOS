@@ -155,7 +155,19 @@ caveat: `nym.approve` cannot hold an in-band hook. A workflow that suspends for 
 counts as a **success on the observe events** (the approval resolves out-of-band, the
 trigger precedent) but as a **fault on the mutate events** (mapped via `on_fault` on PRE,
 raised on `prompt_submit`), so guardrail workflows should not call `nym.approve`
-(use the `require_approval` action for interactive holds). Note that every suspending
+(use the `require_approval` action for interactive holds).
+
+**Recursion bound.** A hook can run a workflow, a workflow can call tools, and a tool
+call is itself a fire point, so hook dispatch is a cycle. The workflow engine's own
+`max_depth` does not close it: that depth rides a runnable configurable which a
+hook-dispatched run does not inherit, so each hop through a hook restarts the count at
+zero. Dispatch therefore carries its own bound, `MAX_HOOK_FIRE_DEPTH` (2), tracked in a
+`ContextVar` so it is per-task rather than shared across concurrent turns. Breaching it
+**denies on `pre_tool_use`** and is a silent no-op on the observe planes, matching the
+saturated-pool policy: a guardrail that was not evaluated must not pass, or driving a
+chain deep would become a way through an approval gate.
+
+Note that every suspending
 fire still mints a durable pending-approval record (7-day expiry, hourly sweep), so a
 frequently-firing hook bound to a suspending workflow accumulates them until resolved
 or reaped.
