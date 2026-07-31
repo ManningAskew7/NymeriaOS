@@ -989,7 +989,11 @@ tool_invoke(name: str, arguments: dict | str | None = None)
   an empty object for a no-argument tool.
 
 Use `tool_invoke` for a one-off call or while choosing among candidate tools: it
-does not mutate the thread tool list, so the prompt cache is preserved. Prefer
+does not mutate the thread tool list, so the prompt cache is preserved. Its
+description opens with a hard precondition for the model: call it only with the
+target's full schema already in context, and only for a target not already bound
+first-class (the validation-miss schema echo is a recovery path, not a discovery
+mechanism). Prefer
 `tool_manage(action="enable")` for repeated use or when arguments must be exactly
 right (a bound tool's arguments are grammar-constrained). It resolves any tool in
 the dispatch superset (catalog, MCP, custom, workflow) and enforces the SAME

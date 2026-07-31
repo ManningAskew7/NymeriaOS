@@ -75,6 +75,14 @@ conversation history, delivered by `tool_search(include_schemas=true)`, a hook,
 the user, or echoed back by `tool_invoke` on a validation error, which is
 cache-safe.
 
+The model-facing description opens with a hard precondition: call `tool_invoke`
+only with the target's full schema already in context, and only for a target
+that is not already bound first-class (a bound tool is called directly). The
+validation-error schema echo is a recovery path, not a discovery mechanism.
+Without that front-loaded rule, models pattern-match `tool_invoke` to the
+generic dispatch idiom they are trained on and guess arguments by tool name
+(observed in dogfooding, 2026-07-31).
+
 - Same gates as binding: the management denylist
   (`PROTECTED_MANAGEMENT_TOOL_NAMES`), admin/developer role gates, and the
   thread's authoritative `disabled_tools`, resolving credentials as the calling

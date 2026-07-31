@@ -14,6 +14,14 @@ target's schema rides in conversation history (delivered by
 validation miss here), which is cache-safe. This is Nymeria's provider-agnostic
 emulation of Anthropic's deferred tool loading.
 
+The model-facing description opens with a hard precondition: call this ONLY
+with the target's full schema already in context, and ONLY for a target that is
+not already bound first-class. Models pattern-match ``tool_invoke`` to the
+generic dispatch idiom they are trained on and guess arguments by tool name
+(observed in dogfooding, 2026-07-31), so the description pushes back up front;
+the schema echo on a validation miss is a recovery path, not a license to
+discover schemas by guessing.
+
 It enforces the SAME gates as binding (management denylist, admin/developer
 role gates, and the thread's authoritative ``disabled_tools``), resolving
 credentials as the CALLING user, so the deferred path is never a gate bypass.
@@ -242,6 +250,14 @@ async def tool_invoke(
 ) -> str:
     """Run one tool by name WITHOUT binding it to this thread (cache-safe).
 
+    DO NOT call this tool unless BOTH of these hold:
+    1. You already have the target tool's FULL argument schema in context,
+       from tool_search(include_schemas=true), a Skill Kit's deferred-load
+       listing, or a schema handed to you (a hook, the user, a prior result).
+       Never guess a tool's arguments from its name or description.
+    2. The target tool is NOT in your current first-class tool list. A bound
+       tool must be called directly, never through tool_invoke.
+
     Use this for a tool you need once or a few times, or while you are still
     choosing among candidates: it does not change your tool list, so the prompt
     cache is preserved. For a tool you will use repeatedly across a long
@@ -249,15 +265,12 @@ async def tool_invoke(
     tool_manage(action="enable") to bind it first-class (its arguments are then
     grammar-constrained by the real schema).
 
-    You can call any tool discoverable via tool_search (catalog, MCP, custom, or
-    workflow tools), including ones not currently in your tool list. Get a
-    tool's argument schema from tool_search(include_schemas=true), from a
-    schema handed to you (a hook, the user, a prior result), or, if you guess
-    wrong, from the corrected schema this tool echoes back on a validation error.
-
-    Arguments are validated against the target's real schema server-side but,
-    unlike a bound tool, are NOT grammar-constrained as you type them, so format
-    them carefully from the schema. The same gates as binding apply (role,
+    You can call any tool discoverable via tool_search (catalog, MCP, custom,
+    or workflow tools). Arguments are validated against the target's real
+    schema server-side but, unlike a bound tool, are NOT grammar-constrained as
+    you type them, so format them exactly from the schema you hold. A
+    validation miss echoes the correct schema back, but that is a recovery
+    path, not a discovery mechanism. The same gates as binding apply (role,
     disabled, and management-tool limits).
 
     Args:
