@@ -177,18 +177,16 @@ def test_an_unidentifiable_caller_is_denied_not_treated_as_the_owner(
         )
 
 
-def test_an_unidentifiable_llm_lookup_does_not_fall_back_to_system(
+def test_an_unidentifiable_credential_reference_does_not_resolve(
     repo, alice_oauth_cache
 ):
-    """The fail-open this pass removed, re-entering through the back door.
+    """A caller-supplied ``${credential:...}`` names an ARBITRARY record.
 
-    ``llm_credentials`` resolved secrets as ``owner_user_id or SYSTEM_ACTOR``,
-    so a thread with no owner AND no acting user (an unclaimed synthetic
-    thread) read as the platform. The second site is the sharper one: the
-    credential id there is parsed out of a caller-supplied string rather than
-    pre-filtered, so it could name any record in the vault.
-
-    Both must degrade to "no credential found", not to a system-level read.
+    Unlike the provider lookup below, nothing narrows the record set here: the
+    id comes out of a string the caller wrote, so resolving it as the platform
+    when the thread has no identifiable owner reaches the whole vault,
+    including other users' records. Degrades to the reference being left
+    unresolved.
     """
     from nymeria.core.llm_credentials import resolve_credential_references
 
@@ -206,6 +204,39 @@ def test_an_unidentifiable_llm_lookup_does_not_fall_back_to_system(
         )
         == "alice-refresh-token"
     )
+
+
+def test_an_ownerless_provider_lookup_still_finds_the_operators_key(repo):
+    """The other half of the asymmetry, and the one easy to break by tidying.
+
+    The provider lookup passes ``SYSTEM_ACTOR`` when there is no owner while
+    the reference resolver above passes ``UNATTRIBUTED_ACTOR``, which reads
+    like an oversight. It is not. ``_list_visible_records`` has already
+    narrowed an ownerless lookup to ``owner_type="system"`` records, so there
+    is no user-owned record in scope to leak, and those system records are
+    exactly the operator's deployment-wide keys that every turn must resolve.
+
+    Tightening this site to match the other one is a pure regression: it does
+    not close a hole, it just stops an unclaimed thread (a synthetic
+    autonomous one, typically) from finding the global LLM key. That was
+    shipped once and caught in review; this test is why it will not ship again.
+    """
+    from nymeria.core.llm_credentials import get_llm_provider_credential
+
+    repo.create_credential(
+        owner_type="system",
+        owner_user_id=None,
+        name="Operator OpenAI",
+        provider="openai",
+        kind="api_key",
+        secret_fields={"api_key": "sk-operator"},
+        allowed_targets=["llm_provider:openai"],
+    )
+    credential = get_llm_provider_credential(
+        "openai", vault=repo, owner_user_id=None, thread_id=None
+    )
+    assert credential is not None, "the ownerless path lost the operator's key"
+    assert credential.api_key == "sk-operator"
 
 
 def test_the_reserved_audit_string_is_not_a_usable_principal(repo):

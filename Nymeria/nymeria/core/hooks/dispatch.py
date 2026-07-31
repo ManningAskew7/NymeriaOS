@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import inspect
 import logging
 import os
@@ -840,8 +841,21 @@ def schedule_observe(
                 return
             except RuntimeError:
                 pass  # loop is shutting down; fall through to the pool path
+        # Context copy, as on every other thread hop in this file. The
+        # create_task branch above inherits the context for free, so without
+        # this the two branches of one function disagree about whether the
+        # re-entrance depth carries, and which one you get depends on whether a
+        # loop happened to be running.
         future = _observe_dispatch_pool.submit(
-            dispatch_observe, event, ctx, registry=registry, scratch=scratch, timeout=timeout
+            copy_context().run,
+            functools.partial(
+                dispatch_observe,
+                event,
+                ctx,
+                registry=registry,
+                scratch=scratch,
+                timeout=timeout,
+            ),
         )
         _observe_futures.add(future)
         future.add_done_callback(_observe_futures.discard)

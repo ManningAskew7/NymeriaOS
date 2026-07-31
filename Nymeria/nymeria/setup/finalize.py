@@ -2020,6 +2020,15 @@ def _start_now_docker(console: Console, *, state: WizardState, root: Path) -> in
     console.print(f"\nStarting Nymeria ({spec.label})...")
     _print_command(console, up_command)
     try:
+        # env-gate: full-copy - compose interpolation reads the process
+        # environment, and on the slim default-port source-checkout path
+        # `--env-file` is deliberately NOT passed (see _docker_stack_spec), so
+        # the process env is the ONLY source for `${...}` in the compose file.
+        # Scrubbing here would silently substitute empty strings into the
+        # containers this is provisioning. The values ARE the stack's
+        # configuration and compose is the thing that installs them, so this is
+        # the same category as the API re-exec rather than a leak: what makes
+        # it acceptable is that the child is bringing up Nymeria itself.
         result = subprocess.run(
             _compose_argv(spec, "up", "-d"),
             cwd=str(root),
@@ -2587,6 +2596,12 @@ def _read_docker_token_file(
     """
     command = _compose_argv(spec, "exec", "-T", spec.service, "cat", f"/data/{filename}")
     try:
+        # env-gate: full-copy - same `_compose_env` as the `up -d` above and
+        # for the same reason: compose resolves the service and file from
+        # `${...}` in the process environment on the no-`--env-file` path. This
+        # one only execs `cat` inside an already-running container, so the
+        # environment does not reach a new image, but compose itself still
+        # needs it to identify the project.
         result = subprocess.run(
             command,
             cwd=str(root),

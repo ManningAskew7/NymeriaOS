@@ -15,6 +15,7 @@ from typing import Any, Iterable, Optional
 from ..config.llm_providers import get_llm_provider_spec, normalize_llm_provider
 from .credential_vault import (
     CREDENTIAL_REF_PATTERN,
+    SYSTEM_ACTOR,
     UNATTRIBUTED_ACTOR,
     CredentialAccessDenied,
     CredentialSecretUnavailable,
@@ -123,14 +124,16 @@ def _read_first_secret(
                 value = repo.get_secret_field(
                     record.id,
                     field_name,
-                    # UNATTRIBUTED, not SYSTEM. "We could not work out who is
-                    # asking" is not a licence to read as the platform: an
-                    # unclaimed thread with no acting user would otherwise
-                    # decrypt any user's provider key. The vault denies this
-                    # actor, and the caller treats a denial as "no credential
-                    # here", so the degradation is a missing key rather than a
-                    # crash.
-                    actor=owner_user_id or UNATTRIBUTED_ACTOR,
+                    # SYSTEM is correct HERE, unlike the reference-resolution
+                    # site below, and the difference is the record set. When
+                    # there is no owner, `_list_visible_records` has already
+                    # narrowed this to `owner_type="system"` records only: the
+                    # operator's deployment-wide keys, which every user's turn
+                    # is meant to resolve. There is no user-owned record in
+                    # scope to leak, so tightening the actor here does not
+                    # close a hole, it just stops an ownerless thread from
+                    # finding the global LLM key at all.
+                    actor=owner_user_id or SYSTEM_ACTOR,
                     target_type=target_type,
                     target_id=target_id,
                 )
@@ -245,12 +248,15 @@ def resolve_credential_references(
         try:
             return vault.resolve_references(
                 value,
-                # The sharper of the two sites. The reference is parsed out of
-                # a caller-supplied string, so the credential id is arbitrary
-                # rather than pre-filtered: reading as SYSTEM here meant any
-                # ${credential:...} written into a per-thread base_url or key
-                # resolved against the whole vault whenever the thread had no
-                # identifiable owner.
+                # UNATTRIBUTED here, SYSTEM at the lookup site above, and the
+                # asymmetry is the point. This reference is parsed out of a
+                # caller-supplied string, so the credential id is arbitrary
+                # rather than drawn from a narrowed record set: reading as
+                # SYSTEM meant any ${credential:...} written into a per-thread
+                # base_url or key resolved against the WHOLE vault, including
+                # other users' records, whenever the thread had no identifiable
+                # owner. Denial degrades to the reference being left
+                # unresolved, which the caller already handles.
                 actor=owner_user_id or UNATTRIBUTED_ACTOR,
                 target_type=target_type,
                 target_id=target_id,
