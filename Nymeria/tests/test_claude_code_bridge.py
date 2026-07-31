@@ -310,7 +310,12 @@ def test_run_local_blocking_cancels_via_cancel_check(monkeypatch, tmp_path):
     cfg = b.ClaudeCodeRunConfig(executable="claude")
     req = b.ClaudeCodeRequest(prompt="hi", cwd=str(tmp_path), permission_mode="dontAsk")
     res = b.run_local_blocking(
-        req, cfg, timeout=30, cancel_check=lambda: True, poll_interval=0.01
+        req,
+        cfg,
+        timeout=30,
+        env=b.build_subprocess_env(bare=False),
+        cancel_check=lambda: True,
+        poll_interval=0.01,
     )
 
     assert res.subtype == "cancelled"
@@ -328,7 +333,10 @@ def test_run_local_blocking_group_kills_on_timeout(monkeypatch, tmp_path):
 
     cfg = b.ClaudeCodeRunConfig(executable="claude")
     req = b.ClaudeCodeRequest(prompt="hi", cwd=str(tmp_path), permission_mode="dontAsk")
-    res = b.run_local_blocking(req, cfg, timeout=0.05, poll_interval=0.01)
+    res = b.run_local_blocking(
+        req, cfg, timeout=0.05,
+        env=b.build_subprocess_env(bare=False), poll_interval=0.01,
+    )
 
     assert res.subtype == "timeout"
     assert killed and killed[0] is proc
@@ -342,7 +350,9 @@ def test_run_local_blocking_success_path_uses_popen(monkeypatch, tmp_path):
 
     cfg = b.ClaudeCodeRunConfig(executable="claude")
     req = b.ClaudeCodeRequest(prompt="hi", cwd=str(tmp_path), permission_mode="dontAsk")
-    res = b.run_local_blocking(req, cfg, timeout=5)
+    res = b.run_local_blocking(
+        req, cfg, timeout=5, env=b.build_subprocess_env(bare=False)
+    )
 
     assert res.ok is True
     assert res.result_text == "ok"

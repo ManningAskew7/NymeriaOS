@@ -129,7 +129,7 @@ def test_run_local_blocking_passes_oom_preexec(monkeypatch, tmp_path):
 
     cfg = b.ClaudeCodeRunConfig(executable="claude")
     req = b.ClaudeCodeRequest(prompt="hi", cwd=str(tmp_path), permission_mode="dontAsk")
-    result = b.run_local_blocking(req, cfg, timeout=5)
+    result = b.run_local_blocking(req, cfg, timeout=5, env=b.build_subprocess_env(bare=False))
 
     assert result.result_text == "ok"
     # preexec_fn is always passed (None off Linux, the OOM callable on Linux).

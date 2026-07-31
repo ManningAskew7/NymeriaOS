@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Tuple, List, Optional
 
 from ..oom import oom_score_preexec
+from ..subprocess_env import scrubbed_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,12 @@ class CodeValidator:
                 text=True,
                 timeout=30,
                 preexec_fn=oom_score_preexec(),
+                # The child only imports a module and counts tools, so it needs
+                # no secret from this process. The two extras are path
+                # resolution, not credentials: NYMERIA_PROJECT_ROOT is how the
+                # package finds its root when launched outside the source tree,
+                # and PYTHONPATH keeps a non-standard install layout importable.
+                env=scrubbed_subprocess_env(("NYMERIA_PROJECT_ROOT", "PYTHONPATH")),
             )
 
             if result.returncode == 0:
