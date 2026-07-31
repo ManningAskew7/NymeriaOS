@@ -940,6 +940,7 @@ async def _available_models(
     vault: Any,
     owner_user_id: Optional[str],
     settings: Any,
+    caller_supplied_base_url: bool = False,
 ) -> list[dict]:
     """Fetch available models from the configured LLM provider or CLIProxy.
 
@@ -951,12 +952,28 @@ async def _available_models(
     EPHEMERAL credential override (nothing stored, never logged): it wins
     over the vault/settings resolution so the /provider setup flow can list
     models with a just-pasted key before saving it.
+
+    ``caller_supplied_base_url`` says the DESTINATION came from the request
+    rather than from configuration, and it suppresses every STORED credential
+    source (vault, then the per-provider settings fallbacks further down).
+    This is a credential-egress gate, not tidiness, and it is the same shape as
+    ``anthropic_probe_base_url`` in the vendored provider factory: the property
+    being defended is that the key never reaches the wire, not that the request
+    never happens. The ephemeral ``api_key`` argument is unaffected, because a
+    caller who supplies both the address and the key is spending only their own
+    credential. Callers that set this flag must therefore not also pass a
+    stored key.
     """
     effective_provider = normalize_llm_provider(provider or settings.llm_provider)
-    credential = get_llm_provider_credential(
-        effective_provider,
-        vault=vault,
-        owner_user_id=owner_user_id,
+    use_stored_credentials = not caller_supplied_base_url
+    credential = (
+        get_llm_provider_credential(
+            effective_provider,
+            vault=vault,
+            owner_user_id=owner_user_id,
+        )
+        if use_stored_credentials
+        else None
     )
 
     effective_base_url = base_url
@@ -979,9 +996,10 @@ async def _available_models(
     had_custom_base = bool(effective_base_url)
 
     if effective_provider == "anthropic":
-        api_key = api_key or (
-            settings.anthropic_direct_api_key or settings.anthropic_api_key
-        )
+        if use_stored_credentials:
+            api_key = api_key or (
+                settings.anthropic_direct_api_key or settings.anthropic_api_key
+            )
         effective_base_url = effective_base_url or "https://api.anthropic.com"
         clean_base = effective_base_url.rstrip("/")
         models_url = (
@@ -990,10 +1008,11 @@ async def _available_models(
             else f"{clean_base}/v1/models"
         )
     elif is_openai_compatible_provider(effective_provider):
-        api_key = api_key or resolve_provider_api_key(
-            effective_provider,
-            settings=settings,
-        )
+        if use_stored_credentials:
+            api_key = api_key or resolve_provider_api_key(
+                effective_provider,
+                settings=settings,
+            )
         effective_base_url = effective_base_url or resolve_provider_base_url(
             effective_provider,
             settings=settings,
@@ -1618,10 +1637,44 @@ def create_settings_router(
         user: AuthenticatedUser = Depends(verify_api_key),
         settings: Settings = Depends(get_settings_fn),
     ):
-        """Fetch available models from the configured LLM provider or CLIProxy."""
+        """List models. Any authenticated user, so NO stored key may egress.
+
+        ``base_url`` is a live, unsaved value typed into a settings or
+        per-thread model field, which is why it stays: the local-endpoint flows
+        (Ollama, LM Studio, CLIProxy, a self-hosted gateway) all list against an
+        address the user is still editing, and per-thread model config is
+        deliberately not admin-gated.
+
+        What it must NOT do is name a destination that a server-held credential
+        is then mailed to. ``caller_supplied_base_url`` is that gate: when the
+        address comes from the request rather than from configuration, the vault
+        and settings key resolution is skipped entirely, so an arbitrary host
+        gets an unauthenticated probe or nothing. Keyless endpoints keep
+        working; naming someone else's server just stops paying for the
+        privilege. The admin-gated POST twin below is where a caller-supplied
+        destination may carry a caller-supplied key.
+
+        Admins are exempt, which is a deliberate scope choice rather than an
+        oversight. The boundary being defended is privilege, not egress: an
+        admin already reaches the same destination-plus-key combination through
+        the POST twin, and already holds the provider configuration and the
+        environment the key lives in, so withholding it here would buy nothing
+        and would silently empty the model dropdown for the one role whose job
+        is configuring custom endpoints. Bearer tokens live in local storage
+        rather than cookies, so there is no ambient authority for another
+        origin to ride an admin's session into this route.
+
+        A residual remains and is accepted for now: a non-admin can still make
+        the server issue a credential-free GET to an address of their choosing.
+        Closing that needs the destination allowlist, which cannot simply be
+        ``validate_http_egress_url`` here because loopback is a legitimate
+        target for exactly the local-LLM flows above.
+        """
+        untrusted_destination = bool(base_url) and user.role != "admin"
         return await _available_models(
             provider=provider,
             base_url=base_url,
+            caller_supplied_base_url=untrusted_destination,
             api_key=None,
             vault=getattr(get_agent_fn(), "credential_vault", None),
             owner_user_id=user.id,
