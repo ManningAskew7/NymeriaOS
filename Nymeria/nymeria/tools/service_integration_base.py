@@ -58,10 +58,13 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
 
 from langchain_core.runnables import RunnableConfig
+
+if TYPE_CHECKING:  # import cost stays at zero; see the lazy-init note in CLAUDE.md
+    import httpx
 
 # Default truncation budget for tool output. Modules that legitimately need a
 # larger budget (bulk row dumps, log payloads) keep an explicit module-local
@@ -108,6 +111,127 @@ def base_url(value: str) -> str:
     from ..core.http_policy import validate_http_egress_url
 
     return validate_http_egress_url(value.strip().rstrip("/"), label="base URL", resolve_dns=False)
+
+
+def request_with_policy(
+    client: "httpx.Client", method: str, url: str, **request_kwargs: Any
+) -> "httpx.Response":
+    """Issue one integration request under the HTTP egress policy.
+
+    The corpus-wide replacement for a bare ``client.request(method, url, ...)``.
+    ``base_url()`` is a cheap PERSIST-shaped screen: it runs with
+    ``resolve_dns=False``, so it rejects a literal private/loopback/metadata IP
+    but lets a HOSTNAME through no matter where it resolves. This is the
+    EGRESS-time half: ``httpx_request_with_policy`` re-evaluates the concrete
+    target with DNS resolution on, and holds ``pinned_dns_resolution`` across
+    the send so the address policy approved is the address the socket connects
+    to. Without the pin the two lookups are independent and a short-TTL record
+    can flip between them.
+
+    ``follow_redirects=False`` is not a policy choice, it is the httpx default
+    every caller here already had: the redirect legs exist for the callers that
+    opt in. Chasing a 3xx would re-aim a request that already carries the
+    credential, so preserving it matters twice.
+
+    The two policy exceptions are translated to one ``RuntimeError`` so the 32
+    modules and 36 call sites that use this need no new ``except`` clause of
+    their own. Thirty of the 33 integration modules end their tool bodies in
+    ``except Exception``; in the other three (``relationship_crm``,
+    ``personal_device``, ``time_hr``, 81 tools between them) the RuntimeError
+    reaches ``SafeToolNode``, which renders it as a tool result because
+    ``handle_tool_errors=True``. Either way the agent gets a string, and either
+    way that path was already live: these helpers raise ``RuntimeError`` on any
+    4xx/5xx today.
+    """
+    from ..core.http_policy import (
+        HTTPPolicyRedirectLimit,
+        HTTPPolicyViolation,
+        httpx_request_with_policy,
+    )
+
+    try:
+        response, _redirect_chain, _decision = httpx_request_with_policy(
+            method,
+            url,
+            client=client,
+            follow_redirects=False,
+            **request_kwargs,
+        )
+    except HTTPPolicyRedirectLimit as exc:
+        raise RuntimeError(f"HTTP request blocked by egress policy: {exc}") from exc
+    except HTTPPolicyViolation as exc:
+        # Names the remedy, because the commonest way to meet this message is not
+        # an attack: it is a self-hosted instance (Home Assistant, GitLab, Jira
+        # Server, Jenkins, Nextcloud, Grafana), including several that ship an
+        # internal address as their own built-in default. The capability change
+        # is documented, but the runtime string is the only place the operator
+        # actually looks.
+        raise RuntimeError(
+            f"HTTP request blocked by egress policy: {exc}. If this is your own "
+            "self-hosted instance, add its host (or host:port) to "
+            "HTTP_INTERNAL_ALLOWLIST."
+        ) from exc
+    return response
+
+
+def signed_endpoint_url(
+    *,
+    from_vault: Optional[str],
+    from_settings: Optional[str] = None,
+    keys_from_vault: bool,
+    label: str,
+) -> Optional[str]:
+    """Resolve an endpoint override for a request signed with separate keys.
+
+    The two boto3 call sites (``aws``, ``file_storage``) reach neither
+    ``base_url()`` nor ``request_with_policy``, because botocore has its own HTTP
+    stack. So this is the only screen those addresses get, which is why it
+    resolves DNS rather than running the cheap literal-IP check the parse-time
+    screen runs.
+
+    ``region`` at the same two sites is classified a destination too, and is
+    deliberately left alone: botocore interpolates it into
+    ``s3.{region}.amazonaws.com``, so a planted value cannot leave
+    ``amazonaws.com`` and there is nowhere internal for it to go.
+
+    ``keys_from_vault`` is the slice B join spelled locally. Slice B guarantees
+    a record supplying an address holds SOME anchor field for the provider, not
+    the specific one a given call site asks for. Here the anchors are
+    ``secret_access_key``/``session_token`` while ``access_key_id`` is a
+    non-proof name, so a record holding ``endpoint_url`` + ``session_token``
+    clears slice B, both key lookups then miss the vault, and boto3 SigV4-signs
+    the operator's env-configured key pair to an address it does not own. The
+    general form of that gap is filed as E10-02-D; these two sites are where it
+    is concrete enough, and cheap enough, to close now.
+
+    The settings leg is deliberately NOT screened. That is not "operator
+    configuration is safe by fiat": it is that here the provenance is free, so
+    the control can apply exactly where the risk is. ``S3_ENDPOINT_URL=
+    http://minio:9000`` is an ordinary compose deployment, and refusing it would
+    cost real capability for very little. The qualifier matters: no native tool
+    writes settings, but ``s3_endpoint_url`` IS in the ``PATCH /settings`` schema
+    and ``nymeria_update_settings`` exposes that route over MCP, so on a
+    deployment where an ADMIN's thread mounts Nymeria's own MCP server the value
+    is reachable. That is the same line the workflow gate draws (an admin's own
+    agent is not the threat the gate is for), and it is recorded in SECURITY.md
+    rather than papered over. The 264 ``base_url()`` sites have no such choice
+    either way: they cannot tell which leg produced the address, so they screen
+    the concrete target unconditionally.
+    """
+    if not from_vault:
+        return str(from_settings).strip() if from_settings else None
+    if not keys_from_vault:
+        from .native_credentials import CredentialDestinationRefused
+
+        raise CredentialDestinationRefused(
+            f"A saved credential supplies {label.lower()} but not the key pair signing the "
+            "request, so it would steer calls made with a key it does not hold. Add the "
+            f"access key id and secret access key to that same record, or remove the "
+            f"{label.lower()} from it."
+        )
+    from ..core.http_policy import validate_http_egress_url
+
+    return validate_http_egress_url(str(from_vault).strip(), label=label)
 
 
 def json_object(value: str, *, field_name: str) -> dict[str, Any]:

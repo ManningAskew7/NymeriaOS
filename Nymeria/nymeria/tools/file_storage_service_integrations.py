@@ -14,6 +14,7 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import policy_http_client as _http_client
 from .credential_registry import (
     CredentialFieldGroup,
     ProviderCredentialSpec,
@@ -25,8 +26,10 @@ from .service_integration_base import (
     credential_value as _credential_value,
     dump_json,
     filtered as _filtered,
+    request_with_policy as _request_with_policy,
     settings_value as _settings_value,
     setup_hint as _setup_hint,
+    signed_endpoint_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,8 +162,9 @@ def _request_json(
     auth: Optional[httpx.Auth] = None,
 ) -> Any:
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.request(
+        with _http_client(timeout=_HTTP_TIMEOUT) as client:
+            response = _request_with_policy(
+                client,
                 method,
                 url,
                 params=_filtered(params),
@@ -204,8 +208,9 @@ def _request_text(
     params: Optional[dict[str, Any]] = None,
 ) -> tuple[str, dict[str, str]]:
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.request(
+        with _http_client(timeout=_HTTP_TIMEOUT) as client:
+            response = _request_with_policy(
+                client,
                 method,
                 url,
                 params=_filtered(params),
@@ -227,8 +232,8 @@ def _request_bytes(
     auth: Optional[httpx.Auth] = None,
 ) -> tuple[bytes, dict[str, str]]:
     try:
-        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-            response = client.request(method, url, headers=headers, auth=auth)
+        with _http_client(timeout=_HTTP_TIMEOUT) as client:
+            response = _request_with_policy(client, method, url, headers=headers, auth=auth)
             response.raise_for_status()
             return response.content, dict(response.headers)
     except httpx.HTTPStatusError as e:
@@ -389,20 +394,22 @@ def _preview_bytes(content: bytes, headers: dict[str, str], *, max_bytes: int) -
 
 
 def _s3_client(tool_name: str, config: Optional[RunnableConfig]) -> tuple[Any, str | None]:
-    access_key = _credential_value(
+    vault_access_key = _credential_value(
         provider=_S3.provider,
         provider_aliases=_S3.aliases,
         field_names=_S3.group("access_key_id"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("s3_access_key_id")
-    secret_key = _credential_value(
+    )
+    vault_secret_key = _credential_value(
         provider=_S3.provider,
         provider_aliases=_S3.aliases,
         field_names=_S3.group("secret_access_key"),
         tool_name=tool_name,
         config=config,
-    ) or _settings_value("s3_secret_access_key")
+    )
+    access_key = vault_access_key or _settings_value("s3_access_key_id")
+    secret_key = vault_secret_key or _settings_value("s3_secret_access_key")
     session_token = _credential_value(
         provider=_S3.provider,
         provider_aliases=_S3.aliases,
@@ -417,13 +424,6 @@ def _s3_client(tool_name: str, config: Optional[RunnableConfig]) -> tuple[Any, s
         tool_name=tool_name,
         config=config,
     ) or _settings_value("s3_region")
-    endpoint_url = _credential_value(
-        provider=_S3.provider,
-        provider_aliases=_S3.aliases,
-        field_names=_S3.group("endpoint_url"),
-        tool_name=tool_name,
-        config=config,
-    ) or _settings_value("s3_endpoint_url")
     force_path_style = _credential_value(
         provider=_S3.provider,
         provider_aliases=_S3.aliases,
@@ -441,6 +441,22 @@ def _s3_client(tool_name: str, config: Optional[RunnableConfig]) -> tuple[Any, s
             env_var=_S3.env_var,
             display_name=_S3.display_name,
         )
+
+    # AFTER the setup-hint guard, deliberately. A deployment with no keys at all
+    # has nothing to steer and nothing to steal, so it should get the friendly
+    # "save an access key id and secret" hint, not a refusal about an endpoint.
+    endpoint_url = signed_endpoint_url(
+        from_vault=_credential_value(
+            provider=_S3.provider,
+            provider_aliases=_S3.aliases,
+            field_names=_S3.group("endpoint_url"),
+            tool_name=tool_name,
+            config=config,
+        ),
+        from_settings=_settings_value("s3_endpoint_url"),
+        keys_from_vault=bool(vault_access_key and vault_secret_key),
+        label="S3 endpoint URL",
+    )
 
     import boto3
     from botocore.config import Config

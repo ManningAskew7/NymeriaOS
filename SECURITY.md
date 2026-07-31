@@ -329,6 +329,57 @@ what reaches the address it chose is its own junk rather than anyone else's
 secret. The exact guarantee (this address came from the same record as this
 credential, checked where the request is built) is tracked separately.
 
+*Where the tool request leaves.* The join decides which record may supply an
+address. A separate control decides whether that address may be reached at all,
+and it has to run at a different moment. Parsing a base URL happens once,
+cheaply, and can only judge the text: it rejects a literal private, loopback or
+metadata address, and a hostname tells it nothing. So every tool request is now
+re-evaluated against the egress policy at the point it leaves, with DNS
+resolution on, and the approved addresses are pinned for the duration of the
+send. The pin is not decoration: without it the check and the connect perform
+independent lookups, and a name that answers publicly for one and privately for
+the other passes both. The two calls that reach a third-party SDK rather than
+the shared HTTP client, both S3-shaped endpoint overrides, are screened where
+they are resolved instead, since no later control can see them.
+
+A proxy defeats all of that, so tool requests no longer use one. An
+`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` setting sends the socket to the proxy and
+lets the PROXY resolve the name, which makes both the private-address block and
+the pin advisory, silently and only on the deployments that set those variables.
+Both HTTP stacks in the tool package now decline that routing while keeping the
+rest of their environment handling, so a custom CA bundle still applies and only
+proxy routing is gone. A deployment that genuinely needs a forward proxy is
+asking for an egress path this policy cannot see through, which is a decision to
+take deliberately rather than inherit from an environment variable. `bash_execute`
+is separate and unchanged: it runs under its own scrubbed environment and sees a
+proxy variable only if the operator names it in `BASH_ENV_PASSTHROUGH`.
+
+The address the policy judges is also normalized to the one a client will
+actually dial. An internationalized hostname has two encodings, and the stdlib
+and the libraries these tools use implement different standards, so for the
+characters where the two disagree a policy that read one spelling would have
+been describing a different domain than the socket reached.
+
+This is a capability change for one deployment shape, and there is no way to
+have the control without it. A self-hosted integration reached by hostname
+(`http://jenkins.corp.local:8080`) was previously allowed and is now refused,
+where the same instance reached by IP was already refused. Both are answered the
+same way, by naming the host in `HTTP_INTERNAL_ALLOWLIST`, which is the existing
+mechanism for exactly this.
+
+An endpoint override the operator configured in settings rather than the vault
+is left alone, because `S3_ENDPOINT_URL=http://minio:9000` is an ordinary
+deployment and settings are a much narrower surface than the vault: no native
+tool writes them. Narrower is not sealed. `s3_endpoint_url` is in the
+`PATCH /settings` schema and `nymeria_update_settings` exposes that route over
+MCP, so on a deployment where an ADMIN's thread mounts Nymeria's own MCP server
+the value is reachable from a turn. That is the same line drawn everywhere else
+in this document: an admin's own agent holds what the admin holds, and a control
+that tried to stop it would be pretending otherwise. The exemption is also only
+available at the two sites where the provenance of the value is known for free;
+the shared HTTP path cannot tell which leg produced an address and screens it
+either way.
+
 Known residuals. A caller supplying their own key may still name any address,
 including a loopback one, so this is not an SSRF control. The gate keys on the
 address, so a per-thread `provider` switch with no address of its own is not a
@@ -342,9 +393,20 @@ record holding a TLS-verification flag, a header set, or an API-key header name
 can still weaken a request another record authenticates, since those are not
 addresses and the join does not look at them. The join also compares vault
 records to each other, so it cannot see a credential that comes from the
-environment: for a provider configured by env var, a planted record naming one
-address field and one credential field is unopposed, and the credential it names
-is the one that rides. Embedding and voice base URLs have no such check at all.
+environment. That is the larger of the two gaps: a record needs only some
+credential field of the provider's, not the one a given call site will ask for,
+so it can satisfy the join with a field nothing asks for and let both real
+lookups fall through to the operator's environment. The two S3-shaped endpoint
+overrides check this directly, because there the address and the key pair are
+resolved in one place; the general form waits on resolving a provider's whole
+credential set from one record rather than field by field. Embedding and voice
+base URLs are deliberately not screened: they are admin-only global settings
+with no per-thread override, and pointing them at localhost is the documented
+way to run a local embedder or a local voice server, so a private-address block
+there would remove a supported configuration without removing an attacker. If
+either ever gains a per-thread override it needs a screen, and voice needs the
+async egress path first, since the DNS pin does not survive an
+`httpx.AsyncClient`.
 
 ### 2.6 In-process heuristics (useful, not boundaries)
 

@@ -7,6 +7,7 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import policy_http_client as _http_client
 from .credential_registry import (
     CredentialFieldGroup,
     ProviderCredentialSpec,
@@ -89,7 +90,7 @@ def _search_single(
     }
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with _http_client(timeout=timeout) as client:
             response = client.post(
                 "https://api.perplexity.ai/chat/completions",
                 headers=headers,

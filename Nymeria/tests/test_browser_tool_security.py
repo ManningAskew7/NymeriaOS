@@ -88,6 +88,7 @@ def test_fallback_requests_verify_tls_by_default(monkeypatch):
         timeout,
         verify,
         allow_redirects,
+        proxies=None,
     ):
         calls.append(
             {
@@ -98,6 +99,7 @@ def test_fallback_requests_verify_tls_by_default(monkeypatch):
                 "timeout": timeout,
                 "verify": verify,
                 "allow_redirects": allow_redirects,
+                "proxies": proxies,
             }
         )
         return response
@@ -118,6 +120,11 @@ def test_fallback_requests_verify_tls_by_default(monkeypatch):
             "timeout": 30,
             "verify": True,
             "allow_redirects": False,
+            # Declining the environment's proxies is part of this path's TLS
+            # story, not a separate concern: a proxy terminates the connection
+            # and resolves the name itself, so verifying the certificate of a
+            # host the policy never reached would prove nothing.
+            "proxies": {"http": None, "https": None, "all": None},
         }
     ]
 
@@ -135,6 +142,7 @@ def test_fallback_requests_ignore_tls_disable_env(monkeypatch):
         timeout,
         verify,
         allow_redirects,
+        proxies=None,
     ):
         calls.append(verify)
         return response

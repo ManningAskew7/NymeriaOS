@@ -15,6 +15,7 @@ from ..core.http_policy import (
     HTTPPolicyRedirectLimit,
     HTTPPolicyViolation,
     httpx_request_with_policy,
+    policy_http_client as _http_client,
     validate_http_egress_url,
 )
 
@@ -109,7 +110,7 @@ def _get_json(url: str, params: Optional[dict[str, Any]] = None, headers: Option
     import httpx
 
     try:
-        with httpx.Client(
+        with _http_client(
             timeout=_HTTP_TIMEOUT,
             headers=headers,
             limits=httpx.Limits(max_keepalive_connections=0),
@@ -140,7 +141,7 @@ def _get_text(url: str, *, verify: bool = True) -> str:
     import httpx
 
     try:
-        with httpx.Client(
+        with _http_client(
             timeout=_HTTP_TIMEOUT,
             follow_redirects=False,
             verify=verify,

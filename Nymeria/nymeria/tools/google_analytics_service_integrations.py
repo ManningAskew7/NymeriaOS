@@ -11,9 +11,10 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import policy_http_client as _http_client
 from ..config.oauth_providers import GOOGLE_ANALYTICS_SCOPES as _GA_SCOPES_TUPLE
 from . import auth_cache_utils as auth_utils
-from .service_integration_base import dump_json
+from .service_integration_base import dump_json, request_with_policy as _request_with_policy
 from .utils import get_user_id
 
 PROVIDER = "google_analytics"
@@ -93,8 +94,8 @@ def _analytics_request(
         headers["Content-Type"] = "application/json"
 
     try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.request(method, url, headers=headers, params=params, json=json_body)
+        with _http_client(timeout=30.0) as client:
+            response = _request_with_policy(client, method, url, headers=headers, params=params, json=json_body)
             response.raise_for_status()
             if not response.content:
                 return True, {}

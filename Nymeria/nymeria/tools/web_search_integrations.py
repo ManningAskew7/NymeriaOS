@@ -19,6 +19,7 @@ from typing import Annotated, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolArg, tool
 
+from ..core.http_policy import policy_http_client as _http_client
 from .credential_registry import (
     CredentialFieldGroup,
     ProviderCredentialSpec,
@@ -215,7 +216,7 @@ def _tavily_search_single(payload: dict, api_key: str, timeout: float, max_resul
     }
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with _http_client(timeout=timeout) as client:
             response = client.post(_TAVILY_SEARCH_URL, headers=headers, json=payload)
             response.raise_for_status()
 
@@ -387,7 +388,7 @@ def _exa_search_single(payload: dict, api_key: str, timeout: float, max_results:
     }
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with _http_client(timeout=timeout) as client:
             response = client.post(_EXA_SEARCH_URL, headers=headers, json=payload)
             response.raise_for_status()
 
@@ -588,7 +589,7 @@ def _firecrawl_search_single(payload: dict, api_key: str, timeout: float, max_re
     }
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with _http_client(timeout=timeout) as client:
             response = client.post(_FIRECRAWL_SEARCH_URL, headers=headers, json=payload)
             response.raise_for_status()
 
@@ -796,7 +797,7 @@ def _brave_search_single(params: dict, api_key: str, timeout: float, count: int)
     }
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with _http_client(timeout=timeout) as client:
             response = client.get(_BRAVE_SEARCH_URL, headers=headers, params=params)
             response.raise_for_status()
 
@@ -920,6 +921,15 @@ def _get_searxng_base_url(config: Optional[RunnableConfig] = None) -> Optional[s
     Unlike the keyed providers, SearXNG's "credential" is the base URL of a
     self-hosted instance (it needs no API key). The base URL is typically an
     internal sidecar such as http://searxng:8080.
+
+    That is why the settings and env legs are not screened, and why the VAULT leg
+    is. A keyless provider whose credential IS an address is the one shape slice
+    B cannot help with: with no secret to anchor against, the join has nothing to
+    check, so a record planted over ``POST /credentials`` aims this tool wherever
+    it likes. Nothing rides the request, so no credential leaks, but the response
+    body comes back into the transcript, which makes it a read-capable probe of
+    anything the deployment can reach. ``destination_label`` screens exactly the
+    leg a caller can write.
     """
     from .native_credentials import resolve_native_credential
 
@@ -931,6 +941,7 @@ def _get_searxng_base_url(config: Optional[RunnableConfig] = None) -> Optional[s
         settings_attr=_SEARXNG.settings_attr,
         env_vars=_SEARXNG.env_vars,
         field_names=_SEARXNG.group("base_url"),
+        destination_label="SearXNG base URL",
     )
 
 
@@ -973,17 +984,21 @@ def _format_searxng_results(data: dict, count: int) -> str:
 def _searxng_search_single(base_url: str, params: dict, timeout: float, count: int) -> str:
     """Execute a single SearXNG search (GET) and return formatted result.
 
-    A bare httpx client is used on purpose: SearXNG runs as an internal sidecar
-    (e.g. http://searxng:8080), so the SSRF egress policy used elsewhere would
-    block the very host we need to reach. The base URL comes from operator
-    config or the vault, not from model input.
+    The request itself is deliberately NOT run through the egress-time policy
+    check the integration corpus uses: SearXNG runs as an internal sidecar (e.g.
+    http://searxng:8080), so the check would block the very host we need. The
+    screen lives one level up instead, in ``_get_searxng_base_url``, which can
+    tell the two provenances apart. An earlier version of this comment said the
+    base URL "comes from operator config or the vault", which conflates exactly
+    the distinction that matters: settings and env are operator configuration,
+    the vault is writable by any identified caller.
     """
     import httpx
 
     url = f"{base_url.rstrip('/')}/search"
 
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with _http_client(timeout=timeout, follow_redirects=True) as client:
             response = client.get(url, headers={"Accept": "application/json"}, params=params)
             response.raise_for_status()
 

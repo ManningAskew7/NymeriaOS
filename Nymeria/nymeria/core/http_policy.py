@@ -145,8 +145,63 @@ def _default_port(scheme: str) -> int:
     return 443 if scheme == "https" else 80
 
 
+def _idna_encode(host: str) -> Optional[str]:
+    """The IDNA2008/UTS46 form, which is the spelling clients actually connect with.
+
+    ``str.encode("idna")`` is NOT this. The stdlib codec implements IDNA2003,
+    and the two standards disagree on the deviation characters (``ß``, final
+    sigma, ZWJ, ZWNJ): stdlib maps ``faß.de`` to ``fass.de`` while httpx and
+    requests, which both use the ``idna`` package, ask for ``xn--fa-hia.de``.
+    Those are different domains, so a policy that judged one and a client that
+    connected to the other would be checking something it never reached.
+    """
+    try:
+        import idna
+
+        return idna.encode(host, uts46=True).decode("ascii").lower()
+    except Exception:  # noqa: BLE001 - any malformed label simply has no IDNA form
+        return None
+
+
 def _normalize_host(host: str) -> str:
-    return host.strip("[]").rstrip(".").lower()
+    """One spelling for every host comparison in this module.
+
+    ASCII hosts (including every IP literal) pass through untouched, so this is
+    a no-op for all but internationalized names. Those are folded to punycode so
+    the address the policy RESOLVES is the address the client CONNECTS to; the
+    pin below then keys on the same string the socket layer will ask for.
+    """
+    normalized = host.strip("[]").rstrip(".").lower()
+    if normalized.isascii():
+        return normalized
+    return _idna_encode(normalized) or normalized
+
+
+def _host_pin_keys(host: str) -> frozenset[str]:
+    """Every spelling a client may hand ``getaddrinfo`` for one hostname.
+
+    ``urlparse`` reports an internationalized host in its UNICODE form while
+    httpx and requests connect with the IDNA form, so a pin keyed on the unicode
+    spelling alone matched neither: the dispatcher fell through to the system
+    resolver and the check and the connect performed independent lookups, which
+    is exactly the rebinding window the pin exists to close. It failed silently,
+    because the screen still ran, so only the pin's behaviour reveals it.
+
+    ``_normalize_host`` now folds a decision's host to the UTS46 spelling, so
+    the first key is already the one the socket layer will ask for. The stdlib
+    IDNA2003 form is kept as a second key for the deviation characters, where
+    the two standards disagree and some other client (anything going through
+    ``str.encode("idna")``) may ask differently; it is a no-op for ASCII hosts.
+    """
+    normalized = _normalize_host(host)
+    keys = {normalized}
+    try:
+        keys.add(normalized.encode("idna").decode("ascii").lower())
+    except (UnicodeError, UnicodeDecodeError):
+        # Labels over 63 bytes, empty labels, and a few other shapes have no
+        # IDNA form. Those cannot be connected to either, so one key is enough.
+        pass
+    return frozenset(keys)
 
 
 def _normalize_allowlist_entry(entry: str) -> str:
@@ -375,6 +430,22 @@ def _redirect_target(current_url: str, location: str) -> str:
     return urljoin(current_url, location)
 
 
+# The requests spelling of ``policy_http_client``'s neutralised mounts, and it
+# exists for the same reason: a proxy resolves the hostname ITSELF and opens the
+# socket, so a proxied request never touches the address this module approved and
+# both the private-address block and the DNS pin become advisory. This path is
+# the higher-exposure one of the two, because ``web_fetch``/``browser`` take the
+# URL as a plain tool argument where the integrations take theirs from a vault
+# record.
+#
+# All THREE keys are load-bearing, measured on requests 2.34.2: an explicit key
+# survives ``merge_environment_settings``' ``setdefault`` and is then dropped by
+# ``merge_setting``, leaving no proxy, but omitting ``all`` lets ``ALL_PROXY``
+# alone still route the request. `trust_env` stays on, so ``REQUESTS_CA_BUNDLE``,
+# ``NO_PROXY`` and ``.netrc`` are untouched; only proxy routing is dropped.
+_NO_ENV_PROXIES = {"http": None, "https": None, "all": None}
+
+
 def requests_get_with_policy(
     url: str,
     *,
@@ -410,6 +481,12 @@ def requests_get_with_policy(
                 timeout=timeout,
                 verify=verify,
                 allow_redirects=False,
+                # The stub types this `MutableMapping[str, str]`, narrower than
+                # the runtime contract: a None value is how requests is told a
+                # scheme has no proxy, and it is the only spelling that survives
+                # `merge_environment_settings`' setdefault. Verified against
+                # requests 2.34.2.
+                proxies=_NO_ENV_PROXIES,  # pyrefly: ignore[bad-argument-type]
             )
 
         if not follow_redirects or not getattr(response, "is_redirect", False):
@@ -442,6 +519,46 @@ def requests_get_with_policy(
         current_params = None
 
 
+def policy_http_client(**kwargs: Any):
+    """Build an ``httpx.Client`` whose requests the egress policy can govern.
+
+    A client that trusts the environment mounts a transport for `HTTP_PROXY` and
+    `HTTPS_PROXY`, and a proxied request never touches the address this module
+    approved: the socket connects to the proxy, and the PROXY resolves the name.
+    Both the private-address block and the DNS pin become advisory, silently and
+    only on deployments that happen to set those variables. So the two scheme
+    mounts are neutralised here.
+
+    Neutralising the mounts rather than passing ``trust_env=False`` is the whole
+    point of the shape: `trust_env` also governs `SSL_CERT_FILE`, `SSLKEYLOGFILE`
+    and `.netrc`, and a corporate deployment that sets a proxy is exactly the one
+    likely to need a custom CA bundle. Only proxy routing is dropped. httpx
+    resolves `mounts` most-specific-first, so `{"http://": None, "https://":
+    None}` displaces the env proxy patterns while `{"all://": None}` does NOT
+    (measured against httpx 0.28.1: `all://` sorts after the scheme patterns and
+    never wins).
+
+    A caller that genuinely wants a proxy is asking for an egress path this
+    module cannot see through, which is a policy decision rather than a
+    connection setting; there is no such caller today.
+
+    One httpx behaviour to know before passing ``transport=``, which only the
+    ``http_api`` test seam does: ``Client._init_transport`` returns a supplied
+    transport verbatim, so ``verify``, ``cert``, ``limits``, ``http1`` and
+    ``http2`` are silently ignored alongside it. That is httpx's rule, not this
+    factory's, and it is harmless on that seam (a mock transport honours none of
+    them anyway), but a production caller passing both would not get the TLS
+    settings it asked for. Such a caller does not need this factory: an explicit
+    transport already disables the env proxies this exists to drop.
+    """
+    import httpx
+
+    mounts = dict(kwargs.pop("mounts", None) or {})
+    mounts.setdefault("http://", None)
+    mounts.setdefault("https://", None)
+    return httpx.Client(mounts=mounts, **kwargs)
+
+
 def httpx_request_with_policy(
     method: str,
     url: str,
@@ -461,7 +578,7 @@ def httpx_request_with_policy(
     current_url = str(url or "").strip()
     current_kwargs = dict(request_kwargs)
     owned_client = client is None
-    http_client = client or httpx.Client(
+    http_client = client or policy_http_client(
         follow_redirects=False,
         limits=httpx.Limits(max_keepalive_connections=0),
         trust_env=False,
@@ -627,8 +744,8 @@ def _dns_pin_dispatcher(
     """
     pin = getattr(_dns_pin_state, "active", None)
     if pin is not None:
-        target_host, target_port, pinned_ips = pin
-        if _normalize_host(str(host)) == target_host and _coerce_port(port) == target_port:
+        target_hosts, target_port, pinned_ips = pin
+        if _normalize_host(str(host)) in target_hosts and _coerce_port(port) == target_port:
             infos = [
                 info
                 for ip_text in pinned_ips
@@ -695,7 +812,7 @@ def pinned_dns_resolution(decision: HTTPPolicyDecision):
         return
 
     _ensure_dns_dispatcher_installed()
-    pin = (_normalize_host(decision.host), decision.port, decision.resolved_ips)
+    pin = (_host_pin_keys(decision.host), decision.port, decision.resolved_ips)
     previous = getattr(_dns_pin_state, "active", None)
     _dns_pin_state.active = pin
     try:

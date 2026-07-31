@@ -12,6 +12,35 @@ from types import SimpleNamespace
 from nymeria.tools import outlook_email as oe
 
 
+
+def _stub_policy_client(monkeypatch, module, **handlers):
+    """Point ``module._http_client`` at a stub exposing the given methods.
+
+    These paths build a client from the policy factory and call it inside a
+    ``with`` block, so the seam is the FACTORY, not ``httpx``. Patching httpx
+    directly used to work and silently stopped meaning anything the moment the
+    call went through the factory, which is why this helper exists rather than
+    a per-test lambda: one place to change if the shape moves again.
+    """
+    captured_kwargs = {}
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    for name, fn in handlers.items():
+        setattr(_Client, name, staticmethod(fn))
+
+    def _factory(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _Client()
+
+    monkeypatch.setattr(module, "_http_client", _factory)
+    return captured_kwargs
+
 def test_build_kql_suffix_combines_structured_filters():
     suffix = oe._build_kql_suffix(
         sender="a@x.com", recipient="b@y.com", subject="Hello", has_attachments=True
@@ -377,10 +406,10 @@ def test_get_access_token_refreshes_and_persists_under_selected_key(monkeypatch)
     persisted = []
     source.persist = lambda cache: persisted.append(cache)
 
-    monkeypatch.setattr(
-        oe.httpx,
-        "post",
-        lambda url, **kw: SimpleNamespace(
+    _stub_policy_client(
+        monkeypatch,
+        oe,
+        post=lambda url, **kw: SimpleNamespace(
             status_code=200,
             json=lambda: {
                 "access_token": "newB",
@@ -413,7 +442,7 @@ def test_try_complete_pending_auth_posts_to_bare_token_url(monkeypatch):
         posted["url"] = url
         return SimpleNamespace(status_code=400)  # non-200 short-circuits to False
 
-    monkeypatch.setattr(oe.httpx, "post", _fake_post)
+    _stub_policy_client(monkeypatch, oe, post=_fake_post)
 
     assert oe.try_complete_pending_auth("u1") is False
     assert posted["url"] == oe.TOKEN_URL

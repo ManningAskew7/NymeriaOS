@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from ..core.http_policy import policy_http_client as _http_client
 from ..subprocess_env import NETWORK_RUNTIME_PASSTHROUGH, scrubbed_subprocess_env
 
 from ..oom import oom_score_preexec
@@ -817,12 +818,12 @@ class RemoteRunnerClient:
         import httpx
 
         try:
-            resp = httpx.post(
-                f"{self.base_url}/run",
-                json=payload,
-                headers=self._headers(),
-                timeout=timeout,
-            )
+            with _http_client(timeout=timeout) as client:
+                resp = client.post(
+                    f"{self.base_url}/run",
+                    json=payload,
+                    headers=self._headers(),
+                )
         except httpx.HTTPError as exc:
             raise RemoteRunnerError(f"runner request failed: {exc}") from exc
         if resp.status_code >= 400:
@@ -836,11 +837,11 @@ class RemoteRunnerClient:
         import httpx
 
         try:
-            resp = httpx.get(
-                f"{self.base_url}/job/{job_id}",
-                headers=self._headers(),
-                timeout=timeout,
-            )
+            with _http_client(timeout=timeout) as client:
+                resp = client.get(
+                    f"{self.base_url}/job/{job_id}",
+                    headers=self._headers(),
+                )
         except httpx.HTTPError as exc:
             raise RemoteRunnerError(f"runner poll failed: {exc}") from exc
         if resp.status_code == 404:
@@ -860,11 +861,11 @@ class RemoteRunnerClient:
         import httpx
 
         try:
-            resp = httpx.post(
-                f"{self.base_url}/cancel/{job_id}",
-                headers=self._headers(),
-                timeout=timeout,
-            )
+            with _http_client(timeout=timeout) as client:
+                resp = client.post(
+                    f"{self.base_url}/cancel/{job_id}",
+                    headers=self._headers(),
+                )
         except httpx.HTTPError as exc:
             raise RemoteRunnerError(f"runner cancel failed: {exc}") from exc
         if resp.status_code == 404:
