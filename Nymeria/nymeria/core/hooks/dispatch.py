@@ -32,6 +32,7 @@ import threading
 import time
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import ContextVar
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from concurrent.futures import wait as futures_wait
 from dataclasses import replace
@@ -55,6 +56,19 @@ logger = logging.getLogger(__name__)
 # Per-hook wall-clock budget. Generous for the spine (fixtures are fast); a real
 # blocking action must not stall a turn indefinitely.
 DEFAULT_HOOK_TIMEOUT = 5.0
+
+# How many hook fires may be nested inside one another before dispatch refuses.
+# 2 leaves room for the one legitimate shape (a hook runs a workflow, that
+# workflow calls a tool, that tool call fires its own hooks) while stopping the
+# cycle from running away. Raising this widens a denial-of-service surface, not
+# a feature.
+MAX_HOOK_FIRE_DEPTH = 2
+
+# ContextVar, not a plain global: hook fires are concurrent across threads and
+# turns, so a shared counter would let one turn's depth deny another's hooks.
+# A ContextVar is naturally per-task and is inherited by tasks spawned inside a
+# fire, which is exactly the chain being bounded.
+_fire_depth: ContextVar[int] = ContextVar("nymeria_hook_fire_depth", default=0)
 
 
 def _pool_workers(env_name: str, default: int = 4) -> int:
@@ -175,6 +189,38 @@ def _with_scratch(ctx: HookContext, scratch: ScratchStore) -> HookContext:
 def _legal(event: HookEvent, outcome: HookOutcome) -> bool:
     """True if ``outcome`` is the allowed type for ``event``."""
     return isinstance(outcome, EVENT_OUTCOME_TYPES[event])
+
+
+def _reentrance_outcome(event: HookEvent, depth: int) -> Optional[HookOutcome]:
+    """Depth policy, deliberately identical to the fault policy above.
+
+    A hook can run a workflow, a workflow can call tools, and a tool call is a
+    hook fire point. That is a cycle, and nothing downstream bounds it: the
+    workflow engine's own ``max_depth`` is carried in a runnable configurable
+    that a hook-dispatched run does not inherit, so every hop through a hook
+    restarts the count at zero.
+
+    Refusing to fire is NOT the same as allowing the call. If a
+    ``require_approval`` or ``block_if_matches`` hook silently stopped applying
+    once a chain got deep enough, then driving the chain deep would be a way to
+    walk straight through the gate. So PRE denies here, for the same reason it
+    denies on a saturated pool: a guardrail that was not evaluated must not
+    pass. The observe and post planes gate nothing, so they simply stop.
+    """
+    logger.error(
+        "hook dispatch refused on %s: fire depth %d exceeds max %d "
+        "(a hook is re-entering itself, most likely hook -> workflow -> tool)",
+        event.value, depth, MAX_HOOK_FIRE_DEPTH,
+    )
+    if event is HookEvent.PRE_TOOL_USE:
+        return PreToolOutcome(
+            decision="deny",
+            reason=(
+                "hook recursion limit reached "
+                f"(depth {depth} > {MAX_HOOK_FIRE_DEPTH})"
+            ),
+        )
+    return None
 
 
 def _fault_outcome(event: HookEvent, reg: Registration, exc: BaseException) -> Optional[HookOutcome]:
@@ -553,28 +599,36 @@ async def adispatch(
     regs = registry.matching(event, ctx, observe=False)
     if not regs:
         return None
+    depth = _fire_depth.get()
+    if depth >= MAX_HOOK_FIRE_DEPTH:
+        return _reentrance_outcome(event, depth + 1)
     ctx = _with_scratch(ctx, scratch)
     outcomes: List[HookOutcome] = []
-    for reg in regs:
-        # _accept runs inside the try so a malformed scratch_patch (or any other
-        # post-run failure) is isolated per hook rather than crashing the turn;
-        # _record runs after the fault handling (see its docstring).
-        started_at = time.monotonic()
-        outcome: Optional[HookOutcome] = None
-        error: Optional[BaseException] = None
-        try:
-            outcome = await _arun_hook(reg, ctx, reg.timeout or timeout, _mutate_pool)
-            status = _accept(event, reg, outcome, ctx, scratch, outcomes)
-        except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
-            error, status = exc, _fault_status(exc)
-            fault = _fault_outcome(event, reg, exc)
-            if fault is not None:
-                outcomes.append(fault)
-        _record(
-            registry, reg, ctx,
-            status=status, duration=time.monotonic() - started_at,
-            outcome=outcome, error=error, emit=emit,
-        )
+    token = _fire_depth.set(depth + 1)
+    try:
+        for reg in regs:
+            # _accept runs inside the try so a malformed scratch_patch (or any
+            # other post-run failure) is isolated per hook rather than crashing
+            # the turn; _record runs after the fault handling (see its
+            # docstring).
+            started_at = time.monotonic()
+            outcome: Optional[HookOutcome] = None
+            error: Optional[BaseException] = None
+            try:
+                outcome = await _arun_hook(reg, ctx, reg.timeout or timeout, _mutate_pool)
+                status = _accept(event, reg, outcome, ctx, scratch, outcomes)
+            except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
+                error, status = exc, _fault_status(exc)
+                fault = _fault_outcome(event, reg, exc)
+                if fault is not None:
+                    outcomes.append(fault)
+            _record(
+                registry, reg, ctx,
+                status=status, duration=time.monotonic() - started_at,
+                outcome=outcome, error=error, emit=emit,
+            )
+    finally:
+        _fire_depth.reset(token)
     return _reduce_safe(event, outcomes)
 
 
@@ -593,28 +647,36 @@ def dispatch(
     regs = registry.matching(event, ctx, observe=False)
     if not regs:
         return None
+    depth = _fire_depth.get()
+    if depth >= MAX_HOOK_FIRE_DEPTH:
+        return _reentrance_outcome(event, depth + 1)
     ctx = _with_scratch(ctx, scratch)
     outcomes: List[HookOutcome] = []
-    for reg in regs:
-        # _accept runs inside the try so a malformed scratch_patch (or any other
-        # post-run failure) is isolated per hook rather than crashing the turn;
-        # _record runs after the fault handling (see its docstring).
-        started_at = time.monotonic()
-        outcome: Optional[HookOutcome] = None
-        error: Optional[BaseException] = None
-        try:
-            outcome = _run_hook_sync(reg, ctx, reg.timeout or timeout, _mutate_pool)
-            status = _accept(event, reg, outcome, ctx, scratch, outcomes)
-        except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
-            error, status = exc, _fault_status(exc)
-            fault = _fault_outcome(event, reg, exc)
-            if fault is not None:
-                outcomes.append(fault)
-        _record(
-            registry, reg, ctx,
-            status=status, duration=time.monotonic() - started_at,
-            outcome=outcome, error=error, emit=emit,
-        )
+    token = _fire_depth.set(depth + 1)
+    try:
+        for reg in regs:
+            # _accept runs inside the try so a malformed scratch_patch (or any
+            # other post-run failure) is isolated per hook rather than crashing
+            # the turn; _record runs after the fault handling (see its
+            # docstring).
+            started_at = time.monotonic()
+            outcome: Optional[HookOutcome] = None
+            error: Optional[BaseException] = None
+            try:
+                outcome = _run_hook_sync(reg, ctx, reg.timeout or timeout, _mutate_pool)
+                status = _accept(event, reg, outcome, ctx, scratch, outcomes)
+            except Exception as exc:  # noqa: BLE001 - a hook can never crash a turn
+                error, status = exc, _fault_status(exc)
+                fault = _fault_outcome(event, reg, exc)
+                if fault is not None:
+                    outcomes.append(fault)
+            _record(
+                registry, reg, ctx,
+                status=status, duration=time.monotonic() - started_at,
+                outcome=outcome, error=error, emit=emit,
+            )
+    finally:
+        _fire_depth.reset(token)
     return _reduce_safe(event, outcomes)
 
 
