@@ -139,15 +139,19 @@ not on the other. State both when reasoning about it.
 - **Execution channel (not protected today).** The master key lives in the agent
   process environment. Any subprocess the agent spawns runs as the same user and
   can read `/proc/1/environ` (the key) and the encrypted stores off disk, then
-  decrypt them. Three separate leaks:
+  decrypt them. Three separate channels, in different states:
   environment *inheritance* is scrubbed on every agent-reachable spawn in the
   API process, and a repo gate now fails the build if a new spawn lands without
   a deliberate environment or a written exemption; several spawns in the setup
   wizard and CLI still inherit, which matters because those processes load the
-  whole deployment `.env`. `/proc` reads by a same-user process are open, and so
-  are off-disk reads of the encrypted stores; closing those is what the Landlock
-  work (Section 2.4) targets. **The vault protects secrets from the model, not
-  from a shell.**
+  whole deployment `.env`. `/proc/<pid>/environ` reads are closed on the API and
+  slim entry points, which set `PR_SET_DUMPABLE(0)` at startup so a same-UID
+  process cannot read this process's `/proc` entries or ptrace it (root and
+  `CAP_SYS_PTRACE` are unaffected, and `NYMERIA_DISABLE_PROCESS_HARDENING=1`
+  turns it off for debugging, at the cost of reopening the channel). Off-disk
+  reads of the encrypted stores remain open, which is what the Landlock work
+  (Section 2.4) targets. **The vault protects secrets from the model, not from
+  a shell.**
 
   The gate is syntactic, so treat a green build as "no new bare spawn was
   introduced" rather than "nothing inherits". It cannot see a spawn dispatched
